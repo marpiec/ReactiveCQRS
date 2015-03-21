@@ -1,5 +1,5 @@
 Common.settings("main")
 
-lazy val cqrsApi = project.in(file("api"))
-lazy val cqrsCore = project.in(file("core"))
-lazy val cqrsMemory = project.in(file("memory"))
+lazy val api = project.in(file("api"))
+lazy val core = project.in(file("core")).dependsOn(api)
+lazy val memory = project.in(file("memory")).dependsOn(core)
