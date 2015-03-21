@@ -8,7 +8,7 @@ object Common {
   def settings(moduleName: String) = Seq[Setting[_]](
 
     name := s"$applicationName-$moduleName",
-    version := "1.0",
+    version := "0.0.1",
     scalaVersion := "2.11.6",
 
     /* required for Scalate to avoid version mismatch */
