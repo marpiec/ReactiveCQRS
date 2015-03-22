@@ -1,17 +1,22 @@
 package io.reactivecqrs.core
 
+import io.reactivecqrs.api.exception.{AggregateDoesNotExistException, RepositoryException, CqrsException}
 import io.reactivecqrs.api.{AggregateUpdatedNotification, NewEventForAggregateNotification, Aggregate}
 import io.reactivecqrs.api.event.Event
-import io.reactivecqrs.api.guid.{UserId, CommandId, AggregateId}
+import io.reactivecqrs.api.guid.{AggregateVersion, UserId, CommandId, AggregateId}
+
+case class StoreEvents[AGGREGATE](messageId: String, commandId: CommandId, aggregateId: AggregateId, expectedVersion: AggregateVersion, event: Event[AGGREGATE])
+
+case class StoreEventsResponse(messageId: String, success: Boolean, exception: CqrsException)
 
 
-trait Repository[AGGREGATE] {
+trait RepositoryActorApi[AGGREGATE] {
 
   /** Adding events */
 
-  def addFirstEvent(commandId: CommandId, userId: UserId, newAggregateId: AggregateId, event: Event[AGGREGATE])
+  def storeFirstEvent(commandId: CommandId, userId: UserId, newAggregateId: AggregateId, event: Event[AGGREGATE]): StoreEventsResponse
 
-  def addEvent(commandId: CommandId, userId: UserId, aggregateId: AggregateId, expectedVersion: Int, event: Event[AGGREGATE])
+  def storeEvent(commandId: CommandId, userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, event: Event[AGGREGATE]): StoreEventsResponse
 
   def addEventListener(eventListener: NewEventForAggregateNotification[AGGREGATE] => Unit): Unit
   
@@ -37,9 +42,9 @@ trait Repository[AGGREGATE] {
 
   /** Getting aggregates */
   
-  def getAggregate(id: AggregateId): Either[RepositoryException, Aggregate[AGGREGATE]]
+  def getAggregate(id: AggregateId): Either[AggregateDoesNotExistException, Aggregate[AGGREGATE]]
 
-  def getAggregates(ids: Seq[AggregateId]): Seq[Either[RepositoryException, Aggregate[AGGREGATE]]]
+  def getAggregates(ids: Seq[AggregateId]): Seq[Either[AggregateDoesNotExistException, Aggregate[AGGREGATE]]]
 
   def getAggregateForVersion(id: AggregateId, version: Int): Either[RepositoryException, Aggregate[AGGREGATE]]
 
