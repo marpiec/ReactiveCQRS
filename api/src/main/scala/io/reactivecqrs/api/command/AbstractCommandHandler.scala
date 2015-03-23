@@ -22,7 +22,10 @@ trait CommandHandler[AGGREGATE, COMMAND <: Command[AGGREGATE, RESPONSE], RESPONS
 
   def validateCommand(userId: UserId, aggregateId: AggregateId, version: AggregateVersion, currentAggregateRoot: AGGREGATE, command: COMMAND): Option[RESPONSE]
 
-  def onConcurrentModification(): OnConcurrentModification
+  /**
+   * Fail by default.
+   */
+  def onConcurrentModification(): OnConcurrentModification = Fail
 
 }
 

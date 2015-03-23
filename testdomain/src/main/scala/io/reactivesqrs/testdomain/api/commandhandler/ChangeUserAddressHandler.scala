@@ -1,41 +1,44 @@
 package io.reactivesqrs.testdomain.api.commandhandler
 
-import io.reactivecqrs.api.command.{OnConcurrentModification, CommandHandlingResult, CommandHandler, AbstractCommandHandler}
-import io.reactivecqrs.api.guid.{AggregateVersion, AggregateId, UserId, CommandId}
-import io.reactivecqrs.core.RepositoryActorApi
-import io.reactivesqrs.testdomain.api.{UserAddressChanged, User, ChangeUserAddress, ChangeUserAddressResult}
+import io.reactivecqrs.api.command._
+import io.reactivecqrs.api.guid.{AggregateId, AggregateVersion, UserId}
+import io.reactivesqrs.testdomain.api.{ChangeUserAddress, ChangeUserAddressResult, User, UserAddressChanged}
 
 
-class ChangeUserAddressHandler(repository: RepositoryActorApi) extends CommandHandler[User, ChangeUserAddress, ChangeUserAddressResult] {
+class ChangeUserAddressHandler
+  extends CommandHandler[User, ChangeUserAddress, ChangeUserAddressResult] {
 
-  def handle(commandId: CommandId, userId: UserId, command: ChangeUserAddress): Unit = {
-    // validation
 
-    // validation against aggregate state
+  // validation
 
-    // validation against other services
+  // validation against aggregate state
 
-    repository.storeEvent(commandId, userId, command.userId, command.expectedVersion, UserAddressChanged(command.city, command.street, command.number))
+  // validation against other services
 
-    // Retry if conflict
+  // store events
 
-    // Side effects after success
+  // Retry if conflict
 
-    // Create response
+  // Side effects after success
 
-    ChangeUserAddressResult(success = true)
-  }
+  // Create response
+
 
   override def validateCommand(userId: UserId,
                                aggregateId: AggregateId,
                                version: AggregateVersion,
                                currentAggregateRoot: User,
-                               command: ChangeUserAddress): Option[ChangeUserAddressResult] = ???
+                               command: ChangeUserAddress): ValidationResult[ChangeUserAddressResult] = {
+    ValidationSuccess()
+  }
 
-  override def onConcurrentModification(): OnConcurrentModification = ???
+  override def commandClass = classOf[ChangeUserAddress]
 
-  override def commandClass: Class[ChangeUserAddress] = ???
-
-  override def handle(userId: UserId, command: ChangeUserAddress): CommandHandlingResult[User, ChangeUserAddressResult] = ???
+  override def handle(userId: UserId, command: ChangeUserAddress) = {
+    CommandHandlingResult(
+      event = UserAddressChanged(command.city, command.street, command.number),
+      response = ChangeUserAddressResult(success = true)
+    )
+  }
 }
 
