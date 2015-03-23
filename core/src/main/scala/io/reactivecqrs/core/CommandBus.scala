@@ -16,7 +16,7 @@ abstract class CommandBus[AGGREGATE](clock: Clock,
                                      aggregateIdGenerator: AggregateIdGenerator,
                                      commandLog: CommandLogActorApi,
                                      aggregateRepository: RepositoryActorApi[AGGREGATE],
-                                     handlers: Array[CommandHandler[AGGREGATE, _ <: Command[_, _], _]]) extends Actor {
+                                     handlers: Array[AbstractCommandHandler[AGGREGATE, _ <: Command[_, _], _]]) extends Actor {
 
 
   private val commandHandlers = handlers.map(handler => handler.commandClass -> handler).toMap
@@ -25,7 +25,7 @@ abstract class CommandBus[AGGREGATE](clock: Clock,
 
   override def receive: Receive = {
     case ce: CommandEnvelope[AGGREGATE, _] => submitCommand(ce.acknowledgeId, ce.userId, ce.aggregateId, ce.expectedVersion, ce.command)
-    case ce: CommandEnvelopeForNewAggregate[AGGREGATE, _] => submitCommandForNewAggregate(ce.acknowledgeId, ce.userId, ce.command)
+    case ce: FirstCommandEnvelope[AGGREGATE, _] => submitCommandForNewAggregate(ce.acknowledgeId, ce.userId, ce.command)
     case message: _ => sender() ! IncorrectCommand(
       s"Received command of type ${message.getClass} but expected instance of ${classOf[CommandEnvelope[_, _]]}")
   }
@@ -70,7 +70,7 @@ abstract class CommandBus[AGGREGATE](clock: Clock,
     }
 
     def getProperCommandHandler = {
-      commandHandlers(command.getClass).asInstanceOf[ExistingAggregateCommandHandler[AGGREGATE, COMMAND, RESPONSE]]
+      commandHandlers(command.getClass).asInstanceOf[CommandHandler[AGGREGATE, COMMAND, RESPONSE]]
     }
 
     def handleValidCommand(newCommandId: CommandId): Unit = {
@@ -115,7 +115,7 @@ abstract class CommandBus[AGGREGATE](clock: Clock,
     // Implementation
 
     def getProperCommandHandler = {
-      commandHandlers(command.getClass).asInstanceOf[NewAggregateCommandHandler[AGGREGATE, COMMAND, RESPONSE]]
+      commandHandlers(command.getClass).asInstanceOf[FirstCommandHandler[AGGREGATE, COMMAND, RESPONSE]]
     }
 
     def handleValidCommand(newCommandId: CommandId): Unit = {
