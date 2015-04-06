@@ -24,7 +24,9 @@ trait FirstCommandHandler[AGGREGATE, COMMAND <: FirstCommand[AGGREGATE, RESPONSE
    * Create response
    */
   def handle(commandId: CommandId,
-             command: COMMAND): RESPONSE
+             userId: UserId,
+             command: COMMAND,
+             repository: RepositoryHandler[AGGREGATE]): RESPONSE
 }
 
 
@@ -39,6 +41,8 @@ trait FollowingCommandHandler[AGGREGATE, COMMAND <: FollowingCommand[AGGREGATE, 
    * Create response
    */
   def handle(commandId: CommandId,
+             userId: UserId,
              aggregateRoot: AGGREGATE,
-             command: COMMAND): RESPONSE
+             command: COMMAND,
+             repository: RepositoryHandler[AGGREGATE]): RESPONSE
 }

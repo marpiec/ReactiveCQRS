@@ -1,5 +1,6 @@
 package io.reactivecqrs.core
 
+import io.reactivecqrs.api.command.StoreEventsResponse
 import io.reactivecqrs.api.exception.{AggregateDoesNotExistException, RepositoryException, CqrsException}
 import io.reactivecqrs.api.{AggregateUpdatedNotification, NewEventForAggregateNotification, Aggregate}
 import io.reactivecqrs.api.event.Event
@@ -8,7 +9,6 @@ import io.reactivecqrs.utils.Result
 
 case class StoreEvents[AGGREGATE](messageId: String, commandId: CommandId, aggregateId: AggregateId, expectedVersion: AggregateVersion, event: Event[AGGREGATE])
 
-case class StoreEventsResponse(messageId: String, success: Boolean, exception: CqrsException)
 
 
 trait RepositoryActorApi[AGGREGATE] {

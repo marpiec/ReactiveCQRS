@@ -2,22 +2,26 @@ package io.reactivecqrs.core
 
 import java.time.Clock
 
-import akka.actor.Actor
+import akka.actor.{ActorRef, Actor}
 import akka.util.Timeout
-import io.reactivecqrs.api.{Aggregate, AggregateIdGenerator, CommandIdGenerator}
 import io.reactivecqrs.api.command._
 import io.reactivecqrs.api.exception._
-import io.reactivecqrs.api.guid.{AggregateId, AggregateVersion, CommandId, UserId}
-import io.reactivecqrs.utils.{Result, Failure, Success}
+import io.reactivecqrs.api.guid.{AggregateVersion, UserId}
+import io.reactivecqrs.api.{Aggregate, AggregateIdGenerator, CommandIdGenerator}
+import io.reactivecqrs.utils.{Failure, Result, Success}
 
 import scala.concurrent.duration._
+
 
 abstract class CommandBus[AGGREGATE](clock: Clock,
                                      commandIdGenerator: CommandIdGenerator, //TODO make it an actor
                                      aggregateIdGenerator: AggregateIdGenerator,
                                      commandLog: CommandLogActorApi,
+                                     aggregateRepositoryActor: ActorRef,
                                      aggregateRepository: RepositoryActorApi[AGGREGATE],
                                      handlers: Array[CommandHandler[AGGREGATE, _ <: Command[_, _], _]]) extends Actor {
+
+  private val repositoryHandler = new RepositoryHandler[AGGREGATE](aggregateRepositoryActor)
 
 
   private val commandHandlers = handlers.map(handler => handler.commandClass -> handler).toMap
@@ -25,18 +29,22 @@ abstract class CommandBus[AGGREGATE](clock: Clock,
   implicit val akkaTimeout = Timeout(5 seconds)
 
   override def receive: Receive = {
-    case command: FirstCommand[AGGREGATE, _] => submitFirstCommand(command)
-    case command: FollowingCommand[AGGREGATE, _] => submitFollowingCommand(command)
-    case message: _ => sender() ! IncorrectCommand(
-      s"Received command of type ${message.getClass} but expected instance of ${classOf[Command[_, _]]}")
+    case CommandEnvelope(acknowledgeId, userId, command) => command match {
+      case command: FirstCommand[AGGREGATE, _] => submitFirstCommand(acknowledgeId, userId, command)
+      case command: FollowingCommand[AGGREGATE, _] => submitFollowingCommand(acknowledgeId, userId, command)
+      case command: _ => sender() ! IncorrectCommand(
+        s"Received command of type ${command.getClass} but expected instance of ${classOf[Command[_, _]]}")
+    }
+    case envelope: _ => sender() ! IncorrectCommand(
+      s"Received commandEnvelope of type ${envelope.getClass} but expected instance of ${classOf[Command[_, _]]}")
   }
 
 
-  def submitFirstCommand[COMMAND <: Command[AGGREGATE, RESPONSE], RESPONSE](command: COMMAND): Unit = {
+  def submitFirstCommand[COMMAND <: Command[AGGREGATE, RESPONSE], RESPONSE](acknowledgeId: String, userId: UserId, command: COMMAND): Unit = {
 
     val commandHandler = getProperCommandHandler
 
-    commandHandler.handle(commandIdGenerator.nextCommandId, command)
+    commandHandler.handle(commandIdGenerator.nextCommandId, userId, command, repositoryHandler)
 
     // implementation
 
@@ -47,8 +55,7 @@ abstract class CommandBus[AGGREGATE](clock: Clock,
   }
 
 
-
-  def submitFollowingCommand[COMMAND <: FollowingCommand[AGGREGATE, RESPONSE], RESPONSE](command: COMMAND): Unit = {
+  def submitFollowingCommand[COMMAND <: FollowingCommand[AGGREGATE, RESPONSE], RESPONSE](acknowledgeId: String, userId: UserId, command: COMMAND): Unit = {
 
     val commandHandler = getProperCommandHandler
 
@@ -60,18 +67,17 @@ abstract class CommandBus[AGGREGATE](clock: Clock,
       val aggregateState = loadLastAggregateState()
       aggregateState match {
         case Failure(exception) => sender ! exception
+        case Success(aggregate) if aggregate.version < command.expectedVersion =>
+          sender ! IncorrectAggregateVersionException(s"Expected version ${command.expectedVersion} but was ${aggregate.version}")
+        case Success(aggregate) if aggregate.version > command.expectedVersion =>
+          handleConcurrentModification(aggregate.version)
+        case Success(aggregate) if aggregate.aggregateRoot.isEmpty =>
+          sender ! AggregateWasAlreadyDeletedException(s"Aggregate is already deleted. So no new commands are possible")
         case Success(aggregate) =>
-          if (aggregate.version < command.expectedVersion) {
-            sender ! IncorrectAggregateVersionException(s"Expected version ${command.expectedVersion} but was ${aggregate.version}")
-          } else if (aggregate.version > command.expectedVersion) {
-            handleConcurrentModification(aggregate.version)
-          } else if (aggregate.aggregateRoot.isEmpty) {
-            sender ! AggregateWasAlreadyDeletedException(s"Aggregate is already deleted. So no new commands are possible")
-          } else {
-            handler.handle(commandIdGenerator.nextCommandId, aggregate.aggregateRoot.get, command)
-          }
+          handler.handle(commandIdGenerator.nextCommandId, userId, aggregate.aggregateRoot.get, command, repositoryHandler)
       }
     }
+
 
 
     def loadLastAggregateState(): Result[Aggregate[AGGREGATE], AggregateDoesNotExistException] = {

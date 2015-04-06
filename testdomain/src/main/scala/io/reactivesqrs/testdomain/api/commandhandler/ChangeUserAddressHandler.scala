@@ -7,12 +7,15 @@ import io.reactivecqrs.core.RepositoryActorApi
 import io.reactivesqrs.testdomain.api.{ChangeUserAddress, ChangeUserAddressResult, User, UserAddressChanged}
 
 
-class ChangeUserAddressHandler(aggregateIdGenerator: AggregateIdGenerator, repository: RepositoryActorApi[User])
-  extends CommandHandler[User, ChangeUserAddress, ChangeUserAddressResult] {
+class ChangeUserAddressHandler
+  extends FollowingCommandHandler[User, ChangeUserAddress, ChangeUserAddressResult] {
 
-  override def handle(commandId: CommandId, userId: UserId, aggregateRoot: User, command: ChangeUserAddress): Unit = {
 
-    repository.storeFirstEvent(commandId, userId, aggregateIdGenerator.nextAggregateId,
+
+
+  override def handle(commandId: CommandId, userId: UserId, aggregateRoot: User, command: ChangeUserAddress, repository: RepositoryHandler[User]): ChangeUserAddressResult = {
+
+    repository.storeFirstEvent(commandId, userId,
       UserAddressChanged(command.city, command.street, command.number))
 
     ChangeUserAddressResult(success = true)
