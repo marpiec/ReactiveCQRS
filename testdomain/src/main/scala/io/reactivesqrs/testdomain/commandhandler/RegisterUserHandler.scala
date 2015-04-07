@@ -1,7 +1,7 @@
-package io.reactivesqrs.testdomain.api.commandhandler
+package io.reactivesqrs.testdomain.commandhandler
 
-import io.reactivecqrs.api.command.{CommandEnvelope, FollowingCommandHandler, RepositoryHandler}
-import io.reactivecqrs.api.guid.{UserId, CommandId}
+import io.reactivecqrs.api.command.{FollowingCommandHandler, RepositoryHandler}
+import io.reactivecqrs.api.guid.{CommandId, UserId}
 import io.reactivesqrs.testdomain.api._
 
 

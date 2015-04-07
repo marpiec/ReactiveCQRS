@@ -1,4 +1,4 @@
-package io.reactivesqrs.testdomain.api.commandhandler
+package io.reactivesqrs.testdomain.commandhandler
 
 import io.reactivecqrs.api.command.{FollowingCommandHandler, RepositoryHandler}
 import io.reactivecqrs.api.guid.{CommandId, UserId}
