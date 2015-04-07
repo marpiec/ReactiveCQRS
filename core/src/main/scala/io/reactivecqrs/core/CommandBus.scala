@@ -24,19 +24,18 @@ abstract class CommandBus[AGGREGATE](clock: Clock,
 
   private val repositoryHandler = new RepositoryHandler[AGGREGATE](aggregateRepositoryActor)
 
-
   private val commandHandlers = handlers.map(handler => handler.commandClass -> handler).toMap
 
   implicit val akkaTimeout = Timeout(5 seconds)
 
   override def receive: Receive = {
     case CommandEnvelope(acknowledgeId, userId, command) => command match {
-      case command: FirstCommand[AGGREGATE, _] => submitFirstCommand(acknowledgeId, userId, command)
-      case command: FollowingCommand[AGGREGATE, _] => submitFollowingCommand(acknowledgeId, userId, command)
-      case command: _ => sender() ! IncorrectCommand(
+      case c :FirstCommand[_, _] => submitFirstCommand(acknowledgeId, userId, c.asInstanceOf[FirstCommand[AGGREGATE, _]])
+      case c :FollowingCommand[_, _] => submitFollowingCommand(acknowledgeId, userId, c.asInstanceOf[FollowingCommand[AGGREGATE, _]])
+      case _ => sender() ! IncorrectCommand(
         s"Received command of type ${command.getClass} but expected instance of ${classOf[Command[_, _]]}")
     }
-    case envelope: _ => sender() ! IncorrectCommand(
+    case envelope: AnyRef => sender() ! IncorrectCommand(
       s"Received commandEnvelope of type ${envelope.getClass} but expected instance of ${classOf[Command[_, _]]}")
   }
 

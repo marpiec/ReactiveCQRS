@@ -1,12 +1,25 @@
 package io.reactivecqrs.api.event
 
+import java.lang.reflect.Type
+
+import sun.reflect.generics.reflectiveObjects.ParameterizedTypeImpl
+
 
 /**
  * This trait marks class as a business event that occurred to aggregate.
  * @tparam AGGREGATE type of aggregate this event is related to.
  */
 trait Event[AGGREGATE] {
-  def aggregateType:Class[AGGREGATE]
+  /** TODO TypeTag could be better solution */
+  def aggregateType:Class[AGGREGATE] = {
+
+    var clazz = this.getClass.asInstanceOf[Class[_]]
+    while(clazz.getGenericSuperclass.isInstanceOf[Class[_]]) {
+      clazz = clazz.getGenericSuperclass.asInstanceOf[Class[_]]
+    }
+    val arguments: Array[Type] = clazz.getGenericSuperclass.asInstanceOf[ParameterizedTypeImpl].getActualTypeArguments
+    arguments(0).asInstanceOf[Class[AGGREGATE]]
+  }
 }
 
 /**
@@ -20,4 +33,4 @@ trait UndoEvent[AGGREGATE] extends Event[AGGREGATE] {
   val eventsCount: Int
 }
 
-object NoopEvent extends Event[_]
+case class NoopEvent[AGGREGATE]() extends Event[AGGREGATE]
