@@ -19,3 +19,5 @@ trait UndoEvent[AGGREGATE] extends Event[AGGREGATE] {
    */
   val eventsCount: Int
 }
+
+object NoopEvent extends Event[_]
