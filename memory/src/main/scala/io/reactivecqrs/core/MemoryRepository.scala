@@ -24,7 +24,7 @@ class MemoryCache[AGGREGATE] {
 }
 
 
-class MemoryRepository[AGGREGATE](clock: Clock, memoryCache: MemoryCache[AGGREGATE]) extends Actor {
+class MemoryRepository[AGGREGATE](clock: Clock, memoryCache: MemoryCache[AGGREGATE], dataStore: DataStore[AGGREGATE]) extends Actor {
 
   override def receive = {
     case StoreFirstEvent(messageId, userId, commandId, newAggregateId, event) => storeFirstEvent(messageId, userId, commandId, newAggregateId, event.asInstanceOf[Event[AGGREGATE]])
@@ -36,6 +36,7 @@ class MemoryRepository[AGGREGATE](clock: Clock, memoryCache: MemoryCache[AGGREGA
     val events = memoryCache.getEvents(newAggregateId)
     if(events.isEmpty) {
       memoryCache.putEvent(newAggregateId, new EventRow[AGGREGATE](commandId, userId, newAggregateId, 1, clock.instant(), event))
+      ??? // Confirm event acceptance
     } else {
       ???
       // It should not be empty
@@ -46,6 +47,7 @@ class MemoryRepository[AGGREGATE](clock: Clock, memoryCache: MemoryCache[AGGREGA
     val events = memoryCache.getEvents(aggregateId)
     if(events.size == expectedVersion.version) {
       memoryCache.putEvent(aggregateId, new EventRow[AGGREGATE](commandId, userId, aggregateId, expectedVersion.version + 1, clock.instant(), event))
+      ??? // Confirm event acceptance
     } else {
       ???
       //concurrent modification error
@@ -54,7 +56,13 @@ class MemoryRepository[AGGREGATE](clock: Clock, memoryCache: MemoryCache[AGGREGA
   }
 
   private def getAggregate(id: AggregateId): Unit = {
-    ???
+    val events = memoryCache.getEvents(id)
+    if(events.isEmpty) {
+      ??? // aggregate does not exist
+    } else {
+      val aggregate = dataStore.buildAggregate(id, events.toStream)
+      sender ! aggregate
+    }
   }
 
 }

@@ -28,7 +28,7 @@ class DataStore[AGGREGATE](handlers: Array[EventHandler[AGGREGATE, _ <: Event[AG
   }
 
 
-  def createAggregate(aggregateId: AggregateId, events: Stream[EventRow[AGGREGATE]]): Result[Aggregate[AGGREGATE], RepositoryException] = {
+  def buildAggregate(aggregateId: AggregateId, events: Stream[EventRow[AGGREGATE]]): Result[Aggregate[AGGREGATE], RepositoryException] = {
 
     if (events.isEmpty) {
       Failure(NoEventsForAggregateException("No events for aggregate " + aggregateId))
@@ -46,7 +46,7 @@ class DataStore[AGGREGATE](handlers: Array[EventHandler[AGGREGATE, _ <: Event[AG
     }
   }
 
-  def updateAggregateWithEvent(eventRow: EventRow[AGGREGATE], aggregate: Aggregate[AGGREGATE]): Aggregate[AGGREGATE] = {
+  private def updateAggregateWithEvent(eventRow: EventRow[AGGREGATE], aggregate: Aggregate[AGGREGATE]): Aggregate[AGGREGATE] = {
 
     if (eventRow.version == aggregate.version.version + 1) {
       // Body:
