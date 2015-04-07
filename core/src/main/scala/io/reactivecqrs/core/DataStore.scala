@@ -65,10 +65,12 @@ class DataStore[AGGREGATE](handlers: Array[EventHandler[AGGREGATE, _ <: Event[AG
 
         }
       } else {
+        // TODO change into result
         throw new IllegalStateException(AggregateWasAlreadyDeletedException(
           "Unexpected modification of already deleted aggregate").toString)
       }
     } else {
+      // TODO change into result
       throw new IllegalStateException(
         "Unexpected version for aggregate when applying eventRow. " + "[aggregateType: TODO - extract" +
           ", aggregateId:" + aggregate.id + ", aggregateVersion:" +

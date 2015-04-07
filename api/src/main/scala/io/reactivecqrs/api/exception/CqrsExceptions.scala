@@ -10,7 +10,7 @@ case class AggregateWasAlreadyDeletedException(message: String) extends CqrsExce
 
 case class CommandAlreadyExistsException(message: String) extends CqrsException
 
-case class ConcurrentAggregateModificationException(currentVersion: AggregateVersion, message: String) extends CqrsException
+case class ConcurrentAggregateModificationException(expectedVersion: AggregateVersion, currentVersion: AggregateVersion, message: String) extends CqrsException
 
 case class IncorrectCommand(message: String) extends CqrsException
 

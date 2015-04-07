@@ -4,7 +4,9 @@ import java.time.Clock
 
 import akka.actor.Actor
 import io.reactivecqrs.api.event.Event
+import io.reactivecqrs.api.exception.{AggregateDoesNotExistException, ConcurrentAggregateModificationException, AggregateAlreadyExistsException}
 import io.reactivecqrs.api.guid.{UserId, AggregateVersion, AggregateId, CommandId}
+import io.reactivecqrs.utils.{Failure, Success}
 
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
@@ -29,17 +31,16 @@ class MemoryRepository[AGGREGATE](clock: Clock, memoryCache: MemoryCache[AGGREGA
   override def receive = {
     case StoreFirstEvent(messageId, userId, commandId, newAggregateId, event) => storeFirstEvent(messageId, userId, commandId, newAggregateId, event.asInstanceOf[Event[AGGREGATE]])
     case StoreEvent(messageId, userId, commandId, aggregateId, expectedVersion, event) => storeEvent(messageId, userId, commandId, aggregateId, expectedVersion, event.asInstanceOf[Event[AGGREGATE]]);
-    case GetAggregate(id) => getAggregate(id)
+    case GetAggregate(messageId, id) => getAggregate(messageId, id)
   }
 
   private def storeFirstEvent(messageId: String, userId: UserId, commandId: CommandId, newAggregateId: AggregateId, event: Event[AGGREGATE]): Unit = {
     val events = memoryCache.getEvents(newAggregateId)
     if(events.isEmpty) {
       memoryCache.putEvent(newAggregateId, new EventRow[AGGREGATE](commandId, userId, newAggregateId, 1, clock.instant(), event))
-      ??? // Confirm event acceptance
+      sender ! StoreEventResponse(messageId, Success(Unit))
     } else {
-      ???
-      // It should not be empty
+      sender ! StoreEventResponse(messageId, Failure(AggregateAlreadyExistsException("Aggregate " + newAggregateId + " already exists")))
     }
   }
 
@@ -47,21 +48,20 @@ class MemoryRepository[AGGREGATE](clock: Clock, memoryCache: MemoryCache[AGGREGA
     val events = memoryCache.getEvents(aggregateId)
     if(events.size == expectedVersion.version) {
       memoryCache.putEvent(aggregateId, new EventRow[AGGREGATE](commandId, userId, aggregateId, expectedVersion.version + 1, clock.instant(), event))
-      ??? // Confirm event acceptance
+      sender ! StoreEventResponse(messageId, Success(Unit))
     } else {
-      ???
-      //concurrent modification error
+      sender ! StoreEventResponse(messageId, Failure(ConcurrentAggregateModificationException(expectedVersion, new AggregateVersion(events.size), "Aggregate concurrent modification")))
     }
 
   }
 
-  private def getAggregate(id: AggregateId): Unit = {
+  private def getAggregate(messageId: String, id: AggregateId): Unit = {
     val events = memoryCache.getEvents(id)
     if(events.isEmpty) {
-      ??? // aggregate does not exist
+      sender ! GetAggregateResponse(messageId, Failure(AggregateDoesNotExistException("No events for aggregate " + id)))
     } else {
       val aggregate = dataStore.buildAggregate(id, events.toStream)
-      sender ! aggregate
+      sender ! GetAggregateResponse(messageId, aggregate)
     }
   }
 
