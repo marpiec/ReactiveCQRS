@@ -1,6 +1,6 @@
 package io.reactivecqrs.testdomain
 
-import io.reactivesqrs.testdomain.UserCommandBus
+import io.reactivesqrs.testdomain.{UserRepository, UserCommandBus}
 import org.scalatest.{GivenWhenThen, FeatureSpec}
 
 class TestDomainSpec extends FeatureSpec with GivenWhenThen {

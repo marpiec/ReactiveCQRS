@@ -7,7 +7,6 @@ import io.reactivecqrs.api.event.Event
 import io.reactivecqrs.api.guid.{AggregateVersion, UserId, CommandId, AggregateId}
 import io.reactivecqrs.utils.Result
 
-case class StoreEvents[AGGREGATE](messageId: String, commandId: CommandId, aggregateId: AggregateId, expectedVersion: AggregateVersion, event: Event[AGGREGATE])
 
 
 
