@@ -6,3 +6,8 @@ package io.reactivecqrs.api.guid
  * @param id unique long identifier across users.
  */
 case class UserId(id: Long)
+
+
+object UserId {
+  def fromAggregateId(id: AggregateId) = UserId(id.id)
+}

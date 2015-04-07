@@ -3,6 +3,7 @@ package io.reactivecqrs.core
 import java.time.Clock
 
 import akka.actor.{ActorRef, Actor}
+import akka.pattern.ask
 import akka.util.Timeout
 import io.reactivecqrs.api.command._
 import io.reactivecqrs.api.exception._
@@ -10,6 +11,7 @@ import io.reactivecqrs.api.guid.{AggregateVersion, UserId}
 import io.reactivecqrs.api.{Aggregate, AggregateIdGenerator, CommandIdGenerator}
 import io.reactivecqrs.utils.{Failure, Result, Success}
 
+import scala.concurrent.Await
 import scala.concurrent.duration._
 
 
@@ -18,7 +20,6 @@ abstract class CommandBus[AGGREGATE](clock: Clock,
                                      aggregateIdGenerator: AggregateIdGenerator,
                                      commandLog: CommandLogActorApi,
                                      aggregateRepositoryActor: ActorRef,
-                                     aggregateRepository: RepositoryActorApi[AGGREGATE],
                                      handlers: Array[CommandHandler[AGGREGATE, _ <: Command[_, _], _]]) extends Actor {
 
   private val repositoryHandler = new RepositoryHandler[AGGREGATE](aggregateRepositoryActor)
@@ -80,8 +81,10 @@ abstract class CommandBus[AGGREGATE](clock: Clock,
 
 
 
-    def loadLastAggregateState(): Result[Aggregate[AGGREGATE], AggregateDoesNotExistException] = {
-      aggregateRepository.getAggregate(command.aggregateId)
+    def loadLastAggregateState(): Result[Aggregate[AGGREGATE], RepositoryException] = {
+      val future = aggregateRepositoryActor ? GetAggregate("123", command.aggregateId)
+      val result = Await.result(future, 5 seconds)
+      result.asInstanceOf[GetAggregateResponse[AGGREGATE]].result
     }
 
     def getProperCommandHandler = {

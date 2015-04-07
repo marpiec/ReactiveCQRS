@@ -12,13 +12,11 @@ class UserCommandBus(clock: Clock,
                      commandIdGenerator: CommandIdGenerator,
                      aggregateIdGenerator: AggregateIdGenerator,
                      commandLog: CommandLogActorApi,
-                     aggregateRepositoryActor: ActorRef,
-                     aggregateRepository: RepositoryActorApi[User])
+                     aggregateRepositoryActor: ActorRef)
   extends CommandBus[User](clock, commandIdGenerator,
                       aggregateIdGenerator,
                       commandLog,
                       aggregateRepositoryActor,
-                      aggregateRepository,
                       Array(
                         new RegisterUserHandler,
                         new ChangeUserAddressHandler,
