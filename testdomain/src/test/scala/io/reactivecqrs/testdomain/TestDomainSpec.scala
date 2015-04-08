@@ -5,10 +5,10 @@ import java.time.Clock
 import akka.actor.{ActorSystem, Props}
 import io.reactivecqrs.api.Aggregate
 import io.reactivecqrs.api.command.{CommandResponseEnvelope, CommandEnvelope}
-import io.reactivecqrs.api.guid.UserId
+import io.reactivecqrs.api.guid.{AggregateVersion, UserId}
 import io.reactivecqrs.core._
 import io.reactivecqrs.testdomain.utils.ActorAskSupport
-import io.reactivesqrs.testdomain.api.{User, RegisterUser, RegisterUserResult}
+import io.reactivesqrs.testdomain.api._
 import io.reactivesqrs.testdomain.{UserCommandBus, UserRepository}
 import org.scalatest.MustMatchers._
 import org.scalatest.{FeatureSpec, GivenWhenThen}
@@ -43,16 +43,38 @@ class TestDomainSpec extends FeatureSpec with GivenWhenThen with ActorAskSupport
 
       Then("We can get aggregate from repository")
 
-      val userAggregateResponse: GetAggregateResponse[Aggregate[User]] = userRepository ?? GetAggregate("321", registeredUserId)
+      var userAggregateResponse: GetAggregateResponse[Aggregate[User]] = userRepository ?? GetAggregate("321", registeredUserId)
 
       userAggregateResponse.messageId mustBe "321"
       userAggregateResponse.result mustBe 'success
-      val userAggregate = userAggregateResponse.result.value
+      var userAggregate = userAggregateResponse.result.value
       userAggregate.id mustBe registeredUserId
       userAggregate.version.version mustBe 1
       userAggregate.aggregateRoot mustBe 'defined
       userAggregate.aggregateRoot.get mustBe User("Marcin Pieciukiewicz", None)
 
+
+      When("User address is changed")
+      val changeAddressResponse: CommandResponseEnvelope[EmptyResult] = userCommandBus ?? CommandEnvelope("123", currentUserId,
+        ChangeUserAddress(registeredUserId, userAggregate.version, "Warsaw", "Center", "1"))
+      changeAddressResponse.response mustBe 'success
+
+      userAggregateResponse = userRepository ?? GetAggregate("321", registeredUserId)
+
+      userAggregate = userAggregateResponse.result.value
+      userAggregate.version.version mustBe 2
+      userAggregate.aggregateRoot.get mustBe User("Marcin Pieciukiewicz", Some(Address("Warsaw", "Center", "1")))
+
+
+      When("User is deleted")
+      val deleteUserResponse: CommandResponseEnvelope[EmptyResult] = userCommandBus ?? CommandEnvelope("123", currentUserId, DeleteUser(registeredUserId, AggregateVersion(2)))
+      deleteUserResponse.response mustBe 'success
+
+
+      userAggregateResponse = userRepository ?? GetAggregate("321", registeredUserId)
+      userAggregate = userAggregateResponse.result.value
+      userAggregate.version.version mustBe 3
+      userAggregate.aggregateRoot mustBe 'empty
     }
   }
 }

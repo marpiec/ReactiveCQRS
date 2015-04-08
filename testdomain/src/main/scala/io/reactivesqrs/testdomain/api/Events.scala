@@ -1,12 +1,8 @@
 package io.reactivesqrs.testdomain.api
 
-import io.reactivecqrs.api.event.{UndoEvent, Event}
+import io.reactivecqrs.api.event.{DeleteEvent, UndoEvent, Event}
 
-sealed abstract class UserEvent extends Event[User] {
-  override def aggregateType: Class[User] = classOf[User]
-}
-
-sealed abstract class UserUndoEvent extends UndoEvent[User] {
+trait UserEvent extends Event[User] {
   override def aggregateType: Class[User] = classOf[User]
 }
 
@@ -14,6 +10,6 @@ case class UserRegistered(name: String) extends UserEvent
 
 case class UserAddressChanged(city: String, street: String, number: String) extends UserEvent
 
-case class UserRemoved() extends UserEvent
+case class UserRemoved() extends DeleteEvent[User] with UserEvent
 
-case class UserChangeUndone(eventsCount: Int) extends UserUndoEvent
+case class UserChangeUndone(eventsCount: Int) extends UndoEvent[User] with UserEvent

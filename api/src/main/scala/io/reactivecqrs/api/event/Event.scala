@@ -36,4 +36,4 @@ trait UndoEvent[AGGREGATE] extends Event[AGGREGATE] {
 case class NoopEvent[AGGREGATE]() extends Event[AGGREGATE]
 
 
-case class DeleteEvent[AGGREGATE]() extends Event[AGGREGATE]
+trait DeleteEvent[AGGREGATE] extends Event[AGGREGATE]

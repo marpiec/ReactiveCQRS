@@ -21,6 +21,7 @@ class Repository[AGGREGATE](clock: Clock, eventStore: EventStore[AGGREGATE],
 
   private def storeFirstEvent(messageId: String, userId: UserId, commandId: CommandId, newAggregateId: AggregateId, event: Event[AGGREGATE]): Unit = {
     val events = eventStore.getEvents(newAggregateId)
+    println("Storing first event " + newAggregateId + " " + event)
     if(events.isEmpty) {
       eventStore.putEvent(newAggregateId, new EventRow[AGGREGATE](commandId, userId, newAggregateId, 1, clock.instant(), event))
       sender ! StoreEventResponse(messageId, Success(Unit))
@@ -31,6 +32,7 @@ class Repository[AGGREGATE](clock: Clock, eventStore: EventStore[AGGREGATE],
 
   private def storeFollowingEvent(messageId: String, userId: UserId, commandId: CommandId, aggregateId: AggregateId, expectedVersion: AggregateVersion, event: Event[AGGREGATE]): Unit = {
     val events = eventStore.getEvents(aggregateId)
+    println("Storing following event " + aggregateId + " " + event)
     if(events.size == expectedVersion.version) {
       eventStore.putEvent(aggregateId, new EventRow[AGGREGATE](commandId, userId, aggregateId, expectedVersion.version + 1, clock.instant(), event))
       sender ! StoreEventResponse(messageId, Success(Unit))
@@ -42,10 +44,12 @@ class Repository[AGGREGATE](clock: Clock, eventStore: EventStore[AGGREGATE],
 
   private def getAggregate(messageId: String, id: AggregateId): Unit = {
     val events = eventStore.getEvents(id)
+    println("getAggregate with " + events.length + " events")
     if(events.isEmpty) {
       sender ! GetAggregateResponse(messageId, Failure(AggregateDoesNotExistException("No events for aggregate " + id)))
     } else {
-      val aggregate = dataStore.buildAggregate(id, events.toStream)
+      val aggregate = dataStore.buildAggregate(id, events)
+      println("Aggregate built " + aggregate)
       sender ! GetAggregateResponse(messageId, aggregate)
     }
   }
