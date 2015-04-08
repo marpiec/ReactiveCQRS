@@ -113,4 +113,8 @@ class TestDomainSpec extends FeatureSpec with GivenWhenThen with ActorAskSupport
   feature("Concurrent modification detection") {
 
   }
+
+  feature("Versioning of events") {
+
+  }
 }
