@@ -16,16 +16,16 @@ import scala.concurrent.Await
 import scala.concurrent.duration._
 
 
-abstract class CommandBus[AGGREGATE](clock: Clock,
-                                     commandIdGenerator: CommandIdGenerator, //TODO make it an actor
-                                     aggregateIdGenerator: AggregateIdGenerator,
-                                     commandLog: CommandLogActorApi,
-                                     aggregateRepositoryActor: ActorRef,
-                                     handlers: Array[CommandHandler[AGGREGATE, _ <: Command[AGGREGATE, _], _]]) extends Actor {
+abstract class CommandBus[AGGREGATE](handlers: CommandHandler[AGGREGATE, _ <: Command[AGGREGATE, _], _]*) extends Actor {
 
+  protected val clock: Clock
+  protected val commandIdGenerator: CommandIdGenerator //TODO make it an actor
+  protected val aggregateIdGenerator: AggregateIdGenerator
+  protected val commandLog: CommandLogActorApi
+  protected val aggregateRepositoryActor: ActorRef
   private val repositoryHandler = new CoreRepositoryHandler[AGGREGATE](aggregateRepositoryActor)
 
-  private val commandHandlers = handlers.asInstanceOf[Array[CommandHandler[AGGREGATE, Command[AGGREGATE, AnyRef], AnyRef]]]
+  private val commandHandlers = handlers.toArray.asInstanceOf[Array[CommandHandler[AGGREGATE, Command[AGGREGATE, AnyRef], AnyRef]]]
     .map(handler => handler.commandClass -> handler).toMap
 
   implicit val akkaTimeout = Timeout(5 seconds)

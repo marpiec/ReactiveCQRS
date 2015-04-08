@@ -9,10 +9,12 @@ import io.reactivecqrs.api.exception.{AggregateAlreadyExistsException, Aggregate
 import io.reactivecqrs.api.guid.{AggregateId, AggregateVersion, CommandId, UserId}
 import io.reactivecqrs.utils.{Failure, Success}
 
-class Repository[AGGREGATE](clock: Clock, eventStore: EventStore[AGGREGATE],
-                           handlers: Array[EventHandler[AGGREGATE, _ <: Event[AGGREGATE]]]) extends Actor {
+abstract class Repository[AGGREGATE](handlers: EventHandler[AGGREGATE, _ <: Event[AGGREGATE]]*) extends Actor {
 
-  private val dataStore = new DataStore[AGGREGATE](handlers)
+  protected val clock: Clock
+  protected val eventStore: EventStore[AGGREGATE]
+
+  private val dataStore = new DataStore[AGGREGATE](handlers:_*)
 
   override def receive = LoggingReceive {
     case StoreFirstEvent(messageId, userId, commandId, newAggregateId, event) => storeFirstEvent(messageId, userId, commandId, newAggregateId, event.asInstanceOf[Event[AGGREGATE]])

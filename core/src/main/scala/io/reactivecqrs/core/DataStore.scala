@@ -9,7 +9,7 @@ import io.reactivecqrs.utils.{Success, Failure, Result}
 import scala.collection.mutable
 
 
-class DataStore[AGGREGATE](handlers: Array[EventHandler[AGGREGATE, _ <: Event[AGGREGATE]]]) {
+class DataStore[AGGREGATE](handlers: EventHandler[AGGREGATE, _ <: Event[AGGREGATE]]*) {
 
   // fields
 
