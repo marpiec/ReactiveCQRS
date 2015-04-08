@@ -19,7 +19,8 @@ abstract class Repository[AGGREGATE_ROOT](handlers: EventHandler[AGGREGATE_ROOT,
   override def receive = LoggingReceive {
     case StoreFirstEvent(messageId, userId, commandId, newAggregateId, event) => storeFirstEvent(messageId, userId, commandId, newAggregateId, event.asInstanceOf[Event[AGGREGATE_ROOT]])
     case StoreFollowingEvent(messageId, userId, commandId, aggregateId, expectedVersion, event) => storeFollowingEvent(messageId, userId, commandId, aggregateId, expectedVersion, event.asInstanceOf[Event[AGGREGATE_ROOT]]);
-    case GetAggregate(messageId, id) => getAggregate(messageId, id)
+    case LoadAggregate(messageId, id) => loadAggregate(messageId, id, None)
+    case LoadAggregateForVersion(messageId, id, version) => loadAggregate(messageId, id, Some(version))
   }
 
   private def storeFirstEvent(messageId: String, userId: UserId, commandId: CommandId, newAggregateId: AggregateId, event: Event[AGGREGATE_ROOT]): Unit = {
@@ -42,9 +43,13 @@ abstract class Repository[AGGREGATE_ROOT](handlers: EventHandler[AGGREGATE_ROOT,
     }
 
   }
-
-  private def getAggregate(messageId: String, id: AggregateId): Unit = {
-    val events = eventStore.getEvents(id)
+  
+  private def loadAggregate(messageId: String, id: AggregateId, version: Option[AggregateVersion]): Unit = {
+    val events = version match {
+      case Some(v) => eventStore.getEventsToVersion(id, v.version)
+      case None => eventStore.getEvents(id)
+    } 
+    
     if(events.isEmpty) {
       sender ! GetAggregateResponse(messageId, Failure(AggregateDoesNotExistException("No events for aggregate " + id)))
     } else {

@@ -17,6 +17,10 @@ class MemoryEventStore[AGGREGATE_ROOT] extends EventStore[AGGREGATE_ROOT] {
   override def getEvents(id: AggregateId) = {
     events.get(id).map(_.toStream).getOrElse(Stream())
   }
+
+  override def getEventsToVersion(id: AggregateId, version: Int) = {
+    events.get(id).map(_.take(version).toStream).getOrElse(Stream())
+  }
 }
 
 

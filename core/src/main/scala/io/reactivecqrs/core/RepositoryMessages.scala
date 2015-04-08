@@ -13,6 +13,8 @@ case class StoreFollowingEvent[AGGREGATE_ROOT](messageId: String, userId: UserId
 
 case class StoreEventResponse(messageId: String, result: Result[Unit, CqrsException])
 
-case class GetAggregate(messageId: String, id: AggregateId)
+case class LoadAggregate(messageId: String, id: AggregateId)
+
+case class LoadAggregateForVersion(messageId: String, id: AggregateId, version: AggregateVersion)
 
 case class GetAggregateResponse[AGGREGATE_ROOT](messageId: String, result: Result[Aggregate[AGGREGATE_ROOT], RepositoryException])

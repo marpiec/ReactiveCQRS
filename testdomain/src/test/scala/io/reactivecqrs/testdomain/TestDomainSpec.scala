@@ -52,7 +52,7 @@ class TestDomainSpec extends FeatureSpec with GivenWhenThen with ActorAskSupport
 
       Then("We can get aggregate from repository")
 
-      var userAggregateResponse: GetAggregateResponse[Aggregate[User]] = userRepository ?? GetAggregate("321", registeredUserId)
+      var userAggregateResponse: GetAggregateResponse[Aggregate[User]] = userRepository ?? LoadAggregate("321", registeredUserId)
 
       userAggregateResponse.messageId mustBe "321"
       userAggregateResponse.result mustBe 'success
@@ -64,26 +64,53 @@ class TestDomainSpec extends FeatureSpec with GivenWhenThen with ActorAskSupport
 
 
       When("User address is changed")
-      val changeAddressResponse: CommandResponseEnvelope[EmptyResult] = userCommandBus ?? CommandEnvelope("123", currentUserId,
+      var changeAddressResponse: CommandResponseEnvelope[EmptyResult] = userCommandBus ?? CommandEnvelope("123", currentUserId,
         ChangeUserAddress(registeredUserId, userAggregate.version, "Warsaw", "Center", "1"))
       changeAddressResponse.response mustBe 'success
 
-      userAggregateResponse = userRepository ?? GetAggregate("321", registeredUserId)
+      Then("We can get user with modified address")
+      userAggregateResponse = userRepository ?? LoadAggregate("321", registeredUserId)
 
       userAggregate = userAggregateResponse.result.value
       userAggregate.version.version mustBe 2
       userAggregate.aggregateRoot.get mustBe User("Marcin Pieciukiewicz", Some(Address("Warsaw", "Center", "1")))
 
+      When("User address is changed again")
+      changeAddressResponse = userCommandBus ?? CommandEnvelope("123", currentUserId,
+        ChangeUserAddress(registeredUserId, userAggregate.version, "Cracow", "Market", "2"))
+      changeAddressResponse.response mustBe 'success
 
-      When("User is deleted")
-      val deleteUserResponse: CommandResponseEnvelope[EmptyResult] = userCommandBus ?? CommandEnvelope("123", currentUserId, DeleteUser(registeredUserId, AggregateVersion(2)))
-      deleteUserResponse.response mustBe 'success
+      Then("We can get user with again modified address")
+      userAggregateResponse = userRepository ?? LoadAggregate("321", registeredUserId)
 
-
-      userAggregateResponse = userRepository ?? GetAggregate("321", registeredUserId)
       userAggregate = userAggregateResponse.result.value
       userAggregate.version.version mustBe 3
+      userAggregate.aggregateRoot.get mustBe User("Marcin Pieciukiewicz", Some(Address("Cracow", "Market", "2")))
+
+
+      When("User is deleted")
+      val deleteUserResponse: CommandResponseEnvelope[EmptyResult] = userCommandBus ?? CommandEnvelope("123", currentUserId, DeleteUser(registeredUserId, userAggregate.version))
+      deleteUserResponse.response mustBe 'success
+
+      Then("When we try to get user we'll have empty aggregate")
+      userAggregateResponse = userRepository ?? LoadAggregate("321", registeredUserId)
+      userAggregate = userAggregateResponse.result.value
+      userAggregate.version.version mustBe 4
       userAggregate.aggregateRoot mustBe 'empty
+
+      When("We want to get first version of user")
+      userAggregateResponse = userRepository ?? LoadAggregateForVersion("321", registeredUserId, AggregateVersion(1))
+      Then("We have correct first vesion of user")
+      userAggregateResponse.result mustBe 'success
+      userAggregate = userAggregateResponse.result.value
+      userAggregate.id mustBe registeredUserId
+      userAggregate.version.version mustBe 1
+      userAggregate.aggregateRoot mustBe 'defined
+      userAggregate.aggregateRoot.get mustBe User("Marcin Pieciukiewicz", None)
     }
+  }
+
+  feature("Concurrent modification detection") {
+
   }
 }

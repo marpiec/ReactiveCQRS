@@ -82,7 +82,7 @@ abstract class CommandBus[AGGREGATE_ROOT](handlers: CommandHandler[AGGREGATE_ROO
 
 
     def loadLastAggregateState(): Result[Aggregate[AGGREGATE_ROOT], RepositoryException] = {
-      val future = aggregateRepositoryActor ? GetAggregate("123", command.aggregateId)
+      val future = aggregateRepositoryActor ? LoadAggregate("123", command.aggregateId)
       val result = Await.result(future, 5 seconds)
       result.asInstanceOf[GetAggregateResponse[AGGREGATE_ROOT]].result
     }

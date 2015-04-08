@@ -8,4 +8,6 @@ trait EventStore[AGGREGATE_ROOT] {
 
   def getEvents(id: AggregateId): Stream[EventRow[AGGREGATE_ROOT]]
 
+  def getEventsToVersion(id: AggregateId, version: Int): Stream[EventRow[AGGREGATE_ROOT]]
+
 }
