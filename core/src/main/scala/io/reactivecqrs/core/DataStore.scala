@@ -51,18 +51,17 @@ class DataStore[AGGREGATE](handlers: Array[EventHandler[AGGREGATE, _ <: Event[AG
     if (eventRow.version == aggregate.version.version + 1) {
       // Body:
       if (aggregate.aggregateRoot.isDefined) {
-        val event = eventRow.event
-        if (event.isInstanceOf[NoopEvent[AGGREGATE]]) {
-          Aggregate(aggregate.id, aggregate.version.increment, aggregate.aggregateRoot)
-        } else {
-          val handler: EventHandler[AGGREGATE, _] = eventHandlers(event.getClass.asInstanceOf[Class[Event[AGGREGATE]]])
-
-          handler match {
-            case h: ModificationEventHandler[_, _] => handleModificationEvent(event, aggregate, h.asInstanceOf[ModificationEventHandler[AGGREGATE, Event[AGGREGATE]]])
-            case h: DeletionEventHandler[_, _] => handleDeletionEvent(aggregate)
-            case _ => throw new IllegalStateException("No handler registered for event " + event.getClass.getName)
-          }
-
+        eventRow.event match {
+          case event: NoopEvent[AGGREGATE] =>
+            Aggregate(aggregate.id, aggregate.version.increment, aggregate.aggregateRoot)
+          case event: DeleteEvent[AGGREGATE] =>
+            handleDeletionEvent(aggregate)
+          case event =>
+            val handler: EventHandler[AGGREGATE, _] = eventHandlers(event.getClass.asInstanceOf[Class[Event[AGGREGATE]]])
+            handler match {
+              case h: ModificationEventHandler[_, _] => handleModificationEvent(event, aggregate, h.asInstanceOf[ModificationEventHandler[AGGREGATE, Event[AGGREGATE]]])
+              case _ => throw new IllegalStateException("No handler registered for event " + event.getClass.getName)
+            }
         }
       } else {
         // TODO change into result
