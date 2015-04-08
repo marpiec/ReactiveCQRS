@@ -20,7 +20,7 @@ abstract class CommandBus[AGGREGATE](clock: Clock,
                                      aggregateIdGenerator: AggregateIdGenerator,
                                      commandLog: CommandLogActorApi,
                                      aggregateRepositoryActor: ActorRef,
-                                     handlers: Array[CommandHandler[AGGREGATE, Command[AGGREGATE, _], _]]) extends Actor {
+                                     handlers: Array[CommandHandler[AGGREGATE, _ <: Command[AGGREGATE, _], _]]) extends Actor {
 
   private val repositoryHandler = new RepositoryHandler[AGGREGATE](aggregateRepositoryActor)
 

@@ -23,7 +23,7 @@ class UserCommandBus(clock: Clock,
                         new ChangeUserAddressHandler,
                         new UndoUserChangeHandler,
                         new DeleteUserHandler
-                      ).asInstanceOf[Array[CommandHandler[User, Command[User, _], _]]]){
+                      )){
 
 
 }
