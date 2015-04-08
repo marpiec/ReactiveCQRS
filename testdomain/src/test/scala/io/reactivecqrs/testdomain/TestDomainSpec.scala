@@ -36,16 +36,20 @@ class TestDomainSpec extends FeatureSpec with GivenWhenThen with ActorAskSupport
       val currentUserId = UserId.fromAggregateId(aggregateIdGenerator.nextAggregateId)
       val registrationResult: CommandResponseEnvelope[RegisterUserResult] = userCommandBus ?? CommandEnvelope("123", currentUserId, RegisterUser("Marcin Pieciukiewicz"))
 
+      registrationResult.acknowledgeId mustBe "123"
       registrationResult.response mustBe 'success
 
       val registeredUserId = registrationResult.response.value.registeredUserId
 
       Then("We can get aggregate from repository")
 
-      val userAggregate: Aggregate[User] = userRepository ?? GetAggregate("123", registeredUserId)
+      val userAggregateResponse: GetAggregateResponse[Aggregate[User]] = userRepository ?? GetAggregate("321", registeredUserId)
 
+      userAggregateResponse.messageId mustBe "321"
+      userAggregateResponse.result mustBe 'success
+      val userAggregate = userAggregateResponse.result.value
       userAggregate.id mustBe registeredUserId
-      userAggregate.version mustBe 1
+      userAggregate.version.version mustBe 1
       userAggregate.aggregateRoot mustBe 'defined
       userAggregate.aggregateRoot.get mustBe User("Marcin Pieciukiewicz", None)
 
