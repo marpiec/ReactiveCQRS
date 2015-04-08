@@ -26,11 +26,11 @@ class TestDomainSpec extends FeatureSpec with GivenWhenThen with ActorAskSupport
       //val system = ActorSystem()
 
       implicit val system = ActorSystem("testsystem", ConfigFactory.parseString("""
-  akka.loglevel = "DEBUG"
-  akka.actor.debug.receive = on
-  akka.actor.debug.autoreceive = on
-  akka.actor.debug.lifecycle = on
-                                                                                """))
+          akka.loglevel = "DEBUG"
+          akka.actor.debug.receive = on
+          akka.actor.debug.autoreceive = on
+          akka.actor.debug.lifecycle = on
+      """))
 
       val userRepository = system.actorOf(Props(classOf[UserRepository], Clock.systemDefaultZone(), new MemoryEventStore[User]), "UserRepository")
       val aggregateIdGenerator = new MemorySequentialAggregateIdGenerator
