@@ -6,7 +6,7 @@ import io.reactivecqrs.utils.Result
 
 
 sealed abstract class CommandHandler[AGGREGATE_ROOT, COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE](implicit ev: Manifest[COMMAND]) {
-  val commandClass:Class[COMMAND] = ev.runtimeClass.asInstanceOf[Class[COMMAND]]
+  def commandClass:Class[COMMAND] = ev.runtimeClass.asInstanceOf[Class[COMMAND]]
 }
 
 
