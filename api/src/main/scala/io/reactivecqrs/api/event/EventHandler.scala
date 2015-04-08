@@ -1,7 +1,7 @@
 package io.reactivecqrs.api.event
 
-sealed trait EventHandler[AGGREGATE, EVENT <: Event[AGGREGATE]] {
-  def eventClass: Class[EVENT] // TODO extract from declaration
+sealed abstract class EventHandler[AGGREGATE, EVENT <: Event[AGGREGATE]](implicit ev: Manifest[EVENT]) {
+  def eventClass = ev.runtimeClass.asInstanceOf[Class[EVENT]]
 }
 
 /**
@@ -9,10 +9,10 @@ sealed trait EventHandler[AGGREGATE, EVENT <: Event[AGGREGATE]] {
  * @tparam AGGREGATE type of aggregate related to event handled by this handler.
  * @tparam EVENT type of event that can be handled by this handler.
  */
-trait CreationEventHandler[AGGREGATE, EVENT <: Event[AGGREGATE]] extends EventHandler[AGGREGATE, EVENT] {
+abstract class CreationEventHandler[AGGREGATE, EVENT <: Event[AGGREGATE]](implicit ev: Manifest[EVENT]) extends EventHandler[AGGREGATE, EVENT] {
   def handle(event: EVENT): AGGREGATE
 }
 
-trait ModificationEventHandler[AGGREGATE, EVENT <: Event[AGGREGATE]] extends EventHandler[AGGREGATE, EVENT] {
+abstract class ModificationEventHandler[AGGREGATE, EVENT <: Event[AGGREGATE]](implicit ev: Manifest[EVENT]) extends EventHandler[AGGREGATE, EVENT] {
   def handle(aggregate: AGGREGATE, event: EVENT): AGGREGATE
 }

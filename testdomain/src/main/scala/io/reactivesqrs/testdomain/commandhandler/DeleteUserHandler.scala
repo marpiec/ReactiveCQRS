@@ -12,7 +12,4 @@ class DeleteUserHandler extends FollowingCommandHandler[User, DeleteUser, EmptyR
     Success(EmptyResult())
   }
 
-
-  override def commandClass: Class[DeleteUser] = classOf[DeleteUser]
-
 }

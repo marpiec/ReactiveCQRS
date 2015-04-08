@@ -7,12 +7,9 @@ import io.reactivesqrs.testdomain.api._
 
 class UndoUserChangeHandler extends FollowingCommandHandler[User, UndoUserChange, EmptyResult] {
 
-
   override def handle(commandId: CommandId, userId: UserId, aggregateRoot: User, command: UndoUserChange, repository: RepositoryFollowingEventHandler[User]) = {
     repository.storeFollowingEvent(commandId, userId, command.aggregateId, command.expectedVersion, new UserChangeUndone(command.stepsToUndo))
     Success(EmptyResult())
   }
-
-  override def commandClass: Class[UndoUserChange] = classOf[UndoUserChange]
 
 }

@@ -14,6 +14,5 @@ class ChangeUserAddressHandler
     Success(EmptyResult())
   }
 
-  override def commandClass = classOf[ChangeUserAddress]
 }
 

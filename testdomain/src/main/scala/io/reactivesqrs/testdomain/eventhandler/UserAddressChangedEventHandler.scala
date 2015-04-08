@@ -8,6 +8,4 @@ object UserAddressChangedEventHandler extends ModificationEventHandler[User, Use
   override def handle(aggregate: User, event: UserAddressChanged): User = {
     aggregate.copy(address = Some(Address(event.city, event.street, event.number)))
   }
-
-  override def eventClass: Class[UserAddressChanged] = classOf[UserAddressChanged]
 }

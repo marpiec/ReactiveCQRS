@@ -2,9 +2,7 @@ package io.reactivesqrs.testdomain.api
 
 import io.reactivecqrs.api.event.{DeleteEvent, UndoEvent, Event}
 
-trait UserEvent extends Event[User] {
-  override def aggregateType: Class[User] = classOf[User]
-}
+sealed trait UserEvent extends Event[User]
 
 case class UserRegistered(name: String) extends UserEvent
 

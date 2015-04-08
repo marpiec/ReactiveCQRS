@@ -1,20 +1,16 @@
 package io.reactivecqrs.api.command
 
 import io.reactivecqrs.api.exception.CqrsException
-import io.reactivecqrs.api.guid.{AggregateVersion, AggregateId, CommandId, UserId}
+import io.reactivecqrs.api.guid.{CommandId, UserId}
 import io.reactivecqrs.utils.Result
 
 
-sealed abstract class CommandHandler[AGGREGATE, COMMAND <: Command[AGGREGATE, RESPONSE], RESPONSE] {
-
-
-
-
-  def commandClass: Class[COMMAND] // TODO extract from declaration
+sealed abstract class CommandHandler[AGGREGATE, COMMAND <: Command[AGGREGATE, RESPONSE], RESPONSE](implicit ev: Manifest[COMMAND]) {
+  val commandClass:Class[COMMAND] = ev.runtimeClass.asInstanceOf[Class[COMMAND]]
 }
 
 
-abstract class FirstCommandHandler[AGGREGATE, COMMAND <: FirstCommand[AGGREGATE, RESPONSE], RESPONSE] extends CommandHandler[AGGREGATE, COMMAND, RESPONSE] {
+abstract class FirstCommandHandler[AGGREGATE, COMMAND <: FirstCommand[AGGREGATE, RESPONSE], RESPONSE](implicit ev: Manifest[COMMAND]) extends CommandHandler[AGGREGATE, COMMAND, RESPONSE] {
   /**
    * validation
    * validation against aggregate state
@@ -31,7 +27,7 @@ abstract class FirstCommandHandler[AGGREGATE, COMMAND <: FirstCommand[AGGREGATE,
 }
 
 
-abstract class FollowingCommandHandler[AGGREGATE, COMMAND <: FollowingCommand[AGGREGATE, RESPONSE], RESPONSE] extends CommandHandler[AGGREGATE, COMMAND, RESPONSE] {
+abstract class FollowingCommandHandler[AGGREGATE, COMMAND <: FollowingCommand[AGGREGATE, RESPONSE], RESPONSE](implicit ev: Manifest[COMMAND]) extends CommandHandler[AGGREGATE, COMMAND, RESPONSE] {
   /**
    * validation
    * validation against aggregate state

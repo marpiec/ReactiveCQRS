@@ -7,5 +7,4 @@ object UserRegisteredEventHandler extends CreationEventHandler[User, UserRegiste
 
   override def handle(event: UserRegistered): User = User(event.name, None)
 
-  override def eventClass: Class[UserRegistered] = classOf[UserRegistered]
 }
