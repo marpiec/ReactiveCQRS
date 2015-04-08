@@ -1,9 +1,9 @@
-package io.reactivesqrs.testdomain.commandhandler
+package io.reactivecqrs.testdomain.commandhandler
 
 import io.reactivecqrs.api.command.{RepositoryFollowingEventHandler, FollowingCommandHandler}
 import io.reactivecqrs.api.guid.{CommandId, UserId}
 import io.reactivecqrs.utils.Success
-import io.reactivesqrs.testdomain.api._
+import io.reactivecqrs.testdomain.api._
 
 class DeleteUserHandler extends FollowingCommandHandler[User, DeleteUser, EmptyResult] {
 

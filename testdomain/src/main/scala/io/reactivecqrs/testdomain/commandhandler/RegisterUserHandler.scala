@@ -1,10 +1,10 @@
-package io.reactivesqrs.testdomain.commandhandler
+package io.reactivecqrs.testdomain.commandhandler
 
 import io.reactivecqrs.api.AggregateIdGenerator
 import io.reactivecqrs.api.command.{RepositoryFirstEventHandler, FirstCommandHandler}
 import io.reactivecqrs.api.guid.{CommandId, UserId}
 import io.reactivecqrs.utils.Success
-import io.reactivesqrs.testdomain.api._
+import io.reactivecqrs.testdomain.api._
 
 
 class RegisterUserHandler(aggregateIdGenerator: AggregateIdGenerator) extends FirstCommandHandler[User, RegisterUser, RegisterUserResult] {

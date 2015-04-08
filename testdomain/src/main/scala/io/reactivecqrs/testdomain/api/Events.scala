@@ -1,4 +1,4 @@
-package io.reactivesqrs.testdomain.api
+package io.reactivecqrs.testdomain.api
 
 import io.reactivecqrs.api.event.{DeleteEvent, UndoEvent, Event}
 

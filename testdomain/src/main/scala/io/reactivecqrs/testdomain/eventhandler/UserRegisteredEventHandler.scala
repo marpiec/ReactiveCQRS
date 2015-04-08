@@ -1,7 +1,7 @@
-package io.reactivesqrs.testdomain.eventhandler
+package io.reactivecqrs.testdomain.eventhandler
 
 import io.reactivecqrs.api.event.CreationEventHandler
-import io.reactivesqrs.testdomain.api.{User, UserRegistered}
+import io.reactivecqrs.testdomain.api.{User, UserRegistered}
 
 object UserRegisteredEventHandler extends CreationEventHandler[User, UserRegistered] {
 

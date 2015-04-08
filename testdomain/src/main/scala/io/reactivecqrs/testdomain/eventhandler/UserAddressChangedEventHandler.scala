@@ -1,7 +1,7 @@
-package io.reactivesqrs.testdomain.eventhandler
+package io.reactivecqrs.testdomain.eventhandler
 
 import io.reactivecqrs.api.event.ModificationEventHandler
-import io.reactivesqrs.testdomain.api.{Address, User, UserAddressChanged}
+import io.reactivecqrs.testdomain.api.{Address, User, UserAddressChanged}
 
 object UserAddressChangedEventHandler extends ModificationEventHandler[User, UserAddressChanged] {
 
