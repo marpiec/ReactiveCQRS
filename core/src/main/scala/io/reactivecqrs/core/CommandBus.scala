@@ -3,6 +3,7 @@ package io.reactivecqrs.core
 import java.time.Clock
 
 import akka.actor.{ActorRef, Actor}
+import akka.event.LoggingReceive
 import akka.pattern.ask
 import akka.util.Timeout
 import io.reactivecqrs.api.command._
@@ -29,7 +30,7 @@ abstract class CommandBus[AGGREGATE](clock: Clock,
 
   implicit val akkaTimeout = Timeout(5 seconds)
 
-  override def receive: Receive = {
+  override def receive: Receive = LoggingReceive {
     case CommandEnvelope(acknowledgeId, userId, command) => command match {
       case c :FirstCommand[AGGREGATE, AnyRef] => submitFirstCommand(acknowledgeId, userId, c.asInstanceOf[FirstCommand[AGGREGATE, AnyRef]])
       case c :FollowingCommand[AGGREGATE, AnyRef] => submitFollowingCommand(acknowledgeId, userId, c.asInstanceOf[FollowingCommand[AGGREGATE, AnyRef]])

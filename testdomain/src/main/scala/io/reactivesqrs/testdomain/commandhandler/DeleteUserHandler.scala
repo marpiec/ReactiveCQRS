@@ -8,7 +8,7 @@ import io.reactivesqrs.testdomain.api._
 class DeleteUserHandler extends FollowingCommandHandler[User, DeleteUser, EmptyResult] {
 
   override def handle(commandId: CommandId, userId: UserId, aggregateRoot: User, command: DeleteUser, repository: RepositoryFollowingEventHandler[User]) = {
-    repository.storeFollowingEvent(commandId, userId, command.aggregateId, command.expectedVersion, UserRemoved())
+    repository.storeFollowingEvent(commandId, userId, command.aggregateId, command.expectedVersion, UserDeleted())
     Success(EmptyResult())
   }
 

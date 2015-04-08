@@ -3,6 +3,7 @@ package io.reactivecqrs.testdomain
 import java.time.Clock
 
 import akka.actor.{ActorSystem, Props}
+import com.typesafe.config.ConfigFactory
 import io.reactivecqrs.api.Aggregate
 import io.reactivecqrs.api.command.{CommandResponseEnvelope, CommandEnvelope}
 import io.reactivecqrs.api.guid.{AggregateVersion, UserId}
@@ -15,20 +16,28 @@ import org.scalatest.{FeatureSpec, GivenWhenThen}
 
 class TestDomainSpec extends FeatureSpec with GivenWhenThen with ActorAskSupport {
 
+
   feature("Aggregate storing and getting with event sourcing") {
 
     scenario("Creation and modification of user aggregate") {
 
       Given("EvenStore, DataStore and UID generator, and UserService")
 
-      val system = ActorSystem()
+      //val system = ActorSystem()
 
-      val userRepository = system.actorOf(Props(classOf[UserRepository], Clock.systemDefaultZone(), new MemoryEventStore[User]))
+      implicit val system = ActorSystem("testsystem", ConfigFactory.parseString("""
+  akka.loglevel = "DEBUG"
+  akka.actor.debug.receive = on
+  akka.actor.debug.autoreceive = on
+  akka.actor.debug.lifecycle = on
+                                                                                """))
+
+      val userRepository = system.actorOf(Props(classOf[UserRepository], Clock.systemDefaultZone(), new MemoryEventStore[User]), "UserRepository")
       val aggregateIdGenerator = new MemorySequentialAggregateIdGenerator
       val commandIdGenerator = new MemorySequentialCommandIdGenerator
       val commandLog = new MemoryCommandLogActorApi
       val userCommandBus =
-        system.actorOf(Props(classOf[UserCommandBus], Clock.systemDefaultZone(), commandIdGenerator, aggregateIdGenerator, commandLog, userRepository))
+        system.actorOf(Props(classOf[UserCommandBus], Clock.systemDefaultZone(), commandIdGenerator, aggregateIdGenerator, commandLog, userRepository), "UserCommandBus")
 
 
       When("User is registered")
