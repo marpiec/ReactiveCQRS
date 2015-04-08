@@ -12,6 +12,6 @@ class UndoUserChangeHandler extends FollowingCommandHandler[User, UndoUserChange
     UndoUserChangeResult(success = true)
   }
 
-  override def commandClass: Class[DeleteUser] = classOf[DeleteUser]
+  override def commandClass: Class[UndoUserChange] = classOf[UndoUserChange]
 
 }

@@ -45,7 +45,7 @@ class TestDomainSpec extends FeatureSpec with GivenWhenThen with ActorAskSupport
 
       userAggregate.id mustBe registeredUserId
       userAggregate.version mustBe 1
-      userAggregate.aggregateRoot must be 'defined
+      userAggregate.aggregateRoot mustBe 'defined
       userAggregate.aggregateRoot.get mustBe User("Marcin Pieciukiewicz", None)
 
     }

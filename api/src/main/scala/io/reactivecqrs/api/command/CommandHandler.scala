@@ -13,7 +13,7 @@ sealed abstract class CommandHandler[AGGREGATE, COMMAND <: Command[AGGREGATE, RE
 }
 
 
-trait FirstCommandHandler[AGGREGATE, COMMAND <: FirstCommand[AGGREGATE, RESPONSE], RESPONSE] extends CommandHandler[AGGREGATE, COMMAND, RESPONSE] {
+abstract class FirstCommandHandler[AGGREGATE, COMMAND <: FirstCommand[AGGREGATE, RESPONSE], RESPONSE] extends CommandHandler[AGGREGATE, COMMAND, RESPONSE] {
   /**
    * validation
    * validation against aggregate state
@@ -30,7 +30,7 @@ trait FirstCommandHandler[AGGREGATE, COMMAND <: FirstCommand[AGGREGATE, RESPONSE
 }
 
 
-trait FollowingCommandHandler[AGGREGATE, COMMAND <: FollowingCommand[AGGREGATE, RESPONSE], RESPONSE] extends CommandHandler[AGGREGATE, COMMAND, RESPONSE] {
+abstract class FollowingCommandHandler[AGGREGATE, COMMAND <: FollowingCommand[AGGREGATE, RESPONSE], RESPONSE] extends CommandHandler[AGGREGATE, COMMAND, RESPONSE] {
   /**
    * validation
    * validation against aggregate state
