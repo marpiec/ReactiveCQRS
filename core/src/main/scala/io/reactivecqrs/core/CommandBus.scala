@@ -16,24 +16,24 @@ import scala.concurrent.Await
 import scala.concurrent.duration._
 
 
-abstract class CommandBus[AGGREGATE](handlers: CommandHandler[AGGREGATE, _ <: Command[AGGREGATE, _], _]*) extends Actor {
+abstract class CommandBus[AGGREGATE_ROOT](handlers: CommandHandler[AGGREGATE_ROOT, _ <: Command[AGGREGATE_ROOT, _], _]*) extends Actor {
 
   protected val clock: Clock
   protected val commandIdGenerator: CommandIdGenerator //TODO make it an actor
   protected val aggregateIdGenerator: AggregateIdGenerator
   protected val commandLog: CommandLogActorApi
   protected val aggregateRepositoryActor: ActorRef
-  private val repositoryHandler = new CoreRepositoryHandler[AGGREGATE](aggregateRepositoryActor)
+  private val repositoryHandler = new CoreRepositoryHandler[AGGREGATE_ROOT](aggregateRepositoryActor)
 
-  private val commandHandlers = handlers.toArray.asInstanceOf[Array[CommandHandler[AGGREGATE, Command[AGGREGATE, AnyRef], AnyRef]]]
+  private val commandHandlers = handlers.toArray.asInstanceOf[Array[CommandHandler[AGGREGATE_ROOT, Command[AGGREGATE_ROOT, AnyRef], AnyRef]]]
     .map(handler => handler.commandClass -> handler).toMap
 
   implicit val akkaTimeout = Timeout(5 seconds)
 
   override def receive: Receive = LoggingReceive {
     case CommandEnvelope(acknowledgeId, userId, command) => command match {
-      case c :FirstCommand[AGGREGATE, AnyRef] => submitFirstCommand(acknowledgeId, userId, c.asInstanceOf[FirstCommand[AGGREGATE, AnyRef]])
-      case c :FollowingCommand[AGGREGATE, AnyRef] => submitFollowingCommand(acknowledgeId, userId, c.asInstanceOf[FollowingCommand[AGGREGATE, AnyRef]])
+      case c :FirstCommand[AGGREGATE_ROOT, AnyRef] => submitFirstCommand(acknowledgeId, userId, c.asInstanceOf[FirstCommand[AGGREGATE_ROOT, AnyRef]])
+      case c :FollowingCommand[AGGREGATE_ROOT, AnyRef] => submitFollowingCommand(acknowledgeId, userId, c.asInstanceOf[FollowingCommand[AGGREGATE_ROOT, AnyRef]])
       case c :AnyRef =>
         sender() ! IncorrectCommand(
         s"Received command of type ${command.getClass} but expected instance of ${classOf[Command[AnyRef, AnyRef]]}")
@@ -44,26 +44,26 @@ abstract class CommandBus[AGGREGATE](handlers: CommandHandler[AGGREGATE, _ <: Co
   }
 
 
-  def submitFirstCommand(acknowledgeId: String, userId: UserId, command: FirstCommand[AGGREGATE, AnyRef]): Unit = {
+  def submitFirstCommand(acknowledgeId: String, userId: UserId, command: FirstCommand[AGGREGATE_ROOT, AnyRef]): Unit = {
 
-    val commandHandler = commandHandlers(command.getClass.asInstanceOf[Class[Command[AGGREGATE, AnyRef]]])
-      .asInstanceOf[FirstCommandHandler[AGGREGATE, FirstCommand[AGGREGATE, AnyRef], AnyRef]]
+    val commandHandler = commandHandlers(command.getClass.asInstanceOf[Class[Command[AGGREGATE_ROOT, AnyRef]]])
+      .asInstanceOf[FirstCommandHandler[AGGREGATE_ROOT, FirstCommand[AGGREGATE_ROOT, AnyRef], AnyRef]]
 
     val result = commandHandler.handle(commandIdGenerator.nextCommandId, userId, command, repositoryHandler)
     sender ! CommandResponseEnvelope(acknowledgeId, result)
   }
 
 
-  def submitFollowingCommand(acknowledgeId: String, userId: UserId, command: FollowingCommand[AGGREGATE, AnyRef]): Unit = {
+  def submitFollowingCommand(acknowledgeId: String, userId: UserId, command: FollowingCommand[AGGREGATE_ROOT, AnyRef]): Unit = {
 
-    val commandHandler = commandHandlers(command.getClass.asInstanceOf[Class[Command[AGGREGATE, AnyRef]]])
-      .asInstanceOf[FollowingCommandHandler[AGGREGATE, FollowingCommand[AGGREGATE, AnyRef], AnyRef]]
+    val commandHandler = commandHandlers(command.getClass.asInstanceOf[Class[Command[AGGREGATE_ROOT, AnyRef]]])
+      .asInstanceOf[FollowingCommandHandler[AGGREGATE_ROOT, FollowingCommand[AGGREGATE_ROOT, AnyRef], AnyRef]]
 
     handleCommand(commandHandler)
 
     // implementation
 
-    def handleCommand(handler: FollowingCommandHandler[AGGREGATE, FollowingCommand[AGGREGATE, AnyRef], AnyRef])= {
+    def handleCommand(handler: FollowingCommandHandler[AGGREGATE_ROOT, FollowingCommand[AGGREGATE_ROOT, AnyRef], AnyRef])= {
       val aggregateState = loadLastAggregateState()
       aggregateState match {
         case Failure(exception) => sender ! exception
@@ -81,10 +81,10 @@ abstract class CommandBus[AGGREGATE](handlers: CommandHandler[AGGREGATE, _ <: Co
 
 
 
-    def loadLastAggregateState(): Result[Aggregate[AGGREGATE], RepositoryException] = {
+    def loadLastAggregateState(): Result[Aggregate[AGGREGATE_ROOT], RepositoryException] = {
       val future = aggregateRepositoryActor ? GetAggregate("123", command.aggregateId)
       val result = Await.result(future, 5 seconds)
-      result.asInstanceOf[GetAggregateResponse[AGGREGATE]].result
+      result.asInstanceOf[GetAggregateResponse[AGGREGATE_ROOT]].result
     }
     
     def handleConcurrentModification(currentVersion: AggregateVersion): Unit = {

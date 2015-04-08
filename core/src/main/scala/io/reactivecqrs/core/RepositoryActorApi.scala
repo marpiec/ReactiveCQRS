@@ -9,49 +9,49 @@ import io.reactivecqrs.utils.Result
 
 
 
-trait RepositoryActorApi[AGGREGATE] {
+trait RepositoryActorApi[AGGREGATE_ROOT] {
 
   /** Adding events */
 
-  def storeFirstEvent(commandId: CommandId, userId: UserId, newAggregateId: AggregateId, event: Event[AGGREGATE]): StoreEventsResponse
+  def storeFirstEvent(commandId: CommandId, userId: UserId, newAggregateId: AggregateId, event: Event[AGGREGATE_ROOT]): StoreEventsResponse
 
-  def storeEvent(commandId: CommandId, userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, event: Event[AGGREGATE]): StoreEventsResponse
+  def storeEvent(commandId: CommandId, userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, event: Event[AGGREGATE_ROOT]): StoreEventsResponse
 
-  def addEventListener(eventListener: NewEventForAggregateNotification[AGGREGATE] => Unit): Unit
+  def addEventListener(eventListener: NewEventForAggregateNotification[AGGREGATE_ROOT] => Unit): Unit
   
   /** Getting events */
 
 
-  def getAllEventsForAggregate(aggregateId: AggregateId): Seq[EventRow[AGGREGATE]]
+  def getAllEventsForAggregate(aggregateId: AggregateId): Seq[EventRow[AGGREGATE_ROOT]]
 
   /**
    * Might be used when requester has cached previous version of aggregate and needs an update only.
    */
-  def getEventsForAggregateFromVersion(aggregateId: AggregateId, fromVersion: Int): Seq[EventRow[AGGREGATE]]
+  def getEventsForAggregateFromVersion(aggregateId: AggregateId, fromVersion: Int): Seq[EventRow[AGGREGATE_ROOT]]
 
   /**
    * Might be used to get old version of aggregate.
    */
-  def getEventsForAggregateToVersion(aggregateId: AggregateId, toVersion: Int): Seq[EventRow[AGGREGATE]]
+  def getEventsForAggregateToVersion(aggregateId: AggregateId, toVersion: Int): Seq[EventRow[AGGREGATE_ROOT]]
 
   /**
    * Might be used to get old version of aggregate, when requester has cached previous version of aggregate and needs an update only.
    */
-  def getEventsForAggregateFromToVersion(aggregateId: AggregateId, fromVersion: Int, toVersion: Int): Seq[EventRow[AGGREGATE]]
+  def getEventsForAggregateFromToVersion(aggregateId: AggregateId, fromVersion: Int, toVersion: Int): Seq[EventRow[AGGREGATE_ROOT]]
 
   /** Getting aggregates */
   
-  def getAggregate(id: AggregateId): Result[Aggregate[AGGREGATE], AggregateDoesNotExistException]
+  def getAggregate(id: AggregateId): Result[Aggregate[AGGREGATE_ROOT], AggregateDoesNotExistException]
 
-  def getAggregates(ids: Seq[AggregateId]): Seq[Result[Aggregate[AGGREGATE], AggregateDoesNotExistException]]
+  def getAggregates(ids: Seq[AggregateId]): Seq[Result[Aggregate[AGGREGATE_ROOT], AggregateDoesNotExistException]]
 
-  def getAggregateForVersion(id: AggregateId, version: Int): Result[Aggregate[AGGREGATE], RepositoryException]
+  def getAggregateForVersion(id: AggregateId, version: Int): Result[Aggregate[AGGREGATE_ROOT], RepositoryException]
 
 
   def countAllAggregates(): Long
 
   def findAllAggregateIds(): Seq[AggregateId]
 
-  def addAggregateListener(eventListener: AggregateUpdatedNotification[AGGREGATE] => Unit): Unit
+  def addAggregateListener(eventListener: AggregateUpdatedNotification[AGGREGATE_ROOT] => Unit): Unit
 
 }

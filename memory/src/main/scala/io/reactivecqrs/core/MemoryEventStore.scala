@@ -5,12 +5,12 @@ import io.reactivecqrs.api.guid.AggregateId
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
 
-class MemoryEventStore[AGGREGATE] extends EventStore[AGGREGATE] {
+class MemoryEventStore[AGGREGATE_ROOT] extends EventStore[AGGREGATE_ROOT] {
 
-  private val events = mutable.Map[AggregateId, ListBuffer[EventRow[AGGREGATE]]]()
+  private val events = mutable.Map[AggregateId, ListBuffer[EventRow[AGGREGATE_ROOT]]]()
 
-  override def putEvent(id: AggregateId, eventRow: EventRow[AGGREGATE]): Unit = {
-    val eventsForAggregate = events.getOrElseUpdate(id, new ListBuffer[EventRow[AGGREGATE]])
+  override def putEvent(id: AggregateId, eventRow: EventRow[AGGREGATE_ROOT]): Unit = {
+    val eventsForAggregate = events.getOrElseUpdate(id, new ListBuffer[EventRow[AGGREGATE_ROOT]])
     eventsForAggregate += eventRow
   }
 

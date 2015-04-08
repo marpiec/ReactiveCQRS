@@ -5,12 +5,12 @@ import io.reactivecqrs.api.guid.{CommandId, UserId}
 import io.reactivecqrs.utils.Result
 
 
-sealed abstract class CommandHandler[AGGREGATE, COMMAND <: Command[AGGREGATE, RESPONSE], RESPONSE](implicit ev: Manifest[COMMAND]) {
+sealed abstract class CommandHandler[AGGREGATE_ROOT, COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE](implicit ev: Manifest[COMMAND]) {
   val commandClass:Class[COMMAND] = ev.runtimeClass.asInstanceOf[Class[COMMAND]]
 }
 
 
-abstract class FirstCommandHandler[AGGREGATE, COMMAND <: FirstCommand[AGGREGATE, RESPONSE], RESPONSE](implicit ev: Manifest[COMMAND]) extends CommandHandler[AGGREGATE, COMMAND, RESPONSE] {
+abstract class FirstCommandHandler[AGGREGATE_ROOT, COMMAND <: FirstCommand[AGGREGATE_ROOT, RESPONSE], RESPONSE](implicit ev: Manifest[COMMAND]) extends CommandHandler[AGGREGATE_ROOT, COMMAND, RESPONSE] {
   /**
    * validation
    * validation against aggregate state
@@ -23,11 +23,11 @@ abstract class FirstCommandHandler[AGGREGATE, COMMAND <: FirstCommand[AGGREGATE,
   def handle(commandId: CommandId,
              userId: UserId,
              command: COMMAND,
-             repository: RepositoryFirstEventHandler[AGGREGATE]): Result[RESPONSE, CqrsException]
+             repository: RepositoryFirstEventHandler[AGGREGATE_ROOT]): Result[RESPONSE, CqrsException]
 }
 
 
-abstract class FollowingCommandHandler[AGGREGATE, COMMAND <: FollowingCommand[AGGREGATE, RESPONSE], RESPONSE](implicit ev: Manifest[COMMAND]) extends CommandHandler[AGGREGATE, COMMAND, RESPONSE] {
+abstract class FollowingCommandHandler[AGGREGATE_ROOT, COMMAND <: FollowingCommand[AGGREGATE_ROOT, RESPONSE], RESPONSE](implicit ev: Manifest[COMMAND]) extends CommandHandler[AGGREGATE_ROOT, COMMAND, RESPONSE] {
   /**
    * validation
    * validation against aggregate state
@@ -39,7 +39,7 @@ abstract class FollowingCommandHandler[AGGREGATE, COMMAND <: FollowingCommand[AG
    */
   def handle(commandId: CommandId,
              userId: UserId,
-             aggregateRoot: AGGREGATE,
+             aggregateRoot: AGGREGATE_ROOT,
              command: COMMAND,
-             repository: RepositoryFollowingEventHandler[AGGREGATE]): Result[RESPONSE, CqrsException]
+             repository: RepositoryFollowingEventHandler[AGGREGATE_ROOT]): Result[RESPONSE, CqrsException]
 }

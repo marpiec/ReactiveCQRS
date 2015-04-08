@@ -13,11 +13,11 @@ import io.reactivecqrs.api.guid.{AggregateId, UserId, CommandId}
  * @param version version of aggregate after applying the event.
  * @param creationTimestamp
  * @param event
- * @tparam AGGREGATE
+ * @tparam AGGREGATE_ROOT
  */
-case class EventRow[AGGREGATE](commandId: CommandId,
+case class EventRow[AGGREGATE_ROOT](commandId: CommandId,
                                userId: UserId,
                                aggregateId: AggregateId,
                                version: Int,
                                creationTimestamp: Instant,
-                               event: Event[AGGREGATE])
+                               event: Event[AGGREGATE_ROOT])

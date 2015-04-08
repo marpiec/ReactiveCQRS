@@ -6,6 +6,6 @@ package io.reactivecqrs.api.command
  * the password for security reasons. Then we'll add this trait to a Command and remove
  * password from command before storing it.
  */
-trait CommandLogTransform[AGGREGATE, RESPONSE] {
-  def transform(): Command[AGGREGATE, RESPONSE]
+trait CommandLogTransform[AGGREGATE_ROOT, RESPONSE] {
+  def transform(): Command[AGGREGATE_ROOT, RESPONSE]
 }

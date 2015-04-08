@@ -5,8 +5,8 @@ import io.reactivecqrs.api.guid.{UserId, CommandId}
 
 class MemoryCommandLogActorApi extends CommandLogActorApi {
 
-  override protected def addTransformedCommand[COMMAND <: Command[AGGREGATE, RESPONSE], AGGREGATE, RESPONSE](commandId: CommandId, userUid: UserId, command: COMMAND): Unit = ???
+  override protected def addTransformedCommand[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], AGGREGATE_ROOT, RESPONSE](commandId: CommandId, userUid: UserId, command: COMMAND): Unit = ???
 
-  override def getCommandById[COMMAND <: Command[AGGREGATE, RESPONSE], AGGREGATE, RESPONSE](commandId: CommandId): CommandRow[RESPONSE] = ???
+  override def getCommandById[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], AGGREGATE_ROOT, RESPONSE](commandId: CommandId): CommandRow[RESPONSE] = ???
 
 }

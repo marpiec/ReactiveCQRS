@@ -13,11 +13,11 @@ case class CommandResponseEnvelope[RESPONSE](acknowledgeId: String, response: Re
  * Trait that should be implemented by command class that will be instantiated by user.
  * @tparam RESPONSE Type of response that will be send to user after command handling.
  */
-sealed abstract class Command[AGGREGATE, RESPONSE]
+sealed abstract class Command[AGGREGATE_ROOT, RESPONSE]
 
-abstract class FirstCommand[AGGREGATE, RESPONSE] extends Command[AGGREGATE, RESPONSE]
+abstract class FirstCommand[AGGREGATE_ROOT, RESPONSE] extends Command[AGGREGATE_ROOT, RESPONSE]
 
-abstract class FollowingCommand[AGGREGATE, RESPONSE] extends Command[AGGREGATE, RESPONSE] {
+abstract class FollowingCommand[AGGREGATE_ROOT, RESPONSE] extends Command[AGGREGATE_ROOT, RESPONSE] {
   def aggregateId: AggregateId
   def expectedVersion: AggregateVersion
 }

@@ -2,4 +2,4 @@ package io.reactivecqrs.core
 
 import io.reactivecqrs.api.event.Event
 
-case class NoopEvent[AGGREGATE]()(implicit ev: Manifest[AGGREGATE]) extends Event[AGGREGATE]
+case class NoopEvent[AGGREGATE_ROOT]()(implicit ev: Manifest[AGGREGATE_ROOT]) extends Event[AGGREGATE_ROOT]

@@ -6,11 +6,11 @@ import io.reactivecqrs.api.guid.{AggregateId, AggregateVersion, CommandId, UserI
 import io.reactivecqrs.utils.Result
 
 
-trait RepositoryFirstEventHandler[AGGREGATE] {
-   def storeFirstEvent(commandId: CommandId, userId: UserId, newAggregateId: AggregateId, event: Event[AGGREGATE]): Result[Unit, CqrsException]
+trait RepositoryFirstEventHandler[AGGREGATE_ROOT] {
+   def storeFirstEvent(commandId: CommandId, userId: UserId, newAggregateId: AggregateId, event: Event[AGGREGATE_ROOT]): Result[Unit, CqrsException]
  }
 
 
-trait RepositoryFollowingEventHandler[AGGREGATE] {
-  def storeFollowingEvent(commandId: CommandId, userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, event: Event[AGGREGATE]): Result[Unit, CqrsException]
+trait RepositoryFollowingEventHandler[AGGREGATE_ROOT] {
+  def storeFollowingEvent(commandId: CommandId, userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, event: Event[AGGREGATE_ROOT]): Result[Unit, CqrsException]
 }
