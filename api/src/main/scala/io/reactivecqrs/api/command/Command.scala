@@ -1,9 +1,13 @@
 package io.reactivecqrs.api.command
 
+import io.reactivecqrs.api.exception.CqrsException
 import io.reactivecqrs.api.guid.{AggregateVersion, AggregateId, UserId}
+import io.reactivecqrs.utils.Result
 
 
 case class CommandEnvelope[COMMAND <: Command[_, _]](acknowledgeId: String, userId: UserId, command: COMMAND)
+
+case class CommandResponseEnvelope[RESPONSE](acknowledgeId: String, response: Result[RESPONSE, CqrsException])
 
 /**
  * Trait that should be implemented by command class that will be instantiated by user.

@@ -4,8 +4,9 @@ import java.time.Clock
 
 import akka.actor.{ActorSystem, Props}
 import io.reactivecqrs.api.Aggregate
+import io.reactivecqrs.api.command.{CommandResponseEnvelope, CommandEnvelope}
 import io.reactivecqrs.api.guid.UserId
-import io.reactivecqrs.core.{GetAggregate, MemoryCommandLogActorApi, MemorySequentialAggregateIdGenerator, MemorySequentialCommandIdGenerator}
+import io.reactivecqrs.core._
 import io.reactivecqrs.testdomain.utils.ActorAskSupport
 import io.reactivesqrs.testdomain.api.{User, RegisterUser, RegisterUserResult}
 import io.reactivesqrs.testdomain.{UserCommandBus, UserRepository}
@@ -22,7 +23,7 @@ class TestDomainSpec extends FeatureSpec with GivenWhenThen with ActorAskSupport
 
       val system = ActorSystem()
 
-      val userRepository = system.actorOf(Props(classOf[UserRepository]))
+      val userRepository = system.actorOf(Props(classOf[UserRepository], Clock.systemDefaultZone(), new MemoryEventStore[User]))
       val aggregateIdGenerator = new MemorySequentialAggregateIdGenerator
       val commandIdGenerator = new MemorySequentialCommandIdGenerator
       val commandLog = new MemoryCommandLogActorApi
@@ -33,11 +34,11 @@ class TestDomainSpec extends FeatureSpec with GivenWhenThen with ActorAskSupport
       When("User is registered")
 
       val currentUserId = UserId.fromAggregateId(aggregateIdGenerator.nextAggregateId)
-      val registrationResult: RegisterUserResult = userCommandBus ?? RegisterUser("Marcin Pieciukiewicz")
+      val registrationResult: CommandResponseEnvelope[RegisterUserResult] = userCommandBus ?? CommandEnvelope("123", currentUserId, RegisterUser("Marcin Pieciukiewicz"))
 
-      registrationResult.success mustBe true
+      registrationResult.response mustBe 'success
 
-      val registeredUserId = registrationResult.registeredUserId
+      val registeredUserId = registrationResult.response.value.registeredUserId
 
       Then("We can get aggregate from repository")
 

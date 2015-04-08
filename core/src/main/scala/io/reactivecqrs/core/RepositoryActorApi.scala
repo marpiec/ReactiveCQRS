@@ -1,6 +1,5 @@
 package io.reactivecqrs.core
 
-import io.reactivecqrs.api.command.StoreEventsResponse
 import io.reactivecqrs.api.exception.{AggregateDoesNotExistException, RepositoryException, CqrsException}
 import io.reactivecqrs.api.{AggregateUpdatedNotification, NewEventForAggregateNotification, Aggregate}
 import io.reactivecqrs.api.event.Event

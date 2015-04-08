@@ -1,14 +1,15 @@
 package io.reactivesqrs.testdomain.commandhandler
 
-import io.reactivecqrs.api.command.{FollowingCommandHandler, RepositoryHandler}
+import io.reactivecqrs.api.command.{RepositoryFollowingEventHandler, FollowingCommandHandler}
 import io.reactivecqrs.api.guid.{CommandId, UserId}
-import io.reactivesqrs.testdomain.api.{DeleteUser, DeleteUserResult, User, UserRemoved}
+import io.reactivecqrs.utils.Success
+import io.reactivesqrs.testdomain.api._
 
-class DeleteUserHandler extends FollowingCommandHandler[User, DeleteUser, DeleteUserResult] {
+class DeleteUserHandler extends FollowingCommandHandler[User, DeleteUser, SimpleResult] {
 
-  override def handle(commandId: CommandId, userId: UserId, aggregateRoot: User, command: DeleteUser, repository: RepositoryHandler[User]): DeleteUserResult = {
+  override def handle(commandId: CommandId, userId: UserId, aggregateRoot: User, command: DeleteUser, repository: RepositoryFollowingEventHandler[User]) = {
     repository.storeFollowingEvent(commandId, userId, command.aggregateId, command.expectedVersion, UserRemoved())
-    DeleteUserResult(success = true)
+    Success(SimpleResult())
   }
 
 

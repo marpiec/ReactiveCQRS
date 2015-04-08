@@ -9,7 +9,7 @@ import io.reactivecqrs.utils.Result
 
 case class StoreFirstEvent[AGGREGATE](messageId: String, userId: UserId, commandId: CommandId, newAggregateId: AggregateId, event: Event[AGGREGATE])
 
-case class StoreEvent[AGGREGATE](messageId: String, userId: UserId, commandId: CommandId, aggregateId: AggregateId, expectedVersion: AggregateVersion, event: Event[AGGREGATE])
+case class StoreFollowingEvent[AGGREGATE](messageId: String, userId: UserId, commandId: CommandId, aggregateId: AggregateId, expectedVersion: AggregateVersion, event: Event[AGGREGATE])
 
 case class StoreEventResponse(messageId: String, result: Result[Unit, CqrsException])
 

@@ -1,16 +1,20 @@
 package io.reactivesqrs.testdomain.commandhandler
 
-import io.reactivecqrs.api.command.{FirstCommandHandler, FollowingCommandHandler, RepositoryHandler}
+import io.reactivecqrs.api.AggregateIdGenerator
+import io.reactivecqrs.api.command.{RepositoryFirstEventHandler, FirstCommandHandler}
 import io.reactivecqrs.api.guid.{CommandId, UserId}
+import io.reactivecqrs.utils.Success
 import io.reactivesqrs.testdomain.api._
 
 
-class RegisterUserHandler extends FirstCommandHandler[User, RegisterUser, RegisterUserResult] {
+class RegisterUserHandler(aggregateIdGenerator: AggregateIdGenerator) extends FirstCommandHandler[User, RegisterUser, RegisterUserResult] {
 
 
-  override def handle(commandId: CommandId, userId: UserId, command: RegisterUser, repository: RepositoryHandler[User]): RegisterUserResult = {
-    val result = repository.storeFirstEvent(commandId, userId, UserRegistered(command.name))
-    RegisterUserResult(success = true, registeredUserId = result.aggregateId)
+  override def handle(commandId: CommandId, userId: UserId, command: RegisterUser, repository: RepositoryFirstEventHandler[User]) = {
+    val aggregateId = aggregateIdGenerator.nextAggregateId
+    val result = repository.storeFirstEvent(commandId, userId, aggregateId, UserRegistered(command.name))
+
+    Success(RegisterUserResult(aggregateId))
   }
 
 
