@@ -1,6 +1,7 @@
 package io.reactivecqrs.testdomain
 
 import akka.actor.ActorRef
+import akka.event.LoggingReceive
 import akka.persistence.PersistentActor
 import io.reactivecqrs.core.{EventEnvelope, AggregateVersion, AggregateId, Event}
 import io.reactivecqrs.testdomain.api.{UserRegistered, User}
@@ -15,11 +16,11 @@ class UserAggregate(val id: AggregateId) extends PersistentActor {
 
   override val persistenceId: String = "User" + id.asLong
 
-  override def receiveRecover: Receive = {
+  override def receiveRecover: Receive = LoggingReceive {
     case event: Event[_] => println("ReceiveRecover"); handleEvent(event.asInstanceOf[Event[User]])
   }
 
-  override def receiveCommand: Receive = {
+  override def receiveCommand: Receive = LoggingReceive {
     case EventEnvelope(respondTo, expectedVersion, event) =>
       println("Received command " + event +" for version " + expectedVersion +" when version was " + version)
       if (expectedVersion == version) {

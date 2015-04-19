@@ -13,4 +13,4 @@ abstract class FirstCommand[AGGREGATE_ROOT, RESPONSE]
 
 case class CommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo: ActorRef, command: Command[AGGREGATE_ROOT, RESPONSE])
 
-case class FirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo: ActorRef, id: AggregateId, firstCommand: FirstCommand[AGGREGATE_ROOT, RESPONSE])
+case class FirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo: ActorRef, firstCommand: FirstCommand[AGGREGATE_ROOT, RESPONSE])
