@@ -1,4 +1,4 @@
-package io.reactivecqrs.testdomain.utils
+package io.reactivecqrs.testdomain.spec.utils
 
 import akka.actor.ActorRef
 import akka.util.Timeout
@@ -20,7 +20,7 @@ class ActorAsk(actor: ActorRef) extends Assertions {
   def ??[R] (message: AnyRef): R = askActor(message)
 
   private def askActor[R](message: AnyRef): R = {
-    val promise = actor ? message
-    Await.result(promise, 1.seconds).asInstanceOf[R]
+    val future = actor ? message
+    Await.result(future, 1.seconds).asInstanceOf[R]
   }
 }
