@@ -18,7 +18,7 @@ class ReactiveTestDomainSpec  extends TestKit(ActorSystem("testsystem"))
 
       val usersCommandBus: ActorRef = system.actorOf(Props(new UserCommandBus))
 
-      val registerUserResponse: RegisterUserResult = usersCommandBus ?? RegisterUser("Marcin Pieciukiewicz")
+      val registerUserResponse: AnyRef = usersCommandBus ?? RegisterUser("Marcin Pieciukiewicz1")
 
 
       registerUserResponse mustBe RegisterUserResult(AggregateId(1))

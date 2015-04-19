@@ -9,7 +9,7 @@ case class AggregateId(asLong: Long)
 
 
 object AggregateVersion {
-  val INITIAL = AggregateVersion(1)
+  val ZERO = AggregateVersion(0)
 }
 
 

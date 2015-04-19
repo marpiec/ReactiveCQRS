@@ -1,7 +1,7 @@
 package io.reactivecqrs.testdomain
 
 import akka.actor.{Props, Actor}
-import io.reactivecqrs.core.{FirstCommandEnvelope, CommandEnvelope, FirstCommand, Command}
+import io.reactivecqrs.core._
 
 class UserCommandBus extends Actor {
 
@@ -19,9 +19,9 @@ class UserCommandBus extends Actor {
 
   def routeFirstCommand[AGGREGATE_ROOT,RESPONSE](firstCommand: FirstCommand[AGGREGATE_ROOT, RESPONSE]): Unit = {
     val newCommandHandlerActor = context.actorOf(Props(new UserCommandHandler), "CommandHandler" + nextAggregateId)
-    nextAggregateId += 1
+    newCommandHandlerActor ! FirstCommandEnvelope(sender(), AggregateId(nextAggregateId), firstCommand)
 
-    newCommandHandlerActor ! FirstCommandEnvelope(sender(), firstCommand)
+    nextAggregateId += 1
 
   }
 }

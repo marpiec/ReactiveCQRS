@@ -53,6 +53,7 @@ object Common {
     val akka = Seq(
       "com.typesafe.akka" %% "akka-actor" % akkaVersion,
       "com.typesafe.akka" %% "akka-slf4j" % akkaVersion,
+      "com.typesafe.akka" %% "akka-persistence-experimental" % akkaVersion,
       "com.typesafe.akka" %% "akka-testkit" % akkaVersion % Test
     )
 
