@@ -9,6 +9,10 @@ import io.reactivecqrs.testdomain.api.{UserRegistered, User}
 case object AggregateAck
 case class AggregateConcurrentModificationError(expected: AggregateVersion, was: AggregateVersion)
 
+case class ReturnAggregateRoot(respondTo: ActorRef)
+
+case class Aggregate[AGGREGATE_ROOT](id: AggregateId, version: AggregateVersion, aggregateRoot: Option[AGGREGATE_ROOT])
+
 class UserAggregate(val id: AggregateId) extends PersistentActor {
 
   var version: AggregateVersion = AggregateVersion.ZERO
@@ -28,6 +32,7 @@ class UserAggregate(val id: AggregateId) extends PersistentActor {
       } else {
         respondTo ! AggregateConcurrentModificationError(expectedVersion, version)
       }
+    case ReturnAggregateRoot(respondTo) => respondTo ! Aggregate(id, version, Some(aggregateRoot))
     case m => throw new IllegalArgumentException("Unsupported message " + m)
   }
 

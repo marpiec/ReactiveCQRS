@@ -11,6 +11,7 @@ class UserCommandBus extends Actor {
   override def receive: Receive = LoggingReceive {
     case c: Command[_,_] => routeCommand(c)
     case fc: FirstCommand[_,_] => routeFirstCommand(fc)
+    case GetAggregateRoot(id) => routeGetAggregateRoot(id)
   }
 
   def routeCommand[AGGREGATE_ROOT,RESPONSE](command: Command[AGGREGATE_ROOT, RESPONSE]): Unit = {
@@ -27,5 +28,11 @@ class UserCommandBus extends Actor {
 
     nextAggregateId += 1
 
+  }
+
+  def routeGetAggregateRoot(id: AggregateId): Unit = {
+    val respondTo = sender()
+    val aggregate = context.actorSelection("CommandHandler" + id.asLong+"/" + "UserAggregate"+id.asLong)
+    aggregate ! ReturnAggregateRoot(respondTo)
   }
 }

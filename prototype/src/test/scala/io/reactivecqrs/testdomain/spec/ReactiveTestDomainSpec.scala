@@ -3,9 +3,9 @@ package io.reactivecqrs.testdomain.spec
 import akka.actor.{Props, ActorSystem, ActorRef}
 import akka.testkit.TestKit
 import com.typesafe.config.ConfigFactory
-import io.reactivecqrs.core.AggregateId
-import io.reactivecqrs.testdomain.UserCommandBus
-import io.reactivecqrs.testdomain.api.{RegisterUserResult, RegisterUser}
+import io.reactivecqrs.core.{AggregateVersion, GetAggregateRoot, AggregateId}
+import io.reactivecqrs.testdomain.{Aggregate, UserCommandBus}
+import io.reactivecqrs.testdomain.api.{User, RegisterUserResult, RegisterUser}
 import io.reactivecqrs.testdomain.spec.utils.ActorAskSupport
 import org.scalatest.{FeatureSpecLike, GivenWhenThen, MustMatchers}
 
@@ -23,12 +23,15 @@ class ReactiveTestDomainSpec  extends TestKit(ActorSystem("testsystem", ConfigFa
 
       val usersCommandBus: ActorRef = system.actorOf(Props(new UserCommandBus), "UserCommandBus")
 
-      val registerUserResponse: AnyRef = usersCommandBus ?? RegisterUser("Marcin Pieciukiewicz1")
+      val registerUserResponse: RegisterUserResult = usersCommandBus ?? RegisterUser("Marcin Pieciukiewicz")
 
 
       registerUserResponse mustBe RegisterUserResult(AggregateId(1))
 
 
+      val user:Aggregate[User] = usersCommandBus ?? GetAggregateRoot(registerUserResponse.registeredUserId)
+
+      user mustBe Aggregate(registerUserResponse.registeredUserId, AggregateVersion(1), Some(User("Marcin Pieciukiewicz", None)))
 
 
     }

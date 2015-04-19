@@ -21,3 +21,6 @@ case class AggregateVersion(version: Int) {
   def increment = AggregateVersion(version + 1)
 
 }
+
+
+case class GetAggregateRoot(id: AggregateId)
