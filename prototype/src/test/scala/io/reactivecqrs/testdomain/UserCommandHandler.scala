@@ -2,7 +2,7 @@ package io.reactivecqrs.testdomain
 
 import akka.actor.{Props, Actor, ActorRef}
 import io.reactivecqrs.core._
-import io.reactivecqrs.testdomain.api.{UserRegistered, DeleteUser, ChangeUserAddress, RegisterUser}
+import io.reactivecqrs.testdomain.api._
 
 class UserCommandHandler extends Actor {
 
@@ -36,7 +36,11 @@ class UserCommandHandler extends Actor {
     } else {
 
       println("Sending event to Aggregate")
-      context.actorOf(Props(new UserAggregate(id))) ! EventEnvelope(respondTo, AggregateVersion.ZERO, UserRegistered(registerUser.name))
+
+      val resultAggregator = context.actorOf(Props(new UserCommandResultAggregator(respondTo, RegisterUserResult(id))))
+
+
+      context.actorOf(Props(new UserAggregate(id))) ! EventEnvelope(resultAggregator, AggregateVersion.ZERO, UserRegistered(registerUser.name))
 
 
     }

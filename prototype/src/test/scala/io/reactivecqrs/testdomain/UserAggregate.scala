@@ -5,6 +5,9 @@ import akka.persistence.PersistentActor
 import io.reactivecqrs.core.{EventEnvelope, AggregateVersion, AggregateId, Event}
 import io.reactivecqrs.testdomain.api.{UserRegistered, User}
 
+case object AggregateAck
+case class AggregateConcurrentModificationError(expected: AggregateVersion, was: AggregateVersion)
+
 class UserAggregate(val id: AggregateId) extends PersistentActor {
 
   var version: AggregateVersion = AggregateVersion.ZERO
@@ -22,7 +25,7 @@ class UserAggregate(val id: AggregateId) extends PersistentActor {
       if (expectedVersion == version) {
         persist(event.asInstanceOf[Event[User]])(handleEventAndRespond(respondTo))
       } else {
-        respondTo ! "Concurrent modification error " + expectedVersion+" "+version
+        respondTo ! AggregateConcurrentModificationError(expectedVersion, version)
       }
     case m => throw new IllegalArgumentException("Unsupported message " + m)
   }
@@ -30,7 +33,7 @@ class UserAggregate(val id: AggregateId) extends PersistentActor {
   private def handleEventAndRespond(respondTo: ActorRef)(event: Event[User]): Unit = {
     println("Updating state and responding")
     handleEvent(event)
-    respondTo ! "OK"
+    respondTo ! AggregateAck
   }
 
   private def handleEvent(event: Event[User]): Unit = {
