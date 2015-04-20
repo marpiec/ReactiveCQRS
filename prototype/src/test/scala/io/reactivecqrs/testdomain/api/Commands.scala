@@ -12,17 +12,17 @@ case class ChangeUserAddress(id: AggregateId,
                              expectedVersion: AggregateVersion,
                              city: String,
                              street: String,
-                             number: String) extends Command[User, EmptyResult]
+                             number: String) extends Command[User, CommandSucceed]
 
 
 case class UndoUserChange(id: AggregateId,
                           expectedVersion: AggregateVersion,
-                          stepsToUndo: Int) extends Command[User, EmptyResult]
+                          stepsToUndo: Int) extends Command[User, CommandSucceed]
 
 
 case class DeleteUser(id: AggregateId,
-                      expectedVersion: AggregateVersion) extends Command[User, EmptyResult]
+                      expectedVersion: AggregateVersion) extends Command[User, CommandSucceed]
 
 
-case class EmptyResult()
+case class CommandSucceed()
 

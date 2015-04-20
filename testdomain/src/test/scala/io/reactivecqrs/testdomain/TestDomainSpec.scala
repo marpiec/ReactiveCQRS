@@ -9,7 +9,6 @@ import io.reactivecqrs.api.command.{CommandResponseEnvelope, CommandEnvelope}
 import io.reactivecqrs.api.guid.{AggregateVersion, UserId}
 import io.reactivecqrs.core._
 import io.reactivecqrs.testdomain.spec.utils.ActorAskSupport
-import io.reactivecqrs.testdomain.api._
 import io.reactivecqrs.testdomain.{UserCommandBus, UserRepository}
 import org.scalatest.MustMatchers._
 import org.scalatest.{FeatureSpec, GivenWhenThen}

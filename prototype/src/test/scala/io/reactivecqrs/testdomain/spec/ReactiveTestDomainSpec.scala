@@ -3,9 +3,10 @@ package io.reactivecqrs.testdomain.spec
 import akka.actor.{Props, ActorSystem, ActorRef}
 import akka.testkit.TestKit
 import com.typesafe.config.ConfigFactory
-import io.reactivecqrs.core.{AggregateVersion, GetAggregateRoot, AggregateId}
-import io.reactivecqrs.testdomain.{Aggregate, UserCommandBus}
-import io.reactivecqrs.testdomain.api.{User, RegisterUserResult, RegisterUser}
+import io.reactivecqrs.actor.{AkkaAggregate, AggregateRoot}
+import io.reactivecqrs.core.{Aggregate, AggregateVersion, GetAggregateRoot, AggregateId}
+import io.reactivecqrs.testdomain.{UserCommandBus}
+import io.reactivecqrs.testdomain.api.{User, RegisterUser, RegisterUserResult}
 import io.reactivecqrs.testdomain.spec.utils.ActorAskSupport
 import org.scalatest.{FeatureSpecLike, GivenWhenThen, MustMatchers}
 
@@ -21,7 +22,7 @@ class ReactiveTestDomainSpec  extends TestKit(ActorSystem("testsystem", ConfigFa
     scenario("Creation and modification of user aggregate") {
 
 
-      val usersCommandBus: ActorRef = system.actorOf(Props(new UserCommandBus), "UserCommandBus")
+      val usersCommandBus: ActorRef = AkkaAggregate.create(new UserCommandBus)(system).commandBus
 
       val registerUserResponse: RegisterUserResult = usersCommandBus ?? RegisterUser("Marcin Pieciukiewicz")
 
@@ -29,9 +30,9 @@ class ReactiveTestDomainSpec  extends TestKit(ActorSystem("testsystem", ConfigFa
       registerUserResponse mustBe RegisterUserResult(AggregateId(1))
 
 
-      val user:Aggregate[User] = usersCommandBus ?? GetAggregateRoot(registerUserResponse.registeredUserId)
+      val user:AggregateRoot[User] = usersCommandBus ?? GetAggregateRoot(registerUserResponse.registeredUserId)
 
-      user mustBe Aggregate(registerUserResponse.registeredUserId, AggregateVersion(1), Some(User("Marcin Pieciukiewicz", None)))
+      user mustBe AggregateRoot(registerUserResponse.registeredUserId, AggregateVersion(1), Some(User("Marcin Pieciukiewicz", None)))
 
 
     }

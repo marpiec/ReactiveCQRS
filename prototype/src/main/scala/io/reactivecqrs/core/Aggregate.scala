@@ -24,3 +24,9 @@ case class AggregateVersion(version: Int) {
 
 
 case class GetAggregateRoot(id: AggregateId)
+
+
+abstract class Aggregate[AGGREGATE_ROOT] {
+  val commandsHandlers: Seq[CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, _],_]]
+  val eventsHandlers: Seq[EventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]]
+}
