@@ -41,7 +41,7 @@ object Common {
 
   object dependencies {
 
-    val akkaVersion = "2.3.9"
+    val akkaVersion = "2.3.11"
 
     val common = Seq(
       "pl.mpieciukiewicz.mpjsons" % "mpjsons" % "0.5.3",
@@ -59,6 +59,14 @@ object Common {
 
     val slick = Seq(
       "com.typesafe.slick" %% "slick" % "3.0.0-RC3"
+    )
+
+    val scalikejdbc = Seq(
+      "org.scalikejdbc" %% "scalikejdbc" % "2.2.6"
+    )
+
+    val postgresql = Seq(
+      "postgresql" % "postgresql" % "9.1-901-1.jdbc4"
     )
   }
 }

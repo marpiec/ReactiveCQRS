@@ -1,7 +1,7 @@
 package io.reactivecqrs.core
 
 import io.reactivecqrs.api.exception.{AggregateDoesNotExistException, RepositoryException, CqrsException}
-import io.reactivecqrs.api.{AggregateUpdatedNotification, NewEventForAggregateNotification, Aggregate}
+import io.reactivecqrs.api.{AggregateUpdatedNotification, NewEventForAggregateNotification, AggregateRoot}
 import io.reactivecqrs.api.event.Event
 import io.reactivecqrs.api.guid.{AggregateVersion, UserId, CommandId, AggregateId}
 import io.reactivecqrs.utils.Result
@@ -41,11 +41,11 @@ trait RepositoryActorApi[AGGREGATE_ROOT] {
 
   /** Getting aggregates */
   
-  def getAggregate(id: AggregateId): Result[Aggregate[AGGREGATE_ROOT], AggregateDoesNotExistException]
+  def getAggregate(id: AggregateId): Result[AggregateRoot[AGGREGATE_ROOT], AggregateDoesNotExistException]
 
-  def getAggregates(ids: Seq[AggregateId]): Seq[Result[Aggregate[AGGREGATE_ROOT], AggregateDoesNotExistException]]
+  def getAggregates(ids: Seq[AggregateId]): Seq[Result[AggregateRoot[AGGREGATE_ROOT], AggregateDoesNotExistException]]
 
-  def getAggregateForVersion(id: AggregateId, version: Int): Result[Aggregate[AGGREGATE_ROOT], RepositoryException]
+  def getAggregateForVersion(id: AggregateId, version: Int): Result[AggregateRoot[AGGREGATE_ROOT], RepositoryException]
 
 
   def countAllAggregates(): Long

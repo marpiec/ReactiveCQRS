@@ -1,6 +1,6 @@
 package io.reactivecqrs.core
 
-import io.reactivecqrs.api.Aggregate
+import io.reactivecqrs.api.AggregateRoot
 import io.reactivecqrs.api.event._
 import io.reactivecqrs.api.exception.{AggregateWasAlreadyDeletedException, NoEventsForAggregateException, RepositoryException}
 import io.reactivecqrs.api.guid.{AggregateVersion, AggregateId}
@@ -28,7 +28,7 @@ class DataStore[AGGREGATE_ROOT](handlers: EventHandler[AGGREGATE_ROOT, _ <: Even
   }
 
 
-  def buildAggregate(aggregateId: AggregateId, events: Stream[EventRow[AGGREGATE_ROOT]]): Result[Aggregate[AGGREGATE_ROOT], RepositoryException] = {
+  def buildAggregate(aggregateId: AggregateId, events: Stream[EventRow[AGGREGATE_ROOT]]): Result[AggregateRoot[AGGREGATE_ROOT], RepositoryException] = {
 
     if (events.isEmpty) {
       Failure(NoEventsForAggregateException("No events for aggregate " + aggregateId))
@@ -38,7 +38,7 @@ class DataStore[AGGREGATE_ROOT](handlers: EventHandler[AGGREGATE_ROOT, _ <: Even
       val creationEventHandler: CreationEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]] =
         eventHandlers(creationEventRow.event.getClass.asInstanceOf[Class[Event[AGGREGATE_ROOT]]]).asInstanceOf[CreationEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]]
 
-      val initialAggregate = Aggregate(aggregateId, AggregateVersion.INITIAL, Some(creationEventHandler.handle(creationEventRow.event)))
+      val initialAggregate = AggregateRoot(aggregateId, AggregateVersion.INITIAL, Some(creationEventHandler.handle(creationEventRow.event)))
       val finalAggregate = events.tail.foldLeft(initialAggregate)((aggregate, eventRow) => updateAggregateWithEvent(eventRow, aggregate))
 
       Success(finalAggregate)
@@ -46,14 +46,14 @@ class DataStore[AGGREGATE_ROOT](handlers: EventHandler[AGGREGATE_ROOT, _ <: Even
     }
   }
 
-  private def updateAggregateWithEvent(eventRow: EventRow[AGGREGATE_ROOT], aggregate: Aggregate[AGGREGATE_ROOT]): Aggregate[AGGREGATE_ROOT] = {
+  private def updateAggregateWithEvent(eventRow: EventRow[AGGREGATE_ROOT], aggregate: AggregateRoot[AGGREGATE_ROOT]): AggregateRoot[AGGREGATE_ROOT] = {
 
     if (eventRow.version == aggregate.version.version + 1) {
       // Body:
       if (aggregate.aggregateRoot.isDefined) {
         eventRow.event match {
           case event: NoopEvent[AGGREGATE_ROOT] =>
-            Aggregate(aggregate.id, aggregate.version.increment, aggregate.aggregateRoot)
+            AggregateRoot(aggregate.id, aggregate.version.increment, aggregate.aggregateRoot)
           case event: DeleteEvent[AGGREGATE_ROOT] =>
             handleDeletionEvent(aggregate)
           case event =>
@@ -82,16 +82,16 @@ class DataStore[AGGREGATE_ROOT](handlers: EventHandler[AGGREGATE_ROOT, _ <: Even
 
 
   private def handleModificationEvent(event: Event[AGGREGATE_ROOT],
-                                      aggregate: Aggregate[AGGREGATE_ROOT],
+                                      aggregate: AggregateRoot[AGGREGATE_ROOT],
                                       handler: ModificationEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]) = {
-    Aggregate[AGGREGATE_ROOT](
+    AggregateRoot[AGGREGATE_ROOT](
       aggregate.id,
       aggregate.version.increment,
       Some(handler.handle(aggregate.aggregateRoot.get, event)))
   }
 
-  private def handleDeletionEvent(aggregate: Aggregate[AGGREGATE_ROOT]) = {
-    Aggregate[AGGREGATE_ROOT](
+  private def handleDeletionEvent(aggregate: AggregateRoot[AGGREGATE_ROOT]) = {
+    AggregateRoot[AGGREGATE_ROOT](
       aggregate.id,
       aggregate.version.increment,
       None)

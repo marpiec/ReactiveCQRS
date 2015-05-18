@@ -20,6 +20,9 @@ class AggregateRepositoryPersistentActor[AGGREGATE_ROOT](val id: AggregateId,
                                                                    eventsHandlersSeq: Seq[EventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]])
                                                                   (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT]) extends PersistentActor {
 
+
+  println("AggregateRepositoryPersistentActor created")
+
   private val eventHandlers = eventsHandlersSeq.map(eh => (eh.eventClassName, eh)).toMap
 
   var version: AggregateVersion = AggregateVersion.ZERO
@@ -27,10 +30,13 @@ class AggregateRepositoryPersistentActor[AGGREGATE_ROOT](val id: AggregateId,
 
   override val persistenceId: String = aggregateRootClassTag.getClass.getName + id.asLong
 
+
+
   override def receiveRecover: Receive = LoggingReceive {
     case event: Event[_] => println("ReceiveRecover"); handleEvent(event.asInstanceOf[Event[AGGREGATE_ROOT]])
   }
 
+  // This receives cqrs Event, not command
   override def receiveCommand: Receive = LoggingReceive {
     case EventEnvelope(respondTo, expectedVersion, event) =>
       println("Received command " + event +" for version " + expectedVersion +" when version was " + version)
@@ -39,7 +45,10 @@ class AggregateRepositoryPersistentActor[AGGREGATE_ROOT](val id: AggregateId,
       } else {
         respondTo ! AggregateConcurrentModificationError(expectedVersion, version)
       }
-    case ReturnAggregateRoot(respondTo) => respondTo ! AggregateRoot(id, version, Some(aggregateRoot))
+    case ReturnAggregateRoot(respondTo) => {
+      println("ReturnAggregateRoot " + aggregateRoot)
+      respondTo ! AggregateRoot(id, version, Some(aggregateRoot))
+    }
     case m => throw new IllegalArgumentException("Unsupported message " + m)
   }
 
@@ -51,7 +60,7 @@ class AggregateRepositoryPersistentActor[AGGREGATE_ROOT](val id: AggregateId,
 
   private def handleEvent(event: Event[AGGREGATE_ROOT]): Unit = {
     println("Updating state by handling " + event)
-    eventHandlers(event.getClass.getName).handle(aggregateRoot, event)
+    aggregateRoot = eventHandlers(event.getClass.getName).handle(aggregateRoot, event)
     version = version.increment
   }
 

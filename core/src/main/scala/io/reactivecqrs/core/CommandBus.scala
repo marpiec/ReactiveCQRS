@@ -9,7 +9,7 @@ import akka.util.Timeout
 import io.reactivecqrs.api.command._
 import io.reactivecqrs.api.exception._
 import io.reactivecqrs.api.guid.{AggregateVersion, UserId}
-import io.reactivecqrs.api.{Aggregate, AggregateIdGenerator, CommandIdGenerator}
+import io.reactivecqrs.api.{AggregateRoot, AggregateIdGenerator, CommandIdGenerator}
 import io.reactivecqrs.utils.{Failure, Result, Success}
 
 import scala.concurrent.Await
@@ -81,7 +81,7 @@ abstract class CommandBus[AGGREGATE_ROOT](handlers: CommandHandler[AGGREGATE_ROO
 
 
 
-    def loadLastAggregateState(): Result[Aggregate[AGGREGATE_ROOT], RepositoryException] = {
+    def loadLastAggregateState(): Result[AggregateRoot[AGGREGATE_ROOT], RepositoryException] = {
       val future = aggregateRepositoryActor ? LoadAggregate("123", command.aggregateId)
       val result = Await.result(future, 5 seconds)
       result.asInstanceOf[GetAggregateResponse[AGGREGATE_ROOT]].result

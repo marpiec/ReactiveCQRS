@@ -15,5 +15,5 @@ case class EventEnvelope[AGGREGATE_ROOT](respondTo: ActorRef,
 
 abstract class EventHandler[AGGREGATE_ROOT, EVENT <: Event[AGGREGATE_ROOT]](implicit eventClassTag: ClassTag[EVENT]) {
   val eventClassName = eventClassTag.runtimeClass.getName
-  def handle(aggregateRoot: AGGREGATE_ROOT, event: EVENT): Unit
+  def handle(aggregateRoot: AGGREGATE_ROOT, event: EVENT): AGGREGATE_ROOT
 }

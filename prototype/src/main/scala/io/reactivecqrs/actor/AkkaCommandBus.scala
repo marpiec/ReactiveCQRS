@@ -21,12 +21,14 @@ class AkkaCommandBus[AGGREGATE_ROOT](val commandsHandlers: Seq[CommandHandler[AG
   }
 
   def routeCommand[RESPONSE](command: Command[AGGREGATE_ROOT, RESPONSE]): Unit = {
+    println("Routes non first command")
     val existingCommandHandlerActor = context.actorSelection("CommandHandler" + command.id.asLong)
     val respondTo = sender()
     existingCommandHandlerActor ! CommandEnvelope(respondTo, command)
   }
 
   def routeFirstCommand[RESPONSE](firstCommand: FirstCommand[AGGREGATE_ROOT, RESPONSE]): Unit = {
+    println("Routes first command")
     val newAggregateId = nextAggregateId // Actor construction might be delayed so we need to store current aggregate id
     val respondTo = sender() // with sender this shouldn't be the case, but just to be sure
     val newCommandHandlerActor = context.actorOf(Props(new CommandHandlerActor[AGGREGATE_ROOT](AggregateId(newAggregateId), commandsHandlers, eventsHandlers)), "CommandHandler" + newAggregateId)
@@ -37,8 +39,9 @@ class AkkaCommandBus[AGGREGATE_ROOT](val commandsHandlers: Seq[CommandHandler[AG
   }
 
   def routeGetAggregateRoot(id: AggregateId): Unit = {
+    println(s"Routes routeGetAggregateRoot $id")
     val respondTo = sender()
-    val aggregate = context.actorSelection("CommandHandler" + id.asLong+"/" + "UserAggregate"+id.asLong)
+    val aggregate = context.actorSelection("CommandHandler" + id.asLong+"/" + "AggregateRepository"+id.asLong)
     aggregate ! ReturnAggregateRoot(respondTo)
   }
 }

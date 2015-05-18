@@ -1,6 +1,6 @@
 package io.reactivecqrs.core
 
-import io.reactivecqrs.api.Aggregate
+import io.reactivecqrs.api.AggregateRoot
 import io.reactivecqrs.api.event.Event
 import io.reactivecqrs.api.exception.{RepositoryException, CqrsException}
 import io.reactivecqrs.api.guid.{UserId, AggregateVersion, AggregateId, CommandId}
@@ -17,4 +17,4 @@ case class LoadAggregate(messageId: String, id: AggregateId)
 
 case class LoadAggregateForVersion(messageId: String, id: AggregateId, version: AggregateVersion)
 
-case class GetAggregateResponse[AGGREGATE_ROOT](messageId: String, result: Result[Aggregate[AGGREGATE_ROOT], RepositoryException])
+case class GetAggregateResponse[AGGREGATE_ROOT](messageId: String, result: Result[AggregateRoot[AGGREGATE_ROOT], RepositoryException])
