@@ -31,7 +31,6 @@ class AggregateRepositoryPersistentActor[AGGREGATE_ROOT](val id: AggregateId,
   override val persistenceId: String = aggregateRootClassTag.getClass.getName + id.asLong
 
 
-
   override def receiveRecover: Receive = LoggingReceive {
     case event: Event[_] => println("ReceiveRecover"); handleEvent(event.asInstanceOf[Event[AGGREGATE_ROOT]])
   }

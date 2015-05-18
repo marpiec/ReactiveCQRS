@@ -10,7 +10,13 @@ import io.reactivecqrs.testdomain.api.{User, RegisterUser, RegisterUserResult}
 import io.reactivecqrs.testdomain.spec.utils.ActorAskSupport
 import org.scalatest.{FeatureSpecLike, GivenWhenThen, MustMatchers}
 
+
+
 class ReactiveTestDomainSpec  extends TestKit(ActorSystem("testsystem", ConfigFactory.parseString("""
+                          akka.persistence.journal.plugin = "postgres-journal"
+                              akka.persistence.snapshot-store.plugin = "postgres-snapshot-store"
+        postgres-journal.class = "io.reactivecqrs.persistance.postgres.PostgresSyncJournal"
+        postgres-snapshot-store.class = "io.reactivecqrs.persistance.postgres.PostgresSyncSnapshotStore"
           akka.loglevel = "DEBUG"
           akka.actor.debug.receive = on
           akka.actor.debug.autoreceive = on

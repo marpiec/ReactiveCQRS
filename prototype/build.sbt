@@ -2,4 +2,4 @@ Common.settings("prototype")
 
 import Common.dependencies._
 
-libraryDependencies ++= akka
+libraryDependencies ++= akka ++ logback

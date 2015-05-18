@@ -68,5 +68,9 @@ object Common {
     val postgresql = Seq(
       "postgresql" % "postgresql" % "9.1-901-1.jdbc4"
     )
+
+    val logback = Seq(
+      "ch.qos.logback" % "logback-classic" % "1.1.3" % Test
+    )
   }
 }
