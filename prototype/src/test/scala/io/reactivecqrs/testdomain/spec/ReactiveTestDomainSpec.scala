@@ -3,7 +3,7 @@ package io.reactivecqrs.testdomain.spec
 import akka.actor.{Props, ActorSystem, ActorRef}
 import akka.testkit.TestKit
 import com.typesafe.config.ConfigFactory
-import io.reactivecqrs.actor.{AkkaAggregate, AggregateRoot}
+import io.reactivecqrs.actor.{EventStore, EventsSchemaInitializer, AkkaAggregate, AggregateRoot}
 import io.reactivecqrs.core.{Aggregate, AggregateVersion, GetAggregateRoot, AggregateId}
 import io.reactivecqrs.testdomain.{UserCommandBus}
 import io.reactivecqrs.testdomain.api.{User, RegisterUser, RegisterUserResult}
@@ -19,13 +19,16 @@ class ReactiveTestDomainSpec  extends TestKit(ActorSystem("testsystem", ConfigFa
         postgres-snapshot-store.class = "io.reactivecqrs.persistance.postgres.PostgresSyncSnapshotStore"
           akka.loglevel = "DEBUG"
           akka.actor.debug.receive = on
-          akka.actor.debug.autoreceive = on
+          akka.actor.debug.receive = on
+          akka.actor.debug.fsm = on
           akka.actor.debug.lifecycle = on""")))
     with FeatureSpecLike with GivenWhenThen with ActorAskSupport with MustMatchers {
 
   feature("Aggregate storing and getting with event sourcing") {
 
     scenario("Creation and modification of user aggregate") {
+
+      (new EventStore).initSchema()
 
 
       val usersCommandBus: ActorRef = AkkaAggregate.create(new UserCommandBus)(system).commandBus

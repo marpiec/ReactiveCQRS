@@ -9,9 +9,9 @@ case class AkkaAggregate[AGGREGATE_ROOT](commandBus: ActorRef)
 
 object AkkaAggregate {
 
-  def create[AGGREGATE_ROOT: ClassTag](aggregate: Aggregate[AGGREGATE_ROOT])(system: ActorSystem): AkkaAggregate[AGGREGATE_ROOT] = {
+  def create[AGGREGATE_ROOT : ClassTag](aggregate: Aggregate[AGGREGATE_ROOT])(system: ActorSystem): AkkaAggregate[AGGREGATE_ROOT] = {
 
-    val commandBus = system.actorOf(Props(new AkkaCommandBus[AGGREGATE_ROOT](aggregate.commandsHandlers, aggregate.eventsHandlers)))
+    val commandBus = system.actorOf(Props(new AkkaCommandBus[AGGREGATE_ROOT](aggregate.commandsHandlers, aggregate.eventsHandlers)), "AkkaCommandBus")
 
     AkkaAggregate(commandBus)
   }

@@ -1,6 +1,7 @@
 package io.reactivecqrs.actor
 
-import akka.actor.ActorRef
+import akka.actor.Actor.Receive
+import akka.actor.{Actor, ActorRef}
 import akka.event.LoggingReceive
 import akka.persistence.PersistentActor
 import io.reactivecqrs.core._
@@ -16,39 +17,45 @@ case class AggregateRoot[AGGREGATE_ROOT](id: AggregateId, version: AggregateVers
 
 
 
+
 class AggregateRepositoryPersistentActor[AGGREGATE_ROOT](val id: AggregateId,
                                                                    eventsHandlersSeq: Seq[EventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]])
-                                                                  (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT]) extends PersistentActor {
+                                                                  (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT]) extends Actor {
 
-
-  println("AggregateRepositoryPersistentActor created")
 
   private val eventHandlers = eventsHandlersSeq.map(eh => (eh.eventClassName, eh)).toMap
 
-  var version: AggregateVersion = AggregateVersion.ZERO
-  var aggregateRoot: AGGREGATE_ROOT = _
+  private var version: AggregateVersion = AggregateVersion.ZERO
+  private var aggregateRoot: AGGREGATE_ROOT = _
 
-  override val persistenceId: String = aggregateRootClassTag.getClass.getName + id.asLong
+  private val persistenceId: String = aggregateRootClassTag.getClass.getName + id.asLong
 
 
-  override def receiveRecover: Receive = LoggingReceive {
-    case event: Event[_] => println("ReceiveRecover"); handleEvent(event.asInstanceOf[Event[AGGREGATE_ROOT]])
+
+  override def receive = LoggingReceive {
+    case EventEnvelope(respondTo, expectedVersion, event) => receiveEvent(respondTo, expectedVersion, event.asInstanceOf[Event[AGGREGATE_ROOT]])
+    case ReturnAggregateRoot(respondTo) => receiveReturnAggregateRoot(respondTo)
   }
 
-  // This receives cqrs Event, not command
-  override def receiveCommand: Receive = LoggingReceive {
-    case EventEnvelope(respondTo, expectedVersion, event) =>
-      println("Received command " + event +" for version " + expectedVersion +" when version was " + version)
-      if (expectedVersion == version) {
-        persist(event.asInstanceOf[Event[AGGREGATE_ROOT]])(handleEventAndRespond(respondTo))
-      } else {
-        respondTo ! AggregateConcurrentModificationError(expectedVersion, version)
-      }
-    case ReturnAggregateRoot(respondTo) => {
-      println("ReturnAggregateRoot " + aggregateRoot)
-      respondTo ! AggregateRoot(id, version, Some(aggregateRoot))
+
+  private def receiveEvent(respondTo: ActorRef, expectedVersion: AggregateVersion, event: Event[AGGREGATE_ROOT]): Unit = {
+    println("Received command " + event +" for version " + expectedVersion +" when version was " + version)
+    if (expectedVersion == version) {
+      persist(event)(handleEventAndRespond(respondTo))
+    } else {
+      respondTo ! AggregateConcurrentModificationError(expectedVersion, version)
     }
-    case m => throw new IllegalArgumentException("Unsupported message " + m)
+
+  }
+
+  private def receiveReturnAggregateRoot(respondTo: ActorRef): Unit = {
+    println("ReturnAggregateRoot " + aggregateRoot)
+    respondTo ! AggregateRoot(id, version, Some(aggregateRoot))
+  }
+
+
+  private def persist(event: Event[AGGREGATE_ROOT])(afterPersist: Event[AGGREGATE_ROOT] => Unit): Unit = {
+
   }
 
   private def handleEventAndRespond(respondTo: ActorRef)(event: Event[AGGREGATE_ROOT]): Unit = {

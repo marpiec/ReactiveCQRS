@@ -31,7 +31,7 @@ object Common {
     resolvers in ThisBuild ++= Seq(
       "eclipse repo" at "https://repo.eclipse.org/content/groups/releases/",
       "Sonatype repo" at "https://oss.sonatype.org/content/repositories/releases/",
-      "marpiec BinTray" at "http://dl.bintray.com/marpiec/maven/"),
+      "marpiec BinTray" at "https://bintray.com/artifact/download/marpiec/maven/"),
 
     libraryDependencies ++= dependencies.common,
 
@@ -44,7 +44,7 @@ object Common {
     val akkaVersion = "2.3.11"
 
     val common = Seq(
-      "pl.mpieciukiewicz.mpjsons" % "mpjsons" % "0.5.3",
+      "io.mpjsons" %% "mpjsons" % "0.6.7",
       "com.typesafe" % "config" % "1.2.1",
       "org.slf4j" % "slf4j-api" % "1.7.10",
       "org.scalatest" %% "scalatest" % "2.2.4"

@@ -1,16 +1,19 @@
 package io.reactivecqrs.persistance.postgres
 
+import akka.actor.ActorSystem
 import akka.persistence._
 import akka.persistence.journal._
 import akka.persistence.snapshot._
+import akka.testkit.TestKit
+import com.typesafe.config._
+import org.scalatest.WordSpec
 
 import scala.collection.immutable.Seq
 import scala.concurrent.Future
+import scala.concurrent.duration._
 
 
 class PostgresSyncJournal extends SyncWriteJournal {
-
-  val journalTableName = "events"
 
 //  Class.forName("org.postgresql.Driver")
 //  ConnectionPool.singleton("jdbc:postgresql://localhost:5432/reactivecqrs", "reactivecqrs", "reactivecqrs")
@@ -35,11 +38,11 @@ println("writeMessages")
 
   override def asyncReadHighestSequenceNr(persistenceId: String, fromSequenceNr: Long): Future[Long] = {
     println("asyncReadHighestSequenceNr")
-    ???
+    Future.successful(1L)
   }
 
   override def asyncReplayMessages(persistenceId: String, fromSequenceNr: Long, toSequenceNr: Long, max: Long)(replayCallback: (PersistentRepr) => Unit): Future[Unit] = {
     println("asyncReplayMessages")
-    ???
+    Future.successful(())
   }
 }
