@@ -2,6 +2,7 @@ package io.reactivecqrs.actor
 
 import akka.actor.{Actor, ActorRef, Props}
 import akka.event.LoggingReceive
+import io.reactivecqrs.api.guid.AggregateId
 import io.reactivecqrs.core._
 
 import scala.reflect.ClassTag
@@ -30,7 +31,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
         val resultAggregator = context.actorOf(Props(new ResultAggregator[RESULT](respondTo, result._2)), "ResultAggregator")
         val newRepositoryActor = context.actorOf(Props(new AggregateRepositoryPersistentActor[AGGREGATE_ROOT](aggregateId, eventsHandlers)), "AggregateRepository" + aggregateId.asLong)
         println("Created persistence actor " +newRepositoryActor.path + " and sending event " + EventEnvelope[AGGREGATE_ROOT](resultAggregator, AggregateVersion.ZERO, result._1))
-        newRepositoryActor ! EventEnvelope[AGGREGATE_ROOT](resultAggregator, AggregateVersion.ZERO, result._1)
+        newRepositoryActor ! EventEnvelope[AGGREGATE_ROOT](resultAggregator, c.aggregateId, AggregateVersion.ZERO, result._1)
         println("...sent")
       case c => throw new IllegalArgumentException("Unsupported command " + c)
     }

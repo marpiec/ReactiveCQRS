@@ -4,6 +4,7 @@ import akka.actor.{Props, ActorSystem, ActorRef}
 import akka.testkit.TestKit
 import com.typesafe.config.ConfigFactory
 import io.reactivecqrs.actor.{EventStore, EventsSchemaInitializer, AkkaAggregate, AggregateRoot}
+import io.reactivecqrs.api.guid.AggregateId
 import io.reactivecqrs.core.{Aggregate, AggregateVersion, GetAggregateRoot, AggregateId}
 import io.reactivecqrs.testdomain.{UserCommandBus}
 import io.reactivecqrs.testdomain.api.{User, RegisterUser, RegisterUserResult}

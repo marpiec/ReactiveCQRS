@@ -1,12 +1,18 @@
 package io.reactivecqrs.core
 
+import _root_.io.reactivecqrs.api.guid.{CommandId, UserId}
 import akka.actor.ActorRef
 
 import scala.reflect._
+import scala.reflect.runtime.universe._
 
-abstract class Event[AGGREGATE_ROOT]
+abstract class Event[AGGREGATE_ROOT: TypeTag] {
+  def aggregateRootType = typeOf[AGGREGATE_ROOT]
+}
 
 case class EventEnvelope[AGGREGATE_ROOT](respondTo: ActorRef,
+                                         commandId: CommandId,
+                                         userId: UserId,
                                          expectedVersion: AggregateVersion,
                                          event: Event[AGGREGATE_ROOT])
 

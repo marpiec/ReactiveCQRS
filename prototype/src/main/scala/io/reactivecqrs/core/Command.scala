@@ -1,5 +1,6 @@
 package io.reactivecqrs.core
 
+import _root_.io.reactivecqrs.api.guid.AggregateId
 import akka.actor.ActorRef
 
 import scala.reflect._
@@ -7,7 +8,8 @@ import scala.reflect._
 sealed trait AbstractCommand[AGGREGATE_ROOT, RESPONSE]
 
 abstract class Command[AGGREGATE_ROOT, RESPONSE] extends AbstractCommand[AGGREGATE_ROOT, RESPONSE] {
-  val id: AggregateId
+
+  val aggregateId: AggregateId
   val expectedVersion: AggregateVersion
 }
 

@@ -9,5 +9,5 @@ case class UserId(id: Long)
 
 
 object UserId {
-  def fromAggregateId(id: AggregateId) = UserId(id.id)
+  def fromAggregateId(id: AggregateId) = UserId(id.asLong)
 }

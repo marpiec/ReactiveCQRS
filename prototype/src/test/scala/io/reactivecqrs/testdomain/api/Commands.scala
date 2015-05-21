@@ -1,6 +1,7 @@
 package io.reactivecqrs.testdomain.api
 
-import io.reactivecqrs.core.{FirstCommand, AggregateVersion, Command, AggregateId}
+import io.reactivecqrs.api.guid.AggregateId
+import io.reactivecqrs.core.{FirstCommand, AggregateVersion, Command}
 
 
 case class RegisterUser(name: String) extends FirstCommand[User, RegisterUserResult]
@@ -8,19 +9,19 @@ case class RegisterUser(name: String) extends FirstCommand[User, RegisterUserRes
 case class RegisterUserResult(registeredUserId: AggregateId)
 
 
-case class ChangeUserAddress(id: AggregateId,
+case class ChangeUserAddress(aggregateId: AggregateId,
                              expectedVersion: AggregateVersion,
                              city: String,
                              street: String,
                              number: String) extends Command[User, CommandSucceed]
 
 
-case class UndoUserChange(id: AggregateId,
+case class UndoUserChange(aggregateId: AggregateId,
                           expectedVersion: AggregateVersion,
                           stepsToUndo: Int) extends Command[User, CommandSucceed]
 
 
-case class DeleteUser(id: AggregateId,
+case class DeleteUser(aggregateId: AggregateId,
                       expectedVersion: AggregateVersion) extends Command[User, CommandSucceed]
 
 

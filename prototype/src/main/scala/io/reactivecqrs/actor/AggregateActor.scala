@@ -1,11 +1,13 @@
 package io.reactivecqrs.actor
 
+import _root_.io.reactivecqrs.api.guid.{AggregateId, UserId, CommandId}
 import akka.actor.Actor.Receive
 import akka.actor.{Actor, ActorRef}
 import akka.event.LoggingReceive
 import akka.persistence.PersistentActor
-import io.reactivecqrs.core._
+import _root_.io.reactivecqrs.core._
 
+import scala.concurrent.Future
 import scala.reflect._
 
 case object AggregateAck
@@ -31,19 +33,20 @@ class AggregateRepositoryPersistentActor[AGGREGATE_ROOT](val id: AggregateId,
   private val persistenceId: String = aggregateRootClassTag.getClass.getName + id.asLong
 
 
+  private val eventStore = new EventStore
 
   override def receive = LoggingReceive {
-    case EventEnvelope(respondTo, expectedVersion, event) => receiveEvent(respondTo, expectedVersion, event.asInstanceOf[Event[AGGREGATE_ROOT]])
+    case ee: EventEnvelope[_] => receiveEvent(ee.asInstanceOf[EventEnvelope[AGGREGATE_ROOT]])
     case ReturnAggregateRoot(respondTo) => receiveReturnAggregateRoot(respondTo)
   }
 
 
-  private def receiveEvent(respondTo: ActorRef, expectedVersion: AggregateVersion, event: Event[AGGREGATE_ROOT]): Unit = {
-    println("Received command " + event +" for version " + expectedVersion +" when version was " + version)
-    if (expectedVersion == version) {
-      persist(event)(handleEventAndRespond(respondTo))
+  private def receiveEvent(eventEnvelope: EventEnvelope[AGGREGATE_ROOT]): Unit = {
+    println("Received command " + eventEnvelope.event +" for version " + eventEnvelope.expectedVersion +" when version was " + version)
+    if (eventEnvelope.expectedVersion == version) {
+      persist(eventEnvelope)(handleEventAndRespond(eventEnvelope.respondTo))
     } else {
-      respondTo ! AggregateConcurrentModificationError(expectedVersion, version)
+      eventEnvelope.respondTo ! AggregateConcurrentModificationError(eventEnvelope.expectedVersion, version)
     }
 
   }
@@ -54,8 +57,12 @@ class AggregateRepositoryPersistentActor[AGGREGATE_ROOT](val id: AggregateId,
   }
 
 
-  private def persist(event: Event[AGGREGATE_ROOT])(afterPersist: Event[AGGREGATE_ROOT] => Unit): Unit = {
-
+  private def persist(eventEnvelope: EventEnvelope[AGGREGATE_ROOT])(afterPersist: Event[AGGREGATE_ROOT] => Unit): Unit = {
+    import context.dispatcher
+    Future {
+      eventStore.persistEvent(id, eventEnvelope.asInstanceOf[EventEnvelope[AnyRef]])
+      afterPersist(eventEnvelope.event)
+    }
   }
 
   private def handleEventAndRespond(respondTo: ActorRef)(event: Event[AGGREGATE_ROOT]): Unit = {
