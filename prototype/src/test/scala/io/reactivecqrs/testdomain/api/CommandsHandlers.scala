@@ -6,21 +6,22 @@ import io.reactivecqrs.core._
 
 class RegisterUserHandler extends CommandHandler[User, RegisterUser, RegisterUserResult] {
   def handle(aggregateId: AggregateId, command: RegisterUser) = {
-    (UserRegistered(command.name),RegisterUserResult(aggregateId))
+    (List(UserRegistered(command.name)),
+      version => RegisterUserResult(aggregateId))
   }
 }
 
 class ChangeUserAddressHandler extends CommandHandler[User, ChangeUserAddress, CommandSucceed] {
   def handle(aggregateId: AggregateId, command: ChangeUserAddress) = {
-    (UserAddressChanged(command.city, command.street, command.number),
-      CommandSucceed())
+    (List(UserAddressChanged(command.city, command.street, command.number)),
+      version => CommandSucceed(aggregateId, version))
   }
 }
 
 class DeleteUserHandler extends CommandHandler[User, DeleteUser, CommandSucceed] {
   override def handle(aggregateId: AggregateId, command: DeleteUser) = {
-    (UserDeleted(),
-      CommandSucceed())
+    (List(UserDeleted()),
+      version => CommandSucceed(aggregateId, version))
   }
 }
 

@@ -7,7 +7,7 @@ import io.reactivecqrs.actor.{AggregateRoot, AkkaAggregate, EventStore}
 import io.reactivecqrs.api.guid.{AggregateId, UserId}
 import io.reactivecqrs.core._
 import io.reactivecqrs.testdomain.UserCommandBus
-import io.reactivecqrs.testdomain.api.{RegisterUser, RegisterUserResult, User}
+import io.reactivecqrs.testdomain.api._
 import io.reactivecqrs.testdomain.spec.utils.ActorAskSupport
 import org.scalatest.{FeatureSpecLike, GivenWhenThen, MustMatchers}
 
@@ -35,18 +35,22 @@ class ReactiveTestDomainSpec  extends TestKit(ActorSystem("testsystem", ConfigFa
 
       val usersCommandBus: ActorRef = AkkaAggregate.create(new UserCommandBus)(system).commandBus
 
-
-
       val registerUserResponse: RegisterUserResult = usersCommandBus ?? FirstCommandEnvelope(userId, RegisterUser("Marcin Pieciukiewicz"))
-
 
       registerUserResponse mustBe RegisterUserResult(AggregateId(1))
 
 
-      val user:AggregateRoot[User] = usersCommandBus ?? GetAggregateRoot(registerUserResponse.registeredUserId)
+      var user:AggregateRoot[User] = usersCommandBus ?? GetAggregateRoot(registerUserResponse.registeredUserId)
 
       user mustBe AggregateRoot(registerUserResponse.registeredUserId, AggregateVersion(1), Some(User("Marcin Pieciukiewicz", None)))
 
+
+      val response: CommandSucceed = usersCommandBus ?? CommandEnvelope(userId, user.id, user.version, ChangeUserAddress("Warsaw", "Center", "1"))
+
+      response mustBe CommandSucceed(user.id, AggregateVersion(2))
+
+      user = usersCommandBus ?? GetAggregateRoot(registerUserResponse.registeredUserId)
+      user mustBe AggregateRoot(response.aggregateId, response.version, Some(User("Marcin Pieciukiewicz", Some(Address("Warsaw", "Center", "1")))))
 
     }
 

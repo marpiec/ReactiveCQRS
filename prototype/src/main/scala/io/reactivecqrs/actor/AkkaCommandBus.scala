@@ -21,6 +21,7 @@ class AkkaCommandBus[AGGREGATE_ROOT](val commandsHandlers: Seq[CommandHandler[AG
     case ce: CommandEnvelope[_,_] => routeCommand(ce.asInstanceOf[CommandEnvelope[AGGREGATE_ROOT, _]])
     case fce: FirstCommandEnvelope[_,_] => routeFirstCommand(fce.asInstanceOf[FirstCommandEnvelope[AGGREGATE_ROOT, _]])
     case GetAggregateRoot(id) => routeGetAggregateRoot(id)
+    case m => throw new IllegalArgumentException("Cannot handle this kind of message: " + m)
   }
 
   def routeCommand[RESPONSE](command: CommandEnvelope[AGGREGATE_ROOT, RESPONSE]): Unit = {

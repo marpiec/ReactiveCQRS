@@ -27,12 +27,12 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
     println("Handling non first command")
     internalCommandEnvelope match {
       case InternalCommandEnvelope(respondTo, commandId, CommandEnvelope(userId, commandAggregateId, expectedVersion, command)) =>
-        val result = commandsHandlers(command.getClass.getName).asInstanceOf[CommandHandler[AGGREGATE_ROOT, COMMAND, RESULT]].handle(aggregateId, command.asInstanceOf[COMMAND])
-        val resultAggregator = context.actorOf(Props(new ResultAggregator[RESULT](respondTo, result._2)), "ResultAggregator")
+        val result = commandsHandlers(command.getClass.getName).asInstanceOf[CommandHandler[AGGREGATE_ROOT, COMMAND, RESULT]].  handle(aggregateId, command.asInstanceOf[COMMAND])
+        val resultAggregator = context.actorOf(Props(new ResultAggregator[RESULT](respondTo, result._2(expectedVersion.incrementBy(result._1.size)))), "ResultAggregator")
 
-        val repositoryActor = context.actorSelection("AkkaCommandBus" + aggregateId.asLong+"/" + "CommandHandler"+aggregateId.asLong + "/" + "AggregateRepository" + aggregateId.asLong)
+        val repositoryActor = context.actorSelection("AggregateRepository" + aggregateId.asLong)
 
-        repositoryActor ! EventEnvelope[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, AggregateVersion.ZERO, result._1)
+        repositoryActor ! EventsEnvelope[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, expectedVersion, result._1)
         println("...sent")
       case c => throw new IllegalArgumentException("Unsupported command " + c)
     }
@@ -44,11 +44,11 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
     internalFirstCommandEnvelope match {
       case InternalFirstCommandEnvelope(respondTo, commandId, FirstCommandEnvelope(userId, command)) =>
         val result = commandsHandlers(command.getClass.getName).asInstanceOf[CommandHandler[AGGREGATE_ROOT, COMMAND, RESULT]].handle(aggregateId, command.asInstanceOf[COMMAND])
-        val resultAggregator = context.actorOf(Props(new ResultAggregator(respondTo, result._2)), "ResultAggregator")
+        val resultAggregator = context.actorOf(Props(new ResultAggregator[RESULT](respondTo, result._2(AggregateVersion(result._1.size)))), "ResultAggregator")
         val newRepositoryActor = context.actorOf(Props(new AggregateRepositoryPersistentActor[AGGREGATE_ROOT](aggregateId, eventsHandlers)), "AggregateRepository" + aggregateId.asLong)
         println("Created persistence actor " +newRepositoryActor.path)
-        newRepositoryActor ! EventEnvelope[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, AggregateVersion.ZERO, result._1)
-        println("...sent " + EventEnvelope[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, AggregateVersion.ZERO, result._1))
+        newRepositoryActor ! EventsEnvelope[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, AggregateVersion.ZERO, result._1)
+        println("...sent " + EventsEnvelope[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, AggregateVersion.ZERO, result._1))
       case c => throw new IllegalArgumentException("Unsupported first command " + c)
     }
   }

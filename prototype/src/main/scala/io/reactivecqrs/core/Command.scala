@@ -31,5 +31,5 @@ abstract class FirstCommand[AGGREGATE_ROOT, RESPONSE] extends AbstractCommand[AG
 abstract class CommandHandler[AGGREGATE_ROOT, COMMAND <: AbstractCommand[AGGREGATE_ROOT, RESPONSE], RESPONSE]
           (implicit commandClassTag: ClassTag[COMMAND]) {
   val commandClassName = commandClassTag.runtimeClass.getName
-  def handle(aggregateId: AggregateId, command: COMMAND): (Event[AGGREGATE_ROOT], RESPONSE)
+  def handle(aggregateId: AggregateId, command: COMMAND): (Seq[Event[AGGREGATE_ROOT]], (AggregateVersion) => RESPONSE)
 }

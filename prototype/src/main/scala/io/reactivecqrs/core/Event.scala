@@ -10,12 +10,12 @@ abstract class Event[AGGREGATE_ROOT: TypeTag] {
   def aggregateRootType = typeOf[AGGREGATE_ROOT]
 }
 
-case class EventEnvelope[AGGREGATE_ROOT](respondTo: ActorRef,
+case class EventsEnvelope[AGGREGATE_ROOT](respondTo: ActorRef,
                                          aggregateId: AggregateId,
                                          commandId: CommandId,
                                          userId: UserId,
                                          expectedVersion: AggregateVersion,
-                                         event: Event[AGGREGATE_ROOT])
+                                         events: Seq[Event[AGGREGATE_ROOT]])
 
 
 
