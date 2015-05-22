@@ -1,13 +1,13 @@
 package io.reactivecqrs.testdomain.spec
 
-import akka.actor.{Props, ActorSystem, ActorRef}
+import akka.actor.{ActorRef, ActorSystem}
 import akka.testkit.TestKit
 import com.typesafe.config.ConfigFactory
-import io.reactivecqrs.actor.{EventStore, EventsSchemaInitializer, AkkaAggregate, AggregateRoot}
-import io.reactivecqrs.api.guid.AggregateId
-import io.reactivecqrs.core.{Aggregate, AggregateVersion, GetAggregateRoot, AggregateId}
-import io.reactivecqrs.testdomain.{UserCommandBus}
-import io.reactivecqrs.testdomain.api.{User, RegisterUser, RegisterUserResult}
+import io.reactivecqrs.actor.{AggregateRoot, AkkaAggregate, EventStore}
+import io.reactivecqrs.api.guid.{AggregateId, UserId}
+import io.reactivecqrs.core._
+import io.reactivecqrs.testdomain.UserCommandBus
+import io.reactivecqrs.testdomain.api.{RegisterUser, RegisterUserResult, User}
 import io.reactivecqrs.testdomain.spec.utils.ActorAskSupport
 import org.scalatest.{FeatureSpecLike, GivenWhenThen, MustMatchers}
 
@@ -31,10 +31,13 @@ class ReactiveTestDomainSpec  extends TestKit(ActorSystem("testsystem", ConfigFa
 
       (new EventStore).initSchema()
 
+      val userId = UserId(1L)
 
       val usersCommandBus: ActorRef = AkkaAggregate.create(new UserCommandBus)(system).commandBus
 
-      val registerUserResponse: RegisterUserResult = usersCommandBus ?? RegisterUser("Marcin Pieciukiewicz")
+
+
+      val registerUserResponse: RegisterUserResult = usersCommandBus ?? FirstCommandEnvelope(userId, RegisterUser("Marcin Pieciukiewicz"))
 
 
       registerUserResponse mustBe RegisterUserResult(AggregateId(1))

@@ -31,8 +31,8 @@ abstract class CommandBus[AGGREGATE_ROOT](handlers: CommandHandler[AGGREGATE_ROO
   implicit val akkaTimeout = Timeout(5 seconds)
 
   override def receive: Receive = LoggingReceive {
-    case CommandEnvelope(acknowledgeId, userId, command) => command match {
-      case c :FirstCommand[AGGREGATE_ROOT, AnyRef] => submitFirstCommand(acknowledgeId, userId, c.asInstanceOf[FirstCommand[AGGREGATE_ROOT, AnyRef]])
+    case CommandEnvelopeOld(acknowledgeId, userId, command) => command match {
+      case c :FirstCommandOld[AGGREGATE_ROOT, AnyRef] => submitFirstCommand(acknowledgeId, userId, c.asInstanceOf[FirstCommandOld[AGGREGATE_ROOT, AnyRef]])
       case c :FollowingCommand[AGGREGATE_ROOT, AnyRef] => submitFollowingCommand(acknowledgeId, userId, c.asInstanceOf[FollowingCommand[AGGREGATE_ROOT, AnyRef]])
       case c :AnyRef =>
         sender() ! IncorrectCommand(
@@ -44,10 +44,10 @@ abstract class CommandBus[AGGREGATE_ROOT](handlers: CommandHandler[AGGREGATE_ROO
   }
 
 
-  def submitFirstCommand(acknowledgeId: String, userId: UserId, command: FirstCommand[AGGREGATE_ROOT, AnyRef]): Unit = {
+  def submitFirstCommand(acknowledgeId: String, userId: UserId, command: FirstCommandOld[AGGREGATE_ROOT, AnyRef]): Unit = {
 
     val commandHandler = commandHandlers(command.getClass.asInstanceOf[Class[Command[AGGREGATE_ROOT, AnyRef]]])
-      .asInstanceOf[FirstCommandHandler[AGGREGATE_ROOT, FirstCommand[AGGREGATE_ROOT, AnyRef], AnyRef]]
+      .asInstanceOf[FirstCommandHandler[AGGREGATE_ROOT, FirstCommandOld[AGGREGATE_ROOT, AnyRef], AnyRef]]
 
     val result = commandHandler.handle(commandIdGenerator.nextCommandId, userId, command, repositoryHandler)
     sender ! CommandResponseEnvelope(acknowledgeId, result)

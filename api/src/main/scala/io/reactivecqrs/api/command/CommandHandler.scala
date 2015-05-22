@@ -10,7 +10,7 @@ sealed abstract class CommandHandler[AGGREGATE_ROOT, COMMAND <: Command[AGGREGAT
 }
 
 
-abstract class FirstCommandHandler[AGGREGATE_ROOT, COMMAND <: FirstCommand[AGGREGATE_ROOT, RESPONSE], RESPONSE](implicit ev: Manifest[COMMAND]) extends CommandHandler[AGGREGATE_ROOT, COMMAND, RESPONSE] {
+abstract class FirstCommandHandler[AGGREGATE_ROOT, COMMAND <: FirstCommandOld[AGGREGATE_ROOT, RESPONSE], RESPONSE](implicit ev: Manifest[COMMAND]) extends CommandHandler[AGGREGATE_ROOT, COMMAND, RESPONSE] {
   /**
    * validation
    * validation against aggregate state

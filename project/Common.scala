@@ -57,10 +57,6 @@ object Common {
       "com.typesafe.akka" %% "akka-testkit" % akkaVersion % Test
     )
 
-    val slick = Seq(
-      "com.typesafe.slick" %% "slick" % "3.0.0-RC3"
-    )
-
     val scalikejdbc = Seq(
       "org.scalikejdbc" %% "scalikejdbc" % "2.2.6"
     )

@@ -8,12 +8,12 @@ object AggregateVersion {
 }
 
 
-case class AggregateVersion(version: Int) {
-  def < (other: AggregateVersion) = this.version < other.version
-  def == (other: AggregateVersion) = this.version == other.version
-  def > (other: AggregateVersion) = this.version > other.version
+case class AggregateVersion(asInt: Int) {
+  def < (other: AggregateVersion) = this.asInt < other.asInt
+  def == (other: AggregateVersion) = this.asInt == other.asInt
+  def > (other: AggregateVersion) = this.asInt > other.asInt
 
-  def increment = AggregateVersion(version + 1)
+  def increment = AggregateVersion(asInt + 1)
 
 }
 

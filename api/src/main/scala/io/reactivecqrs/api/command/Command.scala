@@ -5,7 +5,7 @@ import io.reactivecqrs.api.guid.{AggregateVersion, AggregateId, UserId}
 import io.reactivecqrs.utils.Result
 
 
-case class CommandEnvelope[COMMAND <: Command[_, _]](acknowledgeId: String, userId: UserId, command: COMMAND)
+case class CommandEnvelopeOld[COMMAND <: Command[_, _]](acknowledgeId: String, userId: UserId, command: COMMAND)
 
 case class CommandResponseEnvelope[RESPONSE](acknowledgeId: String, response: Result[RESPONSE, CqrsException])
 
@@ -15,7 +15,7 @@ case class CommandResponseEnvelope[RESPONSE](acknowledgeId: String, response: Re
  */
 sealed abstract class Command[AGGREGATE_ROOT, RESPONSE]
 
-abstract class FirstCommand[AGGREGATE_ROOT, RESPONSE] extends Command[AGGREGATE_ROOT, RESPONSE]
+abstract class FirstCommandOld[AGGREGATE_ROOT, RESPONSE] extends Command[AGGREGATE_ROOT, RESPONSE]
 
 abstract class FollowingCommand[AGGREGATE_ROOT, RESPONSE] extends Command[AGGREGATE_ROOT, RESPONSE] {
   def aggregateId: AggregateId

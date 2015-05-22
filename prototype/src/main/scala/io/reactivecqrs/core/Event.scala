@@ -1,6 +1,6 @@
 package io.reactivecqrs.core
 
-import _root_.io.reactivecqrs.api.guid.{CommandId, UserId}
+import _root_.io.reactivecqrs.api.guid.{AggregateId, CommandId, UserId}
 import akka.actor.ActorRef
 
 import scala.reflect._
@@ -11,6 +11,7 @@ abstract class Event[AGGREGATE_ROOT: TypeTag] {
 }
 
 case class EventEnvelope[AGGREGATE_ROOT](respondTo: ActorRef,
+                                         aggregateId: AggregateId,
                                          commandId: CommandId,
                                          userId: UserId,
                                          expectedVersion: AggregateVersion,

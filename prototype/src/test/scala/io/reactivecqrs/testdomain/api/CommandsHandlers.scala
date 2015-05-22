@@ -1,5 +1,6 @@
 package io.reactivecqrs.testdomain.api
 
+import io.reactivecqrs.api.guid.AggregateId
 import io.reactivecqrs.core._
 
 

@@ -2,7 +2,7 @@ package io.reactivecqrs.actor
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.guid.AggregateId
-import io.reactivecqrs.core.{EventEnvelope, Event}
+import io.reactivecqrs.core.EventEnvelope
 import scalikejdbc._
 
 class EventStore {
@@ -24,19 +24,20 @@ class EventStore {
     (new EventsSchemaInitializer).initSchema()
   }
 
-  def persistEvent(aggregateId: AggregateId, event: EventEnvelope[AnyRef]): Unit = {
-
-    val eventSerialized = mpjsons.serialize(event, event.getClass.getName)
+  def persistEvent(aggregateId: AggregateId, eventEnvelope: EventEnvelope[AnyRef]): Unit = {
+    println("Persisting event " + aggregateId+ " " +eventEnvelope)
+    val eventSerialized = mpjsons.serialize(eventEnvelope.event, eventEnvelope.event.getClass.getName)
     DB.autoCommit { implicit session =>
-      sql"""SELECT add_event(
-         |${event.commandId.id},
-         |${event.userId.id},
-         |${aggregateId.asLong},
-         |${event.expectedVersion},
-         |${event.event.aggregateRootType.typeSymbol.fullName},
-         |${event.getClass.getName},
-         |0,
-         |$eventSerialized);""".stripMargin.executeUpdate().apply()
+
+      sql"""SELECT add_event(?, ?, ?, ? ,? , ?, ? ,?)""".bind(
+          eventEnvelope.commandId.asLong,
+          eventEnvelope.userId.asLong,
+          aggregateId.asLong,
+          eventEnvelope.expectedVersion.asInt,
+          eventEnvelope.event.aggregateRootType.typeSymbol.fullName,
+          eventEnvelope.event.getClass.getName,
+          0,
+          eventSerialized).execute().apply()
     }
 
   }

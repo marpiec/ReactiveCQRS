@@ -37,12 +37,12 @@ class EventsSchemaInitializer  {
         CREATE TABLE IF NOT EXISTS aggregates (
           id BIGINT NOT NULL PRIMARY KEY,
           type VARCHAR(128) NOT NULL,
-          version INT NOT NULL);
+          version INT NOT NULL)
       """.execute().apply()
   }
 
   private def createEventsSequence() = DB.autoCommit { implicit session =>
-    sql"""CREATE SEQUENCE events_seq;""".execute().apply()
+    sql"""CREATE SEQUENCE events_seq""".execute().apply()
   }
 
   private def createAddEventFunction(): Unit = DB.autoCommit { implicit session =>
@@ -69,7 +69,7 @@ class EventsSchemaInitializer  {
           |    UPDATE aggregates SET version = current_version + 1 WHERE id = aggregate_id;
           |END;
           |$$
-          |LANGUAGE 'plpgsql' VOLATILE;
+          |LANGUAGE 'plpgsql' VOLATILE
         """.stripMargin).execute().apply()
   }
 

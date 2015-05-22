@@ -1,10 +1,10 @@
 package io.reactivecqrs.testdomain.api
 
-import io.reactivecqrs.api.command.{FirstCommand, FollowingCommand}
+import io.reactivecqrs.api.command.{FirstCommandOld, FollowingCommand}
 import io.reactivecqrs.api.guid.{AggregateId, AggregateVersion}
 
 
-case class RegisterUser(name: String) extends FirstCommand[User, RegisterUserResult]
+case class RegisterUser(name: String) extends FirstCommandOld[User, RegisterUserResult]
 
 case class RegisterUserResult(registeredUserId: AggregateId)
 
