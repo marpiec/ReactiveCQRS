@@ -1,6 +1,6 @@
 package io.reactivecqrs.testdomain.spec
 
-import akka.actor.{ActorRef, ActorSystem}
+import akka.actor.{Props, ActorRef, ActorSystem}
 import akka.testkit.TestKit
 import com.typesafe.config.ConfigFactory
 import io.reactivecqrs.actor.{AggregateRoot, AkkaAggregate, EventStore}
@@ -9,6 +9,7 @@ import io.reactivecqrs.core._
 import io.reactivecqrs.testdomain.UserCommandBus
 import io.reactivecqrs.testdomain.api._
 import io.reactivecqrs.testdomain.spec.utils.ActorAskSupport
+import io.reactivecqrs.uid.UidGeneratorActor
 import org.scalatest.{FeatureSpecLike, GivenWhenThen, MustMatchers}
 
 
@@ -33,23 +34,25 @@ class ReactiveTestDomainSpec  extends TestKit(ActorSystem("testsystem", ConfigFa
 
       val userId = UserId(1L)
 
-      val usersCommandBus: ActorRef = AkkaAggregate.create(new UserCommandBus)(system).commandBus
+      val uidGenerator = system.actorOf(Props(new UidGeneratorActor), "uidGenerator")
+
+      val usersCommandBus: ActorRef = AkkaAggregate.create(new UserCommandBus, uidGenerator)(system).commandBus
 
       val registerUserResponse: RegisterUserResult = usersCommandBus ?? FirstCommandEnvelope(userId, RegisterUser("Marcin Pieciukiewicz"))
 
-      registerUserResponse mustBe RegisterUserResult(AggregateId(1))
+      val registeredUserId = registerUserResponse.registeredUserId
 
 
-      var user:AggregateRoot[User] = usersCommandBus ?? GetAggregateRoot(registerUserResponse.registeredUserId)
+      var user:AggregateRoot[User] = usersCommandBus ?? GetAggregateRoot(registeredUserId)
 
-      user mustBe AggregateRoot(registerUserResponse.registeredUserId, AggregateVersion(1), Some(User("Marcin Pieciukiewicz", None)))
+      user mustBe AggregateRoot(registeredUserId, AggregateVersion(1), Some(User("Marcin Pieciukiewicz", None)))
 
 
       val response: CommandSucceed = usersCommandBus ?? CommandEnvelope(userId, user.id, user.version, ChangeUserAddress("Warsaw", "Center", "1"))
 
       response mustBe CommandSucceed(user.id, AggregateVersion(2))
 
-      user = usersCommandBus ?? GetAggregateRoot(registerUserResponse.registeredUserId)
+      user = usersCommandBus ?? GetAggregateRoot(registeredUserId)
       user mustBe AggregateRoot(response.aggregateId, response.version, Some(User("Marcin Pieciukiewicz", Some(Address("Warsaw", "Center", "1")))))
 
     }

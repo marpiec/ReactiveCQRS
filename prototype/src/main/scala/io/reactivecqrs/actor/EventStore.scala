@@ -7,8 +7,6 @@ import scalikejdbc._
 
 class EventStore {
 
-  final val eventsTableName = "events"
-
   val mpjsons = new MPJsons
 
 
@@ -58,7 +56,7 @@ class EventStore {
             | WHERE aggregate_id = ?
             | ORDER BY version""".stripMargin.bind(aggregateId.asLong).foreach { rs =>
 
-        val event: Event[AGGREGATE_ROOT] = mpjsons.deserialize(rs.string(2), rs.string(1))
+        val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(2), rs.string(1))
         eventHandler(event)
       }
     }

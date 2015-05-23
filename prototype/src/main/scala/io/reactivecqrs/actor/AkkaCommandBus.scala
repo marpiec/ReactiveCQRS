@@ -1,19 +1,31 @@
 package io.reactivecqrs.actor
 
-import akka.actor.{Actor, Props}
+import akka.actor.{ActorRef, Actor, Props}
 import akka.event.LoggingReceive
+import akka.pattern.ask
+import akka.util.Timeout
 import io.reactivecqrs.api.guid.{CommandId, AggregateId}
 import io.reactivecqrs.core._
+import io.reactivecqrs.uid.{NewAggregatesIdsPool, UidGeneratorActor}
 
+import scala.concurrent.{Await, Future}
 import scala.reflect.ClassTag
+import scala.concurrent.duration._
 
-class AkkaCommandBus[AGGREGATE_ROOT](val commandsHandlers: Seq[CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, _],_]],
+
+
+class AkkaCommandBus[AGGREGATE_ROOT](val uidGenerator: ActorRef,
+                                      val commandsHandlers: Seq[CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, _],_]],
                                      val eventsHandlers: Seq[EventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]])
-                                    (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor {
+                                    (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT]) extends Actor {
 
 
 
-  var nextAggregateId = 1
+
+  var fromAggregateId = 0L
+  var remainingAggregateIds = 0L
+
+
   var nextCommandId = 1
 
 
@@ -39,9 +51,8 @@ class AkkaCommandBus[AGGREGATE_ROOT](val commandsHandlers: Seq[CommandHandler[AG
     val commandId = CommandId(nextCommandId)
     nextCommandId += 1
     val newAggregateId = nextAggregateId // Actor construction might be delayed so we need to store current aggregate id
-    nextAggregateId += 1
     val respondTo = sender() // with sender this shouldn't be the case, but just to be sure
-    val newCommandHandlerActor = context.actorOf(Props(new CommandHandlerActor[AGGREGATE_ROOT](AggregateId(newAggregateId), commandsHandlers, eventsHandlers)), "CommandHandler" + newAggregateId)
+    val newCommandHandlerActor = context.actorOf(Props(new CommandHandlerActor[AGGREGATE_ROOT](newAggregateId, commandsHandlers, eventsHandlers)), "CommandHandler" + newAggregateId.asLong)
     newCommandHandlerActor ! InternalFirstCommandEnvelope(respondTo, commandId, firstCommand)
   }
 
@@ -50,5 +61,23 @@ class AkkaCommandBus[AGGREGATE_ROOT](val commandsHandlers: Seq[CommandHandler[AG
     val respondTo = sender()
     val aggregate = context.actorSelection("CommandHandler" + id.asLong+"/" + "AggregateRepository"+id.asLong)
     aggregate ! ReturnAggregateRoot(respondTo)
+  }
+
+  private def nextAggregateId: AggregateId = {
+    if(remainingAggregateIds == 0) {
+      // TODO get rid of ask pattern
+      implicit val timeout = Timeout(5 seconds)
+      val pool: Future[NewAggregatesIdsPool] = (uidGenerator ? UidGeneratorActor.GetNewAggregatesIdsPool).mapTo[NewAggregatesIdsPool]
+      val newAggregatesIdsPool: NewAggregatesIdsPool = Await.result(pool, 5 seconds)
+      remainingAggregateIds = newAggregatesIdsPool.size
+      fromAggregateId = newAggregatesIdsPool.from
+    }
+
+    remainingAggregateIds -= 1
+    val aggregateId = AggregateId(fromAggregateId)
+    fromAggregateId += 1
+    aggregateId
+
+
   }
 }
