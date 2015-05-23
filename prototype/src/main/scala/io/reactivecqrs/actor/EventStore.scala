@@ -2,7 +2,7 @@ package io.reactivecqrs.actor
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.guid.AggregateId
-import io.reactivecqrs.core.EventsEnvelope
+import io.reactivecqrs.core.{Event, EventsEnvelope}
 import scalikejdbc._
 
 class EventStore {
@@ -48,6 +48,22 @@ class EventStore {
     }
 
   }
+
+
+  def readAllEvents[AGGREGATE_ROOT](aggregateId: AggregateId)(eventHandler: Event[AGGREGATE_ROOT] => Unit): Unit = {
+
+    DB.readOnly { implicit session =>
+      sql"""SELECT event_type, event
+            | FROM events
+            | WHERE aggregate_id = ?
+            | ORDER BY version""".stripMargin.bind(aggregateId.asLong).foreach { rs =>
+
+        val event: Event[AGGREGATE_ROOT] = mpjsons.deserialize(rs.string(2), rs.string(1))
+        eventHandler(event)
+      }
+    }
+  }
+
 
 
 }

@@ -27,15 +27,27 @@ class AggregateRepositoryPersistentActor[AGGREGATE_ROOT](val id: AggregateId,
 
   private var version: AggregateVersion = AggregateVersion.ZERO
   private var aggregateRoot: AGGREGATE_ROOT = _
-
-  private val persistenceId: String = aggregateRootClassTag.getClass.getName + id.asLong
+  private var notRestored = true
 
 
   private val eventStore = new EventStore
 
+  private def assureRestoredState(): Unit = {
+    if(notRestored) {
+      println("Restoring state")
+      //TODO make it future
+      eventStore.readAllEvents[AGGREGATE_ROOT](id)(handleEvent)
+      notRestored = false
+    }
+  }
+
   override def receive = LoggingReceive {
-    case ee: EventsEnvelope[_] => receiveEvent(ee.asInstanceOf[EventsEnvelope[AGGREGATE_ROOT]])
-    case ReturnAggregateRoot(respondTo) => receiveReturnAggregateRoot(respondTo)
+    case ee: EventsEnvelope[_] =>
+      assureRestoredState()
+      receiveEvent(ee.asInstanceOf[EventsEnvelope[AGGREGATE_ROOT]])
+    case ReturnAggregateRoot(respondTo) =>
+      assureRestoredState()
+      receiveReturnAggregateRoot(respondTo)
   }
 
 
