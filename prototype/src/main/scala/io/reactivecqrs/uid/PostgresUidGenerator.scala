@@ -2,26 +2,28 @@ package io.reactivecqrs.uid
 
 import scalikejdbc._
 
-class PostgresUidGenerator {
+case class IdsPool(from: Long, size: Long)
+
+class PostgresUidGenerator(sequenceName: String) {
 
   new UidGeneratorSchemaInitializer().initSchema()
 
   val poolSize = readSequenceStep
 
-  def nextIdsPool: NewAggregatesIdsPool = {
+  def nextIdsPool: IdsPool = {
 
     DB.autoCommit { implicit session =>
-      val poolFrom = sql"""SELECT NEXTVAL('aggregates_uids_seq')""".map(rs => rs.long(1)).single().apply().getOrElse {
+      val poolFrom = SQL(s"SELECT NEXTVAL('$sequenceName')").map(rs => rs.long(1)).single().apply().getOrElse {
         throw new IllegalStateException("Query returned no values, that should not happen.")
       }
-      NewAggregatesIdsPool(poolFrom, poolSize)
+      IdsPool(poolFrom, poolSize)
     }
   }
 
 
   private def readSequenceStep: Long = {
     DB.readOnly { implicit session =>
-      sql"""SELECT increment_by FROM aggregates_uids_seq""".map(rs => rs.long(1)).single().apply().get
+      SQL(s"SELECT increment_by FROM $sequenceName").map(rs => rs.long(1)).single().apply().get
     }
   }
 
