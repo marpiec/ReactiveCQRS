@@ -18,6 +18,19 @@ case class EventsEnvelope[AGGREGATE_ROOT](respondTo: ActorRef,
                                          events: Seq[Event[AGGREGATE_ROOT]])
 
 
+/**
+ * Special type of event, for removing effect of previous events.
+ * @tparam AGGREGATE_ROOT type of aggregate this event is related to.
+ */
+abstract class UndoEvent[AGGREGATE_ROOT: TypeTag] extends Event[AGGREGATE_ROOT] {
+  /** How many events should ba canceled. */
+  val eventsCount: Int
+}
+
+
+abstract class DeleteEvent[AGGREGATE_ROOT: TypeTag] extends Event[AGGREGATE_ROOT]
+
+
 
 
 abstract class EventHandler[AGGREGATE_ROOT, EVENT <: Event[AGGREGATE_ROOT]](implicit eventClassTag: ClassTag[EVENT]) {

@@ -1,7 +1,7 @@
 package io.reactivecqrs.actor
 
 import _root_.io.reactivecqrs.api.guid.AggregateId
-import _root_.io.reactivecqrs.core._
+import _root_.io.reactivecqrs.core.{EventsEnvelope, Event, EventHandler, AggregateVersion}
 import akka.actor.{Actor, ActorRef}
 import akka.event.LoggingReceive
 
@@ -13,7 +13,7 @@ case class AggregateConcurrentModificationError(expected: AggregateVersion, was:
 
 case class ReturnAggregateRoot(respondTo: ActorRef)
 
-case class AggregateRoot[AGGREGATE_ROOT](id: AggregateId, version: AggregateVersion, aggregateRoot: Option[AGGREGATE_ROOT])
+case class Aggregate[AGGREGATE_ROOT](id: AggregateId, version: AggregateVersion, aggregateRoot: Option[AGGREGATE_ROOT])
 
 
 
@@ -63,7 +63,7 @@ class AggregateRepositoryPersistentActor[AGGREGATE_ROOT](val id: AggregateId,
 
   private def receiveReturnAggregateRoot(respondTo: ActorRef): Unit = {
     println("ReturnAggregateRoot " + aggregateRoot)
-    respondTo ! AggregateRoot(id, version, Some(aggregateRoot))
+    respondTo ! Aggregate(id, version, Some(aggregateRoot))
   }
 
 

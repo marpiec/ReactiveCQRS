@@ -1,6 +1,5 @@
 package io.reactivecqrs.testdomain.commandhandler
 
-import io.reactivecqrs.api.AggregateIdGenerator
 import io.reactivecqrs.api.command.{RepositoryFirstEventHandler, FirstCommandHandler}
 import io.reactivecqrs.api.guid.{CommandId, UserId}
 import io.reactivecqrs.utils.Success

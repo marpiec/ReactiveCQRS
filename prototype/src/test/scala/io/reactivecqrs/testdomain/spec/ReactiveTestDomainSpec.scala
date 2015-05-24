@@ -3,7 +3,7 @@ package io.reactivecqrs.testdomain.spec
 import akka.actor.{Props, ActorRef, ActorSystem}
 import akka.testkit.TestKit
 import com.typesafe.config.ConfigFactory
-import io.reactivecqrs.actor.{AggregateRoot, AkkaAggregate, EventStore}
+import io.reactivecqrs.actor.{Aggregate, AkkaAggregate, EventStore}
 import io.reactivecqrs.api.guid.{AggregateId, UserId}
 import io.reactivecqrs.core._
 import io.reactivecqrs.testdomain.UserCommandBus
@@ -43,9 +43,9 @@ class ReactiveTestDomainSpec  extends TestKit(ActorSystem("testsystem", ConfigFa
       val registeredUserId = registerUserResponse.registeredUserId
 
 
-      var user:AggregateRoot[User] = usersCommandBus ?? GetAggregateRoot(registeredUserId)
+      var user:Aggregate[User] = usersCommandBus ?? GetAggregateRoot(registeredUserId)
 
-      user mustBe AggregateRoot(registeredUserId, AggregateVersion(1), Some(User("Marcin Pieciukiewicz", None)))
+      user mustBe Aggregate(registeredUserId, AggregateVersion(1), Some(User("Marcin Pieciukiewicz", None)))
 
 
       val response: CommandSucceed = usersCommandBus ?? CommandEnvelope(userId, user.id, user.version, ChangeUserAddress("Warsaw", "Center", "1"))
@@ -53,7 +53,7 @@ class ReactiveTestDomainSpec  extends TestKit(ActorSystem("testsystem", ConfigFa
       response mustBe CommandSucceed(user.id, AggregateVersion(2))
 
       user = usersCommandBus ?? GetAggregateRoot(registeredUserId)
-      user mustBe AggregateRoot(response.aggregateId, response.version, Some(User("Marcin Pieciukiewicz", Some(Address("Warsaw", "Center", "1")))))
+      user mustBe Aggregate(response.aggregateId, response.version, Some(User("Marcin Pieciukiewicz", Some(Address("Warsaw", "Center", "1")))))
 
     }
 
