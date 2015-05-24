@@ -38,9 +38,9 @@ class ReactiveTestDomainSpec  extends TestKit(ActorSystem("testsystem", ConfigFa
 
       val usersCommandBus: ActorRef = AkkaAggregate.create(new UserCommandBus, uidGenerator)(system).commandBus
 
-      val registerUserResponse: RegisterUserResult = usersCommandBus ?? FirstCommandEnvelope(userId, RegisterUser("Marcin Pieciukiewicz"))
+      val registerUserResponse: CommandSuccessful = usersCommandBus ?? FirstCommandEnvelope(userId, RegisterUser("Marcin Pieciukiewicz"))
 
-      val registeredUserId = registerUserResponse.registeredUserId
+      val registeredUserId = registerUserResponse.aggregateId
 
 
       var user:Aggregate[User] = usersCommandBus ?? GetAggregateRoot(registeredUserId)
@@ -48,12 +48,12 @@ class ReactiveTestDomainSpec  extends TestKit(ActorSystem("testsystem", ConfigFa
       user mustBe Aggregate(registeredUserId, AggregateVersion(1), Some(User("Marcin Pieciukiewicz", None)))
 
 
-      val response: CommandSucceed = usersCommandBus ?? CommandEnvelope(userId, user.id, user.version, ChangeUserAddress("Warsaw", "Center", "1"))
+      val response: CommandSuccessful = usersCommandBus ?? CommandEnvelope(userId, user.id, user.version, ChangeUserAddress("Warsaw", "Center", "1"))
 
-      response mustBe CommandSucceed(user.id, AggregateVersion(2))
+      response mustBe CommandSuccessful(user.id, AggregateVersion(2))
 
       user = usersCommandBus ?? GetAggregateRoot(registeredUserId)
-      user mustBe Aggregate(response.aggregateId, response.version, Some(User("Marcin Pieciukiewicz", Some(Address("Warsaw", "Center", "1")))))
+      user mustBe Aggregate(response.aggregateId, response.aggregateVersion, Some(User("Marcin Pieciukiewicz", Some(Address("Warsaw", "Center", "1")))))
 
     }
 
