@@ -1,17 +1,25 @@
 package io.reactivecqrs.testdomain.api
 
-import io.reactivecqrs.core.EventHandler
+import io.reactivecqrs.core.{FirstEventHandler, EventHandler}
 
 
-object UserAddressChangedEventHandler extends EventHandler[User, UserAddressChanged] {
-  override def handle(aggregateRoot: User, event: UserAddressChanged): User = {
-    aggregateRoot.copy(address = Some(Address(event.city, event.street, event.number)))
+
+object ShoppingCartCreatedHandler extends FirstEventHandler[ShoppingCart, ShoppingCartCreated] {
+  override def handle(event: ShoppingCartCreated): ShoppingCart = {
+    ShoppingCart(event.name, Vector())
   }
 }
 
+object ItemAddedHandler extends EventHandler[ShoppingCart, ItemAdded] {
+  override def handle(aggregateRoot: ShoppingCart, event: ItemAdded): ShoppingCart = {
+    val itemId = aggregateRoot.items.foldLeft(0)((maxId, item) => math.max(maxId, item.id)) + 1
+    val item = Item(itemId, event.name)
+    aggregateRoot.copy(items = aggregateRoot.items :+ item)
+  }
+}
 
-object UserRegisteredEventHandler extends EventHandler[User, UserRegistered] {
-  override def handle(aggregateRoot: User, event: UserRegistered): User = {
-    User(event.name, None)
+object ItemRemovedHandler extends EventHandler[ShoppingCart, ItemRemoved] {
+  override def handle(aggregateRoot: ShoppingCart, event: ItemRemoved): ShoppingCart = {
+    aggregateRoot.copy(items = aggregateRoot.items.filterNot(_.id == event.id))
   }
 }

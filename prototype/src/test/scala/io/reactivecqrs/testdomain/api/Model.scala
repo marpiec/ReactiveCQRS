@@ -1,5 +1,5 @@
 package io.reactivecqrs.testdomain.api
 
-case class User(name: String, address: Option[Address])
+case class ShoppingCart(name: String, items: Vector[Item])
 
-case class Address(city: String, street: String, number: String)
+case class Item(id: Int, name: String)

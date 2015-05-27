@@ -4,23 +4,30 @@ import io.reactivecqrs.api.guid.AggregateId
 import io.reactivecqrs.core._
 
 
-class RegisterUserHandler extends CommandHandler[User, RegisterUser, CommandSuccessful] {
-  def handle(aggregateId: AggregateId, command: RegisterUser) = {
-    CommandHandlingResult(List(UserRegistered(command.name)), version => CommandSuccessful(aggregateId, version))
+class CreateShoppingCartHandler extends CommandHandler[ShoppingCart, CreateShoppingCart, CommandResult] {
+  def handle(aggregateId: AggregateId, command: CreateShoppingCart) = {
+    Success(List(ShoppingCartCreated(command.name)), version => CommandResult(aggregateId, version))
   }
 }
 
-class ChangeUserAddressHandler extends CommandHandler[User, ChangeUserAddress, CommandSuccessful] {
-  def handle(aggregateId: AggregateId, command: ChangeUserAddress) = {
-    CommandHandlingResult(List(UserAddressChanged(command.city, command.street, command.number)),
-      version => CommandSuccessful(aggregateId, version))
+class AddItemHandler extends CommandHandler[ShoppingCart, AddItem, CommandResult] {
+  def handle(aggregateId: AggregateId, command: AddItem) = {
+    Success(List(ItemAdded(command.name)),
+      version => CommandResult(aggregateId, version))
   }
 }
 
-class DeleteUserHandler extends CommandHandler[User, DeleteUser, CommandSuccessful] {
-  override def handle(aggregateId: AggregateId, command: DeleteUser) = {
-    CommandHandlingResult(List(UserDeleted()),
-      version => CommandSuccessful(aggregateId, version))
+class RemoveItemHandler extends CommandHandler[ShoppingCart, RemoveItem, CommandResult] {
+  def handle(aggregateId: AggregateId, command: RemoveItem) = {
+    Success(List(ItemRemoved(command.id)),
+      version => CommandResult(aggregateId, version))
+  }
+}
+
+class DeleteShoppingCartHandler extends CommandHandler[ShoppingCart, DeleteShoppingCart, CommandResult] {
+  override def handle(aggregateId: AggregateId, command: DeleteShoppingCart) = {
+    Success(List(ShoppingCartDeleted()),
+      version => CommandResult(aggregateId, version))
   }
 }
 

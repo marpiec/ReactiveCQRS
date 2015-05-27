@@ -1,13 +1,13 @@
 package io.reactivecqrs.testdomain.api
 
-import io.reactivecqrs.core.Event
+import io.reactivecqrs.core.{FirstEvent, Event}
 
-sealed trait UserEvent extends Event[User]
 
-case class UserRegistered(name: String) extends UserEvent
 
-case class UserAddressChanged(city: String,
-                              street: String,
-                              number: String) extends UserEvent
+case class ShoppingCartCreated(name: String) extends FirstEvent[ShoppingCart]
 
-case class UserDeleted() extends UserEvent
+case class ItemAdded(name: String) extends Event[ShoppingCart]
+
+case class ItemRemoved(id: Int) extends Event[ShoppingCart]
+
+case class ShoppingCartDeleted() extends Event[ShoppingCart]

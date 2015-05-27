@@ -6,11 +6,13 @@ import com.typesafe.config.ConfigFactory
 import io.reactivecqrs.actor.{Aggregate, AkkaAggregate, EventStore}
 import io.reactivecqrs.api.guid.{AggregateId, UserId}
 import io.reactivecqrs.core._
-import io.reactivecqrs.testdomain.UserCommandBus
+import io.reactivecqrs.testdomain.ShoppingCartCommandBus
 import io.reactivecqrs.testdomain.api._
-import io.reactivecqrs.testdomain.spec.utils.ActorAskSupport
+import io.reactivecqrs.testdomain.testUtils.CommonSpec
+
 import io.reactivecqrs.uid.UidGeneratorActor
-import org.scalatest.{FeatureSpecLike, GivenWhenThen, MustMatchers}
+
+
 
 
 
@@ -24,36 +26,34 @@ class ReactiveTestDomainSpec  extends TestKit(ActorSystem("testsystem", ConfigFa
           akka.actor.debug.receive = on
           akka.actor.debug.fsm = on
           akka.actor.debug.lifecycle = on""")))
-    with FeatureSpecLike with GivenWhenThen with ActorAskSupport with MustMatchers {
+    with CommonSpec {
 
   feature("Aggregate storing and getting with event sourcing") {
 
     scenario("Creation and modification of user aggregate") {
 
       (new EventStore).initSchema()
-
       val userId = UserId(1L)
-
       val uidGenerator = system.actorOf(Props(new UidGeneratorActor), "uidGenerator")
-
-      val usersCommandBus: ActorRef = AkkaAggregate.create(new UserCommandBus, uidGenerator)(system).commandBus
-
-      val registerUserResponse: CommandSuccessful = usersCommandBus ?? FirstCommandEnvelope(userId, RegisterUser("Marcin Pieciukiewicz"))
-
-      val registeredUserId = registerUserResponse.aggregateId
+      val shoppingCartsCommandBus: ActorRef = AkkaAggregate.create(new ShoppingCartCommandBus, uidGenerator)(system).commandBus
 
 
-      var user:Aggregate[User] = usersCommandBus ?? GetAggregateRoot(registeredUserId)
+      step("Create shopping cart")
 
-      user mustBe Aggregate(registeredUserId, AggregateVersion(1), Some(User("Marcin Pieciukiewicz", None)))
+      var result: CommandResult = shoppingCartsCommandBus ?? FirstCommandEnvelope(userId, CreateShoppingCart("Groceries"))
+      val shoppingCartId = result.aggregateId
+      var shoppingCart:Aggregate[ShoppingCart] = shoppingCartsCommandBus ?? GetAggregateRoot(shoppingCartId)
 
+      shoppingCart mustBe Aggregate(shoppingCartId, AggregateVersion(1), Some(ShoppingCart("Groceries", Vector())))
 
-      val response: CommandSuccessful = usersCommandBus ?? CommandEnvelope(userId, user.id, user.version, ChangeUserAddress("Warsaw", "Center", "1"))
+      step("Add items to cart")
 
-      response mustBe CommandSuccessful(user.id, AggregateVersion(2))
+      result = shoppingCartsCommandBus ?? CommandEnvelope(userId, shoppingCart.id, shoppingCart.version, AddItem("apples"))
 
-      user = usersCommandBus ?? GetAggregateRoot(registeredUserId)
-      user mustBe Aggregate(response.aggregateId, response.aggregateVersion, Some(User("Marcin Pieciukiewicz", Some(Address("Warsaw", "Center", "1")))))
+      result mustBe CommandResult(shoppingCart.id, AggregateVersion(2))
+
+      shoppingCart = shoppingCartsCommandBus ?? GetAggregateRoot(shoppingCartId)
+      shoppingCart mustBe Aggregate(result.aggregateId, result.aggregateVersion, Some(ShoppingCart("Groceries", Vector(Item(1, "apples")))))
 
     }
 

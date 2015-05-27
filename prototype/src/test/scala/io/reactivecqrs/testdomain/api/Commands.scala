@@ -1,19 +1,16 @@
 package io.reactivecqrs.testdomain.api
 
 import io.reactivecqrs.api.guid.AggregateId
-import io.reactivecqrs.core.{CommandSuccessful, AggregateVersion, Command, FirstCommand}
+import io.reactivecqrs.core.{CommandResult, AggregateVersion, Command, FirstCommand}
 
 
-case class RegisterUser(name: String) extends FirstCommand[User, CommandSuccessful]
+case class CreateShoppingCart(name: String) extends FirstCommand[ShoppingCart, CommandResult]
 
+case class AddItem(name: String) extends Command[ShoppingCart, CommandResult]
 
-case class ChangeUserAddress(city: String,
-                             street: String,
-                             number: String) extends Command[User, CommandSuccessful]
+case class RemoveItem(id: Int) extends Command[ShoppingCart, CommandResult]
 
+case class UndoShoppingCartChange(stepsToUndo: Int) extends Command[ShoppingCart, CommandResult]
 
-case class UndoUserChange(stepsToUndo: Int) extends Command[User, CommandSuccessful]
-
-
-case class DeleteUser() extends Command[User, CommandSuccessful]
+case class DeleteShoppingCart() extends Command[ShoppingCart, CommandResult]
 

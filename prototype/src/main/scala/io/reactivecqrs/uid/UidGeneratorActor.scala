@@ -33,6 +33,8 @@ class UidGeneratorActor extends Actor {
     Future {
       val pool: IdsPool = aggregatesUidGenerator.nextIdsPool
       respondTo ! NewAggregatesIdsPool(pool.from, pool.size)
+    } onFailure {
+      case e: Exception => throw new IllegalStateException(e)
     }
   }
 
@@ -41,6 +43,8 @@ class UidGeneratorActor extends Actor {
     Future {
       val pool: IdsPool = aggregatesUidGenerator.nextIdsPool
       respondTo ! NewCommandsIdsPool(pool.from, pool.size)
+    } onFailure {
+      case e: Exception => throw new IllegalStateException(e)
     }
   }
 }

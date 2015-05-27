@@ -1,7 +1,7 @@
 package io.reactivecqrs.actor
 
 import _root_.io.reactivecqrs.api.guid.AggregateId
-import _root_.io.reactivecqrs.core.{EventsEnvelope, Event, EventHandler, AggregateVersion}
+import _root_.io.reactivecqrs.core._
 import akka.actor.{Actor, ActorRef}
 import akka.event.LoggingReceive
 
@@ -19,7 +19,7 @@ case class Aggregate[AGGREGATE_ROOT](id: AggregateId, version: AggregateVersion,
 
 
 class AggregateRepositoryPersistentActor[AGGREGATE_ROOT](val id: AggregateId,
-                                                                   eventsHandlersSeq: Seq[EventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]])
+                                                                   eventsHandlersSeq: Seq[AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]])
                                                                   (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT]) extends Actor {
 
 
@@ -72,6 +72,8 @@ class AggregateRepositoryPersistentActor[AGGREGATE_ROOT](val id: AggregateId,
     Future {
       eventStore.persistEvent(id, eventsEnvelope.asInstanceOf[EventsEnvelope[AnyRef]])
       afterPersist(eventsEnvelope.events)
+    } onFailure {
+      case e: Exception => throw new IllegalStateException(e)
     }
   }
 
@@ -83,7 +85,10 @@ class AggregateRepositoryPersistentActor[AGGREGATE_ROOT](val id: AggregateId,
 
   private def handleEvent(event: Event[AGGREGATE_ROOT]): Unit = {
     println("Updating state by handling " + event)
-    aggregateRoot = eventHandlers(event.getClass.getName).handle(aggregateRoot, event)
+    aggregateRoot = eventHandlers(event.getClass.getName) match {
+      case handler: FirstEventHandler[_, _] => handler.asInstanceOf[FirstEventHandler[AGGREGATE_ROOT, FirstEvent[AGGREGATE_ROOT]]].handle(event.asInstanceOf[FirstEvent[AGGREGATE_ROOT]])
+      case handler: EventHandler[_, _] => handler.asInstanceOf[EventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]].handle(aggregateRoot, event)
+    }
     version = version.increment
   }
 

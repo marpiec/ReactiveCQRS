@@ -34,9 +34,18 @@ case class InternalCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo: ActorRef
 
 
 
-case class CommandSuccessful(aggregateId: AggregateId, aggregateVersion: AggregateVersion)
+case class CommandResult(aggregateId: AggregateId, aggregateVersion: AggregateVersion)
 
-case class CommandHandlingResult[AGGREGATE_ROOT, RESPONSE](events: Seq[Event[AGGREGATE_ROOT]], response: (AggregateVersion) => RESPONSE)
+
+
+abstract class CommandHandlingResult[AGGREGATE_ROOT, RESPONSE]
+
+case class Success[AGGREGATE_ROOT, RESPONSE](events: Seq[Event[AGGREGATE_ROOT]], response: (AggregateVersion) => RESPONSE)
+  extends CommandHandlingResult[AGGREGATE_ROOT, RESPONSE]
+
+case class Failure[AGGREGATE_ROOT, RESPONSE](response: RESPONSE)
+  extends CommandHandlingResult[AGGREGATE_ROOT, RESPONSE]
+
 
 abstract class CommandHandler[AGGREGATE_ROOT, COMMAND <: AbstractCommand[AGGREGATE_ROOT, RESPONSE] : ClassTag, RESPONSE] {
   val commandClassName = classTag[COMMAND].runtimeClass.getName
