@@ -1,6 +1,5 @@
-package io.reactivecqrs.testdomain.testUtils
+package io.reactivecqrs.testdomain.spec.utils
 
-import io.reactivecqrs.testdomain.spec.utils.ActorAskSupport
 import org.scalatest.{FeatureSpecLike, GivenWhenThen, MustMatchers}
 
 trait CommonSpec extends FeatureSpecLike with GivenWhenThen with ActorAskSupport with MustMatchers {

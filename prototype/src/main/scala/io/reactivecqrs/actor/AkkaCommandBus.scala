@@ -31,13 +31,13 @@ class AkkaCommandBus[AGGREGATE_ROOT](val uidGenerator: ActorRef,
 
 
   override def receive: Receive = LoggingReceive {
-    case ce: CommandEnvelope[_,_] => routeCommand(ce.asInstanceOf[CommandEnvelope[AGGREGATE_ROOT, _]])
+    case ce: FollowingCommandEnvelope[_,_] => routeCommand(ce.asInstanceOf[FollowingCommandEnvelope[AGGREGATE_ROOT, _]])
     case fce: FirstCommandEnvelope[_,_] => routeFirstCommand(fce.asInstanceOf[FirstCommandEnvelope[AGGREGATE_ROOT, _]])
     case GetAggregateRoot(id) => routeGetAggregateRoot(id)
     case m => throw new IllegalArgumentException("Cannot handle this kind of message: " + m)
   }
 
-  def routeCommand[RESPONSE](command: CommandEnvelope[AGGREGATE_ROOT, RESPONSE]): Unit = {
+  def routeCommand[RESPONSE](command: FollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE]): Unit = {
     println("Routes non first command")
     val commandId = takeNextCommandId
     val existingCommandHandlerActor = context.actorSelection("CommandHandler" + command.aggregateId.asLong)

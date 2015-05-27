@@ -26,7 +26,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
   def handleCommand[COMMAND <: Command[AGGREGATE_ROOT, RESULT], RESULT](internalCommandEnvelope: InternalCommandEnvelope[AGGREGATE_ROOT, Any]): Unit = {
     println("Handling non first command")
     internalCommandEnvelope match {
-      case InternalCommandEnvelope(respondTo, commandId, CommandEnvelope(userId, commandAggregateId, expectedVersion, command)) =>
+      case InternalCommandEnvelope(respondTo, commandId, FollowingCommandEnvelope(userId, commandAggregateId, expectedVersion, command)) =>
         val result = commandsHandlers(command.getClass.getName).asInstanceOf[CommandHandler[AGGREGATE_ROOT, COMMAND, RESULT]].  handle(aggregateId, command.asInstanceOf[COMMAND])
         
         result match {

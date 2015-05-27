@@ -8,7 +8,7 @@ import io.reactivecqrs.api.guid.{AggregateId, UserId}
 import io.reactivecqrs.core._
 import io.reactivecqrs.testdomain.ShoppingCartCommandBus
 import io.reactivecqrs.testdomain.api._
-import io.reactivecqrs.testdomain.testUtils.CommonSpec
+import io.reactivecqrs.testdomain.spec.utils.CommonSpec
 
 import io.reactivecqrs.uid.UidGeneratorActor
 
@@ -40,7 +40,7 @@ class ReactiveTestDomainSpec  extends TestKit(ActorSystem("testsystem", ConfigFa
 
       step("Create shopping cart")
 
-      var result: CommandResult = shoppingCartsCommandBus ?? FirstCommandEnvelope(userId, CreateShoppingCart("Groceries"))
+      var result: CommandResult = shoppingCartsCommandBus ?? CommandEnvelope(userId, CreateShoppingCart("Groceries"))
       val shoppingCartId = result.aggregateId
       var shoppingCart:Aggregate[ShoppingCart] = shoppingCartsCommandBus ?? GetAggregateRoot(shoppingCartId)
 

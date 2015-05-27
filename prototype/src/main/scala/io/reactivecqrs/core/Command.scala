@@ -24,12 +24,21 @@ case class InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo: Act
 
 abstract class Command[AGGREGATE_ROOT, RESPONSE] extends AbstractCommand[AGGREGATE_ROOT, RESPONSE]
 
-case class CommandEnvelope[AGGREGATE_ROOT, RESPONSE](userId: UserId,
+object CommandEnvelope {
+  
+  def apply[AGGREGATE_ROOT, RESPONSE](userId: UserId, command: FirstCommand[AGGREGATE_ROOT, RESPONSE]) = FirstCommandEnvelope(userId, command)
+  def apply[AGGREGATE_ROOT, RESPONSE](userId: UserId, aggregateId: AggregateId,
+                                      expectedVersion: AggregateVersion, command: Command[AGGREGATE_ROOT, RESPONSE]) = FollowingCommandEnvelope(userId,aggregateId, expectedVersion, command)
+  
+}
+
+
+case class FollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE](userId: UserId,
                                                      aggregateId: AggregateId,
                                                      expectedVersion: AggregateVersion,
                                                      command: Command[AGGREGATE_ROOT, RESPONSE])
 
-case class InternalCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo: ActorRef, commandId: CommandId, commandEnvelope: CommandEnvelope[AGGREGATE_ROOT, RESPONSE])
+case class InternalCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo: ActorRef, commandId: CommandId, commandEnvelope: FollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE])
 
 
 
