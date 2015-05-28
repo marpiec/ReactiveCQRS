@@ -54,7 +54,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
         result match {
           case success: Success[_,_] =>
             val resultAggregator = context.actorOf(Props(new ResultAggregator[RESULT](respondTo, success.asInstanceOf[Success[AGGREGATE_ROOT, RESULT]].response(aggregateId, AggregateVersion(success.events.size)))), "ResultAggregator")
-            val newRepositoryActor = context.actorOf(Props(new AggregateRepositoryPersistentActor[AGGREGATE_ROOT](aggregateId, eventsHandlers)), "AggregateRepository" + aggregateId.asLong)
+            val newRepositoryActor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventsHandlers)), "AggregateRepository" + aggregateId.asLong)
             println("Created persistence actor " +newRepositoryActor.path)
             newRepositoryActor ! EventsEnvelope[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, AggregateVersion.ZERO, success.asInstanceOf[Success[AGGREGATE_ROOT, RESULT]].events)
             println("...sent " + EventsEnvelope[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, AggregateVersion.ZERO, success.asInstanceOf[Success[AGGREGATE_ROOT, RESULT]].events))

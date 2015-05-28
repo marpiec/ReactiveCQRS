@@ -1,7 +1,8 @@
 package io.reactivecqrs.testdomain.spec
 
 import akka.actor.{ActorRef, Props}
-import io.reactivecqrs.actor.{Aggregate, AkkaAggregate, EventStore}
+import io.reactivecqrs.actor.{AkkaAggregate, EventStore}
+import io.reactivecqrs.api.Aggregate
 import io.reactivecqrs.api.guid.UserId
 import io.reactivecqrs.core._
 import io.reactivecqrs.testdomain.ShoppingCartCommandBus

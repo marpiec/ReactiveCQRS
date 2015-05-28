@@ -4,6 +4,7 @@ import akka.actor.{ActorRef, Actor, Props}
 import akka.event.LoggingReceive
 import akka.pattern.ask
 import akka.util.Timeout
+import io.reactivecqrs.actor.AggregateRepositoryActor.ReturnAggregateRoot
 import io.reactivecqrs.api.guid.{CommandId, AggregateId}
 import io.reactivecqrs.core._
 import io.reactivecqrs.uid.{NewCommandsIdsPool, NewAggregatesIdsPool, UidGeneratorActor}

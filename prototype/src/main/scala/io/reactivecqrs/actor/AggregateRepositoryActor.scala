@@ -1,5 +1,6 @@
 package io.reactivecqrs.actor
 
+import _root_.io.reactivecqrs.api.Aggregate
 import _root_.io.reactivecqrs.api.guid.AggregateId
 import _root_.io.reactivecqrs.core._
 import akka.actor.{Actor, ActorRef}
@@ -8,20 +9,22 @@ import akka.event.LoggingReceive
 import scala.concurrent.Future
 import scala.reflect._
 
-case object AggregateAck
-case class AggregateConcurrentModificationError(expected: AggregateVersion, was: AggregateVersion)
-
-case class ReturnAggregateRoot(respondTo: ActorRef)
-
-case class Aggregate[AGGREGATE_ROOT](id: AggregateId, version: AggregateVersion, aggregateRoot: Option[AGGREGATE_ROOT])
 
 
 
 
-class AggregateRepositoryPersistentActor[AGGREGATE_ROOT](val id: AggregateId,
+object AggregateRepositoryActor {
+
+
+  case class ReturnAggregateRoot(respondTo: ActorRef)
+}
+
+
+class AggregateRepositoryActor[AGGREGATE_ROOT](val id: AggregateId,
                                                                    eventsHandlersSeq: Seq[AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]])
                                                                   (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT]) extends Actor {
 
+  import AggregateRepositoryActor._
 
   private val eventHandlers = eventsHandlersSeq.map(eh => (eh.eventClassName, eh)).toMap
 
@@ -80,7 +83,7 @@ class AggregateRepositoryPersistentActor[AGGREGATE_ROOT](val id: AggregateId,
   private def handleEventAndRespond(respondTo: ActorRef)(events: Seq[Event[AGGREGATE_ROOT]]): Unit = {
     println("Updating state and responding")
     events.foreach(handleEvent)
-    respondTo ! AggregateAck
+    respondTo ! ResultAggregator.AggregateAck
   }
 
   private def handleEvent(event: Event[AGGREGATE_ROOT]): Unit = {
