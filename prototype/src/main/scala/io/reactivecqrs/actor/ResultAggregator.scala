@@ -20,4 +20,6 @@ class ResultAggregator[RESULT]  (private val respondTo: ActorRef,
       respondTo ! e
       self ! PoisonPill
   }
+
+  // TODO add timeout to kill itself
 }
