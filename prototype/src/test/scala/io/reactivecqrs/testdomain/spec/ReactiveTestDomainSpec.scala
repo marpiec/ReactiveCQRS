@@ -1,8 +1,6 @@
 package io.reactivecqrs.testdomain.spec
 
-import akka.actor.{ActorRef, ActorSystem, Props}
-import akka.testkit.TestKit
-import com.typesafe.config.ConfigFactory
+import akka.actor.{ActorRef, Props}
 import io.reactivecqrs.actor.{Aggregate, AkkaAggregate, EventStore}
 import io.reactivecqrs.api.guid.UserId
 import io.reactivecqrs.core._
@@ -15,17 +13,7 @@ import io.reactivecqrs.uid.UidGeneratorActor
 
 
 
-class ReactiveTestDomainSpec  extends TestKit(ActorSystem("testsystem", ConfigFactory.parseString("""
-                          akka.persistence.journal.plugin = "postgres-journal"
-                              akka.persistence.snapshot-store.plugin = "postgres-snapshot-store"
-        postgres-journal.class = "io.reactivecqrs.persistance.postgres.PostgresSyncJournal"
-        postgres-snapshot-store.class = "io.reactivecqrs.persistance.postgres.PostgresSyncSnapshotStore"
-          akka.loglevel = "DEBUG"
-          akka.actor.debug.receive = on
-          akka.actor.debug.receive = on
-          akka.actor.debug.fsm = on
-          akka.actor.debug.lifecycle = on""")))
-    with CommonSpec {
+class ReactiveTestDomainSpec extends CommonSpec {
 
   feature("Aggregate storing and getting with event sourcing") {
 
