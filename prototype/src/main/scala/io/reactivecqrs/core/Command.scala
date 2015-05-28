@@ -1,7 +1,7 @@
 package io.reactivecqrs.core
 
-import io.reactivecqrs.api.guid.{CommandId, AggregateId, UserId}
 import akka.actor.ActorRef
+import io.reactivecqrs.api.guid.{AggregateId, CommandId, UserId}
 
 import scala.reflect._
 
@@ -49,7 +49,18 @@ case class CommandResult(aggregateId: AggregateId, aggregateVersion: AggregateVe
 
 abstract class CommandHandlingResult[AGGREGATE_ROOT, RESPONSE]
 
-case class Success[AGGREGATE_ROOT, RESPONSE](events: Seq[Event[AGGREGATE_ROOT]], response: (AggregateVersion) => RESPONSE)
+object Success {
+  def apply[AGGREGATE_ROOT](event: Event[AGGREGATE_ROOT]):Success[AGGREGATE_ROOT, CommandResult] =
+    new Success(List(event), (aggregateId, version) => CommandResult(aggregateId, version))
+
+  def apply[AGGREGATE_ROOT, RESPONSE](event: Event[AGGREGATE_ROOT], response: (AggregateId, AggregateVersion) => RESPONSE) =
+    new Success(List(event), response)
+
+  def apply[AGGREGATE_ROOT](events: Seq[Event[AGGREGATE_ROOT]]):Success[AGGREGATE_ROOT, CommandResult] =
+    new Success(events, (aggregateId, version) => CommandResult(aggregateId, version))
+}
+
+case class Success[AGGREGATE_ROOT, RESPONSE](events: Seq[Event[AGGREGATE_ROOT]], response: (AggregateId, AggregateVersion) => RESPONSE)
   extends CommandHandlingResult[AGGREGATE_ROOT, RESPONSE]
 
 case class Failure[AGGREGATE_ROOT, RESPONSE](response: RESPONSE)

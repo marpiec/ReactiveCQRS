@@ -16,7 +16,7 @@ import scala.concurrent.duration._
 
 class AkkaCommandBus[AGGREGATE_ROOT](val uidGenerator: ActorRef,
                                       val commandsHandlers: Seq[CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, _],_]],
-                                     val eventsHandlers: Seq[EventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]])
+                                     val eventsHandlers: Seq[AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]])
                                     (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT]) extends Actor {
 
 
@@ -33,7 +33,7 @@ class AkkaCommandBus[AGGREGATE_ROOT](val uidGenerator: ActorRef,
   override def receive: Receive = LoggingReceive {
     case ce: FollowingCommandEnvelope[_,_] => routeCommand(ce.asInstanceOf[FollowingCommandEnvelope[AGGREGATE_ROOT, _]])
     case fce: FirstCommandEnvelope[_,_] => routeFirstCommand(fce.asInstanceOf[FirstCommandEnvelope[AGGREGATE_ROOT, _]])
-    case GetAggregateRoot(id) => routeGetAggregateRoot(id)
+    case GetAggregate(id) => routeGetAggregateRoot(id)
     case m => throw new IllegalArgumentException("Cannot handle this kind of message: " + m)
   }
 

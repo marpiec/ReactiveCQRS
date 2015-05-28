@@ -9,7 +9,7 @@ import scala.reflect.ClassTag
 
 class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
                                           commandsHandlersSeq: Seq[CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, _],_]],
-                                          eventsHandlers: Seq[EventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]])
+                                          eventsHandlers: Seq[AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]])
                                          (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT]) extends Actor {
 
   val commandsHandlers:Map[String, CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, Any],Any]] =
@@ -26,12 +26,12 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
   def handleCommand[COMMAND <: Command[AGGREGATE_ROOT, RESULT], RESULT](internalCommandEnvelope: InternalCommandEnvelope[AGGREGATE_ROOT, Any]): Unit = {
     println("Handling non first command")
     internalCommandEnvelope match {
-      case InternalCommandEnvelope(respondTo, commandId, FollowingCommandEnvelope(userId, commandAggregateId, expectedVersion, command)) =>
+      case InternalCommandEnvelope(respondTo, commandId, FollowingCommandEnvelope(userId, aggregateId, expectedVersion, command)) =>
         val result = commandsHandlers(command.getClass.getName).asInstanceOf[CommandHandler[AGGREGATE_ROOT, COMMAND, RESULT]].  handle(aggregateId, command.asInstanceOf[COMMAND])
         
         result match {
           case success: Success[_,_] =>
-            val resultAggregator = context.actorOf(Props(new ResultAggregator[RESULT](respondTo, success.asInstanceOf[Success[AGGREGATE_ROOT, RESULT]].response(expectedVersion.incrementBy(success.events.size)))), "ResultAggregator")
+            val resultAggregator = context.actorOf(Props(new ResultAggregator[RESULT](respondTo, success.asInstanceOf[Success[AGGREGATE_ROOT, RESULT]].response(aggregateId, expectedVersion.incrementBy(success.events.size)))), "ResultAggregator")
             val repositoryActor = context.actorSelection("AggregateRepository" + aggregateId.asLong)
             repositoryActor ! EventsEnvelope[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, expectedVersion, success.asInstanceOf[Success[AGGREGATE_ROOT, RESULT]].events)
             println("...sent")
@@ -53,7 +53,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
 
         result match {
           case success: Success[_,_] =>
-            val resultAggregator = context.actorOf(Props(new ResultAggregator[RESULT](respondTo, success.asInstanceOf[Success[AGGREGATE_ROOT, RESULT]].response(AggregateVersion(success.events.size)))), "ResultAggregator")
+            val resultAggregator = context.actorOf(Props(new ResultAggregator[RESULT](respondTo, success.asInstanceOf[Success[AGGREGATE_ROOT, RESULT]].response(aggregateId, AggregateVersion(success.events.size)))), "ResultAggregator")
             val newRepositoryActor = context.actorOf(Props(new AggregateRepositoryPersistentActor[AGGREGATE_ROOT](aggregateId, eventsHandlers)), "AggregateRepository" + aggregateId.asLong)
             println("Created persistence actor " +newRepositoryActor.path)
             newRepositoryActor ! EventsEnvelope[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, AggregateVersion.ZERO, success.asInstanceOf[Success[AGGREGATE_ROOT, RESULT]].events)

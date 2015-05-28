@@ -11,10 +11,9 @@ class ShoppingCartCommandBus extends AggregateCommandBus[ShoppingCart] {
     new AddItemHandler(),
     new RemoveItemHandler(),
     new DeleteShoppingCartHandler())
-    .asInstanceOf[Seq[CommandHandler[ShoppingCart,AbstractCommand[ShoppingCart, _],_]]]
 
   override val eventsHandlers = Seq(
     ShoppingCartCreatedHandler,
     ItemAddedHandler,
-    ItemRemovedHandler).asInstanceOf[Seq[EventHandler[ShoppingCart, Event[ShoppingCart]]]]
+    ItemRemovedHandler)
 }

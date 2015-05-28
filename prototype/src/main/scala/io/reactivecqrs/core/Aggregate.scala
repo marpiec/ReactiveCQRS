@@ -19,10 +19,10 @@ case class AggregateVersion(asInt: Int) {
 }
 
 
-case class GetAggregateRoot(id: AggregateId)
+case class GetAggregate(id: AggregateId)
 
 
 abstract class AggregateCommandBus[AGGREGATE_ROOT] {
-  val commandsHandlers: Seq[CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, _],_]]
-  val eventsHandlers: Seq[EventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]]
+  val commandsHandlers: Seq[CommandHandler[AGGREGATE_ROOT,_,_]]
+  val eventsHandlers: Seq[AbstractEventHandler[AGGREGATE_ROOT, _]]
 }
