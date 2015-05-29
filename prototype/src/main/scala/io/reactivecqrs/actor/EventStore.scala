@@ -1,8 +1,9 @@
 package io.reactivecqrs.actor
 
 import io.mpjsons.MPJsons
+import io.reactivecqrs.actor.AggregateRepositoryActor.EventsEnvelope
 import io.reactivecqrs.api.guid.AggregateId
-import io.reactivecqrs.core.{Event, EventsEnvelope}
+import io.reactivecqrs.core.Event
 import scalikejdbc._
 
 class EventStore {

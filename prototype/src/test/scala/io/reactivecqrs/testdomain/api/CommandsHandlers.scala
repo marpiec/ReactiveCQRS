@@ -6,7 +6,7 @@ import io.reactivecqrs.core._
 
 class CreateShoppingCartHandler extends CommandHandler[ShoppingCart, CreateShoppingCart, CommandResult] {
   def handle(aggregateId: AggregateId, command: CreateShoppingCart) = {
-    Success(List(ShoppingCartCreated(command.name)))
+    Success(ShoppingCartCreated(command.name))
   }
 }
 

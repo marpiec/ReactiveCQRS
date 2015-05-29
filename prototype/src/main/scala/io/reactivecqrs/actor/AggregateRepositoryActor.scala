@@ -1,7 +1,7 @@
 package io.reactivecqrs.actor
 
 import _root_.io.reactivecqrs.api.Aggregate
-import _root_.io.reactivecqrs.api.guid.AggregateId
+import _root_.io.reactivecqrs.api.guid.{UserId, CommandId, AggregateId}
 import _root_.io.reactivecqrs.core._
 import akka.actor.{Actor, ActorRef}
 import akka.event.LoggingReceive
@@ -14,9 +14,14 @@ import scala.reflect._
 
 
 object AggregateRepositoryActor {
-
-
   case class ReturnAggregateRoot(respondTo: ActorRef)
+
+  case class EventsEnvelope[AGGREGATE_ROOT](respondTo: ActorRef,
+                                            aggregateId: AggregateId,
+                                            commandId: CommandId,
+                                            userId: UserId,
+                                            expectedVersion: AggregateVersion,
+                                            events: Seq[Event[AGGREGATE_ROOT]])
 }
 
 
