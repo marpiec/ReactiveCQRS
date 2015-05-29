@@ -1,4 +1,4 @@
-Common.settings("prototype")
+Common.settings("testdomain")
 
 import Common.dependencies._
 
