@@ -3,7 +3,6 @@ package io.reactivecqrs.testdomain.commandhandler
 import io.reactivecqrs.api.command.{RepositoryFollowingEventHandler, FollowingCommandHandler}
 import io.reactivecqrs.api.guid.{CommandId, UserId}
 import io.reactivecqrs.utils.Success
-import io.reactivecqrs.testdomain.api._
 
 class UndoUserChangeHandler extends FollowingCommandHandler[User, UndoUserChange, EmptyResult] {
 

@@ -1,4 +1,4 @@
-package io.reactivecqrs.testdomain.api
+package io.reactivecqrs.testdomain.shoppingcart
 
 import io.reactivecqrs.api.{FirstEvent, Event}
 

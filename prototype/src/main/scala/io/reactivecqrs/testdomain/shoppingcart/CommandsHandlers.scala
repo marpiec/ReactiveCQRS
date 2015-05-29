@@ -1,8 +1,7 @@
-package io.reactivecqrs.testdomain.api
+package io.reactivecqrs.testdomain.shoppingcart
 
-import io.reactivecqrs.api.{Success, CommandResult, CommandHandler}
 import io.reactivecqrs.api.guid.AggregateId
-import io.reactivecqrs.core._
+import io.reactivecqrs.api.{CommandHandler, CommandResult, Success}
 
 
 class CreateShoppingCartHandler extends CommandHandler[ShoppingCart, CreateShoppingCart, CommandResult] {

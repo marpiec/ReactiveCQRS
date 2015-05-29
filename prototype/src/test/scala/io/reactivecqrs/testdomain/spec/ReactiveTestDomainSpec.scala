@@ -2,15 +2,12 @@ package io.reactivecqrs.testdomain.spec
 
 import akka.actor.{ActorRef, Props}
 import io.reactivecqrs.api.guid.UserId
-import io.reactivecqrs.api.{Aggregate, AggregateVersion, CommandResult, GetAggregate}
+import io.reactivecqrs.api._
 import io.reactivecqrs.core.AggregateCommandBusActor.CommandEnvelope
 import io.reactivecqrs.core.uid.UidGeneratorActor
 import io.reactivecqrs.core.{AggregateCommandBusActor, EventStore}
-import io.reactivecqrs.testdomain.ShoppingCartCommandBus
-import io.reactivecqrs.testdomain.api._
+import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testdomain.spec.utils.CommonSpec
-
-
 
 
 

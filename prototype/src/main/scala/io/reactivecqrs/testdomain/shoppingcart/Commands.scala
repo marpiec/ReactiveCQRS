@@ -1,7 +1,6 @@
-package io.reactivecqrs.testdomain.api
+package io.reactivecqrs.testdomain.shoppingcart
 
-import io.reactivecqrs.api.{AggregateVersion, CommandResult, FirstCommand, Command}
-import io.reactivecqrs.api.guid.AggregateId
+import io.reactivecqrs.api._
 
 
 case class CreateShoppingCart(name: String) extends FirstCommand[ShoppingCart, CommandResult]

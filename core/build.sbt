@@ -2,4 +2,4 @@ Common.settings("core")
 
 import Common.dependencies._
 
-libraryDependencies ++= akka
+libraryDependencies ++= akka ++ logback ++ scalikejdbc ++ postgresql

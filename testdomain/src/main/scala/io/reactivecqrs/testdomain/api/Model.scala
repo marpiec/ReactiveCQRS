@@ -1,4 +1,4 @@
-package io.reactivecqrs.testdomain.api
+package io.reactivecqrs.testdomain.shoppingcart
 
 case class User(name: String, address: Option[Address])
 

@@ -1,4 +1,4 @@
-package io.reactivecqrs.testdomain.api
+package io.reactivecqrs.testdomain.shoppingcart
 
 case class ShoppingCart(name: String, items: Vector[Item])
 

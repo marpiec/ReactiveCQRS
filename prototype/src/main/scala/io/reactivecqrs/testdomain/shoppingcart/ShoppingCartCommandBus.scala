@@ -1,8 +1,6 @@
-package io.reactivecqrs.testdomain
+package io.reactivecqrs.testdomain.shoppingcart
 
 import io.reactivecqrs.api.AggregateCommandBus
-import io.reactivecqrs.core._
-import io.reactivecqrs.testdomain.api._
 
 
 class ShoppingCartCommandBus extends AggregateCommandBus[ShoppingCart] {
