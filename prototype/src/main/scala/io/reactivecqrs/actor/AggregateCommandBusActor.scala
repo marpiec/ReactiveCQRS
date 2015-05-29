@@ -4,7 +4,6 @@ import akka.actor.{Actor, ActorRef, Props}
 import akka.event.LoggingReceive
 import akka.pattern.ask
 import akka.util.Timeout
-import io.reactivecqrs.actor.AggregateCommandBusActor.{FirstCommandEnvelope, FollowingCommandEnvelope}
 import io.reactivecqrs.actor.AggregateRepositoryActor.ReturnAggregateRoot
 import io.reactivecqrs.actor.CommandHandlerActor.{InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
 import io.reactivecqrs.api.guid.{AggregateId, CommandId, UserId}
@@ -15,6 +14,7 @@ import scala.collection.mutable
 import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
 import scala.reflect.ClassTag
+import AggregateCommandBusActor._
 
 
 object AggregateCommandBusActor {
@@ -37,18 +37,18 @@ object AggregateCommandBusActor {
                                                                 expectedVersion: AggregateVersion,
                                                                 command: Command[AGGREGATE_ROOT, RESPONSE])
 
+  private case class AggregateActors(commandHandler: ActorRef, repository: ActorRef)
 
 
 }
 
-case class AggregateActors(commandHandler: ActorRef, repository: ActorRef)
 
 class AggregateCommandBusActor[AGGREGATE_ROOT](val uidGenerator: ActorRef,
                                       val commandsHandlersSeq: Seq[CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, _],_]],
                                      val eventsHandlersSeq: Seq[AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]])
                                                         (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor {
 
-  
+
   private val commandsHandlers:Map[String, CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, Any],Any]] =
     commandsHandlersSeq.map(ch => (ch.commandClassName, ch.asInstanceOf[CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, Any],Any]])).toMap
   
@@ -62,6 +62,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](val uidGenerator: ActorRef,
   
   private var nextCommandId = 0L
   private var remainingCommandsIds = 0L
+
 
 
   private val aggregatesActors = mutable.HashMap[Long, AggregateActors]()
