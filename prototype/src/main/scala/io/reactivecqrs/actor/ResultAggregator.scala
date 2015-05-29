@@ -3,6 +3,8 @@ package io.reactivecqrs.actor
 import akka.actor.{Actor, ActorRef, PoisonPill}
 import akka.event.LoggingReceive
 
+import scala.concurrent.duration._
+
 object ResultAggregator {
   case object AggregateAck
 }
@@ -21,5 +23,10 @@ class ResultAggregator[RESULT]  (private val respondTo: ActorRef,
       self ! PoisonPill
   }
 
-  // TODO add timeout to kill itself
+  // stop waiting after some time
+  import context.dispatcher
+  context.system.scheduler.scheduleOnce(5 seconds) {
+    self ! PoisonPill
+  }
+
 }

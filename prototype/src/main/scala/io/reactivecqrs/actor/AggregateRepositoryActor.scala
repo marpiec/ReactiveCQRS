@@ -79,10 +79,9 @@ class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](val id: AggregateId,
 
   private def persist(eventsEnvelope: EventsEnvelope[AGGREGATE_ROOT])(afterPersist: Seq[Event[AGGREGATE_ROOT]] => Unit): Unit = {
     import context.dispatcher
-    val selfActorRef = self
     Future {
       eventStore.persistEvents(id, eventsEnvelope.asInstanceOf[EventsEnvelope[AnyRef]])
-      selfActorRef ! EventsPersisted(eventsEnvelope.events)
+      self ! EventsPersisted(eventsEnvelope.events)
       afterPersist(eventsEnvelope.events)
     } onFailure {
       case e: Exception => throw new IllegalStateException(e)
