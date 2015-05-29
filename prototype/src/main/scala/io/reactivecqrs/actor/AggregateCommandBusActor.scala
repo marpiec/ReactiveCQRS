@@ -1,19 +1,19 @@
 package io.reactivecqrs.actor
 
-import akka.actor.{ActorRef, Actor, Props}
+import akka.actor.{Actor, ActorRef, Props}
 import akka.event.LoggingReceive
 import akka.pattern.ask
 import akka.util.Timeout
 import io.reactivecqrs.actor.AggregateCommandBusActor.{FirstCommandEnvelope, FollowingCommandEnvelope}
 import io.reactivecqrs.actor.AggregateRepositoryActor.ReturnAggregateRoot
-import io.reactivecqrs.actor.CommandHandlerActor.{InternalFirstCommandEnvelope, InternalCommandEnvelope}
-import io.reactivecqrs.api.guid.{UserId, CommandId, AggregateId}
+import io.reactivecqrs.actor.CommandHandlerActor.{InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
+import io.reactivecqrs.api.guid.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core._
-import io.reactivecqrs.uid.{NewCommandsIdsPool, NewAggregatesIdsPool, UidGeneratorActor}
+import io.reactivecqrs.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
 
+import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
 import scala.reflect.ClassTag
-import scala.concurrent.duration._
 
 
 object AggregateCommandBusActor {
@@ -41,51 +41,63 @@ object AggregateCommandBusActor {
 }
 
 class AggregateCommandBusActor[AGGREGATE_ROOT](val uidGenerator: ActorRef,
-                                      val commandsHandlers: Seq[CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, _],_]],
-                                     val eventsHandlers: Seq[AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]])
-                                    (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT]) extends Actor {
+                                      val commandsHandlersSeq: Seq[CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, _],_]],
+                                     val eventsHandlersSeq: Seq[AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]])
+                                                        (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor {
 
-
-
-
-  var nextAggregateId = 0L
-  var remainingAggregateIds = 0L
   
-  var nextCommandId = 0L
-  var remainingCommandsIds = 0L
+  private val commandsHandlers:Map[String, CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, Any],Any]] =
+    commandsHandlersSeq.map(ch => (ch.commandClassName, ch.asInstanceOf[CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, Any],Any]])).toMap
+  
+  private val eventHandlers = eventsHandlersSeq.map(eh => (eh.eventClassName, eh)).toMap
+
+  private val aggregateTypeSimpleName = aggregateRootClassTag.runtimeClass.getSimpleName
+
+
+  private var nextAggregateId = 0L
+  private var remainingAggregateIds = 0L
+  
+  private var nextCommandId = 0L
+  private var remainingCommandsIds = 0L
 
 
 
   override def receive: Receive = LoggingReceive {
-    case ce: FollowingCommandEnvelope[_,_] => routeCommand(ce.asInstanceOf[FollowingCommandEnvelope[AGGREGATE_ROOT, _]])
     case fce: FirstCommandEnvelope[_,_] => routeFirstCommand(fce.asInstanceOf[FirstCommandEnvelope[AGGREGATE_ROOT, _]])
+    case ce: FollowingCommandEnvelope[_,_] => routeCommand(ce.asInstanceOf[FollowingCommandEnvelope[AGGREGATE_ROOT, _]])
     case GetAggregate(id) => routeGetAggregateRoot(id)
     case m => throw new IllegalArgumentException("Cannot handle this kind of message: " + m + " class: " + m.getClass)
   }
 
-  def routeCommand[RESPONSE](command: FollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE]): Unit = {
-    println("Routes non first command")
-    val commandId = takeNextCommandId
-    val existingCommandHandlerActor = context.actorSelection("CommandHandler" + command.aggregateId.asLong)
-    val respondTo = sender()
-    existingCommandHandlerActor ! InternalCommandEnvelope(respondTo, commandId, command)
-
-  }
-
-  def routeFirstCommand[RESPONSE](firstCommand: FirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE]): Unit = {
+  def routeFirstCommand[RESPONSE](firstCommandEnvelope: FirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE]): Unit = {
     println("Routes first command")
     val commandId = takeNextCommandId
     val newAggregateId = takeNextAggregateId // Actor construction might be delayed so we need to store current aggregate id
     val respondTo = sender() // with sender this shouldn't be the case, but just to be sure
-    val newCommandHandlerActor = context.actorOf(Props(new CommandHandlerActor[AGGREGATE_ROOT](newAggregateId, commandsHandlers, eventsHandlers)), "CommandHandler" + newAggregateId.asLong)
-    newCommandHandlerActor ! InternalFirstCommandEnvelope(respondTo, commandId, firstCommand)
+    val newRepositoryActor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](newAggregateId, eventHandlers)), aggregateTypeSimpleName+"_AggregateRepository_" + newAggregateId.asLong)
+    val newCommandHandlerActor = context.actorOf(Props(new CommandHandlerActor[AGGREGATE_ROOT](newAggregateId, newRepositoryActor, commandsHandlers)), aggregateTypeSimpleName+"_CommandHandler_" + newAggregateId.asLong)
+
+    newCommandHandlerActor ! InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo, commandId, firstCommandEnvelope)
   }
+
+  def routeCommand[RESPONSE](commandEnvelope: FollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE]): Unit = {
+    println("Routes non first command")
+    val commandId = takeNextCommandId
+    val respondTo = sender()
+
+    val repositoryActor = context.actorSelection(aggregateTypeSimpleName+"_AggregateRepository_" + commandEnvelope.aggregateId.asLong) // create if not exists?
+    val newCommandHandlerActor = context.actorSelection(aggregateTypeSimpleName+"_CommandHandler_" + commandEnvelope.aggregateId.asLong)
+
+    newCommandHandlerActor ! InternalFollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo, commandId, commandEnvelope)
+  }
+
+
 
   def routeGetAggregateRoot(id: AggregateId): Unit = {
     println(s"Routes routeGetAggregateRoot $id")
     val respondTo = sender()
-    val aggregate = context.actorSelection("CommandHandler" + id.asLong+"/" + "AggregateRepository"+id.asLong)
-    aggregate ! ReturnAggregateRoot(respondTo)
+    val aggregateRepository = context.actorSelection(aggregateTypeSimpleName+"_AggregateRepository_"+id.asLong)
+    aggregateRepository ! ReturnAggregateRoot(respondTo)
   }
 
   private def takeNextAggregateId: AggregateId = {

@@ -25,13 +25,11 @@ object AggregateRepositoryActor {
 }
 
 
-class AggregateRepositoryActor[AGGREGATE_ROOT](val id: AggregateId,
-                                                                   eventsHandlersSeq: Seq[AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]])
-                                                                  (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT]) extends Actor {
+class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](val id: AggregateId,
+                                               eventHandlers: Map[String, AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]]) extends Actor {
 
   import AggregateRepositoryActor._
 
-  private val eventHandlers = eventsHandlersSeq.map(eh => (eh.eventClassName, eh)).toMap
 
   private var version: AggregateVersion = AggregateVersion.ZERO
   private var aggregateRoot: AGGREGATE_ROOT = _
@@ -60,7 +58,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT](val id: AggregateId,
 
 
   private def receiveEvent(eventsEnvelope: EventsEnvelope[AGGREGATE_ROOT]): Unit = {
-    println("Received command " + eventsEnvelope.events.head +" for version " + eventsEnvelope.expectedVersion +" when version was " + version)
+    println("Received event " + eventsEnvelope.events.head +" for version " + eventsEnvelope.expectedVersion +" when version was " + version)
     if (eventsEnvelope.expectedVersion == version) {
       persist(eventsEnvelope)(handleEventAndRespond(eventsEnvelope.respondTo))
     } else {
