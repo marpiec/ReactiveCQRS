@@ -37,12 +37,22 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
       step("Add items to cart")
 
-      result = shoppingCartCommandBus ?? CommandEnvelope(userId, shoppingCart.id, shoppingCart.version, AddItem("apples"))
-
+      result = shoppingCartCommandBus ?? CommandEnvelope(userId, shoppingCart.id, AggregateVersion(1), AddItem("apples"))
       result mustBe CommandResult(shoppingCart.id, AggregateVersion(2))
 
+      result = shoppingCartCommandBus ?? CommandEnvelope(userId, shoppingCart.id, AggregateVersion(2), AddItem("oranges"))
+      result mustBe CommandResult(shoppingCart.id, AggregateVersion(3))
+
       shoppingCart = shoppingCartCommandBus ?? GetAggregate(shoppingCartId)
-      shoppingCart mustBe Aggregate(result.aggregateId, result.aggregateVersion, Some(ShoppingCart("Groceries", Vector(Item(1, "apples")))))
+      shoppingCart mustBe Aggregate(result.aggregateId, result.aggregateVersion, Some(ShoppingCart("Groceries", Vector(Item(1, "apples"), Item(2, "oranges")))))
+
+      step("Remove items from cart")
+
+      result = shoppingCartCommandBus ?? CommandEnvelope(userId, shoppingCart.id, AggregateVersion(3), RemoveItem(1))
+      result mustBe CommandResult(shoppingCart.id, AggregateVersion(4))
+
+      shoppingCart = shoppingCartCommandBus ?? GetAggregate(shoppingCartId)
+      shoppingCart mustBe Aggregate(result.aggregateId, result.aggregateVersion, Some(ShoppingCart("Groceries", Vector(Item(2, "oranges")))))
 
     }
 
