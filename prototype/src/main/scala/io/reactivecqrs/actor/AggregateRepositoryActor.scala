@@ -22,6 +22,9 @@ object AggregateRepositoryActor {
                                             userId: UserId,
                                             expectedVersion: AggregateVersion,
                                             events: Seq[Event[AGGREGATE_ROOT]])
+
+
+  case class EventsPersisted[AGGREGATE_ROOT](events: Seq[Event[AGGREGATE_ROOT]])
 }
 
 
@@ -48,6 +51,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](val id: AggregateId,
   }
 
   override def receive = LoggingReceive {
+    case ep: EventsPersisted[_] => ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.foreach(handleEvent)
     case ee: EventsEnvelope[_] =>
       assureRestoredState()
       receiveEvent(ee.asInstanceOf[EventsEnvelope[AGGREGATE_ROOT]])
@@ -60,7 +64,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](val id: AggregateId,
   private def receiveEvent(eventsEnvelope: EventsEnvelope[AGGREGATE_ROOT]): Unit = {
     println("Received event " + eventsEnvelope.events.head +" for version " + eventsEnvelope.expectedVersion +" when version was " + version)
     if (eventsEnvelope.expectedVersion == version) {
-      persist(eventsEnvelope)(handleEventAndRespond(eventsEnvelope.respondTo))
+      persist(eventsEnvelope)(respond(eventsEnvelope.respondTo))
     } else {
       eventsEnvelope.respondTo ! AggregateConcurrentModificationError(eventsEnvelope.expectedVersion, version)
     }
@@ -75,17 +79,18 @@ class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](val id: AggregateId,
 
   private def persist(eventsEnvelope: EventsEnvelope[AGGREGATE_ROOT])(afterPersist: Seq[Event[AGGREGATE_ROOT]] => Unit): Unit = {
     import context.dispatcher
+    val selfActorRef = self
     Future {
       eventStore.persistEvent(id, eventsEnvelope.asInstanceOf[EventsEnvelope[AnyRef]])
+      selfActorRef ! EventsPersisted(eventsEnvelope.events)
       afterPersist(eventsEnvelope.events)
     } onFailure {
       case e: Exception => throw new IllegalStateException(e)
     }
   }
 
-  private def handleEventAndRespond(respondTo: ActorRef)(events: Seq[Event[AGGREGATE_ROOT]]): Unit = {
+  private def respond(respondTo: ActorRef)(events: Seq[Event[AGGREGATE_ROOT]]): Unit = {
     println("Updating state and responding")
-    events.foreach(handleEvent)
     respondTo ! ResultAggregator.AggregateAck
   }
 
