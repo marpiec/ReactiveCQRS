@@ -1,6 +1,6 @@
 package io.reactivecqrs.core
 
-import io.reactivecqrs.api.guid.AggregateId
+import io.reactivecqrs.api.id.AggregateId
 
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer

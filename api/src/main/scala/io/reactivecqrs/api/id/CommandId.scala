@@ -1,4 +1,4 @@
-package io.reactivecqrs.api.guid
+package io.reactivecqrs.api.id
 
 /**
  * Globally unique id that identifies command triggered by a user.

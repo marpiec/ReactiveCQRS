@@ -1,7 +1,7 @@
 package io.reactivecqrs.core
 
 import _root_.io.reactivecqrs.api._
-import _root_.io.reactivecqrs.api.guid.{AggregateId, UserId, CommandId}
+import _root_.io.reactivecqrs.api.id.{AggregateId, UserId, CommandId}
 import _root_.io.reactivecqrs.core._
 import akka.actor.{Actor, ActorRef}
 import akka.event.LoggingReceive

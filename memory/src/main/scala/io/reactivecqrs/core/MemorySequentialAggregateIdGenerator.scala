@@ -1,7 +1,7 @@
 package io.reactivecqrs.core
 
 import java.util.concurrent.atomic.AtomicLong
-import io.reactivecqrs.api.guid.AggregateId
+import io.reactivecqrs.api.id.AggregateId
 
 class MemorySequentialAggregateIdGenerator extends AggregateIdGenerator {
 

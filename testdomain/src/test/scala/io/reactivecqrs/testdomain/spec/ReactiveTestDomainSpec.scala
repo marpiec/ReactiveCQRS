@@ -1,7 +1,7 @@
 package io.reactivecqrs.testdomain.spec
 
 import akka.actor.{ActorRef, Props}
-import io.reactivecqrs.api.guid.UserId
+import io.reactivecqrs.api.id.UserId
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.AggregateCommandBusActor.CommandEnvelope
 import io.reactivecqrs.core.uid.UidGeneratorActor

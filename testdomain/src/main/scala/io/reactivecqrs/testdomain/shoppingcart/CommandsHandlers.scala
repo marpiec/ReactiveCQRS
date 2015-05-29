@@ -1,6 +1,6 @@
 package io.reactivecqrs.testdomain.shoppingcart
 
-import io.reactivecqrs.api.guid.AggregateId
+import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.api.{CommandHandler, CommandResult, Success}
 
 

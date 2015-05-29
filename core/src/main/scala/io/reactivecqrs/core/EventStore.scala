@@ -2,7 +2,7 @@ package io.reactivecqrs.core
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.Event
-import io.reactivecqrs.api.guid.AggregateId
+import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.AggregateRepositoryActor.EventsEnvelope
 import scalikejdbc._
 

@@ -6,7 +6,7 @@ import io.reactivecqrs.core.AggregateCommandBusActor.{FirstCommandEnvelope, Foll
 import io.reactivecqrs.core.AggregateRepositoryActor.{EventsEnvelope, ReturnAggregateRoot}
 import io.reactivecqrs.core.CommandHandlerActor._
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.guid.{AggregateId, CommandId}
+import io.reactivecqrs.api.id.{AggregateId, CommandId}
 import io.reactivecqrs.core._
 
 object CommandHandlerActor {

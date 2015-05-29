@@ -1,7 +1,7 @@
 package io.reactivecqrs.core
 
 import io.reactivecqrs.api.command.Command
-import io.reactivecqrs.api.guid.{UserId, CommandId}
+import io.reactivecqrs.api.id.{UserId, CommandId}
 
 class MemoryCommandLogActorApi extends CommandLogActorApi {
 

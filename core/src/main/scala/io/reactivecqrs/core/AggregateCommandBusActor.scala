@@ -5,7 +5,7 @@ import akka.event.LoggingReceive
 import akka.pattern.ask
 import akka.util.Timeout
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.guid.{AggregateId, UserId, CommandId}
+import io.reactivecqrs.api.id.{AggregateId, UserId, CommandId}
 import io.reactivecqrs.core.AggregateCommandBusActor._
 import io.reactivecqrs.core.AggregateRepositoryActor.ReturnAggregateRoot
 import io.reactivecqrs.core.CommandHandlerActor.{InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}

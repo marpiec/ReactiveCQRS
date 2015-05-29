@@ -1,6 +1,6 @@
 package io.reactivecqrs.api
 
-import _root_.io.reactivecqrs.api.guid.AggregateId
+import _root_.io.reactivecqrs.api.id.AggregateId
 
 import scala.reflect._
 

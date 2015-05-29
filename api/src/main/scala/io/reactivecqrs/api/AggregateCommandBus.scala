@@ -1,6 +1,6 @@
 package io.reactivecqrs.api
 
-import io.reactivecqrs.api.guid.AggregateId
+import io.reactivecqrs.api.id.AggregateId
 
 
 case class GetAggregate(id: AggregateId)
