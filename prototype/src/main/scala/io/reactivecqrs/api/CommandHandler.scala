@@ -1,4 +1,4 @@
-package io.reactivecqrs.core
+package io.reactivecqrs.api
 
 import _root_.io.reactivecqrs.api.guid.AggregateId
 

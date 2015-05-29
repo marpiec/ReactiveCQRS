@@ -1,5 +1,5 @@
-package io.reactivecqrs.actor
+package io.reactivecqrs.core
 
-import io.reactivecqrs.core.AggregateVersion
+import io.reactivecqrs.api.AggregateVersion
 
 case class AggregateConcurrentModificationError(expected: AggregateVersion, was: AggregateVersion)

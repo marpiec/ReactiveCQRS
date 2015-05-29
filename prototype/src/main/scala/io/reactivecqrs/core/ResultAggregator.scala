@@ -1,4 +1,4 @@
-package io.reactivecqrs.actor
+package io.reactivecqrs.core
 
 import akka.actor.{Actor, ActorRef, PoisonPill}
 import akka.event.LoggingReceive

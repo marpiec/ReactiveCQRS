@@ -1,11 +1,11 @@
-package io.reactivecqrs.actor
+package io.reactivecqrs.core
 
 import akka.actor.{Actor, ActorRef, Props}
 import akka.event.LoggingReceive
-import io.reactivecqrs.actor.AggregateCommandBusActor.{FirstCommandEnvelope, FollowingCommandEnvelope}
-import io.reactivecqrs.actor.AggregateRepositoryActor.{EventsEnvelope, ReturnAggregateRoot}
-import io.reactivecqrs.actor.CommandHandlerActor._
-import io.reactivecqrs.api.Aggregate
+import io.reactivecqrs.core.AggregateCommandBusActor.{FirstCommandEnvelope, FollowingCommandEnvelope}
+import io.reactivecqrs.core.AggregateRepositoryActor.{EventsEnvelope, ReturnAggregateRoot}
+import io.reactivecqrs.core.CommandHandlerActor._
+import io.reactivecqrs.api._
 import io.reactivecqrs.api.guid.{AggregateId, CommandId}
 import io.reactivecqrs.core._
 

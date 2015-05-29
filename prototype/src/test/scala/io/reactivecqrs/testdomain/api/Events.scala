@@ -1,6 +1,6 @@
 package io.reactivecqrs.testdomain.api
 
-import io.reactivecqrs.core.{FirstEvent, Event}
+import io.reactivecqrs.api.{FirstEvent, Event}
 
 
 

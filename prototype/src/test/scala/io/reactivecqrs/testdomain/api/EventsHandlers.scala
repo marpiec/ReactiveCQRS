@@ -1,6 +1,6 @@
 package io.reactivecqrs.testdomain.api
 
-import io.reactivecqrs.core.{FirstEventHandler, EventHandler}
+import io.reactivecqrs.api.{FirstEventHandler, EventHandler}
 
 
 

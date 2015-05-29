@@ -1,5 +1,4 @@
-package io.reactivecqrs.core
-
+package io.reactivecqrs.api
 
 sealed trait AbstractCommand[AGGREGATE_ROOT, RESPONSE]
 

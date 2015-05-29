@@ -1,6 +1,6 @@
-package io.reactivecqrs.actor
+package io.reactivecqrs.core
 
-import _root_.io.reactivecqrs.api.Aggregate
+import _root_.io.reactivecqrs.api._
 import _root_.io.reactivecqrs.api.guid.{UserId, CommandId, AggregateId}
 import _root_.io.reactivecqrs.core._
 import akka.actor.{Actor, ActorRef}

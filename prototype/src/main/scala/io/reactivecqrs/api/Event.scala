@@ -1,4 +1,4 @@
-package io.reactivecqrs.core
+package io.reactivecqrs.api
 
 import scala.reflect.runtime.universe._
 

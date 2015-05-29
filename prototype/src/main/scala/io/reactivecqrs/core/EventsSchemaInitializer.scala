@@ -1,4 +1,4 @@
-package io.reactivecqrs.actor
+package io.reactivecqrs.core
 
 import scalikejdbc._
 

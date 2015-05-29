@@ -1,5 +1,6 @@
 package io.reactivecqrs.testdomain
 
+import io.reactivecqrs.api.AggregateCommandBus
 import io.reactivecqrs.core._
 import io.reactivecqrs.testdomain.api._
 

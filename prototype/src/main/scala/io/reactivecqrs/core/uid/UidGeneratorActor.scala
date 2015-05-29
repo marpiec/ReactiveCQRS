@@ -1,4 +1,4 @@
-package io.reactivecqrs.uid
+package io.reactivecqrs.core.uid
 
 import akka.actor.{ActorRef, Actor}
 import akka.actor.Actor.Receive

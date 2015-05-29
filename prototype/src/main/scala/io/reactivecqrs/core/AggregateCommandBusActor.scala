@@ -1,15 +1,15 @@
-package io.reactivecqrs.actor
+package io.reactivecqrs.core
 
 import akka.actor.{Actor, ActorRef, Props}
 import akka.event.LoggingReceive
 import akka.pattern.ask
 import akka.util.Timeout
-import io.reactivecqrs.actor.AggregateCommandBusActor._
-import io.reactivecqrs.actor.AggregateRepositoryActor.ReturnAggregateRoot
-import io.reactivecqrs.actor.CommandHandlerActor.{InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
+import io.reactivecqrs.api._
 import io.reactivecqrs.api.guid.{AggregateId, CommandId, UserId}
-import io.reactivecqrs.core._
-import io.reactivecqrs.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
+import io.reactivecqrs.core.AggregateCommandBusActor._
+import io.reactivecqrs.core.AggregateRepositoryActor.ReturnAggregateRoot
+import io.reactivecqrs.core.CommandHandlerActor.{InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
+import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
 
 import scala.collection.mutable
 import scala.concurrent.duration._
