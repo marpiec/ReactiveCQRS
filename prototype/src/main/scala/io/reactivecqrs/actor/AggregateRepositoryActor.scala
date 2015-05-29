@@ -81,7 +81,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](val id: AggregateId,
     import context.dispatcher
     val selfActorRef = self
     Future {
-      eventStore.persistEvent(id, eventsEnvelope.asInstanceOf[EventsEnvelope[AnyRef]])
+      eventStore.persistEvents(id, eventsEnvelope.asInstanceOf[EventsEnvelope[AnyRef]])
       selfActorRef ! EventsPersisted(eventsEnvelope.events)
       afterPersist(eventsEnvelope.events)
     } onFailure {

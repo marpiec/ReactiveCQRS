@@ -23,20 +23,20 @@ class EventStore {
     (new EventsSchemaInitializer).initSchema()
   }
 
-  def persistEvent(aggregateId: AggregateId, eventEnvelope: EventsEnvelope[AnyRef]): Unit = {
-    println("Persisting event " + aggregateId+ " " +eventEnvelope)
+  def persistEvents(aggregateId: AggregateId, eventsEnvelope: EventsEnvelope[AnyRef]): Unit = {
+    println("Persisting event " + aggregateId+ " " +eventsEnvelope)
     var versionsIncreased = 0
     DB.autoCommit { implicit session =>
-      eventEnvelope.events.foreach(event => {
+      eventsEnvelope.events.foreach(event => {
 
-        val eventSerialized = mpjsons.serialize(eventEnvelope.events.head, event.getClass.getName)
+        val eventSerialized = mpjsons.serialize(eventsEnvelope.events.head, event.getClass.getName)
 
 
           sql"""SELECT add_event(?, ?, ?, ? ,? , ?, ? ,?)""".bind(
-            eventEnvelope.commandId.asLong,
-            eventEnvelope.userId.asLong,
+            eventsEnvelope.commandId.asLong,
+            eventsEnvelope.userId.asLong,
             aggregateId.asLong,
-            eventEnvelope.expectedVersion.asInt + versionsIncreased,
+            eventsEnvelope.expectedVersion.asInt + versionsIncreased,
             event.aggregateRootType.typeSymbol.fullName,
             event.getClass.getName,
             0,
