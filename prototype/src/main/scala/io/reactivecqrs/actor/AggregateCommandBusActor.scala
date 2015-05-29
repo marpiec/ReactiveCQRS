@@ -4,6 +4,7 @@ import akka.actor.{Actor, ActorRef, Props}
 import akka.event.LoggingReceive
 import akka.pattern.ask
 import akka.util.Timeout
+import io.reactivecqrs.actor.AggregateCommandBusActor._
 import io.reactivecqrs.actor.AggregateRepositoryActor.ReturnAggregateRoot
 import io.reactivecqrs.actor.CommandHandlerActor.{InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
 import io.reactivecqrs.api.guid.{AggregateId, CommandId, UserId}
@@ -14,7 +15,6 @@ import scala.collection.mutable
 import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
 import scala.reflect.ClassTag
-import AggregateCommandBusActor._
 
 
 object AggregateCommandBusActor {
@@ -38,6 +38,15 @@ object AggregateCommandBusActor {
                                                                 command: Command[AGGREGATE_ROOT, RESPONSE])
 
   private case class AggregateActors(commandHandler: ActorRef, repository: ActorRef)
+
+
+  def apply[AGGREGATE_ROOT : ClassTag](aggregate: AggregateCommandBus[AGGREGATE_ROOT], uidGenerator: ActorRef): Props = {
+    Props(new AggregateCommandBusActor[AGGREGATE_ROOT](
+      uidGenerator,
+      aggregate.commandsHandlers.asInstanceOf[Seq[CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, _],_]]],
+      aggregate.eventsHandlers.asInstanceOf[Seq[AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]]]))
+
+  }
 
 
 }

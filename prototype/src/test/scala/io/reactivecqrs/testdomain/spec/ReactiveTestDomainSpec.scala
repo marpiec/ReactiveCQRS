@@ -2,7 +2,7 @@ package io.reactivecqrs.testdomain.spec
 
 import akka.actor.{ActorRef, Props}
 import io.reactivecqrs.actor.AggregateCommandBusActor.CommandEnvelope
-import io.reactivecqrs.actor.{AkkaAggregate, EventStore}
+import io.reactivecqrs.actor.{AggregateCommandBusActor, EventStore}
 import io.reactivecqrs.api.Aggregate
 import io.reactivecqrs.api.guid.UserId
 import io.reactivecqrs.core._
@@ -24,7 +24,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
       (new EventStore).initSchema()
       val userId = UserId(1L)
       val uidGenerator = system.actorOf(Props(new UidGeneratorActor), "uidGenerator")
-      val shoppingCartCommandBus: ActorRef = AkkaAggregate.create(new ShoppingCartCommandBus, uidGenerator)(system).commandBus
+      val shoppingCartCommandBus: ActorRef = system.actorOf(AggregateCommandBusActor(new ShoppingCartCommandBus, uidGenerator), "ShoppingCartCommandBus")
 
 
       step("Create shopping cart")
