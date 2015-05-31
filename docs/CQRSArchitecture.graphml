@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:y="http://www.yworks.com/xml/graphml" xmlns:yed="http://www.yworks.com/xml/yed/3" xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://www.yworks.com/xml/schema/graphml/1.1/ygraphml.xsd">
-  <!--Created by yEd 3.14-->
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:java="http://www.yworks.com/xml/yfiles-common/1.0/java" xmlns:sys="http://www.yworks.com/xml/yfiles-common/markup/primitives/2.0" xmlns:x="http://www.yworks.com/xml/yfiles-common/markup/2.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:y="http://www.yworks.com/xml/graphml" xmlns:yed="http://www.yworks.com/xml/yed/3" xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://www.yworks.com/xml/schema/graphml/1.1/ygraphml.xsd">
+  <!--Created by yEd 3.14.1-->
   <key attr.name="Description" attr.type="string" for="graph" id="d0"/>
   <key for="port" id="d1" yfiles.type="portgraphics"/>
   <key for="port" id="d2" yfiles.type="portgeometry"/>
@@ -1972,25 +1972,7 @@ Aggregate Id, version<y:LabelModel>
         </y:SVGNode>
       </data>
     </node>
-    <node id="n70">
-      <data key="d4"/>
-      <data key="d6">
-        <y:ShapeNode>
-          <y:Geometry height="40.0" width="243.40725265392757" x="2867.1222746168205" y="1530.9672160773769"/>
-          <y:Fill color="#D9C4EF" transparent="false"/>
-          <y:BorderStyle color="#000000" type="line" width="1.0"/>
-          <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="13" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="19.1328125" modelName="custom" textColor="#000000" visible="true" width="201.6533203125" x="20.876966170713786" y="10.43359375">Has command handlers within<y:LabelModel>
-              <y:SmartNodeLabelModel distance="4.0"/>
-            </y:LabelModel>
-            <y:ModelParameter>
-              <y:SmartNodeLabelModelParameter labelRatioX="0.0" labelRatioY="0.0" nodeRatioX="0.0" nodeRatioY="0.0" offsetX="0.0" offsetY="0.0" upX="0.0" upY="-1.0"/>
-            </y:ModelParameter>
-          </y:NodeLabel>
-          <y:Shape type="ellipse"/>
-        </y:ShapeNode>
-      </data>
-    </node>
-    <node id="n71" yfiles.foldertype="group">
+    <node id="n70" yfiles.foldertype="group">
       <data key="d4"/>
       <data key="d6">
         <y:ProxyAutoBoundsNode>
@@ -2018,8 +2000,8 @@ Aggregate Id, version<y:LabelModel>
           </y:Realizers>
         </y:ProxyAutoBoundsNode>
       </data>
-      <graph edgedefault="directed" id="n71:">
-        <node id="n71::n0">
+      <graph edgedefault="directed" id="n70:">
+        <node id="n70::n0">
           <data key="d6">
             <y:ShapeNode>
               <y:Geometry height="30.0" width="282.5" x="3255.5258501238286" y="1402.4443286039163"/>
@@ -2037,7 +2019,7 @@ Aggregate Id, version<y:LabelModel>
             </y:ShapeNode>
           </data>
         </node>
-        <node id="n71::n1">
+        <node id="n70::n1">
           <data key="d6">
             <y:ShapeNode>
               <y:Geometry height="30.0" width="282.5" x="3255.5258501238286" y="1363.8542664941597"/>
@@ -2056,31 +2038,13 @@ Aggregate Id, version<y:LabelModel>
         </node>
       </graph>
     </node>
-    <node id="n72">
-      <data key="d4"/>
-      <data key="d6">
-        <y:ShapeNode>
-          <y:Geometry height="40.0" width="330.4276857749469" x="2867.1222746168205" y="1570.9672160773769"/>
-          <y:Fill color="#CCFFCC" transparent="false"/>
-          <y:BorderStyle color="#000000" type="line" width="1.0"/>
-          <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="13" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="19.1328125" modelName="custom" textColor="#000000" visible="true" width="305.30419921875" x="12.56174327809822" y="10.43359375">Stateless, so maybe per agggregate type only<y:LabelModel>
-              <y:SmartNodeLabelModel distance="4.0"/>
-            </y:LabelModel>
-            <y:ModelParameter>
-              <y:SmartNodeLabelModelParameter labelRatioX="0.0" labelRatioY="0.0" nodeRatioX="0.0" nodeRatioY="0.0" offsetX="0.0" offsetY="0.0" upX="0.0" upY="-1.0"/>
-            </y:ModelParameter>
-          </y:NodeLabel>
-          <y:Shape type="ellipse"/>
-        </y:ShapeNode>
-      </data>
-    </node>
-    <node id="n73" yfiles.foldertype="group">
+    <node id="n71" yfiles.foldertype="group">
       <data key="d4"/>
       <data key="d6">
         <y:ProxyAutoBoundsNode>
           <y:Realizers active="0">
             <y:GroupNode>
-              <y:Geometry height="225.12052140392842" width="396.69162093617297" x="2945.9153899742173" y="1633.0892217875337"/>
+              <y:Geometry height="225.12052140392842" width="396.69162093617297" x="3173.73352562124" y="1647.3408674946436"/>
               <y:Fill color="#F5F5F5" transparent="false"/>
               <y:BorderStyle color="#000000" type="dashed" width="1.0"/>
               <y:NodeLabel alignment="right" autoSizePolicy="node_width" backgroundColor="#EBEBEB" borderDistance="0.0" fontFamily="Dialog" fontSize="15" fontStyle="plain" hasLineColor="false" height="21.4609375" modelName="internal" modelPosition="t" textColor="#000000" visible="true" width="396.69162093617297" x="0.0" y="0.0">Command Handler Actor (per aggregate)</y:NodeLabel>
@@ -2102,11 +2066,11 @@ Aggregate Id, version<y:LabelModel>
           </y:Realizers>
         </y:ProxyAutoBoundsNode>
       </data>
-      <graph edgedefault="directed" id="n73:">
-        <node id="n73::n0">
+      <graph edgedefault="directed" id="n71:">
+        <node id="n71::n0">
           <data key="d6">
             <y:ShapeNode>
-              <y:Geometry height="30.0" width="282.5" x="3003.0112004423036" y="1674.8984166521834"/>
+              <y:Geometry height="30.0" width="282.5" x="3230.8293360893263" y="1689.1500623592933"/>
               <y:Fill color="#89CCDC" transparent="false"/>
               <y:BorderStyle color="#000000" type="line" width="1.0"/>
               <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="116.27734375" x="83.111328125" y="6.015625">Handles command<y:LabelModel>
@@ -2120,10 +2084,10 @@ Aggregate Id, version<y:LabelModel>
             </y:ShapeNode>
           </data>
         </node>
-        <node id="n73::n1">
+        <node id="n71::n1">
           <data key="d6">
             <y:ShapeNode>
-              <y:Geometry height="30.0" width="282.5" x="3003.0112004423036" y="1711.156930452608"/>
+              <y:Geometry height="30.0" width="282.5" x="3230.8293360893263" y="1725.408576159718"/>
               <y:Fill color="#89CCDC" transparent="false"/>
               <y:BorderStyle color="#000000" type="line" width="1.0"/>
               <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="163.345703125" x="59.5771484375" y="6.015625">Creates Result Aggregator<y:LabelModel>
@@ -2137,10 +2101,10 @@ Aggregate Id, version<y:LabelModel>
             </y:ShapeNode>
           </data>
         </node>
-        <node id="n73::n2">
+        <node id="n71::n2">
           <data key="d6">
             <y:ShapeNode>
-              <y:Geometry height="30.0" width="282.5" x="3003.0112004423036" y="1787.8177882020775"/>
+              <y:Geometry height="30.0" width="282.5" x="3230.8293360893263" y="1802.0694339091874"/>
               <y:Fill color="#89CCDC" transparent="false"/>
               <y:BorderStyle color="#000000" type="line" width="1.0"/>
               <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="162.00390625" x="60.248046875" y="6.015625">Sends events to repostory<y:LabelModel>
@@ -2154,10 +2118,10 @@ Aggregate Id, version<y:LabelModel>
             </y:ShapeNode>
           </data>
         </node>
-        <node id="n73::n3">
+        <node id="n71::n3">
           <data key="d6">
             <y:ShapeNode>
-              <y:Geometry height="30.0" width="282.5" x="3003.0112004423036" y="1747.4154442530328"/>
+              <y:Geometry height="30.0" width="282.5" x="3230.8293360893263" y="1761.6670899601427"/>
               <y:Fill color="#89CCDC" transparent="false"/>
               <y:BorderStyle color="#000000" type="line" width="1.0"/>
               <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="196.685546875" x="42.9072265625" y="6.015625">Ensures existance of Repository<y:LabelModel>
@@ -2173,13 +2137,13 @@ Aggregate Id, version<y:LabelModel>
         </node>
       </graph>
     </node>
-    <node id="n74" yfiles.foldertype="group">
+    <node id="n72" yfiles.foldertype="group">
       <data key="d4"/>
       <data key="d6">
         <y:ProxyAutoBoundsNode>
           <y:Realizers active="0">
             <y:GroupNode>
-              <y:Geometry height="129.79738598726055" width="368.58517016356245" x="2779.743802825514" y="2044.6481051353494"/>
+              <y:Geometry height="129.79738598726055" width="368.58517016356245" x="2556.8761512605274" y="1831.917700624957"/>
               <y:Fill color="#F5F5F5" transparent="false"/>
               <y:BorderStyle color="#000000" type="dashed" width="1.0"/>
               <y:NodeLabel alignment="right" autoSizePolicy="node_width" backgroundColor="#EBEBEB" borderDistance="0.0" fontFamily="Dialog" fontSize="15" fontStyle="plain" hasLineColor="false" height="21.4609375" modelName="internal" modelPosition="t" textColor="#000000" visible="true" width="368.58517016356245" x="0.0" y="0.0">Result Aggregator</y:NodeLabel>
@@ -2201,11 +2165,11 @@ Aggregate Id, version<y:LabelModel>
           </y:Realizers>
         </y:ProxyAutoBoundsNode>
       </data>
-      <graph edgedefault="directed" id="n74:">
-        <node id="n74::n0">
+      <graph edgedefault="directed" id="n72:">
+        <node id="n72::n0">
           <data key="d6">
             <y:ShapeNode>
-              <y:Geometry height="30.0" width="312.8164076433118" x="2794.7438028255146" y="2081.5973289145422"/>
+              <y:Geometry height="30.0" width="312.8164076433118" x="2571.876151260528" y="1868.8669244041498"/>
               <y:Fill color="#89CCDC" transparent="false"/>
               <y:BorderStyle color="#000000" type="line" width="1.0"/>
               <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="302.681640625" x="5.067383509155661" y="6.015625">Aggregates response and repository confirmation<y:LabelModel>
@@ -2219,10 +2183,10 @@ Aggregate Id, version<y:LabelModel>
             </y:ShapeNode>
           </data>
         </node>
-        <node id="n74::n1">
+        <node id="n72::n1">
           <data key="d6">
             <y:ShapeNode>
-              <y:Geometry height="30.0" width="312.81640764331246" x="2794.743802825514" y="2128.293582842355"/>
+              <y:Geometry height="30.0" width="312.81640764331246" x="2571.8761512605274" y="1915.5631783319627"/>
               <y:Fill color="#89CCDC" transparent="false"/>
               <y:BorderStyle color="#000000" type="line" width="1.0"/>
               <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="146.083984375" x="83.36621163415612" y="6.015625">Sends response to User<y:LabelModel>
@@ -2238,16 +2202,16 @@ Aggregate Id, version<y:LabelModel>
         </node>
       </graph>
     </node>
-    <node id="n75" yfiles.foldertype="group">
+    <node id="n73" yfiles.foldertype="group">
       <data key="d4"/>
       <data key="d6">
         <y:ProxyAutoBoundsNode>
           <y:Realizers active="0">
             <y:GroupNode>
-              <y:Geometry height="300.0907464171978" width="354.43970075305333" x="3462.9135251669563" y="1675.7813168844068"/>
+              <y:Geometry height="300.09074641719803" width="354.43970075305333" x="3174.7438731282073" y="2044.9084895128815"/>
               <y:Fill color="#F5F5F5" transparent="false"/>
               <y:BorderStyle color="#000000" type="dashed" width="1.0"/>
-              <y:NodeLabel alignment="right" autoSizePolicy="node_width" backgroundColor="#EBEBEB" borderDistance="0.0" fontFamily="Dialog" fontSize="15" fontStyle="plain" hasLineColor="false" height="21.4609375" modelName="internal" modelPosition="t" textColor="#000000" visible="true" width="354.43970075305333" x="0.0" y="0.0">Aggregate Repository (per aggregate)</y:NodeLabel>
+              <y:NodeLabel alignment="right" autoSizePolicy="node_width" backgroundColor="#EBEBEB" borderDistance="0.0" fontFamily="Dialog" fontSize="15" fontStyle="plain" hasLineColor="false" height="21.4609375" modelName="internal" modelPosition="t" textColor="#000000" visible="true" width="354.43970075305333" x="0.0" y="2.2737367544323206E-13">Aggregate Repository (per aggregate)</y:NodeLabel>
               <y:Shape type="roundrectangle"/>
               <y:State closed="false" closedHeight="50.0" closedWidth="50.0" innerGraphDisplayEnabled="false"/>
               <y:Insets bottom="15" bottomF="15.0" left="15" leftF="15.0" right="15" rightF="15.0" top="15" topF="15.0"/>
@@ -2266,11 +2230,11 @@ Aggregate Id, version<y:LabelModel>
           </y:Realizers>
         </y:ProxyAutoBoundsNode>
       </data>
-      <graph edgedefault="directed" id="n75:">
-        <node id="n75::n0">
+      <graph edgedefault="directed" id="n73:">
+        <node id="n73::n0">
           <data key="d6">
             <y:ShapeNode>
-              <y:Geometry height="30.0" width="282.5" x="3519.695022098354" y="1873.0075147612647"/>
+              <y:Geometry height="30.0" width="282.5" x="3231.525370059605" y="2242.134687389739"/>
               <y:Fill color="#89CCDC" transparent="false"/>
               <y:BorderStyle color="#000000" type="line" width="1.0"/>
               <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="159.736328125" x="61.3818359375" y="6.015625">Stores event in repository<y:LabelModel>
@@ -2284,10 +2248,10 @@ Aggregate Id, version<y:LabelModel>
             </y:ShapeNode>
           </data>
         </node>
-        <node id="n75::n1">
+        <node id="n73::n1">
           <data key="d6">
             <y:ShapeNode>
-              <y:Geometry height="30.0" width="282.5" x="3519.695022098354" y="1918.4469638576456"/>
+              <y:Geometry height="30.0" width="282.5" x="3231.525370059605" y="2287.5741364861206"/>
               <y:Fill color="#89CCDC" transparent="false"/>
               <y:BorderStyle color="#000000" type="line" width="1.0"/>
               <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="249.173828125" x="16.6630859375" y="6.015625">Sends confirmation to Result Aggregator<y:LabelModel>
@@ -2301,10 +2265,10 @@ Aggregate Id, version<y:LabelModel>
             </y:ShapeNode>
           </data>
         </node>
-        <node id="n75::n2">
+        <node id="n73::n2">
           <data key="d6">
             <y:ShapeNode>
-              <y:Geometry height="30.0" width="243.40725265392757" x="3538.545361801112" y="1730.6494824894978"/>
+              <y:Geometry height="30.0" width="243.40725265392757" x="3250.375709762363" y="2099.7766551179725"/>
               <y:Fill color="#89CCDC" transparent="false"/>
               <y:BorderStyle color="#000000" type="line" width="1.0"/>
               <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="150.947265625" x="46.229993514463786" y="6.015625">Restores AggregateRoot<y:LabelModel>
@@ -2318,13 +2282,13 @@ Aggregate Id, version<y:LabelModel>
             </y:ShapeNode>
           </data>
         </node>
-        <node id="n75::n3">
+        <node id="n73::n3">
           <data key="d6">
             <y:ShapeNode>
-              <y:Geometry height="30.0" width="233.30666666666684" x="3538.545361801112" y="1773.382730897141"/>
+              <y:Geometry height="30.0" width="233.30666666666684" x="3250.375709762363" y="2142.5099035256158"/>
               <y:Fill color="#89CCDC" transparent="false"/>
               <y:BorderStyle color="#000000" type="line" width="1.0"/>
-              <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="107.107421875" x="63.09962239583365" y="6.015625000000227">Sends Aggregate<y:LabelModel>
+              <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="107.107421875" x="63.099622395833194" y="6.015625">Sends Aggregate<y:LabelModel>
                   <y:SmartNodeLabelModel distance="4.0"/>
                 </y:LabelModel>
                 <y:ModelParameter>
@@ -2337,10 +2301,10 @@ Aggregate Id, version<y:LabelModel>
         </node>
       </graph>
     </node>
-    <node id="n76">
+    <node id="n74">
       <data key="d6">
         <y:SVGNode>
-          <y:Geometry height="138.75883229573537" width="101.75" x="4007.8995260145543" y="1650.5130200251665"/>
+          <y:Geometry height="138.75883229573537" width="101.75" x="3211.7856745063095" y="2481.284585593444"/>
           <y:Fill color="#CCCCFF" transparent="false"/>
           <y:BorderStyle color="#000000" type="line" width="1.0"/>
           <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="72.806640625" x="14.4716796875" y="142.75883229573537">Event store<y:LabelModel>
@@ -2357,16 +2321,16 @@ Aggregate Id, version<y:LabelModel>
         </y:SVGNode>
       </data>
     </node>
-    <node id="n77" yfiles.foldertype="group">
+    <node id="n75" yfiles.foldertype="group">
       <data key="d4"/>
       <data key="d6">
         <y:ProxyAutoBoundsNode>
           <y:Realizers active="0">
             <y:GroupNode>
-              <y:Geometry height="129.79738598726055" width="265.6803397027602" x="3973.8364874322397" y="1933.3929881900199"/>
+              <y:Geometry height="129.79738598726055" width="265.6803397027602" x="3828.3477903006533" y="2177.3971750857645"/>
               <y:Fill color="#F5F5F5" transparent="false"/>
               <y:BorderStyle color="#000000" type="dashed" width="1.0"/>
-              <y:NodeLabel alignment="right" autoSizePolicy="node_width" backgroundColor="#EBEBEB" borderDistance="0.0" fontFamily="Dialog" fontSize="15" fontStyle="plain" hasLineColor="false" height="21.4609375" modelName="internal" modelPosition="t" textColor="#000000" visible="true" width="265.6803397027602" x="0.0" y="0.0">Event Broadcaster</y:NodeLabel>
+              <y:NodeLabel alignment="right" autoSizePolicy="node_width" backgroundColor="#EBEBEB" borderDistance="0.0" fontFamily="Dialog" fontSize="15" fontStyle="plain" hasLineColor="false" height="21.4609375" modelName="internal" modelPosition="tr" textColor="#000000" visible="true" width="265.6803397027602" x="0.0" y="0.0">EventBus</y:NodeLabel>
               <y:Shape type="roundrectangle"/>
               <y:State closed="false" closedHeight="50.0" closedWidth="50.0" innerGraphDisplayEnabled="false"/>
               <y:Insets bottom="15" bottomF="15.0" left="15" leftF="15.0" right="15" rightF="15.0" top="15" topF="15.0"/>
@@ -2385,15 +2349,15 @@ Aggregate Id, version<y:LabelModel>
           </y:Realizers>
         </y:ProxyAutoBoundsNode>
       </data>
-      <graph edgedefault="directed" id="n77:"/>
+      <graph edgedefault="directed" id="n75:"/>
     </node>
-    <node id="n78" yfiles.foldertype="group">
+    <node id="n76" yfiles.foldertype="group">
       <data key="d4"/>
       <data key="d6">
         <y:ProxyAutoBoundsNode>
           <y:Realizers active="0">
             <y:GroupNode>
-              <y:Geometry height="65.07872611464973" width="200.93299363057304" x="4396.000088647229" y="1850.5163852176206"/>
+              <y:Geometry height="65.07872611464973" width="200.93299363057304" x="4192.2975619135195" y="2064.6979290033228"/>
               <y:Fill color="#F5F5F5" transparent="false"/>
               <y:BorderStyle color="#000000" type="dashed" width="1.0"/>
               <y:NodeLabel alignment="right" autoSizePolicy="node_width" backgroundColor="#EBEBEB" borderDistance="0.0" fontFamily="Dialog" fontSize="15" fontStyle="plain" hasLineColor="false" height="21.4609375" modelName="internal" modelPosition="t" textColor="#000000" visible="true" width="200.93299363057304" x="0.0" y="0.0">Projection</y:NodeLabel>
@@ -2415,15 +2379,15 @@ Aggregate Id, version<y:LabelModel>
           </y:Realizers>
         </y:ProxyAutoBoundsNode>
       </data>
-      <graph edgedefault="directed" id="n78:"/>
+      <graph edgedefault="directed" id="n76:"/>
     </node>
-    <node id="n79" yfiles.foldertype="group">
+    <node id="n77" yfiles.foldertype="group">
       <data key="d4"/>
       <data key="d6">
         <y:ProxyAutoBoundsNode>
           <y:Realizers active="0">
             <y:GroupNode>
-              <y:Geometry height="65.07872611464973" width="200.93299363057304" x="4396.000088647229" y="1945.5951113322703"/>
+              <y:Geometry height="65.07872611464973" width="200.93299363057304" x="4253.935734433414" y="2292.392877855455"/>
               <y:Fill color="#F5F5F5" transparent="false"/>
               <y:BorderStyle color="#000000" type="dashed" width="1.0"/>
               <y:NodeLabel alignment="right" autoSizePolicy="node_width" backgroundColor="#EBEBEB" borderDistance="0.0" fontFamily="Dialog" fontSize="15" fontStyle="plain" hasLineColor="false" height="21.4609375" modelName="internal" modelPosition="t" textColor="#000000" visible="true" width="200.93299363057304" x="0.0" y="0.0">Saga</y:NodeLabel>
@@ -2445,9 +2409,9 @@ Aggregate Id, version<y:LabelModel>
           </y:Realizers>
         </y:ProxyAutoBoundsNode>
       </data>
-      <graph edgedefault="directed" id="n79:"/>
+      <graph edgedefault="directed" id="n77:"/>
     </node>
-    <node id="n80">
+    <node id="n78">
       <data key="d4"/>
       <data key="d6">
         <y:ShapeNode>
@@ -2455,6 +2419,224 @@ Aggregate Id, version<y:LabelModel>
           <y:Fill color="#D9C4EF" transparent="false"/>
           <y:BorderStyle color="#000000" type="line" width="1.0"/>
           <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="13" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="19.1328125" modelName="custom" textColor="#000000" visible="true" width="173.79345703125" x="18.2856614467255" y="10.43359375">Has event handlers within<y:LabelModel>
+              <y:SmartNodeLabelModel distance="4.0"/>
+            </y:LabelModel>
+            <y:ModelParameter>
+              <y:SmartNodeLabelModelParameter labelRatioX="0.0" labelRatioY="0.0" nodeRatioX="0.0" nodeRatioY="0.0" offsetX="0.0" offsetY="0.0" upX="0.0" upY="-1.0"/>
+            </y:ModelParameter>
+          </y:NodeLabel>
+          <y:Shape type="ellipse"/>
+        </y:ShapeNode>
+      </data>
+    </node>
+    <node id="n79">
+      <data key="d5"/>
+      <data key="d6">
+        <y:ShapeNode>
+          <y:Geometry height="30.0" width="171.5870774117575" x="2999.4328560868753" y="1265.7388684822029"/>
+          <y:Fill color="#FFCC00" transparent="false"/>
+          <y:BorderStyle color="#000000" type="line" width="1.0"/>
+          <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="136.287109375" x="17.649984018378746" y="6.015625">1. CommandEnvelope<y:LabelModel>
+              <y:SmartNodeLabelModel distance="4.0"/>
+            </y:LabelModel>
+            <y:ModelParameter>
+              <y:SmartNodeLabelModelParameter labelRatioX="0.0" labelRatioY="0.0" nodeRatioX="0.0" nodeRatioY="0.0" offsetX="0.0" offsetY="0.0" upX="0.0" upY="-1.0"/>
+            </y:ModelParameter>
+          </y:NodeLabel>
+          <y:Shape type="ellipse"/>
+        </y:ShapeNode>
+      </data>
+    </node>
+    <node id="n80">
+      <data key="d5"/>
+      <data key="d6">
+        <y:ShapeNode>
+          <y:Geometry height="40.0" width="210.36477992470054" x="3291.593460161478" y="1564.239078061253"/>
+          <y:Fill color="#FFCC00" transparent="false"/>
+          <y:BorderStyle color="#000000" type="line" width="1.0"/>
+          <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="182.74609375" x="13.809343087350499" y="11.015625">2, InternalCommandEnvelope<y:LabelModel>
+              <y:SmartNodeLabelModel distance="4.0"/>
+            </y:LabelModel>
+            <y:ModelParameter>
+              <y:SmartNodeLabelModelParameter labelRatioX="0.0" labelRatioY="0.0" nodeRatioX="0.0" nodeRatioY="0.0" offsetX="0.0" offsetY="0.0" upX="0.0" upY="-1.0"/>
+            </y:ModelParameter>
+          </y:NodeLabel>
+          <y:Shape type="ellipse"/>
+        </y:ShapeNode>
+      </data>
+    </node>
+    <node id="n81">
+      <data key="d5"/>
+      <data key="d6">
+        <y:ShapeNode>
+          <y:Geometry height="30.0" width="101.75" x="3313.205617407225" y="1915.5631783319627"/>
+          <y:Fill color="#FFCC00" transparent="false"/>
+          <y:BorderStyle color="#000000" type="line" width="1.0"/>
+          <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="82.08203125" x="9.833984375" y="6.015625">4. Aggregate<y:LabelModel>
+              <y:SmartNodeLabelModel distance="4.0"/>
+            </y:LabelModel>
+            <y:ModelParameter>
+              <y:SmartNodeLabelModelParameter labelRatioX="0.0" labelRatioY="0.0" nodeRatioX="0.0" nodeRatioY="0.0" offsetX="0.0" offsetY="0.0" upX="0.0" upY="-1.0"/>
+            </y:ModelParameter>
+          </y:NodeLabel>
+          <y:Shape type="ellipse"/>
+        </y:ShapeNode>
+      </data>
+    </node>
+    <node id="n82">
+      <data key="d5"/>
+      <data key="d6">
+        <y:ShapeNode>
+          <y:Geometry height="30.0" width="150.82745768677705" x="3132.378159720448" y="1942.578461825922"/>
+          <y:Fill color="#FFCC00" transparent="false"/>
+          <y:BorderStyle color="#000000" type="line" width="1.0"/>
+          <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="131.1953125" x="9.816072593388526" y="6.015625">3. GetAggregateRoot<y:LabelModel>
+              <y:SmartNodeLabelModel distance="4.0"/>
+            </y:LabelModel>
+            <y:ModelParameter>
+              <y:SmartNodeLabelModelParameter labelRatioX="0.0" labelRatioY="0.0" nodeRatioX="0.0" nodeRatioY="0.0" offsetX="0.0" offsetY="0.0" upX="0.0" upY="-1.0"/>
+            </y:ModelParameter>
+          </y:NodeLabel>
+          <y:Shape type="ellipse"/>
+        </y:ShapeNode>
+      </data>
+    </node>
+    <node id="n83">
+      <data key="d5"/>
+      <data key="d6">
+        <y:ShapeNode>
+          <y:Geometry height="30.0" width="129.30594461538476" x="3461.884271840329" y="1943.6849392057268"/>
+          <y:Fill color="#FFCC00" transparent="false"/>
+          <y:BorderStyle color="#000000" type="line" width="1.0"/>
+          <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="99.98828125" x="14.65883168269238" y="6.015625">5. PersistEvents<y:LabelModel>
+              <y:SmartNodeLabelModel distance="4.0"/>
+            </y:LabelModel>
+            <y:ModelParameter>
+              <y:SmartNodeLabelModelParameter labelRatioX="0.0" labelRatioY="0.0" nodeRatioX="0.0" nodeRatioY="0.0" offsetX="0.0" offsetY="0.0" upX="0.0" upY="-1.0"/>
+            </y:ModelParameter>
+          </y:NodeLabel>
+          <y:Shape type="ellipse"/>
+        </y:ShapeNode>
+      </data>
+    </node>
+    <node id="n84">
+      <data key="d5"/>
+      <data key="d6">
+        <y:ShapeNode>
+          <y:Geometry height="30.0" width="150.82745768677705" x="2908.448158875037" y="2096.7666327309225"/>
+          <y:Fill color="#FFCC00" transparent="false"/>
+          <y:BorderStyle color="#000000" type="line" width="1.0"/>
+          <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="133.287109375" x="8.770174155888526" y="6.015625">6. AggregateModified<y:LabelModel>
+              <y:SmartNodeLabelModel distance="4.0"/>
+            </y:LabelModel>
+            <y:ModelParameter>
+              <y:SmartNodeLabelModelParameter labelRatioX="0.0" labelRatioY="0.0" nodeRatioX="0.0" nodeRatioY="0.0" offsetX="0.0" offsetY="0.0" upX="0.0" upY="-1.0"/>
+            </y:ModelParameter>
+          </y:NodeLabel>
+          <y:Shape type="ellipse"/>
+        </y:ShapeNode>
+      </data>
+    </node>
+    <node id="n85">
+      <data key="d5"/>
+      <data key="d6">
+        <y:ShapeNode>
+          <y:Geometry height="30.0" width="271.98689952254654" x="2787.2887170392673" y="2156.7666327309225"/>
+          <y:Fill color="#FFCC00" transparent="false"/>
+          <y:BorderStyle color="#000000" type="line" width="1.0"/>
+          <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="236.775390625" x="17.60575444877304" y="6.015625">AggregateConcurrentModificationError<y:LabelModel>
+              <y:SmartNodeLabelModel distance="4.0"/>
+            </y:LabelModel>
+            <y:ModelParameter>
+              <y:SmartNodeLabelModelParameter labelRatioX="0.0" labelRatioY="0.0" nodeRatioX="0.0" nodeRatioY="0.0" offsetX="0.0" offsetY="0.0" upX="0.0" upY="-1.0"/>
+            </y:ModelParameter>
+          </y:NodeLabel>
+          <y:Shape type="ellipse"/>
+        </y:ShapeNode>
+      </data>
+    </node>
+    <node id="n86">
+      <data key="d5"/>
+      <data key="d6">
+        <y:ShapeNode>
+          <y:Geometry height="40.0" width="203.50004116710852" x="2681.1925177367316" y="1549.2303783054936"/>
+          <y:Fill color="#FFCC00" transparent="false"/>
+          <y:BorderStyle color="#000000" type="line" width="1.0"/>
+          <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="142.92578125" x="30.287129958554488" y="11.015625">7. Command Response<y:LabelModel>
+              <y:SmartNodeLabelModel distance="4.0"/>
+            </y:LabelModel>
+            <y:ModelParameter>
+              <y:SmartNodeLabelModelParameter labelRatioX="0.0" labelRatioY="0.0" nodeRatioX="0.0" nodeRatioY="0.0" offsetX="0.0" offsetY="0.0" upX="0.0" upY="-1.0"/>
+            </y:ModelParameter>
+          </y:NodeLabel>
+          <y:Shape type="ellipse"/>
+        </y:ShapeNode>
+      </data>
+    </node>
+    <node id="n87">
+      <data key="d6">
+        <y:SVGNode>
+          <y:Geometry height="138.75883229573537" width="101.75" x="3412.275370059605" y="2481.284585593444"/>
+          <y:Fill color="#CCCCFF" transparent="false"/>
+          <y:BorderStyle color="#000000" type="line" width="1.0"/>
+          <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="108.830078125" x="-3.5400390625" y="142.75883229573537">Events Broadcast<y:LabelModel>
+              <y:SmartNodeLabelModel distance="4.0"/>
+            </y:LabelModel>
+            <y:ModelParameter>
+              <y:SmartNodeLabelModelParameter labelRatioX="0.0" labelRatioY="-0.5" nodeRatioX="0.0" nodeRatioY="0.5" offsetX="0.0" offsetY="4.0" upX="0.0" upY="-1.0"/>
+            </y:ModelParameter>
+          </y:NodeLabel>
+          <y:SVGNodeProperties usingVisualBounds="true"/>
+          <y:SVGModel svgBoundsPolicy="0">
+            <y:SVGContent refid="2"/>
+          </y:SVGModel>
+        </y:SVGNode>
+      </data>
+    </node>
+    <node id="n88">
+      <data key="d5"/>
+      <data key="d6">
+        <y:ShapeNode>
+          <y:Geometry height="30.0" width="117.49199677607612" x="3612.368935169139" y="2199.3584725888545"/>
+          <y:Fill color="#FFCC00" transparent="false"/>
+          <y:BorderStyle color="#000000" type="line" width="1.0"/>
+          <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="87.61328125" x="14.93935776303806" y="6.015625">PublishEvents<y:LabelModel>
+              <y:SmartNodeLabelModel distance="4.0"/>
+            </y:LabelModel>
+            <y:ModelParameter>
+              <y:SmartNodeLabelModelParameter labelRatioX="0.0" labelRatioY="0.0" nodeRatioX="0.0" nodeRatioY="0.0" offsetX="0.0" offsetY="0.0" upX="0.0" upY="-1.0"/>
+            </y:ModelParameter>
+          </y:NodeLabel>
+          <y:Shape type="ellipse"/>
+        </y:ShapeNode>
+      </data>
+    </node>
+    <node id="n89">
+      <data key="d5"/>
+      <data key="d6">
+        <y:ShapeNode>
+          <y:Geometry height="30.0" width="158.98358323607408" x="3591.62314193914" y="2277.194561073025"/>
+          <y:Fill color="#FFCC00" transparent="false"/>
+          <y:BorderStyle color="#000000" type="line" width="1.0"/>
+          <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="109.369140625" x="24.80722130553704" y="6.015625">PublishEventsAck<y:LabelModel>
+              <y:SmartNodeLabelModel distance="4.0"/>
+            </y:LabelModel>
+            <y:ModelParameter>
+              <y:SmartNodeLabelModelParameter labelRatioX="0.0" labelRatioY="0.0" nodeRatioX="0.0" nodeRatioY="0.0" offsetX="0.0" offsetY="0.0" upX="0.0" upY="-1.0"/>
+            </y:ModelParameter>
+          </y:NodeLabel>
+          <y:Shape type="ellipse"/>
+        </y:ShapeNode>
+      </data>
+    </node>
+    <node id="n90">
+      <data key="d5"/>
+      <data key="d6">
+        <y:ShapeNode>
+          <y:Geometry height="30.0" width="171.5870774117575" x="3007.6859296618354" y="1483.2304600360092"/>
+          <y:Fill color="#FFCC00" transparent="false"/>
+          <y:BorderStyle color="#000000" type="line" width="1.0"/>
+          <y:NodeLabel alignment="center" autoSizePolicy="content" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" textColor="#000000" visible="true" width="120.51953125" x="25.533773080878746" y="6.015625">? Command Failure<y:LabelModel>
               <y:SmartNodeLabelModel distance="4.0"/>
             </y:LabelModel>
             <y:ModelParameter>
@@ -2734,7 +2916,6 @@ version in single DB transaction<y:LabelModel>
       </data>
     </edge>
     <edge id="e17" source="n58" target="n60">
-      <data key="d9"/>
       <data key="d10">
         <y:PolyLineEdge>
           <y:Path sx="0.0" sy="0.0" tx="-178.22823456825665" ty="-62.49851500071204"/>
@@ -2753,7 +2934,6 @@ version in single DB transaction<y:LabelModel>
       </data>
     </edge>
     <edge id="e18" source="n60::n0" target="n62">
-      <data key="d9"/>
       <data key="d10">
         <y:PolyLineEdge>
           <y:Path sx="0.0" sy="0.0" tx="0.0" ty="0.0"/>
@@ -2764,7 +2944,6 @@ version in single DB transaction<y:LabelModel>
       </data>
     </edge>
     <edge id="e19" source="n62::n1" target="n63">
-      <data key="d9"/>
       <data key="d10">
         <y:PolyLineEdge>
           <y:Path sx="-141.25" sy="0.0" tx="69.811330049404" ty="-28.956970174467642"/>
@@ -2775,7 +2954,6 @@ version in single DB transaction<y:LabelModel>
       </data>
     </edge>
     <edge id="e20" source="n62::n2" target="n64">
-      <data key="d9"/>
       <data key="d10">
         <y:PolyLineEdge>
           <y:Path sx="0.0" sy="0.0" tx="0.0" ty="0.0"/>
@@ -2786,7 +2964,6 @@ version in single DB transaction<y:LabelModel>
       </data>
     </edge>
     <edge id="e21" source="n64::n1" target="n63">
-      <data key="d9"/>
       <data key="d10">
         <y:PolyLineEdge>
           <y:Path sx="-141.25" sy="0.0" tx="0.0" ty="0.0"/>
@@ -2797,7 +2974,6 @@ version in single DB transaction<y:LabelModel>
       </data>
     </edge>
     <edge id="e22" source="n63::n1" target="n58">
-      <data key="d9"/>
       <data key="d10">
         <y:PolyLineEdge>
           <y:Path sx="-156.40820382165612" sy="0.0" tx="0.0" ty="0.0">
@@ -2810,7 +2986,6 @@ version in single DB transaction<y:LabelModel>
       </data>
     </edge>
     <edge id="e23" source="n64::n0" target="n65">
-      <data key="d9"/>
       <data key="d10">
         <y:PolyLineEdge>
           <y:Path sx="141.25" sy="0.0" tx="0.0" ty="0.0"/>
@@ -2821,7 +2996,6 @@ version in single DB transaction<y:LabelModel>
       </data>
     </edge>
     <edge id="e24" source="n64" target="n66">
-      <data key="d9"/>
       <data key="d10">
         <y:PolyLineEdge>
           <y:Path sx="0.0" sy="0.0" tx="0.0" ty="0.0"/>
@@ -2832,7 +3006,6 @@ version in single DB transaction<y:LabelModel>
       </data>
     </edge>
     <edge id="e25" source="n66" target="n67">
-      <data key="d9"/>
       <data key="d10">
         <y:PolyLineEdge>
           <y:Path sx="0.0" sy="0.0" tx="0.0" ty="0.0"/>
@@ -2843,7 +3016,6 @@ version in single DB transaction<y:LabelModel>
       </data>
     </edge>
     <edge id="e26" source="n66" target="n68">
-      <data key="d9"/>
       <data key="d10">
         <y:PolyLineEdge>
           <y:Path sx="0.0" sy="0.0" tx="0.0" ty="0.0"/>
@@ -2853,33 +3025,23 @@ version in single DB transaction<y:LabelModel>
         </y:PolyLineEdge>
       </data>
     </edge>
-    <edge id="e27" source="n69" target="n71">
-      <data key="d9"/>
+    <edge id="e27" source="n69" target="n70">
       <data key="d10">
         <y:PolyLineEdge>
           <y:Path sx="0.0" sy="0.0" tx="-178.22823456825665" ty="-62.49851500071204"/>
           <y:LineStyle color="#000000" type="line" width="1.0"/>
           <y:Arrows source="none" target="standard"/>
-          <y:EdgeLabel alignment="center" configuration="AutoFlippingLabel" distance="2.0" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" preferredPlacement="anywhere" ratio="0.5" textColor="#000000" visible="true" width="105.96484375" x="131.97361631228705" y="-9.633246838688137">Sends Command<y:LabelModel>
-              <y:SmartEdgeLabelModel autoRotationEnabled="false" defaultAngle="0.0" defaultDistance="10.0"/>
-            </y:LabelModel>
-            <y:ModelParameter>
-              <y:SmartEdgeLabelModelParameter angle="6.283185307179586" distance="55.26040116668919" distanceToCenter="true" position="left" ratio="0.5468217826357439" segment="-1"/>
-            </y:ModelParameter>
-            <y:PreferredPlacementDescriptor angle="0.0" angleOffsetOnRightSide="0" angleReference="absolute" angleRotationOnRightSide="co" distance="-1.0" frozen="true" placement="anywhere" side="anywhere" sideReference="relative_to_edge_flow"/>
-          </y:EdgeLabel>
           <y:BendStyle smoothed="false"/>
         </y:PolyLineEdge>
       </data>
     </edge>
-    <edge id="e28" source="n71::n0" target="n73">
-      <data key="d9"/>
+    <edge id="e28" source="n70::n0" target="n71">
       <data key="d10">
         <y:PolyLineEdge>
           <y:Path sx="0.0" sy="0.0" tx="0.0" ty="0.0"/>
           <y:LineStyle color="#000000" type="line" width="1.0"/>
           <y:Arrows source="none" target="standard"/>
-          <y:EdgeLabel alignment="center" configuration="AutoFlippingLabel" distance="2.0" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" preferredPlacement="anywhere" ratio="0.5" textColor="#000000" visible="true" width="65.67578125" x="-146.21799689421096" y="89.18347195193064">Command<y:LabelModel>
+          <y:EdgeLabel alignment="center" configuration="AutoFlippingLabel" distance="2.0" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" preferredPlacement="anywhere" ratio="0.5" textColor="#000000" visible="true" width="65.67578125" x="-70.6644847171774" y="98.46388711177997">Command<y:LabelModel>
               <y:SmartEdgeLabelModel autoRotationEnabled="false" defaultAngle="0.0" defaultDistance="10.0"/>
             </y:LabelModel>
             <y:ModelParameter>
@@ -2891,29 +3053,17 @@ version in single DB transaction<y:LabelModel>
         </y:PolyLineEdge>
       </data>
     </edge>
-    <edge id="e29" source="n73::n1" target="n74">
-      <data key="d9"/>
+    <edge id="e29" source="n71::n1" target="n72">
       <data key="d10">
         <y:PolyLineEdge>
           <y:Path sx="-141.25" sy="0.0" tx="69.811330049404" ty="-28.956970174467642"/>
           <y:LineStyle color="#000000" type="line" width="1.0"/>
           <y:Arrows source="none" target="standard"/>
-          <y:BendStyle smoothed="false"/>
-        </y:PolyLineEdge>
-      </data>
-    </edge>
-    <edge id="e30" source="n71" target="n75">
-      <data key="d9"/>
-      <data key="d10">
-        <y:PolyLineEdge>
-          <y:Path sx="164.53919320594196" sy="54.42440664023843" tx="37.72689071622699" ty="-89.24183605361395"/>
-          <y:LineStyle color="#000000" type="line" width="1.0"/>
-          <y:Arrows source="none" target="standard"/>
-          <y:EdgeLabel alignment="center" configuration="AutoFlippingLabel" distance="2.0" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" preferredPlacement="anywhere" ratio="0.5" textColor="#000000" visible="true" width="88.205078125" x="-35.551114085750214" y="96.03896547447312">GetAggregate<y:LabelModel>
+          <y:EdgeLabel alignment="center" configuration="AutoFlippingLabel" distance="2.0" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" preferredPlacement="anywhere" ratio="0.5" textColor="#000000" visible="true" width="50.388671875" x="-212.65501607794795" y="79.27359295388305">Creates<y:LabelModel>
               <y:SmartEdgeLabelModel autoRotationEnabled="false" defaultAngle="0.0" defaultDistance="10.0"/>
             </y:LabelModel>
             <y:ModelParameter>
-              <y:SmartEdgeLabelModelParameter angle="0.0" distance="30.0" distanceToCenter="true" position="right" ratio="0.5" segment="0"/>
+              <y:SmartEdgeLabelModelParameter angle="0.0" distance="30.0" distanceToCenter="true" position="left" ratio="0.6901204868390323" segment="-1"/>
             </y:ModelParameter>
             <y:PreferredPlacementDescriptor angle="0.0" angleOffsetOnRightSide="0" angleReference="absolute" angleRotationOnRightSide="co" distance="-1.0" frozen="true" placement="anywhere" side="anywhere" sideReference="relative_to_edge_flow"/>
           </y:EdgeLabel>
@@ -2921,8 +3071,17 @@ version in single DB transaction<y:LabelModel>
         </y:PolyLineEdge>
       </data>
     </edge>
-    <edge id="e31" source="n75::n1" target="n74">
-      <data key="d9"/>
+    <edge id="e30" source="n71" target="n73">
+      <data key="d10">
+        <y:PolyLineEdge>
+          <y:Path sx="-149.04080954691972" sy="101.02431921340803" tx="-128.92519696232694" ty="-137.6994213592102"/>
+          <y:LineStyle color="#000000" type="line" width="1.0"/>
+          <y:Arrows source="none" target="standard"/>
+          <y:BendStyle smoothed="false"/>
+        </y:PolyLineEdge>
+      </data>
+    </edge>
+    <edge id="e31" source="n73::n1" target="n72">
       <data key="d10">
         <y:PolyLineEdge>
           <y:Path sx="-141.25" sy="0.0" tx="0.0" ty="0.0"/>
@@ -2932,32 +3091,17 @@ version in single DB transaction<y:LabelModel>
         </y:PolyLineEdge>
       </data>
     </edge>
-    <edge id="e32" source="n74::n1" target="n69">
-      <data key="d9"/>
+    <edge id="e32" source="n72" target="n69">
       <data key="d10">
         <y:PolyLineEdge>
-          <y:Path sx="-156.40820382165612" sy="0.0" tx="0.0" ty="0.0">
-            <y:Point x="2749.5831884349373" y="2013.8453873407625"/>
-          </y:Path>
+          <y:Path sx="0.0" sy="-64.91463870297571" tx="0.0" ty="0.0"/>
           <y:LineStyle color="#000000" type="line" width="1.0"/>
           <y:Arrows source="none" target="standard"/>
           <y:BendStyle smoothed="false"/>
         </y:PolyLineEdge>
       </data>
     </edge>
-    <edge id="e33" source="n75::n0" target="n76">
-      <data key="d9"/>
-      <data key="d10">
-        <y:PolyLineEdge>
-          <y:Path sx="141.25" sy="0.0" tx="0.0" ty="0.0"/>
-          <y:LineStyle color="#000000" type="line" width="1.0"/>
-          <y:Arrows source="none" target="standard"/>
-          <y:BendStyle smoothed="false"/>
-        </y:PolyLineEdge>
-      </data>
-    </edge>
-    <edge id="e34" source="n75" target="n77">
-      <data key="d9"/>
+    <edge id="e33" source="n73" target="n75">
       <data key="d10">
         <y:PolyLineEdge>
           <y:Path sx="0.0" sy="0.0" tx="0.0" ty="0.0"/>
@@ -2967,8 +3111,7 @@ version in single DB transaction<y:LabelModel>
         </y:PolyLineEdge>
       </data>
     </edge>
-    <edge id="e35" source="n77" target="n78">
-      <data key="d9"/>
+    <edge id="e34" source="n75" target="n76">
       <data key="d10">
         <y:PolyLineEdge>
           <y:Path sx="0.0" sy="0.0" tx="0.0" ty="0.0"/>
@@ -2978,8 +3121,7 @@ version in single DB transaction<y:LabelModel>
         </y:PolyLineEdge>
       </data>
     </edge>
-    <edge id="e36" source="n77" target="n79">
-      <data key="d9"/>
+    <edge id="e35" source="n75" target="n77">
       <data key="d10">
         <y:PolyLineEdge>
           <y:Path sx="0.0" sy="0.0" tx="0.0" ty="0.0"/>
@@ -2989,18 +3131,39 @@ version in single DB transaction<y:LabelModel>
         </y:PolyLineEdge>
       </data>
     </edge>
-    <edge id="e37" source="n75::n3" target="n73">
+    <edge id="e36" source="n73" target="n71">
+      <data key="d10">
+        <y:PolyLineEdge>
+          <y:Path sx="0.0" sy="-150.08161096050503" tx="-20.115612584592782" ty="112.59039412056973"/>
+          <y:LineStyle color="#000000" type="line" width="1.0"/>
+          <y:Arrows source="none" target="standard"/>
+          <y:BendStyle smoothed="false"/>
+        </y:PolyLineEdge>
+      </data>
+    </edge>
+    <edge id="e37" source="n71" target="n73">
+      <data key="d10">
+        <y:PolyLineEdge>
+          <y:Path sx="162.3458777866217" sy="112.55395519192143" tx="159.72118722764844" ty="-150.06341781630908"/>
+          <y:LineStyle color="#000000" type="line" width="1.0"/>
+          <y:Arrows source="none" target="standard"/>
+          <y:BendStyle smoothed="false"/>
+        </y:PolyLineEdge>
+      </data>
+    </edge>
+    <edge id="e38" source="n73" target="n87">
       <data key="d9"/>
       <data key="d10">
         <y:PolyLineEdge>
           <y:Path sx="0.0" sy="0.0" tx="0.0" ty="0.0"/>
           <y:LineStyle color="#000000" type="line" width="1.0"/>
-          <y:Arrows source="none" target="standard"/>
-          <y:EdgeLabel alignment="center" configuration="AutoFlippingLabel" distance="2.0" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" height="17.96875" modelName="custom" preferredPlacement="anywhere" ratio="0.5" textColor="#000000" visible="true" width="66.818359375" x="-110.92362455178863" y="-45.572203717759066">Aggregate<y:LabelModel>
+          <y:Arrows source="standard" target="standard"/>
+          <y:EdgeLabel alignment="center" configuration="AutoFlippingLabel" distance="2.0" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" hasText="false" height="4.0" modelName="custom" preferredPlacement="anywhere" ratio="0.5" textColor="#000000" visible="true" width="4.0" x="96.63790295648596" y="5.0236499925795215">
+            <y:LabelModel>
               <y:SmartEdgeLabelModel autoRotationEnabled="false" defaultAngle="0.0" defaultDistance="10.0"/>
             </y:LabelModel>
             <y:ModelParameter>
-              <y:SmartEdgeLabelModelParameter angle="0.0" distance="30.0" distanceToCenter="true" position="right" ratio="0.5" segment="0"/>
+              <y:SmartEdgeLabelModelParameter angle="6.283185307179586" distance="92.05034578848645" distanceToCenter="true" position="left" ratio="0.0" segment="0"/>
             </y:ModelParameter>
             <y:PreferredPlacementDescriptor angle="0.0" angleOffsetOnRightSide="0" angleReference="absolute" angleRotationOnRightSide="co" distance="-1.0" frozen="true" placement="anywhere" side="anywhere" sideReference="relative_to_edge_flow"/>
           </y:EdgeLabel>
@@ -3008,13 +3171,62 @@ version in single DB transaction<y:LabelModel>
         </y:PolyLineEdge>
       </data>
     </edge>
-    <edge id="e38" source="n73::n2" target="n75::n0">
+    <edge id="e39" source="n73" target="n74">
       <data key="d9"/>
       <data key="d10">
         <y:PolyLineEdge>
           <y:Path sx="0.0" sy="0.0" tx="0.0" ty="0.0"/>
           <y:LineStyle color="#000000" type="line" width="1.0"/>
+          <y:Arrows source="standard" target="standard"/>
+          <y:EdgeLabel alignment="center" configuration="AutoFlippingLabel" distance="2.0" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" hasText="false" height="4.0" modelName="custom" preferredPlacement="anywhere" ratio="0.5" textColor="#000000" visible="true" width="4.0" x="87.27390837837811" y="20.437833356299052">
+            <y:LabelModel>
+              <y:SmartEdgeLabelModel autoRotationEnabled="false" defaultAngle="0.0" defaultDistance="10.0"/>
+            </y:LabelModel>
+            <y:ModelParameter>
+              <y:SmartEdgeLabelModelParameter angle="6.283185307179586" distance="92.05034578848645" distanceToCenter="true" position="left" ratio="0.0" segment="0"/>
+            </y:ModelParameter>
+            <y:PreferredPlacementDescriptor angle="0.0" angleOffsetOnRightSide="0" angleReference="absolute" angleRotationOnRightSide="co" distance="-1.0" frozen="true" placement="anywhere" side="anywhere" sideReference="relative_to_edge_flow"/>
+          </y:EdgeLabel>
+          <y:BendStyle smoothed="false"/>
+        </y:PolyLineEdge>
+      </data>
+    </edge>
+    <edge id="e40" source="n75" target="n73">
+      <data key="d9"/>
+      <data key="d10">
+        <y:PolyLineEdge>
+          <y:Path sx="-101.57069208456869" sy="38.31160760955845" tx="177.2045237460129" ty="100.49243227781744"/>
+          <y:LineStyle color="#000000" type="line" width="1.0"/>
           <y:Arrows source="none" target="standard"/>
+          <y:EdgeLabel alignment="center" configuration="AutoFlippingLabel" distance="2.0" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" hasText="false" height="4.0" modelName="custom" preferredPlacement="anywhere" ratio="0.5" textColor="#000000" visible="true" width="4.0" x="2.1219268982667927" y="89.95807965001677">
+            <y:LabelModel>
+              <y:SmartEdgeLabelModel autoRotationEnabled="false" defaultAngle="0.0" defaultDistance="10.0"/>
+            </y:LabelModel>
+            <y:ModelParameter>
+              <y:SmartEdgeLabelModelParameter angle="6.283185307179586" distance="92.05034578848645" distanceToCenter="true" position="left" ratio="0.0" segment="0"/>
+            </y:ModelParameter>
+            <y:PreferredPlacementDescriptor angle="0.0" angleOffsetOnRightSide="0" angleReference="absolute" angleRotationOnRightSide="co" distance="-1.0" frozen="true" placement="anywhere" side="anywhere" sideReference="relative_to_edge_flow"/>
+          </y:EdgeLabel>
+          <y:BendStyle smoothed="false"/>
+        </y:PolyLineEdge>
+      </data>
+    </edge>
+    <edge id="e41" source="n71" target="n69">
+      <data key="d9"/>
+      <data key="d10">
+        <y:PolyLineEdge>
+          <y:Path sx="-190.50389504287568" sy="-25.16271730648714" tx="0.0" ty="0.0"/>
+          <y:LineStyle color="#000000" type="line" width="1.0"/>
+          <y:Arrows source="none" target="standard"/>
+          <y:EdgeLabel alignment="center" configuration="AutoFlippingLabel" distance="2.0" fontFamily="Dialog" fontSize="12" fontStyle="plain" hasBackgroundColor="false" hasLineColor="false" hasText="false" height="4.0" modelName="custom" preferredPlacement="anywhere" ratio="0.5" textColor="#000000" visible="true" width="4.0" x="-82.37028882084769" y="42.8764103099943">
+            <y:LabelModel>
+              <y:SmartEdgeLabelModel autoRotationEnabled="false" defaultAngle="0.0" defaultDistance="10.0"/>
+            </y:LabelModel>
+            <y:ModelParameter>
+              <y:SmartEdgeLabelModelParameter angle="6.283185307179586" distance="92.05034578848645" distanceToCenter="true" position="left" ratio="0.0" segment="0"/>
+            </y:ModelParameter>
+            <y:PreferredPlacementDescriptor angle="0.0" angleOffsetOnRightSide="0" angleReference="absolute" angleRotationOnRightSide="co" distance="-1.0" frozen="true" placement="anywhere" side="anywhere" sideReference="relative_to_edge_flow"/>
+          </y:EdgeLabel>
           <y:BendStyle smoothed="false"/>
         </y:PolyLineEdge>
       </data>
