@@ -5,7 +5,7 @@ import io.reactivecqrs.api.id.UserId
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.AggregateCommandBusActor.CommandEnvelope
 import io.reactivecqrs.core.uid.UidGeneratorActor
-import io.reactivecqrs.core.{AggregateCommandBusActor, EventStore}
+import io.reactivecqrs.core.{EventsBusActor, AggregateCommandBusActor, EventStore}
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testdomain.spec.utils.CommonSpec
 
@@ -20,7 +20,8 @@ class ReactiveTestDomainSpec extends CommonSpec {
       (new EventStore).initSchema()
       val userId = UserId(1L)
       val uidGenerator = system.actorOf(Props(new UidGeneratorActor), "uidGenerator")
-      val shoppingCartCommandBus: ActorRef = system.actorOf(AggregateCommandBusActor(new ShoppingCartCommandBus, uidGenerator), "ShoppingCartCommandBus")
+      val eventBus = system.actorOf(Props(new EventsBusActor), "eventBus")
+      val shoppingCartCommandBus: ActorRef = system.actorOf(AggregateCommandBusActor(new ShoppingCartCommandBus, uidGenerator, eventBus), "ShoppingCartCommandBus")
 
 
       step("Create shopping cart")

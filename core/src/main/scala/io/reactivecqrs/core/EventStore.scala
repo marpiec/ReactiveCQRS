@@ -4,6 +4,7 @@ import io.mpjsons.MPJsons
 import io.reactivecqrs.api.Event
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.AggregateRepositoryActor.EventsEnvelope
+import io.reactivecqrs.core.api.EventIdentifier
 import scalikejdbc._
 
 class EventStore {
@@ -59,6 +60,17 @@ class EventStore {
 
         val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(2), rs.string(1))
         eventHandler(event)
+      }
+    }
+  }
+
+  def clearEventsBroadcast(events: Seq[EventIdentifier]): Unit = {
+    // TODO optimize SQL query so it will be one query
+    DB.autoCommit { implicit session =>
+      events.foreach {event =>
+        sql"""DELETE FROM events_broadcast WHERE aggregate_id = ? AND version = ?"""
+          .bind(event.aggregateId.asLong, event.version.asInt)
+          .executeUpdate().apply()
       }
     }
   }

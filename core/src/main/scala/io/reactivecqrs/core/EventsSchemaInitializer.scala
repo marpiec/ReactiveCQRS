@@ -7,6 +7,7 @@ class EventsSchemaInitializer  {
 
   def initSchema(): Unit = {
     createEventsTable()
+    createEventsBroadcastTable()
     createAggregatesTable()
     try {
       createEventsSequence()
@@ -20,7 +21,7 @@ class EventsSchemaInitializer  {
   private def createEventsTable() = DB.autoCommit { implicit session =>
     sql"""
         CREATE TABLE IF NOT EXISTS events (
-          id INT NOT NULL PRIMARY KEY,
+          id BIGINT NOT NULL PRIMARY KEY,
           command_id BIGINT NOT NULL,
           user_id BIGINT NOT NULL,
           aggregate_id BIGINT NOT NULL,
@@ -30,6 +31,16 @@ class EventsSchemaInitializer  {
           event_type_version INT NOT NULL,
           event VARCHAR(10240) NOT NULL)
       """.execute().apply()
+  }
+
+  private def createEventsBroadcastTable() = DB.autoCommit { implicit session =>
+    sql"""
+        CREATE TABLE IF NOT EXISTS events_broadcast (
+          event_id BIGINT NOT NULL PRIMARY KEY,
+          aggregate_id BIGINT NOT NULL,
+          version INT NOT NULL)
+      """.execute().apply()
+
   }
 
   private def createAggregatesTable() = DB.autoCommit { implicit session =>
@@ -66,6 +77,7 @@ class EventsSchemaInitializer  {
           |	RAISE EXCEPTION 'Concurrent aggregate modification exception, command id %, user id %, aggregate id %, expected version %, current_version %, event_type %, event_type_version %, event %', command_id, user_id, aggregate_id, expected_version, current_version, event_type, event_type_version, event;
           |    END IF;
           |    INSERT INTO events (id, command_id, user_id, aggregate_id, event_time, version, event_type, event_type_version, event) VALUES (NEXTVAL('events_seq'), command_id, user_id, aggregate_id, current_timestamp, current_version + 1, event_type, event_type_version, event);
+          |    INSERT INTO events_broadcast (event_id, aggregate_id, version) VALUES(CURRVAL('events_seq'), aggregate_id, current_version + 1);
           |    UPDATE aggregates SET version = current_version + 1 WHERE id = aggregate_id;
           |END;
           |$$

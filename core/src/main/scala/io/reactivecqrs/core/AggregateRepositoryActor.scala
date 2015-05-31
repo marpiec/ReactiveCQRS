@@ -1,8 +1,9 @@
 package io.reactivecqrs.core
 
-import _root_.io.reactivecqrs.api._
-import _root_.io.reactivecqrs.api.id.{AggregateId, UserId, CommandId}
-import _root_.io.reactivecqrs.core._
+import io.reactivecqrs.core.api.{IdentifiableEvent, EventIdentifier}
+import io.reactivecqrs.api._
+import io.reactivecqrs.api.id.{AggregateId, UserId, CommandId}
+import io.reactivecqrs.core.EventsBusActor.{EventsPublishAck, PublishEvents}
 import akka.actor.{Actor, ActorRef}
 import akka.event.LoggingReceive
 
@@ -24,12 +25,16 @@ object AggregateRepositoryActor {
                                             events: Seq[Event[AGGREGATE_ROOT]])
 
 
-  case class EventsPersisted[AGGREGATE_ROOT](events: Seq[Event[AGGREGATE_ROOT]])
+  case class EventsPersisted[AGGREGATE_ROOT](events: Seq[IdentifiableEvent[AGGREGATE_ROOT]])
+
+
+
 }
 
 
-class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](val id: AggregateId,
-                                               eventHandlers: Map[String, AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]]) extends Actor {
+class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](id: AggregateId,
+                                                         eventsBus: ActorRef,
+                                                         eventHandlers: Map[String, AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]]) extends Actor {
 
   import AggregateRepositoryActor._
 
@@ -50,14 +55,20 @@ class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](val id: AggregateId,
     }
   }
 
+
+
   override def receive = LoggingReceive {
-    case ep: EventsPersisted[_] => ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.foreach(handleEvent)
+    case ep: EventsPersisted[_] =>
+      eventsBus ! PublishEvents(ep.events)
+      ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.foreach(eventIdentifier => handleEvent(eventIdentifier.event))
     case ee: EventsEnvelope[_] =>
       assureRestoredState()
       receiveEvent(ee.asInstanceOf[EventsEnvelope[AGGREGATE_ROOT]])
     case ReturnAggregateRoot(respondTo) =>
       assureRestoredState()
       receiveReturnAggregateRoot(respondTo)
+    case EventsPublishAck(events) =>
+      markPublishedEvents(events)
   }
 
 
@@ -81,7 +92,12 @@ class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](val id: AggregateId,
     import context.dispatcher
     Future {
       eventStore.persistEvents(id, eventsEnvelope.asInstanceOf[EventsEnvelope[AnyRef]])
-      self ! EventsPersisted(eventsEnvelope.events)
+      var mappedEvents = 0
+      self ! EventsPersisted(eventsEnvelope.events.map { event =>
+        val eventVersion = eventsEnvelope.expectedVersion.incrementBy(mappedEvents + 1)
+        mappedEvents += 1
+        IdentifiableEvent(eventsEnvelope.aggregateId, eventVersion, event)
+      })
       afterPersist(eventsEnvelope.events)
     } onFailure {
       case e: Exception => throw new IllegalStateException(e)
@@ -100,6 +116,15 @@ class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](val id: AggregateId,
       case handler: EventHandler[_, _] => handler.asInstanceOf[EventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]].handle(aggregateRoot, event)
     }
     version = version.increment
+  }
+
+  def markPublishedEvents(events: Seq[EventIdentifier]): Unit = {
+    import context.dispatcher
+    Future { // Fire and forget
+      eventStore.clearEventsBroadcast(events)
+    } onFailure {
+      case e: Exception => throw new IllegalStateException(e)
+    }
   }
 
 
