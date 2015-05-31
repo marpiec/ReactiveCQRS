@@ -35,7 +35,7 @@ class EventsSchemaInitializer  {
 
   private def createEventsBroadcastTable() = DB.autoCommit { implicit session =>
     sql"""
-        CREATE TABLE IF NOT EXISTS events_broadcast (
+        CREATE TABLE IF NOT EXISTS events_to_publish (
           event_id BIGINT NOT NULL PRIMARY KEY,
           aggregate_id BIGINT NOT NULL,
           version INT NOT NULL)
@@ -77,7 +77,7 @@ class EventsSchemaInitializer  {
           |	RAISE EXCEPTION 'Concurrent aggregate modification exception, command id %, user id %, aggregate id %, expected version %, current_version %, event_type %, event_type_version %, event %', command_id, user_id, aggregate_id, expected_version, current_version, event_type, event_type_version, event;
           |    END IF;
           |    INSERT INTO events (id, command_id, user_id, aggregate_id, event_time, version, event_type, event_type_version, event) VALUES (NEXTVAL('events_seq'), command_id, user_id, aggregate_id, current_timestamp, current_version + 1, event_type, event_type_version, event);
-          |    INSERT INTO events_broadcast (event_id, aggregate_id, version) VALUES(CURRVAL('events_seq'), aggregate_id, current_version + 1);
+          |    INSERT INTO events_to_publish (event_id, aggregate_id, version) VALUES(CURRVAL('events_seq'), aggregate_id, current_version + 1);
           |    UPDATE aggregates SET version = current_version + 1 WHERE id = aggregate_id;
           |END;
           |$$

@@ -64,11 +64,11 @@ class EventStore {
     }
   }
 
-  def clearEventsBroadcast(events: Seq[EventIdentifier]): Unit = {
+  def deletePublishedEvents(events: Seq[EventIdentifier]): Unit = {
     // TODO optimize SQL query so it will be one query
     DB.autoCommit { implicit session =>
       events.foreach {event =>
-        sql"""DELETE FROM events_broadcast WHERE aggregate_id = ? AND version = ?"""
+        sql"""DELETE FROM events_to_publish WHERE aggregate_id = ? AND version = ?"""
           .bind(event.aggregateId.asLong, event.version.asInt)
           .executeUpdate().apply()
       }

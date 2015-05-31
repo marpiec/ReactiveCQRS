@@ -121,7 +121,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](id: AggregateId,
   def markPublishedEvents(events: Seq[EventIdentifier]): Unit = {
     import context.dispatcher
     Future { // Fire and forget
-      eventStore.clearEventsBroadcast(events)
+      eventStore.deletePublishedEvents(events)
     } onFailure {
       case e: Exception => throw new IllegalStateException(e)
     }
