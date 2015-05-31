@@ -6,7 +6,7 @@ import akka.event.LoggingReceive
 import scala.concurrent.duration._
 
 object ResultAggregator {
-  case object AggregateAck
+  case object AggregateModified
 }
 
 class ResultAggregator[RESULT]  (private val respondTo: ActorRef,
@@ -15,7 +15,7 @@ class ResultAggregator[RESULT]  (private val respondTo: ActorRef,
   import ResultAggregator._
 
   override def receive: Receive = LoggingReceive {
-    case AggregateAck =>
+    case AggregateModified =>
       respondTo ! result
       self ! PoisonPill
     case e: AggregateConcurrentModificationError =>

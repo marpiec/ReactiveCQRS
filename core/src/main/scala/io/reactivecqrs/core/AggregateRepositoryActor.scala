@@ -106,7 +106,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](id: AggregateId,
 
   private def respond(respondTo: ActorRef)(events: Seq[Event[AGGREGATE_ROOT]]): Unit = {
     println("Updating state and responding")
-    respondTo ! ResultAggregator.AggregateAck
+    respondTo ! ResultAggregator.AggregateModified
   }
 
   private def handleEvent(event: Event[AGGREGATE_ROOT]): Unit = {
