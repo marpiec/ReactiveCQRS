@@ -1,9 +1,9 @@
-package io.reactivecqrs.core
+package io.reactivecqrs.core.db.eventstore
 
 import scalikejdbc._
 
 
-class EventsSchemaInitializer  {
+class EventStoreSchemaInitializer  {
 
   def initSchema(): Unit = {
     createEventsTable()

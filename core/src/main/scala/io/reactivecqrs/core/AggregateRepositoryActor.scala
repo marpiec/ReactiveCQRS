@@ -1,5 +1,6 @@
 package io.reactivecqrs.core
 
+import io.reactivecqrs.core.db.eventstore.EventStore
 import io.reactivecqrs.core.api.{IdentifiableEvent, EventIdentifier}
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId, CommandId}

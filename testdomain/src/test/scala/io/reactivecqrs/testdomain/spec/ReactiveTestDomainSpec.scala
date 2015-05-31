@@ -4,8 +4,9 @@ import akka.actor.{ActorRef, Props}
 import io.reactivecqrs.api.id.UserId
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.AggregateCommandBusActor.CommandEnvelope
+import io.reactivecqrs.core.db.eventstore.EventStore
 import io.reactivecqrs.core.uid.UidGeneratorActor
-import io.reactivecqrs.core.{EventsBusActor, AggregateCommandBusActor, EventStore}
+import io.reactivecqrs.core.{EventsBusActor, AggregateCommandBusActor}
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testdomain.spec.utils.CommonSpec
 

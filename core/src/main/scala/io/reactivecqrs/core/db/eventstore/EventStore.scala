@@ -1,4 +1,4 @@
-package io.reactivecqrs.core
+package io.reactivecqrs.core.db.eventstore
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.Event
@@ -21,7 +21,7 @@ class EventStore {
   ConnectionPool.singleton("jdbc:postgresql://localhost:5432/reactivecqrs", "reactivecqrs", "reactivecqrs", settings)
 
   def initSchema(): Unit = {
-    (new EventsSchemaInitializer).initSchema()
+    (new EventStoreSchemaInitializer).initSchema()
   }
 
   def persistEvents(aggregateId: AggregateId, eventsEnvelope: PersistEvents[AnyRef]): Unit = {
