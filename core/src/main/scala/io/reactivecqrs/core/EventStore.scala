@@ -3,7 +3,7 @@ package io.reactivecqrs.core
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.Event
 import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.core.AggregateRepositoryActor.EventsEnvelope
+import io.reactivecqrs.core.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.core.api.EventIdentifier
 import scalikejdbc._
 
@@ -24,7 +24,7 @@ class EventStore {
     (new EventsSchemaInitializer).initSchema()
   }
 
-  def persistEvents(aggregateId: AggregateId, eventsEnvelope: EventsEnvelope[AnyRef]): Unit = {
+  def persistEvents(aggregateId: AggregateId, eventsEnvelope: PersistEvents[AnyRef]): Unit = {
     println("Persisting event " + aggregateId+ " " +eventsEnvelope)
     var versionsIncreased = 0
     DB.autoCommit { implicit session =>

@@ -3,7 +3,7 @@ package io.reactivecqrs.core
 import io.reactivecqrs.core.api.{IdentifiableEvent, EventIdentifier}
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId, CommandId}
-import io.reactivecqrs.core.EventsBusActor.{EventsPublishAck, PublishEvents}
+import io.reactivecqrs.core.EventsBusActor.{PublishEventsAck, PublishEvents}
 import akka.actor.{Actor, ActorRef}
 import akka.event.LoggingReceive
 
@@ -15,9 +15,9 @@ import scala.reflect._
 
 
 object AggregateRepositoryActor {
-  case class ReturnAggregateRoot(respondTo: ActorRef)
+  case class GetAggregateRoot(respondTo: ActorRef)
 
-  case class EventsEnvelope[AGGREGATE_ROOT](respondTo: ActorRef,
+  case class PersistEvents[AGGREGATE_ROOT](respondTo: ActorRef,
                                             aggregateId: AggregateId,
                                             commandId: CommandId,
                                             userId: UserId,
@@ -61,18 +61,18 @@ class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](id: AggregateId,
     case ep: EventsPersisted[_] =>
       eventsBus ! PublishEvents(ep.events)
       ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.foreach(eventIdentifier => handleEvent(eventIdentifier.event))
-    case ee: EventsEnvelope[_] =>
+    case ee: PersistEvents[_] =>
       assureRestoredState()
-      receiveEvent(ee.asInstanceOf[EventsEnvelope[AGGREGATE_ROOT]])
-    case ReturnAggregateRoot(respondTo) =>
+      handlePersistEvents(ee.asInstanceOf[PersistEvents[AGGREGATE_ROOT]])
+    case GetAggregateRoot(respondTo) =>
       assureRestoredState()
       receiveReturnAggregateRoot(respondTo)
-    case EventsPublishAck(events) =>
+    case PublishEventsAck(events) =>
       markPublishedEvents(events)
   }
 
 
-  private def receiveEvent(eventsEnvelope: EventsEnvelope[AGGREGATE_ROOT]): Unit = {
+  private def handlePersistEvents(eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Unit = {
     println("Received event " + eventsEnvelope.events.head +" for version " + eventsEnvelope.expectedVersion +" when version was " + version)
     if (eventsEnvelope.expectedVersion == version) {
       persist(eventsEnvelope)(respond(eventsEnvelope.respondTo))
@@ -88,10 +88,10 @@ class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](id: AggregateId,
   }
 
 
-  private def persist(eventsEnvelope: EventsEnvelope[AGGREGATE_ROOT])(afterPersist: Seq[Event[AGGREGATE_ROOT]] => Unit): Unit = {
+  private def persist(eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(afterPersist: Seq[Event[AGGREGATE_ROOT]] => Unit): Unit = {
     import context.dispatcher
     Future {
-      eventStore.persistEvents(id, eventsEnvelope.asInstanceOf[EventsEnvelope[AnyRef]])
+      eventStore.persistEvents(id, eventsEnvelope.asInstanceOf[PersistEvents[AnyRef]])
       var mappedEvents = 0
       self ! EventsPersisted(eventsEnvelope.events.map { event =>
         val eventVersion = eventsEnvelope.expectedVersion.incrementBy(mappedEvents + 1)

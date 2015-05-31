@@ -3,7 +3,7 @@ package io.reactivecqrs.core
 import akka.actor.{Actor, ActorRef, Props}
 import akka.event.LoggingReceive
 import io.reactivecqrs.core.AggregateCommandBusActor.{FirstCommandEnvelope, FollowingCommandEnvelope}
-import io.reactivecqrs.core.AggregateRepositoryActor.{EventsEnvelope, ReturnAggregateRoot}
+import io.reactivecqrs.core.AggregateRepositoryActor.{PersistEvents, GetAggregateRoot}
 import io.reactivecqrs.core.CommandHandlerActor._
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId}
@@ -53,8 +53,8 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
           val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, success.asInstanceOf[Success[AGGREGATE_ROOT, RESPONSE]].response(aggregateId, AggregateVersion(success.events.size)))), "ResultAggregator")
 
           println("Created persistence actor " + repositoryActor.path)
-          repositoryActor ! EventsEnvelope[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, AggregateVersion.ZERO, success.asInstanceOf[Success[AGGREGATE_ROOT, RESPONSE]].events)
-          println("...sent " + EventsEnvelope[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, AggregateVersion.ZERO, success.asInstanceOf[Success[AGGREGATE_ROOT, RESPONSE]].events))
+          repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, AggregateVersion.ZERO, success.asInstanceOf[Success[AGGREGATE_ROOT, RESPONSE]].events)
+          println("...sent " + PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, AggregateVersion.ZERO, success.asInstanceOf[Success[AGGREGATE_ROOT, RESPONSE]].events))
         case failure: Failure[_, _] =>
           ???
       }
@@ -63,7 +63,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
   }
   
   def requestAggregateForCommandHandling[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE](envelope: InternalFollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE]): Unit = {
-    repositoryActor ! ReturnAggregateRoot(self)
+    repositoryActor ! GetAggregateRoot(self)
     storedCommand = Some(envelope)
   }
 
@@ -75,7 +75,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
       result match {
         case success: Success[_, _] =>
           val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, success.asInstanceOf[Success[AGGREGATE_ROOT, RESPONSE]].response(aggregateId, expectedVersion.incrementBy(success.events.size)))), "ResultAggregator")
-          repositoryActor ! EventsEnvelope[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, expectedVersion, success.asInstanceOf[Success[AGGREGATE_ROOT, RESPONSE]].events)
+          repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, expectedVersion, success.asInstanceOf[Success[AGGREGATE_ROOT, RESPONSE]].events)
           println("...sent")
         case failure: Failure[_, _] =>
           ???

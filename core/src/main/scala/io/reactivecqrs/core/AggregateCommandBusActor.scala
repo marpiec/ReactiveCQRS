@@ -7,7 +7,7 @@ import akka.util.Timeout
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId, CommandId}
 import io.reactivecqrs.core.AggregateCommandBusActor._
-import io.reactivecqrs.core.AggregateRepositoryActor.ReturnAggregateRoot
+import io.reactivecqrs.core.AggregateRepositoryActor.GetAggregateRoot
 import io.reactivecqrs.core.CommandHandlerActor.{InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
 import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
 
@@ -131,7 +131,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](val uidGenerator: ActorRef,
     println(s"Routes routeGetAggregateRoot $id")
     val respondTo = sender()
     val aggregateRepository = context.actorSelection(aggregateTypeSimpleName+"_AggregateRepository_"+id.asLong)
-    aggregateRepository ! ReturnAggregateRoot(respondTo)
+    aggregateRepository ! GetAggregateRoot(respondTo)
   }
 
   private def takeNextAggregateId: AggregateId = {
