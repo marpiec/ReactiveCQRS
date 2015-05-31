@@ -56,7 +56,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
           repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, AggregateVersion.ZERO, success.asInstanceOf[Success[AGGREGATE_ROOT, RESPONSE]].events)
           println("...sent " + PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, AggregateVersion.ZERO, success.asInstanceOf[Success[AGGREGATE_ROOT, RESPONSE]].events))
         case failure: Failure[_, _] =>
-          ???
+          ??? // TODO send failure message to requestor
       }
 
       storedCommand = None
@@ -78,7 +78,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
           repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, expectedVersion, success.asInstanceOf[Success[AGGREGATE_ROOT, RESPONSE]].events)
           println("...sent")
         case failure: Failure[_, _] =>
-          ???
+          ??? // TODO send failure message to requestor
       }
       storedCommand = None
   }
