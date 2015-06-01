@@ -6,6 +6,8 @@ import io.reactivecqrs.core.api.{EventIdentifier, IdentifiableEvent}
 import io.reactivecqrs.core.db.eventbus.EventBus
 import io.reactivecqrs.core.db.eventbus.EventBus.MessageToSend
 
+import scala.concurrent.Future
+
 object EventsBusActor {
 
   case class PublishEvents[AGGREGATE_ROOT](events: Seq[IdentifiableEvent[AGGREGATE_ROOT]])
@@ -21,8 +23,16 @@ class EventsBusActor(eventBus: EventBus) extends Actor {
 
   def handlePublishEvents(respondTo: ActorRef, events: Seq[IdentifiableEvent[Any]]): Unit = {
     println("EventsBusActor handlePublishEvents")
-    eventBus.persistMessages(events.map(event => MessageToSend[IdentifiableEvent[Any]]("some subscriber", event)))
-    respondTo ! PublishEventsAck(events.map(event => EventIdentifier(event.aggregateId, event.version)))
+
+    import context.dispatcher
+    Future {
+      eventBus.persistMessages(events.map(event => MessageToSend[IdentifiableEvent[Any]]("some subscriber", event)))
+      respondTo ! PublishEventsAck(events.map(event => EventIdentifier(event.aggregateId, event.version)))
+    } onFailure {
+      case e: Exception => throw new IllegalStateException(e)
+    }
+
+
   }
 
 }
