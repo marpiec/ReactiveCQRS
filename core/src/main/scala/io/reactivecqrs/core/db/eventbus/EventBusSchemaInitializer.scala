@@ -7,7 +7,11 @@ class EventBusSchemaInitializer {
 
    def initSchema(): Unit = {
      createMessagesToSendTable()
-     createMessagesToSendSequence()
+     try {
+      createMessagesToSendSequence()
+     } catch {
+       case e: Exception => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
+     }
    }
 
 

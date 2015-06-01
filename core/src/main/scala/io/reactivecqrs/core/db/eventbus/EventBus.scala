@@ -30,7 +30,7 @@ class EventBus(serialization: Serialization) {
       //TODO optimize, make it one query
       messages.foreach { message =>
         sql"""INSERT INTO messages_to_send (id, message_time, subscriber, message)
-             |VALUES (NEXTVAL('events_seq'), current_timestamp, ?, ?)""".stripMargin
+             |VALUES (NEXTVAL('messages_to_send_seq'), current_timestamp, ?, ?)""".stripMargin
           .bind(message.subscriber, serialization.serialize(message.message).get)
           .executeUpdate().apply()
       }
