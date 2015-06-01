@@ -1,16 +1,16 @@
 package io.reactivecqrs.core.db.eventbus
 
+import akka.actor.ActorRef
 import akka.serialization.Serialization
-import io.reactivecqrs.core.db.eventbus.EventBus.MessageToSend
+import io.reactivecqrs.api.AggregateVersion
+import io.reactivecqrs.api.id.AggregateId
+import io.reactivecqrs.core.EventsBusActor.EventToSend
 import scalikejdbc._
 
-object EventBus {
 
-  case class MessageToSend[MESSAGE](subscriber: String, message: MESSAGE)
-
-}
 
 class EventBus(serialization: Serialization) {
+
 
 
   val settings = ConnectionPoolSettings(
@@ -25,32 +25,28 @@ class EventBus(serialization: Serialization) {
     (new EventBusSchemaInitializer).initSchema()
   }
 
-  def persistMessages[MESSAGE <: AnyRef](messages: Seq[MessageToSend[MESSAGE]]): Unit = {
+  def persistMessages[MESSAGE <: AnyRef](messages: Seq[EventToSend]): Unit = {
     DB.autoCommit {implicit session =>
       //TODO optimize, make it one query
       messages.foreach { message =>
-        sql"""INSERT INTO messages_to_send (id, message_time, subscriber, message)
-             |VALUES (NEXTVAL('messages_to_send_seq'), current_timestamp, ?, ?)""".stripMargin
-          .bind(message.subscriber, serialization.serialize(message.message).get)
+        sql"""INSERT INTO messages_to_send (id, aggregate_id, version, message_time, subscriber, message)
+             |VALUES (NEXTVAL('messages_to_send_seq'), ?, ?, current_timestamp, ?, ?)""".stripMargin
+          .bind(message.aggregateId.asLong, message.version.asInt, message.subscriber.path.toString,
+            serialization.serialize(message.message).get)
           .executeUpdate().apply()
       }
     }
 
   }
 
-
-
-  def deleteSentMessages(messages: Seq[Int]): Unit = {
+  def deleteSentMessage(subscriber: ActorRef, aggregateId: AggregateId, version: AggregateVersion): Unit = {
     // TODO optimize SQL query so it will be one query
     DB.autoCommit { implicit session =>
-      messages.foreach {message =>
-        sql"""DELETE FROM messages_to_send WHERE id = ?"""
-          .bind(message)
-          .executeUpdate().apply()
-      }
+      sql"""DELETE FROM messages_to_send WHERE aggregate_id = ? AND version = ? AND subscriber = ?"""
+        .bind(aggregateId.asLong, version.asInt, subscriber.path.toString)
+        .executeUpdate().apply()
     }
   }
-
 
 
 }

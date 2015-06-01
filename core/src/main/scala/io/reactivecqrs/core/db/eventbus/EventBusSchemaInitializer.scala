@@ -19,6 +19,8 @@ class EventBusSchemaInitializer {
      sql"""
          CREATE TABLE IF NOT EXISTS messages_to_send (
            id BIGINT NOT NULL PRIMARY KEY,
+           aggregate_id BIGINT NOT NULL,
+           version INT NOT NULL,
            message_time TIMESTAMP NOT NULL,
            subscriber VARCHAR(256) NOT NULL,
            message bytea NOT NULL)
