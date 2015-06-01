@@ -34,6 +34,7 @@ object AggregateRepositoryActor {
 
 
 class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](id: AggregateId,
+                                                         eventStore: EventStore,
                                                          eventsBus: ActorRef,
                                                          eventHandlers: Map[String, AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]]) extends Actor {
 
@@ -44,8 +45,6 @@ class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](id: AggregateId,
   private var aggregateRoot: AGGREGATE_ROOT = _
   private var notRestored = true
 
-
-  private val eventStore = new EventStore
 
   private def assureRestoredState(): Unit = {
     if(notRestored) {

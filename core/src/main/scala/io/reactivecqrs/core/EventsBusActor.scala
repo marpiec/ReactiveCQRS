@@ -1,10 +1,10 @@
 package io.reactivecqrs.core
 
-import akka.actor.{ActorRef, Actor}
-import akka.actor.Actor.Receive
-import io.reactivecqrs.api.Event
-import io.reactivecqrs.core.EventsBusActor.{PublishEventsAck, PublishEvents}
-import io.reactivecqrs.core.api.{IdentifiableEvent, EventIdentifier}
+import akka.actor.{Actor, ActorRef}
+import io.reactivecqrs.core.EventsBusActor.{PublishEvents, PublishEventsAck}
+import io.reactivecqrs.core.api.{EventIdentifier, IdentifiableEvent}
+import io.reactivecqrs.core.db.eventbus.EventBus
+import io.reactivecqrs.core.db.eventbus.EventBus.MessageToSend
 
 object EventsBusActor {
 
@@ -13,13 +13,15 @@ object EventsBusActor {
 }
 
 
-class EventsBusActor extends Actor {
+class EventsBusActor(eventBus: EventBus) extends Actor {
 
   override def receive: Receive = {
     case PublishEvents(events) => handlePublishEvents(sender(), events)
   }
 
   def handlePublishEvents(respondTo: ActorRef, events: Seq[IdentifiableEvent[Any]]): Unit = {
+    println("EventsBusActor handlePublishEvents")
+    eventBus.persistMessages(events.map(event => MessageToSend[IdentifiableEvent[Any]]("some subscriber", event)))
     respondTo ! PublishEventsAck(events.map(event => EventIdentifier(event.aggregateId, event.version)))
   }
 

@@ -9,6 +9,7 @@ import io.reactivecqrs.api.id.{AggregateId, UserId, CommandId}
 import io.reactivecqrs.core.AggregateCommandBusActor._
 import io.reactivecqrs.core.AggregateRepositoryActor.GetAggregateRoot
 import io.reactivecqrs.core.CommandHandlerActor.{InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
+import io.reactivecqrs.core.db.eventstore.EventStore
 import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
 
 import scala.collection.mutable
@@ -40,9 +41,10 @@ object AggregateCommandBusActor {
   private case class AggregateActors(commandHandler: ActorRef, repository: ActorRef)
 
 
-  def apply[AGGREGATE_ROOT : ClassTag](aggregate: AggregateCommandBus[AGGREGATE_ROOT], uidGenerator: ActorRef, eventBus: ActorRef): Props = {
+  def apply[AGGREGATE_ROOT : ClassTag](aggregate: AggregateCommandBus[AGGREGATE_ROOT], uidGenerator: ActorRef, eventStore: EventStore, eventBus: ActorRef): Props = {
     Props(new AggregateCommandBusActor[AGGREGATE_ROOT](
       uidGenerator,
+      eventStore,
       aggregate.commandsHandlers.asInstanceOf[Seq[CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, _],_]]],
       aggregate.eventsHandlers.asInstanceOf[Seq[AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]]],
       eventBus))
@@ -55,6 +57,7 @@ object AggregateCommandBusActor {
 
 
 class AggregateCommandBusActor[AGGREGATE_ROOT](val uidGenerator: ActorRef,
+                                              eventStore: EventStore,
                                       val commandsHandlersSeq: Seq[CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, _],_]],
                                      val eventsHandlersSeq: Seq[AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]],
                                                 val eventBus: ActorRef)
@@ -104,7 +107,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](val uidGenerator: ActorRef,
   }
 
   private def createAggregateActors(aggregateId: AggregateId): AggregateActors = {
-    val repositoryActor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventBus, eventHandlers)),
+    val repositoryActor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventBus, eventHandlers)),
       aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong)
 
     val commandHandlerActor = context.actorOf(Props(new CommandHandlerActor[AGGREGATE_ROOT](aggregateId, repositoryActor, commandsHandlers)),

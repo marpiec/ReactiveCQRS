@@ -1,5 +1,6 @@
 package io.reactivecqrs.core.db.eventbus
 
+import akka.serialization.Serialization
 import io.reactivecqrs.core.db.eventbus.EventBus.MessageToSend
 import scalikejdbc._
 
@@ -9,7 +10,7 @@ object EventBus {
 
 }
 
-class EventBus {
+class EventBus(serialization: Serialization) {
 
 
   val settings = ConnectionPoolSettings(
@@ -24,17 +25,20 @@ class EventBus {
     (new EventBusSchemaInitializer).initSchema()
   }
 
-  def persistMessages(messages: Seq[MessageToSend[Any]]): Unit = {
+  def persistMessages[MESSAGE <: AnyRef](messages: Seq[MessageToSend[MESSAGE]]): Unit = {
     DB.autoCommit {implicit session =>
       //TODO optimize, make it one query
       messages.foreach { message =>
         sql"""INSERT INTO messages_to_send (id, message_time, subscriber, message)
              |VALUES (NEXTVAL('events_seq'), current_timestamp, ?, ?)""".stripMargin
-          .bind(message.subscriber, message.message.asInstanceOf[Array[Byte]])
+          .bind(message.subscriber, serialization.serialize(message.message).get)
+          .executeUpdate().apply()
       }
     }
 
   }
+
+
 
   def deleteSentMessages(messages: Seq[Int]): Unit = {
     // TODO optimize SQL query so it will be one query

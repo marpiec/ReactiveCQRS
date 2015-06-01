@@ -1,9 +1,11 @@
 package io.reactivecqrs.testdomain.spec
 
 import akka.actor.{ActorRef, Props}
+import akka.serialization.SerializationExtension
 import io.reactivecqrs.api.id.UserId
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.AggregateCommandBusActor.CommandEnvelope
+import io.reactivecqrs.core.db.eventbus.EventBus
 import io.reactivecqrs.core.db.eventstore.EventStore
 import io.reactivecqrs.core.uid.UidGeneratorActor
 import io.reactivecqrs.core.{EventsBusActor, AggregateCommandBusActor}
@@ -18,11 +20,16 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
     scenario("Creation and modification of user aggregate") {
 
-      (new EventStore).initSchema()
+      val eventStore = new EventStore
+      eventStore.initSchema()
       val userId = UserId(1L)
+      val serialization = SerializationExtension(system)
+      val eventBus = new EventBus(serialization)
+      eventBus.initSchema()
       val uidGenerator = system.actorOf(Props(new UidGeneratorActor), "uidGenerator")
-      val eventBus = system.actorOf(Props(new EventsBusActor), "eventBus")
-      val shoppingCartCommandBus: ActorRef = system.actorOf(AggregateCommandBusActor(new ShoppingCartCommandBus, uidGenerator, eventBus), "ShoppingCartCommandBus")
+      val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBus)), "eventBus")
+      val shoppingCartCommandBus: ActorRef = system.actorOf(
+        AggregateCommandBusActor(new ShoppingCartCommandBus, uidGenerator, eventStore, eventBusActor), "ShoppingCartCommandBus")
 
 
       step("Create shopping cart")
