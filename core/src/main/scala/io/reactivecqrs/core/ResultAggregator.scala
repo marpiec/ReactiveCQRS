@@ -6,11 +6,14 @@ import akka.event.LoggingReceive
 import scala.concurrent.duration._
 
 object ResultAggregator {
+
   case object AggregateModified
+
 }
 
-class ResultAggregator[RESULT]  (private val respondTo: ActorRef,
-                                  private val result: RESULT) extends Actor {
+class ResultAggregator[RESULT](private val respondTo: ActorRef,
+                               private val result: RESULT,
+                               private val timeout: FiniteDuration) extends Actor {
 
   import ResultAggregator._
 
@@ -24,8 +27,10 @@ class ResultAggregator[RESULT]  (private val respondTo: ActorRef,
   }
 
   // stop waiting after some time
+
   import context.dispatcher
-  context.system.scheduler.scheduleOnce(5 seconds) {
+
+  context.system.scheduler.scheduleOnce(timeout) {
     self ! PoisonPill
   }
 
