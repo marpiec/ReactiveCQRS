@@ -28,23 +28,26 @@ object CommandHandlerActor {
 class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
                                           repositoryActor: ActorRef,
                                           commandHandlers: Map[String, CommandHandler[AGGREGATE_ROOT, AbstractCommand[AGGREGATE_ROOT, Any], Any]]) extends Actor {
-
-  var storedCommand: Option[InternalFollowingCommandEnvelope[AGGREGATE_ROOT, _]] = None
   
 
   println(s"UserCommandHandler with $aggregateId created")
 
 
-
-  override def receive: Receive = LoggingReceive {
-    case envelope: InternalFirstCommandEnvelope[_, _] =>
-      handleFirstCommand[FirstCommand[AGGREGATE_ROOT, Any], Any](envelope.asInstanceOf[InternalFirstCommandEnvelope[AGGREGATE_ROOT, Any]])
-    case envelope: InternalFollowingCommandEnvelope[_,_] =>
-      requestAggregateForCommandHandling[Command[AGGREGATE_ROOT, Any], Any](envelope.asInstanceOf[InternalFollowingCommandEnvelope[AGGREGATE_ROOT, Any]])
-    case aggregate: Aggregate[_] => handleAggregate(aggregate.asInstanceOf[Aggregate[AGGREGATE_ROOT]])
+  private def waitingForCommand = LoggingReceive {
+    case commandEnvelope: InternalFirstCommandEnvelope[_, _] =>
+      handleFirstCommand(commandEnvelope.asInstanceOf[InternalFirstCommandEnvelope[AGGREGATE_ROOT, Any]])
+    case commandEnvelope: InternalFollowingCommandEnvelope[_, _] =>
+      requestAggregateForCommandHandling(commandEnvelope.asInstanceOf[InternalFollowingCommandEnvelope[AGGREGATE_ROOT, Any]])
   }
 
-  def handleFirstCommand[COMMAND <: FirstCommand[AGGREGATE_ROOT, RESPONSE], RESPONSE](envelope: InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE]) = envelope match {
+  private def waitingForAggregate(command: InternalFollowingCommandEnvelope[AGGREGATE_ROOT, _]) = LoggingReceive {
+    case aggregate: Aggregate[_] => handleFollowingCommand(command, aggregate.asInstanceOf[Aggregate[AGGREGATE_ROOT]])
+  }
+
+
+  override def receive = waitingForCommand
+
+  private def handleFirstCommand[COMMAND <: FirstCommand[AGGREGATE_ROOT, RESPONSE], RESPONSE](envelope: InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE]) = envelope match {
     case InternalFirstCommandEnvelope(respondTo, commandId, FirstCommandEnvelope(userId, command)) =>
       val result = commandHandlers(command.getClass.getName).asInstanceOf[CommandHandler[AGGREGATE_ROOT, COMMAND, RESPONSE]].handle(aggregateId, command.asInstanceOf[COMMAND])
 
@@ -59,15 +62,14 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
           ??? // TODO send failure message to requestor
       }
 
-      storedCommand = None
-  }
-  
-  def requestAggregateForCommandHandling[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE](envelope: InternalFollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE]): Unit = {
-    repositoryActor ! GetAggregateRoot(self)
-    storedCommand = Some(envelope)
   }
 
-  def handleFollowingCommand[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE](envelope: InternalFollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE], aggregate: Aggregate[AGGREGATE_ROOT]): Unit = envelope match {
+  private def requestAggregateForCommandHandling[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE](commandEnvelope: InternalFollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE]): Unit = {
+    context.become(waitingForAggregate(commandEnvelope))
+    repositoryActor ! GetAggregateRoot(self)
+  }
+
+  private def handleFollowingCommand[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE](envelope: InternalFollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE], aggregate: Aggregate[AGGREGATE_ROOT]): Unit = envelope match {
     case InternalFollowingCommandEnvelope(respondTo, commandId, FollowingCommandEnvelope(userId, commandAggregateId, expectedVersion, command)) =>
       val result = commandHandlers(command.getClass.getName).asInstanceOf[CommandHandler[AGGREGATE_ROOT, COMMAND, RESPONSE]]
         .handle(aggregateId, command.asInstanceOf[COMMAND])
@@ -80,15 +82,9 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
         case failure: Failure[_, _] =>
           ??? // TODO send failure message to requestor
       }
-      storedCommand = None
+      context.become(waitingForCommand)
   }
-  
-  def handleAggregate(aggregate: Aggregate[AGGREGATE_ROOT]): Unit = {
-    storedCommand match {
-      case Some(commandEnvelope) => handleFollowingCommand(commandEnvelope, aggregate)
-      case _ => throw new IllegalStateException("Received aggregate, but no command is available!")
-    }
-  }
+
 
 
 }
