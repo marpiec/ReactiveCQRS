@@ -91,7 +91,6 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   }
 
   private def routeFirstCommand[RESPONSE](firstCommandEnvelope: FirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE]): Unit = {
-    println("Routes first command")
     val commandId = takeNextCommandId
     val newAggregateId = takeNextAggregateId // Actor construction might be delayed so we need to store current aggregate id
     val respondTo = sender() // with sender this shouldn't be the case, but just to be sure
@@ -119,7 +118,6 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   }
 
   private def routeCommand[RESPONSE](commandEnvelope: FollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE]): Unit = {
-    println("Routes non first command")
     val commandId = takeNextCommandId
     val respondTo = sender()
 
@@ -131,7 +129,6 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
 
   private def routeGetAggregateRoot(id: AggregateId): Unit = {
-    println(s"Routes routeGetAggregateRoot $id")
     val respondTo = sender()
     val aggregateRepository = context.actorSelection(aggregateTypeSimpleName+"_AggregateRepository_"+id.asLong)
     aggregateRepository ! GetAggregateRoot(respondTo)

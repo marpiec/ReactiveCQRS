@@ -5,6 +5,7 @@ import _root_.io.reactivecqrs.api.{AggregateVersion, Event}
 import _root_.io.reactivecqrs.core.EventsBusActor.{MessageAck, SubscribeForEvents, SubscribedForEvents}
 import _root_.io.reactivecqrs.core.api.IdentifiableEvent
 import akka.actor.{Actor, ActorRef}
+import akka.event.LoggingReceive
 
 abstract class EventBasedProjectionActor extends Actor {
 
@@ -12,14 +13,14 @@ abstract class EventBasedProjectionActor extends Actor {
 
   protected val listeners: Map[Class[_], (AggregateId, AggregateVersion, Event[_]) => Unit]
 
-  override def receive: Receive = receiveSubscribed(listeners.keySet)
+  override def receive: Receive = LoggingReceive(receiveSubscribed(listeners.keySet))
 
   private def receiveSubscribed(typesRemaining: Set[Class[_]]): Receive = {
     case SubscribedForEvents(aggregateType) =>
       if(typesRemaining.size == 1 && typesRemaining.head.getName == aggregateType) {
-        context.become(receiveUpdate orElse receiveQuery)
+        context.become(LoggingReceive(receiveUpdate orElse receiveQuery))
       } else {
-        context.become(receiveSubscribed(typesRemaining.filterNot(_.getName == aggregateType)))
+        context.become(LoggingReceive(receiveSubscribed(typesRemaining.filterNot(_.getName == aggregateType))))
       }
   }
 

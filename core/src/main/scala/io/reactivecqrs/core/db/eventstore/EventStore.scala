@@ -25,7 +25,6 @@ class EventStore {
   }
 
   def persistEvents(aggregateId: AggregateId, eventsEnvelope: PersistEvents[AnyRef]): Unit = {
-    println("Persisting event " + aggregateId+ " " +eventsEnvelope)
     var versionsIncreased = 0
     DB.autoCommit { implicit session =>
       eventsEnvelope.events.foreach(event => {

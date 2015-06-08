@@ -65,10 +65,10 @@ class ReactiveTestDomainSpec extends CommonSpec {
       shoppingCart mustBe Aggregate(result.aggregateId, result.aggregateVersion, Some(ShoppingCart("Groceries", Vector(Item(2, "oranges")))))
 
 
+      Thread.sleep(100) // Projections are eventually consistent, so let's wait until they are consistent
+
       var cartsNames: Vector[String] = shoppingCartsListProjectionEventsBased ?? ShoppingCartsListProjection.GetAllCartsNames()
-
       cartsNames must have size 1
-
 
       cartsNames = shoppingCartsListProjectionAggregatesBased ?? ShoppingCartsListProjection.GetAllCartsNames()
 

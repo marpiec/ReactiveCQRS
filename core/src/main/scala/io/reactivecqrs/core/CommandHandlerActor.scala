@@ -30,11 +30,9 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
                                           repositoryActor: ActorRef,
                                           commandHandlers: Map[String, CommandHandler[AGGREGATE_ROOT, AbstractCommand[AGGREGATE_ROOT, Any], Any]]) extends Actor {
   
+  var resultAggregatorsCounter = 0
 
   val responseTimeout = 5.seconds
-
-  println(s"UserCommandHandler with $aggregateId created")
-
 
   private def waitingForCommand = LoggingReceive {
     case commandEnvelope: InternalFirstCommandEnvelope[_, _] =>
@@ -57,12 +55,17 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
       result match {
         case s: Success[_, _] =>
           val success: Success[AGGREGATE_ROOT, RESPONSE] = s.asInstanceOf[Success[AGGREGATE_ROOT, RESPONSE]]
-          val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, success.response(aggregateId, AggregateVersion(s.events.size)), responseTimeout)), "ResultAggregator")
+          val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, success.response(aggregateId, AggregateVersion(s.events.size)), responseTimeout)), nextResultAggregatorName)
           repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, AggregateVersion.ZERO, success.events)
         case failure: Failure[_, _] =>
           ??? // TODO send failure message to requestor
       }
 
+  }
+
+  private def nextResultAggregatorName[RESPONSE, COMMAND <: FirstCommand[AGGREGATE_ROOT, RESPONSE]]: String = {
+    resultAggregatorsCounter += 1
+    "ResultAggregator_" + resultAggregatorsCounter
   }
 
   private def requestAggregateForCommandHandling[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE](commandEnvelope: InternalFollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE]): Unit = {
@@ -78,7 +81,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
       result match {
         case s: Success[_, _] =>
           val success = s.asInstanceOf[Success[AGGREGATE_ROOT, RESPONSE]]
-          val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, success.response(aggregateId, expectedVersion.incrementBy(success.events.size)), responseTimeout)), "ResultAggregator")
+          val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, success.response(aggregateId, expectedVersion.incrementBy(success.events.size)), responseTimeout)), nextResultAggregatorName)
           repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, expectedVersion, success.events)
         case failure: Failure[_, _] =>
           ??? // TODO send failure message to requestor

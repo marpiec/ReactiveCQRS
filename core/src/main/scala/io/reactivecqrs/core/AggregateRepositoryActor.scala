@@ -46,7 +46,6 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
 
   private def assureRestoredState(): Unit = {
     if(notRestored) {
-      println("Restoring state")
       //TODO make it future
       eventStore.readAllEvents[AGGREGATE_ROOT](id)(handleEvent)
       notRestored = false
@@ -71,7 +70,6 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
 
 
   private def handlePersistEvents(eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Unit = {
-    println("Received event " + eventsEnvelope.events.head +" for version " + eventsEnvelope.expectedVersion +" when version was " + version)
     if (eventsEnvelope.expectedVersion == version) {
       persist(eventsEnvelope)(respond(eventsEnvelope.respondTo))
     } else {
@@ -81,7 +79,6 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
   }
 
   private def receiveReturnAggregateRoot(respondTo: ActorRef): Unit = {
-    println("ReturnAggregateRoot " + aggregateRoot)
     respondTo ! Aggregate[AGGREGATE_ROOT](id, version, Some(aggregateRoot))
   }
 
@@ -103,12 +100,10 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
   }
 
   private def respond(respondTo: ActorRef)(events: Seq[Event[AGGREGATE_ROOT]]): Unit = {
-    println("Updating state and responding")
     respondTo ! ResultAggregator.AggregateModified
   }
 
   private def handleEvent(event: Event[AGGREGATE_ROOT]): Unit = {
-    println("Updating state by handling " + event)
     aggregateRoot = eventHandlers(event.getClass.getName) match {
       case handler: FirstEventHandler[_, _] => handler.asInstanceOf[FirstEventHandler[AGGREGATE_ROOT, FirstEvent[AGGREGATE_ROOT]]].handle(event.asInstanceOf[FirstEvent[AGGREGATE_ROOT]])
       case handler: EventHandler[_, _] => handler.asInstanceOf[EventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]].handle(aggregateRoot, event)

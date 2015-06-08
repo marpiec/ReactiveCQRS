@@ -59,8 +59,6 @@ class EventsBusActor(eventBus: EventBus) extends Actor {
 
   private def handlePublishEvents(respondTo: ActorRef, aggregateType: String, events: Seq[IdentifiableEvent[Any]],
                                   aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregateRoot: Option[Any]): Unit = {
-    println("EventsBusActor handlePublishEvents")
-
     import context.dispatcher
     Future {
       val eventsToSend = subscribersForEvents.getOrElse(aggregateType, Vector.empty).flatMap(subscriber => {
