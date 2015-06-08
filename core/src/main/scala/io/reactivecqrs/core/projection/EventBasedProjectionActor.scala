@@ -6,39 +6,53 @@ import _root_.io.reactivecqrs.core.EventsBusActor.{MessageAck, SubscribeForEvent
 import _root_.io.reactivecqrs.core.api.IdentifiableEvent
 import akka.actor.{Actor, ActorRef}
 import akka.event.LoggingReceive
+import scala.reflect.runtime.universe._
+
+// listenerField exist because it could not be covariant type, or something like that
+class EventListener[+AGGREGATE_ROOT: TypeTag](listenerField: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT]) => Unit){
+  def listener = listenerField.asInstanceOf[(AggregateId, AggregateVersion, Event[_]) => Unit]
+  def aggregateRootType = typeOf[AGGREGATE_ROOT]
+}
+
+object EventListener {
+  implicit def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT]) => Unit): EventListener[AGGREGATE_ROOT] =
+    new EventListener(listener)
+}
+
+
 
 abstract class EventBasedProjectionActor extends Actor {
 
   protected val eventBusActor: ActorRef
 
-  protected val listeners: Map[Class[_], (AggregateId, AggregateVersion, Event[_]) => Unit]
+  protected val listeners:List[EventListener[Any]]
+  
+  private lazy val listenersMap =
+    listeners.map(l => (l.aggregateRootType.toString, l.listener)).toMap
 
-  override def receive: Receive = LoggingReceive(receiveSubscribed(listeners.keySet))
+  override def receive: Receive = LoggingReceive(receiveSubscribed(listenersMap.keySet))
 
-  private def receiveSubscribed(typesRemaining: Set[Class[_]]): Receive = {
+  private def receiveSubscribed(typesRemaining: Set[String]): Receive = {
     case SubscribedForEvents(aggregateType) =>
-      if(typesRemaining.size == 1 && typesRemaining.head.getName == aggregateType) {
+      if(typesRemaining.size == 1 && typesRemaining.head == aggregateType) {
         context.become(LoggingReceive(receiveUpdate orElse receiveQuery))
       } else {
-        context.become(LoggingReceive(receiveSubscribed(typesRemaining.filterNot(_.getName == aggregateType))))
+        context.become(LoggingReceive(receiveSubscribed(typesRemaining.filterNot(_ == aggregateType))))
       }
   }
 
   private def receiveUpdate: Receive = {
     case e: IdentifiableEvent[_] =>
-      listeners.find(_._1.getName == e.aggregateType).get._2(e.aggregateId, e.version, e.event)
+      listenersMap(e.aggregateType)(e.aggregateId, e.version, e.event)
       sender() ! MessageAck(self, e.aggregateId, e.version)
   }
 
   protected def receiveQuery: Receive
 
   override def preStart() {
-    listeners.keySet.foreach { aggregateType =>
-      eventBusActor ! SubscribeForEvents(aggregateType.getName, self)
+    listenersMap.keySet.foreach { aggregateType =>
+      eventBusActor ! SubscribeForEvents(aggregateType, self)
     }
-
   }
-
-
 
 }
