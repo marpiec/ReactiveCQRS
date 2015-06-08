@@ -17,7 +17,7 @@ class ShoppingCartsListProjection(val eventBusActor: ActorRef)
   
   private var shoppingCartsNames = Map[AggregateId, String]()
 
-  def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, event: Event[_]): Unit = event match {
+  private def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, event: Event[_]): Unit = event match {
     case ShoppingCartCreated(name) => shoppingCartsNames += aggregateId -> name
     case ItemAdded(name) => ()
     case ItemRemoved(id) => ()
