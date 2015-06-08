@@ -3,16 +3,14 @@ package io.reactivecqrs.testdomain.shoppingcart
 import akka.actor.ActorRef
 import io.reactivecqrs.api.{Event, AggregateVersion}
 import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.core.projection.EventBasedProjectionActor
+import io.reactivecqrs.core.projection.{AggregateRootBasedProjectionActor, EventBasedProjectionActor}
 import io.reactivecqrs.testdomain.shoppingcart.ShoppingCartsListProjection.GetAllCartsNames
 
 object ShoppingCartsListProjection {
   case class GetAllCartsNames()
 }
 
-class ShoppingCartsListProjection(val eventBusActor: ActorRef) 
-  extends EventBasedProjectionActor {
-
+class ShoppingCartsListProjectionEventsBased(val eventBusActor: ActorRef) extends EventBasedProjectionActor {
   protected val listeners = Map[Class[_], (AggregateId, AggregateVersion, Event[_]) => Unit](classOf[ShoppingCart] -> shoppingCartUpdate _)
   
   private var shoppingCartsNames = Map[AggregateId, String]()
@@ -22,6 +20,24 @@ class ShoppingCartsListProjection(val eventBusActor: ActorRef)
     case ItemAdded(name) => ()
     case ItemRemoved(id) => ()
     case ShoppingCartDeleted() => shoppingCartsNames -= aggregateId
+  }
+
+  override protected def receiveQuery: Receive = {
+    case GetAllCartsNames() => sender() ! shoppingCartsNames.values.toVector
+  }
+}
+
+
+
+class ShoppingCartsListProjectionAggregatesBased(val eventBusActor: ActorRef) extends AggregateRootBasedProjectionActor {
+  protected val listeners = Map[Class[_], (AggregateId, AggregateVersion, Option[_]) => Unit](classOf[ShoppingCart] -> shoppingCartUpdate _)
+
+  private var shoppingCartsNames = Map[AggregateId, String]()
+
+  private def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, aggregateRoot: Option[_]): Unit =
+    aggregateRoot.asInstanceOf[Option[ShoppingCart]] match {
+    case Some(a) => shoppingCartsNames += aggregateId -> a.name
+    case None => shoppingCartsNames -= aggregateId
   }
 
   override protected def receiveQuery: Receive = {

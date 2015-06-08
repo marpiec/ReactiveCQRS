@@ -1,19 +1,17 @@
 package io.reactivecqrs.core
 
-import io.reactivecqrs.core.db.eventstore.EventStore
-import io.reactivecqrs.core.api.{IdentifiableEvent, EventIdentifier}
-import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.{AggregateId, UserId, CommandId}
-import io.reactivecqrs.core.EventsBusActor.{PublishEventsAck, PublishEvents}
 import akka.actor.{Actor, ActorRef}
 import akka.event.LoggingReceive
+import io.reactivecqrs.api._
+import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
+import io.reactivecqrs.core.EventsBusActor.{PublishEvents, PublishEventsAck}
+import io.reactivecqrs.core.api.{EventIdentifier, IdentifiableEvent}
+import io.reactivecqrs.core.db.eventstore.EventStore
 
 import scala.concurrent.Future
 import scala.reflect._
 
-
-
-
+import scala.reflect.runtime.universe._
 
 object AggregateRepositoryActor {
   case class GetAggregateRoot(respondTo: ActorRef)
@@ -33,7 +31,7 @@ object AggregateRepositoryActor {
 }
 
 
-class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](id: AggregateId,
+class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
                                                          eventStore: EventStore,
                                                          eventsBus: ActorRef,
                                                          eventHandlers: Map[String, AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]]) extends Actor {
@@ -59,8 +57,8 @@ class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](id: AggregateId,
 
   override def receive = LoggingReceive {
     case ep: EventsPersisted[_] =>
-      eventsBus ! PublishEvents(classTag[AGGREGATE_ROOT].toString(), ep.events)
       ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.foreach(eventIdentifier => handleEvent(eventIdentifier.event))
+      eventsBus ! PublishEvents(classTag[AGGREGATE_ROOT].toString(), ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events, id, version, Option(aggregateRoot))
     case ee: PersistEvents[_] =>
       assureRestoredState()
       handlePersistEvents(ee.asInstanceOf[PersistEvents[AGGREGATE_ROOT]])
@@ -84,7 +82,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](id: AggregateId,
 
   private def receiveReturnAggregateRoot(respondTo: ActorRef): Unit = {
     println("ReturnAggregateRoot " + aggregateRoot)
-    respondTo ! Aggregate(id, version, Some(aggregateRoot))
+    respondTo ! Aggregate[AGGREGATE_ROOT](id, version, Some(aggregateRoot))
   }
 
 

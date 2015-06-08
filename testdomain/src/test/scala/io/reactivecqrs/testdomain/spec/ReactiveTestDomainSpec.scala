@@ -31,7 +31,10 @@ class ReactiveTestDomainSpec extends CommonSpec {
       val shoppingCartCommandBus: ActorRef = system.actorOf(
         AggregateCommandBusActor(new ShoppingCartCommandBus, uidGenerator, eventStore, eventBusActor), "ShoppingCartCommandBus")
 
-      val shoppingCartsListProjection = system.actorOf(Props(new ShoppingCartsListProjection(eventBusActor)), "ShoppingCartsListProjection")
+      val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusActor)), "ShoppingCartsListProjectionEventsBased")
+      val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusActor)), "ShoppingCartsListProjectionAggregatesBased")
+
+
 
 
       step("Create shopping cart")
@@ -62,7 +65,12 @@ class ReactiveTestDomainSpec extends CommonSpec {
       shoppingCart mustBe Aggregate(result.aggregateId, result.aggregateVersion, Some(ShoppingCart("Groceries", Vector(Item(2, "oranges")))))
 
 
-      val cartsNames: Vector[String] = shoppingCartsListProjection ?? ShoppingCartsListProjection.GetAllCartsNames()
+      var cartsNames: Vector[String] = shoppingCartsListProjectionEventsBased ?? ShoppingCartsListProjection.GetAllCartsNames()
+
+      cartsNames must have size 1
+
+
+      cartsNames = shoppingCartsListProjectionAggregatesBased ?? ShoppingCartsListProjection.GetAllCartsNames()
 
       cartsNames must have size 1
 

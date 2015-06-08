@@ -4,7 +4,7 @@ import akka.actor.ActorRef
 import akka.serialization.Serialization
 import io.reactivecqrs.api.AggregateVersion
 import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.core.EventsBusActor.EventToSend
+import io.reactivecqrs.core.EventsBusActor.MessageToSend
 import scalikejdbc._
 
 
@@ -25,7 +25,7 @@ class EventBus(serialization: Serialization) {
     (new EventBusSchemaInitializer).initSchema()
   }
 
-  def persistMessages[MESSAGE <: AnyRef](messages: Seq[EventToSend]): Unit = {
+  def persistMessages[MESSAGE <: AnyRef](messages: Seq[MessageToSend]): Unit = {
     DB.autoCommit {implicit session =>
       //TODO optimize, make it one query
       messages.foreach { message =>

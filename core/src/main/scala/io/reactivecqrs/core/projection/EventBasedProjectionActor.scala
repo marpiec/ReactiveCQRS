@@ -2,7 +2,7 @@ package io.reactivecqrs.core.projection
 
 import _root_.io.reactivecqrs.api.id.AggregateId
 import _root_.io.reactivecqrs.api.{AggregateVersion, Event}
-import _root_.io.reactivecqrs.core.EventsBusActor.{EventReceived, SubscribeForEvents, SubscribedForEvents}
+import _root_.io.reactivecqrs.core.EventsBusActor.{MessageAck, SubscribeForEvents, SubscribedForEvents}
 import _root_.io.reactivecqrs.core.api.IdentifiableEvent
 import akka.actor.{Actor, ActorRef}
 
@@ -26,7 +26,7 @@ abstract class EventBasedProjectionActor extends Actor {
   private def receiveUpdate: Receive = {
     case e: IdentifiableEvent[_] =>
       listeners.find(_._1.getName == e.aggregateType).get._2(e.aggregateId, e.version, e.event)
-      sender() ! EventReceived(self, e.aggregateId, e.version)
+      sender() ! MessageAck(self, e.aggregateId, e.version)
   }
 
   protected def receiveQuery: Receive
