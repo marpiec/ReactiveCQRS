@@ -59,7 +59,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](id: AggregateId,
 
   override def receive = LoggingReceive {
     case ep: EventsPersisted[_] =>
-      eventsBus ! PublishEvents(ep.events)
+      eventsBus ! PublishEvents(classTag[AGGREGATE_ROOT].toString(), ep.events)
       ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.foreach(eventIdentifier => handleEvent(eventIdentifier.event))
     case ee: PersistEvents[_] =>
       assureRestoredState()

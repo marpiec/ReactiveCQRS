@@ -1,12 +1,10 @@
 package io.reactivecqrs.testdomain.spec
 
-import akka.actor.{Actor, ActorRef, Props}
+import akka.actor.{ActorRef, Props}
 import akka.serialization.SerializationExtension
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.UserId
 import io.reactivecqrs.core.AggregateCommandBusActor.CommandEnvelope
-import io.reactivecqrs.core.EventsBusActor.{EventReceived, SubscribeForEvents}
-import io.reactivecqrs.core.api.IdentifiableEvent
 import io.reactivecqrs.core.db.eventbus.EventBus
 import io.reactivecqrs.core.db.eventstore.EventStore
 import io.reactivecqrs.core.uid.UidGeneratorActor
@@ -14,14 +12,6 @@ import io.reactivecqrs.core.{AggregateCommandBusActor, EventsBusActor}
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testdomain.spec.utils.CommonSpec
 
-class SampleProjection extends Actor {
-  override def receive: Receive = {
-    case e: IdentifiableEvent[_] =>
-      println("SampleProjection received event " + e)
-      sender() ! EventReceived(self, e.aggregateId, e.version)
-    case e => println("SampleProjection received " + e);
-  }
-}
 
 
 class ReactiveTestDomainSpec extends CommonSpec {
@@ -40,10 +30,6 @@ class ReactiveTestDomainSpec extends CommonSpec {
       val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBus)), "eventBus")
       val shoppingCartCommandBus: ActorRef = system.actorOf(
         AggregateCommandBusActor(new ShoppingCartCommandBus, uidGenerator, eventStore, eventBusActor), "ShoppingCartCommandBus")
-
-      val sampleProjection = system.actorOf(Props(new SampleProjection), "SampleProjection")
-
-      eventBusActor ! SubscribeForEvents(sampleProjection)
 
       val shoppingCartsListProjection = system.actorOf(Props(new ShoppingCartsListProjection(eventBusActor)), "ShoppingCartsListProjection")
 

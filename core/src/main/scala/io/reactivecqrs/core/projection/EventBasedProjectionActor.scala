@@ -1,12 +1,14 @@
 package io.reactivecqrs.core.projection
 
 import akka.actor.{ActorRef, Actor}
-import io.reactivecqrs.api.{AggregateVersion, Event}
-import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.core.EventsBusActor.{SubscribedForEvents, SubscribeForEvents, EventReceived}
-import io.reactivecqrs.core.api.IdentifiableEvent
+import _root_.io.reactivecqrs.api.{AggregateVersion, Event}
+import _root_.io.reactivecqrs.api.id.AggregateId
+import _root_.io.reactivecqrs.core.EventsBusActor.{SubscribedForEvents, SubscribeForEvents, EventReceived}
+import _root_.io.reactivecqrs.core.api.IdentifiableEvent
 
-abstract class EventBasedProjectionActor[AGGREGATE_ROOT] extends Actor {
+import scala.reflect._
+
+abstract class EventBasedProjectionActor[AGGREGATE_ROOT: ClassTag] extends Actor {
 
   protected val eventBusActor: ActorRef
 
@@ -27,7 +29,7 @@ abstract class EventBasedProjectionActor[AGGREGATE_ROOT] extends Actor {
   protected def receiveQuery: Receive
 
   override def preStart() {
-    eventBusActor ! SubscribeForEvents(self)
+    eventBusActor ! SubscribeForEvents(classTag[AGGREGATE_ROOT].toString(), self)
   }
 
 
