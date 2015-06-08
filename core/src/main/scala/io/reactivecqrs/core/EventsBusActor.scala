@@ -16,7 +16,7 @@ object EventsBusActor {
 
 
   case class SubscribeForEvents(aggregateType: String, subscriber: ActorRef) // Todo add message classifier?
-  case class SubscribedForEvents()
+  case class SubscribedForEvents(aggregateType: String)
 
   case class MessagesPersisted(aggregateType: String, messages: Seq[EventToSend])
 
@@ -40,7 +40,7 @@ class EventsBusActor(eventBus: EventBus) extends Actor {
   private def handlerSubscribeForEvents(aggregateType: String, subscriber: ActorRef): Unit = {
     val subscribersForAggregateType = subscribersForEvents.getOrElse(aggregateType, Vector())
     subscribersForEvents += aggregateType -> (subscribersForAggregateType :+ subscriber)
-    subscriber ! SubscribedForEvents()
+    subscriber ! SubscribedForEvents(aggregateType)
   }
 
   private def handlePublishEvents(respondTo: ActorRef, aggregateType: String, events: Seq[IdentifiableEvent[Any]]): Unit = {

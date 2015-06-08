@@ -96,7 +96,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT: ClassTag](id: AggregateId,
       self ! EventsPersisted(eventsEnvelope.events.map { event =>
         val eventVersion = eventsEnvelope.expectedVersion.incrementBy(mappedEvents + 1)
         mappedEvents += 1
-        IdentifiableEvent(eventsEnvelope.aggregateId, eventVersion, event)
+        IdentifiableEvent(event.aggregateRootType.toString, eventsEnvelope.aggregateId, eventVersion, event)
       })
       afterPersist(eventsEnvelope.events)
     } onFailure {

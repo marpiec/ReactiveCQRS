@@ -10,11 +10,14 @@ object ShoppingCartsListProjection {
   case class GetAllCartsNames()
 }
 
-class ShoppingCartsListProjection(val eventBusActor: ActorRef) extends EventBasedProjectionActor[ShoppingCart] {
+class ShoppingCartsListProjection(val eventBusActor: ActorRef) 
+  extends EventBasedProjectionActor {
 
+  protected val listeners = Map[Class[_], (AggregateId, AggregateVersion, Event[_]) => Unit](classOf[ShoppingCart] -> shoppingCartUpdate _)
+  
   private var shoppingCartsNames = Map[AggregateId, String]()
 
-  override protected def newEventReceived(aggregateId: AggregateId, version: AggregateVersion, event: Event[ShoppingCart]): Unit = event match {
+  def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, event: Event[_]): Unit = event match {
     case ShoppingCartCreated(name) => shoppingCartsNames += aggregateId -> name
     case ItemAdded(name) => ()
     case ItemRemoved(id) => ()
