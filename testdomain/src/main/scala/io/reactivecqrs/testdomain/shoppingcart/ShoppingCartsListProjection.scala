@@ -1,9 +1,9 @@
 package io.reactivecqrs.testdomain.shoppingcart
 
 import akka.actor.ActorRef
-import io.reactivecqrs.api.{Event, AggregateVersion}
 import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.core.projection.{AggregateRootBasedProjectionActor, EventBasedProjectionActor}
+import io.reactivecqrs.api.{AggregateVersion, Event}
+import io.reactivecqrs.core.projection.ProjectionActor
 import io.reactivecqrs.testdomain.shoppingcart.ShoppingCartsListProjection.GetAllCartsNames
 
 
@@ -11,9 +11,9 @@ object ShoppingCartsListProjection {
   case class GetAllCartsNames()
 }
 
-class ShoppingCartsListProjectionEventsBased(val eventBusActor: ActorRef) extends EventBasedProjectionActor {
+class ShoppingCartsListProjectionEventsBased(val eventBusActor: ActorRef) extends ProjectionActor {
 
-  override protected val listeners = List(Listener(shoppingCartUpdate))
+  protected val listeners = List(EventListener(shoppingCartUpdate))
 
   private var shoppingCartsNames = Map[AggregateId, String]()
 
@@ -31,8 +31,8 @@ class ShoppingCartsListProjectionEventsBased(val eventBusActor: ActorRef) extend
 
 
 
-class ShoppingCartsListProjectionAggregatesBased(val eventBusActor: ActorRef) extends AggregateRootBasedProjectionActor {
-  protected val listeners =  List(Listener(shoppingCartUpdate))
+class ShoppingCartsListProjectionAggregatesBased(val eventBusActor: ActorRef) extends ProjectionActor {
+  protected val listeners =  List(AggregateListener(shoppingCartUpdate))
 
   private var shoppingCartsNames = Map[AggregateId, String]()
 
