@@ -6,7 +6,7 @@ import io.reactivecqrs.api.{FirstEventHandler, EventHandler}
 
 object ShoppingCartCreatedHandler extends FirstEventHandler[ShoppingCart, ShoppingCartCreated] {
   override def handle(event: ShoppingCartCreated): ShoppingCart = {
-    ShoppingCart(event.name, Vector())
+    ShoppingCart(event.name, items = Vector())
   }
 }
 

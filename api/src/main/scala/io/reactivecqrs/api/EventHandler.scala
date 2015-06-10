@@ -6,13 +6,11 @@ sealed abstract class AbstractEventHandler[AGGREGATE_ROOT, EVENT <: Event[AGGREG
   val eventClassName = eventClassTag.runtimeClass.getName
 }
 
-abstract class EventHandler[AGGREGATE_ROOT, EVENT <: Event[AGGREGATE_ROOT]](implicit eventClassTag: ClassTag[EVENT])
-  extends AbstractEventHandler[AGGREGATE_ROOT, EVENT]{
+abstract class EventHandler[AGGREGATE_ROOT, EVENT <: Event[AGGREGATE_ROOT]: ClassTag] extends AbstractEventHandler[AGGREGATE_ROOT, EVENT]{
   def handle(aggregateRoot: AGGREGATE_ROOT, event: EVENT): AGGREGATE_ROOT
 }
 
 
-abstract class FirstEventHandler[AGGREGATE_ROOT, EVENT <: FirstEvent[AGGREGATE_ROOT]](implicit eventClassTag: ClassTag[EVENT])
-  extends AbstractEventHandler[AGGREGATE_ROOT, EVENT] {
+abstract class FirstEventHandler[AGGREGATE_ROOT, EVENT <: FirstEvent[AGGREGATE_ROOT]: ClassTag] extends AbstractEventHandler[AGGREGATE_ROOT, EVENT] {
   def handle(event: EVENT): AGGREGATE_ROOT
 }
