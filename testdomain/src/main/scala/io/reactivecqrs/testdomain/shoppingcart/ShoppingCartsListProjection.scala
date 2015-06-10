@@ -15,13 +15,19 @@ class ShoppingCartsListProjectionEventsBased(val eventBusActor: ActorRef) extend
 
   protected val listeners = List(EventListener(shoppingCartUpdate))
 
+  private var aggregatesApplied = Map[AggregateId, AggregateVersion]()
   private var shoppingCartsNames = Map[AggregateId, String]()
 
   private def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, event: Event[ShoppingCart]): Unit = event match {
-    case ShoppingCartCreated(name) => shoppingCartsNames += aggregateId -> name
-    case ItemAdded(name) => ()
-    case ItemRemoved(id) => ()
-    case ShoppingCartDeleted() => shoppingCartsNames -= aggregateId
+    case ShoppingCartCreated(name) =>
+      shoppingCartsNames += aggregateId -> name
+      aggregatesApplied += aggregateId -> version
+    case ItemAdded(name) =>
+      aggregatesApplied += aggregateId -> version
+    case ItemRemoved(id) =>
+      aggregatesApplied += aggregateId -> version
+    case ShoppingCartDeleted() =>
+      shoppingCartsNames -= aggregateId
   }
 
   override protected def receiveQuery: Receive = {
@@ -34,11 +40,16 @@ class ShoppingCartsListProjectionEventsBased(val eventBusActor: ActorRef) extend
 class ShoppingCartsListProjectionAggregatesBased(val eventBusActor: ActorRef) extends ProjectionActor {
   protected val listeners =  List(AggregateListener(shoppingCartUpdate))
 
+  private var aggregatesApplied = Map[AggregateId, AggregateVersion]()
   private var shoppingCartsNames = Map[AggregateId, String]()
 
   private def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, aggregateRoot: Option[ShoppingCart]): Unit = aggregateRoot match {
-    case Some(a) => shoppingCartsNames += aggregateId -> a.name
-    case None => shoppingCartsNames -= aggregateId
+    case Some(a) =>
+      shoppingCartsNames += aggregateId -> a.name
+      aggregatesApplied += aggregateId -> version
+    case None =>
+      shoppingCartsNames -= aggregateId
+      aggregatesApplied += aggregateId -> version
   }
 
   override protected def receiveQuery: Receive = {
