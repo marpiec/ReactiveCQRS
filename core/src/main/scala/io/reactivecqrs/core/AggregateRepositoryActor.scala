@@ -57,7 +57,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
   override def receive = LoggingReceive {
     case ep: EventsPersisted[_] =>
       ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.foreach(eventIdentifier => handleEvent(eventIdentifier.event))
-      eventsBus ! PublishEvents(classTag[AGGREGATE_ROOT].toString(), ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events, id, version, Option(aggregateRoot))
+      eventsBus ! PublishEvents(AggregateType(classTag[AGGREGATE_ROOT].toString), ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events, id, version, Option(aggregateRoot))
     case ee: PersistEvents[_] =>
       assureRestoredState()
       handlePersistEvents(ee.asInstanceOf[PersistEvents[AGGREGATE_ROOT]])
@@ -91,7 +91,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
       self ! EventsPersisted(eventsEnvelope.events.map { event =>
         val eventVersion = eventsEnvelope.expectedVersion.incrementBy(mappedEvents + 1)
         mappedEvents += 1
-        IdentifiableEvent(event.aggregateRootType.toString, eventsEnvelope.aggregateId, eventVersion, event)
+        IdentifiableEvent(AggregateType(event.aggregateRootType.toString), eventsEnvelope.aggregateId, eventVersion, event)
       })
       afterPersist(eventsEnvelope.events)
     } onFailure {

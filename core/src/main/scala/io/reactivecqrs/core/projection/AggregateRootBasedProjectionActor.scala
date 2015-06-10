@@ -3,7 +3,7 @@ package io.reactivecqrs.core.projection
 import akka.actor.{Actor, ActorRef}
 import akka.event.LoggingReceive
 import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.api.{AggregateVersion, AggregateWithType}
+import io.reactivecqrs.api.{AggregateType, AggregateVersion, AggregateWithType}
 import io.reactivecqrs.core.EventsBusActor.{MessageAck, SubscribeForAggregates, SubscribedForAggregates}
 
 import scala.reflect.runtime.universe._
@@ -28,7 +28,7 @@ abstract class AggregateRootBasedProjectionActor extends Actor {
 
   private lazy val listenersMap = {
     validateListeners()
-    listeners.map(l => (l.aggregateRootType.toString, l.listener)).toMap
+    listeners.map(l => (AggregateType(l.aggregateRootType.toString), l.listener)).toMap
   }
 
   override def receive: Receive = LoggingReceive(receiveSubscribed(listenersMap.keySet))
@@ -39,7 +39,7 @@ abstract class AggregateRootBasedProjectionActor extends Actor {
     }
   }
 
-  private def receiveSubscribed(typesRemaining: Set[String]): Receive = {
+  private def receiveSubscribed(typesRemaining: Set[AggregateType]): Receive = {
     case SubscribedForAggregates(aggregateType) =>
       if(typesRemaining.size == 1 && typesRemaining.head == aggregateType) {
         context.become(LoggingReceive(receiveUpdate orElse receiveQuery))
