@@ -16,8 +16,8 @@ class ShoppingCartCommandBus extends AggregateCommandBus[ShoppingCart] {
 //
 //  }
 
-  val commandHandlers:ShoppingCart => PartialFunction[Any, CommandHandlingResult[Any]] = (aggregateRoot: ShoppingCart) => {
-    case command: CreateShoppingCart => createShoppingCart(aggregateRoot)(command)
+  override def commandHandlers = (shoppingCart: ShoppingCart) => {
+    case command: CreateShoppingCart => createShoppingCart(shoppingCart)(command)
     case command: AddItem => addItem(command)
     case command: RemoveItem => removeItem(command)
     case command: DeleteShoppingCart => deleteShoppingCart()(command)
