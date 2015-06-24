@@ -9,8 +9,8 @@ abstract class AggregateCommandBus[AGGREGATE_ROOT] {
   val initialState: AGGREGATE_ROOT
 
 
-  type SingleHandler = Function2[AGGREGATE_ROOT, _ <: Command[AGGREGATE_ROOT, Any], CommandHandlingResult[Any]]
-  type CommandHandler = PartialFunction[Any, SingleHandler]
+  type SingleHandler = Function1[_ <: Command[AGGREGATE_ROOT, Any], CommandHandlingResult[Any]]
+  type CommandHandler = AGGREGATE_ROOT => PartialFunction[Any, CommandHandlingResult[Any]]
   type CommandHandlerWrapper = Function[CommandHandler, CommandHandler]
   
 

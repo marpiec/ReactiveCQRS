@@ -6,27 +6,21 @@ import CommandsHandlers._
 
 class ShoppingCartCommandBus extends AggregateCommandBus[ShoppingCart] {
 //
-//  addCommandHandler[CreateShoppingCart](createShoppingCart _)
-//  addCommandHandler[AddItem](addItem() _)
-//  addCommandHandler[RemoveItem](removeItem() _)
-//  addCommandHandler[DeleteShoppingCart](deleteShoppingCart() _)
+//  def isAllowed(function: CommandHandlingResult[Any]) = {
+//
+//    if(true) {
+//      function
+//    } else {
+//      (a: ShoppingCart, a2: Any) => Failure()
+//    }
+//
+//  }
 
-
-  def isAllowed(function: SingleHandler) = {
-
-    if(true) {
-      function
-    } else {
-      (a: ShoppingCart, a2: Any) => Failure()
-    }
-
-  }
-
-  def commandHandlers = {
-    case _:CreateShoppingCart => isAllowed(createShoppingCart())
-    case _:AddItem => addItem()
-    case _:RemoveItem => removeItem()
-    case _:DeleteShoppingCart => deleteShoppingCart()
+  val commandHandlers:ShoppingCart => PartialFunction[Any, CommandHandlingResult[Any]] = (aggregateRoot: ShoppingCart) => {
+    case command: CreateShoppingCart => createShoppingCart(aggregateRoot)(command)
+    case command: AddItem => addItem(command)
+    case command: RemoveItem => removeItem(command)
+    case command: DeleteShoppingCart => deleteShoppingCart()(command)
   }
 
   override val eventsHandlers = Seq(
@@ -35,4 +29,5 @@ class ShoppingCartCommandBus extends AggregateCommandBus[ShoppingCart] {
     ItemRemovedHandler)
 
   override val initialState: ShoppingCart = ShoppingCart("", Vector())
+
 }

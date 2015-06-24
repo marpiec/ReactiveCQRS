@@ -61,7 +61,7 @@ object AggregateCommandBusActor {
 
 class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRef,
                                               eventStore: EventStore,
-                                      val commandsHandlers: PartialFunction[Any, _ >: Command[AGGREGATE_ROOT, Any] => CommandHandlingResult[Any]],
+                                      val commandsHandlers: AGGREGATE_ROOT => PartialFunction[Any, CommandHandlingResult[Any]],
                                      val eventsHandlersSeq: Seq[AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]],
                                                 val eventBus: ActorRef,
                                                         val initialState: AGGREGATE_ROOT)
@@ -119,7 +119,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
     val commandHandlerActor = context.actorOf(Props(new CommandHandlerActor[AGGREGATE_ROOT](
       aggregateId, repositoryActor,
-      commandsHandlers.asInstanceOf[PartialFunction[Any, Function2[AGGREGATE_ROOT, Command[AGGREGATE_ROOT, Any], CommandHandlingResult[Any]]]],
+      commandsHandlers.asInstanceOf[AGGREGATE_ROOT => PartialFunction[Any, CommandHandlingResult[Any]]],
     initialState)),
       aggregateTypeSimpleName + "_CommandHandler_" + aggregateId.asLong)
 

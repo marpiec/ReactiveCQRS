@@ -9,19 +9,19 @@ object CommandsHandlers {
 //    command
 //  }
 
-  val createShoppingCart = () => (aggregate: ShoppingCart, command: CreateShoppingCart) => {
+  val createShoppingCart = (aggregate: ShoppingCart) => (command: CreateShoppingCart) => {
     Success(ShoppingCartCreated(command.name))
   }
 
-  val addItem = () => (aggregate: ShoppingCart, command: AddItem) => {
+  val addItem = (command: AddItem) => {
     Success(ItemAdded(command.name))
   }
 
-  val removeItem = () => (aggregate: ShoppingCart, command: RemoveItem) => {
+  val removeItem = (command: RemoveItem) => {
     Success(ItemRemoved(command.id))
   }
 
-  val deleteShoppingCart = () => (aggregate: ShoppingCart, command: DeleteShoppingCart) => {
+  val deleteShoppingCart = () => (command: DeleteShoppingCart) => {
     Success(ShoppingCartDeleted())
   }
 
