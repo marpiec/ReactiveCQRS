@@ -34,13 +34,14 @@ object AggregateRepositoryActor {
 class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
                                                          eventStore: EventStore,
                                                          eventsBus: ActorRef,
-                                                         eventHandlers: Map[String, AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]]) extends Actor {
+                                                         eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
+                                                         initialState: AGGREGATE_ROOT) extends Actor {
 
   import AggregateRepositoryActor._
 
 
   private var version: AggregateVersion = AggregateVersion.ZERO
-  private var aggregateRoot: AGGREGATE_ROOT = _
+  private var aggregateRoot: AGGREGATE_ROOT = initialState
   private var notRestored = true
 
 
@@ -104,10 +105,12 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
   }
 
   private def handleEvent(event: Event[AGGREGATE_ROOT]): Unit = {
-    aggregateRoot = eventHandlers(event.getClass.getName) match {
-      case handler: FirstEventHandler[_, _] => handler.asInstanceOf[FirstEventHandler[AGGREGATE_ROOT, FirstEvent[AGGREGATE_ROOT]]].handle(event.asInstanceOf[FirstEvent[AGGREGATE_ROOT]])
-      case handler: EventHandler[_, _] => handler.asInstanceOf[EventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]].handle(aggregateRoot, event)
-    }
+//    aggregateRoot = eventHandlers(event.getClass.getName) match {
+//      case handler: FirstEventHandler[_, _] => handler.asInstanceOf[FirstEventHandler[AGGREGATE_ROOT, FirstEvent[AGGREGATE_ROOT]]].handle(event.asInstanceOf[FirstEvent[AGGREGATE_ROOT]])
+//      case handler: EventHandler[_, _] => handler.asInstanceOf[EventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]].handle(aggregateRoot, event)
+//    }
+    aggregateRoot = eventHandlers(aggregateRoot)(event)
+
     version = version.increment
   }
 

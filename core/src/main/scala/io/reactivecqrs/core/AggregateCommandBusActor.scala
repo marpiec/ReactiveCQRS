@@ -48,7 +48,7 @@ object AggregateCommandBusActor {
       uidGenerator,
       eventStore,
       aggregate.commandHandlers,
-      aggregate.eventsHandlers.asInstanceOf[Seq[AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]]],
+      aggregate.eventHandlers,
       eventBus,
     aggregate.initialState))
 
@@ -62,16 +62,12 @@ object AggregateCommandBusActor {
 class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRef,
                                               eventStore: EventStore,
                                       val commandsHandlers: AGGREGATE_ROOT => PartialFunction[Any, CommandHandlingResult[Any]],
-                                     val eventsHandlersSeq: Seq[AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]],
+                                     val eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
                                                 val eventBus: ActorRef,
                                                         val initialState: AGGREGATE_ROOT)
                                                         (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor {
 
 
-//  private val commandsHandlers:Map[String, CommandHandlerF[AGGREGATE_ROOT]] =
-//    commandsHandlersSeq.map(ch => (extractCommandClassName(ch), ch)).toMap
-//
-  private val eventHandlers = eventsHandlersSeq.map(eh => (eh.eventClassName, eh)).toMap
 
   private val aggregateTypeSimpleName = aggregateRootClassTag.runtimeClass.getSimpleName
 
@@ -114,7 +110,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   }
 
   private def createAggregateActors(aggregateId: AggregateId): AggregateActors = {
-    val repositoryActor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventBus, eventHandlers)),
+    val repositoryActor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventBus, eventHandlers, initialState)),
       aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong)
 
     val commandHandlerActor = context.actorOf(Props(new CommandHandlerActor[AGGREGATE_ROOT](
