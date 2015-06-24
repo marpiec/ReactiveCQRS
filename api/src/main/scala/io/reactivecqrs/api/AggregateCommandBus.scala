@@ -7,7 +7,7 @@ case class GetAggregate(id: AggregateId)
 
 abstract class AggregateCommandBus[AGGREGATE_ROOT] {
 
-  type CommandHandler = PartialFunction[Any, _ >: Command[AGGREGATE_ROOT, Any] => CommandHandlingResult[Any]]
+  type CommandHandler = PartialFunction[Any, Function1[_ <: Command[AGGREGATE_ROOT, Any], CommandHandlingResult[Any]]]
   type CommandHandlerWrapper = Function[CommandHandler, CommandHandler]
   
 
