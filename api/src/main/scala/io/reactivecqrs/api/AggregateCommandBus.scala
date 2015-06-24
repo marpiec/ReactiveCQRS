@@ -6,8 +6,11 @@ import io.reactivecqrs.api.id.AggregateId
 case class GetAggregate(id: AggregateId)
 
 abstract class AggregateCommandBus[AGGREGATE_ROOT] {
+  val initialState: AGGREGATE_ROOT
 
-  type CommandHandler = PartialFunction[Any, Function1[_ <: Command[AGGREGATE_ROOT, Any], CommandHandlingResult[Any]]]
+
+  type SingleHandler = Function2[AGGREGATE_ROOT, _ <: Command[AGGREGATE_ROOT, Any], CommandHandlingResult[Any]]
+  type CommandHandler = PartialFunction[Any, SingleHandler]
   type CommandHandlerWrapper = Function[CommandHandler, CommandHandler]
   
 
