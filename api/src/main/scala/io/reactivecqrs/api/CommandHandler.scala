@@ -18,7 +18,10 @@ object CommandHandlerP {
 
 // Command handling default response
 
-case class CommandResult(aggregateId: AggregateId, aggregateVersion: AggregateVersion)
+sealed abstract class CommandResult(val success: Boolean)
+
+case class CommandSuccess(aggregateId: AggregateId, aggregateVersion: AggregateVersion) extends CommandResult(true)
+case class CommandFailure(reason: String) extends CommandResult(false)
 
 // Command handling result
 
@@ -33,13 +36,13 @@ case class Failure[AGGREGATE_ROOT, RESPONSE](response: RESPONSE)
 
 object Success {
   def apply[AGGREGATE_ROOT](event: Event[AGGREGATE_ROOT]):Success[AGGREGATE_ROOT, CommandResult] =
-    new Success(List(event), (aggregateId, version) => CommandResult(aggregateId, version))
+    new Success(List(event), (aggregateId, version) => CommandSuccess(aggregateId, version))
 
   def apply[AGGREGATE_ROOT, RESPONSE](event: Event[AGGREGATE_ROOT], response: (AggregateId, AggregateVersion) => RESPONSE) =
     new Success(List(event), response)
 
   def apply[AGGREGATE_ROOT](events: Seq[Event[AGGREGATE_ROOT]]):Success[AGGREGATE_ROOT, CommandResult] =
-    new Success(events, (aggregateId, version) => CommandResult(aggregateId, version))
+    new Success(events, (aggregateId, version) => CommandSuccess(aggregateId, version))
 }
 
 

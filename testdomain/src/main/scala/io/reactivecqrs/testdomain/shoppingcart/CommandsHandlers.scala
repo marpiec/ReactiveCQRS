@@ -1,6 +1,6 @@
 package io.reactivecqrs.testdomain.shoppingcart
 
-import io.reactivecqrs.api.{Failure, Success}
+import io.reactivecqrs.api.{CommandFailure, Failure, Success}
 
 object CommandsHandlers {
 
@@ -11,7 +11,7 @@ object CommandsHandlers {
 
   def addItem(shoppingCart: ShoppingCart)(command: AddItem) = {
     if(shoppingCart.items.size > 5) {
-      Failure(null)
+      Failure(CommandFailure("Cannot have more than 5 items in your cart"))
     } else {
       Success(ItemAdded(command.name))
     }
