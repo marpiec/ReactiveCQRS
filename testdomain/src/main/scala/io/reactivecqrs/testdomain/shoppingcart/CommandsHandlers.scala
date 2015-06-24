@@ -1,31 +1,24 @@
 package io.reactivecqrs.testdomain.shoppingcart
 
-import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.api.{CommandHandler, CommandResult, Success}
+import io.reactivecqrs.api.Success
 
+object CommandsHandlers {
 
-class CreateShoppingCartHandler extends CommandHandler[ShoppingCart, CreateShoppingCart, CommandResult] {
-  def handle(aggregateId: AggregateId, command: CreateShoppingCart) = {
+  def createShoppingCart(command: CreateShoppingCart) = {
     Success(ShoppingCartCreated(command.name))
   }
-}
 
-class AddItemHandler extends CommandHandler[ShoppingCart, AddItem, CommandResult] {
-  def handle(aggregateId: AggregateId, command: AddItem) = {
+  def addItem()(command: AddItem) = {
     Success(ItemAdded(command.name))
   }
-}
 
-class RemoveItemHandler extends CommandHandler[ShoppingCart, RemoveItem, CommandResult] {
-  def handle(aggregateId: AggregateId, command: RemoveItem) = {
+  def removeItem()(command: RemoveItem) = {
     Success(ItemRemoved(command.id))
   }
-}
 
-class DeleteShoppingCartHandler extends CommandHandler[ShoppingCart, DeleteShoppingCart, CommandResult] {
-  override def handle(aggregateId: AggregateId, command: DeleteShoppingCart) = {
+  def deleteShoppingCart()(command: DeleteShoppingCart) = {
     Success(ShoppingCartDeleted())
   }
-}
 
+}
 

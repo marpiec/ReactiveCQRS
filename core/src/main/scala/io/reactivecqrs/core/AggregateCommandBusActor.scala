@@ -4,6 +4,7 @@ import akka.actor.{Actor, ActorRef, Props}
 import akka.event.LoggingReceive
 import akka.pattern.ask
 import akka.util.Timeout
+import io.reactivecqrs.api.CommandHandlerP.CommandHandlerF
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.AggregateCommandBusActor._
@@ -45,7 +46,7 @@ object AggregateCommandBusActor {
     Props(new AggregateCommandBusActor[AGGREGATE_ROOT](
       uidGenerator,
       eventStore,
-      aggregate.commandsHandlers.asInstanceOf[Seq[CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, _],_]]],
+      aggregate.commandsHandlers.asInstanceOf[Vector[AbstractCommand[AGGREGATE_ROOT, _ <: Any] => _ <: CommandHandlingResult[Any]]],
       aggregate.eventsHandlers.asInstanceOf[Seq[AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]]],
       eventBus))
 
@@ -58,14 +59,14 @@ object AggregateCommandBusActor {
 
 class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRef,
                                               eventStore: EventStore,
-                                      val commandsHandlersSeq: Seq[CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, _],_]],
+                                      val commandsHandlersSeq: Vector[AbstractCommand[AGGREGATE_ROOT, _ <: Any] => _ <: CommandHandlingResult[Any]],
                                      val eventsHandlersSeq: Seq[AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]],
                                                 val eventBus: ActorRef)
                                                         (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor {
 
 
-  private val commandsHandlers:Map[String, CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, Any],Any]] =
-    commandsHandlersSeq.map(ch => (ch.commandClassName, ch.asInstanceOf[CommandHandler[AGGREGATE_ROOT,AbstractCommand[AGGREGATE_ROOT, Any],Any]])).toMap
+  private val commandsHandlers:Map[String, CommandHandlerF[AGGREGATE_ROOT]] =
+    commandsHandlersSeq.map(ch => (extractCommandClassName(ch), ch)).toMap
   
   private val eventHandlers = eventsHandlersSeq.map(eh => (eh.eventClassName, eh)).toMap
 
@@ -82,6 +83,10 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
   private val aggregatesActors = mutable.HashMap[Long, AggregateActors]()
 
+
+  private def extractCommandClassName(ch: CommandHandlerF[AGGREGATE_ROOT]): String = {
+    ch.getClass.getMethods.filter(m => m.getName == "apply").filter(m => m.getParameterTypes.head != classOf[Object]).map(m => m.getParameterTypes.head.getName).head
+  }
 
   override def receive: Receive = LoggingReceive {
     case fce: FirstCommandEnvelope[_,_] => routeFirstCommand(fce.asInstanceOf[FirstCommandEnvelope[AGGREGATE_ROOT, _]])

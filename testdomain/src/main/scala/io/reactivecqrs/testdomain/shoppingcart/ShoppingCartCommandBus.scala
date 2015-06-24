@@ -1,15 +1,16 @@
 package io.reactivecqrs.testdomain.shoppingcart
 
-import io.reactivecqrs.api.AggregateCommandBus
+import io.reactivecqrs.api._
 
+import CommandsHandlers._
 
 class ShoppingCartCommandBus extends AggregateCommandBus[ShoppingCart] {
 
-  override val commandsHandlers = Seq(
-    new CreateShoppingCartHandler(),
-    new AddItemHandler(),
-    new RemoveItemHandler(),
-    new DeleteShoppingCartHandler())
+  addCommandHandler[CreateShoppingCart](createShoppingCart _)
+  addCommandHandler[AddItem](addItem() _)
+  addCommandHandler[RemoveItem](removeItem() _)
+  addCommandHandler[DeleteShoppingCart](deleteShoppingCart() _)
+
 
   override val eventsHandlers = Seq(
     ShoppingCartCreatedHandler,

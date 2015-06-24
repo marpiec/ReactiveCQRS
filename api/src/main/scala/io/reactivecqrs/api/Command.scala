@@ -1,6 +1,6 @@
 package io.reactivecqrs.api
 
-sealed trait AbstractCommand[AGGREGATE_ROOT, RESPONSE]
+sealed trait AbstractCommand[AGGREGATE_ROOT, +RESPONSE]
 
 
 // First Command
