@@ -4,19 +4,24 @@ import io.reactivecqrs.api.Success
 
 object CommandsHandlers {
 
-  def createShoppingCart(command: CreateShoppingCart) = {
+//  val logCommand: AbstractCommand[ShoppingCart] => AbstractCommand[ShoppingCart] = command => {
+//    println(command)
+//    command
+//  }
+
+  val createShoppingCart = () => (command: CreateShoppingCart) => {
     Success(ShoppingCartCreated(command.name))
   }
 
-  def addItem()(command: AddItem) = {
+  val addItem = () => (command: AddItem) => {
     Success(ItemAdded(command.name))
   }
 
-  def removeItem()(command: RemoveItem) = {
+  val removeItem = () => (command: RemoveItem) => {
     Success(ItemRemoved(command.id))
   }
 
-  def deleteShoppingCart()(command: DeleteShoppingCart) = {
+  val deleteShoppingCart = () => (command: DeleteShoppingCart) => {
     Success(ShoppingCartDeleted())
   }
 

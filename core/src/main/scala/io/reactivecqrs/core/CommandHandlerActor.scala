@@ -2,7 +2,6 @@ package io.reactivecqrs.core
 
 import akka.actor.{Actor, ActorRef, Props}
 import akka.event.LoggingReceive
-import io.reactivecqrs.api.CommandHandlerP.CommandHandlerF
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId}
 import io.reactivecqrs.core.AggregateCommandBusActor.{FirstCommandEnvelope, FollowingCommandEnvelope}
@@ -29,7 +28,7 @@ object CommandHandlerActor {
 
 class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
                                           repositoryActor: ActorRef,
-                                          commandHandlers: Map[String, CommandHandlerF[AGGREGATE_ROOT]]) extends Actor {
+                                          commandHandlers: PartialFunction[Command[AGGREGATE_ROOT, Any], Command[AGGREGATE_ROOT, Any] => CommandHandlingResult[Any]]) extends Actor {
   
   var resultAggregatorsCounter = 0
 
@@ -49,9 +48,11 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
 
   override def receive = waitingForCommand
 
-  private def handleFirstCommand[COMMAND <: FirstCommand[AGGREGATE_ROOT, RESPONSE], RESPONSE](envelope: InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE]) = envelope match {
+  private def handleFirstCommand[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE](envelope: InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE]) = envelope match {
     case InternalFirstCommandEnvelope(respondTo, commandId, FirstCommandEnvelope(userId, command)) =>
-      val result = commandHandlers(command.getClass.getName).asInstanceOf[CommandHandlerF[AGGREGATE_ROOT]].apply(command.asInstanceOf[COMMAND])
+//      val result = commandHandlers(command.getClass.getName).asInstanceOf[CommandHandlerF[AGGREGATE_ROOT]].apply(command.asInstanceOf[COMMAND])
+
+      val result = commandHandlers(command.asInstanceOf[Command[AGGREGATE_ROOT, Any]])(command.asInstanceOf[Command[AGGREGATE_ROOT, Any]])
 
       result match {
         case s: Success[_, _] =>
@@ -64,7 +65,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
 
   }
 
-  private def nextResultAggregatorName[RESPONSE, COMMAND <: FirstCommand[AGGREGATE_ROOT, RESPONSE]]: String = {
+  private def nextResultAggregatorName[RESPONSE, COMMAND <: Command[AGGREGATE_ROOT, RESPONSE]]: String = {
     resultAggregatorsCounter += 1
     "ResultAggregator_" + resultAggregatorsCounter
   }
@@ -76,8 +77,12 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
 
   private def handleFollowingCommand[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE](envelope: InternalFollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE], aggregate: Aggregate[AGGREGATE_ROOT]): Unit = envelope match {
     case InternalFollowingCommandEnvelope(respondTo, commandId, FollowingCommandEnvelope(userId, commandAggregateId, expectedVersion, command)) =>
-      val handler = commandHandlers(command.getClass.getName).asInstanceOf[CommandHandlerF[AGGREGATE_ROOT]]
-      val result = handler.apply(command.asInstanceOf[COMMAND])
+//      val handler = commandHandlers(command.getClass.getName).asInstanceOf[CommandHandlerF[AGGREGATE_ROOT]]
+//
+//
+//      val result = handler.apply(command.asInstanceOf[COMMAND])
+
+      val result = commandHandlers(command.asInstanceOf[Command[AGGREGATE_ROOT, Any]])(command.asInstanceOf[Command[AGGREGATE_ROOT, Any]])
 
       result match {
         case s: Success[_, _] =>

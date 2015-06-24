@@ -24,13 +24,13 @@ object AggregateCommandBusActor {
 
   object CommandEnvelope {
 
-    def apply[AGGREGATE_ROOT, RESPONSE](userId: UserId, command: FirstCommand[AGGREGATE_ROOT, RESPONSE]) = FirstCommandEnvelope(userId, command)
+    def apply[AGGREGATE_ROOT, RESPONSE](userId: UserId, command: Command[AGGREGATE_ROOT, RESPONSE]) = FirstCommandEnvelope(userId, command)
     def apply[AGGREGATE_ROOT, RESPONSE](userId: UserId, aggregateId: AggregateId,
                                         expectedVersion: AggregateVersion, command: Command[AGGREGATE_ROOT, RESPONSE]) = FollowingCommandEnvelope(userId,aggregateId, expectedVersion, command)
 
   }
   case class FirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE](userId: UserId,
-                                                            command: FirstCommand[AGGREGATE_ROOT, RESPONSE])
+                                                            command: Command[AGGREGATE_ROOT, RESPONSE])
 
 
 
@@ -46,7 +46,7 @@ object AggregateCommandBusActor {
     Props(new AggregateCommandBusActor[AGGREGATE_ROOT](
       uidGenerator,
       eventStore,
-      aggregate.commandsHandlers.asInstanceOf[Vector[AbstractCommand[AGGREGATE_ROOT, _ <: Any] => _ <: CommandHandlingResult[Any]]],
+      aggregate.commandHandlers,
       aggregate.eventsHandlers.asInstanceOf[Seq[AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]]],
       eventBus))
 
@@ -59,15 +59,15 @@ object AggregateCommandBusActor {
 
 class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRef,
                                               eventStore: EventStore,
-                                      val commandsHandlersSeq: Vector[AbstractCommand[AGGREGATE_ROOT, _ <: Any] => _ <: CommandHandlingResult[Any]],
+                                      val commandsHandlers: PartialFunction[Any, _ >: Command[AGGREGATE_ROOT, Any] => CommandHandlingResult[Any]],
                                      val eventsHandlersSeq: Seq[AbstractEventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]],
                                                 val eventBus: ActorRef)
                                                         (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor {
 
 
-  private val commandsHandlers:Map[String, CommandHandlerF[AGGREGATE_ROOT]] =
-    commandsHandlersSeq.map(ch => (extractCommandClassName(ch), ch)).toMap
-  
+//  private val commandsHandlers:Map[String, CommandHandlerF[AGGREGATE_ROOT]] =
+//    commandsHandlersSeq.map(ch => (extractCommandClassName(ch), ch)).toMap
+//
   private val eventHandlers = eventsHandlersSeq.map(eh => (eh.eventClassName, eh)).toMap
 
   private val aggregateTypeSimpleName = aggregateRootClassTag.runtimeClass.getSimpleName
@@ -114,7 +114,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     val repositoryActor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventBus, eventHandlers)),
       aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong)
 
-    val commandHandlerActor = context.actorOf(Props(new CommandHandlerActor[AGGREGATE_ROOT](aggregateId, repositoryActor, commandsHandlers)),
+    val commandHandlerActor = context.actorOf(Props(new CommandHandlerActor[AGGREGATE_ROOT](aggregateId, repositoryActor, commandsHandlers.asInstanceOf[PartialFunction[Command[AGGREGATE_ROOT, Any], Command[AGGREGATE_ROOT, Any] => CommandHandlingResult[Any]]])),
       aggregateTypeSimpleName + "_CommandHandler_" + aggregateId.asLong)
 
     val actors = AggregateActors(commandHandlerActor, repositoryActor)

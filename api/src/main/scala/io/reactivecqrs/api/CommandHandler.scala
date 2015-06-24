@@ -3,7 +3,7 @@ package io.reactivecqrs.api
 import _root_.io.reactivecqrs.api.id.AggregateId
 
 object CommandHandlerP {
-  type CommandHandlerF[AGGREGATE_ROOT] = AbstractCommand[AGGREGATE_ROOT, _ <: Any] => _ <: CommandHandlingResult[Any]
+  type CommandHandlerF[AGGREGATE_ROOT] = Command[AGGREGATE_ROOT, Any] => _ <: CommandHandlingResult[Any]
 
 }
 
