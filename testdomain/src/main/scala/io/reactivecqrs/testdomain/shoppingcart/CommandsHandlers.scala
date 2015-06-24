@@ -1,27 +1,27 @@
 package io.reactivecqrs.testdomain.shoppingcart
 
-import io.reactivecqrs.api.Success
+import io.reactivecqrs.api.{Failure, Success}
 
 object CommandsHandlers {
 
-//  val logCommand: AbstractCommand[ShoppingCart] => AbstractCommand[ShoppingCart] = command => {
-//    println(command)
-//    command
-//  }
 
-  val createShoppingCart = (aggregate: ShoppingCart) => (command: CreateShoppingCart) => {
+  def createShoppingCart(command: CreateShoppingCart) = {
     Success(ShoppingCartCreated(command.name))
   }
 
-  val addItem = (command: AddItem) => {
-    Success(ItemAdded(command.name))
+  def addItem(shoppingCart: ShoppingCart)(command: AddItem) = {
+    if(shoppingCart.items.size > 5) {
+      Failure(null)
+    } else {
+      Success(ItemAdded(command.name))
+    }
   }
 
-  val removeItem = (command: RemoveItem) => {
+  def removeItem(command: RemoveItem) = {
     Success(ItemRemoved(command.id))
   }
 
-  val deleteShoppingCart = () => (command: DeleteShoppingCart) => {
+  def deleteShoppingCart()(command: DeleteShoppingCart) = {
     Success(ShoppingCartDeleted())
   }
 

@@ -17,8 +17,8 @@ class ShoppingCartCommandBus extends AggregateCommandBus[ShoppingCart] {
 //  }
 
   override def commandHandlers = (shoppingCart: ShoppingCart) => {
-    case command: CreateShoppingCart => createShoppingCart(shoppingCart)(command)
-    case command: AddItem => addItem(command)
+    case command: CreateShoppingCart => createShoppingCart(command)
+    case command: AddItem => addItem(shoppingCart)(command)
     case command: RemoveItem => removeItem(command)
     case command: DeleteShoppingCart => deleteShoppingCart()(command)
   }
