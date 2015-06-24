@@ -50,7 +50,7 @@ object AggregateCommandBusActor {
       aggregate.commandHandlers,
       aggregate.eventHandlers,
       eventBus,
-    aggregate.initialState))
+    aggregate.initialAggregateRoot))
 
 
   }
