@@ -6,7 +6,7 @@ import io.reactivecqrs.api.id.AggregateId
 case class GetAggregate(id: AggregateId)
 
 abstract class AggregateCommandBus[AGGREGATE_ROOT] {
-  val initialAggregateRoot: AGGREGATE_ROOT
+   def initialAggregateRoot: AGGREGATE_ROOT
 
 
   type HandlerWrapper = (=> CommandHandlingResult[Any]) => CommandHandlingResult[Any]

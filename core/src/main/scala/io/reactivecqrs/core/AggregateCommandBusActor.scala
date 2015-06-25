@@ -50,7 +50,7 @@ object AggregateCommandBusActor {
       aggregate.commandHandlers,
       aggregate.eventHandlers,
       eventBus,
-    aggregate.initialAggregateRoot))
+    aggregate.initialAggregateRoot _))
 
 
   }
@@ -64,7 +64,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
                                       val commandsHandlers: AGGREGATE_ROOT => PartialFunction[Any, CommandHandlingResult[Any]],
                                      val eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
                                                 val eventBus: ActorRef,
-                                                        val initialState: AGGREGATE_ROOT)
+                                                        val initialState: () => AGGREGATE_ROOT)
                                                         (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor {
 
 

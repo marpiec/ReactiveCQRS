@@ -35,13 +35,13 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
                                                          eventStore: EventStore,
                                                          eventsBus: ActorRef,
                                                          eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
-                                                         initialState: AGGREGATE_ROOT) extends Actor {
+                                                         initialState: () => AGGREGATE_ROOT) extends Actor {
 
   import AggregateRepositoryActor._
 
 
   private var version: AggregateVersion = AggregateVersion.ZERO
-  private var aggregateRoot: AGGREGATE_ROOT = initialState
+  private var aggregateRoot: AGGREGATE_ROOT = initialState()
   private var notRestored = true
 
 

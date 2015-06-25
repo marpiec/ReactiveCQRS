@@ -21,6 +21,6 @@ class ShoppingCartCommandBus extends AggregateCommandBus[ShoppingCart] {
     case event: ItemRemoved => itemRemoved(shoppingCart, event)
   }
 
-  override val initialAggregateRoot: ShoppingCart = ShoppingCart("", Vector())
+  override def initialAggregateRoot: ShoppingCart = ShoppingCart("", Vector())
 
 }
