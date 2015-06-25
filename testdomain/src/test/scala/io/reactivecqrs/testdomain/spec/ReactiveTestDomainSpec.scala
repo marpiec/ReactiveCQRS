@@ -39,10 +39,10 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
       step("Create shopping cart")
 
-      var result: CommandResult = shoppingCartCommandBus ?? CommandEnvelope(userId, CreateShoppingCart("Groceries"))
+      var result: CommandResponse = shoppingCartCommandBus ?? CommandEnvelope(userId, CreateShoppingCart("Groceries"))
       val shoppingCartId: AggregateId = result match {
-        case CommandSuccess(aggregateId, aggregateVersion) => aggregateId
-        case CommandFailure(reason) => fail()
+        case SuccessResponse(aggregateId, aggregateVersion) => aggregateId
+        case FailureResponse(reason) => fail()
       }
       var shoppingCart:Aggregate[ShoppingCart] = shoppingCartCommandBus ?? GetAggregate(shoppingCartId)
 
@@ -51,12 +51,12 @@ class ReactiveTestDomainSpec extends CommonSpec {
       step("Add items to cart")
 
       result = shoppingCartCommandBus ?? CommandEnvelope(userId, shoppingCart.id, AggregateVersion(1), AddItem("apples"))
-      result mustBe CommandSuccess(shoppingCart.id, AggregateVersion(2))
-      var success = result.asInstanceOf[CommandSuccess]
+      result mustBe SuccessResponse(shoppingCart.id, AggregateVersion(2))
+      var success = result.asInstanceOf[SuccessResponse]
 
       result = shoppingCartCommandBus ?? CommandEnvelope(userId, shoppingCart.id, AggregateVersion(2), AddItem("oranges"))
-      result mustBe CommandSuccess(shoppingCart.id, AggregateVersion(3))
-      success = result.asInstanceOf[CommandSuccess]
+      result mustBe SuccessResponse(shoppingCart.id, AggregateVersion(3))
+      success = result.asInstanceOf[SuccessResponse]
 
       shoppingCart = shoppingCartCommandBus ?? GetAggregate(shoppingCartId)
       shoppingCart mustBe Aggregate(success.aggregateId, success.aggregateVersion, Some(ShoppingCart("Groceries", Vector(Item(1, "apples"), Item(2, "oranges")))))
@@ -64,8 +64,8 @@ class ReactiveTestDomainSpec extends CommonSpec {
       step("Remove items from cart")
 
       result = shoppingCartCommandBus ?? CommandEnvelope(userId, shoppingCart.id, AggregateVersion(3), RemoveItem(1))
-      result mustBe CommandSuccess(shoppingCart.id, AggregateVersion(4))
-      success = result.asInstanceOf[CommandSuccess]
+      result mustBe SuccessResponse(shoppingCart.id, AggregateVersion(4))
+      success = result.asInstanceOf[SuccessResponse]
 
       shoppingCart = shoppingCartCommandBus ?? GetAggregate(shoppingCartId)
       shoppingCart mustBe Aggregate(success.aggregateId, success.aggregateVersion, Some(ShoppingCart("Groceries", Vector(Item(2, "oranges")))))

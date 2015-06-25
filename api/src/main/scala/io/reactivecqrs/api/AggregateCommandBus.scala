@@ -9,10 +9,10 @@ abstract class AggregateCommandBus[AGGREGATE_ROOT] {
    def initialAggregateRoot: AGGREGATE_ROOT
 
 
-  type HandlerWrapper = (=> CommandHandlingResult[Any]) => CommandHandlingResult[Any]
+  type HandlerWrapper = (=> CommandResult[Any]) => CommandResult[Any]
 
-  type SingleHandler = Function1[_ <: Command[AGGREGATE_ROOT, Any], CommandHandlingResult[Any]]
-  type CommandHandler = AGGREGATE_ROOT => PartialFunction[Any, CommandHandlingResult[Any]]
+  type SingleHandler = (_ <: Command[AGGREGATE_ROOT, Any]) => CommandResult[Any]
+  type CommandHandler = AGGREGATE_ROOT => PartialFunction[Any, CommandResult[Any]]
   type CommandHandlerWrapper = Function[CommandHandler, CommandHandler]
 
 

@@ -28,7 +28,7 @@ object CommandHandlerActor {
 
 class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
                                           repositoryActor: ActorRef,
-                                          commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, CommandHandlingResult[Any]],
+                                          commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, CommandResult[Any]],
                                            initialState: () => AGGREGATE_ROOT) extends Actor {
   
   var resultAggregatorsCounter = 0
@@ -53,7 +53,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
     case InternalFirstCommandEnvelope(respondTo, commandId, FirstCommandEnvelope(userId, command)) =>
 //      val result = commandHandlers(command.getClass.getName).asInstanceOf[CommandHandlerF[AGGREGATE_ROOT]].apply(command.asInstanceOf[COMMAND])
 
-      val result:CommandHandlingResult[Any] = commandHandlers(initialState())(command.asInstanceOf[Command[AGGREGATE_ROOT, Any]])
+      val result:CommandResult[Any] = commandHandlers(initialState())(command.asInstanceOf[Command[AGGREGATE_ROOT, Any]])
 
       result match {
         case s: Success[_, _] =>
