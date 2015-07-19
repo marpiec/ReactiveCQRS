@@ -9,16 +9,16 @@ class ShoppingCartCommandBus extends AggregateCommandBus[ShoppingCart] {
 
 
   override def commandHandlers = (shoppingCart: ShoppingCart) => {
-    case command: CreateShoppingCart => createShoppingCart(command)
-    case command: AddItem => addItem(shoppingCart)(command)
-    case command: RemoveItem => removeItem(command)
-    case command: DeleteShoppingCart => deleteShoppingCart()(command)
+    case c: CreateShoppingCart => createShoppingCart(c.userId, c)
+    case c: AddItem => addItem(c.userId, c.aggregateId, c.expectedVersion, shoppingCart)(c)
+    case c: RemoveItem => removeItem(c)
+    case c: DeleteShoppingCart => deleteShoppingCart()(c)
   }
 
   override def eventHandlers = (shoppingCart: ShoppingCart) => {
-    case event: ShoppingCartCreated => shoppingCartCreated(event)
-    case event: ItemAdded => itemAdded(shoppingCart, event)
-    case event: ItemRemoved => itemRemoved(shoppingCart, event)
+    case e: ShoppingCartCreated => shoppingCartCreated(e)
+    case e: ItemAdded => itemAdded(shoppingCart, e)
+    case e: ItemRemoved => itemRemoved(shoppingCart, e)
   }
 
   override def initialAggregateRoot: ShoppingCart = ShoppingCart("", Vector())

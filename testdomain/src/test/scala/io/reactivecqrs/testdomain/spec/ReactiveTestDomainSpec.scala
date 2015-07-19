@@ -5,7 +5,6 @@ import akka.serialization.SerializationExtension
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
-import AggregateCommandBusActor.CommandEnvelope
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
 import io.reactivecqrs.core.eventbus.{EventBusState, EventsBusActor}
 import io.reactivecqrs.core.eventstore.EventStoreState
@@ -40,7 +39,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
       step("Create shopping cart")
 
-      var result: CommandResponse = shoppingCartCommandBus ?? CommandEnvelope(userId, CreateShoppingCart("Groceries"))
+      var result: CommandResponse = shoppingCartCommandBus ?? CreateShoppingCart(userId,"Groceries")
       val shoppingCartId: AggregateId = result match {
         case SuccessResponse(aggregateId, aggregateVersion) => aggregateId
         case FailureResponse(reason) => fail()
@@ -51,11 +50,11 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
       step("Add items to cart")
 
-      result = shoppingCartCommandBus ?? CommandEnvelope(userId, shoppingCart.id, AggregateVersion(1), AddItem("apples"))
+      result = shoppingCartCommandBus ?? AddItem(userId, shoppingCart.id, AggregateVersion(1), "apples")
       result mustBe SuccessResponse(shoppingCart.id, AggregateVersion(2))
       var success = result.asInstanceOf[SuccessResponse]
 
-      result = shoppingCartCommandBus ?? CommandEnvelope(userId, shoppingCart.id, AggregateVersion(2), AddItem("oranges"))
+      result = shoppingCartCommandBus ?? AddItem(userId, shoppingCart.id, AggregateVersion(2), "oranges")
       result mustBe SuccessResponse(shoppingCart.id, AggregateVersion(3))
       success = result.asInstanceOf[SuccessResponse]
 
@@ -64,7 +63,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
       step("Remove items from cart")
 
-      result = shoppingCartCommandBus ?? CommandEnvelope(userId, shoppingCart.id, AggregateVersion(3), RemoveItem(1))
+      result = shoppingCartCommandBus ?? RemoveItem(userId, shoppingCart.id, AggregateVersion(3), 1)
       result mustBe SuccessResponse(shoppingCart.id, AggregateVersion(4))
       success = result.asInstanceOf[SuccessResponse]
 

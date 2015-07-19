@@ -1,13 +1,22 @@
 package io.reactivecqrs.api
 
+import io.reactivecqrs.api.id.{AggregateId, UserId}
+
 //
 //// First Command
 //
 //abstract class FirstCommand[AGGREGATE_ROOT, RESPONSE] extends AbstractCommand[AGGREGATE_ROOT]
 //
 
+abstract class FirstCommand[AGGREGATE_ROOT, RESPONSE] {
+  val userId: UserId
+}
 
-abstract class Command[AGGREGATE_ROOT, RESPONSE]
+abstract class Command[AGGREGATE_ROOT, RESPONSE] {
+  val userId: UserId
+  val aggregateId: AggregateId
+  val expectedVersion: AggregateVersion
+}
 
 
 

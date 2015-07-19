@@ -6,7 +6,6 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
 import AggregateRepositoryActor.{GetAggregateRoot, PersistEvents}
-import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{FirstCommandEnvelope, FollowingCommandEnvelope}
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalFollowingCommandEnvelope, InternalFirstCommandEnvelope}
 
 import scala.concurrent.duration._
@@ -15,10 +14,10 @@ object CommandHandlerActor {
 
   sealed trait InternalCommandEnvelope[AGGREGATE_ROOT, +RESPONSE]
 
-  case class InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo: ActorRef, commandId: CommandId, commandEnvelope: FirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE])
+  case class InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo: ActorRef, commandId: CommandId, commandEnvelope: FirstCommand[AGGREGATE_ROOT, RESPONSE])
     extends InternalCommandEnvelope[AGGREGATE_ROOT, RESPONSE]
 
-  case class InternalFollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo: ActorRef, commandId: CommandId, commandEnvelope: FollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE])
+  case class InternalFollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo: ActorRef, commandId: CommandId, commandEnvelope: Command[AGGREGATE_ROOT, RESPONSE])
     extends InternalCommandEnvelope[AGGREGATE_ROOT, RESPONSE]
 
 
@@ -50,17 +49,17 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
 
   override def receive = waitingForCommand
 
-  private def handleFirstCommand[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE](envelope: InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE]) = envelope match {
-    case InternalFirstCommandEnvelope(respondTo, commandId, FirstCommandEnvelope(userId, command)) =>
+  private def handleFirstCommand[COMMAND <: FirstCommand[AGGREGATE_ROOT, RESPONSE], RESPONSE](envelope: InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE]) = envelope match {
+    case InternalFirstCommandEnvelope(respondTo, commandId, command) =>
 //      val result = commandHandlers(command.getClass.getName).asInstanceOf[CommandHandlerF[AGGREGATE_ROOT]].apply(command.asInstanceOf[COMMAND])
 
-      val result:CommandResult[Any] = commandHandlers(initialState())(command.asInstanceOf[Command[AGGREGATE_ROOT, Any]])
+      val result:CommandResult[Any] = commandHandlers(initialState())(command.asInstanceOf[FirstCommand[AGGREGATE_ROOT, Any]])
 
       result match {
         case s: Success[_, _] =>
           val success: Success[AGGREGATE_ROOT, RESPONSE] = s.asInstanceOf[Success[AGGREGATE_ROOT, RESPONSE]]
           val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, success.response(aggregateId, AggregateVersion(s.events.size)), responseTimeout)), nextResultAggregatorName)
-          repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, AggregateVersion.ZERO, success.events)
+          repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, command.userId, AggregateVersion.ZERO, success.events)
         case failure: Failure[_, _] =>
           ??? // TODO send failure message to requestor
       }
@@ -78,7 +77,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
   }
 
   private def handleFollowingCommand[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE](envelope: InternalFollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE], aggregate: Aggregate[AGGREGATE_ROOT]): Unit = envelope match {
-    case InternalFollowingCommandEnvelope(respondTo, commandId, FollowingCommandEnvelope(userId, commandAggregateId, expectedVersion, command)) =>
+    case InternalFollowingCommandEnvelope(respondTo, commandId, command) =>
 //      val handler = commandHandlers(command.getClass.getName).asInstanceOf[CommandHandlerF[AGGREGATE_ROOT]]
 //
 //
@@ -89,8 +88,8 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
       result match {
         case s: Success[_, _] =>
           val success = s.asInstanceOf[Success[AGGREGATE_ROOT, RESPONSE]]
-          val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, success.response(aggregateId, expectedVersion.incrementBy(success.events.size)), responseTimeout)), nextResultAggregatorName)
-          repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, expectedVersion, success.events)
+          val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, success.response(aggregateId, command.expectedVersion.incrementBy(success.events.size)), responseTimeout)), nextResultAggregatorName)
+          repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, command.userId, command.expectedVersion, success.events)
         case failure: Failure[_, _] =>
           ??? // TODO send failure message to requestor
       }
