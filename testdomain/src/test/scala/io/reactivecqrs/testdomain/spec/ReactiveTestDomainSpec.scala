@@ -6,6 +6,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
+import io.reactivecqrs.core.documentstore.MemoryDocumentStore
 import io.reactivecqrs.core.eventbus.{EventBusState, EventsBusActor}
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.uid.UidGeneratorActor
@@ -31,8 +32,8 @@ class ReactiveTestDomainSpec extends CommonSpec {
       val shoppingCartCommandBus: ActorRef = system.actorOf(
         AggregateCommandBusActor(new ShoppingCartCommandBus, uidGenerator, eventStore, eventBusActor), "ShoppingCartCommandBus")
 
-      val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusActor)), "ShoppingCartsListProjectionEventsBased")
-      val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusActor)), "ShoppingCartsListProjectionAggregatesBased")
+      val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusActor, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionEventsBased")
+      val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusActor, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionAggregatesBased")
 
 
 
