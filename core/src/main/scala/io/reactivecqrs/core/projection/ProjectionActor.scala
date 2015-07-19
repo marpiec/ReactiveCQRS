@@ -4,8 +4,9 @@ import akka.actor.{Actor, ActorRef}
 import akka.event.LoggingReceive
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.api.{Event, AggregateType, AggregateVersion, AggregateWithType}
-import io.reactivecqrs.core.EventsBusActor._
-import io.reactivecqrs.core.api.IdentifiableEvent
+import io.reactivecqrs.core.aggregaterepository.IdentifiableEvent
+import io.reactivecqrs.core.eventbus.EventsBusActor
+import EventsBusActor._
 
 import scala.reflect.runtime.universe._
 

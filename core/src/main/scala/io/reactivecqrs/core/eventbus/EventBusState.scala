@@ -1,15 +1,15 @@
-package io.reactivecqrs.core.db.eventbus
+package io.reactivecqrs.core.eventbus
 
 import akka.actor.ActorRef
 import akka.serialization.Serialization
 import io.reactivecqrs.api.AggregateVersion
 import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.core.EventsBusActor.MessageToSend
+import io.reactivecqrs.core.eventbus.EventsBusActor.MessageToSend
 import scalikejdbc._
 
 
 
-class EventBus(serialization: Serialization) {
+class EventBusState(serialization: Serialization) {
 
 
 

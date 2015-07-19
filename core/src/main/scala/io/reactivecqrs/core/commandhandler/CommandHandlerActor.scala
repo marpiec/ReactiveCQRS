@@ -1,12 +1,13 @@
-package io.reactivecqrs.core
+package io.reactivecqrs.core.commandhandler
 
 import akka.actor.{Actor, ActorRef, Props}
 import akka.event.LoggingReceive
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId}
-import io.reactivecqrs.core.AggregateCommandBusActor.{FirstCommandEnvelope, FollowingCommandEnvelope}
-import io.reactivecqrs.core.AggregateRepositoryActor.{GetAggregateRoot, PersistEvents}
-import io.reactivecqrs.core.CommandHandlerActor._
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
+import AggregateRepositoryActor.{GetAggregateRoot, PersistEvents}
+import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{FirstCommandEnvelope, FollowingCommandEnvelope}
+import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalFollowingCommandEnvelope, InternalFirstCommandEnvelope}
 
 import scala.concurrent.duration._
 

@@ -1,4 +1,4 @@
-package io.reactivecqrs.core
+package io.reactivecqrs.core.commandhandler
 
 import akka.actor.{Actor, ActorRef, Props}
 import akka.event.LoggingReceive
@@ -6,10 +6,12 @@ import akka.pattern.ask
 import akka.util.Timeout
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
-import io.reactivecqrs.core.AggregateCommandBusActor._
-import io.reactivecqrs.core.AggregateRepositoryActor.GetAggregateRoot
-import io.reactivecqrs.core.CommandHandlerActor.{InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
-import io.reactivecqrs.core.db.eventstore.EventStore
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
+import AggregateRepositoryActor.GetAggregateRoot
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
+import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{FollowingCommandEnvelope, FirstCommandEnvelope, AggregateActors}
+import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalFollowingCommandEnvelope, InternalFirstCommandEnvelope}
+import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
 
 import scala.collection.mutable
@@ -42,7 +44,7 @@ object AggregateCommandBusActor {
 
 
   def apply[AGGREGATE_ROOT:ClassTag:TypeTag](aggregate: AggregateCommandBus[AGGREGATE_ROOT],
-                                             uidGenerator: ActorRef, eventStore: EventStore, eventBus: ActorRef): Props = {
+                                             uidGenerator: ActorRef, eventStore: EventStoreState, eventBus: ActorRef): Props = {
     Props(new AggregateCommandBusActor[AGGREGATE_ROOT](
       uidGenerator,
       eventStore,
@@ -59,7 +61,7 @@ object AggregateCommandBusActor {
 
 
 class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRef,
-                                              eventStore: EventStore,
+                                              eventStore: EventStoreState,
                                       val commandsHandlers: AGGREGATE_ROOT => PartialFunction[Any, CommandResult[Any]],
                                      val eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
                                                 val eventBus: ActorRef,

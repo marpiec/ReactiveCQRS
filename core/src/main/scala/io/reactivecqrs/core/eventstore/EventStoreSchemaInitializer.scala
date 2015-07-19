@@ -1,4 +1,4 @@
-package io.reactivecqrs.core.db.eventstore
+package io.reactivecqrs.core.eventstore
 
 import scalikejdbc._
 

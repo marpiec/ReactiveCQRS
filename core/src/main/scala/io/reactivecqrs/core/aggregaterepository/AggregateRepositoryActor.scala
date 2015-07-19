@@ -1,16 +1,16 @@
-package io.reactivecqrs.core
+package io.reactivecqrs.core.aggregaterepository
 
+import _root_.io.reactivecqrs.core.commandhandler.ResultAggregator
+import _root_.io.reactivecqrs.core.eventstore.EventStoreState
 import akka.actor.{Actor, ActorRef}
 import akka.event.LoggingReceive
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
-import io.reactivecqrs.core.EventsBusActor.{PublishEvents, PublishEventsAck}
-import io.reactivecqrs.core.api.{EventIdentifier, IdentifiableEvent}
-import io.reactivecqrs.core.db.eventstore.EventStore
+import _root_.io.reactivecqrs.core.errors.AggregateConcurrentModificationError
+import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
 
 import scala.concurrent.Future
 import scala.reflect._
-
 import scala.reflect.runtime.universe._
 
 object AggregateRepositoryActor {
@@ -32,7 +32,7 @@ object AggregateRepositoryActor {
 
 
 class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
-                                                         eventStore: EventStore,
+                                                         eventStore: EventStoreState,
                                                          eventsBus: ActorRef,
                                                          eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
                                                          initialState: () => AGGREGATE_ROOT) extends Actor {

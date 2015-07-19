@@ -1,11 +1,10 @@
-package io.reactivecqrs.core
+package io.reactivecqrs.core.eventbus
 
 import akka.actor.{Actor, ActorRef}
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.api.{AggregateType, AggregateVersion, AggregateWithType}
-import io.reactivecqrs.core.EventsBusActor._
-import io.reactivecqrs.core.api.{EventIdentifier, IdentifiableEvent}
-import io.reactivecqrs.core.db.eventbus.EventBus
+import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEvent}
+import io.reactivecqrs.core.eventbus.EventsBusActor._
 
 import scala.concurrent.Future
 
@@ -31,7 +30,7 @@ object EventsBusActor {
 }
 
 
-class EventsBusActor(eventBus: EventBus) extends Actor {
+class EventsBusActor(eventBus: EventBusState) extends Actor {
 
   private var subscribersForEvents: Map[AggregateType, Vector[ActorRef]] = Map()
   private var subscribersForAggregates: Map[AggregateType, Vector[ActorRef]] = Map()

@@ -1,7 +1,8 @@
-package io.reactivecqrs.core
+package io.reactivecqrs.core.commandhandler
 
 import akka.actor.{Actor, ActorRef, PoisonPill}
 import akka.event.LoggingReceive
+import io.reactivecqrs.core.errors.AggregateConcurrentModificationError
 
 import scala.concurrent.duration._
 

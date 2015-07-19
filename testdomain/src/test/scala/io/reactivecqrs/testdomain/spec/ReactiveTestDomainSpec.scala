@@ -4,11 +4,12 @@ import akka.actor.{ActorRef, Props}
 import akka.serialization.SerializationExtension
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
-import io.reactivecqrs.core.AggregateCommandBusActor.CommandEnvelope
-import io.reactivecqrs.core.db.eventbus.EventBus
-import io.reactivecqrs.core.db.eventstore.EventStore
+import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
+import AggregateCommandBusActor.CommandEnvelope
+import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
+import io.reactivecqrs.core.eventbus.{EventBusState, EventsBusActor}
+import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.uid.UidGeneratorActor
-import io.reactivecqrs.core.{AggregateCommandBusActor, EventsBusActor}
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testdomain.spec.utils.CommonSpec
 
@@ -20,11 +21,11 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
     scenario("Creation and modification of user aggregate") {
 
-      val eventStore = new EventStore
+      val eventStore = new EventStoreState
       eventStore.initSchema()
       val userId = UserId(1L)
       val serialization = SerializationExtension(system)
-      val eventBus = new EventBus(serialization)
+      val eventBus = new EventBusState(serialization)
       eventBus.initSchema()
       val uidGenerator = system.actorOf(Props(new UidGeneratorActor), "uidGenerator")
       val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBus)), "eventBus")
