@@ -15,4 +15,5 @@ object EventsHandlers {
   def itemRemoved(shoppingCart: ShoppingCart, event: ItemRemoved): ShoppingCart = {
     shoppingCart.copy(items = shoppingCart.items.filterNot(_.id == event.id))
   }
+
 }
