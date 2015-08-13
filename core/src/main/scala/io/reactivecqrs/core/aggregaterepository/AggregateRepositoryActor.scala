@@ -1,12 +1,12 @@
 package io.reactivecqrs.core.aggregaterepository
 
 import _root_.io.reactivecqrs.core.commandhandler.ResultAggregator
+import _root_.io.reactivecqrs.core.errors.AggregateConcurrentModificationError
 import _root_.io.reactivecqrs.core.eventstore.EventStoreState
 import akka.actor.{Actor, ActorRef}
 import akka.event.LoggingReceive
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
-import _root_.io.reactivecqrs.core.errors.AggregateConcurrentModificationError
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
 
 import scala.concurrent.Future
@@ -85,8 +85,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
 
 
   private def persist(eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(afterPersist: Seq[Event[AGGREGATE_ROOT]] => Unit): Unit = {
-    import context.dispatcher
-    Future {
+    //Future { FIXME this future can broke order in which events are stored
       eventStore.persistEvents(id, eventsEnvelope.asInstanceOf[PersistEvents[AnyRef]])
       var mappedEvents = 0
       self ! EventsPersisted(eventsEnvelope.events.map { event =>
@@ -95,9 +94,9 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
         IdentifiableEvent(AggregateType(event.aggregateRootType.toString), eventsEnvelope.aggregateId, eventVersion, event)
       })
       afterPersist(eventsEnvelope.events)
-    } onFailure {
-      case e: Exception => throw new IllegalStateException(e)
-    }
+//    } onFailure {
+//      case e: Exception => throw new IllegalStateException(e)
+//    }
   }
 
   private def respond(respondTo: ActorRef)(events: Seq[Event[AGGREGATE_ROOT]]): Unit = {
