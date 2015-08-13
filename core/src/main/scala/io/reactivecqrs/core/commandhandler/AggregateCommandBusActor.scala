@@ -1,4 +1,4 @@
-package io.reactivecqrs.core
+package io.reactivecqrs.core.commandhandler
 
 import akka.actor.{Actor, ActorRef, Props}
 import akka.event.LoggingReceive
@@ -6,10 +6,12 @@ import akka.pattern.ask
 import akka.util.Timeout
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
-import io.reactivecqrs.core.AggregateCommandBusActor._
-import io.reactivecqrs.core.AggregateRepositoryActor.GetAggregateRoot
-import io.reactivecqrs.core.CommandHandlerActor.{InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
-import io.reactivecqrs.core.db.eventstore.EventStore
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
+import AggregateRepositoryActor.GetAggregateRoot
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
+import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.AggregateActors
+import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalFollowingCommandEnvelope, InternalFirstCommandEnvelope}
+import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
 
 import scala.collection.mutable
@@ -20,29 +22,11 @@ import scala.reflect.runtime.universe._
 
 object AggregateCommandBusActor {
 
-
-  object CommandEnvelope {
-
-    def apply[AGGREGATE_ROOT, RESPONSE](userId: UserId, command: Command[AGGREGATE_ROOT, RESPONSE]) = FirstCommandEnvelope(userId, command)
-    def apply[AGGREGATE_ROOT, RESPONSE](userId: UserId, aggregateId: AggregateId,
-                                        expectedVersion: AggregateVersion, command: Command[AGGREGATE_ROOT, RESPONSE]) = FollowingCommandEnvelope(userId,aggregateId, expectedVersion, command)
-
-  }
-  case class FirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE](userId: UserId,
-                                                            command: Command[AGGREGATE_ROOT, RESPONSE])
-
-
-
-  case class FollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE](userId: UserId,
-                                                                aggregateId: AggregateId,
-                                                                expectedVersion: AggregateVersion,
-                                                                command: Command[AGGREGATE_ROOT, RESPONSE])
-
   private case class AggregateActors(commandHandler: ActorRef, repository: ActorRef)
 
 
   def apply[AGGREGATE_ROOT:ClassTag:TypeTag](aggregate: AggregateCommandBus[AGGREGATE_ROOT],
-                                             uidGenerator: ActorRef, eventStore: EventStore, eventBus: ActorRef): Props = {
+                                             uidGenerator: ActorRef, eventStore: EventStoreState, eventBus: ActorRef): Props = {
     Props(new AggregateCommandBusActor[AGGREGATE_ROOT](
       uidGenerator,
       eventStore,
@@ -59,7 +43,7 @@ object AggregateCommandBusActor {
 
 
 class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRef,
-                                              eventStore: EventStore,
+                                              eventStore: EventStoreState,
                                       val commandsHandlers: AGGREGATE_ROOT => PartialFunction[Any, CommandResult[Any]],
                                      val eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
                                                 val eventBus: ActorRef,
@@ -73,7 +57,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
   private var nextAggregateId = 0L
   private var remainingAggregateIds = 0L
-  
+
   private var nextCommandId = 0L
   private var remainingCommandsIds = 0L
 
@@ -83,19 +67,19 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
 
   override def receive: Receive = LoggingReceive {
-    case fce: FirstCommandEnvelope[_,_] => routeFirstCommand(fce.asInstanceOf[FirstCommandEnvelope[AGGREGATE_ROOT, _]])
-    case ce: FollowingCommandEnvelope[_,_] => routeCommand(ce.asInstanceOf[FollowingCommandEnvelope[AGGREGATE_ROOT, _]])
+    case fce: FirstCommand[_,_] => routeFirstCommand(fce.asInstanceOf[FirstCommand[AGGREGATE_ROOT, _]])
+    case ce: Command[_,_] => routeCommand(ce.asInstanceOf[Command[AGGREGATE_ROOT, _]])
     case GetAggregate(id) => routeGetAggregateRoot(id)
     case m => throw new IllegalArgumentException("Cannot handle this kind of message: " + m + " class: " + m.getClass)
   }
 
-  private def routeFirstCommand[RESPONSE](firstCommandEnvelope: FirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE]): Unit = {
+  private def routeFirstCommand[RESPONSE](firstCommand: FirstCommand[AGGREGATE_ROOT, RESPONSE]): Unit = {
     val commandId = takeNextCommandId
     val newAggregateId = takeNextAggregateId // Actor construction might be delayed so we need to store current aggregate id
     val respondTo = sender() // with sender this shouldn't be the case, but just to be sure
 
     val aggregateActors = createAggregateActorsIfNeeded(newAggregateId)
-    aggregateActors.commandHandler ! InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo, commandId, firstCommandEnvelope)
+    aggregateActors.commandHandler ! InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo, commandId, firstCommand)
   }
 
   private def createAggregateActorsIfNeeded(aggregateId: AggregateId): AggregateActors = {
@@ -119,13 +103,13 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     actors
   }
 
-  private def routeCommand[RESPONSE](commandEnvelope: FollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE]): Unit = {
+  private def routeCommand[RESPONSE](command: Command[AGGREGATE_ROOT, RESPONSE]): Unit = {
     val commandId = takeNextCommandId
     val respondTo = sender()
 
-    val aggregateActors = createAggregateActorsIfNeeded(commandEnvelope.aggregateId)
+    val aggregateActors = createAggregateActorsIfNeeded(command.aggregateId)
 
-    aggregateActors.commandHandler ! InternalFollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo, commandId, commandEnvelope)
+    aggregateActors.commandHandler ! InternalFollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo, commandId, command)
   }
 
 

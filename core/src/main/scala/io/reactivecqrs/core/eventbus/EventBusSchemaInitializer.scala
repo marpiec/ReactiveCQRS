@@ -1,4 +1,4 @@
-package io.reactivecqrs.core.db.eventbus
+package io.reactivecqrs.core.eventbus
 
 import scalikejdbc._
 

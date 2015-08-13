@@ -1,13 +1,13 @@
-package io.reactivecqrs.core.db.eventstore
+package io.reactivecqrs.core.eventstore
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.Event
 import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.core.AggregateRepositoryActor.PersistEvents
-import io.reactivecqrs.core.api.EventIdentifier
+import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, AggregateRepositoryActor}
+import AggregateRepositoryActor.PersistEvents
 import scalikejdbc._
 
-class EventStore {
+class EventStoreState {
 
   val mpjsons = new MPJsons
 
