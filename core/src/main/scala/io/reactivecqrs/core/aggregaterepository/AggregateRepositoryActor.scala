@@ -1,6 +1,6 @@
 package io.reactivecqrs.core.aggregaterepository
 
-import _root_.io.reactivecqrs.api.{AggregateVersion, AggregateType, Event, Aggregate}
+import _root_.io.reactivecqrs.api._
 import _root_.io.reactivecqrs.core.commandhandler.ResultAggregator
 import _root_.io.reactivecqrs.core.errors.AggregateConcurrentModificationError
 import _root_.io.reactivecqrs.core.eventstore.EventStoreState
@@ -12,7 +12,7 @@ import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEvent
 import scala.concurrent.Future
 import scala.reflect._
 import scala.reflect.runtime.universe._
-import scala.util.Success
+import scala.util.{Failure, Success}
 
 object AggregateRepositoryActor {
   case class GetAggregateRoot(respondTo: ActorRef)
@@ -81,7 +81,12 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
   }
 
   private def receiveReturnAggregateRoot(respondTo: ActorRef): Unit = {
-    respondTo ! Success(Aggregate[AGGREGATE_ROOT](id, version, Some(aggregateRoot)))
+    if(version == AggregateVersion.ZERO) {
+      respondTo ! Failure(new NoEventsForAggregateException(id))
+    } else {
+      respondTo ! Success(Aggregate[AGGREGATE_ROOT](id, version, Some(aggregateRoot)))
+    }
+
   }
 
 

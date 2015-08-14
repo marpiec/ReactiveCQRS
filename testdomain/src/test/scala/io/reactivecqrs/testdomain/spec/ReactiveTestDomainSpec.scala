@@ -48,7 +48,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
       val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusActor, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionEventsBased")
       val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusActor, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionAggregatesBased")
 
-      Thread.sleep(50) // Wait until all subscriptions in place
+      Thread.sleep(100) // Wait until all subscriptions in place
 
 
       step("Create shopping cart")
@@ -87,7 +87,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
       shoppingCart mustBe Aggregate(success.aggregateId, success.aggregateVersion, Some(ShoppingCart("Groceries", Vector(Item(2, "oranges")))))
 
 
-      Thread.sleep(50) // Projections are eventually consistent, so let's wait until they are consistent
+      Thread.sleep(100) // Projections are eventually consistent, so let's wait until they are consistent
 
       var cartsNames: Vector[String] = shoppingCartsListProjectionEventsBased ?? ShoppingCartsListProjection.GetAllCartsNames()
       cartsNames must have size 1
