@@ -4,7 +4,11 @@ import scalikejdbc._
 
 case class IdsPool(from: Long, size: Long)
 
-class PostgresUidGenerator(sequenceName: String) {
+abstract class UidGenerator {
+  def nextIdsPool: IdsPool
+}
+
+class PostgresUidGenerator(sequenceName: String) extends UidGenerator{
 
   new UidGeneratorSchemaInitializer().initSchema()
 
@@ -25,6 +29,19 @@ class PostgresUidGenerator(sequenceName: String) {
     DB.readOnly { implicit session =>
       SQL(s"SELECT increment_by FROM $sequenceName").map(rs => rs.long(1)).single().apply().get
     }
+  }
+
+}
+
+class MemoryUidGenerator extends UidGenerator {
+
+  val poolSize = 100
+  var lastValue = 0
+
+  def nextIdsPool: IdsPool = synchronized {
+    val pool = IdsPool(lastValue, poolSize)
+    lastValue += poolSize
+    pool
   }
 
 }

@@ -8,7 +8,7 @@ import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
 import io.reactivecqrs.core.documentstore.MemoryDocumentStore
 import io.reactivecqrs.core.eventbus.{EventsBusActor, PostgresEventBusState}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
-import io.reactivecqrs.core.uid.UidGeneratorActor
+import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testdomain.spec.utils.CommonSpec
 import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
@@ -37,7 +37,10 @@ class ReactiveTestDomainSpec extends CommonSpec {
       val serialization = SerializationExtension(system)
       val eventBusState = new PostgresEventBusState(serialization) // or MemoryEventBusState
       eventBusState.initSchema()
-      val uidGenerator = system.actorOf(Props(new UidGeneratorActor), "uidGenerator")
+
+      val aggregatesUidGenerator = new PostgresUidGenerator("aggregates_uids_seq") // or MemoryUidGenerator
+      val commandsUidGenerator = new PostgresUidGenerator("commands_uids_seq") // or MemoryUidGenerator
+      val uidGenerator = system.actorOf(Props(new UidGeneratorActor(aggregatesUidGenerator, commandsUidGenerator)), "uidGenerator")
       val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusState)), "eventBus")
       val shoppingCartCommandBus: ActorRef = system.actorOf(
         AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStoreState, eventBusActor), "ShoppingCartCommandBus")
