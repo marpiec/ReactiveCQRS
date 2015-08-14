@@ -6,7 +6,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
 import io.reactivecqrs.core.documentstore.MemoryDocumentStore
-import io.reactivecqrs.core.eventbus.{EventBusState, EventsBusActor}
+import io.reactivecqrs.core.eventbus.{EventsBusActor, PostgresEventBusState}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.uid.UidGeneratorActor
 import io.reactivecqrs.testdomain.shoppingcart._
@@ -24,12 +24,12 @@ class ReactiveTestDomainSpec extends CommonSpec {
       eventStore.initSchema()
       val userId = UserId(1L)
       val serialization = SerializationExtension(system)
-      val eventBus = new EventBusState(serialization)
+      val eventBus = new PostgresEventBusState(serialization) // or MemoryEventBusState
       eventBus.initSchema()
       val uidGenerator = system.actorOf(Props(new UidGeneratorActor), "uidGenerator")
       val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBus)), "eventBus")
       val shoppingCartCommandBus: ActorRef = system.actorOf(
-        AggregateCommandBusActor(new ShoppingCartCommandBus, uidGenerator, eventStore, eventBusActor), "ShoppingCartCommandBus")
+        AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStore, eventBusActor), "ShoppingCartCommandBus")
 
       val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusActor, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionEventsBased")
       val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusActor, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionAggregatesBased")
