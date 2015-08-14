@@ -48,7 +48,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
   private def assureRestoredState(): Unit = {
     if(notRestored) {
       //TODO make it future
-      eventStore.readAllEvents[AGGREGATE_ROOT](id)(handleEvent)
+      eventStore.readAndProcessAllEvents[AGGREGATE_ROOT](id)(handleEvent)
       notRestored = false
     }
   }
@@ -116,7 +116,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
   def markPublishedEvents(events: Seq[EventIdentifier]): Unit = {
     import context.dispatcher
     Future { // Fire and forget
-      eventStore.deletePublishedEvents(events)
+      eventStore.deletePublishedEventsToPublish(events)
     } onFailure {
       case e: Exception => throw new IllegalStateException(e)
     }

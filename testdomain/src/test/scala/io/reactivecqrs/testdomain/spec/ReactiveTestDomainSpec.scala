@@ -7,7 +7,7 @@ import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
 import io.reactivecqrs.core.documentstore.MemoryDocumentStore
 import io.reactivecqrs.core.eventbus.{EventBusState, EventsBusActor}
-import io.reactivecqrs.core.eventstore.EventStoreState
+import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.uid.UidGeneratorActor
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testdomain.spec.utils.CommonSpec
@@ -20,7 +20,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
     scenario("Creation and modification of user aggregate") {
 
-      val eventStore = new EventStoreState
+      val eventStore = new PostgresEventStoreState // or MemoryEventStore
       eventStore.initSchema()
       val userId = UserId(1L)
       val serialization = SerializationExtension(system)
