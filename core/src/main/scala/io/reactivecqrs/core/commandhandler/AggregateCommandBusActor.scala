@@ -9,7 +9,7 @@ import io.reactivecqrs.api.id.{AggregateId, CommandId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.GetAggregateRoot
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.AggregateActors
-import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
+import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
 
@@ -67,6 +67,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
   override def receive: Receive = LoggingReceive {
     case fce: FirstCommand[_,_] => routeFirstCommand(fce.asInstanceOf[FirstCommand[AGGREGATE_ROOT, _]])
+    case cce: ConcurrentCommand[_,_] => routeConcurrentCommand(cce.asInstanceOf[ConcurrentCommand[AGGREGATE_ROOT, _]])
     case ce: Command[_,_] => routeCommand(ce.asInstanceOf[Command[AGGREGATE_ROOT, _]])
     case GetAggregate(id) => routeGetAggregateRoot(id)
     case m => throw new IllegalArgumentException("Cannot handle this kind of message: " + m + " class: " + m.getClass)
@@ -106,6 +107,17 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
       context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventBus, eventHandlers, initialState)),
         aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong)
     )
+  }
+
+
+
+  private def routeConcurrentCommand[RESPONSE](command: ConcurrentCommand[AGGREGATE_ROOT, RESPONSE]): Unit = {
+    val commandId = takeNextCommandId
+    val respondTo = sender()
+
+    val aggregateActors = createAggregateActorsIfNeeded(command.aggregateId)
+
+    aggregateActors.commandHandler ! InternalConcurrentCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo, commandId, command)
   }
 
   private def routeCommand[RESPONSE](command: Command[AGGREGATE_ROOT, RESPONSE]): Unit = {
