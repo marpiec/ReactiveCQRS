@@ -5,12 +5,11 @@ import akka.event.LoggingReceive
 import akka.pattern.ask
 import akka.util.Timeout
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
+import io.reactivecqrs.api.id.{AggregateId, CommandId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
-import AggregateRepositoryActor.GetAggregateRoot
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.GetAggregateRoot
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.AggregateActors
-import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalFollowingCommandEnvelope, InternalFirstCommandEnvelope}
+import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
 
@@ -89,8 +88,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   }
 
   private def createAggregateActors(aggregateId: AggregateId): AggregateActors = {
-    val repositoryActor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventBus, eventHandlers, initialState)),
-      aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong)
+    val repositoryActor = getOrCreateAggregateRepositoryActor(aggregateId)
 
     val commandHandlerActor = context.actorOf(Props(new CommandHandlerActor[AGGREGATE_ROOT](
       aggregateId, repositoryActor,
@@ -101,6 +99,13 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     val actors = AggregateActors(commandHandlerActor, repositoryActor)
     aggregatesActors += aggregateId.asLong -> actors
     actors
+  }
+
+  private def getOrCreateAggregateRepositoryActor(aggregateId: AggregateId): ActorRef = {
+    context.child(aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong).getOrElse(
+      context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventBus, eventHandlers, initialState)),
+        aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong)
+    )
   }
 
   private def routeCommand[RESPONSE](command: Command[AGGREGATE_ROOT, RESPONSE]): Unit = {
@@ -116,7 +121,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
   private def routeGetAggregateRoot(id: AggregateId): Unit = {
     val respondTo = sender()
-    val aggregateRepository = context.actorSelection(aggregateTypeSimpleName+"_AggregateRepository_"+id.asLong)
+    val aggregateRepository = getOrCreateAggregateRepositoryActor(id)
+
     aggregateRepository ! GetAggregateRoot(respondTo)
   }
 
