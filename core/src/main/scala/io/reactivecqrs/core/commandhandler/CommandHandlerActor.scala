@@ -52,7 +52,6 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
 
   private def handleFirstCommand[COMMAND <: FirstCommand[AGGREGATE_ROOT, RESPONSE], RESPONSE](envelope: InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE]) = envelope match {
     case InternalFirstCommandEnvelope(respondTo, commandId, command) =>
-//      val result = commandHandlers(command.getClass.getName).asInstanceOf[CommandHandlerF[AGGREGATE_ROOT]].apply(command.asInstanceOf[COMMAND])
 
       val result:CommandResult[Any] = commandHandlers(initialState())(command.asInstanceOf[FirstCommand[AGGREGATE_ROOT, Any]])
 
@@ -62,7 +61,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
           val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, success.response(aggregateId, AggregateVersion(s.events.size)), responseTimeout)), nextResultAggregatorName)
           repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, command.userId, AggregateVersion.ZERO, success.events)
         case failure: CommandFailure[_, _] =>
-          ??? // TODO send failure message to requestor
+          respondTo ! failure.response
       }
 
   }
@@ -79,10 +78,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
 
   private def handleFollowingCommand[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE](envelope: InternalFollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE], aggregate: Aggregate[AGGREGATE_ROOT]): Unit = envelope match {
     case InternalFollowingCommandEnvelope(respondTo, commandId, command) =>
-//      val handler = commandHandlers(command.getClass.getName).asInstanceOf[CommandHandlerF[AGGREGATE_ROOT]]
-//
-//
-//      val result = handler.apply(command.asInstanceOf[COMMAND])
+
 
       val result = commandHandlers(aggregate.aggregateRoot.get)(command.asInstanceOf[Command[AGGREGATE_ROOT, Any]])
 
@@ -92,7 +88,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
           val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, success.response(aggregateId, command.expectedVersion.incrementBy(success.events.size)), responseTimeout)), nextResultAggregatorName)
           repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, command.userId, command.expectedVersion, success.events)
         case failure: CommandFailure[_, _] =>
-          ??? // TODO send failure message to requestor
+          respondTo ! failure.response
       }
       context.become(waitingForCommand)
   }

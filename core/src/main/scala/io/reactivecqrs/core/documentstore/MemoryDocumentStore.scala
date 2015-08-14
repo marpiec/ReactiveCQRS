@@ -11,16 +11,16 @@ class MemoryDocumentStore[T <: AnyRef : TypeTag, M <: AnyRef : TypeTag] extends 
 
 
   override def findDocumentByPath(path: Seq[String], value: String): Map[Long, DocumentWithMetadata[T,M]] = {
-    store.filter(keyValuePair => matches(keyValuePair._2.asInstanceOf[AnyRef], path, value)).seq.toMap
+    store.filter(keyValuePair => matches(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].document, path, value)).seq.toMap
   }
 
   override def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String]): Map[Long, DocumentWithMetadata[T,M]] = {
-    store.filter(keyValuePair => matchesMultiple(keyValuePair._2.asInstanceOf[AnyRef], path, values)).seq.toMap
+    store.filter(keyValuePair => matchesMultiple(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].document, path, values)).seq.toMap
   }
 
 
   override def findDocumentByPathWithOneArray[V](array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T,M]] =
-    store.filter(keyValuePair => arrayMatch(keyValuePair._2.asInstanceOf[AnyRef], array).exists(matches(_, objectPath, value))).seq.toMap
+    store.filter(keyValuePair => arrayMatch(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].document, array).exists(matches(_, objectPath, value))).seq.toMap
 
 
   override def findAll(): Map[Long, DocumentWithMetadata[T,M]] = {
@@ -38,24 +38,32 @@ class MemoryDocumentStore[T <: AnyRef : TypeTag, M <: AnyRef : TypeTag] extends 
   }
 
   private def matches[V](element: AnyRef, path: Seq[String], value: V): Boolean = {
-    val field = element.getClass.getDeclaredField(path.head)
-    val innerElement: AnyRef = getPrivateValue(element, field)
-    val tail = path.tail
-    if(tail.isEmpty) {
-      innerElement.toString == value.toString
-    } else {
-      matches(innerElement, tail, value)
+    try {
+      val field = element.getClass.getDeclaredField(path.head)
+      val innerElement: AnyRef = getPrivateValue(element, field)
+      val tail = path.tail
+      if(tail.isEmpty) {
+        innerElement.toString == value.toString
+      } else {
+        matches(innerElement, tail, value)
+      }
+    } catch {
+      case e: NoSuchFieldException => throw new IllegalArgumentException(s"No field [${path.head}] found in type [${element.getClass}] for element $element")
     }
   }
 
   private def matchesMultiple(element: AnyRef, path: Seq[String], values: Set[String]): Boolean = {
-    val field = element.getClass.getDeclaredField(path.head)
-    val innerElement: AnyRef = getPrivateValue(element, field)
-    val tail = path.tail
-    if(tail.isEmpty) {
-      values.contains(innerElement.toString)
-    } else {
-      matchesMultiple(innerElement, tail, values)
+    try {
+      val field = element.getClass.getDeclaredField(path.head)
+      val innerElement: AnyRef = getPrivateValue(element, field)
+      val tail = path.tail
+      if(tail.isEmpty) {
+        values.contains(innerElement.toString)
+      } else {
+        matchesMultiple(innerElement, tail, values)
+      }
+    } catch {
+      case e: NoSuchFieldException => throw new IllegalArgumentException(s"No field [${path.head}] found in type [${element.getClass}] for element $element")
     }
   }
 
