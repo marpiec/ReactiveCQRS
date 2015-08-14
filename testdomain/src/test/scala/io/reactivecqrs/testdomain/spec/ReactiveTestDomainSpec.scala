@@ -12,6 +12,7 @@ import io.reactivecqrs.core.uid.UidGeneratorActor
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testdomain.spec.utils.CommonSpec
 
+import scala.util.Try
 
 
 class ReactiveTestDomainSpec extends CommonSpec {
@@ -20,21 +21,21 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
     scenario("Creation and modification of user aggregate") {
 
-      val eventStore = new PostgresEventStoreState // or MemoryEventStore
-      eventStore.initSchema()
+      val eventStoreState = new PostgresEventStoreState // or MemoryEventStore
+      eventStoreState.initSchema()
       val userId = UserId(1L)
       val serialization = SerializationExtension(system)
-      val eventBus = new PostgresEventBusState(serialization) // or MemoryEventBusState
-      eventBus.initSchema()
+      val eventBusState = new PostgresEventBusState(serialization) // or MemoryEventBusState
+      eventBusState.initSchema()
       val uidGenerator = system.actorOf(Props(new UidGeneratorActor), "uidGenerator")
-      val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBus)), "eventBus")
+      val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusState)), "eventBus")
       val shoppingCartCommandBus: ActorRef = system.actorOf(
-        AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStore, eventBusActor), "ShoppingCartCommandBus")
+        AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStoreState, eventBusActor), "ShoppingCartCommandBus")
 
       val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusActor, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionEventsBased")
       val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusActor, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionAggregatesBased")
 
-      Thread.sleep(100) // Wait until all subscriptions in place
+      Thread.sleep(50) // Wait until all subscriptions in place
 
 
       step("Create shopping cart")
@@ -44,8 +45,8 @@ class ReactiveTestDomainSpec extends CommonSpec {
         case SuccessResponse(aggregateId, aggregateVersion) => aggregateId
         case FailureResponse(reason) => fail()
       }
-      var shoppingCart:Aggregate[ShoppingCart] = shoppingCartCommandBus ?? GetAggregate(shoppingCartId)
-
+      var shoppingCartTry:Try[Aggregate[ShoppingCart]] = shoppingCartCommandBus ?? GetAggregate(shoppingCartId)
+      var shoppingCart = shoppingCartTry.get
       shoppingCart mustBe Aggregate(shoppingCartId, AggregateVersion(1), Some(ShoppingCart("Groceries", Vector())))
 
       step("Add items to cart")
@@ -58,7 +59,8 @@ class ReactiveTestDomainSpec extends CommonSpec {
       result mustBe SuccessResponse(shoppingCart.id, AggregateVersion(3))
       success = result.asInstanceOf[SuccessResponse]
 
-      shoppingCart = shoppingCartCommandBus ?? GetAggregate(shoppingCartId)
+      shoppingCartTry = shoppingCartCommandBus ?? GetAggregate(shoppingCartId)
+      shoppingCart = shoppingCartTry.get
       shoppingCart mustBe Aggregate(success.aggregateId, success.aggregateVersion, Some(ShoppingCart("Groceries", Vector(Item(1, "apples"), Item(2, "oranges")))))
 
       step("Remove items from cart")
@@ -67,11 +69,12 @@ class ReactiveTestDomainSpec extends CommonSpec {
       result mustBe SuccessResponse(shoppingCart.id, AggregateVersion(4))
       success = result.asInstanceOf[SuccessResponse]
 
-      shoppingCart = shoppingCartCommandBus ?? GetAggregate(shoppingCartId)
+      shoppingCartTry = shoppingCartCommandBus ?? GetAggregate(shoppingCartId)
+      shoppingCart = shoppingCartTry.get
       shoppingCart mustBe Aggregate(success.aggregateId, success.aggregateVersion, Some(ShoppingCart("Groceries", Vector(Item(2, "oranges")))))
 
 
-      Thread.sleep(100) // Projections are eventually consistent, so let's wait until they are consistent
+      Thread.sleep(50) // Projections are eventually consistent, so let's wait until they are consistent
 
       var cartsNames: Vector[String] = shoppingCartsListProjectionEventsBased ?? ShoppingCartsListProjection.GetAllCartsNames()
       cartsNames must have size 1

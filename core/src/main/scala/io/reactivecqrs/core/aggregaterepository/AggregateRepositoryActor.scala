@@ -1,17 +1,18 @@
 package io.reactivecqrs.core.aggregaterepository
 
+import _root_.io.reactivecqrs.api.{AggregateVersion, AggregateType, Event, Aggregate}
 import _root_.io.reactivecqrs.core.commandhandler.ResultAggregator
 import _root_.io.reactivecqrs.core.errors.AggregateConcurrentModificationError
 import _root_.io.reactivecqrs.core.eventstore.EventStoreState
 import akka.actor.{Actor, ActorRef}
 import akka.event.LoggingReceive
-import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
 
 import scala.concurrent.Future
 import scala.reflect._
 import scala.reflect.runtime.universe._
+import scala.util.Success
 
 object AggregateRepositoryActor {
   case class GetAggregateRoot(respondTo: ActorRef)
@@ -80,7 +81,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
   }
 
   private def receiveReturnAggregateRoot(respondTo: ActorRef): Unit = {
-    respondTo ! Aggregate[AGGREGATE_ROOT](id, version, Some(aggregateRoot))
+    respondTo ! Success(Aggregate[AGGREGATE_ROOT](id, version, Some(aggregateRoot)))
   }
 
 

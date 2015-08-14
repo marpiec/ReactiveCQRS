@@ -4,11 +4,11 @@ import akka.actor.{Actor, ActorRef, Props}
 import akka.event.LoggingReceive
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId}
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
-import AggregateRepositoryActor.{GetAggregateRoot, PersistEvents}
-import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalFollowingCommandEnvelope, InternalFirstCommandEnvelope}
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRoot, PersistEvents}
+import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
 
 import scala.concurrent.duration._
+import scala.util.{Failure, Success}
 
 object CommandHandlerActor {
 
@@ -43,7 +43,8 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
   }
 
   private def waitingForAggregate(command: InternalFollowingCommandEnvelope[AGGREGATE_ROOT, _]) = LoggingReceive {
-    case aggregate: Aggregate[_] => handleFollowingCommand(command, aggregate.asInstanceOf[Aggregate[AGGREGATE_ROOT]])
+    case s:Success[_] => handleFollowingCommand(command, s.get.asInstanceOf[Aggregate[AGGREGATE_ROOT]])
+    case f:Failure[_] => throw new IllegalStateException("Error getting aggregate")
   }
 
 
@@ -56,11 +57,11 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
       val result:CommandResult[Any] = commandHandlers(initialState())(command.asInstanceOf[FirstCommand[AGGREGATE_ROOT, Any]])
 
       result match {
-        case s: Success[_, _] =>
-          val success: Success[AGGREGATE_ROOT, RESPONSE] = s.asInstanceOf[Success[AGGREGATE_ROOT, RESPONSE]]
+        case s: CommandSuccess[_, _] =>
+          val success: CommandSuccess[AGGREGATE_ROOT, RESPONSE] = s.asInstanceOf[CommandSuccess[AGGREGATE_ROOT, RESPONSE]]
           val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, success.response(aggregateId, AggregateVersion(s.events.size)), responseTimeout)), nextResultAggregatorName)
           repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, command.userId, AggregateVersion.ZERO, success.events)
-        case failure: Failure[_, _] =>
+        case failure: CommandFailure[_, _] =>
           ??? // TODO send failure message to requestor
       }
 
@@ -86,11 +87,11 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
       val result = commandHandlers(aggregate.aggregateRoot.get)(command.asInstanceOf[Command[AGGREGATE_ROOT, Any]])
 
       result match {
-        case s: Success[_, _] =>
-          val success = s.asInstanceOf[Success[AGGREGATE_ROOT, RESPONSE]]
+        case s: CommandSuccess[_, _] =>
+          val success = s.asInstanceOf[CommandSuccess[AGGREGATE_ROOT, RESPONSE]]
           val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, success.response(aggregateId, command.expectedVersion.incrementBy(success.events.size)), responseTimeout)), nextResultAggregatorName)
           repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, command.userId, command.expectedVersion, success.events)
-        case failure: Failure[_, _] =>
+        case failure: CommandFailure[_, _] =>
           ??? // TODO send failure message to requestor
       }
       context.become(waitingForCommand)
