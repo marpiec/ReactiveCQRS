@@ -12,6 +12,11 @@ abstract class FirstCommand[AGGREGATE_ROOT, RESPONSE] {
   val userId: UserId
 }
 
+abstract class ConcurrentCommand[AGGREGATE_ROOT, RESPONSE] {
+  val userId: UserId
+  val aggregateId: AggregateId
+}
+
 abstract class Command[AGGREGATE_ROOT, RESPONSE] {
   val userId: UserId
   val aggregateId: AggregateId

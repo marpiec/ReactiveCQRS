@@ -5,7 +5,7 @@ import io.reactivecqrs.api.id.AggregateId
 
 case class GetAggregate(id: AggregateId)
 
-abstract class AggregateCommandBus[AGGREGATE_ROOT] {
+abstract class AggregateContext[AGGREGATE_ROOT] {
    def initialAggregateRoot: AGGREGATE_ROOT
 
 

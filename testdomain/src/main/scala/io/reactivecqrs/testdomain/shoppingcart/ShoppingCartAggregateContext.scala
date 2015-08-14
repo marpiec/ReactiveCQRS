@@ -5,7 +5,7 @@ import io.reactivecqrs.api._
 import CommandsHandlers._
 import EventsHandlers._
 
-class ShoppingCartAggregateContext extends AggregateCommandBus[ShoppingCart] {
+class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
 
 
   override def commandHandlers = (shoppingCart: ShoppingCart) => {

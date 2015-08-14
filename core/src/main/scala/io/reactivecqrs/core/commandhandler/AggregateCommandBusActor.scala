@@ -24,7 +24,7 @@ object AggregateCommandBusActor {
   private case class AggregateActors(commandHandler: ActorRef, repository: ActorRef)
 
 
-  def apply[AGGREGATE_ROOT:ClassTag:TypeTag](aggregate: AggregateCommandBus[AGGREGATE_ROOT],
+  def apply[AGGREGATE_ROOT:ClassTag:TypeTag](aggregate: AggregateContext[AGGREGATE_ROOT],
                                              uidGenerator: ActorRef, eventStore: EventStoreState, eventBus: ActorRef): Props = {
     Props(new AggregateCommandBusActor[AGGREGATE_ROOT](
       uidGenerator,
