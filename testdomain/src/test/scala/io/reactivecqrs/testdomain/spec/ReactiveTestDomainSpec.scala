@@ -11,11 +11,21 @@ import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.uid.UidGeneratorActor
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testdomain.spec.utils.CommonSpec
+import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
 
 import scala.util.Try
 
 
 class ReactiveTestDomainSpec extends CommonSpec {
+
+  val settings = ConnectionPoolSettings(
+    initialSize = 5,
+    maxSize = 20,
+    connectionTimeoutMillis = 3000L)
+
+  Class.forName("org.postgresql.Driver")
+  ConnectionPool.singleton("jdbc:postgresql://localhost:5432/reactivecqrs", "reactivecqrs", "reactivecqrs", settings)
+
 
   feature("Aggregate storing and getting with event sourcing") {
 
