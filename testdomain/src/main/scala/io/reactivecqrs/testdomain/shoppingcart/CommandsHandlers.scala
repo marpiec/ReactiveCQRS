@@ -14,7 +14,7 @@ object CommandsHandlers {
               aggregateId: AggregateId, expectedVersion: AggregateVersion,
               shoppingCart: ShoppingCart)(command: AddItem) = {
     if(shoppingCart.items.size > 5) {
-      CommandFailure(FailureResponse("Cannot have more than 5 items in your cart"))
+      CommandFailure("Cannot have more than 5 items in your cart")
     } else {
       CommandSuccess(ItemAdded(command.name))
     }

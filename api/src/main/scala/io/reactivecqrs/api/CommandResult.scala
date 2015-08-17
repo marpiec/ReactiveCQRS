@@ -27,3 +27,7 @@ object CommandSuccess {
 }
 
 
+object CommandFailure {
+  def apply[AGGREGATE_ROOT](exceptions: List[String]) = new CommandFailure[AGGREGATE_ROOT, CommandResponse](FailureResponse(exceptions))
+  def apply[AGGREGATE_ROOT](exception: String) = new CommandFailure[AGGREGATE_ROOT, CommandResponse](FailureResponse(List(exception)))
+}

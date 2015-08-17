@@ -8,5 +8,5 @@ import _root_.io.reactivecqrs.api.id.AggregateId
 sealed abstract class CommandResponse(val success: Boolean)
 
 case class SuccessResponse(aggregateId: AggregateId, aggregateVersion: AggregateVersion) extends CommandResponse(true)
-case class FailureResponse(reason: String) extends CommandResponse(false)
+case class FailureResponse(exceptions: List[String]) extends CommandResponse(false)
 
