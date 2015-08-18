@@ -1,9 +1,9 @@
 package io.reactivecqrs.core.eventstore
 
-import io.reactivecqrs.api.{AggregateVersion, AggregateType, Event}
 import io.reactivecqrs.api.id.AggregateId
+import io.reactivecqrs.api.{AggregateVersion, Event}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
-import io.reactivecqrs.core.aggregaterepository.{IdentifiableEvent, EventIdentifier}
+import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEventNoAggregateType}
 
 class MemoryEventStoreState extends EventStoreState {
 
@@ -47,9 +47,10 @@ class MemoryEventStoreState extends EventStoreState {
     eventsToPublish.keys.groupBy(_._1).keys.foreach(aggregateHandler)
   }
 
-  override def readEventsToPublishForAggregate[AGGREGATE_ROOT](aggregateId: AggregateId)(eventHandler: (IdentifiableEvent[AGGREGATE_ROOT]) => Unit): Unit = {
+  override def readEventsToPublishForAggregate[AGGREGATE_ROOT](aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]] = {
 
-    eventsToPublish.filterKeys(_._1 == aggregateId).toList.map(e => IdentifiableEvent[AGGREGATE_ROOT](AggregateType(e._2.getClass.getName), e._1._1, AggregateVersion(e._1._2), e._2.asInstanceOf[Event[AGGREGATE_ROOT]]))
+    eventsToPublish.filterKeys(_._1 == aggregateId).toList.
+      map(e => IdentifiableEventNoAggregateType[AGGREGATE_ROOT](e._1._1, AggregateVersion(e._1._2), e._2.asInstanceOf[Event[AGGREGATE_ROOT]]))
 
   }
 }

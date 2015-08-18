@@ -1,10 +1,10 @@
 package io.reactivecqrs.core.eventstore
 
 import io.mpjsons.MPJsons
-import io.reactivecqrs.api.{AggregateVersion, AggregateType, Event}
 import io.reactivecqrs.api.id.AggregateId
+import io.reactivecqrs.api.{AggregateVersion, Event}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
-import io.reactivecqrs.core.aggregaterepository.{IdentifiableEvent, EventIdentifier}
+import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEventNoAggregateType}
 import scalikejdbc._
 
 class PostgresEventStoreState extends EventStoreState {
@@ -75,19 +75,22 @@ class PostgresEventStoreState extends EventStoreState {
     }
   }
 
-  override def readEventsToPublishForAggregate[AGGREGATE_ROOT](aggregateId: AggregateId)(eventHandler: IdentifiableEvent[AGGREGATE_ROOT] => Unit): Unit = {
+  override def readEventsToPublishForAggregate[AGGREGATE_ROOT](aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]] = {
+    var result = List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]]()
     DB.readOnly { implicit session =>
       sql"""SELECT events_to_publish.version, events.event_type, events.event_type_version, events.event
            | FROM events_to_publish
            | JOIN events on events_to_publish.event_id = events.id
-           | WHERE aggregate_id = ?
+           | WHERE events_to_publish.aggregate_id = ?
            | ORDER BY events_to_publish.version""".stripMargin.bind(aggregateId.asLong).foreach { rs =>
 
         val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(4), rs.string(2))
-        eventHandler(IdentifiableEvent[AGGREGATE_ROOT](AggregateType(rs.string(2)), aggregateId, AggregateVersion(rs.int(1)), event))
+
+        result ::= IdentifiableEventNoAggregateType[AGGREGATE_ROOT](aggregateId, AggregateVersion(rs.int(1)), event)
+
       }
     }
-
+    result.reverse
   }
 
 
