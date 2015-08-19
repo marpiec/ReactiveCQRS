@@ -44,9 +44,11 @@ object Common {
 
     pomIncludeRepository := { _ => false },
 
-    publishLocal := {}
+    publishLocal := {},
 
-    )
+    publishTo := Some("snapshots" at sys.props.getOrElse("snapshotsRepo", default = "http://someMockRepo.com"))
+
+  )
 
   object dependencies {
 
