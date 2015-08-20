@@ -19,8 +19,13 @@ class MemoryDocumentStore[T <: AnyRef : TypeTag, M <: AnyRef : TypeTag] extends 
   }
 
 
-  override def findDocumentByPathWithOneArray[V](array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T,M]] =
+  override def findDocumentByPathWithOneArray[V](array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
     store.filter(keyValuePair => arrayMatch(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].document, array).exists(matches(_, objectPath, value))).seq.toMap
+  }
+
+  override def findDocumentByMetadataPathWithOneArray[V](array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
+    store.filter(keyValuePair => arrayMatch(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].metadata, array).exists(matches(_, objectPath, value))).seq.toMap
+  }
 
 
   override def findAll(): Map[Long, DocumentWithMetadata[T,M]] = {

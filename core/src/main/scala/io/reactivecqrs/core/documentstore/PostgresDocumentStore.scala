@@ -19,25 +19,25 @@ class PostgresDocumentStore[T <: AnyRef: TypeTag, M <: AnyRef: TypeTag](tableNam
 
   private val CREATE_TABLE_QUERY = s"CREATE TABLE IF NOT EXISTS $projectionTableName (" +
     "id BIGINT NOT NULL PRIMARY KEY, " +
-    "document JSONB NOT NULL)"
+    "document JSONB NOT NULL, metadata JSONB NOT NULL)"
 
   private val UPDATE_DOCUMENT_QUERY = s"UPDATE $projectionTableName SET document = ?::jsonb WHERE id = ? "
 
   private val INSERT_DOCUMENT_QUERY = s"INSERT INTO $projectionTableName (id, document) VALUES (?, ?::jsonb)"
 
-  private val SELECT_DOCUMENT_BY_ID_QUERY = s"SELECT document FROM $projectionTableName WHERE id = ?"
+  private val SELECT_DOCUMENT_BY_ID_QUERY = s"SELECT document, metadata FROM $projectionTableName WHERE id = ?"
 
   private def SELECT_DOCUMENT_BY_IDS_QUERY(ids: Seq[Long]) =
-    s"SELECT id, document FROM $projectionTableName WHERE id IN ( ${ids.mkString(",")} )"
+    s"SELECT id, document, metadata FROM $projectionTableName WHERE id IN ( ${ids.mkString(",")} )"
 
   private val DELETE_DOCUMENT_BY_ID_QUERY = s"DELETE FROM $projectionTableName WHERE id = ?"
 
-  private def SELECT_DOCUMENT_BY_PATH(path: String) = s"SELECT id, document FROM $projectionTableName WHERE document #>> '{$path}' = ?"
+  private def SELECT_DOCUMENT_BY_PATH(path: String) = s"SELECT id, document, metadata FROM $projectionTableName WHERE document #>> '{$path}' = ?"
 
   private def SELECT_DOCUMENT_BY_PATH_WITH_ONE_OF_THE_VALUES(path: String, values: Set[String]) =
-    s"SELECT id, document FROM $projectionTableName WHERE document #>> '{$path}' in (${values.map("'"+_+"'").mkString(",")}})"
+    s"SELECT id, document, metadata FROM $projectionTableName WHERE document #>> '{$path}' in (${values.map("'"+_+"'").mkString(",")}})"
 
-  private val SELECT_ALL = s"SELECT id, document FROM $projectionTableName"
+  private val SELECT_ALL = s"SELECT id, document, metadata FROM $projectionTableName"
 
   init()
 
@@ -111,7 +111,7 @@ class PostgresDocumentStore[T <: AnyRef: TypeTag, M <: AnyRef: TypeTag](tableNam
         val resultSet = statement.executeQuery()
         try {
           if (resultSet.next()) {
-            Some(DocumentWithMetadata[T, M](mpjsons.deserialize[T](resultSet.getString(1)), null.asInstanceOf[M]))
+            Some(DocumentWithMetadata[T, M](mpjsons.deserialize[T](resultSet.getString(1)), mpjsons.deserialize[M](resultSet.getString(2))))
           } else {
             None
           }
@@ -151,7 +151,7 @@ class PostgresDocumentStore[T <: AnyRef: TypeTag, M <: AnyRef: TypeTag](tableNam
         try {
           val results = mutable.ListMap[Long, DocumentWithMetadata[T, M]]()
           while (resultSet.next()) {
-            results += resultSet.getLong(1) -> DocumentWithMetadata[T,M](mpjsons.deserialize[T](resultSet.getString(2)), null.asInstanceOf[M])
+            results += resultSet.getLong(1) -> DocumentWithMetadata[T,M](mpjsons.deserialize[T](resultSet.getString(2)), mpjsons.deserialize[M](resultSet.getString(3)))
           }
           results.toMap
         } finally {
@@ -175,7 +175,7 @@ class PostgresDocumentStore[T <: AnyRef: TypeTag, M <: AnyRef: TypeTag](tableNam
         try {
           val results = mutable.ListMap[Long, DocumentWithMetadata[T, M]]()
           while (resultSet.next()) {
-            results += resultSet.getLong(1) -> DocumentWithMetadata[T,M](mpjsons.deserialize[T](resultSet.getString(2)), null.asInstanceOf[M])
+            results += resultSet.getLong(1) -> DocumentWithMetadata[T,M](mpjsons.deserialize[T](resultSet.getString(2)), mpjsons.deserialize[M](resultSet.getString(3)))
           }
           results.toMap
         } finally {
@@ -190,12 +190,20 @@ class PostgresDocumentStore[T <: AnyRef: TypeTag, M <: AnyRef: TypeTag](tableNam
   }
 
   override def findDocumentByPathWithOneArray[V](array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
+    findDocumentByPathWithOneArray("document", array, objectPath, value)
+  }
+
+  override def findDocumentByMetadataPathWithOneArray[V](array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
+    findDocumentByPathWithOneArray("metadata", array, objectPath, value)
+  }
+
+  private def findDocumentByPathWithOneArray[V](columnName: String, array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
     val connection = dbDataSource.getConnection
 
     //sample query that works:
     // SELECT id, document FROM projection_process_info WHERE document -> 'setups' @> '[{"hasActiveInstance":true}]';
     def QUERY(array: String, path: String) =
-      s"SELECT id, document FROM $projectionTableName WHERE document -> '$array' @> '[$path]'"
+      s"SELECT id, document, metadata FROM $projectionTableName WHERE $columnName -> '$array' @> '[$path]'"
 
     def makeJson(path: Seq[String], value: V): String =
       path match {
@@ -215,7 +223,7 @@ class PostgresDocumentStore[T <: AnyRef: TypeTag, M <: AnyRef: TypeTag](tableNam
         try {
           val results = mutable.ListMap[Long, DocumentWithMetadata[T, M]]()
           while (resultSet.next()) {
-            results += resultSet.getLong(1) -> DocumentWithMetadata[T,M](mpjsons.deserialize[T](resultSet.getString(2)), null.asInstanceOf[M])
+            results += resultSet.getLong(1) -> DocumentWithMetadata[T,M](mpjsons.deserialize[T](resultSet.getString(2)), mpjsons.deserialize[M](resultSet.getString(3)))
           }
           results.toMap
         } finally {
@@ -226,7 +234,9 @@ class PostgresDocumentStore[T <: AnyRef: TypeTag, M <: AnyRef: TypeTag](tableNam
       }
     } finally {
       connection.close()
-    }  }
+    }
+  }
+
 
   override def findAll(): Map[Long, DocumentWithMetadata[T, M]] = {
     val connection = dbDataSource.getConnection
@@ -237,7 +247,7 @@ class PostgresDocumentStore[T <: AnyRef: TypeTag, M <: AnyRef: TypeTag](tableNam
         try {
           val results = mutable.ListMap[Long, DocumentWithMetadata[T, M]]()
           while (resultSet.next()) {
-            results += resultSet.getLong(1) -> DocumentWithMetadata[T,M](mpjsons.deserialize[T](resultSet.getString(2)), null.asInstanceOf[M])
+            results += resultSet.getLong(1) -> DocumentWithMetadata[T,M](mpjsons.deserialize[T](resultSet.getString(2)), mpjsons.deserialize[M](resultSet.getString(3)))
           }
           results.toMap
         } finally {
@@ -264,7 +274,7 @@ class PostgresDocumentStore[T <: AnyRef: TypeTag, M <: AnyRef: TypeTag](tableNam
           try {
             val results = mutable.ListMap[Long, DocumentWithMetadata[T, M]]()
             while (resultSet.next()) {
-              results += resultSet.getLong(1) -> DocumentWithMetadata[T,M](mpjsons.deserialize[T](resultSet.getString(2)), null.asInstanceOf[M])
+              results += resultSet.getLong(1) -> DocumentWithMetadata[T,M](mpjsons.deserialize[T](resultSet.getString(2)), mpjsons.deserialize[M](resultSet.getString(3)))
             }
             results.toMap
           } finally {

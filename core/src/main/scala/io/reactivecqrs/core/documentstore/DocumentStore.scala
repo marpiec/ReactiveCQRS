@@ -10,6 +10,8 @@ abstract class DocumentStore[T <: AnyRef, M <: AnyRef] {
 
   def findDocumentByPathWithOneArray[V](array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T,M]]
 
+  def findDocumentByMetadataPathWithOneArray[V](array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T,M]]
+
   def insertDocument(key: Long, document: T, metadata: M): Unit
 
   def updateDocument(key: Long, document: T, metadata: M): Unit
