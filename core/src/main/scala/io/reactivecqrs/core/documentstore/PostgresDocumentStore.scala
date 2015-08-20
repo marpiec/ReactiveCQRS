@@ -210,8 +210,7 @@ class PostgresDocumentStore[T <: AnyRef: TypeTag, M <: AnyRef: TypeTag](tableNam
         case head :: tail => "{\"" + head + "\":" + makeJson(tail, value) + "}"
         case Nil => value match {
           case s: String => "\"" + s + "\""
-          case b: Boolean => b.toString
-          case i: Int => i.toString
+          case anything => anything.toString
         }
       }
 
