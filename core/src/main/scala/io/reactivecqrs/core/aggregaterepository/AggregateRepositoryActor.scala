@@ -72,10 +72,12 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
 
   override def receive = LoggingReceive {
     case ep: EventsPersisted[_] =>
-      if(ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.exists(_.event.isInstanceOf[UndoEvent[_]])) {
+      if(ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.exists(_.event.isInstanceOf[UndoEvent[_]]) ||
+        ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.exists(_.event.isInstanceOf[DuplicationEvent[_]])) {
+        // In case of those events it's easier to re read past events
         assureRestoredState()
       } else {
-        ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.foreach(eventIdentifier => handleEvent(eventIdentifier.event, false))
+        ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.foreach(eventIdentifier => handleEvent(eventIdentifier.event, id, false))
       }
       eventsBus ! PublishEvents(aggregateType, ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events, id, version, Option(aggregateRoot))
     case ee: PersistEvents[_] =>
@@ -127,7 +129,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
     respondTo ! ResultAggregator.AggregateModified
   }
 
-  private def handleEvent(event: Event[AGGREGATE_ROOT], noopEvent: Boolean): Unit = {
+  private def handleEvent(event: Event[AGGREGATE_ROOT], aggregateId: AggregateId, noopEvent: Boolean): Unit = {
 //    aggregateRoot = eventHandlers(event.getClass.getName) match {
 //      case handler: FirstEventHandler[_, _] => handler.asInstanceOf[FirstEventHandler[AGGREGATE_ROOT, FirstEvent[AGGREGATE_ROOT]]].handle(event.asInstanceOf[FirstEvent[AGGREGATE_ROOT]])
 //      case handler: EventHandler[_, _] => handler.asInstanceOf[EventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]].handle(aggregateRoot, event)
@@ -136,7 +138,9 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
       aggregateRoot = eventHandlers(aggregateRoot)(event)
     }
 
-    version = version.increment
+    if(aggregateId == id) { // otherwise it's event from base aggregate we don't want to count
+      version = version.increment
+    }
   }
 
   def markPublishedEvents(events: Seq[EventIdentifier]): Unit = {

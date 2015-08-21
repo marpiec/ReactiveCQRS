@@ -19,8 +19,8 @@ class ShoppingCartsListProjectionEventsBased(val eventBusActor: ActorRef, docume
   private def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, event: Event[ShoppingCart]): Unit = event match {
     case ShoppingCartCreated(name) =>
       documentStore.insertDocument(aggregateId.asLong, name, version)
-    case ShoppingCartDuplicated(baseId, baseVersion) =>
-      documentStore.insertDocument(aggregateId.asLong, "???", version)
+    case ShoppingCartDuplicated(baseId, baseVersion) => println("sorry :(")
+      //documentStore.insertDocument(aggregateId.asLong, "???", version)
     case ItemAdded(name) =>
       val document = documentStore.getDocument(aggregateId.asLong)
       documentStore.updateDocument(aggregateId.asLong, document.get.document, version)

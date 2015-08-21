@@ -110,6 +110,9 @@ class ReactiveTestDomainSpec extends CommonSpec {
       shoppingCartB.id mustNot be(shoppingCart.id)
       shoppingCartB mustBe Aggregate(shoppingCartB.id, AggregateVersion(1), Some(ShoppingCart("Groceries", Vector(Item(1, "apples"), Item(2, "oranges")))))
 
+      shoppingCartB = shoppingCartCommand(AddItem(userId, shoppingCartB.id, AggregateVersion(1), "tomatoes"))
+      shoppingCartB mustBe Aggregate(shoppingCartB.id, AggregateVersion(2), Some(ShoppingCart("Groceries", Vector(Item(1, "apples"), Item(2, "oranges"), Item(3, "tomatoes")))))
+
 
     }
 
