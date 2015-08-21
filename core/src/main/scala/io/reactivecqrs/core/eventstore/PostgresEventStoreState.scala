@@ -7,9 +7,7 @@ import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.Persist
 import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEventNoAggregateType}
 import scalikejdbc._
 
-class PostgresEventStoreState extends EventStoreState {
-
-  val mpjsons = new MPJsons
+class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
 
   def initSchema(): Unit = {
     (new EventStoreSchemaInitializer).initSchema()

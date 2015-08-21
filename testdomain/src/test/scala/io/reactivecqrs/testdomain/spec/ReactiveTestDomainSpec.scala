@@ -2,6 +2,7 @@ package io.reactivecqrs.testdomain.spec
 
 import akka.actor.{ActorRef, Props}
 import akka.serialization.SerializationExtension
+import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
@@ -31,7 +32,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
     scenario("Creation and modification of user aggregate") {
 
-      val eventStoreState = new PostgresEventStoreState // or MemoryEventStore
+      val eventStoreState = new PostgresEventStoreState(new MPJsons) // or MemoryEventStore
       eventStoreState.initSchema()
       val userId = UserId(1L)
       val serialization = SerializationExtension(system)
