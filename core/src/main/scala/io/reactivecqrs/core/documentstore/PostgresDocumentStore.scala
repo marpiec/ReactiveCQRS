@@ -21,9 +21,9 @@ class PostgresDocumentStore[T <: AnyRef: TypeTag, M <: AnyRef: TypeTag](tableNam
     "id BIGINT NOT NULL PRIMARY KEY, " +
     "document JSONB NOT NULL, metadata JSONB NOT NULL)"
 
-  private val UPDATE_DOCUMENT_QUERY = s"UPDATE $projectionTableName SET document = ?::jsonb WHERE id = ? "
+  private val UPDATE_DOCUMENT_QUERY = s"UPDATE $projectionTableName SET document = ?::jsonb, metadata = ?::jsonb WHERE id = ? "
 
-  private val INSERT_DOCUMENT_QUERY = s"INSERT INTO $projectionTableName (id, document) VALUES (?, ?::jsonb)"
+  private val INSERT_DOCUMENT_QUERY = s"INSERT INTO $projectionTableName (id, document, metadata) VALUES (?, ?::jsonb, ?::jsonb)"
 
   private val SELECT_DOCUMENT_BY_ID_QUERY = s"SELECT document, metadata FROM $projectionTableName WHERE id = ?"
 
@@ -70,6 +70,7 @@ class PostgresDocumentStore[T <: AnyRef: TypeTag, M <: AnyRef: TypeTag](tableNam
       try {
         statement.setLong(1, key)
         statement.setString(2, mpjsons.serialize(document))
+        statement.setString(3, mpjsons.serialize(metadata))
         statement.execute()
       } finally {
         statement.close()
@@ -85,7 +86,8 @@ class PostgresDocumentStore[T <: AnyRef: TypeTag, M <: AnyRef: TypeTag](tableNam
       val statement = connection.prepareStatement(UPDATE_DOCUMENT_QUERY)
       try {
         statement.setString(1, mpjsons.serialize[T](document))
-        statement.setLong(2, key)
+        statement.setString(2, mpjsons.serialize[M](metadata))
+        statement.setLong(3, key)
 
         val numberOfUpdated = statement.executeUpdate()
 
