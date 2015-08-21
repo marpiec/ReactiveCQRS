@@ -7,7 +7,7 @@ import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEv
 
 abstract class EventStoreState {
   def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Unit
-  def readAndProcessAllEvents[AGGREGATE_ROOT](aggregateId: AggregateId)(eventHandler: Event[AGGREGATE_ROOT] => Unit)
+  def readAndProcessAllEvents[AGGREGATE_ROOT](aggregateId: AggregateId)(eventHandler: (Event[AGGREGATE_ROOT], Boolean) => Unit)
   def deletePublishedEventsToPublish(events: Seq[EventIdentifier]): Unit
 
   def readAggregatesWithEventsToPublish(aggregateHandler: AggregateId => Unit): Unit

@@ -50,6 +50,8 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
 
   private def assureRestoredState(): Unit = {
     //TODO make it future
+    version = AggregateVersion.ZERO
+    aggregateRoot = initialState()
     eventStore.readAndProcessAllEvents[AGGREGATE_ROOT](id)(handleEvent)
 
     eventsToPublish = eventStore.readEventsToPublishForAggregate[AGGREGATE_ROOT](id)
@@ -70,7 +72,11 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
 
   override def receive = LoggingReceive {
     case ep: EventsPersisted[_] =>
-      ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.foreach(eventIdentifier => handleEvent(eventIdentifier.event))
+      if(ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.exists(_.event.isInstanceOf[UndoEvent[_]])) {
+        assureRestoredState()
+      } else {
+        ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.foreach(eventIdentifier => handleEvent(eventIdentifier.event, false))
+      }
       eventsBus ! PublishEvents(aggregateType, ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events, id, version, Option(aggregateRoot))
     case ee: PersistEvents[_] =>
       handlePersistEvents(ee.asInstanceOf[PersistEvents[AGGREGATE_ROOT]])
@@ -121,12 +127,14 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
     respondTo ! ResultAggregator.AggregateModified
   }
 
-  private def handleEvent(event: Event[AGGREGATE_ROOT]): Unit = {
+  private def handleEvent(event: Event[AGGREGATE_ROOT], noopEvent: Boolean): Unit = {
 //    aggregateRoot = eventHandlers(event.getClass.getName) match {
 //      case handler: FirstEventHandler[_, _] => handler.asInstanceOf[FirstEventHandler[AGGREGATE_ROOT, FirstEvent[AGGREGATE_ROOT]]].handle(event.asInstanceOf[FirstEvent[AGGREGATE_ROOT]])
 //      case handler: EventHandler[_, _] => handler.asInstanceOf[EventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]].handle(aggregateRoot, event)
 //    }
-    aggregateRoot = eventHandlers(aggregateRoot)(event)
+    if(!noopEvent) {
+      aggregateRoot = eventHandlers(aggregateRoot)(event)
+    }
 
     version = version.increment
   }

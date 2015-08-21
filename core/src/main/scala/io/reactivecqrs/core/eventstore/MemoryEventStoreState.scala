@@ -30,9 +30,9 @@ class MemoryEventStoreState extends EventStoreState {
   }
 
 
-  def readAndProcessAllEvents[AGGREGATE_ROOT](aggregateId: AggregateId)(eventHandler: Event[AGGREGATE_ROOT] => Unit): Unit = {
+  def readAndProcessAllEvents[AGGREGATE_ROOT](aggregateId: AggregateId)(eventHandler: (Event[AGGREGATE_ROOT], Boolean) => Unit): Unit = {
     val eventsForAggregate: List[Event[AGGREGATE_ROOT]] = eventStore.getOrElse(aggregateId, List()).asInstanceOf[List[Event[AGGREGATE_ROOT]]]
-    eventsForAggregate.reverse.foreach(eventHandler)
+    eventsForAggregate.reverse.foreach(eventHandler(_, false))
   }
 
   def deletePublishedEventsToPublish(events: Seq[EventIdentifier]): Unit = {

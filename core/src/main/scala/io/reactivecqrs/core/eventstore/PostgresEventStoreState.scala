@@ -65,17 +65,17 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
     }
   }
 
-  override def readAndProcessAllEvents[AGGREGATE_ROOT](aggregateId: AggregateId)(eventHandler: Event[AGGREGATE_ROOT] => Unit): Unit = {
+  override def readAndProcessAllEvents[AGGREGATE_ROOT](aggregateId: AggregateId)(eventHandler: (Event[AGGREGATE_ROOT], Boolean) => Unit): Unit = {
 
     DB.readOnly { implicit session =>
-      sql"""SELECT event_type, event
+      sql"""SELECT event_type, event, noop_events.id IS NOT NULL
            | FROM events
            | LEFT JOIN noop_events ON events.id = noop_events.id
-           | WHERE aggregate_id = ? AND noop_events.id IS NULL
+           | WHERE aggregate_id = ?
            | ORDER BY version""".stripMargin.bind(aggregateId.asLong).foreach { rs =>
 
         val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(2), rs.string(1))
-        eventHandler(event)
+        eventHandler(event, rs.boolean(3))
       }
     }
   }
