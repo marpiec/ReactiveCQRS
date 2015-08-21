@@ -1,4 +1,4 @@
-package io.reactivecqrs.core.api
+package io.reactivecqrs.core.aggregaterepository
 
 import io.reactivecqrs.api.AggregateVersion
 import io.reactivecqrs.api.id.AggregateId

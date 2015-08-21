@@ -3,13 +3,12 @@ import sbt._
 
 object Common {
 
-  val applicationName = "reactivecqrs"
-
   def settings(moduleName: String) = Seq[Setting[_]](
 
-    name := s"$applicationName-$moduleName",
-    version := "0.0.1",
-    scalaVersion := "2.11.6",
+    organization := "io.reactivecqrs",
+    name := s"reactivecqrs-$moduleName",
+    version := "0.7.1-SNAPSHOT",
+    scalaVersion := "2.11.7",
 
     /* required for Scalate to avoid version mismatch */
     dependencyOverrides := Set(
@@ -35,16 +34,28 @@ object Common {
 
     libraryDependencies ++= dependencies.common,
 
-    updateOptions := updateOptions.value.withCachedResolution(cachedResoluton = true)
+    licenses += ("MIT", url("http://opensource.org/licenses/MIT")),
 
-    )
+    updateOptions := updateOptions.value.withCachedResolution(cachedResoluton = true),
+
+    publishMavenStyle := true,
+
+    publishArtifact in Test := false,
+
+    pomIncludeRepository := { _ => false },
+
+    publishLocal := {},
+
+    publishTo := Some("snapshots" at sys.props.getOrElse("snapshotsRepo", default = "http://someMockRepo.com"))
+
+  )
 
   object dependencies {
 
-    val akkaVersion = "2.3.11"
+    val akkaVersion = "2.3.12"
 
     val common = Seq(
-      "io.mpjsons" %% "mpjsons" % "0.6.7",
+      "io.mpjsons" %% "mpjsons" % "0.6.12",
       "com.typesafe" % "config" % "1.2.1",
       "org.slf4j" % "slf4j-api" % "1.7.10",
       "org.scalatest" %% "scalatest" % "2.2.4"
@@ -62,7 +73,7 @@ object Common {
     )
 
     val postgresql = Seq(
-      "postgresql" % "postgresql" % "9.1-901-1.jdbc4"
+      "org.postgresql" % "postgresql" % "9.4-1201-jdbc41"
     )
 
     val logback = Seq(

@@ -1,4 +1,4 @@
-package io.reactivecqrs.core
+package io.reactivecqrs.core.errors
 
 import io.reactivecqrs.api.AggregateVersion
 

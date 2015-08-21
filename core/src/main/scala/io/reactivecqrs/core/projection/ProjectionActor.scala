@@ -1,13 +1,20 @@
 package io.reactivecqrs.core.projection
 
+import java.time.Instant
+
 import akka.actor.{Actor, ActorRef}
 import akka.event.LoggingReceive
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.api.{Event, AggregateType, AggregateVersion, AggregateWithType}
-import io.reactivecqrs.core.EventsBusActor._
-import io.reactivecqrs.core.api.IdentifiableEvent
+import io.reactivecqrs.core.aggregaterepository.IdentifiableEvent
+import io.reactivecqrs.core.eventbus.EventsBusActor
+import EventsBusActor._
 
 import scala.reflect.runtime.universe._
+
+
+
+private case class DelayedQuery(until: Instant, respondTo: ActorRef, search: () => Option[Any])
 
 abstract class ProjectionActor extends Actor {
 
@@ -85,9 +92,11 @@ abstract class ProjectionActor extends Actor {
     case a: AggregateWithType[_] =>
       aggregateListenersMap(a.aggregateType)(a.id, a.version, a.aggregateRoot)
       sender() ! MessageAck(self, a.id, a.version)
+      replayQueries()
     case e: IdentifiableEvent[_] =>
       eventListenersMap(e.aggregateType)(e.aggregateId, e.version, e.event.asInstanceOf[Event[Any]])
       sender() ! MessageAck(self, e.aggregateId, e.version)
+      replayQueries()
   }
 
   protected def receiveQuery: Receive
@@ -102,4 +111,37 @@ abstract class ProjectionActor extends Actor {
     }
 
   }
+
+  // ************** Queries delay - needed if query is for document that might not been yet updated, but update is in it's way
+
+  private var delayedQueries = List[DelayedQuery]()
+
+  private def replayQueries(): Unit = {
+
+    var delayAgain = List[DelayedQuery]()
+    val now = Instant.now()
+    delayedQueries.filter(_.until.isAfter(now)).foreach(query => {
+      val result:Option[Any] = query.search()
+      if(result.isDefined) {
+        query.respondTo ! result
+      } else {
+        delayAgain ::= query
+      }
+    })
+
+    delayedQueries = delayAgain
+
+  }
+
+
+  protected def delayIfNotAvailable[T](respondTo: ActorRef, search: () => Option[T], forMaximumMillis: Int) {
+    val result: Option[Any] = search()
+    if (result.isDefined) {
+      respondTo ! result
+    } else {
+      delayedQueries ::= DelayedQuery(Instant.now().plusMillis(forMaximumMillis), respondTo, search)
+    }
+
+  }
+   
 }

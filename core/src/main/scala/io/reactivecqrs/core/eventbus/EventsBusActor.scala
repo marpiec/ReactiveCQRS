@@ -1,13 +1,10 @@
-package io.reactivecqrs.core
+package io.reactivecqrs.core.eventbus
 
 import akka.actor.{Actor, ActorRef}
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.api.{AggregateType, AggregateVersion, AggregateWithType}
-import io.reactivecqrs.core.EventsBusActor._
-import io.reactivecqrs.core.api.{EventIdentifier, IdentifiableEvent}
-import io.reactivecqrs.core.db.eventbus.EventBus
-
-import scala.concurrent.Future
+import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEvent}
+import io.reactivecqrs.core.eventbus.EventsBusActor._
 
 object EventsBusActor {
 
@@ -31,7 +28,7 @@ object EventsBusActor {
 }
 
 
-class EventsBusActor(eventBus: EventBus) extends Actor {
+class EventsBusActor(eventBus: EventBusState) extends Actor {
 
   private var subscribersForEvents: Map[AggregateType, Vector[ActorRef]] = Map()
   private var subscribersForAggregates: Map[AggregateType, Vector[ActorRef]] = Map()
@@ -59,24 +56,23 @@ class EventsBusActor(eventBus: EventBus) extends Actor {
 
   private def handlePublishEvents(respondTo: ActorRef, aggregateType: AggregateType, events: Seq[IdentifiableEvent[Any]],
                                   aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregateRoot: Option[Any]): Unit = {
-    import context.dispatcher
-    Future {
-      val eventsToSend = subscribersForEvents.getOrElse(aggregateType, Vector.empty).flatMap(subscriber => {
-        events.map(event => MessageToSend(subscriber, event.aggregateId, event.version, event))
-      })
+    val eventsToSend = subscribersForEvents.getOrElse(aggregateType, Vector.empty).flatMap(subscriber => {
+      events.map(event => MessageToSend(subscriber, event.aggregateId, event.version, event))
+    })
 
-      val aggregatesToSend = subscribersForAggregates.getOrElse(aggregateType, Vector.empty).map(subscriber => {
-        MessageToSend(subscriber, aggregateId, aggregateVersion, AggregateWithType(aggregateType, aggregateId, aggregateVersion, aggregateRoot))
-      })
+    val aggregatesToSend = subscribersForAggregates.getOrElse(aggregateType, Vector.empty).map(subscriber => {
+      MessageToSend(subscriber, aggregateId, aggregateVersion, AggregateWithType(aggregateType, aggregateId, aggregateVersion, aggregateRoot))
+    })
 
-      val messagesToSend = eventsToSend ++ aggregatesToSend
+    val messagesToSend = eventsToSend ++ aggregatesToSend
 
+//    Future { // FIXME Future is to ensure non blocking access to db, but it broke order in which events for the same aggreagte were persisted, maybe this should ba actor per aggregate instead of future?
       eventBus.persistMessages(messagesToSend)
       respondTo ! PublishEventsAck(events.map(event => EventIdentifier(event.aggregateId, event.version)))
       self ! MessagesPersisted(aggregateType, messagesToSend)
-    } onFailure {
-      case e: Exception => throw new IllegalStateException(e)
-    }
+//    } onFailure {
+//      case e: Exception => throw new IllegalStateException(e)
+//    }
 
   }
 

@@ -1,15 +1,27 @@
 package io.reactivecqrs.api
 
-sealed trait AbstractCommand[AGGREGATE_ROOT, RESPONSE]
+import io.reactivecqrs.api.id.{AggregateId, UserId}
 
+//
+//// First Command
+//
+//abstract class FirstCommand[AGGREGATE_ROOT, RESPONSE] extends AbstractCommand[AGGREGATE_ROOT]
+//
 
-// First Command
+abstract class FirstCommand[AGGREGATE_ROOT, RESPONSE] {
+  val userId: UserId
+}
 
-abstract class FirstCommand[AGGREGATE_ROOT, RESPONSE] extends AbstractCommand[AGGREGATE_ROOT, RESPONSE]
+abstract class ConcurrentCommand[AGGREGATE_ROOT, RESPONSE] {
+  val userId: UserId
+  val aggregateId: AggregateId
+}
 
-
-
-abstract class Command[AGGREGATE_ROOT, RESPONSE] extends AbstractCommand[AGGREGATE_ROOT, RESPONSE]
+abstract class Command[AGGREGATE_ROOT, RESPONSE] {
+  val userId: UserId
+  val aggregateId: AggregateId
+  val expectedVersion: AggregateVersion
+}
 
 
 
@@ -20,6 +32,16 @@ abstract class Command[AGGREGATE_ROOT, RESPONSE] extends AbstractCommand[AGGREGA
  * the password for security reasons. Then we'll add this trait to a Command and remove
  * password from command before storing it.
  */
-trait CommandLogTransform[AGGREGATE_ROOT, RESPONSE] { self: AbstractCommand[AGGREGATE_ROOT, RESPONSE] =>
+trait CommandLogTransform[AGGREGATE_ROOT, RESPONSE] { self: Command[AGGREGATE_ROOT, RESPONSE] =>
   def transform(): Command[AGGREGATE_ROOT, RESPONSE]
+}
+
+/**
+ * Trait used when command have to be transformed before stored in Command Log.
+ * E.g. when user registration command contains a password we don't want to store
+ * the password for security reasons. Then we'll add this trait to a Command and remove
+ * password from command before storing it.
+ */
+trait FirstCommandLogTransform[AGGREGATE_ROOT, RESPONSE] { self: FirstCommand[AGGREGATE_ROOT, RESPONSE] =>
+  def transform(): FirstCommand[AGGREGATE_ROOT, RESPONSE]
 }

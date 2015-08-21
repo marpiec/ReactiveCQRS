@@ -1,5 +1,7 @@
 package io.reactivecqrs.api
 
+import io.reactivecqrs.api.id.AggregateId
+
 import scala.reflect.runtime.universe._
 
 abstract class Event[AGGREGATE_ROOT: TypeTag] {
@@ -17,11 +19,8 @@ abstract class UndoEvent[AGGREGATE_ROOT: TypeTag] extends Event[AGGREGATE_ROOT] 
 }
 
 
-abstract class FirstEvent[AGGREGATE_ROOT: TypeTag] extends Event[AGGREGATE_ROOT]
-
-abstract class DeleteEvent[AGGREGATE_ROOT: TypeTag] extends Event[AGGREGATE_ROOT]
-
-
-
-
+abstract class DuplicationEvent[AGGREGATE_ROOT: TypeTag] extends Event[AGGREGATE_ROOT] {
+  val baseAggregateId: AggregateId
+  val baseAggregateVersion: AggregateVersion
+}
 

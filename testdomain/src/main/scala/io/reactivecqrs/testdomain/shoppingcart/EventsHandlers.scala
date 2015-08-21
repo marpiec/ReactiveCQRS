@@ -1,25 +1,19 @@
 package io.reactivecqrs.testdomain.shoppingcart
 
-import io.reactivecqrs.api.{FirstEventHandler, EventHandler}
 
-
-
-object ShoppingCartCreatedHandler extends FirstEventHandler[ShoppingCart, ShoppingCartCreated] {
-  override def handle(event: ShoppingCartCreated): ShoppingCart = {
+object EventsHandlers {
+  def shoppingCartCreated(event: ShoppingCartCreated): ShoppingCart = {
     ShoppingCart(event.name, items = Vector())
   }
-}
-
-object ItemAddedHandler extends EventHandler[ShoppingCart, ItemAdded] {
-  override def handle(aggregateRoot: ShoppingCart, event: ItemAdded): ShoppingCart = {
-    val itemId = aggregateRoot.items.foldLeft(0)((maxId, item) => math.max(maxId, item.id)) + 1
+  
+  def itemAdded(shoppingCart: ShoppingCart, event: ItemAdded): ShoppingCart = {
+    val itemId = shoppingCart.items.foldLeft(0)((maxId, item) => math.max(maxId, item.id)) + 1
     val item = Item(itemId, event.name)
-    aggregateRoot.copy(items = aggregateRoot.items :+ item)
+    shoppingCart.copy(items = shoppingCart.items :+ item)
   }
-}
+  
+  def itemRemoved(shoppingCart: ShoppingCart, event: ItemRemoved): ShoppingCart = {
+    shoppingCart.copy(items = shoppingCart.items.filterNot(_.id == event.id))
+  }
 
-object ItemRemovedHandler extends EventHandler[ShoppingCart, ItemRemoved] {
-  override def handle(aggregateRoot: ShoppingCart, event: ItemRemoved): ShoppingCart = {
-    aggregateRoot.copy(items = aggregateRoot.items.filterNot(_.id == event.id))
-  }
 }

@@ -9,8 +9,3 @@ sealed abstract class AbstractEventHandler[AGGREGATE_ROOT, EVENT <: Event[AGGREG
 abstract class EventHandler[AGGREGATE_ROOT, EVENT <: Event[AGGREGATE_ROOT]: ClassTag] extends AbstractEventHandler[AGGREGATE_ROOT, EVENT]{
   def handle(aggregateRoot: AGGREGATE_ROOT, event: EVENT): AGGREGATE_ROOT
 }
-
-
-abstract class FirstEventHandler[AGGREGATE_ROOT, EVENT <: FirstEvent[AGGREGATE_ROOT]: ClassTag] extends AbstractEventHandler[AGGREGATE_ROOT, EVENT] {
-  def handle(event: EVENT): AGGREGATE_ROOT
-}
