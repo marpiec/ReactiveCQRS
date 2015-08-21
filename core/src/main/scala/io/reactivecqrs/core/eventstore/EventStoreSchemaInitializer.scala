@@ -17,6 +17,7 @@ class EventStoreSchemaInitializer  {
     }
     createAddEventFunction()
     createAddUndoEventFunction()
+    createAddDuplicationEventFunction()
   }
 
 
@@ -56,8 +57,9 @@ class EventStoreSchemaInitializer  {
   private def createAggregatesTable() = DB.autoCommit { implicit session =>
     sql"""
         CREATE TABLE IF NOT EXISTS aggregates (
-          id BIGINT NOT NULL PRIMARY KEY,
+          id BIGINT NOT NULL,
           type VARCHAR(128) NOT NULL,
+          base_order INT NOT NULL,
           base_id BIGINT NOT NULL,
           base_version INT NOT NULL)
       """.execute().apply()
@@ -69,7 +71,7 @@ class EventStoreSchemaInitializer  {
 
   private def createAddEventFunction(): Unit = DB.autoCommit { implicit session =>
     SQL("""
-          |CREATE OR REPLACE FUNCTION add_event(command_id bigint, user_id bigint, aggregate_id bigint, expected_version INT, aggregate_type VARCHAR(128), event_type VARCHAR(128), event_type_version INT, event VARCHAR(10240))
+          |CREATE OR REPLACE FUNCTION add_event(command_id BIGINT, user_id BIGINT, aggregate_id BIGINT, expected_version INT, aggregate_type VARCHAR(128), event_type VARCHAR(128), event_type_version INT, event VARCHAR(10240))
           |RETURNS void AS
           |$$
           |DECLARE
@@ -78,7 +80,7 @@ class EventStoreSchemaInitializer  {
           | SELECT aggregates.base_version INTO current_version FROM aggregates WHERE id = aggregate_id AND base_id = aggregate_id;
           |    IF NOT FOUND THEN
           |        IF expected_version = 0 THEN
-          |            INSERT INTO AGGREGATES (id, type, base_id, base_version) VALUES (aggregate_id, aggregate_type, aggregate_id, 0);
+          |            INSERT INTO AGGREGATES (id, type, base_order, base_id, base_version) VALUES (aggregate_id, aggregate_type, 1, aggregate_id, 0);
           |            current_version := 0;
           |        ELSE
           |	    RAISE EXCEPTION 'aggregate not found, id %, aggregate_type %', aggregate_id, aggregate_type;
@@ -98,7 +100,7 @@ class EventStoreSchemaInitializer  {
 
   private def createAddUndoEventFunction(): Unit = DB.autoCommit { implicit session =>
     SQL("""
-          |CREATE OR REPLACE FUNCTION add_undo_event(command_id bigint, user_id bigint, _aggregate_id bigint, expected_version INT, aggregate_type VARCHAR(128), event_type VARCHAR(128), event_type_version INT, event VARCHAR(10240), undo_count INT)
+          |CREATE OR REPLACE FUNCTION add_undo_event(command_id BIGINT, user_id BIGINT, _aggregate_id BIGINT, expected_version INT, aggregate_type VARCHAR(128), event_type VARCHAR(128), event_type_version INT, event VARCHAR(10240), undo_count INT)
           |RETURNS void AS
           |$$
           |DECLARE
@@ -129,4 +131,38 @@ class EventStoreSchemaInitializer  {
         """.stripMargin).execute().apply()
   }
 
+  private def createAddDuplicationEventFunction(): Unit = DB.autoCommit { implicit session =>
+    SQL("""
+          |CREATE OR REPLACE FUNCTION add_duplication_event(command_id BIGINT, user_id BIGINT, aggregate_id BIGINT, expected_version INT, aggregate_type VARCHAR(128), event_type VARCHAR(128), event_type_version INT, event VARCHAR(10240), _base_id BIGINT, _base_version INT)
+          |RETURNS void AS
+          |$$
+          |DECLARE
+          |    current_version int;
+          |    base_count int;
+          |BEGIN
+          |    SELECT aggregates.base_version INTO current_version FROM aggregates WHERE id = aggregate_id AND base_id = aggregate_id;
+          |    IF NOT FOUND THEN
+          |        IF expected_version != 0 THEN
+          |          RAISE EXCEPTION 'Duplication event might occur only for non existing aggregate, so expected version need to be 0';
+          |        ELSE
+          |          INSERT INTO AGGREGATES (id, type, base_order, base_id, base_version) (select aggregate_id, aggregate_type, base_order, base_id, base_version
+          |            from AGGREGATES
+          |            where id = _base_id);
+          |            current_version := 0;
+          |          SELECT base_order INTO base_count FROM aggregates WHERE id = aggregate_id AND base_id = _base_id;
+          |          INSERT INTO AGGREGATES (id, type, base_order, base_id, base_version) VALUES (aggregate_id, aggregate_type, base_count + 1, aggregate_id, 0);
+          |          UPDATE aggregates SET base_version = _base_version WHERE id = aggregate_id AND base_id = _base_id;
+          |        END IF;
+          |    ELSE
+          |      RAISE EXCEPTION 'Duplication event might occur only for non existing aggregate, but such was found';
+          |    END IF;
+          |    INSERT INTO events (id, command_id, user_id, aggregate_id, event_time, version, event_type, event_type_version, event) VALUES (NEXTVAL('events_seq'), command_id, user_id, aggregate_id, current_timestamp, current_version + 1, event_type, event_type_version, event);
+          |    INSERT INTO events_to_publish (event_id, aggregate_id, version) VALUES(CURRVAL('events_seq'), aggregate_id, current_version + 1);
+          |    UPDATE aggregates SET base_version = current_version + 1 WHERE id = aggregate_id AND base_id = aggregate_id;
+          |END;
+          |$$
+          |LANGUAGE 'plpgsql' VOLATILE
+        """.stripMargin).execute().apply()
+  }
+  
 }
