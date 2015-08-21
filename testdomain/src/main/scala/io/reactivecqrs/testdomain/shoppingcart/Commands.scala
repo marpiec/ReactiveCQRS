@@ -6,6 +6,8 @@ import io.reactivecqrs.api.id.{AggregateId, UserId}
 
 case class CreateShoppingCart(userId: UserId, name: String) extends FirstCommand[ShoppingCart, CommandResponse]
 
+case class DuplicateShoppingCart(userId: UserId, baseAggregateId: AggregateId, baseAggregateVersion: AggregateVersion) extends FirstCommand[ShoppingCart, CommandResponse]
+
 case class AddItem(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
                    name: String) extends Command[ShoppingCart, CommandResponse]
 
@@ -17,4 +19,5 @@ case class UndoShoppingCartChange(userId: UserId, aggregateId: AggregateId, expe
 
 case class DeleteShoppingCart(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion)
   extends Command[ShoppingCart, CommandResponse]
+
 

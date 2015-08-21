@@ -10,6 +10,7 @@ class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
 
   override def commandHandlers = (shoppingCart: ShoppingCart) => {
     case c: CreateShoppingCart => createShoppingCart(c.userId, c)
+    case c: DuplicateShoppingCart => duplicateShoppingCart(c)
     case c: AddItem => addItem(c.userId, c.aggregateId, c.expectedVersion, shoppingCart)(c)
     case c: RemoveItem => removeItem(c)
     case c: DeleteShoppingCart => deleteShoppingCart(c)
@@ -17,9 +18,11 @@ class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
   }
 
   override def eventHandlers = (shoppingCart: ShoppingCart) => {
+    case e: ShoppingCartDuplicated => shoppingCart
     case e: ShoppingCartCreated => shoppingCartCreated(e)
     case e: ItemAdded => itemAdded(shoppingCart, e)
     case e: ItemRemoved => itemRemoved(shoppingCart, e)
+    case e: ShoppingCartDeleted => null
   }
 
   override def initialAggregateRoot: ShoppingCart = ShoppingCart("", Vector())

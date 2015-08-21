@@ -104,6 +104,13 @@ class ReactiveTestDomainSpec extends CommonSpec {
       shoppingCart = shoppingCartCommand(RemoveItem(userId, shoppingCart.id, AggregateVersion(5), 2))
       shoppingCart mustBe Aggregate(shoppingCart.id, AggregateVersion(6), Some(ShoppingCart("Groceries", Vector(Item(1, "apples")))))
 
+      step("Duplicate some previous cart")
+
+      var shoppingCartB = shoppingCartCommand(DuplicateShoppingCart(userId, shoppingCart.id, AggregateVersion(3)))
+      shoppingCartB.id mustNot be(shoppingCart.id)
+      shoppingCartB mustBe Aggregate(shoppingCartB.id, AggregateVersion(1), Some(ShoppingCart("Groceries", Vector(Item(1, "apples"), Item(2, "oranges")))))
+
+
     }
 
 

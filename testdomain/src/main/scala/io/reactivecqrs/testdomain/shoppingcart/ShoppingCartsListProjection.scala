@@ -19,6 +19,8 @@ class ShoppingCartsListProjectionEventsBased(val eventBusActor: ActorRef, docume
   private def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, event: Event[ShoppingCart]): Unit = event match {
     case ShoppingCartCreated(name) =>
       documentStore.insertDocument(aggregateId.asLong, name, version)
+    case ShoppingCartDuplicated(baseId, baseVersion) =>
+      documentStore.insertDocument(aggregateId.asLong, "???", version)
     case ItemAdded(name) =>
       val document = documentStore.getDocument(aggregateId.asLong)
       documentStore.updateDocument(aggregateId.asLong, document.get.document, version)
@@ -27,6 +29,7 @@ class ShoppingCartsListProjectionEventsBased(val eventBusActor: ActorRef, docume
       documentStore.updateDocument(aggregateId.asLong, document.get.document, version)
     case ShoppingCartDeleted() =>
       documentStore.removeDocument(aggregateId.asLong)
+    case ShoppingCartChangesUndone(count) => println("Sorry :(")
   }
 
   override protected def receiveQuery: Receive = {

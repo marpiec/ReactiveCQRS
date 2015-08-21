@@ -10,6 +10,10 @@ object CommandsHandlers {
     CommandSuccess(ShoppingCartCreated(command.name))
   }
 
+  def duplicateShoppingCart(command: DuplicateShoppingCart) = {
+    CommandSuccess(ShoppingCartDuplicated(command.baseAggregateId, command.baseAggregateVersion))
+  }
+
   def addItem(userId: UserId,
               aggregateId: AggregateId, expectedVersion: AggregateVersion,
               shoppingCart: ShoppingCart)(command: AddItem) = {
