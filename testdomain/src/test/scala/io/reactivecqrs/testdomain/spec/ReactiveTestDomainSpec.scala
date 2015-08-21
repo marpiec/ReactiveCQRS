@@ -30,7 +30,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
   feature("Aggregate storing and getting with event sourcing") {
 
-    scenario("Creation and modification of user aggregate") {
+    scenario("Creation and modification of shopping cart aggregate") {
 
       val eventStoreState = new PostgresEventStoreState(new MPJsons) // or MemoryEventStore
       eventStoreState.initSchema()
@@ -88,7 +88,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
       shoppingCart mustBe Aggregate(success.aggregateId, success.aggregateVersion, Some(ShoppingCart("Groceries", Vector(Item(2, "oranges")))))
 
 
-      Thread.sleep(100) // Projections are eventually consistent, so let's wait until they are consistent
+      Thread.sleep(300) // Projections are eventually consistent, so let's wait until they are consistent
 
       var cartsNames: Vector[String] = shoppingCartsListProjectionEventsBased ?? ShoppingCartsListProjection.GetAllCartsNames()
       cartsNames must have size 1
@@ -96,6 +96,18 @@ class ReactiveTestDomainSpec extends CommonSpec {
       cartsNames = shoppingCartsListProjectionAggregatesBased ?? ShoppingCartsListProjection.GetAllCartsNames()
 
       cartsNames must have size 1
+
+
+      step("Undo removing items from cart")
+
+
+      result = shoppingCartCommandBus ?? UndoShoppingCartChange(userId, shoppingCart.id, AggregateVersion(4), 1)
+      result mustBe SuccessResponse(shoppingCart.id, AggregateVersion(5))
+      success = result.asInstanceOf[SuccessResponse]
+
+      shoppingCartTry = shoppingCartCommandBus ?? GetAggregate(shoppingCartId)
+      shoppingCart = shoppingCartTry.get
+      shoppingCart mustBe Aggregate(success.aggregateId, success.aggregateVersion, Some(ShoppingCart("Groceries", Vector(Item(1, "apples"), Item(2, "oranges")))))
 
 
     }

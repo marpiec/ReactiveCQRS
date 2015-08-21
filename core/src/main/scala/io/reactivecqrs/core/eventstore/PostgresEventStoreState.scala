@@ -2,7 +2,7 @@ package io.reactivecqrs.core.eventstore
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.api.{AggregateVersion, Event}
+import io.reactivecqrs.api.{UndoEvent, AggregateVersion, Event}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEventNoAggregateType}
 import scalikejdbc._
@@ -20,7 +20,19 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
 
         val eventSerialized = mpjsons.serialize(eventsEnvelope.events.head, event.getClass.getName)
 
-
+        val query = if(event.isInstanceOf[UndoEvent[_]]) {
+          sql"""SELECT add_undo_event(?, ?, ?, ? ,? , ?, ?, ?, ?)""".bind(
+            eventsEnvelope.commandId.asLong,
+            eventsEnvelope.userId.asLong,
+            aggregateId.asLong,
+            eventsEnvelope.expectedVersion.asInt + versionsIncreased,
+            event.aggregateRootType.typeSymbol.fullName,
+            event.getClass.getName,
+            0,
+            eventSerialized,
+            event.asInstanceOf[UndoEvent[AGGREGATE_ROOT]].eventsCount
+          ).execute().apply()
+        } else {
           sql"""SELECT add_event(?, ?, ?, ? ,? , ?, ? ,?)""".bind(
             eventsEnvelope.commandId.asLong,
             eventsEnvelope.userId.asLong,
@@ -30,8 +42,9 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
             event.getClass.getName,
             0,
             eventSerialized).execute().apply()
+        }
 
-          versionsIncreased += 1
+        versionsIncreased += 1
       })
     }
 

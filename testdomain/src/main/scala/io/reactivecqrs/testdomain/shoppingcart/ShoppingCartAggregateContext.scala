@@ -12,7 +12,8 @@ class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
     case c: CreateShoppingCart => createShoppingCart(c.userId, c)
     case c: AddItem => addItem(c.userId, c.aggregateId, c.expectedVersion, shoppingCart)(c)
     case c: RemoveItem => removeItem(c)
-    case c: DeleteShoppingCart => deleteShoppingCart()(c)
+    case c: DeleteShoppingCart => deleteShoppingCart(c)
+    case c: UndoShoppingCartChange => undoShoppingCartChange(c)
   }
 
   override def eventHandlers = (shoppingCart: ShoppingCart) => {

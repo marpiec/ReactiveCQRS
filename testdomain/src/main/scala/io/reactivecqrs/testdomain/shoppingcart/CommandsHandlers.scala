@@ -24,8 +24,12 @@ object CommandsHandlers {
     CommandSuccess(ItemRemoved(command.id))
   }
 
-  def deleteShoppingCart()(command: DeleteShoppingCart) = {
+  def deleteShoppingCart(command: DeleteShoppingCart) = {
     CommandSuccess(ShoppingCartDeleted())
+  }
+
+  def undoShoppingCartChange(command: UndoShoppingCartChange) = {
+    CommandSuccess(ShoppingCartChangesUndone(command.stepsToUndo))
   }
 
 }
