@@ -109,6 +109,16 @@ class ReactiveTestDomainSpec extends CommonSpec {
       shoppingCart = shoppingCartTry.get
       shoppingCart mustBe Aggregate(success.aggregateId, success.aggregateVersion, Some(ShoppingCart("Groceries", Vector(Item(1, "apples"), Item(2, "oranges")))))
 
+      step("Remove different items from cart")
+
+      result = shoppingCartCommandBus ?? RemoveItem(userId, shoppingCart.id, AggregateVersion(5), 2)
+      result mustBe SuccessResponse(shoppingCart.id, AggregateVersion(6))
+      success = result.asInstanceOf[SuccessResponse]
+
+      shoppingCartTry = shoppingCartCommandBus ?? GetAggregate(shoppingCartId)
+      shoppingCart = shoppingCartTry.get
+      shoppingCart mustBe Aggregate(success.aggregateId, success.aggregateVersion, Some(ShoppingCart("Groceries", Vector(Item(1, "apples")))))
+
 
     }
 
