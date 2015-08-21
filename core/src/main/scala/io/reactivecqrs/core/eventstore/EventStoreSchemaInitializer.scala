@@ -58,7 +58,8 @@ class EventStoreSchemaInitializer  {
         CREATE TABLE IF NOT EXISTS aggregates (
           id BIGINT NOT NULL PRIMARY KEY,
           type VARCHAR(128) NOT NULL,
-          version INT NOT NULL)
+          base_id BIGINT NOT NULL,
+          base_version INT NOT NULL)
       """.execute().apply()
   }
 
@@ -74,10 +75,10 @@ class EventStoreSchemaInitializer  {
           |DECLARE
           |    current_version int;
           |BEGIN
-          | SELECT aggregates.version INTO current_version from aggregates where id = aggregate_id;
+          | SELECT aggregates.base_version INTO current_version FROM aggregates WHERE id = aggregate_id AND base_id = aggregate_id;
           |    IF NOT FOUND THEN
           |        IF expected_version = 0 THEN
-          |            INSERT INTO AGGREGATES (id, type, version) VALUES (aggregate_id, aggregate_type, 0);
+          |            INSERT INTO AGGREGATES (id, type, base_id, base_version) VALUES (aggregate_id, aggregate_type, aggregate_id, 0);
           |            current_version := 0;
           |        ELSE
           |	    RAISE EXCEPTION 'aggregate not found, id %, aggregate_type %', aggregate_id, aggregate_type;
@@ -88,7 +89,7 @@ class EventStoreSchemaInitializer  {
           |    END IF;
           |    INSERT INTO events (id, command_id, user_id, aggregate_id, event_time, version, event_type, event_type_version, event) VALUES (NEXTVAL('events_seq'), command_id, user_id, aggregate_id, current_timestamp, current_version + 1, event_type, event_type_version, event);
           |    INSERT INTO events_to_publish (event_id, aggregate_id, version) VALUES(CURRVAL('events_seq'), aggregate_id, current_version + 1);
-          |    UPDATE aggregates SET version = current_version + 1 WHERE id = aggregate_id;
+          |    UPDATE aggregates SET base_version = current_version + 1 WHERE id = aggregate_id AND base_id = aggregate_id;
           |END;
           |$$
           |LANGUAGE 'plpgsql' VOLATILE
@@ -103,7 +104,7 @@ class EventStoreSchemaInitializer  {
           |DECLARE
           |    current_version int;
           |BEGIN
-          | SELECT aggregates.version INTO current_version from aggregates where id = _aggregate_id;
+          | SELECT aggregates.base_version INTO current_version FROM aggregates WHERE id = _aggregate_id AND base_id = _aggregate_id;
           |    IF NOT FOUND THEN
           |        IF expected_version = 0 THEN
           |            RAISE EXCEPTION 'Cannot undo event for non existing aggregate';
@@ -121,7 +122,7 @@ class EventStoreSchemaInitializer  {
           |    INSERT INTO noop_events(id, from_version) VALUES (NEXTVAL('events_seq'), current_version + 1);
           |    INSERT INTO events (id, command_id, user_id, aggregate_id, event_time, version, event_type, event_type_version, event) VALUES (CURRVAL('events_seq'), command_id, user_id, _aggregate_id, current_timestamp, current_version + 1, event_type, event_type_version, event);
           |    INSERT INTO events_to_publish (event_id, aggregate_id, version) VALUES(CURRVAL('events_seq'), _aggregate_id, current_version + 1);
-          |    UPDATE aggregates SET version = current_version + 1 WHERE id = _aggregate_id;
+          |    UPDATE aggregates SET base_version = current_version + 1 WHERE id = _aggregate_id AND base_id = _aggregate_id;
           |END;
           |$$
           |LANGUAGE 'plpgsql' VOLATILE
