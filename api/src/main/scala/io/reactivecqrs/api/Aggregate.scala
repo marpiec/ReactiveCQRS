@@ -6,6 +6,10 @@ import scala.reflect.runtime.universe._
 
 case class AggregateType(typeName: String)
 
+case class EventType(typeName: String)
+
 case class AggregateWithType[AGGREGATE_ROOT](aggregateType: AggregateType, id: AggregateId, version: AggregateVersion, aggregateRoot: Option[AGGREGATE_ROOT])
+
+case class AggregateWithTypeAndEvent[AGGREGATE_ROOT](aggregateType: AggregateType, id: AggregateId, version: AggregateVersion, aggregateRoot: Option[AGGREGATE_ROOT], event: Event[AGGREGATE_ROOT])
 
 case class Aggregate[AGGREGATE_ROOT: TypeTag](id: AggregateId, version: AggregateVersion, aggregateRoot: Option[AGGREGATE_ROOT])

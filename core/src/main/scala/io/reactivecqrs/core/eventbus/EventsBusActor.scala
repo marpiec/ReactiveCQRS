@@ -1,10 +1,13 @@
 package io.reactivecqrs.core.eventbus
 
 import akka.actor.{Actor, ActorRef}
+import akka.event.LoggingReceive
+import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.api.{AggregateType, AggregateVersion, AggregateWithType}
 import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEvent}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
+import io.reactivecqrs.core.util.RandomUtil
+
 
 object EventsBusActor {
 
@@ -13,8 +16,14 @@ object EventsBusActor {
   case class PublishEventsAck(eventsIds: Seq[EventIdentifier])
 
 
-  case class SubscribeForEvents(aggregateType: AggregateType, subscriber: ActorRef) // Todo add message classifier?
-  case class SubscribedForEvents(aggregateType: AggregateType)
+  case class SubscribeForEvents(aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier)
+  case class SubscribedForEvents(aggregateType: AggregateType, subscriptionId: String)
+
+  case class SubscribeForAggregates(aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier = AcceptAllAggregateIdClassifier)
+  case class SubscribedForAggregates(aggregateType: AggregateType, subscriptionId: String)
+
+  case class SubscribeForAggregatesWithEvents(aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier)
+  case class SubscribedForAggregatesWithEvents(aggregateType: AggregateType, subscriptionId: String)
 
   case class MessagesPersisted(aggregateType: AggregateType, messages: Seq[MessageToSend])
 
@@ -22,49 +31,101 @@ object EventsBusActor {
   case class MessageAck(subscriber: ActorRef, aggregateId: AggregateId, version: AggregateVersion)
 
   
-  case class SubscribeForAggregates(aggregateType: AggregateType, subscriber: ActorRef) // Todo add message classifier?
-  case class SubscribedForAggregates(aggregateType: AggregateType)
-
+  case class CancelSubscription(subscriptionId: String)
+  case class SubscriptionCanceled(subscriptionId: String)
 }
 
+abstract class Subscription {
+  val subscriptionId: String
+  val aggregateType: AggregateType
+}
+case class EventSubscription(subscriptionId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier) extends Subscription
+case class AggregateSubscription(subscriptionId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier) extends Subscription
+case class AggregateWithEventSubscription(subscriptionId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier) extends Subscription
 
 class EventsBusActor(eventBus: EventBusState) extends Actor {
 
-  private var subscribersForEvents: Map[AggregateType, Vector[ActorRef]] = Map()
-  private var subscribersForAggregates: Map[AggregateType, Vector[ActorRef]] = Map()
+  private val randomUtil = new RandomUtil
+  
+  private var subscriptions: Map[AggregateType, Vector[Subscription]] = Map()
+  private var subscriptionsByIds = Map[String, Subscription]()
+  
 
-  override def receive: Receive = {
-    case SubscribeForEvents(aggregateType, subscriber) => handlerSubscribeForEvents(aggregateType, subscriber)
-    case SubscribeForAggregates(aggregateType, subscriber) => handlerSubscribeForAggregates(aggregateType, subscriber)
+  override def receive: Receive = LoggingReceive {
+    case SubscribeForEvents(aggregateType, subscriber, classifier) => handleSubscribeForEvents(aggregateType, subscriber, classifier)
+    case SubscribeForAggregates(aggregateType, subscriber, classifier) => handleSubscribeForAggregates(aggregateType, subscriber, classifier)
+    case SubscribeForAggregatesWithEvents(aggregateType, subscriber, classifier) => handleSubscribeForAggregatesWithEvents(aggregateType, subscriber, classifier)
+    case CancelSubscription(subscriptionId) => handleCancelSubscription(sender(), subscriptionId)
     case PublishEvents(aggregateType, events, aggregateId, aggregateVersion, aggregate) =>
       handlePublishEvents(sender(), aggregateType, events, aggregateId, aggregateVersion, aggregate)
     case MessagesPersisted(aggregateType, messages) => handleMessagesPersisted(aggregateType, messages)
     case MessageAck(subscriber, aggregateId, version) => handleEventReceived(subscriber, aggregateId, version)
   }
+  
+  
+  // ****************** SUBSCRIPTION
 
-  private def handlerSubscribeForEvents(aggregateType: AggregateType, subscriber: ActorRef): Unit = {
-    val subscribersForAggregateType = subscribersForEvents.getOrElse(aggregateType, Vector())
-    subscribersForEvents += aggregateType -> (subscribersForAggregateType :+ subscriber)
-    subscriber ! SubscribedForEvents(aggregateType)
+  private def handleSubscribeForEvents(aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier): Unit = {
+    val subscriptionId = generateNextSubscriptionId
+    val subscribersForAggregateType = subscriptions.getOrElse(aggregateType, Vector())
+    val subscription = EventSubscription(subscriptionId, aggregateType, subscriber, classifier)
+    subscriptions += aggregateType -> (subscribersForAggregateType :+ subscription)
+    subscriptionsByIds += subscriptionId -> subscription
+    subscriber ! SubscribedForEvents(aggregateType, subscriptionId)
   }
 
-  private def handlerSubscribeForAggregates(aggregateType: AggregateType, subscriber: ActorRef): Unit = {
-    val subscribersForAggregateType = subscribersForAggregates.getOrElse(aggregateType, Vector())
-    subscribersForAggregates += aggregateType -> (subscribersForAggregateType :+ subscriber)
-    subscriber ! SubscribedForAggregates(aggregateType)
+  private def handleSubscribeForAggregates(aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier): Unit = {
+    val subscriptionId = generateNextSubscriptionId
+    val subscribersForAggregateType = subscriptions.getOrElse(aggregateType, Vector())
+    val subscription = AggregateSubscription(subscriptionId, aggregateType, subscriber, classifier)
+    subscriptions += aggregateType -> (subscribersForAggregateType :+ subscription)
+    subscriptionsByIds += subscriptionId -> subscription
+    subscriber ! SubscribedForAggregates(aggregateType, subscriptionId)
   }
 
+  private def handleSubscribeForAggregatesWithEvents(aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier): Unit = {
+    val subscriptionId = generateNextSubscriptionId
+    val subscribersForAggregateType = subscriptions.getOrElse(aggregateType, Vector())
+    val subscription = AggregateWithEventSubscription(subscriptionId, aggregateType, subscriber, classifier)
+    subscriptions += aggregateType -> (subscribersForAggregateType :+ subscription)
+    subscriptionsByIds += subscriptionId -> subscription
+    subscriber ! SubscribedForAggregatesWithEvents(aggregateType, subscriptionId)
+  }
+
+  def handleCancelSubscription(subscriber: ActorRef, subscriptionId: String): Unit = {
+    subscriptionsByIds.get(subscriptionId) match {
+      case Some(subscription) =>
+        val subscriptionsForType = subscriptions.getOrElse(subscription.aggregateType, Vector()).filter(_.subscriptionId != subscriptionId)
+        subscriptions += subscription.aggregateType -> subscriptionsForType
+        subscriptionsByIds -= subscriptionId
+        subscriber ! SubscriptionCanceled(subscriptionId)
+      case None => subscriber ! SubscriptionCanceled(subscriptionId)
+    }
+  }
+
+  
+  // ***************** PUBLISHING
+  
   private def handlePublishEvents(respondTo: ActorRef, aggregateType: AggregateType, events: Seq[IdentifiableEvent[Any]],
                                   aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregateRoot: Option[Any]): Unit = {
-    val eventsToSend = subscribersForEvents.getOrElse(aggregateType, Vector.empty).flatMap(subscriber => {
-      events.map(event => MessageToSend(subscriber, event.aggregateId, event.version, event))
-    })
+    val messagesToSend = subscriptions.getOrElse(aggregateType, Vector.empty).flatMap {
+        case s: EventSubscription =>
+          events
+            .filter(event => s.classifier.accept(aggregateId, EventType(event.event.getClass.getName)))
+            .map(event => MessageToSend(s.subscriber, event.aggregateId, event.version, event))
+        case s: AggregateSubscription =>
+          if(s.classifier.accept(aggregateId)) {
+            List(MessageToSend(s.subscriber, aggregateId, aggregateVersion, AggregateWithType(aggregateType, aggregateId, aggregateVersion, aggregateRoot)))
+          } else {
+            List.empty
+          }
+        case s: AggregateWithEventSubscription =>
+          events
+            .filter(event => s.classifier.accept(aggregateId, EventType(event.event.getClass.getName)))
+            .map(event => MessageToSend(s.subscriber, event.aggregateId, event.version, AggregateWithTypeAndEvent(aggregateType, aggregateId, aggregateVersion, aggregateRoot, event.event)))
+      }
 
-    val aggregatesToSend = subscribersForAggregates.getOrElse(aggregateType, Vector.empty).map(subscriber => {
-      MessageToSend(subscriber, aggregateId, aggregateVersion, AggregateWithType(aggregateType, aggregateId, aggregateVersion, aggregateRoot))
-    })
 
-    val messagesToSend = eventsToSend ++ aggregatesToSend
 
 //    Future { // FIXME Future is to ensure non blocking access to db, but it broke order in which events for the same aggreagte were persisted, maybe this should ba actor per aggregate instead of future?
       eventBus.persistMessages(messagesToSend)
@@ -86,5 +147,13 @@ class EventsBusActor(eventBus: EventBusState) extends Actor {
 
   private def handleEventReceived(subscriber: ActorRef, aggregateId: AggregateId, version: AggregateVersion): Unit = {
     eventBus.deleteSentMessage(subscriber: ActorRef, aggregateId: AggregateId, version: AggregateVersion)
+  }
+  
+  private def generateNextSubscriptionId:String = {
+    var subscriptionId: String = null
+    do {
+      subscriptionId = randomUtil.generateRandomString(32)
+    } while(subscriptionsByIds.contains(subscriptionId))
+    subscriptionId
   }
 }

@@ -5,7 +5,7 @@ import java.time.Instant
 import akka.actor.{Actor, ActorRef}
 import akka.event.LoggingReceive
 import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.api.{Event, AggregateType, AggregateVersion, AggregateWithType}
+import io.reactivecqrs.api._
 import io.reactivecqrs.core.aggregaterepository.IdentifiableEvent
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import EventsBusActor._
@@ -46,6 +46,18 @@ abstract class ProjectionActor extends Actor {
   }
 
 
+  // ListenerParam and listener are separately so covariant type is allowed
+  protected class AggregateWithEventListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT], Option[AGGREGATE_ROOT]) => Unit) extends Listener[AGGREGATE_ROOT] {
+    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Event[Any], Option[Any]) => Unit]
+    def aggregateRootType = typeOf[AGGREGATE_ROOT]
+  }
+
+  protected object AggregateWithEventListener {
+    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT], Option[AGGREGATE_ROOT]) => Unit): AggregateWithEventListener[AGGREGATE_ROOT] =
+      new AggregateWithEventListener[AGGREGATE_ROOT](listener)
+  }
+
+
   protected val eventBusActor: ActorRef
 
   protected val listeners:List[Listener[Any]]
@@ -64,8 +76,13 @@ abstract class ProjectionActor extends Actor {
       .map(l => (AggregateType(l.aggregateRootType.toString), l.asInstanceOf[AggregateListener[Any]].listener)).toMap
   }
 
+  private lazy val aggregateWithEventListenersMap ={
+    validateListeners()
+    listeners.filter(_.isInstanceOf[AggregateWithEventListener[Any]])
+      .map(l => (AggregateType(l.aggregateRootType.toString), l.asInstanceOf[AggregateWithEventListener[Any]].listener)).toMap
+  }
 
-  override def receive: Receive = LoggingReceive(receiveSubscribed(aggregateListenersMap.keySet, eventListenersMap.keySet))
+  override def receive: Receive = LoggingReceive(receiveSubscribed(aggregateListenersMap.keySet, eventListenersMap.keySet, aggregateWithEventListenersMap.keySet))
 
   private def validateListeners() = {
     if(listeners.exists(l => l.aggregateRootType == typeOf[Any] || l.aggregateRootType == typeOf[Nothing])) {
@@ -73,24 +90,34 @@ abstract class ProjectionActor extends Actor {
     }
   }
 
-  private def receiveSubscribed(aggregateListenersRemaining: Set[AggregateType], eventsListenersRemaining: Set[AggregateType]): Receive = {
-    case SubscribedForAggregates(aggregateType) =>
-      if(eventsListenersRemaining.isEmpty && aggregateListenersRemaining.size == 1 && aggregateListenersRemaining.head == aggregateType) {
+  private def receiveSubscribed(aggregateListenersRemaining: Set[AggregateType], eventsListenersRemaining: Set[AggregateType], aggregatesWithEventsListenersRemaining: Set[AggregateType]): Receive = {
+    case SubscribedForAggregates(aggregateType, subscriptionId) =>
+      if(eventsListenersRemaining.isEmpty && aggregatesWithEventsListenersRemaining.isEmpty && aggregateListenersRemaining.size == 1 && aggregateListenersRemaining.head == aggregateType) {
         context.become(LoggingReceive(receiveUpdate orElse receiveQuery))
       } else {
-        context.become(LoggingReceive(receiveSubscribed(aggregateListenersRemaining.filterNot(_ == aggregateType), eventsListenersRemaining)))
+        context.become(LoggingReceive(receiveSubscribed(aggregateListenersRemaining.filterNot(_ == aggregateType), eventsListenersRemaining, aggregatesWithEventsListenersRemaining)))
       }
-    case SubscribedForEvents(aggregateType) =>
-      if(aggregateListenersRemaining.isEmpty && eventsListenersRemaining.size == 1 && eventsListenersRemaining.head == aggregateType) {
+    case SubscribedForEvents(aggregateType, subscriptionId) =>
+      if(aggregateListenersRemaining.isEmpty && aggregatesWithEventsListenersRemaining.isEmpty && eventsListenersRemaining.size == 1 && eventsListenersRemaining.head == aggregateType) {
         context.become(LoggingReceive(receiveUpdate orElse receiveQuery))
       } else {
-        context.become(LoggingReceive(receiveSubscribed(aggregateListenersRemaining, eventsListenersRemaining.filterNot(_ == aggregateType))))
+        context.become(LoggingReceive(receiveSubscribed(aggregateListenersRemaining, eventsListenersRemaining.filterNot(_ == aggregateType), aggregatesWithEventsListenersRemaining)))
+      }
+    case SubscribedForAggregatesWithEvents(aggregateType, subscriptionId) =>
+      if(eventsListenersRemaining.isEmpty && aggregateListenersRemaining.isEmpty && aggregatesWithEventsListenersRemaining.size == 1 && aggregatesWithEventsListenersRemaining.head == aggregateType) {
+        context.become(LoggingReceive(receiveUpdate orElse receiveQuery))
+      } else {
+        context.become(LoggingReceive(receiveSubscribed(aggregateListenersRemaining, eventsListenersRemaining, aggregatesWithEventsListenersRemaining.filterNot(_ == aggregateType))))
       }
   }
 
   private def receiveUpdate: Receive = {
     case a: AggregateWithType[_] =>
       aggregateListenersMap(a.aggregateType)(a.id, a.version, a.aggregateRoot)
+      sender() ! MessageAck(self, a.id, a.version)
+      replayQueries()
+    case a: AggregateWithTypeAndEvent[_] =>
+      aggregateWithEventListenersMap(a.aggregateType)(a.id, a.version, a.event.asInstanceOf[Event[Any]], a.aggregateRoot)
       sender() ! MessageAck(self, a.id, a.version)
       replayQueries()
     case e: IdentifiableEvent[_] =>
@@ -108,6 +135,10 @@ abstract class ProjectionActor extends Actor {
 
     eventListenersMap.keySet.foreach { aggregateType =>
       eventBusActor ! SubscribeForEvents(aggregateType, self)
+    }
+
+    aggregateWithEventListenersMap.keySet.foreach { aggregateType =>
+      eventBusActor ! SubscribeForAggregatesWithEvents(aggregateType, self)
     }
 
   }
