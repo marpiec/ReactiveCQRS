@@ -16,14 +16,14 @@ object EventsBusActor {
   case class PublishEventsAck(eventsIds: Seq[EventIdentifier])
 
 
-  case class SubscribeForEvents(aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier)
-  case class SubscribedForEvents(aggregateType: AggregateType, subscriptionId: String)
+  case class SubscribeForEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier)
+  case class SubscribedForEvents(messageId: String, aggregateType: AggregateType, subscriptionId: String)
 
-  case class SubscribeForAggregates(aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier = AcceptAllAggregateIdClassifier)
-  case class SubscribedForAggregates(aggregateType: AggregateType, subscriptionId: String)
+  case class SubscribeForAggregates(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier = AcceptAllAggregateIdClassifier)
+  case class SubscribedForAggregates(messageId: String, aggregateType: AggregateType, subscriptionId: String)
 
-  case class SubscribeForAggregatesWithEvents(aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier)
-  case class SubscribedForAggregatesWithEvents(aggregateType: AggregateType, subscriptionId: String)
+  case class SubscribeForAggregatesWithEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier)
+  case class SubscribedForAggregatesWithEvents(messageId: String, aggregateType: AggregateType, subscriptionId: String)
 
   case class MessagesPersisted(aggregateType: AggregateType, messages: Seq[MessageToSend])
 
@@ -34,7 +34,6 @@ object EventsBusActor {
   case class CancelSubscriptions(subscriptionId: List[String])
   case class SubscriptionsCanceled(subscriptionId: List[String])
 
-  case class CancelAllSubscriptionsOf(subscriber: ActorRef)
 }
 
 abstract class Subscription {
@@ -54,9 +53,9 @@ class EventsBusActor(eventBus: EventBusState) extends Actor {
 
 
   override def receive: Receive = LoggingReceive {
-    case SubscribeForEvents(aggregateType, subscriber, classifier) => handleSubscribeForEvents(aggregateType, subscriber, classifier)
-    case SubscribeForAggregates(aggregateType, subscriber, classifier) => handleSubscribeForAggregates(aggregateType, subscriber, classifier)
-    case SubscribeForAggregatesWithEvents(aggregateType, subscriber, classifier) => handleSubscribeForAggregatesWithEvents(aggregateType, subscriber, classifier)
+    case SubscribeForEvents(messageId, aggregateType, subscriber, classifier) => handleSubscribeForEvents(messageId, aggregateType, subscriber, classifier)
+    case SubscribeForAggregates(messageId, aggregateType, subscriber, classifier) => handleSubscribeForAggregates(messageId, aggregateType, subscriber, classifier)
+    case SubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, classifier) => handleSubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, classifier)
     case CancelSubscriptions(subscriptionsIds) => handleCancelSubscription(sender(), subscriptionsIds)
     case PublishEvents(aggregateType, events, aggregateId, aggregateVersion, aggregate) =>
       handlePublishEvents(sender(), aggregateType, events, aggregateId, aggregateVersion, aggregate)
@@ -67,31 +66,31 @@ class EventsBusActor(eventBus: EventBusState) extends Actor {
   
   // ****************** SUBSCRIPTION
 
-  private def handleSubscribeForEvents(aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier): Unit = {
+  private def handleSubscribeForEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier): Unit = {
     val subscriptionId = generateNextSubscriptionId
     val subscribersForAggregateType = subscriptions.getOrElse(aggregateType, Vector())
     val subscription = EventSubscription(subscriptionId, aggregateType, subscriber, classifier)
     subscriptions += aggregateType -> (subscribersForAggregateType :+ subscription)
     subscriptionsByIds += subscriptionId -> subscription
-    subscriber ! SubscribedForEvents(aggregateType, subscriptionId)
+    subscriber ! SubscribedForEvents(messageId, aggregateType, subscriptionId)
   }
 
-  private def handleSubscribeForAggregates(aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier): Unit = {
+  private def handleSubscribeForAggregates(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier): Unit = {
     val subscriptionId = generateNextSubscriptionId
     val subscribersForAggregateType = subscriptions.getOrElse(aggregateType, Vector())
     val subscription = AggregateSubscription(subscriptionId, aggregateType, subscriber, classifier)
     subscriptions += aggregateType -> (subscribersForAggregateType :+ subscription)
     subscriptionsByIds += subscriptionId -> subscription
-    subscriber ! SubscribedForAggregates(aggregateType, subscriptionId)
+    subscriber ! SubscribedForAggregates(messageId, aggregateType, subscriptionId)
   }
 
-  private def handleSubscribeForAggregatesWithEvents(aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier): Unit = {
+  private def handleSubscribeForAggregatesWithEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier): Unit = {
     val subscriptionId = generateNextSubscriptionId
     val subscribersForAggregateType = subscriptions.getOrElse(aggregateType, Vector())
     val subscription = AggregateWithEventSubscription(subscriptionId, aggregateType, subscriber, classifier)
     subscriptions += aggregateType -> (subscribersForAggregateType :+ subscription)
     subscriptionsByIds += subscriptionId -> subscription
-    subscriber ! SubscribedForAggregatesWithEvents(aggregateType, subscriptionId)
+    subscriber ! SubscribedForAggregatesWithEvents(messageId, aggregateType, subscriptionId)
   }
 
   def handleCancelSubscription(subscriber: ActorRef, subscriptionsIds: List[String]): Unit = {
@@ -108,12 +107,6 @@ class EventsBusActor(eventBus: EventBusState) extends Actor {
     subscriber ! SubscriptionsCanceled(subscriptionsIds)
   }
 
-
-  def handleCancelAllSubscriptionsOf(subscriber: ActorRef): Unit = {
-
-
-
-  }
 
 
 

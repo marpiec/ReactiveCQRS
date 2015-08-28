@@ -91,19 +91,19 @@ abstract class ProjectionActor extends Actor {
   }
 
   private def receiveSubscribed(aggregateListenersRemaining: Set[AggregateType], eventsListenersRemaining: Set[AggregateType], aggregatesWithEventsListenersRemaining: Set[AggregateType]): Receive = {
-    case SubscribedForAggregates(aggregateType, subscriptionId) =>
+    case SubscribedForAggregates(messageId, aggregateType, subscriptionId) =>
       if(eventsListenersRemaining.isEmpty && aggregatesWithEventsListenersRemaining.isEmpty && aggregateListenersRemaining.size == 1 && aggregateListenersRemaining.head == aggregateType) {
         context.become(LoggingReceive(receiveUpdate orElse receiveQuery))
       } else {
         context.become(LoggingReceive(receiveSubscribed(aggregateListenersRemaining.filterNot(_ == aggregateType), eventsListenersRemaining, aggregatesWithEventsListenersRemaining)))
       }
-    case SubscribedForEvents(aggregateType, subscriptionId) =>
+    case SubscribedForEvents(messageId, aggregateType, subscriptionId) =>
       if(aggregateListenersRemaining.isEmpty && aggregatesWithEventsListenersRemaining.isEmpty && eventsListenersRemaining.size == 1 && eventsListenersRemaining.head == aggregateType) {
         context.become(LoggingReceive(receiveUpdate orElse receiveQuery))
       } else {
         context.become(LoggingReceive(receiveSubscribed(aggregateListenersRemaining, eventsListenersRemaining.filterNot(_ == aggregateType), aggregatesWithEventsListenersRemaining)))
       }
-    case SubscribedForAggregatesWithEvents(aggregateType, subscriptionId) =>
+    case SubscribedForAggregatesWithEvents(messageId, aggregateType, subscriptionId) =>
       if(eventsListenersRemaining.isEmpty && aggregateListenersRemaining.isEmpty && aggregatesWithEventsListenersRemaining.size == 1 && aggregatesWithEventsListenersRemaining.head == aggregateType) {
         context.become(LoggingReceive(receiveUpdate orElse receiveQuery))
       } else {
@@ -130,15 +130,15 @@ abstract class ProjectionActor extends Actor {
 
   override def preStart() {
     aggregateListenersMap.keySet.foreach { aggregateType =>
-      eventBusActor ! SubscribeForAggregates(aggregateType, self)
+      eventBusActor ! SubscribeForAggregates("", aggregateType, self)
     }
 
     eventListenersMap.keySet.foreach { aggregateType =>
-      eventBusActor ! SubscribeForEvents(aggregateType, self)
+      eventBusActor ! SubscribeForEvents("", aggregateType, self)
     }
 
     aggregateWithEventListenersMap.keySet.foreach { aggregateType =>
-      eventBusActor ! SubscribeForAggregatesWithEvents(aggregateType, self)
+      eventBusActor ! SubscribeForAggregatesWithEvents("", aggregateType, self)
     }
 
   }

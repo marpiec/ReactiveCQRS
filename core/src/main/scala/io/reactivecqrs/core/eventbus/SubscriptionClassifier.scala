@@ -16,7 +16,7 @@ abstract class AggregateSubscriptionClassifier extends SubscriptionClassifier {
 }
 
 
-class AggregateIdClassifier(aggregateId: AggregateId) extends AggregateSubscriptionClassifier {
+case class AggregateIdClassifier(aggregateId: AggregateId) extends AggregateSubscriptionClassifier {
   override def accept(aggregateId: AggregateId): Boolean = {
     this.aggregateId == aggregateId
   }
