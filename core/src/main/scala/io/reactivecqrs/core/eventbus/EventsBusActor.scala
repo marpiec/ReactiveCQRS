@@ -133,7 +133,7 @@ class EventsBusActor(eventBus: EventBusState) extends Actor {
 
 
 
-//    Future { // FIXME Future is to ensure non blocking access to db, but it broke order in which events for the same aggreagte were persisted, maybe this should ba actor per aggregate instead of future?
+//    Future { // FIXME Future is to ensure non blocking access to db, but it broke order in which events for the same aggregate were persisted, maybe there should be an actor per aggregate instead of a future?
       eventBus.persistMessages(messagesToSend)
       respondTo ! PublishEventsAck(events.map(event => EventIdentifier(event.aggregateId, event.version)))
       self ! MessagesPersisted(aggregateType, messagesToSend)
