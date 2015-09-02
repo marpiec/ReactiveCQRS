@@ -111,7 +111,7 @@ abstract class ProjectionActor extends Actor {
       }
   }
 
-  private def receiveUpdate: Receive = {
+  protected def receiveUpdate: Receive = {
     case a: AggregateWithType[_] =>
       aggregateListenersMap(a.aggregateType)(a.id, a.version, a.aggregateRoot)
       sender() ! MessageAck(self, a.id, a.version)
