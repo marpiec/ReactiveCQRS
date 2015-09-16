@@ -35,7 +35,7 @@ class PostgresDocumentStore[T <: AnyRef: TypeTag, M <: AnyRef: TypeTag](tableNam
   private def SELECT_DOCUMENT_BY_PATH(path: String) = s"SELECT id, document, metadata FROM $projectionTableName WHERE document #>> '{$path}' = ?"
 
   private def SELECT_DOCUMENT_BY_PATH_WITH_ONE_OF_THE_VALUES(path: String, values: Set[String]) =
-    s"SELECT id, document, metadata FROM $projectionTableName WHERE document #>> '{$path}' in (${values.map("'"+_+"'").mkString(",")}})"
+    s"SELECT id, document, metadata FROM $projectionTableName WHERE document #>> '{$path}' in (${values.map("'"+_+"'").mkString(",")})"
 
   private val SELECT_ALL = s"SELECT id, document, metadata FROM $projectionTableName"
 
