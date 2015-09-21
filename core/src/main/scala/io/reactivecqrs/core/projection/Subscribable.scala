@@ -1,42 +1,89 @@
 package io.reactivecqrs.core.projection
 
 import akka.actor.ActorRef
-import akka.event.LoggingReceive
-import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.core.projection.Subscribable.{SubscribedForAggregateInfo, InfoSubscriptionsCanceled, SubscribeForAggregateInfoUpdates, CancelInfoSubscriptions}
 import io.reactivecqrs.core.util.RandomUtil
+import io.reactivecqrs.core.projection.Subscribable._
 
 import scala.collection.mutable
+import scala.reflect.runtime.universe._
 
 object Subscribable {
-  case class SubscribeForAggregateInfoUpdates(subscriptionCode: String, listener: ActorRef, aggregateId: AggregateId)
+  case class SubscribedForProjectionUpdates(subscriptionCode: String, subscriptionId: String)
 
-  case class SubscribedForAggregateInfo(subscriptionCode: String, subscriptionId: String)
+  case class CancelProjectionSubscriptions(subscriptions: List[String])
 
-  case class CancelInfoSubscriptions(subscriptions: List[String])
+  case class ProjectionSubscriptionsCancelled(subscriptions: List[String])
 
-  case class InfoSubscriptionsCanceled(subscriptions: List[String])
+  case class SubscriptionUpdated[UPDATE](subscriptionId: String, data: UPDATE)
 }
 
-trait Subscribable[PROJECTION_MODEL] extends ProjectionActor {
+trait Subscribable extends ProjectionActor {
 
-  abstract override protected def receiveUpdate: Receive = LoggingReceive {
-      case SubscribeForAggregateInfoUpdates(subscriptionCode, listener, aggregateId) => handleSubscription(subscriptionCode, listener, aggregateId)
-      case CancelInfoSubscriptions(subscriptions) => sender ! InfoSubscriptionsCanceled(subscriptions.flatMap(handleUnsubscribe))
-  } orElse super.receiveUpdate
+  protected def receiveSubscriptionRequest: Receive
 
-  protected def sendUpdate(aggregateId: AggregateId, state: PROJECTION_MODEL) = {
-    aggregateIdToSubscriptionIds.get(aggregateId) foreach {
-      _ foreach {
-        subscriptionIdToListener.get(_) foreach {
-          _ ! state
-        }
-      }
+  protected def receiveSubscription: Receive = receiveSubscriptionRequest orElse {
+    case CancelProjectionSubscriptions(subscriptions) => sender ! ProjectionSubscriptionsCancelled(subscriptions.flatMap(handleUnsubscribe))
+  }
+
+  abstract override protected def receiveUpdate = super.receiveUpdate orElse receiveSubscription
+
+  private val subscriptionIdToListener = mutable.HashMap[String, ActorRef]()
+  private val subscriptionIdToAcceptor = mutable.HashMap[String, _ => Option[_]]()
+  private val typeToSubscriptionId = mutable.HashMap[String, List[String]]()
+
+
+  protected def handleSubscribe[DATA: TypeTag, UPDATE](code: String, listener: ActorRef, filter: (DATA) => Option[UPDATE]) = {
+    val subscriptionId = generateNextSubscriptionId
+    val typeTagString = typeTag[DATA].toString()
+
+    subscriptionIdToListener += subscriptionId -> listener
+    subscriptionIdToAcceptor += subscriptionId -> filter
+    typeToSubscriptionId += typeTagString -> (subscriptionId :: typeToSubscriptionId.getOrElse(typeTagString, Nil))
+
+    listener ! SubscribedForProjectionUpdates(code, subscriptionId)
+  }
+
+
+
+  protected def sendUpdate[DATA: TypeTag](u: DATA) = {
+    val tt = typeTag[DATA].toString()
+    typeToSubscriptionId.get(typeTag[DATA].toString()) foreach { subscriptions =>
+      for {
+        subscriptionId: String <- subscriptions
+        listener: ActorRef <- subscriptionIdToListener.get(subscriptionId)
+        acceptor <- subscriptionIdToAcceptor.get(subscriptionId)
+        result <- acceptor.asInstanceOf[DATA => Option[_]](u)
+      } yield listener ! SubscriptionUpdated(subscriptionId, result)
     }
   }
 
-  private var subscriptionIdToListener = mutable.HashMap[String, ActorRef]()
-  private var aggregateIdToSubscriptionIds = mutable.HashMap[AggregateId, List[String]]()
+
+
+  private def handleUnsubscribe(subscriptionId: String): Option[String] = {
+    typeToSubscriptionId.find { _._2.contains(subscriptionId) } match {
+      case Some((aggregateId, subscriptions)) =>
+        val filtered = subscriptions.filterNot(_ == subscriptionId)
+        if (filtered.isEmpty) {
+          typeToSubscriptionId -= aggregateId
+        } else {
+          typeToSubscriptionId += aggregateId -> filtered
+        }
+      case None => ()
+    }
+    subscriptionIdToAcceptor.get(subscriptionId) match {
+      case Some(_) =>
+        subscriptionIdToAcceptor -= subscriptionId
+      case None => ()
+    }
+    subscriptionIdToListener.get(subscriptionId) match {
+      case Some(subscriber) =>
+        subscriptionIdToListener -= subscriptionId
+        Some(subscriptionId)
+      case None => None
+    }
+  }
+
+  // utilities
 
   private val randomUtil = new RandomUtil
 
@@ -46,28 +93,5 @@ trait Subscribable[PROJECTION_MODEL] extends ProjectionActor {
       subscriptionId = randomUtil.generateRandomString(32)
     } while (subscriptionIdToListener.contains(subscriptionId))
     subscriptionId
-  }
-
-  private def handleSubscription(subscriptionCode: String, listener: ActorRef, aggregateId: AggregateId) = {
-    val subscriptionId: String = generateNextSubscriptionId
-    val subscriptions: List[String] = aggregateIdToSubscriptionIds.getOrElse(aggregateId, List())
-    subscriptionIdToListener += subscriptionId -> listener
-    aggregateIdToSubscriptionIds += aggregateId -> (subscriptionId :: subscriptions)
-    listener ! SubscribedForAggregateInfo(subscriptionCode, subscriptionId)
-  }
-
-  private def handleUnsubscribe(subscriptionId: String): Option[String] = {
-    val aggregate: Option[(AggregateId, List[String])] = aggregateIdToSubscriptionIds find { _._2.contains(subscriptionId) }
-    aggregate match {
-      case Some((aggregateId, subscriptions)) =>
-        aggregateIdToSubscriptionIds += aggregateId -> subscriptions.filterNot(_ == subscriptionId)
-      case None => ()
-    }
-    subscriptionIdToListener.get(subscriptionId) match {
-      case Some(subscriber) =>
-        subscriptionIdToListener -= subscriptionId
-        Some(subscriptionId)
-      case None => None
-    }
   }
 }
