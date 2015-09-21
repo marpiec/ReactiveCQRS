@@ -2,7 +2,7 @@ package io.reactivecqrs.core.documentstore
 
 case class DocumentWithMetadata[T <: AnyRef, M <: AnyRef](document: T, metadata: M)
 
-abstract class DocumentStore[T <: AnyRef, M <: AnyRef] {
+sealed abstract class AbstractDocumentStore[T <: AnyRef, M <: AnyRef] {
 
   def findDocumentByPath(path: Seq[String], value: String): Map[Long, DocumentWithMetadata[T,M]]
 
@@ -10,17 +10,13 @@ abstract class DocumentStore[T <: AnyRef, M <: AnyRef] {
 
   def findDocumentByPathWithOneArray[V](array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T,M]]
 
-  def findDocumentByMetadataPathWithOneArray[V](array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T,M]]
+  def findDocumentByPathWithOneArrayAnywhere[V](arrayPath: Seq[String], objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]]
 
-  def insertDocument(key: Long, document: T, metadata: M): Unit
+  def findDocumentByMetadataPathWithOneArray[V](array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T,M]]
 
   def updateDocument(key: Long, document: T, metadata: M): Unit
 
   def getDocument(key: Long): Option[DocumentWithMetadata[T, M]]
-
-  // def getJson(key: Long): String
-
-  // def getJsons(keys: List[Long]): Map[Long, String]
 
   def getDocuments(keys: List[Long]): Map[Long, DocumentWithMetadata[T, M]]
 
@@ -28,4 +24,12 @@ abstract class DocumentStore[T <: AnyRef, M <: AnyRef] {
 
   def findAll(): Map[Long, DocumentWithMetadata[T, M]]
 
+}
+
+abstract class DocumentStore[T <: AnyRef, M <: AnyRef] extends AbstractDocumentStore[T, M] {
+  def insertDocument(key: Long, document: T, metadata: M): Unit
+}
+
+abstract class DocumentStoreAutoId[T <: AnyRef, M <: AnyRef] extends AbstractDocumentStore[T, M] {
+  def insertDocument(document: T, metadata: M): Unit
 }

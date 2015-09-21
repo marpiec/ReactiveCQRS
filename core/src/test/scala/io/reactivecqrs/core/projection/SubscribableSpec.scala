@@ -2,32 +2,58 @@ package io.reactivecqrs.core.projection
 
 import java.time.Clock
 
-import akka.actor.{Actor, Props, ActorSystem, ActorRef}
-import akka.event.LoggingReceive
-import akka.testkit.{TestProbe, TestActorRef}
+import akka.actor._
+import akka.testkit.{TestActorRef, TestProbe}
 import akka.util.Timeout
-import io.reactivecqrs.api.{AggregateType, AggregateVersion, Event}
 import io.reactivecqrs.api.id.AggregateId
+import io.reactivecqrs.api.{AggregateType, AggregateVersion, Event}
 import io.reactivecqrs.core.aggregaterepository.IdentifiableEvent
 import io.reactivecqrs.core.eventbus.EventsBusActor.SubscribedForEvents
-import io.reactivecqrs.core.projection.Subscribable.{SubscribeForAggregateInfoUpdates, CancelInfoSubscriptions, InfoSubscriptionsCanceled, SubscribedForAggregateInfo}
-import org.scalatest.{BeforeAndAfter, GivenWhenThen, FeatureSpecLike}
+import io.reactivecqrs.core.projection.Subscribable.{CancelProjectionSubscriptions, SubscriptionUpdated, ProjectionSubscriptionsCancelled, SubscribedForProjectionUpdates}
+import org.scalatest.{BeforeAndAfter, FeatureSpecLike, GivenWhenThen}
+
 import scala.concurrent.duration._
+
 
 case class StringEvent(aggregate: String) extends Event[String]
 
-class SimpleProjection(val eventBusActor: ActorRef) extends ProjectionActor with Subscribable[String] {
-  override protected def receiveQuery: Receive = LoggingReceive {
+case class SubscribeForAll(subscriptionCode: String, listener: ActorRef)
+
+class SimpleProjection(val eventBusActor: ActorRef) extends ProjectionActor with Subscribable {
+
+  override def receiveSubscriptionRequest: Receive = {
+    case SubscribeForAll(code, listener) => handleSubscribe(code, listener, (s: String) => Some(s))
+  }
+
+  override protected def receiveQuery: Receive = {
     case ref: ActorRef => ref ! "test"
   }
 
   override protected val listeners: List[Listener[Any]] = List(EventListener(handleUpdate))
 
   private def handleUpdate(aggregateId: AggregateId, version: AggregateVersion, event: Event[String]) = {
-    sendUpdate(aggregateId, event.asInstanceOf[StringEvent].aggregate)
+    sendUpdate(event.asInstanceOf[StringEvent].aggregate)
   }
+
 }
 
+class SimpleListener(simpleListenerProbe: TestProbe) extends Actor {
+  private var subscriptionId: Option[String] = None
+  override def receive: Receive = {
+    case SubscribedForProjectionUpdates(code, id) => {
+      subscriptionId = Some(id)
+      simpleListenerProbe.ref ! SubscribedForProjectionUpdates(code, id)
+    }
+    case ProjectionSubscriptionsCancelled(id :: Nil) => {
+      if (subscriptionId.get == id) {
+        subscriptionId = None
+      }
+      simpleListenerProbe.ref ! ProjectionSubscriptionsCancelled(id :: Nil)
+    }
+    case SubscriptionUpdated(id, data) => simpleListenerProbe.ref ! data // TODO validate subscription id?
+    case actor: ActorRef => actor ! CancelProjectionSubscriptions(List(subscriptionId.get))
+  }
+}
 
 class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAndAfter {
   implicit val actorSystem = ActorSystem()
@@ -37,7 +63,7 @@ class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAnd
 
   def fixture = new {
     val eventBusActorStub = actorSystem.actorOf(Props(new Actor {
-      override def receive: Receive = {case _ => ()}
+      override def receive: Receive = { case _ => () }
     }))
 
     val simpleProjectionActor = TestActorRef(Props(new SimpleProjection(eventBusActorStub)))
@@ -45,34 +71,17 @@ class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAnd
     simpleProjectionActor ! SubscribedForEvents("someMessageId", AggregateType(classOf[String].getSimpleName), "someId1")
 
 
-    // use this actor/probe combo for unsubscribing scenarios - the actor is necessary to store subscription id
+    // use this actor/probe combo - the actor is necessary to store subscription id
     val simpleListenerProbe = TestProbe()
+    val simpleListener = actorSystem.actorOf(Props(new SimpleListener(simpleListenerProbe)))
 
-    val simpleListener = actorSystem.actorOf(Props(new Actor {
-      private var subscriptionId: Option[String] = None
-      override def receive: Receive = {
-        case SubscribedForAggregateInfo(code, id) => {
-          subscriptionId = Some(id)
-          simpleListenerProbe.ref ! SubscribedForAggregateInfo(code, id)
-        }
-        case InfoSubscriptionsCanceled(id :: Nil) => {
-          if (subscriptionId.get == id) {
-            subscriptionId = None
-          }
-          simpleListenerProbe.ref ! InfoSubscriptionsCanceled(id :: Nil)
-        }
-        case message: String => simpleListenerProbe.ref ! message
-        case actor: ActorRef => actor ! CancelInfoSubscriptions(List(subscriptionId.get))
-      }
-    }))
-
-    // this is a simple probe - use for no-unsubscribe scenarios
-    val listenerProbe = TestProbe()
+    val secondSimpleListenerProbe = TestProbe()
+    val secondSimpleListener = actorSystem.actorOf(Props(new SimpleListener(secondSimpleListenerProbe)))
   }
 
   val stringType = AggregateType(classOf[String].getSimpleName)
 
-  feature("Can subscribe to events") {
+  feature("Can subscribe to all events") {
 
     scenario("Single listener subscribes and receives updates") {
 
@@ -85,11 +94,11 @@ class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAnd
 
       When("listener subscribes")
 
-      f.simpleProjectionActor ! SubscribeForAggregateInfoUpdates("some code", f.simpleListenerProbe.ref, AggregateId(0))
+      f.simpleProjectionActor ! SubscribeForAll("some code", f.simpleListener)
 
       Then("listener receives subscription id")
 
-      f.simpleListenerProbe.expectMsgAnyClassOf(2 seconds, classOf[SubscribedForAggregateInfo])
+      f.simpleListenerProbe.expectMsgAnyClassOf(2 seconds, classOf[SubscribedForProjectionUpdates])
 
       When("projection is updated")
 
@@ -105,13 +114,13 @@ class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAnd
 
       Given("a projection and subscribed listener")
 
-      f.simpleListenerProbe.send(f.simpleProjectionActor, SubscribeForAggregateInfoUpdates("some code", f.simpleListener, AggregateId(0)))
-      f.simpleListenerProbe.expectMsgAnyClassOf(2 seconds, classOf[SubscribedForAggregateInfo])
+      f.simpleListenerProbe.send(f.simpleProjectionActor, SubscribeForAll("some code", f.simpleListener))
+      f.simpleListenerProbe.expectMsgAnyClassOf(2 seconds, classOf[SubscribedForProjectionUpdates])
 
       When("listener unsubscribes")
 
       f.simpleListenerProbe.send(f.simpleListener, f.simpleProjectionActor)
-      f.simpleListenerProbe.expectMsgAnyClassOf(2 seconds, classOf[InfoSubscriptionsCanceled])
+      f.simpleListenerProbe.expectMsgAnyClassOf(2 seconds, classOf[ProjectionSubscriptionsCancelled])
 
       When("projection is updated")
 
@@ -129,11 +138,11 @@ class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAnd
 
       When("listener one subscribes")
 
-      f.simpleProjectionActor ! SubscribeForAggregateInfoUpdates("some code", f.simpleListenerProbe.ref, AggregateId(0))
+      f.simpleProjectionActor ! SubscribeForAll("some code", f.simpleListener)
 
       Then("listener one receives subscription id")
 
-      f.simpleListenerProbe.expectMsgAnyClassOf(2 seconds, classOf[SubscribedForAggregateInfo])
+      f.simpleListenerProbe.expectMsgAnyClassOf(2 seconds, classOf[SubscribedForProjectionUpdates])
 
       When("projection is updated")
 
@@ -142,15 +151,15 @@ class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAnd
       Then("only listener one receives update")
 
       f.simpleListenerProbe.expectMsg(2 seconds, "some string")
-      f.listenerProbe.expectNoMsg()
+      f.secondSimpleListenerProbe.expectNoMsg()
 
       When("listener two subscribes")
 
-      f.simpleProjectionActor ! SubscribeForAggregateInfoUpdates("some code", f.listenerProbe.ref, AggregateId(0))
+      f.simpleProjectionActor ! SubscribeForAll("some code", f.secondSimpleListener)
 
       Then("listener two receives subscription id")
 
-      f.listenerProbe.expectMsgAnyClassOf(2 seconds, classOf[SubscribedForAggregateInfo])
+      f.secondSimpleListenerProbe.expectMsgAnyClassOf(2 seconds, classOf[SubscribedForProjectionUpdates])
 
       When("projection is updated")
 
@@ -159,7 +168,7 @@ class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAnd
       Then("both listeners receive update")
 
       f.simpleListenerProbe.expectMsg(2 seconds, "another string")
-      f.listenerProbe.expectMsg(2 seconds, "another string")
+      f.secondSimpleListenerProbe.expectMsg(2 seconds, "another string")
     }
 
     scenario("Multiple listeners subscribe, some unsubscribe") {
@@ -169,24 +178,24 @@ class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAnd
 
       When("listener one subscribes")
 
-      f.simpleProjectionActor ! SubscribeForAggregateInfoUpdates("some code", f.simpleListener, AggregateId(0))
+      f.simpleProjectionActor ! SubscribeForAll("some code", f.simpleListener)
 
       Then("listener one receives subscription id")
 
-      f.simpleListenerProbe.expectMsgAnyClassOf(2 seconds, classOf[SubscribedForAggregateInfo])
+      f.simpleListenerProbe.expectMsgAnyClassOf(2 seconds, classOf[SubscribedForProjectionUpdates])
 
       When("listener two subscribes")
 
-      f.simpleProjectionActor ! SubscribeForAggregateInfoUpdates("some code", f.listenerProbe.ref, AggregateId(0))
+      f.simpleProjectionActor ! SubscribeForAll("some code", f.secondSimpleListener)
 
       Then("listener two receives subscription id")
 
-      f.listenerProbe.expectMsgAnyClassOf(2 seconds, classOf[SubscribedForAggregateInfo])
+      f.secondSimpleListenerProbe.expectMsgAnyClassOf(2 seconds, classOf[SubscribedForProjectionUpdates])
 
       When("listener unsubscribes")
 
       f.simpleListener ! f.simpleProjectionActor
-      f.simpleListenerProbe.expectMsgAnyClassOf(2 seconds, classOf[InfoSubscriptionsCanceled])
+      f.simpleListenerProbe.expectMsgAnyClassOf(2 seconds, classOf[ProjectionSubscriptionsCancelled])
 
       When("projection is updated")
 
@@ -195,7 +204,7 @@ class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAnd
       Then("only listener two receives update")
 
       f.simpleListenerProbe.expectNoMsg(2 seconds)
-      f.listenerProbe.expectMsg(2 seconds, "another string")
+      f.secondSimpleListenerProbe.expectMsg(2 seconds, "another string")
     }
   }
 }
