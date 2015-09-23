@@ -46,7 +46,6 @@ trait Subscribable extends ProjectionActor {
 
 
   protected def sendUpdate[DATA: TypeTag](u: DATA) = {
-    val tt = typeTag[DATA].toString()
     typeToSubscriptionId.get(typeTag[DATA].toString()) foreach { subscriptions =>
       for {
         subscriptionId: String <- subscriptions
