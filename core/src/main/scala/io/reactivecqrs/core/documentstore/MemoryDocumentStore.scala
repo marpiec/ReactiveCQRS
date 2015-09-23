@@ -3,49 +3,62 @@ package io.reactivecqrs.core.documentstore
 import java.lang.reflect.Field
 
 import scala.collection.parallel.mutable
-import scala.reflect.runtime.universe._
 
-class MemoryDocumentStore[T <: AnyRef : TypeTag, M <: AnyRef : TypeTag] extends DocumentStore[T,M] {
+sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
   val store = mutable.ParHashMap[Long, DocumentWithMetadata[T,M]]()
 
 
-  override def findDocumentByPath(path: Seq[String], value: String): Map[Long, DocumentWithMetadata[T,M]] = {
+  def findDocumentByPath(path: Seq[String], value: String): Map[Long, DocumentWithMetadata[T,M]] = {
     store.filter(keyValuePair => matches(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].document, path, value)).seq.toMap
   }
 
-  override def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String]): Map[Long, DocumentWithMetadata[T,M]] = {
+  def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String]): Map[Long, DocumentWithMetadata[T,M]] = {
     store.filter(keyValuePair => matchesMultiple(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].document, path, values)).seq.toMap
   }
 
-
-  override def findDocumentByPathWithOneArray[V](array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
-    store.filter(keyValuePair => arrayMatch(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].document, array).exists(matches(_, objectPath, value))).seq.toMap
-  }
-
-  override def findDocumentByMetadataPathWithOneArray[V](array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
-    store.filter(keyValuePair => arrayMatch(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].metadata, array).exists(matches(_, objectPath, value))).seq.toMap
+  def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
+    store.filter(keyValuePair => arrayMatchSeq(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].document, arrayPath).exists(matches(_, objectPath, value))).seq.toMap
   }
 
 
-  override def findAll(): Map[Long, DocumentWithMetadata[T,M]] = {
+  def findDocumentByMetadataObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
+    store.filter(keyValuePair => arrayMatchSeq(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].metadata, arrayPath).exists(matches(_, objectPath, value))).seq.toMap
+  }
+
+
+  def findAll(): Map[Long, DocumentWithMetadata[T,M]] = {
     store.seq.toMap
   }
 
-  private def arrayMatch(element: AnyRef, array: String): Seq[AnyRef] = {
-    val field = element.getClass.getDeclaredField(array)
-    val innerElement: AnyRef = getPrivateValue(element, field)
-
-    innerElement match {
-      case seq: Seq[_] => seq.asInstanceOf[Seq[AnyRef]]
-      case _ => Seq()
+  protected def arrayMatchSeq(element: AnyRef, arrayPath: Seq[String]): Seq[AnyRef] = {
+    val innerElement: AnyRef = element match {
+      case None if arrayPath.head == "value" => return Seq()
+      case Some(_) if arrayPath.head == "value" => element.asInstanceOf[Option[AnyRef]].get
+      case _ =>
+        val field = element.getClass.getDeclaredField(arrayPath.head)
+        getPrivateValue(element, field)
+    }
+    val tail = arrayPath.tail
+    if (tail.isEmpty) {
+      innerElement match {
+        case seq: Seq[_] => seq.asInstanceOf[Seq[AnyRef]]
+        case _ => Seq()
+      }
+    } else {
+      arrayMatchSeq(innerElement, tail)
     }
   }
 
-  private def matches[V](element: AnyRef, path: Seq[String], value: V): Boolean = {
+  protected def matches[V](element: AnyRef, path: Seq[String], value: V): Boolean = {
     try {
-      val field = element.getClass.getDeclaredField(path.head)
-      val innerElement: AnyRef = getPrivateValue(element, field)
+      val innerElement: AnyRef = element match {
+        case None if path.head == "value" => return false
+        case Some(_) if path.head == "value" => element.asInstanceOf[Option[AnyRef]].get
+        case _ =>
+          val field = element.getClass.getDeclaredField(path.head)
+          getPrivateValue(element, field)
+      }
       val tail = path.tail
       if(tail.isEmpty) {
         innerElement.toString == value.toString
@@ -57,10 +70,15 @@ class MemoryDocumentStore[T <: AnyRef : TypeTag, M <: AnyRef : TypeTag] extends 
     }
   }
 
-  private def matchesMultiple(element: AnyRef, path: Seq[String], values: Set[String]): Boolean = {
+  protected def matchesMultiple(element: AnyRef, path: Seq[String], values: Set[String]): Boolean = {
     try {
-      val field = element.getClass.getDeclaredField(path.head)
-      val innerElement: AnyRef = getPrivateValue(element, field)
+      val innerElement: AnyRef = element match {
+        case None if path.head == "value" => return false
+        case Some(_) if path.head == "value" => element.asInstanceOf[Option[AnyRef]].get
+        case _ =>
+          val field = element.getClass.getDeclaredField(path.head)
+          getPrivateValue(element, field)
+      }
       val tail = path.tail
       if(tail.isEmpty) {
         values.contains(innerElement.toString)
@@ -84,20 +102,13 @@ class MemoryDocumentStore[T <: AnyRef : TypeTag, M <: AnyRef : TypeTag] extends 
     value
   }
 
-  override def getDocument(key: Long): Option[DocumentWithMetadata[T,M]] = store.get(key)
+  def getDocument(key: Long): Option[DocumentWithMetadata[T,M]] = store.get(key)
 
-  override def removeDocument(key: Long): Unit = store -= key
+  def removeDocument(key: Long): Unit = store -= key
 
-  override def getDocuments(keys: List[Long]): Map[Long, DocumentWithMetadata[T,M]] = (store filterKeys keys.toSet).seq.toMap
+  def getDocuments(keys: List[Long]): Map[Long, DocumentWithMetadata[T,M]] = (store filterKeys keys.toSet).seq.toMap
 
-  override def insertDocument(key: Long, document: T, metadata: M): Unit =
-    if (store.contains(key)) {
-      throw new IllegalStateException("Attempting to re-insert document with key " + key)
-    } else {
-      store += key -> DocumentWithMetadata[T, M](document, metadata)
-    }
-
-  override def updateDocument(key: Long, document: T, metadata: M): Unit = {
+  def updateDocument(key: Long, document: T, metadata: M): Unit = {
     if (store.contains(key)) {
       store += key -> DocumentWithMetadata[T, M](document, metadata)
     } else {
@@ -106,4 +117,32 @@ class MemoryDocumentStore[T <: AnyRef : TypeTag, M <: AnyRef : TypeTag] extends 
   }
 
 
+}
+
+class MemoryDocumentStore[T <: AnyRef, M <: AnyRef] extends DocumentStore[T,M] with MemoryDocumentStoreTrait[T, M] {
+
+  def insertDocument(key: Long, document: T, metadata: M): Unit =
+    if (store.contains(key)) {
+      throw new IllegalStateException("Attempting to re-insert document with key " + key)
+    } else {
+      store += key -> DocumentWithMetadata[T, M](document, metadata)
+    }
+}
+
+class MemoryDocumentStoreAutoId[T <: AnyRef, M <: AnyRef] extends DocumentStoreAutoId[T,M] with MemoryDocumentStoreTrait[T, M] {
+
+  val random = new scala.util.Random(System.nanoTime)
+
+  private def generateNextId: Long = {
+    var id: Long = 0
+    do {
+      id = random.nextLong()
+    } while (store.contains(id))
+    id
+  }
+
+  def insertDocument(document: T, metadata: M): Unit = {
+    val key = generateNextId
+    store += key -> DocumentWithMetadata[T, M](document, metadata)
+  }
 }

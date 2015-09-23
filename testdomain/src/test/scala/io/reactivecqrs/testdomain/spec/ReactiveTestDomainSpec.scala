@@ -4,7 +4,7 @@ import akka.actor.{ActorRef, Props}
 import akka.serialization.SerializationExtension
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.UserId
+import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
 import io.reactivecqrs.core.documentstore.MemoryDocumentStore
 import io.reactivecqrs.core.eventbus.{EventsBusActor, PostgresEventBusState}
@@ -44,7 +44,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val shoppingCartCommandBus: ActorRef = system.actorOf(
       AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStoreState, eventBusActor), "ShoppingCartCommandBus")
 
-    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusActor, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionEventsBased")
+    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusActor, shoppingCartCommandBus, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionEventsBased")
     val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusActor, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionAggregatesBased")
 
     Thread.sleep(100) // Wait until all subscriptions in place
@@ -55,6 +55,11 @@ class ReactiveTestDomainSpec extends CommonSpec {
       val success = result.asInstanceOf[SuccessResponse]
 
       val shoppingCartTry:Try[Aggregate[ShoppingCart]] = shoppingCartCommandBus ?? GetAggregate(success.aggregateId)
+      shoppingCartTry.get
+    }
+
+    def getShoppingCartForVersion(aggregateId: AggregateId, aggregateVersion: AggregateVersion): Aggregate[ShoppingCart] = {
+      val shoppingCartTry:Try[Aggregate[ShoppingCart]] = shoppingCartCommandBus ?? GetAggregateForVersion(aggregateId, aggregateVersion)
       shoppingCartTry.get
     }
   }
@@ -70,19 +75,19 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
       step("Create shopping cart")
 
-      var shoppingCart = shoppingCartCommand(CreateShoppingCart(userId,"Groceries"))
-      shoppingCart mustBe Aggregate(shoppingCart.id, AggregateVersion(1), Some(ShoppingCart("Groceries", Vector())))
+      var shoppingCartA = shoppingCartCommand(CreateShoppingCart(userId,"Groceries"))
+      shoppingCartA mustBe Aggregate(shoppingCartA.id, AggregateVersion(1), Some(ShoppingCart("Groceries", Vector())))
 
       step("Add items to cart")
 
-      shoppingCart = shoppingCartCommand(AddItem(userId, shoppingCart.id, AggregateVersion(1), "apples"))
-      shoppingCart = shoppingCartCommand(AddItem(userId, shoppingCart.id, AggregateVersion(2), "oranges"))
-      shoppingCart mustBe Aggregate(shoppingCart.id, AggregateVersion(3), Some(ShoppingCart("Groceries", Vector(Item(1, "apples"), Item(2, "oranges")))))
+      shoppingCartA = shoppingCartCommand(AddItem(userId, shoppingCartA.id, AggregateVersion(1), "apples"))
+      shoppingCartA = shoppingCartCommand(AddItem(userId, shoppingCartA.id, AggregateVersion(2), "oranges"))
+      shoppingCartA mustBe Aggregate(shoppingCartA.id, AggregateVersion(3), Some(ShoppingCart("Groceries", Vector(Item(1, "apples"), Item(2, "oranges")))))
 
       step("Remove items from cart")
 
-      shoppingCart = shoppingCartCommand(RemoveItem(userId, shoppingCart.id, AggregateVersion(3), 1))
-      shoppingCart mustBe Aggregate(shoppingCart.id, AggregateVersion(4), Some(ShoppingCart("Groceries", Vector(Item(2, "oranges")))))
+      shoppingCartA = shoppingCartCommand(RemoveItem(userId, shoppingCartA.id, AggregateVersion(3), 1))
+      shoppingCartA mustBe Aggregate(shoppingCartA.id, AggregateVersion(4), Some(ShoppingCart("Groceries", Vector(Item(2, "oranges")))))
 
 
       Thread.sleep(300) // Projections are eventually consistent, so let's wait until they are consistent
@@ -96,23 +101,26 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
       step("Undo removing items from cart")
 
-      shoppingCart = shoppingCartCommand(UndoShoppingCartChange(userId, shoppingCart.id, AggregateVersion(4), 1))
-      shoppingCart mustBe Aggregate(shoppingCart.id, AggregateVersion(5), Some(ShoppingCart("Groceries", Vector(Item(1, "apples"), Item(2, "oranges")))))
+      shoppingCartA = shoppingCartCommand(UndoShoppingCartChange(userId, shoppingCartA.id, AggregateVersion(4), 1))
+      shoppingCartA mustBe Aggregate(shoppingCartA.id, AggregateVersion(5), Some(ShoppingCart("Groceries", Vector(Item(1, "apples"), Item(2, "oranges")))))
 
       step("Remove different items from cart")
 
-      shoppingCart = shoppingCartCommand(RemoveItem(userId, shoppingCart.id, AggregateVersion(5), 2))
-      shoppingCart mustBe Aggregate(shoppingCart.id, AggregateVersion(6), Some(ShoppingCart("Groceries", Vector(Item(1, "apples")))))
+      shoppingCartA = shoppingCartCommand(RemoveItem(userId, shoppingCartA.id, AggregateVersion(5), 2))
+      shoppingCartA mustBe Aggregate(shoppingCartA.id, AggregateVersion(6), Some(ShoppingCart("Groceries", Vector(Item(1, "apples")))))
 
       step("Duplicate some previous cart")
 
-      var shoppingCartB = shoppingCartCommand(DuplicateShoppingCart(userId, shoppingCart.id, AggregateVersion(3)))
-      shoppingCartB.id mustNot be(shoppingCart.id)
+      var shoppingCartB = shoppingCartCommand(DuplicateShoppingCart(userId, shoppingCartA.id, AggregateVersion(3)))
+      shoppingCartB.id mustNot be(shoppingCartA.id)
       shoppingCartB mustBe Aggregate(shoppingCartB.id, AggregateVersion(1), Some(ShoppingCart("Groceries", Vector(Item(1, "apples"), Item(2, "oranges")))))
 
       shoppingCartB = shoppingCartCommand(AddItem(userId, shoppingCartB.id, AggregateVersion(1), "tomatoes"))
       shoppingCartB mustBe Aggregate(shoppingCartB.id, AggregateVersion(2), Some(ShoppingCart("Groceries", Vector(Item(1, "apples"), Item(2, "oranges"), Item(3, "tomatoes")))))
 
+      Then("We can get old version of shopping cart A")
+      shoppingCartA = getShoppingCartForVersion(shoppingCartA.id, AggregateVersion(4))
+      shoppingCartA mustBe Aggregate(shoppingCartA.id, AggregateVersion(4), Some(ShoppingCart("Groceries", Vector(Item(2, "oranges")))))
 
     }
 

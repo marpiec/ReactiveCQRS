@@ -6,7 +6,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEvent}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
-import io.reactivecqrs.core.util.RandomUtil
+import io.reactivecqrs.core.util.{ActorLogging, RandomUtil}
 
 
 object EventsBusActor {
@@ -44,7 +44,7 @@ case class EventSubscription(subscriptionId: String, aggregateType: AggregateTyp
 case class AggregateSubscription(subscriptionId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier) extends Subscription
 case class AggregateWithEventSubscription(subscriptionId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier) extends Subscription
 
-class EventsBusActor(eventBus: EventBusState) extends Actor {
+class EventsBusActor(eventBus: EventBusState) extends Actor with ActorLogging {
 
   private val randomUtil = new RandomUtil
   
@@ -52,8 +52,8 @@ class EventsBusActor(eventBus: EventBusState) extends Actor {
   private var subscriptionsByIds = Map[String, Subscription]()
 
 
-  override def receive: Receive = LoggingReceive {
-    case SubscribeForEvents(messageId, aggregateType, subscriber, classifier) => handleSubscribeForEvents(messageId, aggregateType, subscriber, classifier)
+  override def receive: Receive = logReceive {
+  case SubscribeForEvents(messageId, aggregateType, subscriber, classifier) => handleSubscribeForEvents(messageId, aggregateType, subscriber, classifier)
     case SubscribeForAggregates(messageId, aggregateType, subscriber, classifier) => handleSubscribeForAggregates(messageId, aggregateType, subscriber, classifier)
     case SubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, classifier) => handleSubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, classifier)
     case CancelSubscriptions(subscriptionsIds) => handleCancelSubscription(sender(), subscriptionsIds)
@@ -133,7 +133,7 @@ class EventsBusActor(eventBus: EventBusState) extends Actor {
 
 
 
-//    Future { // FIXME Future is to ensure non blocking access to db, but it broke order in which events for the same aggreagte were persisted, maybe this should ba actor per aggregate instead of future?
+//    Future { // FIXME Future is to ensure non blocking access to db, but it broke order in which events for the same aggregate were persisted, maybe there should be an actor per aggregate instead of a future?
       eventBus.persistMessages(messagesToSend)
       respondTo ! PublishEventsAck(events.map(event => EventIdentifier(event.aggregateId, event.version)))
       self ! MessagesPersisted(aggregateType, messagesToSend)
