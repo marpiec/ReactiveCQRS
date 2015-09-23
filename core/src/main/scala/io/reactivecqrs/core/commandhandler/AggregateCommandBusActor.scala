@@ -12,6 +12,7 @@ import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.AggregateAct
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
+import io.reactivecqrs.core.util.ActorLogging
 
 import scala.collection.mutable
 import scala.concurrent.duration._
@@ -47,7 +48,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
                                      val eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
                                                 val eventBus: ActorRef,
                                                         val initialState: () => AGGREGATE_ROOT)
-                                                        (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor {
+                                                        (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor with ActorLogging {
 
 
 
@@ -65,7 +66,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private val aggregatesActors = mutable.HashMap[Long, AggregateActors]()
 
 
-  override def receive: Receive = LoggingReceive {
+  override def receive: Receive = logReceive {
     case fce: FirstCommand[_,_] => routeFirstCommand(fce.asInstanceOf[FirstCommand[AGGREGATE_ROOT, _]])
     case cce: ConcurrentCommand[_,_] => routeConcurrentCommand(cce.asInstanceOf[ConcurrentCommand[AGGREGATE_ROOT, _]])
     case ce: Command[_,_] => routeCommand(ce.asInstanceOf[Command[AGGREGATE_ROOT, _]])

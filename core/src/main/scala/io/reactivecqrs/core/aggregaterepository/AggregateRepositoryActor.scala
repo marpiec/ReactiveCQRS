@@ -4,8 +4,8 @@ import _root_.io.reactivecqrs.api._
 import _root_.io.reactivecqrs.core.commandhandler.ResultAggregator
 import _root_.io.reactivecqrs.core.errors.AggregateConcurrentModificationError
 import _root_.io.reactivecqrs.core.eventstore.EventStoreState
-import akka.actor.{PoisonPill, Actor, ActorRef}
-import akka.event.LoggingReceive
+import _root_.io.reactivecqrs.core.util.ActorLogging
+import akka.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
 
@@ -37,7 +37,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
                                                          eventsBus: ActorRef,
                                                          eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
                                                          initialState: () => AGGREGATE_ROOT,
-                                                         singleReadForVersionOnly: Option[AggregateVersion]) extends Actor {
+                                                         singleReadForVersionOnly: Option[AggregateVersion]) extends Actor with ActorLogging {
 
   import AggregateRepositoryActor._
 
@@ -71,7 +71,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
 
 
 
-  override def receive = LoggingReceive {
+  override def receive = logReceive {
     case ep: EventsPersisted[_] =>
       if(ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.exists(_.event.isInstanceOf[UndoEvent[_]]) ||
         ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.exists(_.event.isInstanceOf[DuplicationEvent[_]])) {
