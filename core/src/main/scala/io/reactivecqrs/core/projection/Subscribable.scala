@@ -14,7 +14,7 @@ object Subscribable {
 
   case class ProjectionSubscriptionsCancelled(subscriptions: List[String])
 
-  case class SubscriptionUpdated[UPDATE](subscriptionId: String, data: UPDATE)
+  case class SubscriptionUpdated[UPDATE, METADATA](subscriptionId: String, data: UPDATE, metadata: METADATA)
 }
 
 trait Subscribable extends ProjectionActor {
@@ -32,7 +32,7 @@ trait Subscribable extends ProjectionActor {
   private val typeToSubscriptionId = mutable.HashMap[String, List[String]]()
 
 
-  protected def handleSubscribe[DATA: TypeTag, UPDATE](code: String, listener: ActorRef, filter: (DATA) => Option[UPDATE]) = {
+  protected def handleSubscribe[DATA: TypeTag, UPDATE, METADATA](code: String, listener: ActorRef, filter: (DATA) => Option[(UPDATE, METADATA)]) = {
     val subscriptionId = generateNextSubscriptionId
     val typeTagString = typeTag[DATA].toString()
 
@@ -50,9 +50,9 @@ trait Subscribable extends ProjectionActor {
       for {
         subscriptionId: String <- subscriptions
         listener: ActorRef <- subscriptionIdToListener.get(subscriptionId)
-        acceptor <- subscriptionIdToAcceptor.get(subscriptionId)
-        result <- acceptor.asInstanceOf[DATA => Option[_]](u)
-      } yield listener ! SubscriptionUpdated(subscriptionId, result)
+        filter <- subscriptionIdToAcceptor.get(subscriptionId)
+        result <- filter.asInstanceOf[DATA => Option[(_, _)]](u)
+      } yield listener ! SubscriptionUpdated(subscriptionId, result._1, result._2)
     }
   }
 

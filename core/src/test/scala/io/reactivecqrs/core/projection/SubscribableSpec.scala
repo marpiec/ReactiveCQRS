@@ -8,6 +8,7 @@ import akka.util.Timeout
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.api.{AggregateType, AggregateVersion, Event}
 import io.reactivecqrs.core.aggregaterepository.IdentifiableEvent
+import io.reactivecqrs.core.documentstore.NothingMetadata
 import io.reactivecqrs.core.eventbus.EventsBusActor.SubscribedForEvents
 import io.reactivecqrs.core.projection.Subscribable.{CancelProjectionSubscriptions, SubscriptionUpdated, ProjectionSubscriptionsCancelled, SubscribedForProjectionUpdates}
 import org.scalatest.{BeforeAndAfter, FeatureSpecLike, GivenWhenThen}
@@ -22,7 +23,7 @@ case class SubscribeForAll(subscriptionCode: String, listener: ActorRef)
 class SimpleProjection(val eventBusActor: ActorRef) extends ProjectionActor with Subscribable {
 
   override def receiveSubscriptionRequest: Receive = {
-    case SubscribeForAll(code, listener) => handleSubscribe(code, listener, (s: String) => Some(s))
+    case SubscribeForAll(code, listener) => handleSubscribe(code, listener, (s: String) => Some(s, NothingMetadata()))
   }
 
   override protected def receiveQuery: Receive = {
@@ -50,7 +51,7 @@ class SimpleListener(simpleListenerProbe: TestProbe) extends Actor {
       }
       simpleListenerProbe.ref ! ProjectionSubscriptionsCancelled(id :: Nil)
     }
-    case SubscriptionUpdated(id, data) => simpleListenerProbe.ref ! data // TODO validate subscription id?
+    case SubscriptionUpdated(id, data, metadata) => simpleListenerProbe.ref ! data // TODO validate subscription id?
     case actor: ActorRef => actor ! CancelProjectionSubscriptions(List(subscriptionId.get))
   }
 }
