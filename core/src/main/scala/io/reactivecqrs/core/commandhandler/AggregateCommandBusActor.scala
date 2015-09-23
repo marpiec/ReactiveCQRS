@@ -7,7 +7,7 @@ import akka.util.Timeout
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.GetAggregateRoot
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRootForVersion, GetAggregateRoot}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.AggregateActors
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
 import io.reactivecqrs.core.eventstore.EventStoreState
@@ -70,6 +70,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     case cce: ConcurrentCommand[_,_] => routeConcurrentCommand(cce.asInstanceOf[ConcurrentCommand[AGGREGATE_ROOT, _]])
     case ce: Command[_,_] => routeCommand(ce.asInstanceOf[Command[AGGREGATE_ROOT, _]])
     case GetAggregate(id) => routeGetAggregateRoot(id)
+    case GetAggregateForVersion(id, version) => routeGetAggregateRootForVersion(id, version)
     case m => throw new IllegalArgumentException("Cannot handle this kind of message: " + m + " class: " + m.getClass)
   }
 
@@ -104,11 +105,17 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
   private def getOrCreateAggregateRepositoryActor(aggregateId: AggregateId): ActorRef = {
     context.child(aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong).getOrElse(
-      context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventBus, eventHandlers, initialState)),
+      context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventBus, eventHandlers, initialState, None)),
         aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong)
     )
   }
 
+  private def getOrCreateAggregateRepositoryActorForVersion(aggregateId: AggregateId, aggregateVersion: AggregateVersion): ActorRef = {
+    context.child(aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong+"_"+aggregateVersion.asInt).getOrElse(
+      context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventBus, eventHandlers, initialState, Some(aggregateVersion))),
+        aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong+"_"+aggregateVersion.asInt)
+    )
+  }
 
 
   private def routeConcurrentCommand[RESPONSE](command: ConcurrentCommand[AGGREGATE_ROOT, RESPONSE]): Unit = {
@@ -136,6 +143,13 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     val aggregateRepository = getOrCreateAggregateRepositoryActor(id)
 
     aggregateRepository ! GetAggregateRoot(respondTo)
+  }
+
+  private def routeGetAggregateRootForVersion(id: AggregateId, version: AggregateVersion): Unit = {
+    val respondTo = sender()
+    val aggregateRepository = getOrCreateAggregateRepositoryActorForVersion(id, version)
+
+    aggregateRepository ! GetAggregateRootForVersion(respondTo, version)
   }
 
   private def takeNextAggregateId: AggregateId = {

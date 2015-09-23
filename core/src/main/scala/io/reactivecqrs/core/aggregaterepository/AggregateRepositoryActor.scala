@@ -4,7 +4,7 @@ import _root_.io.reactivecqrs.api._
 import _root_.io.reactivecqrs.core.commandhandler.ResultAggregator
 import _root_.io.reactivecqrs.core.errors.AggregateConcurrentModificationError
 import _root_.io.reactivecqrs.core.eventstore.EventStoreState
-import akka.actor.{Actor, ActorRef}
+import akka.actor.{PoisonPill, Actor, ActorRef}
 import akka.event.LoggingReceive
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
@@ -17,6 +17,7 @@ import scala.util.{Failure, Success}
 
 object AggregateRepositoryActor {
   case class GetAggregateRoot(respondTo: ActorRef)
+  case class GetAggregateRootForVersion(respondTo: ActorRef, version: AggregateVersion)
 
   case class PersistEvents[AGGREGATE_ROOT](respondTo: ActorRef,
                                             aggregateId: AggregateId,
@@ -36,7 +37,8 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
                                                          eventStore: EventStoreState,
                                                          eventsBus: ActorRef,
                                                          eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
-                                                         initialState: () => AGGREGATE_ROOT) extends Actor {
+                                                         initialState: () => AGGREGATE_ROOT,
+                                                         singleReadForVersionOnly: Option[AggregateVersion]) extends Actor {
 
   import AggregateRepositoryActor._
 
@@ -52,7 +54,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
     //TODO make it future
     version = AggregateVersion.ZERO
     aggregateRoot = initialState()
-    eventStore.readAndProcessAllEvents[AGGREGATE_ROOT](id)(handleEvent)
+    eventStore.readAndProcessEvents[AGGREGATE_ROOT](id, singleReadForVersionOnly)(handleEvent)
 
     eventsToPublish = eventStore.readEventsToPublishForAggregate[AGGREGATE_ROOT](id)
     resendEventsToPublish()
@@ -105,6 +107,10 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
       respondTo ! Failure(new NoEventsForAggregateException(id))
     } else {
       respondTo ! Success(Aggregate[AGGREGATE_ROOT](id, version, Some(aggregateRoot)))
+    }
+    
+    if(singleReadForVersionOnly.isDefined) {
+      self ! PoisonPill
     }
 
   }

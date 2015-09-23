@@ -65,79 +65,25 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
 
   }
 
-
-  def readAndProcessAllEventsWithoutUndo[AGGREGATE_ROOT](aggregateId: AggregateId)(eventHandler: Event[AGGREGATE_ROOT] => Unit): Unit = {
-
-    DB.readOnly { implicit session =>
-      sql"""SELECT event_type, event
-            | FROM events
-            | WHERE aggregate_id = ?
-            | ORDER BY version""".stripMargin.bind(aggregateId.asLong).foreach { rs =>
-
-        val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(2), rs.string(1))
-        eventHandler(event)
-      }
-    }
-  }
-
-  def readAndProcessAllEventsWithoutUndoWithBaseAggregates[AGGREGATE_ROOT](aggregateId: AggregateId)(eventHandler: Event[AGGREGATE_ROOT] => Unit): Unit = {
+  override def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, version: Option[AggregateVersion])(eventHandler: (Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit = {
 
     DB.readOnly { implicit session =>
-      sql"""SELECT event_type, event
-             FROM events
-             JOIN aggregates ON events.aggregate_id = aggregates.base_id AND events.version <= aggregates.base_version
-             WHERE aggregates.id = ? ORDER BY aggregates.base_order, version""".stripMargin.bind(aggregateId.asLong).foreach { rs =>
-
-        val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(2), rs.string(1))
-        eventHandler(event)
-      }
-    }
-  }
-
-  def readAndProcessAllEventsWithoutBaseAggregates[AGGREGATE_ROOT](aggregateId: AggregateId)(eventHandler: (Event[AGGREGATE_ROOT], Boolean) => Unit): Unit = {
-
-    DB.readOnly { implicit session =>
-      sql"""SELECT event_type, event, noop_events.id IS NOT NULL
-           | FROM events
-           | LEFT JOIN noop_events ON events.id = noop_events.id
-           | WHERE aggregate_id = ?
-           | ORDER BY version""".stripMargin.bind(aggregateId.asLong).foreach { rs =>
-
-        val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(2), rs.string(1))
-        eventHandler(event, rs.boolean(3))
-      }
-    }
-  }
-
-  override def readAndProcessAllEvents[AGGREGATE_ROOT](aggregateId: AggregateId)(eventHandler: (Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit = {
-
-    DB.readOnly { implicit session =>
-      sql"""SELECT event_type, event, events.aggregate_id, noop_events.id IS NOT NULL
+      sql"""SELECT event_type, event, events.version, events.aggregate_id, noop_events.id IS NOT NULL
              FROM events
              JOIN aggregates ON events.aggregate_id = aggregates.base_id AND events.version <= aggregates.base_version
              LEFT JOIN noop_events ON events.id = noop_events.id
              WHERE aggregates.id = ? ORDER BY aggregates.base_order, version""".stripMargin.bind(aggregateId.asLong).foreach { rs =>
 
         val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(2), rs.string(1))
-        eventHandler(event, AggregateId(rs.long(3)), rs.boolean(4))
+        val id = AggregateId(rs.long(4))
+        val eventVersion = rs.long(3)
+        if(version.isEmpty || id != aggregateId || eventVersion <= version.get.asInt) {
+          eventHandler(event, id, rs.boolean(5))
+        } // otherwise it's to new event, TODO optimise as it reads all events from database, also those not needed here
       }
     }
   }
-
-  def readAndProcessAllEventsForVersion[AGGREGATE_ROOT](aggregateId: AggregateId, version: AggregateVersion)(eventHandler: Event[AGGREGATE_ROOT] => Unit): Unit = {
-
-    DB.readOnly { implicit session =>
-      sql"""SELECT event_type, event
-           | FROM events
-           | LEFT JOIN noop_events ON events.id = noop_events.id AND noop_events.from_version <= ?
-           | WHERE aggregate_id = ? AND version <= ? AND noop_events.id IS NULL
-           | ORDER BY version""".stripMargin.bind(version.asInt, aggregateId.asLong, version.asInt).foreach { rs =>
-
-        val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(2), rs.string(1))
-        eventHandler(event)
-      }
-    }
-  }
+  
 
   override def deletePublishedEventsToPublish(events: Seq[EventIdentifier]): Unit = {
     // TODO optimize SQL query so it will be one query
