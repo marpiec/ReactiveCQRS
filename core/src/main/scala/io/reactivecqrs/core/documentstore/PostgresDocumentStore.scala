@@ -181,58 +181,16 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     } else Map()
   }
 
-  def findDocumentByPathWithOneArray[V](array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
-    findDocumentByPathWithOneArray("document", array, objectPath, value)
+
+  def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
+    findDocumentByObjectInArray("document", arrayPath, objectPath, value)
   }
 
-  def findDocumentByPathWithOneArrayAnywhere[V](arrayPath: Seq[String], objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
-    findDocumentByPathWithOneArrayAnywhere("document", arrayPath, objectPath, value)
+  def findDocumentByMetadataObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
+    findDocumentByObjectInArray("metadata", arrayPath, objectPath, value)
   }
-
-  def findDocumentByMetadataPathWithOneArray[V](array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
-    findDocumentByPathWithOneArray("metadata", array, objectPath, value)
-  }
-
-  protected def findDocumentByPathWithOneArray[V](columnName: String, array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
-    val connection = dbDataSource.getConnection
-
-    //sample query that works:
-    // SELECT id, document FROM projection_process_info WHERE document -> 'setups' @> '[{"hasActiveInstance":true}]';
-    def QUERY(array: String, path: String) =
-      s"SELECT id, document, metadata FROM $projectionTableName WHERE $columnName -> '$array' @> '[$path]'"
-
-    def makeJson(path: Seq[String], value: V): String =
-      path match {
-        case head :: tail => "{\"" + head + "\":" + makeJson(tail, value) + "}"
-        case Nil => value match {
-          case s: String => "\"" + s + "\""
-          case anything => anything.toString
-        }
-      }
-
-    try {
-      val statement = connection.prepareStatement(QUERY(array, makeJson(objectPath, value)))
-      try {
-//        statement.setString(1, value)
-        val resultSet = statement.executeQuery()
-        try {
-          val results = mutable.ListMap[Long, DocumentWithMetadata[T, M]]()
-          while (resultSet.next()) {
-            results += resultSet.getLong(1) -> DocumentWithMetadata[T,M](mpjsons.deserialize[T](resultSet.getString(2)), mpjsons.deserialize[M](resultSet.getString(3)))
-          }
-          results.toMap
-        } finally {
-          resultSet.close()
-        }
-      } finally {
-        statement.close()
-      }
-    } finally {
-      connection.close()
-    }
-  }
-
-  protected def findDocumentByPathWithOneArrayAnywhere[V](columnName: String, array: Seq[String], objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
+  
+  protected def findDocumentByObjectInArray[V](columnName: String, array: Seq[String], objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
     val connection = dbDataSource.getConnection
 
     //sample query that works:

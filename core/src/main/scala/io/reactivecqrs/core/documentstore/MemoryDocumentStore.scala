@@ -3,7 +3,6 @@ package io.reactivecqrs.core.documentstore
 import java.lang.reflect.Field
 
 import scala.collection.parallel.mutable
-import scala.reflect.runtime.universe._
 
 sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
@@ -18,32 +17,18 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     store.filter(keyValuePair => matchesMultiple(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].document, path, values)).seq.toMap
   }
 
-
-  def findDocumentByPathWithOneArray[V](array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
-    store.filter(keyValuePair => arrayMatch(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].document, array).exists(matches(_, objectPath, value))).seq.toMap
-  }
-
-  def findDocumentByPathWithOneArrayAnywhere[V](arrayPath: Seq[String], objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
+  def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
     store.filter(keyValuePair => arrayMatchSeq(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].document, arrayPath).exists(matches(_, objectPath, value))).seq.toMap
   }
 
-  def findDocumentByMetadataPathWithOneArray[V](array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
-    store.filter(keyValuePair => arrayMatch(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].metadata, array).exists(matches(_, objectPath, value))).seq.toMap
+
+  def findDocumentByMetadataObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
+    store.filter(keyValuePair => arrayMatchSeq(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].metadata, arrayPath).exists(matches(_, objectPath, value))).seq.toMap
   }
 
 
   def findAll(): Map[Long, DocumentWithMetadata[T,M]] = {
     store.seq.toMap
-  }
-
-  private def arrayMatch(element: AnyRef, array: String): Seq[AnyRef] = {
-    val field = element.getClass.getDeclaredField(array)
-    val innerElement: AnyRef = getPrivateValue(element, field)
-
-    innerElement match {
-      case seq: Seq[_] => seq.asInstanceOf[Seq[AnyRef]]
-      case _ => Seq()
-    }
   }
 
   protected def arrayMatchSeq(element: AnyRef, arrayPath: Seq[String]): Seq[AnyRef] = {
