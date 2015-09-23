@@ -56,7 +56,6 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
     eventStore.readAndProcessEvents[AGGREGATE_ROOT](id, singleReadForVersionOnly)(handleEvent)
 
     eventsToPublish = eventStore.readEventsToPublishForAggregate[AGGREGATE_ROOT](id)
-    resendEventsToPublish()
   }
 
   private def resendEventsToPublish(): Unit = {
@@ -66,6 +65,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
   }
 
   assureRestoredState()
+  resendEventsToPublish()
 
   context.system.scheduler.schedule(60.seconds, 60.seconds, self, ResendPersistedMessages)(context.dispatcher)
 
