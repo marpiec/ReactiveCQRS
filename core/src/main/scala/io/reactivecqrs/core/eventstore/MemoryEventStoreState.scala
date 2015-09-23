@@ -10,8 +10,8 @@ class MemoryEventStoreState extends EventStoreState {
   private var eventStore: Map[AggregateId, List[Event[_]]] = Map()
   private var eventsToPublish: Map[(AggregateId, Int), Event[_]] = Map()
 
-  
-  def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Unit = {
+
+  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Unit = {
 
     var eventsForAggregate: List[Event[_]] = eventStore.getOrElse(aggregateId, List())
 
@@ -30,12 +30,17 @@ class MemoryEventStoreState extends EventStoreState {
   }
 
 
-  def readAndProcessAllEvents[AGGREGATE_ROOT](aggregateId: AggregateId)(eventHandler: (Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit = {
-    val eventsForAggregate: List[Event[AGGREGATE_ROOT]] = eventStore.getOrElse(aggregateId, List()).asInstanceOf[List[Event[AGGREGATE_ROOT]]]
+  override def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, upToVersion: Option[AggregateVersion])(eventHandler: (Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit = {
+    var eventsForAggregate: List[Event[AGGREGATE_ROOT]] = eventStore.getOrElse(aggregateId, List()).asInstanceOf[List[Event[AGGREGATE_ROOT]]]
+
+    if(upToVersion.isDefined) {
+      eventsForAggregate = eventsForAggregate.take(upToVersion.get.asInt)
+    }
+
     eventsForAggregate.reverse.foreach(eventHandler(_, aggregateId, false))
   }
 
-  def deletePublishedEventsToPublish(events: Seq[EventIdentifier]): Unit = {
+  override def deletePublishedEventsToPublish(events: Seq[EventIdentifier]): Unit = {
 
     events.foreach { event =>
       eventsToPublish -= ((event.aggregateId, event.version.asInt))

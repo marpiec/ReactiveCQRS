@@ -4,8 +4,8 @@ import _root_.io.reactivecqrs.api._
 import _root_.io.reactivecqrs.core.commandhandler.ResultAggregator
 import _root_.io.reactivecqrs.core.errors.AggregateConcurrentModificationError
 import _root_.io.reactivecqrs.core.eventstore.EventStoreState
-import akka.actor.{Actor, ActorRef}
-import akka.event.LoggingReceive
+import _root_.io.reactivecqrs.core.util.ActorLogging
+import akka.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
 
@@ -36,7 +36,8 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
                                                          eventStore: EventStoreState,
                                                          eventsBus: ActorRef,
                                                          eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
-                                                         initialState: () => AGGREGATE_ROOT) extends Actor {
+                                                         initialState: () => AGGREGATE_ROOT,
+                                                         singleReadForVersionOnly: Option[AggregateVersion]) extends Actor with ActorLogging {
 
   import AggregateRepositoryActor._
 
@@ -52,7 +53,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
     //TODO make it future
     version = AggregateVersion.ZERO
     aggregateRoot = initialState()
-    eventStore.readAndProcessAllEvents[AGGREGATE_ROOT](id)(handleEvent)
+    eventStore.readAndProcessEvents[AGGREGATE_ROOT](id, singleReadForVersionOnly)(handleEvent)
 
     eventsToPublish = eventStore.readEventsToPublishForAggregate[AGGREGATE_ROOT](id)
     resendEventsToPublish()
@@ -70,7 +71,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
 
 
 
-  override def receive = LoggingReceive {
+  override def receive = logReceive {
     case ep: EventsPersisted[_] =>
       if(ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.exists(_.event.isInstanceOf[UndoEvent[_]]) ||
         ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.exists(_.event.isInstanceOf[DuplicationEvent[_]])) {
@@ -105,6 +106,10 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
       respondTo ! Failure(new NoEventsForAggregateException(id))
     } else {
       respondTo ! Success(Aggregate[AGGREGATE_ROOT](id, version, Some(aggregateRoot)))
+    }
+    
+    if(singleReadForVersionOnly.isDefined) {
+      self ! PoisonPill
     }
 
   }

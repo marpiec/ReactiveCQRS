@@ -1,11 +1,11 @@
 package io.reactivecqrs.core.commandhandler
 
 import akka.actor.{Actor, ActorRef, Props}
-import akka.event.LoggingReceive
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.{UserId, AggregateId, CommandId}
+import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRoot, PersistEvents}
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalCommandEnvelope, InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
+import io.reactivecqrs.core.util.ActorLogging
 
 import scala.concurrent.duration._
 import scala.util.{Failure, Success}
@@ -32,13 +32,13 @@ object CommandHandlerActor {
 class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
                                           repositoryActor: ActorRef,
                                           commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, CommandResult[Any]],
-                                           initialState: () => AGGREGATE_ROOT) extends Actor {
+                                           initialState: () => AGGREGATE_ROOT) extends Actor with ActorLogging {
   
   var resultAggregatorsCounter = 0
 
   val responseTimeout = 5.seconds
 
-  private def waitingForCommand = LoggingReceive {
+  private def waitingForCommand = logReceive {
     case commandEnvelope: InternalFirstCommandEnvelope[_, _] =>
       handleFirstCommand(commandEnvelope.asInstanceOf[InternalFirstCommandEnvelope[AGGREGATE_ROOT, Any]])
     case commandEnvelope: InternalConcurrentCommandEnvelope[_, _] =>
@@ -47,7 +47,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
       requestAggregateForCommandHandling(commandEnvelope.asInstanceOf[InternalFollowingCommandEnvelope[AGGREGATE_ROOT, Any]])
   }
 
-  private def waitingForAggregate(command: InternalCommandEnvelope[AGGREGATE_ROOT, _]) = LoggingReceive {
+  private def waitingForAggregate(command: InternalCommandEnvelope[AGGREGATE_ROOT, _]) = logReceive {
     case s:Success[_] => handleFollowingCommand(command, s.get.asInstanceOf[Aggregate[AGGREGATE_ROOT]])
     case f:Failure[_] => throw new IllegalStateException("Error getting aggregate")
   }

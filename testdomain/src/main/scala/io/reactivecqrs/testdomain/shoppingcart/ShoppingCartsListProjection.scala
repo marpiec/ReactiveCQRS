@@ -1,26 +1,37 @@
 package io.reactivecqrs.testdomain.shoppingcart
 
 import akka.actor.ActorRef
+import akka.pattern.ask
+import akka.util.Timeout
 import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.api.{AggregateVersion, Event}
+import io.reactivecqrs.api.{Aggregate, AggregateVersion, Event, GetAggregateForVersion}
 import io.reactivecqrs.core.documentstore.DocumentStore
 import io.reactivecqrs.core.projection.ProjectionActor
 import io.reactivecqrs.testdomain.shoppingcart.ShoppingCartsListProjection.GetAllCartsNames
+
+import scala.concurrent.Await
+import scala.concurrent.duration._
+import scala.util.Try
 
 
 object ShoppingCartsListProjection {
   case class GetAllCartsNames()
 }
 
-class ShoppingCartsListProjectionEventsBased(val eventBusActor: ActorRef, documentStore: DocumentStore[String, AggregateVersion]) extends ProjectionActor {
+class ShoppingCartsListProjectionEventsBased(val eventBusActor: ActorRef,
+                                             shoppingCartCommandBus: ActorRef,
+                                             documentStore: DocumentStore[String, AggregateVersion]) extends ProjectionActor {
 
   protected val listeners = List(EventListener(shoppingCartUpdate))
 
   private def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, event: Event[ShoppingCart]): Unit = event match {
     case ShoppingCartCreated(name) =>
       documentStore.insertDocument(aggregateId.asLong, name, version)
-    case ShoppingCartDuplicated(baseId, baseVersion) => println("sorry :(")
-      //documentStore.insertDocument(aggregateId.asLong, "???", version)
+    case ShoppingCartDuplicated(baseId, baseVersion) =>
+      implicit val timeout = Timeout(5 seconds)
+      val future = (shoppingCartCommandBus ? GetAggregateForVersion(baseId, baseVersion)).mapTo[Try[Aggregate[ShoppingCart]]] // TODO try to do this without ask
+      val baseShoppingCart: Try[Aggregate[ShoppingCart]]= Await.result(future, 5 seconds)
+      documentStore.insertDocument(aggregateId.asLong, baseShoppingCart.get.aggregateRoot.get.name, version)
     case ItemAdded(name) =>
       val document = documentStore.getDocument(aggregateId.asLong)
       documentStore.updateDocument(aggregateId.asLong, document.get.document, version)

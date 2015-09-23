@@ -8,11 +8,9 @@ sealed abstract class AbstractDocumentStore[T <: AnyRef, M <: AnyRef] {
 
   def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String]): Map[Long, DocumentWithMetadata[T,M]]
 
-  def findDocumentByPathWithOneArray[V](array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T,M]]
+  def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]]
 
-  def findDocumentByPathWithOneArrayAnywhere[V](arrayPath: Seq[String], objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]]
-
-  def findDocumentByMetadataPathWithOneArray[V](array: String, objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T,M]]
+  def findDocumentByMetadataObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T,M]]
 
   def updateDocument(key: Long, document: T, metadata: M): Unit
 

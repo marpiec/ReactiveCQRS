@@ -9,6 +9,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.core.aggregaterepository.IdentifiableEvent
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import EventsBusActor._
+import io.reactivecqrs.core.util.ActorLogging
 
 import scala.reflect.runtime.universe._
 
@@ -16,7 +17,7 @@ import scala.reflect.runtime.universe._
 
 private case class DelayedQuery(until: Instant, respondTo: ActorRef, search: () => Option[Any])
 
-abstract class ProjectionActor extends Actor {
+abstract class ProjectionActor extends Actor with ActorLogging {
 
   protected trait Listener[+AGGREGATE_ROOT]  {
     def aggregateRootType: Type
@@ -82,7 +83,7 @@ abstract class ProjectionActor extends Actor {
       .map(l => (AggregateType(l.aggregateRootType.toString), l.asInstanceOf[AggregateWithEventListener[Any]].listener)).toMap
   }
 
-  override def receive: Receive = LoggingReceive(receiveSubscribed(aggregateListenersMap.keySet, eventListenersMap.keySet, aggregateWithEventListenersMap.keySet))
+  override def receive: Receive = logReceive (receiveSubscribed(aggregateListenersMap.keySet, eventListenersMap.keySet, aggregateWithEventListenersMap.keySet))
 
   private def validateListeners() = {
     if(listeners.exists(l => l.aggregateRootType == typeOf[Any] || l.aggregateRootType == typeOf[Nothing])) {
@@ -90,28 +91,28 @@ abstract class ProjectionActor extends Actor {
     }
   }
 
-  private def receiveSubscribed(aggregateListenersRemaining: Set[AggregateType], eventsListenersRemaining: Set[AggregateType], aggregatesWithEventsListenersRemaining: Set[AggregateType]): Receive = {
+  private def receiveSubscribed(aggregateListenersRemaining: Set[AggregateType], eventsListenersRemaining: Set[AggregateType], aggregatesWithEventsListenersRemaining: Set[AggregateType]): Receive = LoggingReceive {
     case SubscribedForAggregates(messageId, aggregateType, subscriptionId) =>
       if(eventsListenersRemaining.isEmpty && aggregatesWithEventsListenersRemaining.isEmpty && aggregateListenersRemaining.size == 1 && aggregateListenersRemaining.head == aggregateType) {
-        context.become(LoggingReceive(receiveUpdate orElse receiveQuery))
+        context.become(logReceive (receiveUpdate orElse receiveQuery))
       } else {
-        context.become(LoggingReceive(receiveSubscribed(aggregateListenersRemaining.filterNot(_ == aggregateType), eventsListenersRemaining, aggregatesWithEventsListenersRemaining)))
+        context.become(logReceive (receiveSubscribed(aggregateListenersRemaining.filterNot(_ == aggregateType), eventsListenersRemaining, aggregatesWithEventsListenersRemaining)))
       }
     case SubscribedForEvents(messageId, aggregateType, subscriptionId) =>
       if(aggregateListenersRemaining.isEmpty && aggregatesWithEventsListenersRemaining.isEmpty && eventsListenersRemaining.size == 1 && eventsListenersRemaining.head == aggregateType) {
-        context.become(LoggingReceive(receiveUpdate orElse receiveQuery))
+        context.become(logReceive (receiveUpdate orElse receiveQuery))
       } else {
-        context.become(LoggingReceive(receiveSubscribed(aggregateListenersRemaining, eventsListenersRemaining.filterNot(_ == aggregateType), aggregatesWithEventsListenersRemaining)))
+        context.become(logReceive (receiveSubscribed(aggregateListenersRemaining, eventsListenersRemaining.filterNot(_ == aggregateType), aggregatesWithEventsListenersRemaining)))
       }
     case SubscribedForAggregatesWithEvents(messageId, aggregateType, subscriptionId) =>
       if(eventsListenersRemaining.isEmpty && aggregateListenersRemaining.isEmpty && aggregatesWithEventsListenersRemaining.size == 1 && aggregatesWithEventsListenersRemaining.head == aggregateType) {
-        context.become(LoggingReceive(receiveUpdate orElse receiveQuery))
+        context.become(logReceive (receiveUpdate orElse receiveQuery))
       } else {
-        context.become(LoggingReceive(receiveSubscribed(aggregateListenersRemaining, eventsListenersRemaining, aggregatesWithEventsListenersRemaining.filterNot(_ == aggregateType))))
+        context.become(logReceive (receiveSubscribed(aggregateListenersRemaining, eventsListenersRemaining, aggregatesWithEventsListenersRemaining.filterNot(_ == aggregateType))))
       }
   }
 
-  protected def receiveUpdate: Receive = {
+  protected def receiveUpdate: Receive = logReceive  {
     case a: AggregateWithType[_] =>
       aggregateListenersMap(a.aggregateType)(a.id, a.version, a.aggregateRoot)
       sender() ! MessageAck(self, a.id, a.version)
