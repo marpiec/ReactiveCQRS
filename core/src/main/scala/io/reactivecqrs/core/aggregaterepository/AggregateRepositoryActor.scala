@@ -17,7 +17,6 @@ import scala.util.{Failure, Success}
 
 object AggregateRepositoryActor {
   case class GetAggregateRoot(respondTo: ActorRef)
-  case class GetAggregateRootForVersion(respondTo: ActorRef, version: AggregateVersion)
 
   case class PersistEvents[AGGREGATE_ROOT](respondTo: ActorRef,
                                             aggregateId: AggregateId,
