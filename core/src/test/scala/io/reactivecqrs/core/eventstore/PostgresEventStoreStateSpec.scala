@@ -35,9 +35,9 @@ class TestFixture {
     expectedVersion = expectedVersion.incrementBy(events.length)
   }
 
-  def getEvents(): Vector[Event[SomeAggregate]] = {
+  def getEvents(version: Option[AggregateVersion] = None): Vector[Event[SomeAggregate]] = {
     var events = Vector[Event[SomeAggregate]]()
-    eventStoreState.readAndProcessEvents[SomeAggregate](aggregateId, None)((event: Event[SomeAggregate], id: AggregateId, noop: Boolean) => {
+    eventStoreState.readAndProcessEvents[SomeAggregate](aggregateId, version)((event: Event[SomeAggregate], id: AggregateId, noop: Boolean) => {
         if(!noop) {
           events :+= event
         }
@@ -112,19 +112,27 @@ class PostgresEventStoreStateSpec extends CommonSpec {
 
     When("Adding events and undoing some")
 
-    storeEvents(List(EventA("one")))
-    storeEvents(List(EventB(2)))
-    storeEvents(List(EventC(false)))
-    storeEvents(List(EventA("four")))
-    storeEvents(List(Undo(1)))
-    storeEvents(List(EventB(5)))
-    storeEvents(List(EventC(true)))
-    storeEvents(List(Undo(2)))
-    storeEvents(List(EventA("seven")))
+    storeEvents(List(EventA("one"))) //1
+    storeEvents(List(EventB(2))) //2
+    storeEvents(List(EventC(false)))//3
+    storeEvents(List(EventA("four")))//4
+    storeEvents(List(Undo(1)))//5
+    storeEvents(List(EventB(5)))//6
+    storeEvents(List(EventC(true)))//7
+    storeEvents(List(Undo(2)))//8
+    storeEvents(List(EventA("seven")))//9
 
     Then("We can get all events in correct order")
 
     getEvents() mustBe List(EventA("one"), EventB(2), EventC(false), EventA("seven"))
+
+    Then("We can get correct events for different versions")
+    getEvents(Some(AggregateVersion(8))) mustBe List(EventA("one"), EventB(2), EventC(false))
+
+    getEvents(Some(AggregateVersion(7))) mustBe List(EventA("one"), EventB(2), EventC(false), EventB(5), EventC(true))
+
+    getEvents(Some(AggregateVersion(4))) mustBe List(EventA("one"), EventB(2), EventC(false), EventA("four"))
+
   }
 
 }
