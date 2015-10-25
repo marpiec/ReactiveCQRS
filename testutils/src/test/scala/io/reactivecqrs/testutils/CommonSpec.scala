@@ -1,10 +1,10 @@
-package io.reactivecqrs.testdomain.spec.utils
+package io.reactivecqrs.testutils
 
 import akka.actor.ActorSystem
 import akka.testkit.TestKit
 import com.typesafe.config.ConfigFactory
 import org.scalatest.{FeatureSpecLike, GivenWhenThen, MustMatchers}
-import scalikejdbc.{LoggingSQLAndTimeSettings, GlobalSettings}
+import scalikejdbc.{GlobalSettings, LoggingSQLAndTimeSettings}
 
 abstract class CommonSpec extends TestKit(ActorSystem("testsystem", ConfigFactory.parseString("""
           akka.loglevel = "DEBUG"

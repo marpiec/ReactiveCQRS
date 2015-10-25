@@ -1,9 +1,9 @@
-package io.reactivecqrs.testdomain.spec.utils
+package io.reactivecqrs.testutils
 
+import akka.pattern.ask
 import akka.actor.ActorRef
 import akka.util.Timeout
 import org.scalatest.Assertions
-import akka.pattern.ask
 
 import scala.concurrent.Await
 import scala.concurrent.duration._

@@ -11,7 +11,7 @@ import io.reactivecqrs.core.eventbus.{EventsBusActor, PostgresEventBusState}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testdomain.spec.utils.CommonSpec
+import io.reactivecqrs.testutils.CommonSpec
 import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
 
 import scala.util.Try
