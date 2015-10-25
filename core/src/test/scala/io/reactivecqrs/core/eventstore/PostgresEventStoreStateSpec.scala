@@ -42,31 +42,24 @@ class PostgresEventStoreStateSpec extends CommonSpec {
       val aggregateId = AggregateId(System.nanoTime() + Math.random().toLong)
       val commandId = CommandId(101)
       val userId = UserId(201)
-      val expectedVersion = AggregateVersion(0)
+      var expectedVersion = AggregateVersion(0)
+
+      def storeEvents(events: Seq[Event[SomeAggregate]]): Unit = {
+        eventStoreState.persistEvents(aggregateId,
+          PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion, events))
+        expectedVersion = expectedVersion.incrementBy(events.length)
+      }
 
       When("Adding multiple events")
 
-      eventStoreState.persistEvents(aggregateId,
-        PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion,
-          List(EventA("one"))))
-      eventStoreState.persistEvents(aggregateId,
-        PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion.incrementBy(1),
-          List(EventB(2))))
-      eventStoreState.persistEvents(aggregateId,
-        PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion.incrementBy(2),
-          List(EventC(false))))
-      eventStoreState.persistEvents(aggregateId,
-        PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion.incrementBy(3),
-        List(EventA("four"))))
-      eventStoreState.persistEvents(aggregateId,
-        PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion.incrementBy(4),
-          List(EventB(5))))
-      eventStoreState.persistEvents(aggregateId,
-        PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion.incrementBy(5),
-          List(EventC(true))))
-      eventStoreState.persistEvents(aggregateId,
-        PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion.incrementBy(6),
-          List(EventA("seven"))))
+      storeEvents(List(EventA("one")))
+
+      storeEvents(List(EventB(2)))
+      storeEvents(List(EventC(false)))
+      storeEvents(List(EventA("four")))
+      storeEvents(List(EventB(5)))
+      storeEvents(List(EventC(true)))
+      storeEvents(List(EventA("seven")))
 
       Then("We can get all events in correct order")
 
@@ -93,17 +86,18 @@ class PostgresEventStoreStateSpec extends CommonSpec {
       val aggregateId = AggregateId(System.nanoTime() + Math.random().toLong)
       val commandId = CommandId(101)
       val userId = UserId(201)
-      val expectedVersion = AggregateVersion(0)
+      var expectedVersion = AggregateVersion(0)
+
+      def storeEvents(events: Seq[Event[SomeAggregate]]): Unit = {
+        eventStoreState.persistEvents(aggregateId,
+          PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion, events))
+        expectedVersion = expectedVersion.incrementBy(events.length)
+      }
 
       When("Adding multiple events")
 
-      eventStoreState.persistEvents(aggregateId,
-        PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion,
-          List(EventA("one"), EventB(2), EventC(false), EventA("four"))))
-
-      eventStoreState.persistEvents(aggregateId,
-        PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion.incrementBy(4),
-          List(EventB(5), EventC(true), EventA("seven"))))
+      storeEvents(List(EventA("one"), EventB(2), EventC(false), EventA("four")))
+      storeEvents(List(EventB(5), EventC(true), EventA("seven")))
 
       Then("We can get all events in correct order")
 
