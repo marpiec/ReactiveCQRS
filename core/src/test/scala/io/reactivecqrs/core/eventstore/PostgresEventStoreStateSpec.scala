@@ -20,6 +20,33 @@ case class Copy(baseAggregateId: AggregateId, baseAggregateVersion: AggregateVer
   extends DuplicationEvent[SomeAggregate]
 
 
+class TestFixture {
+  val eventStoreState = new PostgresEventStoreState(new MPJsons)
+  eventStoreState.initSchema()
+
+  val aggregateId = AggregateId(System.nanoTime() + Math.random().toLong)
+  val commandId = CommandId(101)
+  val userId = UserId(201)
+  var expectedVersion = AggregateVersion(0)
+
+  def storeEvents(events: Seq[Event[SomeAggregate]]): Unit = {
+    eventStoreState.persistEvents(aggregateId,
+      PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion, events))
+    expectedVersion = expectedVersion.incrementBy(events.length)
+  }
+
+  def getEvents(): Vector[Event[SomeAggregate]] = {
+    var events = Vector[Event[SomeAggregate]]()
+    eventStoreState.readAndProcessEvents[SomeAggregate](aggregateId, None)((event: Event[SomeAggregate], id: AggregateId, noop: Boolean) => {
+        if(!noop) {
+          events :+= event
+        }
+      })
+    events
+  }
+}
+
+
 class PostgresEventStoreStateSpec extends CommonSpec {
 
   val settings = ConnectionPoolSettings(
@@ -36,24 +63,13 @@ class PostgresEventStoreStateSpec extends CommonSpec {
 
       Given("Event store state")
 
-      val eventStoreState = new PostgresEventStoreState(new MPJsons)
-      eventStoreState.initSchema()
+      val f = new TestFixture
+      import f._
 
-      val aggregateId = AggregateId(System.nanoTime() + Math.random().toLong)
-      val commandId = CommandId(101)
-      val userId = UserId(201)
-      var expectedVersion = AggregateVersion(0)
-
-      def storeEvents(events: Seq[Event[SomeAggregate]]): Unit = {
-        eventStoreState.persistEvents(aggregateId,
-          PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion, events))
-        expectedVersion = expectedVersion.incrementBy(events.length)
-      }
 
       When("Adding multiple events")
 
       storeEvents(List(EventA("one")))
-
       storeEvents(List(EventB(2)))
       storeEvents(List(EventC(false)))
       storeEvents(List(EventA("four")))
@@ -63,15 +79,8 @@ class PostgresEventStoreStateSpec extends CommonSpec {
 
       Then("We can get all events in correct order")
 
-      var events = Vector[Event[SomeAggregate]]()
-      eventStoreState.readAndProcessEvents[SomeAggregate](aggregateId, None)((event: Event[SomeAggregate], id: AggregateId, noop: Boolean) => {
-        if(!noop) {
-          events :+= event
-        }
 
-      })
-
-      events mustBe List(EventA("one"), EventB(2), EventC(false), EventA("four"), EventB(5), EventC(true), EventA("seven"))
+      getEvents() mustBe List(EventA("one"), EventB(2), EventC(false), EventA("four"), EventB(5), EventC(true), EventA("seven"))
 
     }
 
@@ -80,19 +89,8 @@ class PostgresEventStoreStateSpec extends CommonSpec {
 
       Given("Event store state")
 
-      val eventStoreState = new PostgresEventStoreState(new MPJsons)
-      eventStoreState.initSchema()
-
-      val aggregateId = AggregateId(System.nanoTime() + Math.random().toLong)
-      val commandId = CommandId(101)
-      val userId = UserId(201)
-      var expectedVersion = AggregateVersion(0)
-
-      def storeEvents(events: Seq[Event[SomeAggregate]]): Unit = {
-        eventStoreState.persistEvents(aggregateId,
-          PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion, events))
-        expectedVersion = expectedVersion.incrementBy(events.length)
-      }
+      val f = new TestFixture
+      import f._
 
       When("Adding multiple events")
 
@@ -101,17 +99,32 @@ class PostgresEventStoreStateSpec extends CommonSpec {
 
       Then("We can get all events in correct order")
 
-      var events = Vector[Event[SomeAggregate]]()
-      eventStoreState.readAndProcessEvents[SomeAggregate](aggregateId, None)((event: Event[SomeAggregate], id: AggregateId, noop: Boolean) => {
-        if(!noop) {
-          events :+= event
-        }
-
-      })
-
-      events mustBe List(EventA("one"), EventB(2), EventC(false), EventA("four"), EventB(5), EventC(true), EventA("seven"))
+      getEvents() mustBe List(EventA("one"), EventB(2), EventC(false), EventA("four"), EventB(5), EventC(true), EventA("seven"))
 
     }
+  }
+
+  scenario("Adding and reading undo events") {
+
+    Given("Event sotre state")
+    val f = new TestFixture
+    import f._
+
+    When("Adding events and undoing some")
+
+    storeEvents(List(EventA("one")))
+    storeEvents(List(EventB(2)))
+    storeEvents(List(EventC(false)))
+    storeEvents(List(EventA("four")))
+    storeEvents(List(Undo(1)))
+    storeEvents(List(EventB(5)))
+    storeEvents(List(EventC(true)))
+    storeEvents(List(Undo(2)))
+    storeEvents(List(EventA("seven")))
+
+    Then("We can get all events in correct order")
+
+    getEvents() mustBe List(EventA("one"), EventB(2), EventC(false), EventA("seven"))
   }
 
 }
