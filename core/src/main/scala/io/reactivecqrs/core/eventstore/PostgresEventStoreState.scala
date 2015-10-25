@@ -18,7 +18,7 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
     DB.autoCommit { implicit session =>
       eventsEnvelope.events.foreach(event => {
 
-        val eventSerialized = mpjsons.serialize(eventsEnvelope.events.head, event.getClass.getName)
+        val eventSerialized = mpjsons.serialize(event, event.getClass.getName)
 
         val query = event match {
           case undoEvent: UndoEvent[_] =>
@@ -65,7 +65,8 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
 
   }
 
-  override def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, version: Option[AggregateVersion])(eventHandler: (Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit = {
+  override def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, version: Option[AggregateVersion])
+                                                   (eventHandler: (Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit = {  //event, id, noop
 
     DB.readOnly { implicit session =>
 
@@ -97,21 +98,6 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
     }
   }
 
-  def readAndProcessAllEventsForVersion[AGGREGATE_ROOT](aggregateId: AggregateId, version: AggregateVersion)(eventHandler: Event[AGGREGATE_ROOT] => Unit): Unit = {
-
-    DB.readOnly { implicit session =>
-      sql"""SELECT event_type, event
-           | FROM events
-           | LEFT JOIN noop_events ON events.id = noop_events.id AND noop_events.from_version <= ?
-           | WHERE aggregate_id = ? AND version <= ? AND noop_events.id IS NULL
-           | ORDER BY version""".stripMargin.bind(version.asInt, aggregateId.asLong, version.asInt).foreach { rs =>
-
-        val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(2), rs.string(1))
-        eventHandler(event)
-      }
-    }
-  }
-  
 
   override def deletePublishedEventsToPublish(events: Seq[EventIdentifier]): Unit = {
     // TODO optimize SQL query so it will be one query

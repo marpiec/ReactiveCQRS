@@ -1,8 +1,123 @@
 package io.reactivecqrs.core.eventstore
 
+import akka.actor.ActorRef
+import io.mpjsons.MPJsons
+import io.reactivecqrs.api.{DuplicationEvent, UndoEvent, Event, AggregateVersion}
+import io.reactivecqrs.api.id.{UserId, CommandId, AggregateId}
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.testutils.CommonSpec
+import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
+
+case class SomeAggregate()
+
+case class EventA(text: String) extends Event[SomeAggregate]
+case class EventB(number: Int) extends Event[SomeAggregate]
+case class EventC(predicate: Boolean) extends Event[SomeAggregate]
+
+case class Undo(eventsCount: Int) extends UndoEvent[SomeAggregate]
+
+case class Copy(baseAggregateId: AggregateId, baseAggregateVersion: AggregateVersion)
+  extends DuplicationEvent[SomeAggregate]
 
 
 class PostgresEventStoreStateSpec extends CommonSpec {
+
+  val settings = ConnectionPoolSettings(
+    initialSize = 5,
+    maxSize = 20,
+    connectionTimeoutMillis = 3000L)
+
+  Class.forName("org.postgresql.Driver")
+  ConnectionPool.singleton("jdbc:postgresql://localhost:5432/reactivecqrs", "reactivecqrs", "reactivecqrs", settings)
+
+  feature("Can store and retrieve correct events for aggregate") {
+
+    scenario("Simple adding and reading events") {
+
+      Given("Event store state")
+
+      val eventStoreState = new PostgresEventStoreState(new MPJsons)
+      eventStoreState.initSchema()
+
+      val aggregateId = AggregateId(System.nanoTime() + Math.random().toLong)
+      val commandId = CommandId(101)
+      val userId = UserId(201)
+      val expectedVersion = AggregateVersion(0)
+
+      When("Adding multiple events")
+
+      eventStoreState.persistEvents(aggregateId,
+        PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion,
+          List(EventA("one"))))
+      eventStoreState.persistEvents(aggregateId,
+        PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion.incrementBy(1),
+          List(EventB(2))))
+      eventStoreState.persistEvents(aggregateId,
+        PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion.incrementBy(2),
+          List(EventC(false))))
+      eventStoreState.persistEvents(aggregateId,
+        PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion.incrementBy(3),
+        List(EventA("four"))))
+      eventStoreState.persistEvents(aggregateId,
+        PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion.incrementBy(4),
+          List(EventB(5))))
+      eventStoreState.persistEvents(aggregateId,
+        PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion.incrementBy(5),
+          List(EventC(true))))
+      eventStoreState.persistEvents(aggregateId,
+        PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion.incrementBy(6),
+          List(EventA("seven"))))
+
+      Then("We can get all events in correct order")
+
+      var events = Vector[Event[SomeAggregate]]()
+      eventStoreState.readAndProcessEvents[SomeAggregate](aggregateId, None)((event: Event[SomeAggregate], id: AggregateId, noop: Boolean) => {
+        if(!noop) {
+          events :+= event
+        }
+
+      })
+
+      events mustBe List(EventA("one"), EventB(2), EventC(false), EventA("four"), EventB(5), EventC(true), EventA("seven"))
+
+    }
+
+
+    scenario("Adding and reading events in batches") {
+
+      Given("Event store state")
+
+      val eventStoreState = new PostgresEventStoreState(new MPJsons)
+      eventStoreState.initSchema()
+
+      val aggregateId = AggregateId(System.nanoTime() + Math.random().toLong)
+      val commandId = CommandId(101)
+      val userId = UserId(201)
+      val expectedVersion = AggregateVersion(0)
+
+      When("Adding multiple events")
+
+      eventStoreState.persistEvents(aggregateId,
+        PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion,
+          List(EventA("one"), EventB(2), EventC(false), EventA("four"))))
+
+      eventStoreState.persistEvents(aggregateId,
+        PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion.incrementBy(4),
+          List(EventB(5), EventC(true), EventA("seven"))))
+
+      Then("We can get all events in correct order")
+
+      var events = Vector[Event[SomeAggregate]]()
+      eventStoreState.readAndProcessEvents[SomeAggregate](aggregateId, None)((event: Event[SomeAggregate], id: AggregateId, noop: Boolean) => {
+        if(!noop) {
+          events :+= event
+        }
+
+      })
+
+      events mustBe List(EventA("one"), EventB(2), EventC(false), EventA("four"), EventB(5), EventC(true), EventA("seven"))
+
+    }
+  }
 
 }
