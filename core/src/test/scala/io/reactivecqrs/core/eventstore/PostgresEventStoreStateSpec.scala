@@ -29,15 +29,17 @@ class TestFixture {
   val userId = UserId(201)
   var expectedVersion = AggregateVersion(0)
 
-  def storeEvents(events: Seq[Event[SomeAggregate]]): Unit = {
-    eventStoreState.persistEvents(aggregateId,
-      PersistEvents(ActorRef.noSender, aggregateId, commandId, userId, expectedVersion, events))
-    expectedVersion = expectedVersion.incrementBy(events.length)
+  def storeEvents(events: Seq[Event[SomeAggregate]], id: AggregateId = aggregateId, exVersion: AggregateVersion = expectedVersion): Unit = {
+    eventStoreState.persistEvents(id,
+      PersistEvents(ActorRef.noSender, id, commandId, userId, exVersion, events))
+    if(exVersion == expectedVersion) {
+      expectedVersion = expectedVersion.incrementBy(events.length)
+    }
   }
 
-  def getEvents(version: Option[AggregateVersion] = None): Vector[Event[SomeAggregate]] = {
+  def getEvents(version: Option[AggregateVersion] = None, id: AggregateId = aggregateId): Vector[Event[SomeAggregate]] = {
     var events = Vector[Event[SomeAggregate]]()
-    eventStoreState.readAndProcessEvents[SomeAggregate](aggregateId, version)((event: Event[SomeAggregate], id: AggregateId, noop: Boolean) => {
+    eventStoreState.readAndProcessEvents[SomeAggregate](id, version)((event: Event[SomeAggregate], id: AggregateId, noop: Boolean) => {
         if(!noop) {
           events :+= event
         }
@@ -106,7 +108,7 @@ class PostgresEventStoreStateSpec extends CommonSpec {
 
   scenario("Adding and reading undo events") {
 
-    Given("Event sotre state")
+    Given("Event store state")
     val f = new TestFixture
     import f._
 
@@ -134,5 +136,36 @@ class PostgresEventStoreStateSpec extends CommonSpec {
     getEvents(Some(AggregateVersion(4))) mustBe List(EventA("one"), EventB(2), EventC(false), EventA("four"))
 
   }
+
+  scenario("Adding and reading events for duplicated aggregates") {
+
+    Given("Event store state")
+    val f = new TestFixture
+    import f._
+
+    val aggregateBId = AggregateId(System.nanoTime() + Math.random().toLong)
+
+    When("Adding events and undoing some")
+
+    storeEvents(List(EventA("one"))) //1
+    storeEvents(List(EventB(2))) //2
+    storeEvents(List(EventC(false)))//3
+    storeEvents(List(EventA("four")))//4
+    storeEvents(List(Undo(1)))//5
+    storeEvents(List(EventB(5)))//6
+
+    storeEvents(List(Copy(aggregateId, AggregateVersion(6))), aggregateBId, AggregateVersion(0))
+    storeEvents(List(EventA("newSix")), aggregateBId, AggregateVersion(1))
+
+    storeEvents(List(EventA("oldSix")))
+
+    Then("We can get all events in correct order")
+
+    getEvents() mustBe List(EventA("one"), EventB(2), EventC(false), EventB(5), EventA("oldSix"))
+    getEvents(None, aggregateBId) mustBe List(EventA("one"), EventB(2), EventC(false), EventB(5), Copy(aggregateId, AggregateVersion(6)), EventA("newSix"))
+
+  }
+
+  //TODO test for undo and duplication
 
 }
