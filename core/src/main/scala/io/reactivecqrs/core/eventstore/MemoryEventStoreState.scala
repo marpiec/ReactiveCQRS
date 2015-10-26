@@ -1,26 +1,26 @@
 package io.reactivecqrs.core.eventstore
 
 import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.api.{AggregateVersion, Event}
+import io.reactivecqrs.api.{UndoEvent, AggregateVersion, Event}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEventNoAggregateType}
 
 class MemoryEventStoreState extends EventStoreState {
 
-  private var eventStore: Map[AggregateId, List[Event[_]]] = Map()
+  private var eventStore: Map[AggregateId, Vector[Event[_]]] = Map()
   private var eventsToPublish: Map[(AggregateId, Int), Event[_]] = Map()
 
 
   override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Unit = {
 
-    var eventsForAggregate: List[Event[_]] = eventStore.getOrElse(aggregateId, List())
+    var eventsForAggregate: Vector[Event[_]] = eventStore.getOrElse(aggregateId, Vector())
 
     if (eventsEnvelope.expectedVersion.asInt != eventsForAggregate.size) {
       throw new IllegalStateException("Incorrect version for event, expected " + eventsEnvelope.expectedVersion.asInt + " but was " + eventsForAggregate.size)
     }
     var versionsIncreased = 0
     eventsEnvelope.events.foreach(event => {
-      eventsForAggregate ::= event
+      eventsForAggregate :+= event
       eventsToPublish += (aggregateId, eventsEnvelope.expectedVersion.asInt + versionsIncreased) -> event
       versionsIncreased += 1
     })
@@ -31,13 +31,31 @@ class MemoryEventStoreState extends EventStoreState {
 
 
   override def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, upToVersion: Option[AggregateVersion])(eventHandler: (Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit = {
-    var eventsForAggregate: List[Event[AGGREGATE_ROOT]] = eventStore.getOrElse(aggregateId, List()).asInstanceOf[List[Event[AGGREGATE_ROOT]]]
+    var eventsForAggregate: Vector[Event[AGGREGATE_ROOT]] = eventStore.getOrElse(aggregateId, Vector()).asInstanceOf[Vector[Event[AGGREGATE_ROOT]]]
 
     if(upToVersion.isDefined) {
       eventsForAggregate = eventsForAggregate.take(upToVersion.get.asInt)
     }
 
-    eventsForAggregate.reverse.foreach(eventHandler(_, aggregateId, false))
+
+
+    var undoEventsCount = 0
+    val eventsWithNoop = eventsForAggregate.reverse.map(event => {
+      if(undoEventsCount == 0) {
+        event match {
+          case e:UndoEvent[_] =>
+            undoEventsCount += e.eventsCount
+            (event, true)
+          case _ =>
+            (event, false)
+        }
+      } else {
+        undoEventsCount -= 1
+        (event, true)
+      }
+    }).reverse
+
+    eventsWithNoop.foreach(eventWithNoop => eventHandler(eventWithNoop._1, aggregateId, eventWithNoop._2))
   }
 
   override def deletePublishedEventsToPublish(events: Seq[EventIdentifier]): Unit = {
