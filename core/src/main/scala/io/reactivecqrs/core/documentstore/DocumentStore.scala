@@ -29,5 +29,5 @@ abstract class DocumentStore[T <: AnyRef, M <: AnyRef] extends AbstractDocumentS
 }
 
 abstract class DocumentStoreAutoId[T <: AnyRef, M <: AnyRef] extends AbstractDocumentStore[T, M] {
-  def insertDocument(document: T, metadata: M): Unit
+  def insertDocument(document: T, metadata: M): Long
 }

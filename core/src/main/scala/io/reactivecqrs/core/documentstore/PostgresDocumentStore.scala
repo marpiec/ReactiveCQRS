@@ -316,7 +316,7 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
 
   protected lazy val CREATE_SEQUENCE_QUERY = s"CREATE SEQUENCE $sequenceName START 1"
 
-  protected lazy val INSERT_DOCUMENT_QUERY = s"INSERT INTO $projectionTableName (id, document, metadata) VALUES (nextval('$sequenceName'), ?::jsonb, ?::jsonb)"
+  protected lazy val INSERT_DOCUMENT_QUERY = s"INSERT INTO $projectionTableName (id, document, metadata) VALUES (nextval('$sequenceName'), ?::jsonb, ?::jsonb) RETURNING currval('$sequenceName')"
 
 
   override protected def createTableIfNotExists(): Unit = {
@@ -328,14 +328,19 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
     executeQuery(CREATE_TABLE_QUERY)
   }
 
-  override def insertDocument(document: T, metadata: M): Unit = {
+  override def insertDocument(document: T, metadata: M): Long = {
     val connection = dbDataSource.getConnection
     try {
       val statement = connection.prepareStatement(INSERT_DOCUMENT_QUERY)
       try {
         statement.setString(1, mpjsons.serialize(document))
         statement.setString(2, mpjsons.serialize(metadata))
-        statement.execute()
+        val resultSet = statement.executeQuery()
+        if (resultSet.next()) {
+          resultSet.getLong(1)
+        } else {
+          throw new Exception("Result set has no next :(")
+        }
       } finally {
         statement.close()
       }

@@ -141,8 +141,9 @@ class MemoryDocumentStoreAutoId[T <: AnyRef, M <: AnyRef] extends DocumentStoreA
     id
   }
 
-  def insertDocument(document: T, metadata: M): Unit = {
+  def insertDocument(document: T, metadata: M): Long = {
     val key = generateNextId
     store += key -> DocumentWithMetadata[T, M](document, metadata)
+    key
   }
 }
