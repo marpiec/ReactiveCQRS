@@ -2,7 +2,7 @@
 CQRS framework implementation leveraging Scala and Akka framework, for building reactive distributed applications.
 
 
-# it uses Default singleton ScalikeJDBC connection pool, so it have to be initialized first
+# it uses Default singleton ScalikeJDBC connection pool, so it has to be initialized first
 
 
 # TODO
