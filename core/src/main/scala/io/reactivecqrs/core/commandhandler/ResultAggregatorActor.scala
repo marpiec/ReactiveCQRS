@@ -1,7 +1,7 @@
 package io.reactivecqrs.core.commandhandler
 
 import akka.actor.{Actor, ActorRef, PoisonPill}
-import io.reactivecqrs.api.AggregateConcurrentModificationError
+import io.reactivecqrs.api.{CustomCommandResponse, AggregateConcurrentModificationError}
 import io.reactivecqrs.core.util.ActorLogging
 
 import scala.concurrent.duration._
@@ -12,9 +12,9 @@ object ResultAggregator {
 
 }
 
-class ResultAggregator[RESULT](private val respondTo: ActorRef,
-                               private val result: RESULT,
-                               private val timeout: FiniteDuration) extends Actor with ActorLogging {
+class ResultAggregator[RESPONSE <: CustomCommandResponse[_]](private val respondTo: ActorRef,
+                                                             private val result: RESPONSE,
+                                                             private val timeout: FiniteDuration) extends Actor with ActorLogging {
 
   import ResultAggregator._
 

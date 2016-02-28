@@ -51,7 +51,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
 
     def shoppingCartCommand(command: AnyRef): Aggregate[ShoppingCart]= {
-      val result: CommandResponse = shoppingCartCommandBus ?? command
+      val result: CustomCommandResponse[_] = shoppingCartCommandBus ?? command
       val success = result.asInstanceOf[SuccessResponse]
 
       val shoppingCartTry:Try[Aggregate[ShoppingCart]] = shoppingCartCommandBus ?? GetAggregate(success.aggregateId)
