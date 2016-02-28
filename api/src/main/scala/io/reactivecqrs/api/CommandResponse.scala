@@ -9,4 +9,4 @@ sealed abstract class CommandResponse
 
 case class SuccessResponse(aggregateId: AggregateId, aggregateVersion: AggregateVersion) extends CommandResponse
 case class FailureResponse(exceptions: List[String]) extends CommandResponse
-
+case class AggregateConcurrentModificationError(aggregateType: AggregateType, aggregateId: AggregateId, expected: AggregateVersion, was: AggregateVersion) extends CommandResponse

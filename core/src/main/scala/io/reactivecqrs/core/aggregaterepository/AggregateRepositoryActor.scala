@@ -1,10 +1,9 @@
 package io.reactivecqrs.core.aggregaterepository
 
-import _root_.io.reactivecqrs.api._
-import _root_.io.reactivecqrs.core.commandhandler.ResultAggregator
-import _root_.io.reactivecqrs.core.errors.AggregateConcurrentModificationError
-import _root_.io.reactivecqrs.core.eventstore.EventStoreState
-import _root_.io.reactivecqrs.core.util.ActorLogging
+import io.reactivecqrs.core.commandhandler.ResultAggregator
+import io.reactivecqrs.core.eventstore.EventStoreState
+import io.reactivecqrs.core.util.ActorLogging
+import io.reactivecqrs.api._
 import akka.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
@@ -96,7 +95,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
     if (eventsEnvelope.expectedVersion == version) {
       persist(eventsEnvelope)(respond(eventsEnvelope.respondTo))
     } else {
-      eventsEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateType, eventsEnvelope.aggregateId, eventsEnvelope.events.map(_.getClass.getName), eventsEnvelope.expectedVersion, version)
+      eventsEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateType, eventsEnvelope.aggregateId, eventsEnvelope.expectedVersion, version)
     }
 
   }

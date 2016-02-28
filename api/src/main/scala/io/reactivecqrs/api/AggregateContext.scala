@@ -10,10 +10,10 @@ abstract class AggregateContext[AGGREGATE_ROOT] {
    def initialAggregateRoot: AGGREGATE_ROOT
 
 
-  type HandlerWrapper = (=> CommandResult[Any]) => CommandResult[Any]
+  type HandlerWrapper = (=> CommandResult[CommandResponse]) => CommandResult[CommandResponse]
 
-  type SingleHandler = (_ <: Command[AGGREGATE_ROOT, Any]) => CommandResult[Any]
-  type CommandHandler = AGGREGATE_ROOT => PartialFunction[Any, CommandResult[Any]]
+  type SingleHandler = (_ <: Command[AGGREGATE_ROOT, CommandResponse]) => CommandResult[CommandResponse]
+  type CommandHandler = AGGREGATE_ROOT => PartialFunction[Any, CommandResult[CommandResponse]]
   type CommandHandlerWrapper = Function[CommandHandler, CommandHandler]
 
 

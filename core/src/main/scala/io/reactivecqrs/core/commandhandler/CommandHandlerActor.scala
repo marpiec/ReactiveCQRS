@@ -12,15 +12,15 @@ import scala.util.{Failure, Success}
 
 object CommandHandlerActor {
 
-  sealed trait InternalCommandEnvelope[AGGREGATE_ROOT, +RESPONSE]
+  sealed trait InternalCommandEnvelope[AGGREGATE_ROOT, +RESPONSE <: CommandResponse]
 
-  case class InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo: ActorRef, commandId: CommandId, commandEnvelope: FirstCommand[AGGREGATE_ROOT, RESPONSE])
+  case class InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE <: CommandResponse](respondTo: ActorRef, commandId: CommandId, commandEnvelope: FirstCommand[AGGREGATE_ROOT, RESPONSE])
     extends InternalCommandEnvelope[AGGREGATE_ROOT, RESPONSE]
 
-  case class InternalConcurrentCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo: ActorRef, commandId: CommandId, commandEnvelope: ConcurrentCommand[AGGREGATE_ROOT, RESPONSE])
+  case class InternalConcurrentCommandEnvelope[AGGREGATE_ROOT, RESPONSE <: CommandResponse](respondTo: ActorRef, commandId: CommandId, commandEnvelope: ConcurrentCommand[AGGREGATE_ROOT, RESPONSE])
     extends InternalCommandEnvelope[AGGREGATE_ROOT, RESPONSE]
 
-  case class InternalFollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo: ActorRef, commandId: CommandId, commandEnvelope: Command[AGGREGATE_ROOT, RESPONSE])
+  case class InternalFollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE <: CommandResponse](respondTo: ActorRef, commandId: CommandId, commandEnvelope: Command[AGGREGATE_ROOT, RESPONSE])
     extends InternalCommandEnvelope[AGGREGATE_ROOT, RESPONSE]
 
 
@@ -31,7 +31,7 @@ object CommandHandlerActor {
 
 class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
                                           repositoryActor: ActorRef,
-                                          commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, CommandResult[Any]],
+                                          commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, CommandResult[CommandResponse]],
                                            initialState: () => AGGREGATE_ROOT) extends Actor with ActorLogging {
   
   var resultAggregatorsCounter = 0
@@ -40,14 +40,14 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
 
   private def waitingForCommand = logReceive {
     case commandEnvelope: InternalFirstCommandEnvelope[_, _] =>
-      handleFirstCommand(commandEnvelope.asInstanceOf[InternalFirstCommandEnvelope[AGGREGATE_ROOT, Any]])
+      handleFirstCommand(commandEnvelope.asInstanceOf[InternalFirstCommandEnvelope[AGGREGATE_ROOT, CommandResponse]])
     case commandEnvelope: InternalConcurrentCommandEnvelope[_, _] =>
-      requestAggregateForCommandHandling(commandEnvelope.asInstanceOf[InternalConcurrentCommandEnvelope[AGGREGATE_ROOT, Any]])
+      requestAggregateForCommandHandling(commandEnvelope.asInstanceOf[InternalConcurrentCommandEnvelope[AGGREGATE_ROOT, CommandResponse]])
     case commandEnvelope: InternalFollowingCommandEnvelope[_, _] =>
-      requestAggregateForCommandHandling(commandEnvelope.asInstanceOf[InternalFollowingCommandEnvelope[AGGREGATE_ROOT, Any]])
+      requestAggregateForCommandHandling(commandEnvelope.asInstanceOf[InternalFollowingCommandEnvelope[AGGREGATE_ROOT, CommandResponse]])
   }
 
-  private def waitingForAggregate(command: InternalCommandEnvelope[AGGREGATE_ROOT, _]) = logReceive {
+  private def waitingForAggregate(command: InternalCommandEnvelope[AGGREGATE_ROOT, CommandResponse]) = logReceive {
     case s:Success[_] => handleFollowingCommand(command, s.get.asInstanceOf[Aggregate[AGGREGATE_ROOT]])
     case f:Failure[_] => throw new IllegalStateException("Error getting aggregate")
   }
@@ -55,10 +55,10 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
 
   override def receive = waitingForCommand
 
-  private def handleFirstCommand[COMMAND <: FirstCommand[AGGREGATE_ROOT, RESPONSE], RESPONSE](envelope: InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE]) = envelope match {
+  private def handleFirstCommand[COMMAND <: FirstCommand[AGGREGATE_ROOT, RESPONSE], RESPONSE <: CommandResponse](envelope: InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE]) = envelope match {
     case InternalFirstCommandEnvelope(respondTo, commandId, command) =>
 
-      val result:CommandResult[Any] = commandHandlers(initialState())(command.asInstanceOf[FirstCommand[AGGREGATE_ROOT, Any]])
+      val result:CommandResult[CommandResponse] = commandHandlers(initialState())(command.asInstanceOf[FirstCommand[AGGREGATE_ROOT, CommandResponse]])
 
       result match {
         case s: CommandSuccess[_, _] =>
@@ -71,18 +71,18 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
 
   }
 
-  private def nextResultAggregatorName[RESPONSE, COMMAND <: Command[AGGREGATE_ROOT, RESPONSE]]: String = {
+  private def nextResultAggregatorName[RESPONSE <: CommandResponse, COMMAND <: Command[AGGREGATE_ROOT, RESPONSE]]: String = {
     resultAggregatorsCounter += 1
     "ResultAggregator_" + resultAggregatorsCounter
   }
 
-  private def requestAggregateForCommandHandling[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE](commandEnvelope: InternalCommandEnvelope[AGGREGATE_ROOT, RESPONSE]): Unit = {
+  private def requestAggregateForCommandHandling[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE <: CommandResponse](commandEnvelope: InternalCommandEnvelope[AGGREGATE_ROOT, RESPONSE]): Unit = {
     context.become(waitingForAggregate(commandEnvelope))
     repositoryActor ! GetAggregateRoot(self)
   }
 
   // TODO handling concurrent command is not thread safe
-  private def handleFollowingCommand[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE](envelope: InternalCommandEnvelope[AGGREGATE_ROOT, RESPONSE], aggregate: Aggregate[AGGREGATE_ROOT]): Unit = envelope match {
+  private def handleFollowingCommand[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE <: CommandResponse](envelope: InternalCommandEnvelope[AGGREGATE_ROOT, RESPONSE], aggregate: Aggregate[AGGREGATE_ROOT]): Unit = envelope match {
     case InternalConcurrentCommandEnvelope(respondTo, commandId, command) =>
       handleFollowingCommandVersionAware(aggregate, respondTo, command.userId, commandId, command, aggregate.version)
     case InternalFollowingCommandEnvelope(respondTo, commandId, command) =>
@@ -90,7 +90,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
     case e => throw new IllegalArgumentException(s"Unsupported envelope type [$e]")
   }
 
-  private def handleFollowingCommandVersionAware[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE](aggregate: Aggregate[AGGREGATE_ROOT], respondTo: ActorRef, userId: UserId,
+  private def handleFollowingCommandVersionAware[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE <: CommandResponse](aggregate: Aggregate[AGGREGATE_ROOT], respondTo: ActorRef, userId: UserId,
                                                                                               commandId: CommandId, commandEnvelope: Any, expectedVersion: AggregateVersion): Unit = {
     val result = commandHandlers(aggregate.aggregateRoot.get)(commandEnvelope)
 
