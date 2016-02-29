@@ -30,9 +30,9 @@ class EventStoreSchemaInitializer  {
           aggregate_id BIGINT NOT NULL,
           event_time TIMESTAMP NOT NULL,
           version INT NOT NULL,
-          event_type VARCHAR(128) NOT NULL,
+          event_type VARCHAR(1024) NOT NULL,
           event_type_version INT NOT NULL,
-          event VARCHAR(10240) NOT NULL)
+          event TEXT NOT NULL)
       """.execute().apply()
   }
 
@@ -58,7 +58,7 @@ class EventStoreSchemaInitializer  {
     sql"""
         CREATE TABLE IF NOT EXISTS aggregates (
           id BIGINT NOT NULL,
-          type VARCHAR(128) NOT NULL,
+          type VARCHAR(1024) NOT NULL,
           base_order INT NOT NULL,
           base_id BIGINT NOT NULL,
           base_version INT NOT NULL)
