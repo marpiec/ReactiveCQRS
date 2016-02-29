@@ -1,6 +1,6 @@
 package io.reactivecqrs.api
 
-import _root_.io.reactivecqrs.api.id.AggregateId
+import io.reactivecqrs.api.id.{CommandId, AggregateId}
 
 
 // Command handling default response
@@ -16,6 +16,7 @@ case class SuccessResponse(aggregateId: AggregateId, aggregateVersion: Aggregate
 case class CustomSuccessResponse[INFO](aggregateId: AggregateId, aggregateVersion: AggregateVersion, info: INFO) extends CustomCommandResponse[INFO]
 case class FailureResponse(exceptions: List[String]) extends CommandResponse
 case class AggregateConcurrentModificationError(aggregateId: AggregateId,
+                                                aggregateType: String,
                                                 expected: AggregateVersion,
                                                 was: AggregateVersion) extends CommandResponse
-case class CommandHandlingError(commandName: String, stackTrace: String) extends CommandResponse
+case class CommandHandlingError(commandName: String, stackTrace: String, commandId: CommandId) extends CommandResponse
