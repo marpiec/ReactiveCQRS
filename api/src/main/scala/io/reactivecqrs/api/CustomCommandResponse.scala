@@ -15,8 +15,7 @@ sealed abstract class CustomCommandResponse[INFO]
 case class SuccessResponse(aggregateId: AggregateId, aggregateVersion: AggregateVersion) extends CommandResponse
 case class CustomSuccessResponse[INFO](aggregateId: AggregateId, aggregateVersion: AggregateVersion, info: INFO) extends CustomCommandResponse[INFO]
 case class FailureResponse(exceptions: List[String]) extends CommandResponse
-case class AggregateConcurrentModificationError(aggregateType: AggregateType,
-                                                aggregateId: AggregateId,
+case class AggregateConcurrentModificationError(aggregateId: AggregateId,
                                                 expected: AggregateVersion,
                                                 was: AggregateVersion) extends CommandResponse
-case class CommandHandlingError(message: String) extends CommandResponse
+case class CommandHandlingError(commandName: String, stackTrace: String) extends CommandResponse

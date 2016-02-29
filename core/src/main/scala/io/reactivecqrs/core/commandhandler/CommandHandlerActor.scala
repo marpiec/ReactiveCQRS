@@ -1,5 +1,7 @@
 package io.reactivecqrs.core.commandhandler
 
+import java.io.{StringWriter, PrintWriter}
+
 import akka.actor.{Actor, ActorRef, Props}
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
@@ -8,7 +10,7 @@ import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalCommandE
 import io.reactivecqrs.core.util.ActorLogging
 
 import scala.concurrent.duration._
-import scala.util.{Failure, Success}
+import scala.util.{Try, Failure, Success}
 
 object CommandHandlerActor {
 
@@ -22,7 +24,6 @@ object CommandHandlerActor {
 
   case class InternalFollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE <: CustomCommandResponse[_]](respondTo: ActorRef, commandId: CommandId, commandEnvelope: Command[AGGREGATE_ROOT, RESPONSE])
     extends InternalCommandEnvelope[AGGREGATE_ROOT, RESPONSE]
-
 
   case class NoAggregateExist()
 
@@ -58,21 +59,34 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
   private def handleFirstCommand[COMMAND <: FirstCommand[AGGREGATE_ROOT, RESPONSE], RESPONSE <: CustomCommandResponse[_]](envelope: InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE]) = envelope match {
     case InternalFirstCommandEnvelope(respondTo, commandId, command) =>
 
-      val result:CustomCommandResult[Any] = commandHandlers(initialState())(command.asInstanceOf[FirstCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]])
 
-      result match {
-        case s: CommandSuccess[_, _] =>
-          val success = s.asInstanceOf[CommandSuccess[AGGREGATE_ROOT, AnyRef]]
-          val response = success.responseInfo match {
-            case r: Nothing => SuccessResponse(aggregateId, AggregateVersion(s.events.size))
-            case _ => CustomSuccessResponse(aggregateId, AggregateVersion(s.events.size), success.responseInfo)
-          }
-          val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, response.asInstanceOf[RESPONSE], responseTimeout)), nextResultAggregatorName)
-          repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, command.userId, AggregateVersion.ZERO, success.events)
-        case failure: CommandFailure[_, _] =>
-          respondTo ! failure.response
+      val resultTry:Try[CustomCommandResult[Any]] = Try {
+        commandHandlers(initialState())(command.asInstanceOf[FirstCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]])
       }
 
+      resultTry match {
+        case  Success(result) => result match {
+          case s: CommandSuccess[_, _] =>
+            val success = s.asInstanceOf[CommandSuccess[AGGREGATE_ROOT, AnyRef]]
+            val response = success.responseInfo match {
+              case r: Nothing => SuccessResponse(aggregateId, AggregateVersion(s.events.size))
+              case _ => CustomSuccessResponse(aggregateId, AggregateVersion(s.events.size), success.responseInfo)
+            }
+            val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, response.asInstanceOf[RESPONSE], responseTimeout)), nextResultAggregatorName)
+            repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, command.userId, AggregateVersion.ZERO, success.events)
+          case failure: CommandFailure[_, _] =>
+            respondTo ! failure.response
+        }
+        case Failure(exception) => respondTo ! CommandHandlingError(command.getClass.getSimpleName, stackTraceToString(exception))
+      }
+
+
+  }
+
+  private def stackTraceToString(e: Throwable) = {
+    val sw = new StringWriter()
+    e.printStackTrace(new PrintWriter(sw))
+    sw.toString
   }
 
   private def nextResultAggregatorName[RESPONSE <: CustomCommandResponse[_], COMMAND <: Command[AGGREGATE_ROOT, RESPONSE]]: String = {
@@ -94,22 +108,29 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
     case e => throw new IllegalArgumentException(s"Unsupported envelope type [$e]")
   }
 
-  private def handleFollowingCommandVersionAware[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE <: CustomCommandResponse[_]](aggregate: Aggregate[AGGREGATE_ROOT], respondTo: ActorRef, userId: UserId,
-                                                                                                                                     commandId: CommandId, commandEnvelope: Any, expectedVersion: AggregateVersion): Unit = {
-    val result = commandHandlers(aggregate.aggregateRoot.get)(commandEnvelope)
+  private def handleFollowingCommandVersionAware[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE <: CustomCommandResponse[_]](aggregate: Aggregate[AGGREGATE_ROOT], respondTo: ActorRef,
+                                                                                                                                     userId: UserId,commandId: CommandId, commandEnvelope: Any, expectedVersion: AggregateVersion): Unit = {
 
-    result match {
-      case s: CommandSuccess[_, _] =>
-        val success = s.asInstanceOf[CommandSuccess[AGGREGATE_ROOT, AnyRef]]
-        val response = success.responseInfo match {
-          case r: Nothing => SuccessResponse(aggregateId, AggregateVersion(s.events.size))
-          case _ => CustomSuccessResponse(aggregateId, AggregateVersion(s.events.size), success.responseInfo)
-        }
-        val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, response.asInstanceOf[RESPONSE], responseTimeout)), nextResultAggregatorName)
-        repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, expectedVersion, success.events)
-      case failure: CommandFailure[_, _] =>
-        respondTo ! failure.response
+    val resultTry:Try[CustomCommandResult[Any]] = Try {
+      commandHandlers(aggregate.aggregateRoot.get)(commandEnvelope)
     }
+
+    resultTry match {
+      case Success(result) => result match {
+        case s: CommandSuccess[_, _] =>
+          val success = s.asInstanceOf[CommandSuccess[AGGREGATE_ROOT, AnyRef]]
+          val response = success.responseInfo match {
+            case r: Nothing => SuccessResponse(aggregateId, expectedVersion.incrementBy(success.events.size))
+            case _ => CustomSuccessResponse(aggregateId, expectedVersion.incrementBy(success.events.size), success.responseInfo)
+          }
+          val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, response.asInstanceOf[RESPONSE], responseTimeout)), nextResultAggregatorName)
+          repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, expectedVersion, success.events)
+        case failure: CommandFailure[_, _] =>
+          respondTo ! failure.response
+      }
+      case Failure(exception) => respondTo ! CommandHandlingError(commandEnvelope.getClass.getSimpleName, stackTraceToString(exception))
+    }
+
     context.become(waitingForCommand)
   }
 

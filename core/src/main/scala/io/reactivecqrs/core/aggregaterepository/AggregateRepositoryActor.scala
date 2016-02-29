@@ -95,7 +95,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
     if (eventsEnvelope.expectedVersion == version) {
       persist(eventsEnvelope)(respond(eventsEnvelope.respondTo))
     } else {
-      eventsEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateType, eventsEnvelope.aggregateId, eventsEnvelope.expectedVersion, version)
+      eventsEnvelope.respondTo ! AggregateConcurrentModificationError(eventsEnvelope.aggregateId, eventsEnvelope.expectedVersion, version)
     }
 
   }
