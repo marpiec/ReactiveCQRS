@@ -77,7 +77,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
           case failure: CommandFailure[_, _] =>
             respondTo ! failure.response
         }
-        case Failure(exception) => respondTo ! CommandHandlingError(command.getClass.getSimpleName, stackTraceToString(exception))
+        case Failure(exception) => respondTo ! CommandHandlingError(command.getClass.getSimpleName, stackTraceToString(exception), commandId)
       }
 
 
