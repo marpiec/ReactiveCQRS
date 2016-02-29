@@ -128,7 +128,9 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
         case failure: CommandFailure[_, _] =>
           respondTo ! failure.response
       }
-      case Failure(exception) => respondTo ! CommandHandlingError(commandEnvelope.getClass.getSimpleName, stackTraceToString(exception))
+      case Failure(exception) =>
+        respondTo ! CommandHandlingError(commandEnvelope.getClass.getSimpleName, stackTraceToString(exception))
+        log.error(exception, "Error handling command")
     }
 
     context.become(waitingForCommand)
