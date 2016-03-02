@@ -21,3 +21,4 @@ case class AggregateConcurrentModificationError(aggregateId: AggregateId,
                                                 expected: AggregateVersion,
                                                 was: AggregateVersion) extends CommandResponse
 case class CommandHandlingError(commandName: String, stackTrace: String, commandId: CommandId) extends CommandResponse
+case class EventHandlingError(eventName: String, stackTrace: String, commandId: CommandId) extends CommandResponse
