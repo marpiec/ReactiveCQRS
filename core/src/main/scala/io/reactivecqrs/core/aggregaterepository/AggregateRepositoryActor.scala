@@ -87,13 +87,19 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
       }
       eventsBus ! PublishEvents(aggregateType, ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events, id, version, Option(aggregateRoot))
     case ee: PersistEvents[_] =>
-      val notHandledEvents = ee.asInstanceOf[PersistEvents[AGGREGATE_ROOT]].events.map(event => (event, tryToHandleEvent(event, false))).filter(_._2.isFailure)
-      if(notHandledEvents.isEmpty) {
-        handlePersistEvents(ee.asInstanceOf[PersistEvents[AGGREGATE_ROOT]])
-      } else {
-        val exception = notHandledEvents.head._2.asInstanceOf[Failure[Boolean]].exception
-        ee.respondTo ! EventHandlingError(notHandledEvents.head._1.getClass.getSimpleName, stackTraceToString(exception), ee.commandId)
-        log.error(exception, "Error handling event")
+
+      val result = ee.asInstanceOf[PersistEvents[AGGREGATE_ROOT]].events.foldLeft(Right(aggregateRoot).asInstanceOf[Either[(Exception, Event[AGGREGATE_ROOT]), AGGREGATE_ROOT]])((aggEither, event) => {
+        aggEither match {
+          case Right(agg) => tryToHandleEvent(event, false, agg)
+          case f: Left[_, _] => f
+        }
+      })
+
+      result match {
+        case s: Right[_, _] => handlePersistEvents(ee.asInstanceOf[PersistEvents[AGGREGATE_ROOT]])
+        case Left((exception, event)) =>
+          ee.respondTo ! EventHandlingError(event.getClass.getSimpleName, stackTraceToString(exception), ee.commandId)
+          log.error(exception, "Error handling event")
       }
 
     case GetAggregateRoot(respondTo) =>
@@ -147,18 +153,17 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
     respondTo ! ResultAggregator.AggregateModified
   }
 
-  private def tryToHandleEvent(event: Event[AGGREGATE_ROOT], noopEvent: Boolean): Try[Boolean] = {
+  private def tryToHandleEvent(event: Event[AGGREGATE_ROOT], noopEvent: Boolean, tmpAggregateRoot: AGGREGATE_ROOT): Either[(Exception, Event[AGGREGATE_ROOT]), AGGREGATE_ROOT] = {
     if(!noopEvent) {
       try {
-        eventHandlers(aggregateRoot)(event)
-        Success(true)
+        Right(eventHandlers(tmpAggregateRoot)(event))
       } catch {
         case e: Exception =>
           log.error("Error while handling event tryout : " + event)
-          Failure(e)
+          Left((e, event))
       }
     } else {
-      Success(true)
+      Right(tmpAggregateRoot)
     }
   }
 
