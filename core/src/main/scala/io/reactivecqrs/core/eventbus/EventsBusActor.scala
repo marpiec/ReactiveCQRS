@@ -70,8 +70,13 @@ class EventsBusActor(eventBus: EventBusState) extends Actor with ActorLogging {
     val subscriptionId = generateNextSubscriptionId
     val subscribersForAggregateType = subscriptions.getOrElse(aggregateType, Vector())
     val subscription = EventSubscription(subscriptionId, aggregateType, subscriber, classifier)
-    subscriptions += aggregateType -> (subscribersForAggregateType :+ subscription)
-    subscriptionsByIds += subscriptionId -> subscription
+    if(!subscribersForAggregateType.exists(s => s.isInstanceOf[EventSubscription]
+                                             && s.asInstanceOf[EventSubscription].aggregateType == aggregateType
+                                             && s.asInstanceOf[EventSubscription].subscriber.path.toString == subscriber.path.toString
+                                             && s.asInstanceOf[EventSubscription].classifier == classifier)) {
+      subscriptions += aggregateType -> (subscribersForAggregateType :+ subscription)
+      subscriptionsByIds += subscriptionId -> subscription
+    }
     subscriber ! SubscribedForEvents(messageId, aggregateType, subscriptionId)
   }
 
@@ -79,8 +84,13 @@ class EventsBusActor(eventBus: EventBusState) extends Actor with ActorLogging {
     val subscriptionId = generateNextSubscriptionId
     val subscribersForAggregateType = subscriptions.getOrElse(aggregateType, Vector())
     val subscription = AggregateSubscription(subscriptionId, aggregateType, subscriber, classifier)
-    subscriptions += aggregateType -> (subscribersForAggregateType :+ subscription)
-    subscriptionsByIds += subscriptionId -> subscription
+    if(!subscribersForAggregateType.exists(s => s.isInstanceOf[AggregateSubscription]
+      && s.asInstanceOf[AggregateSubscription].aggregateType == aggregateType
+      && s.asInstanceOf[AggregateSubscription].subscriber.path.toString == subscriber.path.toString
+      && s.asInstanceOf[AggregateSubscription].classifier == classifier)) {
+      subscriptions += aggregateType -> (subscribersForAggregateType :+ subscription)
+      subscriptionsByIds += subscriptionId -> subscription
+    }
     subscriber ! SubscribedForAggregates(messageId, aggregateType, subscriptionId)
   }
 
@@ -88,8 +98,13 @@ class EventsBusActor(eventBus: EventBusState) extends Actor with ActorLogging {
     val subscriptionId = generateNextSubscriptionId
     val subscribersForAggregateType = subscriptions.getOrElse(aggregateType, Vector())
     val subscription = AggregateWithEventSubscription(subscriptionId, aggregateType, subscriber, classifier)
-    subscriptions += aggregateType -> (subscribersForAggregateType :+ subscription)
-    subscriptionsByIds += subscriptionId -> subscription
+    if(!subscribersForAggregateType.exists(s => s.isInstanceOf[AggregateWithEventSubscription]
+      && s.asInstanceOf[AggregateWithEventSubscription].aggregateType == aggregateType
+      && s.asInstanceOf[AggregateWithEventSubscription].subscriber.path.toString == subscriber.path.toString
+      && s.asInstanceOf[AggregateWithEventSubscription].classifier == classifier)) {
+      subscriptions += aggregateType -> (subscribersForAggregateType :+ subscription)
+      subscriptionsByIds += subscriptionId -> subscription
+    }
     subscriber ! SubscribedForAggregatesWithEvents(messageId, aggregateType, subscriptionId)
   }
 
