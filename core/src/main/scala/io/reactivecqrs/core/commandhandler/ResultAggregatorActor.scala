@@ -26,9 +26,11 @@ class ResultAggregator[RESPONSE <: CustomCommandResponse[_]](private val respond
       respondTo ! e
       self ! PoisonPill
     case e: CommandHandlingError =>
+      log.error("CommandHandlingError " + e.commandName +"\n" + e.stackTrace)
       respondTo ! e
       self ! PoisonPill
     case e: EventHandlingError =>
+      log.error("EventHandlingError " + e.eventName +"\n" + e.stackTrace)
       respondTo ! e
       self ! PoisonPill
   }
