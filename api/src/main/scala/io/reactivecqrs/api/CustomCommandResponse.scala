@@ -15,10 +15,10 @@ sealed abstract class CustomCommandResponse[INFO: TypeTag]
 
 case class SuccessResponse(aggregateId: AggregateId, aggregateVersion: AggregateVersion) extends CommandResponse
 case class CustomSuccessResponse[INFO: TypeTag](aggregateId: AggregateId, aggregateVersion: AggregateVersion, info: INFO) extends CustomCommandResponse[INFO]
-case class FailureResponse(exceptions: List[String]) extends CommandResponse
+case class FailureResponse(exceptions: List[String]) extends CustomCommandResponse[Nothing]
 case class AggregateConcurrentModificationError(aggregateId: AggregateId,
                                                 aggregateType: String,
                                                 expected: AggregateVersion,
-                                                was: AggregateVersion) extends CommandResponse
-case class CommandHandlingError(commandName: String, stackTrace: String, commandId: CommandId) extends CommandResponse
-case class EventHandlingError(eventName: String, stackTrace: String, commandId: CommandId) extends CommandResponse
+                                                was: AggregateVersion) extends CustomCommandResponse[Nothing]
+case class CommandHandlingError(commandName: String, stackTrace: String, commandId: CommandId) extends CustomCommandResponse[Nothing]
+case class EventHandlingError(eventName: String, stackTrace: String, commandId: CommandId) extends CustomCommandResponse[Nothing]
