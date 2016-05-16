@@ -1,10 +1,11 @@
 package io.reactivecqrs.core.aggregaterepository
 
-import _root_.io.reactivecqrs.api._
-import _root_.io.reactivecqrs.core.commandhandler.ResultAggregator
-import _root_.io.reactivecqrs.core.errors.AggregateConcurrentModificationError
-import _root_.io.reactivecqrs.core.eventstore.EventStoreState
-import _root_.io.reactivecqrs.core.util.ActorLogging
+import java.io.{PrintWriter, StringWriter}
+
+import io.reactivecqrs.core.commandhandler.ResultAggregator
+import io.reactivecqrs.core.eventstore.EventStoreState
+import io.reactivecqrs.core.util.ActorLogging
+import io.reactivecqrs.api._
 import akka.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
@@ -13,7 +14,7 @@ import scala.concurrent.Future
 import scala.concurrent.duration._
 import scala.reflect._
 import scala.reflect.runtime.universe._
-import scala.util.{Failure, Success}
+import scala.util.{Try, Failure, Success}
 
 object AggregateRepositoryActor {
   case class GetAggregateRoot(respondTo: ActorRef)
@@ -69,7 +70,11 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
 
   context.system.scheduler.schedule(60.seconds, 60.seconds, self, ResendPersistedMessages)(context.dispatcher)
 
-
+  private def stackTraceToString(e: Throwable) = {
+    val sw = new StringWriter()
+    e.printStackTrace(new PrintWriter(sw))
+    sw.toString
+  }
 
   override def receive = logReceive {
     case ep: EventsPersisted[_] =>
@@ -82,7 +87,21 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
       }
       eventsBus ! PublishEvents(aggregateType, ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events, id, version, Option(aggregateRoot))
     case ee: PersistEvents[_] =>
-      handlePersistEvents(ee.asInstanceOf[PersistEvents[AGGREGATE_ROOT]])
+
+      val result = ee.asInstanceOf[PersistEvents[AGGREGATE_ROOT]].events.foldLeft(Right(aggregateRoot).asInstanceOf[Either[(Exception, Event[AGGREGATE_ROOT]), AGGREGATE_ROOT]])((aggEither, event) => {
+        aggEither match {
+          case Right(agg) => tryToHandleEvent(event, false, agg)
+          case f: Left[_, _] => f
+        }
+      })
+
+      result match {
+        case s: Right[_, _] => handlePersistEvents(ee.asInstanceOf[PersistEvents[AGGREGATE_ROOT]])
+        case Left((exception, event)) =>
+          ee.respondTo ! EventHandlingError(event.getClass.getSimpleName, stackTraceToString(exception), ee.commandId)
+          log.error(exception, "Error handling event")
+      }
+
     case GetAggregateRoot(respondTo) =>
       receiveReturnAggregateRoot(respondTo)
     case PublishEventsAck(events) =>
@@ -96,7 +115,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
     if (eventsEnvelope.expectedVersion == version) {
       persist(eventsEnvelope)(respond(eventsEnvelope.respondTo))
     } else {
-      eventsEnvelope.respondTo ! AggregateConcurrentModificationError(eventsEnvelope.expectedVersion, version)
+      eventsEnvelope.respondTo ! AggregateConcurrentModificationError(eventsEnvelope.aggregateId, aggregateType.simpleName, eventsEnvelope.expectedVersion, version)
     }
 
   }
@@ -134,13 +153,34 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
     respondTo ! ResultAggregator.AggregateModified
   }
 
+  private def tryToHandleEvent(event: Event[AGGREGATE_ROOT], noopEvent: Boolean, tmpAggregateRoot: AGGREGATE_ROOT): Either[(Exception, Event[AGGREGATE_ROOT]), AGGREGATE_ROOT] = {
+    if(!noopEvent) {
+      try {
+        Right(eventHandlers(tmpAggregateRoot)(event))
+      } catch {
+        case e: Exception =>
+          log.error("Error while handling event tryout : " + event)
+          Left((e, event))
+      }
+    } else {
+      Right(tmpAggregateRoot)
+    }
+  }
+
   private def handleEvent(event: Event[AGGREGATE_ROOT], aggregateId: AggregateId, noopEvent: Boolean): Unit = {
 //    aggregateRoot = eventHandlers(event.getClass.getName) match {
 //      case handler: FirstEventHandler[_, _] => handler.asInstanceOf[FirstEventHandler[AGGREGATE_ROOT, FirstEvent[AGGREGATE_ROOT]]].handle(event.asInstanceOf[FirstEvent[AGGREGATE_ROOT]])
 //      case handler: EventHandler[_, _] => handler.asInstanceOf[EventHandler[AGGREGATE_ROOT, Event[AGGREGATE_ROOT]]].handle(aggregateRoot, event)
 //    }
     if(!noopEvent) {
-      aggregateRoot = eventHandlers(aggregateRoot)(event)
+      try {
+        aggregateRoot = eventHandlers(aggregateRoot)(event)
+      } catch {
+        case e: Exception =>
+          log.error("Error while handling event: " + event)
+          throw e;
+      }
+
     }
 
     if(aggregateId == id) { // otherwise it's event from base aggregate we don't want to count

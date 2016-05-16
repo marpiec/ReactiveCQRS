@@ -4,7 +4,9 @@ import io.reactivecqrs.api.id.AggregateId
 import scala.reflect.runtime.universe._
 
 
-case class AggregateType(typeName: String)
+case class AggregateType(typeName: String) {
+  def simpleName = typeName.substring(typeName.lastIndexOf(".") + 1)
+}
 
 case class EventType(typeName: String)
 
