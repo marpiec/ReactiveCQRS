@@ -23,7 +23,9 @@ class MemoryEventStoreState extends EventStoreState {
     var versionsIncreased = 0
     eventsEnvelope.events.foreach(event => {
       eventsForAggregate :+= event
-      eventsToPublish += (aggregateId, eventsEnvelope.expectedVersion.asInt + versionsIncreased) -> (eventsEnvelope.userId, eventsEnvelope.timestamp, event)
+      val key = (aggregateId, eventsEnvelope.expectedVersion.asInt + versionsIncreased)
+      val value = (eventsEnvelope.userId, eventsEnvelope.timestamp, event)
+      eventsToPublish += key -> value
       versionsIncreased += 1
     })
 

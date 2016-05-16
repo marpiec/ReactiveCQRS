@@ -5,7 +5,7 @@ import java.time.Instant
 
 import akka.actor.{Actor, ActorRef, Props}
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.command.LogFirstCommand
+import io.reactivecqrs.api.command.{LogCommand, LogConcurrentCommand, LogFirstCommand}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRoot, PersistEvents}
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalCommandEnvelope, InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
@@ -113,10 +113,10 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
   }
 
   private def handleFollowingCommandVersionAware[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE <: CustomCommandResponse[_]](aggregate: Aggregate[AGGREGATE_ROOT], respondTo: ActorRef,
-                                                                                                                                     userId: UserId, commandId: CommandId, commandEnvelope: Any, expectedVersion: AggregateVersion): Unit = {
+                                                                                                                                     userId: UserId, commandId: CommandId, command: Any, expectedVersion: AggregateVersion): Unit = {
 
     val resultTry:Try[CustomCommandResult[Any]] = Try {
-      commandHandlers(aggregate.aggregateRoot.get)(commandEnvelope)
+      commandHandlers(aggregate.aggregateRoot.get)(command)
     }
 
     resultTry match {
@@ -129,11 +129,16 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
           }
           val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, response.asInstanceOf[RESPONSE], responseTimeout)), nextResultAggregatorName)
           repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, expectedVersion, Instant.now, success.events)
+          command match {
+            case c: Command[_, _] => commandLogActor ! LogCommand(commandId, c)
+            case c: ConcurrentCommand[_, _] => commandLogActor ! LogConcurrentCommand(commandId, c)
+          }
+
         case failure: CommandFailure[_, _] =>
           respondTo ! failure.response
       }
       case Failure(exception) =>
-        respondTo ! CommandHandlingError(commandEnvelope.getClass.getSimpleName, stackTraceToString(exception), commandId)
+        respondTo ! CommandHandlingError(command.getClass.getSimpleName, stackTraceToString(exception), commandId)
         log.error(exception, "Error handling command")
     }
 

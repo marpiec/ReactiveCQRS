@@ -23,7 +23,7 @@ case class SubscribeForAll(subscriptionCode: String, listener: ActorRef)
 class SimpleProjection(val eventBusActor: ActorRef) extends ProjectionActor with Subscribable {
 
   override def receiveSubscriptionRequest: Receive = {
-    case SubscribeForAll(code, listener) => handleSubscribe(code, listener, (s: String) => Some(s, NothingMetadata()))
+    case SubscribeForAll(code, listener) => handleSubscribe(code, listener, (s: String) => Some((s, NothingMetadata())))
   }
 
   override protected def receiveQuery: Receive = {

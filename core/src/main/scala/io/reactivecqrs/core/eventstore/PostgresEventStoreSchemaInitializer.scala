@@ -147,12 +147,12 @@ class PostgresEventStoreSchemaInitializer  {
           |        IF expected_version != 0 THEN
           |          RAISE EXCEPTION 'Duplication event might occur only for non existing aggregate, so expected version need to be 0';
           |        ELSE
-          |          INSERT INTO AGGREGATES (id, type, base_order, base_id, base_version) (select aggregate_id, aggregate_type, base_order, base_id, base_version
-          |            from AGGREGATES
+          |          INSERT INTO aggregates (id, type, base_order, base_id, base_version) (select aggregate_id, aggregate_type, base_order, base_id, base_version
+          |            from aggregates
           |            where id = _base_id);
           |            current_version := 0;
           |          SELECT base_order INTO base_count FROM aggregates WHERE id = aggregate_id AND base_id = _base_id;
-          |          INSERT INTO AGGREGATES (id, type, base_order, base_id, base_version) VALUES (aggregate_id, aggregate_type, base_count + 1, aggregate_id, 0);
+          |          INSERT INTO aggregates (id, type, base_order, base_id, base_version) VALUES (aggregate_id, aggregate_type, base_count + 1, aggregate_id, 0);
           |          UPDATE aggregates SET base_version = _base_version WHERE id = aggregate_id AND base_id = _base_id;
           |        END IF;
           |    ELSE
