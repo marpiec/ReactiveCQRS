@@ -1,6 +1,7 @@
 package io.reactivecqrs.core.commandhandler
 
 import java.io.{PrintWriter, StringWriter}
+import java.time.Instant
 
 import akka.actor.{Actor, ActorRef, Props}
 import io.reactivecqrs.api._
@@ -75,7 +76,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
               case _ => CustomSuccessResponse(aggregateId, AggregateVersion(s.events.size), success.responseInfo)
             }
             val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, response.asInstanceOf[RESPONSE], responseTimeout)), nextResultAggregatorName)
-            repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, command.userId, AggregateVersion.ZERO, success.events)
+            repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, command.userId, AggregateVersion.ZERO, Instant.now, success.events)
             commandLogActor ! LogFirstCommand(commandId, command)
           case failure: CommandFailure[_, _] =>
             respondTo ! failure.response
@@ -127,7 +128,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
             case _ => CustomSuccessResponse(aggregateId, expectedVersion.incrementBy(success.events.size), success.responseInfo)
           }
           val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, response.asInstanceOf[RESPONSE], responseTimeout)), nextResultAggregatorName)
-          repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, expectedVersion, success.events)
+          repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, userId, expectedVersion, Instant.now, success.events)
         case failure: CommandFailure[_, _] =>
           respondTo ! failure.response
       }

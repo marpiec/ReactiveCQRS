@@ -1,9 +1,11 @@
 package io.reactivecqrs.testdomain.shoppingcart
 
+import java.time.Instant
+
 import akka.actor.ActorRef
 import akka.pattern.ask
 import akka.util.Timeout
-import io.reactivecqrs.api.id.AggregateId
+import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.api.{Aggregate, AggregateVersion, Event, GetAggregateForVersion}
 import io.reactivecqrs.core.documentstore.DocumentStore
 import io.reactivecqrs.core.projection.ProjectionActor
@@ -24,7 +26,7 @@ class ShoppingCartsListProjectionEventsBased(val eventBusActor: ActorRef,
 
   protected val listeners = List(EventListener(shoppingCartUpdate))
 
-  private def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, event: Event[ShoppingCart]): Unit = event match {
+  private def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, event: Event[ShoppingCart], userId: UserId, timestamp: Instant): Unit = event match {
     case ShoppingCartCreated(name) =>
       documentStore.insertDocument(aggregateId.asLong, name, version)
     case ShoppingCartDuplicated(baseId, baseVersion) =>

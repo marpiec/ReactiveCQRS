@@ -4,7 +4,7 @@ import java.time.Instant
 
 import akka.actor.{Actor, ActorRef}
 import akka.event.LoggingReceive
-import io.reactivecqrs.api.id.AggregateId
+import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.aggregaterepository.IdentifiableEvent
 import io.reactivecqrs.core.eventbus.EventsBusActor
@@ -24,13 +24,13 @@ abstract class ProjectionActor extends Actor with ActorLogging {
   }
 
   // ListenerParam and listener are separately so covariant type is allowed
-  protected class EventListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT]) => Unit) extends Listener[AGGREGATE_ROOT] {
-    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Event[Any]) => Unit]
+  protected class EventListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT], UserId, Instant) => Unit) extends Listener[AGGREGATE_ROOT] {
+    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Event[Any], UserId, Instant) => Unit]
     def aggregateRootType = typeOf[AGGREGATE_ROOT]
   }
 
   protected object EventListener {
-    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT]) => Unit): EventListener[AGGREGATE_ROOT] =
+    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT], UserId, Instant) => Unit): EventListener[AGGREGATE_ROOT] =
       new EventListener[AGGREGATE_ROOT](listener)
   }
 
@@ -48,13 +48,13 @@ abstract class ProjectionActor extends Actor with ActorLogging {
 
 
   // ListenerParam and listener are separately so covariant type is allowed
-  protected class AggregateWithEventListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT], Option[AGGREGATE_ROOT]) => Unit) extends Listener[AGGREGATE_ROOT] {
-    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Event[Any], Option[Any]) => Unit]
+  protected class AggregateWithEventListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT], Option[AGGREGATE_ROOT], UserId, Instant) => Unit) extends Listener[AGGREGATE_ROOT] {
+    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Event[Any], Option[Any], UserId, Instant) => Unit]
     def aggregateRootType = typeOf[AGGREGATE_ROOT]
   }
 
   protected object AggregateWithEventListener {
-    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT], Option[AGGREGATE_ROOT]) => Unit): AggregateWithEventListener[AGGREGATE_ROOT] =
+    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT], Option[AGGREGATE_ROOT], UserId, Instant) => Unit): AggregateWithEventListener[AGGREGATE_ROOT] =
       new AggregateWithEventListener[AGGREGATE_ROOT](listener)
   }
 
@@ -117,12 +117,12 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       aggregateListenersMap(a.aggregateType)(a.id, a.version, a.aggregateRoot)
       sender() ! MessageAck(self, a.id, a.version)
       replayQueries()
-    case a: AggregateWithTypeAndEvent[_] =>
-      aggregateWithEventListenersMap(a.aggregateType)(a.id, a.version, a.event.asInstanceOf[Event[Any]], a.aggregateRoot)
-      sender() ! MessageAck(self, a.id, a.version)
+    case ae: AggregateWithTypeAndEvent[_] =>
+      aggregateWithEventListenersMap(ae.aggregateType)(ae.id, ae.version, ae.event.asInstanceOf[Event[Any]], ae.aggregateRoot, ae.userId, ae.timestamp)
+      sender() ! MessageAck(self, ae.id, ae.version)
       replayQueries()
     case e: IdentifiableEvent[_] =>
-      eventListenersMap(e.aggregateType)(e.aggregateId, e.version, e.event.asInstanceOf[Event[Any]])
+      eventListenersMap(e.aggregateType)(e.aggregateId, e.version, e.event.asInstanceOf[Event[Any]], e.userId, e.timestamp)
       sender() ! MessageAck(self, e.aggregateId, e.version)
       replayQueries()
   }

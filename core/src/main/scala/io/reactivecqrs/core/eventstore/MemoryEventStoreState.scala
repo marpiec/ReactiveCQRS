@@ -1,14 +1,16 @@
 package io.reactivecqrs.core.eventstore
 
-import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.api.{UndoEvent, AggregateVersion, Event}
+import java.time.Instant
+
+import io.reactivecqrs.api.id.{AggregateId, UserId}
+import io.reactivecqrs.api.{AggregateVersion, Event, UndoEvent}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEventNoAggregateType}
 
 class MemoryEventStoreState extends EventStoreState {
 
   private var eventStore: Map[AggregateId, Vector[Event[_]]] = Map()
-  private var eventsToPublish: Map[(AggregateId, Int), Event[_]] = Map()
+  private var eventsToPublish: Map[(AggregateId, Int), (UserId, Instant, Event[_])] = Map()
 
 
   override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Unit = {
@@ -21,7 +23,7 @@ class MemoryEventStoreState extends EventStoreState {
     var versionsIncreased = 0
     eventsEnvelope.events.foreach(event => {
       eventsForAggregate :+= event
-      eventsToPublish += (aggregateId, eventsEnvelope.expectedVersion.asInt + versionsIncreased) -> event
+      eventsToPublish += (aggregateId, eventsEnvelope.expectedVersion.asInt + versionsIncreased) -> (eventsEnvelope.userId, eventsEnvelope.timestamp, event)
       versionsIncreased += 1
     })
 
@@ -73,7 +75,7 @@ class MemoryEventStoreState extends EventStoreState {
   override def readEventsToPublishForAggregate[AGGREGATE_ROOT](aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]] = {
 
     eventsToPublish.filterKeys(_._1 == aggregateId).toList.
-      map(e => IdentifiableEventNoAggregateType[AGGREGATE_ROOT](e._1._1, AggregateVersion(e._1._2), e._2.asInstanceOf[Event[AGGREGATE_ROOT]]))
+      map(e => IdentifiableEventNoAggregateType[AGGREGATE_ROOT](e._1._1, AggregateVersion(e._1._2), e._2._3.asInstanceOf[Event[AGGREGATE_ROOT]], e._2._1, e._2._2))
 
   }
 }

@@ -1,6 +1,9 @@
 package io.reactivecqrs.api
 
-import io.reactivecqrs.api.id.AggregateId
+import java.time.Instant
+
+import io.reactivecqrs.api.id.{AggregateId, UserId}
+
 import scala.reflect.runtime.universe._
 
 
@@ -12,6 +15,6 @@ case class EventType(typeName: String)
 
 case class AggregateWithType[AGGREGATE_ROOT](aggregateType: AggregateType, id: AggregateId, version: AggregateVersion, aggregateRoot: Option[AGGREGATE_ROOT])
 
-case class AggregateWithTypeAndEvent[AGGREGATE_ROOT](aggregateType: AggregateType, id: AggregateId, version: AggregateVersion, aggregateRoot: Option[AGGREGATE_ROOT], event: Event[AGGREGATE_ROOT])
+case class AggregateWithTypeAndEvent[AGGREGATE_ROOT](aggregateType: AggregateType, id: AggregateId, version: AggregateVersion, aggregateRoot: Option[AGGREGATE_ROOT], event: Event[AGGREGATE_ROOT], userId: UserId, timestamp: Instant)
 
 case class Aggregate[AGGREGATE_ROOT: TypeTag](id: AggregateId, version: AggregateVersion, aggregateRoot: Option[AGGREGATE_ROOT])

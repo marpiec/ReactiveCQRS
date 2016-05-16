@@ -1,6 +1,7 @@
 package io.reactivecqrs.core.aggregaterepository
 
 import java.io.{PrintWriter, StringWriter}
+import java.time.Instant
 
 import io.reactivecqrs.core.commandhandler.ResultAggregator
 import io.reactivecqrs.core.eventstore.EventStoreState
@@ -14,7 +15,7 @@ import scala.concurrent.Future
 import scala.concurrent.duration._
 import scala.reflect._
 import scala.reflect.runtime.universe._
-import scala.util.{Try, Failure, Success}
+import scala.util.{Failure, Success, Try}
 
 object AggregateRepositoryActor {
   case class GetAggregateRoot(respondTo: ActorRef)
@@ -24,6 +25,7 @@ object AggregateRepositoryActor {
                                             commandId: CommandId,
                                             userId: UserId,
                                             expectedVersion: AggregateVersion,
+                                            timestamp: Instant,
                                             events: Seq[Event[AGGREGATE_ROOT]])
 
 
@@ -61,7 +63,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
 
   private def resendEventsToPublish(): Unit = {
     if(eventsToPublish.nonEmpty) {
-      eventsBus ! PublishEvents(aggregateType, eventsToPublish.map(e => IdentifiableEvent(aggregateType, id, e.version, e.event)), id, version, Option(aggregateRoot))
+      eventsBus ! PublishEvents(aggregateType, eventsToPublish.map(e => IdentifiableEvent(aggregateType, id, e.version, e.event, e.userId, e.timestamp)), id, version, Option(aggregateRoot))
     }
   }
 
@@ -141,7 +143,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
       self ! EventsPersisted(eventsEnvelope.events.map { event =>
         val eventVersion = eventsEnvelope.expectedVersion.incrementBy(mappedEvents + 1)
         mappedEvents += 1
-        IdentifiableEvent(AggregateType(event.aggregateRootType.toString), eventsEnvelope.aggregateId, eventVersion, event)
+        IdentifiableEvent(AggregateType(event.aggregateRootType.toString), eventsEnvelope.aggregateId, eventVersion, event, eventsEnvelope.userId, eventsEnvelope.timestamp)
       })
       afterPersist(eventsEnvelope.events)
 //    } onFailure {

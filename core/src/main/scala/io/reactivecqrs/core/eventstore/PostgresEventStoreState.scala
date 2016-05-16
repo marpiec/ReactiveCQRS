@@ -1,8 +1,11 @@
 package io.reactivecqrs.core.eventstore
 
+import java.sql.Timestamp
+import java.time.Instant
+
 import io.mpjsons.MPJsons
-import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.api.{DuplicationEvent, UndoEvent, AggregateVersion, Event}
+import io.reactivecqrs.api.id.{AggregateId, UserId}
+import io.reactivecqrs.api.{AggregateVersion, DuplicationEvent, Event, UndoEvent}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEventNoAggregateType}
 import scalikejdbc._
@@ -22,7 +25,7 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
 
         val query = event match {
           case undoEvent: UndoEvent[_] =>
-            sql"""SELECT add_undo_event(?, ?, ?, ? ,? , ?, ?, ?, ?)""".bind(
+            sql"""SELECT add_undo_event(?, ?, ?, ? ,? , ?, ?, ?, ?, ?)""".bind(
               eventsEnvelope.commandId.asLong,
               eventsEnvelope.userId.asLong,
               aggregateId.asLong,
@@ -30,11 +33,12 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
               event.aggregateRootType.typeSymbol.fullName,
               event.getClass.getName,
               0,
+              Timestamp.from(Instant.now),
               eventSerialized,
               undoEvent.eventsCount
             ).execute().apply()
           case duplicationEvent: DuplicationEvent[_] =>
-            sql"""SELECT add_duplication_event(?, ?, ?, ? ,? , ?, ?, ?, ?, ?)""".bind(
+            sql"""SELECT add_duplication_event(?, ?, ?, ? ,? , ?, ?, ?, ?, ?, ?)""".bind(
               eventsEnvelope.commandId.asLong,
               eventsEnvelope.userId.asLong,
               aggregateId.asLong,
@@ -42,12 +46,13 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
               event.aggregateRootType.typeSymbol.fullName,
               event.getClass.getName,
               0,
+              Timestamp.from(Instant.now),
               eventSerialized,
               duplicationEvent.baseAggregateId.asLong,
               duplicationEvent.baseAggregateVersion.asInt
             ).execute().apply()
           case _ =>
-            sql"""SELECT add_event(?, ?, ?, ? ,? , ?, ? ,?)""".bind(
+            sql"""SELECT add_event(?, ?, ?, ? ,? , ?, ? ,?, ?)""".bind(
               eventsEnvelope.commandId.asLong,
               eventsEnvelope.userId.asLong,
               aggregateId.asLong,
@@ -55,7 +60,9 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
               event.aggregateRootType.typeSymbol.fullName,
               event.getClass.getName,
               0,
-              eventSerialized).execute().apply()
+              Timestamp.from(Instant.now),
+              eventSerialized
+            ).execute().apply()
 
         }
 
@@ -123,7 +130,7 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
   override def readEventsToPublishForAggregate[AGGREGATE_ROOT](aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]] = {
     var result = List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]]()
     DB.readOnly { implicit session =>
-      sql"""SELECT events_to_publish.version, events.event_type, events.event_type_version, events.event
+      sql"""SELECT events_to_publish.version, events.event_type, events.event_type_version, events.event, events.user_id, events.event_time
            | FROM events_to_publish
            | JOIN events on events_to_publish.event_id = events.id
            | WHERE events_to_publish.aggregate_id = ?
@@ -131,7 +138,7 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
 
         val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(4), rs.string(2))
 
-        result ::= IdentifiableEventNoAggregateType[AGGREGATE_ROOT](aggregateId, AggregateVersion(rs.int(1)), event)
+        result ::= IdentifiableEventNoAggregateType[AGGREGATE_ROOT](aggregateId, AggregateVersion(rs.int(1)), event, UserId(rs.long(5)), rs.timestamp(6).toInstant)
 
       }
     }
