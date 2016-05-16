@@ -6,6 +6,7 @@ import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
+import io.reactivecqrs.core.commandlog.PostgresCommandLogState
 import io.reactivecqrs.core.documentstore.MemoryDocumentStore
 import io.reactivecqrs.core.eventbus.{EventsBusActor, PostgresEventBusState}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
@@ -30,8 +31,13 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
 
   def Fixture = new {
-    val eventStoreState = new PostgresEventStoreState(new MPJsons) // or MemoryEventStore
+    val mpjsons = new MPJsons
+    val eventStoreState = new PostgresEventStoreState(mpjsons) // or MemoryEventStore
     eventStoreState.initSchema()
+
+    val commandLogState = new PostgresCommandLogState(mpjsons)
+    commandLogState.initSchema()
+
     val userId = UserId(1L)
     val serialization = SerializationExtension(system)
     val eventBusState = new PostgresEventBusState(serialization) // or MemoryEventBusState
@@ -42,7 +48,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val uidGenerator = system.actorOf(Props(new UidGeneratorActor(aggregatesUidGenerator, commandsUidGenerator)), "uidGenerator")
     val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusState)), "eventBus")
     val shoppingCartCommandBus: ActorRef = system.actorOf(
-      AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStoreState, eventBusActor), "ShoppingCartCommandBus")
+      AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStoreState, commandLogState, eventBusActor), "ShoppingCartCommandBus")
 
     val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusActor, shoppingCartCommandBus, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionEventsBased")
     val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusActor, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionAggregatesBased")

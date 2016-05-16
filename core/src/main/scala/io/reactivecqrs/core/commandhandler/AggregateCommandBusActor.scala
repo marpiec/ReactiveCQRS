@@ -10,6 +10,7 @@ import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.GetAggregateRoot
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.AggregateActors
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
+import io.reactivecqrs.core.commandlog.{CommandLogActor, CommandLogState}
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
 import io.reactivecqrs.core.util.ActorLogging
@@ -22,14 +23,15 @@ import scala.reflect.runtime.universe._
 
 object AggregateCommandBusActor {
 
-  private case class AggregateActors(commandHandler: ActorRef, repository: ActorRef)
+  private case class AggregateActors(commandHandler: ActorRef, repository: ActorRef, commandLog: ActorRef)
 
 
   def apply[AGGREGATE_ROOT:ClassTag:TypeTag](aggregate: AggregateContext[AGGREGATE_ROOT],
-                                             uidGenerator: ActorRef, eventStore: EventStoreState, eventBus: ActorRef): Props = {
+                                             uidGenerator: ActorRef, eventStoreState: EventStoreState, commandLogState: CommandLogState, eventBus: ActorRef): Props = {
     Props(new AggregateCommandBusActor[AGGREGATE_ROOT](
       uidGenerator,
-      eventStore,
+      eventStoreState,
+      commandLogState,
       aggregate.commandHandlers,
       aggregate.eventHandlers,
       eventBus,
@@ -44,6 +46,7 @@ object AggregateCommandBusActor {
 
 class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRef,
                                                        eventStore: EventStoreState,
+                                                       commandLogState: CommandLogState,
                                                        val commandsHandlers: AGGREGATE_ROOT => PartialFunction[Any, CustomCommandResult[Any]],
                                                        val eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
                                                        val eventBus: ActorRef,
@@ -93,13 +96,15 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private def createAggregateActors(aggregateId: AggregateId): AggregateActors = {
     val repositoryActor = getOrCreateAggregateRepositoryActor(aggregateId)
 
+    val commandLogActor = context.actorOf(Props(new CommandLogActor[AGGREGATE_ROOT](aggregateId, commandLogState)), aggregateTypeSimpleName+"_CommandLog_" + aggregateId.asLong)
+
     val commandHandlerActor = context.actorOf(Props(new CommandHandlerActor[AGGREGATE_ROOT](
-      aggregateId, repositoryActor,
+      aggregateId, repositoryActor, commandLogActor,
       commandsHandlers.asInstanceOf[AGGREGATE_ROOT => PartialFunction[Any, CustomCommandResult[Any]]],
     initialState)),
       aggregateTypeSimpleName + "_CommandHandler_" + aggregateId.asLong)
 
-    val actors = AggregateActors(commandHandlerActor, repositoryActor)
+    val actors = AggregateActors(commandHandlerActor, repositoryActor, commandLogActor)
     aggregatesActors += aggregateId.asLong -> actors
     actors
   }

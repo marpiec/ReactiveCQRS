@@ -3,7 +3,7 @@ package io.reactivecqrs.core.eventstore
 import scalikejdbc._
 
 
-class EventStoreSchemaInitializer  {
+class PostgresEventStoreSchemaInitializer  {
 
   def initSchema(): Unit = {
     createEventsTable()

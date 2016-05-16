@@ -1,16 +1,17 @@
 package io.reactivecqrs.core.commandhandler
 
-import java.io.{StringWriter, PrintWriter}
+import java.io.{PrintWriter, StringWriter}
 
 import akka.actor.{Actor, ActorRef, Props}
 import io.reactivecqrs.api._
+import io.reactivecqrs.api.command.LogFirstCommand
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRoot, PersistEvents}
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalCommandEnvelope, InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
 import io.reactivecqrs.core.util.ActorLogging
 
 import scala.concurrent.duration._
-import scala.util.{Try, Failure, Success}
+import scala.util.{Failure, Success, Try}
 
 object CommandHandlerActor {
 
@@ -32,6 +33,7 @@ object CommandHandlerActor {
 
 class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
                                           repositoryActor: ActorRef,
+                                          commandLogActor: ActorRef,
                                           commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, CustomCommandResult[Any]],
                                           initialState: () => AGGREGATE_ROOT) extends Actor with ActorLogging {
   
@@ -74,6 +76,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
             }
             val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, response.asInstanceOf[RESPONSE], responseTimeout)), nextResultAggregatorName)
             repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, aggregateId, commandId, command.userId, AggregateVersion.ZERO, success.events)
+            commandLogActor ! LogFirstCommand(commandId, command)
           case failure: CommandFailure[_, _] =>
             respondTo ! failure.response
         }
@@ -81,8 +84,6 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
           respondTo ! CommandHandlingError(command.getClass.getSimpleName, stackTraceToString(exception), commandId)
           log.error(exception, "Error handling command")
       }
-
-
   }
 
   private def stackTraceToString(e: Throwable) = {
@@ -111,7 +112,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
   }
 
   private def handleFollowingCommandVersionAware[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE <: CustomCommandResponse[_]](aggregate: Aggregate[AGGREGATE_ROOT], respondTo: ActorRef,
-                                                                                                                                     userId: UserId,commandId: CommandId, commandEnvelope: Any, expectedVersion: AggregateVersion): Unit = {
+                                                                                                                                     userId: UserId, commandId: CommandId, commandEnvelope: Any, expectedVersion: AggregateVersion): Unit = {
 
     val resultTry:Try[CustomCommandResult[Any]] = Try {
       commandHandlers(aggregate.aggregateRoot.get)(commandEnvelope)

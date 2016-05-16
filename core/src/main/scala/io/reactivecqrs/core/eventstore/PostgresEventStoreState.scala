@@ -10,7 +10,7 @@ import scalikejdbc._
 class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
 
   def initSchema(): Unit = {
-    (new EventStoreSchemaInitializer).initSchema()
+    (new PostgresEventStoreSchemaInitializer).initSchema()
   }
 
   override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Unit = {
