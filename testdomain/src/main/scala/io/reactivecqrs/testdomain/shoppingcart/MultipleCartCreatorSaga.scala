@@ -33,10 +33,8 @@ class MultipleCartCreatorSaga(val state: SagaState, shoppingCartCommandBus: Acto
   override val name = "MultipleCartCreatorSaga"
 
   override def handleOrder:ReceiveOrder = {
-    case order: CreateMultipleCarts =>
-      handleCreateMultipleCarts(order)
-    case order: CreateRemainingCarts =>
-      handleCreateRemainingCarts(order)
+    case order: CreateMultipleCarts => handleCreateMultipleCarts(order)
+    case order: CreateRemainingCarts => handleCreateRemainingCarts(order)
   }
 
   override def handleRevert: ReceiveRevert = {
@@ -65,7 +63,8 @@ class MultipleCartCreatorSaga(val state: SagaState, shoppingCartCommandBus: Acto
           SagaContinues(CreateRemainingCarts(userId, cartName, cartsCount, c.aggregateId :: createdCarts))
         case c: SuccessResponse =>
           SagaSucceded(CartsCreated(c.aggregateId :: createdCarts))
-        case c: FailureResponse => SagaFailed(CartsCreationFailure(c.exceptions))
+        case c: FailureResponse =>
+          SagaFailed(CartsCreationFailure(c.exceptions))
       }
   }
 
