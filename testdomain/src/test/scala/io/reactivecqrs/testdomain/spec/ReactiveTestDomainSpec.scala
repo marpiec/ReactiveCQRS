@@ -10,7 +10,9 @@ import io.reactivecqrs.core.commandlog.PostgresCommandLogState
 import io.reactivecqrs.core.documentstore.MemoryDocumentStore
 import io.reactivecqrs.core.eventbus.{EventsBusActor, PostgresEventBusState}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
+import io.reactivecqrs.core.saga.PostgresSagaState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
+import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.{CreateMultipleCarts, MultipleCartCreatorSagaResponse}
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testutils.CommonSpec
 import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
@@ -49,6 +51,13 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusState)), "eventBus")
     val shoppingCartCommandBus: ActorRef = system.actorOf(
       AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStoreState, commandLogState, eventBusActor), "ShoppingCartCommandBus")
+
+    val sagaState = new PostgresSagaState(serialization)
+    sagaState.initSchema()
+
+    val multipleCartCreatorSaga: ActorRef = system.actorOf(
+      Props(new MultipleCartCreatorSaga(sagaState, shoppingCartCommandBus))
+    )
 
     val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusActor, shoppingCartCommandBus, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionEventsBased")
     val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusActor, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionAggregatesBased")
@@ -130,6 +139,20 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
     }
 
+
+    scenario("Crate multiple carts at once") {
+
+
+      val fixture = Fixture
+      import fixture._
+
+
+      println("!!!!!! Sending command CreateMultipleCarts")
+
+      val result: MultipleCartCreatorSagaResponse = multipleCartCreatorSaga ?? CreateMultipleCarts(userId, "My special cart", 5)
+
+      println(result)
+    }
 
   }
 

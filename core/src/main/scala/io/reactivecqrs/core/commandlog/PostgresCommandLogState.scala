@@ -8,7 +8,7 @@ import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 class PostgresCommandLogState(mpjsons: MPJsons) extends CommandLogState {
 
   def initSchema(): Unit = {
-    (new PostgresCommandLogSchemaInitializer).initSchema()
+    new PostgresCommandLogSchemaInitializer().initSchema()
   }
 
   def storeFirstCommand(commandId: CommandId, aggregateId: AggregateId, command: FirstCommand[_, _ <: CustomCommandResponse[_]]): Unit = {
