@@ -63,7 +63,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
 
   private def resendEventsToPublish(): Unit = {
     if(eventsToPublish.nonEmpty) {
-      eventsBus ! PublishEvents(aggregateType, eventsToPublish.map(e => IdentifiableEvent(aggregateType, id, e.version, e.event, e.userId, e.timestamp)), id, version, Option(aggregateRoot))
+      eventsBus ! PublishEvents(aggregateType, eventsToPublish.map(e => IdentifiableEvent(e.eventId, aggregateType, id, e.version, e.event, e.userId, e.timestamp)), id, version, Option(aggregateRoot))
     }
   }
 
@@ -138,12 +138,12 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](id: AggregateId,
 
   private def persist(eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(afterPersist: Seq[Event[AGGREGATE_ROOT]] => Unit): Unit = {
     //Future { FIXME this future can broke order in which events are stored
-      eventStore.persistEvents(id, eventsEnvelope.asInstanceOf[PersistEvents[AnyRef]])
+      val eventsWithIds = eventStore.persistEvents(id, eventsEnvelope.asInstanceOf[PersistEvents[AnyRef]])
       var mappedEvents = 0
-      self ! EventsPersisted(eventsEnvelope.events.map { event =>
+      self ! EventsPersisted(eventsWithIds.map { case (event, id) =>
         val eventVersion = eventsEnvelope.expectedVersion.incrementBy(mappedEvents + 1)
         mappedEvents += 1
-        IdentifiableEvent(AggregateType(event.aggregateRootType.toString), eventsEnvelope.aggregateId, eventVersion, event, eventsEnvelope.userId, eventsEnvelope.timestamp)
+        IdentifiableEvent(id, AggregateType(event.aggregateRootType.toString), eventsEnvelope.aggregateId, eventVersion, event, eventsEnvelope.userId, eventsEnvelope.timestamp)
       })
       afterPersist(eventsEnvelope.events)
 //    } onFailure {

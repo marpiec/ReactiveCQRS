@@ -10,10 +10,11 @@ import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEv
 class MemoryEventStoreState extends EventStoreState {
 
   private var eventStore: Map[AggregateId, Vector[Event[_]]] = Map()
-  private var eventsToPublish: Map[(AggregateId, Int), (UserId, Instant, Event[_])] = Map()
+  private var eventsToPublish: Map[(AggregateId, Int), (UserId, Instant, Event[_], Long)] = Map()
+  private var eventIdSeq: Long = 0
 
 
-  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Unit = {
+  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Seq[(Event[AGGREGATE_ROOT], Long)] = {
 
     var eventsForAggregate: Vector[Event[_]] = eventStore.getOrElse(aggregateId, Vector())
 
@@ -21,16 +22,18 @@ class MemoryEventStoreState extends EventStoreState {
       throw new IllegalStateException("Incorrect version for event, expected " + eventsEnvelope.expectedVersion.asInt + " but was " + eventsForAggregate.size)
     }
     var versionsIncreased = 0
-    eventsEnvelope.events.foreach(event => {
+    val eventsWithIds = eventsEnvelope.events.map(event => {
       eventsForAggregate :+= event
       val key = (aggregateId, eventsEnvelope.expectedVersion.asInt + versionsIncreased)
-      val value = (eventsEnvelope.userId, eventsEnvelope.timestamp, event)
+      eventIdSeq += 1
+      val value = (eventsEnvelope.userId, eventsEnvelope.timestamp, event, eventIdSeq)
       eventsToPublish += key -> value
       versionsIncreased += 1
+      (event, eventIdSeq)
     })
 
     eventStore += aggregateId -> eventsForAggregate
-
+    eventsWithIds
   }
 
 
@@ -77,7 +80,7 @@ class MemoryEventStoreState extends EventStoreState {
   override def readEventsToPublishForAggregate[AGGREGATE_ROOT](aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]] = {
 
     eventsToPublish.filterKeys(_._1 == aggregateId).toList.
-      map(e => IdentifiableEventNoAggregateType[AGGREGATE_ROOT](e._1._1, AggregateVersion(e._1._2), e._2._3.asInstanceOf[Event[AGGREGATE_ROOT]], e._2._1, e._2._2))
+      map(e => IdentifiableEventNoAggregateType[AGGREGATE_ROOT](e._2._4, e._1._1, AggregateVersion(e._1._2), e._2._3.asInstanceOf[Event[AGGREGATE_ROOT]], e._2._1, e._2._2))
 
   }
 }
