@@ -20,7 +20,7 @@ case class StringEvent(aggregate: String) extends Event[String]
 
 case class SubscribeForAll(subscriptionCode: String, listener: ActorRef)
 
-class SimpleProjection(val eventBusActor: ActorRef) extends ProjectionActor with Subscribable {
+class SimpleProjection(val eventBusActor: ActorRef, val subscriptionsState: PostgresSubscriptionsState) extends ProjectionActor with Subscribable {
 
   override def receiveSubscriptionRequest: Receive = {
     case SubscribeForAll(code, listener) => handleSubscribe(code, listener, (s: String) => Some((s, NothingMetadata())))
@@ -65,7 +65,10 @@ class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAnd
       override def receive: Receive = { case _ => () }
     }))
 
-    val simpleProjectionActor = TestActorRef(Props(new SimpleProjection(eventBusActorStub)))
+    val subscriptionsState = new PostgresSubscriptionsState
+    subscriptionsState.initSchema()
+
+    val simpleProjectionActor = TestActorRef(Props(new SimpleProjection(eventBusActorStub, subscriptionsState)))
 
     simpleProjectionActor ! SubscribedForEvents("someMessageId", AggregateType(classOf[String].getSimpleName), "someId1")
 

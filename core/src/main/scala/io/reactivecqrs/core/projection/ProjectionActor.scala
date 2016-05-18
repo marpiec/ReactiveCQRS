@@ -19,6 +19,8 @@ private case class DelayedQuery(until: Instant, respondTo: ActorRef, search: () 
 
 abstract class ProjectionActor extends Actor with ActorLogging {
 
+  val subscriptionsState: PostgresSubscriptionsState
+
   protected trait Listener[+AGGREGATE_ROOT]  {
     def aggregateRootType: Type
   }
@@ -93,6 +95,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
 
   private def receiveSubscribed(aggregateListenersRemaining: Set[AggregateType], eventsListenersRemaining: Set[AggregateType], aggregatesWithEventsListenersRemaining: Set[AggregateType]): Receive = LoggingReceive {
     case SubscribedForAggregates(messageId, aggregateType, subscriptionId) =>
+
       if(eventsListenersRemaining.isEmpty && aggregatesWithEventsListenersRemaining.isEmpty && aggregateListenersRemaining.size == 1 && aggregateListenersRemaining.head == aggregateType) {
         context.become(logReceive (receiveUpdate orElse receiveQuery))
       } else {
@@ -131,15 +134,18 @@ abstract class ProjectionActor extends Actor with ActorLogging {
 
   override def preStart() {
     aggregateListenersMap.keySet.foreach { aggregateType =>
-      eventBusActor ! SubscribeForAggregates("", aggregateType, self)
+      val lastEventId = subscriptionsState.eventsCountForAggregatesSubscription(self.path.name, aggregateType)
+      eventBusActor ! SubscribeForAggregates("", aggregateType, self, lastEventId)
     }
 
     eventListenersMap.keySet.foreach { aggregateType =>
-      eventBusActor ! SubscribeForEvents("", aggregateType, self)
+      val lastEventId = subscriptionsState.eventsCountForEventsSubscription(self.path.name, aggregateType)
+      eventBusActor ! SubscribeForEvents("", aggregateType, self, lastEventId)
     }
 
     aggregateWithEventListenersMap.keySet.foreach { aggregateType =>
-      eventBusActor ! SubscribeForAggregatesWithEvents("", aggregateType, self)
+      val lastEventId = subscriptionsState.eventsCountForAggregatesWithEventsSubscription(self.path.name, aggregateType)
+      eventBusActor ! SubscribeForAggregatesWithEvents("", aggregateType, self, lastEventId)
     }
 
   }

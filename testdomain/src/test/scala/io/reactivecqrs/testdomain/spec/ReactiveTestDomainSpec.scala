@@ -10,6 +10,7 @@ import io.reactivecqrs.core.commandlog.PostgresCommandLogState
 import io.reactivecqrs.core.documentstore.MemoryDocumentStore
 import io.reactivecqrs.core.eventbus.{EventsBusActor, PostgresEventBusState}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
+import io.reactivecqrs.core.projection.PostgresSubscriptionsState
 import io.reactivecqrs.core.saga.PostgresSagaState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.{CreateMultipleCarts, MultipleCartCreatorSagaResponse}
@@ -59,9 +60,10 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val multipleCartCreatorSaga: ActorRef = system.actorOf(
       Props(new MultipleCartCreatorSaga(sagaState, uidGenerator, shoppingCartCommandBus))
     )
-
-    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusActor, shoppingCartCommandBus, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionEventsBased")
-    val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusActor, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionAggregatesBased")
+    val subscriptionsState = new PostgresSubscriptionsState
+    subscriptionsState.initSchema()
+    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusActor, subscriptionsState, shoppingCartCommandBus, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionEventsBased")
+    val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusActor, subscriptionsState, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionAggregatesBased")
 
     Thread.sleep(100) // Wait until all subscriptions in place
 

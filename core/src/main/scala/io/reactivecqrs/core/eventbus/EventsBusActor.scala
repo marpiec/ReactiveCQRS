@@ -16,13 +16,13 @@ object EventsBusActor {
   case class PublishEventsAck(eventsIds: Seq[EventIdentifier])
 
 
-  case class SubscribeForEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier)
+  case class SubscribeForEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, lastEventId: Long, classifier: SubscriptionClassifier = AcceptAllClassifier)
   case class SubscribedForEvents(messageId: String, aggregateType: AggregateType, subscriptionId: String)
 
-  case class SubscribeForAggregates(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier = AcceptAllAggregateIdClassifier)
+  case class SubscribeForAggregates(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, lastEventId: Long, classifier: AggregateSubscriptionClassifier = AcceptAllAggregateIdClassifier)
   case class SubscribedForAggregates(messageId: String, aggregateType: AggregateType, subscriptionId: String)
 
-  case class SubscribeForAggregatesWithEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier)
+  case class SubscribeForAggregatesWithEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, lastEventId: Long, classifier: SubscriptionClassifier = AcceptAllClassifier)
   case class SubscribedForAggregatesWithEvents(messageId: String, aggregateType: AggregateType, subscriptionId: String)
 
   case class MessagesPersisted(aggregateType: AggregateType, messages: Seq[MessageToSend])
@@ -53,9 +53,9 @@ class EventsBusActor(eventBus: EventBusState) extends Actor with ActorLogging {
 
 
   override def receive: Receive = logReceive {
-  case SubscribeForEvents(messageId, aggregateType, subscriber, classifier) => handleSubscribeForEvents(messageId, aggregateType, subscriber, classifier)
-    case SubscribeForAggregates(messageId, aggregateType, subscriber, classifier) => handleSubscribeForAggregates(messageId, aggregateType, subscriber, classifier)
-    case SubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, classifier) => handleSubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, classifier)
+  case SubscribeForEvents(messageId, aggregateType, subscriber, lastEventId, classifier) => handleSubscribeForEvents(messageId, aggregateType, subscriber, classifier)
+    case SubscribeForAggregates(messageId, aggregateType, subscriber, lastEventId, classifier) => handleSubscribeForAggregates(messageId, aggregateType, subscriber, classifier)
+    case SubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, lastEventId, classifier) => handleSubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, classifier)
     case CancelSubscriptions(subscriptionsIds) => handleCancelSubscription(sender(), subscriptionsIds)
     case PublishEvents(aggregateType, events, aggregateId, aggregateVersion, aggregate) =>
       handlePublishEvents(sender(), aggregateType, events, aggregateId, aggregateVersion, aggregate)
