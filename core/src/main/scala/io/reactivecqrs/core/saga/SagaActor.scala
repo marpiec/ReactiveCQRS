@@ -1,16 +1,15 @@
 package io.reactivecqrs.core.saga
 
 import akka.actor.{Actor, ActorRef}
+import io.reactivecqrs.core.saga.SagaActor.SagaPersisted
 import io.reactivecqrs.core.util.ActorLogging
 
 import scala.concurrent.Future
-import scala.util.{Failure, Success, Try}
+import scala.util.{Failure, Success}
 
 object SagaActor {
 
-  case class SagaOrderPersisted(sagaId: Int, respondTo: ActorRef, order: SagaInternalOrder)
-  case class SagaRevertPersisted(sagaId: Int, respondTo: ActorRef, order: SagaInternalOrder)
-
+  case class SagaPersisted(sagaId: Int, respondTo: ActorRef, order: SagaInternalOrder, phase: SagaPhase)
 
 }
 
@@ -22,7 +21,7 @@ abstract class SagaActor extends Actor with ActorLogging {
   val name: String
 
   type ReceiveOrder = PartialFunction[SagaInternalOrder, Future[SagaHandlingStatus]]
-  type ReceiveRevert = PartialFunction[SagaInternalOrder, Future[SagaHandlingStatus]]
+  type ReceiveRevert = PartialFunction[SagaInternalOrder, Future[SagaRevertHandlingStatus]]
 
   def handleOrder: ReceiveOrder
   def handleRevert: ReceiveRevert
@@ -30,28 +29,24 @@ abstract class SagaActor extends Actor with ActorLogging {
   def nextSagaId = 0
 
   override def receive: Receive = {
-    case m: SagaOrder => persistInitialSagaStatusAndSendConfirm(nextSagaId, sender, m)
-    case m: SagaPersisted =>
-      internalHandleOrder(m.sagaId, m.respondTo, m.order, m.phase)
-    case m => log.warning("Received incorrect message of type: [" + m.getClass.getName +"]")
+    case m: SagaOrder => persistInitialSagaStatusAndSendConfirm(self, nextSagaId, sender, m)
+    case m: SagaPersisted if m.phase == CONTINUES => internalHandleOrderContinue(self, m.sagaId, m.respondTo, m.order)
+    case m: SagaPersisted if m.phase == REVERTING => internalHandleRevert(self, m.sagaId, m.respondTo, m.order)
+    case m => log.warning("Received incorrect message of type: [" + m.getClass.getName +"] "+m)
   }
 
-  def persistInitialSagaStatusAndSendConfirm(sagaId: Int, respondTo: ActorRef, order: SagaOrder): Unit = {
-    val me = self
+  def persistInitialSagaStatusAndSendConfirm(me: ActorRef, sagaId: Int, respondTo: ActorRef, order: SagaOrder): Unit = {
     Future {
       state.createSaga(name, sagaId, respondTo, order)
-      println("!1 " + SagaPersisted(sagaId, respondTo, order, CONTINUES))
       me ! SagaPersisted(sagaId, respondTo, order, CONTINUES)
     } onFailure {
       case e: Exception => throw new IllegalStateException(e)
     }
   }
 
-  def persistSagaStatusAndSendConfirm(sagaId: Int, respondTo: ActorRef, order: SagaInternalOrder, phase: SagaPhase): Unit = {
-    val me = self
+  def persistSagaStatusAndSendConfirm(me: ActorRef, sagaId: Int, respondTo: ActorRef, order: SagaInternalOrder, phase: SagaPhase): Unit = {
     Future {
       state.updateSaga(name, sagaId, order, phase)
-      println("!2 " + SagaPersisted(sagaId, respondTo, order, phase))
       me ! SagaPersisted(sagaId, respondTo, order, phase)
     } onFailure {
       case e: Exception => throw new IllegalStateException(e)
@@ -62,50 +57,49 @@ abstract class SagaActor extends Actor with ActorLogging {
     state.deleteSaga(name, sagaId)
   }
 
-
-  private def internalHandleOrder(sagaId: Int, respondTo: ActorRef, order: SagaInternalOrder, status: SagaPhase): Unit = {
-    println("!internalHandleOrder " + order)
-    val me = self
+  private def internalHandleOrderContinue(me: ActorRef, sagaId: Int, respondTo: ActorRef, order: SagaInternalOrder): Unit = {
     Future {
-      tryToHandleOrderOrRevert(order, status).onComplete {
+      handleOrder(order).onComplete {
         case Success(r) =>
           r match {
           case c: SagaContinues =>
-            persistSagaStatusAndSendConfirm(sagaId, respondTo, c.order, CONTINUES)
+            persistSagaStatusAndSendConfirm(me, sagaId, respondTo, c.order, CONTINUES)
           case c: SagaSucceded =>
-            println("!5 respondTo !" + c.response)
             respondTo ! c.response
             deleteSagaStatus(sagaId)
           case c: SagaFailed =>
-            println("!6 respondTo !" + c.response)
             respondTo ! c.response
-            if(status == CONTINUES) {
-              persistSagaStatusAndSendConfirm(sagaId, respondTo, order, REVERTING)
-            } else {
-              deleteSagaStatus(sagaId)
-            }
-
+            persistSagaStatusAndSendConfirm(me, sagaId, respondTo, order, REVERTING)
         }
         case Failure(ex) =>
-          log.error(ex, "Exception while handling saga " + order)
-          val response = SagaFailureResponse(List(ex.getMessage))
-          respondTo ! response
-          if(status == CONTINUES) {
-            persistSagaStatusAndSendConfirm(sagaId, respondTo, order, REVERTING)
-          } else {
-            deleteSagaStatus(sagaId)
-          }
+          respondTo ! SagaFailureResponse(List(ex.getMessage))
+          persistSagaStatusAndSendConfirm(me, sagaId, respondTo, order, REVERTING)
       }
     } onFailure {
       case e: Exception => throw new IllegalStateException(e)
     }
   }
 
-  private def tryToHandleOrderOrRevert(order: SagaInternalOrder, status: SagaPhase): Future[SagaHandlingStatus] = {
-    status match {
-      case CONTINUES => handleOrder(order)
-      case REVERTING => handleRevert(order)
-      case s => throw new IllegalStateException("Incorrect status value: " + s)
+
+  private def internalHandleRevert(me: ActorRef, sagaId: Int, respondTo: ActorRef, order: SagaInternalOrder): Unit = {
+    Future {
+      handleRevert(order).onComplete {
+        case Success(r) =>
+          r match {
+            case c: SagaRevertContinues =>
+              persistSagaStatusAndSendConfirm(me, sagaId, respondTo, c.order, CONTINUES)
+            case SagaRevertSucceded =>
+              deleteSagaStatus(sagaId)
+            case c: SagaRevertFailed =>
+              log.error(s"Saga revert failed, sagaId = $sagaId, order = $order, "+ c.exceptions.mkString(", "))
+              deleteSagaStatus(sagaId)
+          }
+        case Failure(ex) =>
+          log.error(ex, s"Saga revert failed, sagaId = $sagaId, order = $order")
+          deleteSagaStatus(sagaId)
+      }
+    } onFailure {
+      case e: Exception => throw new IllegalStateException(e)
     }
   }
 

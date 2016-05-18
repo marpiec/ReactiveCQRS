@@ -1,6 +1,5 @@
 package io.reactivecqrs.core.saga
 
-import akka.actor.ActorRef
 import io.reactivecqrs.api.id.UserId
 
 
@@ -16,21 +15,28 @@ trait SagaInternalOrder {
 
 trait SagaOrder extends SagaInternalOrder
 
-sealed trait SagaInternalRevert
-
 trait SagaResponse
 case class SagaFailureResponse(exceptions: List[String]) extends SagaResponse
 
 
-trait SagaHandlingStatus
 
-case class SagaPersisted(sagaId: Int, respondTo: ActorRef, order: SagaInternalOrder, phase: SagaPhase)
-
+sealed trait SagaHandlingStatus
 
 case class SagaContinues(order: SagaInternalOrder) extends SagaHandlingStatus
-
-case class SagaReverts(order: SagaInternalOrder) extends SagaHandlingStatus
 
 case class SagaSucceded(response: SagaResponse) extends SagaHandlingStatus
 
 case class SagaFailed(response: SagaResponse) extends SagaHandlingStatus
+
+
+
+
+
+sealed trait SagaRevertHandlingStatus
+
+case class SagaRevertContinues(order: SagaInternalOrder) extends SagaRevertHandlingStatus
+
+case object SagaRevertSucceded extends SagaRevertHandlingStatus
+
+case class SagaRevertFailed(exceptions: List[String]) extends SagaRevertHandlingStatus
+
