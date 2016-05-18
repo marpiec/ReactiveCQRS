@@ -47,7 +47,8 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
     val aggregatesUidGenerator = new PostgresUidGenerator("aggregates_uids_seq") // or MemoryUidGenerator
     val commandsUidGenerator = new PostgresUidGenerator("commands_uids_seq") // or MemoryUidGenerator
-    val uidGenerator = system.actorOf(Props(new UidGeneratorActor(aggregatesUidGenerator, commandsUidGenerator)), "uidGenerator")
+    val sagasUidGenerator = new PostgresUidGenerator("sagas_uids_seq") // or MemoryUidGenerator
+    val uidGenerator = system.actorOf(Props(new UidGeneratorActor(aggregatesUidGenerator, commandsUidGenerator, sagasUidGenerator)), "uidGenerator")
     val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusState)), "eventBus")
     val shoppingCartCommandBus: ActorRef = system.actorOf(
       AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStoreState, commandLogState, eventBusActor), "ShoppingCartCommandBus")
@@ -56,7 +57,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
     sagaState.initSchema()
 
     val multipleCartCreatorSaga: ActorRef = system.actorOf(
-      Props(new MultipleCartCreatorSaga(sagaState, shoppingCartCommandBus))
+      Props(new MultipleCartCreatorSaga(sagaState, uidGenerator, shoppingCartCommandBus))
     )
 
     val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusActor, shoppingCartCommandBus, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionEventsBased")
@@ -142,18 +143,24 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
     scenario("Crate multiple carts at once") {
 
+      val fixture = Fixture
+      import fixture._
+
+      val result: MultipleCartCreatorSagaResponse = multipleCartCreatorSaga ?? CreateMultipleCarts(userId, "My special cart", 5)
+
+      Thread.sleep(500) // time to cleanup
+    }
+
+    scenario("Fail to create multiple carts at once") {
 
       val fixture = Fixture
       import fixture._
 
+      // Will not be able to create cart ending with M 4
+      val result: MultipleCartCreatorSagaResponse = multipleCartCreatorSaga ?? CreateMultipleCarts(userId, "My special cart M", 5)
 
-      println("!!!!!! Sending command CreateMultipleCarts")
-
-      val result: MultipleCartCreatorSagaResponse = multipleCartCreatorSaga ?? CreateMultipleCarts(userId, "My special cart", 5)
-
-      println(result)
+      Thread.sleep(500) // time to cleanup
     }
-
   }
 
 }

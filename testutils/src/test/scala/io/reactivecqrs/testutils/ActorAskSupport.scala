@@ -15,12 +15,12 @@ trait ActorAskSupport {
 
 class ActorAsk(actor: ActorRef) extends Assertions {
 
-  implicit val timeout = Timeout(1.seconds)
+  implicit val timeout = Timeout(10.seconds)
 
   def ??[R] (message: AnyRef): R = askActor(message)
 
   private def askActor[R](message: AnyRef): R = {
     val future = actor ? message
-    Await.result(future, 1.seconds).asInstanceOf[R]
+    Await.result(future, 10.seconds).asInstanceOf[R]
   }
 }

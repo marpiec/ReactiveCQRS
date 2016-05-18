@@ -24,15 +24,14 @@ object MultipleCartCreatorSaga {
 
 }
 
-class MultipleCartCreatorSaga(val state: SagaState, shoppingCartCommandBus: ActorRef) extends SagaActor {
+class MultipleCartCreatorSaga(val state: SagaState, val uidGenerator: ActorRef, shoppingCartCommandBus: ActorRef) extends SagaActor {
 
   import context.dispatcher
 
   implicit val timeout = Timeout(10 seconds)
-
   override val name = "MultipleCartCreatorSaga"
 
-  override def handleOrder:ReceiveOrder = {
+  override def handleOrder: ReceiveOrder = {
     case order: CreateMultipleCarts => handleCreateMultipleCarts(order)
     case order: CreateRemainingCarts => handleCreateRemainingCarts(order)
   }

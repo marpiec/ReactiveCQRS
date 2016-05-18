@@ -7,7 +7,12 @@ object CommandsHandlers {
 
 
   def createShoppingCart(userId: UserId, command: CreateShoppingCart) = {
-    CommandSuccess(ShoppingCartCreated(command.name))
+    if(command.name.endsWith("M 4")) {
+      CommandFailure("Cannot add cart *M 4")
+    } else {
+      CommandSuccess(ShoppingCartCreated(command.name))
+    }
+
   }
 
   def duplicateShoppingCart(command: DuplicateShoppingCart) = {

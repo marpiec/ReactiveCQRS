@@ -58,7 +58,7 @@ class SimpleListener(simpleListenerProbe: TestProbe) extends Actor {
 
 class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAndAfter {
   implicit val actorSystem = ActorSystem()
-  implicit val timeout = Timeout(1 second)
+  implicit val timeout = Timeout(10 second)
 
   def fixture = new {
     val eventBusActorStub = actorSystem.actorOf(Props(new Actor {

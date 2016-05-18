@@ -30,9 +30,9 @@ class ShoppingCartsListProjectionEventsBased(val eventBusActor: ActorRef,
     case ShoppingCartCreated(name) =>
       documentStore.insertDocument(aggregateId.asLong, name, version)
     case ShoppingCartDuplicated(baseId, baseVersion) =>
-      implicit val timeout = Timeout(5 seconds)
+      implicit val timeout = Timeout(10 seconds)
       val future = (shoppingCartCommandBus ? GetAggregateForVersion(baseId, baseVersion)).mapTo[Try[Aggregate[ShoppingCart]]] // TODO try to do this without ask
-      val baseShoppingCart: Try[Aggregate[ShoppingCart]]= Await.result(future, 5 seconds)
+      val baseShoppingCart: Try[Aggregate[ShoppingCart]]= Await.result(future, 10 seconds)
       documentStore.insertDocument(aggregateId.asLong, baseShoppingCart.get.aggregateRoot.get.name, version)
     case ItemAdded(name) =>
       val document = documentStore.getDocument(aggregateId.asLong)

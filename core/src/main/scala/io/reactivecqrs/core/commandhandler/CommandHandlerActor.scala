@@ -40,7 +40,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
   
   var resultAggregatorsCounter = 0
 
-  val responseTimeout = 5.seconds
+  val responseTimeout = 10.seconds
 
   private def waitingForCommand = logReceive {
     case commandEnvelope: InternalFirstCommandEnvelope[_, _] =>
