@@ -3,7 +3,7 @@ package io.reactivecqrs.core.saga
 import akka.pattern.ask
 import akka.actor.{Actor, ActorRef}
 import akka.util.Timeout
-import io.reactivecqrs.api.id.CommandId
+import io.reactivecqrs.api.id.{CommandId, UserId}
 import io.reactivecqrs.core.saga.SagaActor.SagaPersisted
 import io.reactivecqrs.core.uid.{NewSagasIdsPool, UidGeneratorActor}
 import io.reactivecqrs.core.util.ActorLogging
@@ -14,11 +14,13 @@ import scala.concurrent.duration._
 
 object SagaActor {
 
-  case class SagaPersisted(sagaId: Long, respondTo: ActorRef, order: SagaInternalOrder, phase: SagaPhase)
+  case class SagaPersisted(sagaId: Long, respondTo: String, order: SagaInternalOrder, phase: SagaPhase)
 
 }
 
 abstract class SagaActor extends Actor with ActorLogging {
+
+  implicit val timeout = Timeout(50.seconds)
 
   import context.dispatcher
 
@@ -35,14 +37,23 @@ abstract class SagaActor extends Actor with ActorLogging {
   def handleOrder: ReceiveOrder
   def handleRevert: ReceiveRevert
 
+  private def loadPendingSagas(): Unit = {
+    state.loadAllSagas((sagaName: String, sagaId: Long, userId: UserId, respondTo: String, phase: SagaPhase, order: SagaInternalOrder) => {
+      println("Continuing saga " + sagaName+" "+sagaId)
+      self ! SagaPersisted(sagaId, respondTo, order, phase)
+    })
+  }
+
+  loadPendingSagas()
+
   override def receive: Receive = {
-    case m: SagaOrder => persistInitialSagaStatusAndSendConfirm(self, takeNextSagaId, sender, m)
+    case m: SagaOrder => persistInitialSagaStatusAndSendConfirm(self, takeNextSagaId, sender.path.toString, m)
     case m: SagaPersisted if m.phase == CONTINUES => internalHandleOrderContinue(self, m.sagaId, m.respondTo, m.order)
     case m: SagaPersisted if m.phase == REVERTING => internalHandleRevert(self, m.sagaId, m.respondTo, m.order)
     case m => log.warning("Received incorrect message of type: [" + m.getClass.getName +"] "+m)
   }
 
-  def persistInitialSagaStatusAndSendConfirm(me: ActorRef, sagaId: Long, respondTo: ActorRef, order: SagaOrder): Unit = {
+  def persistInitialSagaStatusAndSendConfirm(me: ActorRef, sagaId: Long, respondTo: String, order: SagaOrder): Unit = {
     Future {
       state.createSaga(name, sagaId, respondTo, order)
       me ! SagaPersisted(sagaId, respondTo, order, CONTINUES)
@@ -51,7 +62,7 @@ abstract class SagaActor extends Actor with ActorLogging {
     }
   }
 
-  def persistSagaStatusAndSendConfirm(me: ActorRef, sagaId: Long, respondTo: ActorRef, order: SagaInternalOrder, phase: SagaPhase): Unit = {
+  def persistSagaStatusAndSendConfirm(me: ActorRef, sagaId: Long, respondTo: String, order: SagaInternalOrder, phase: SagaPhase): Unit = {
     Future {
       state.updateSaga(name, sagaId, order, phase)
       me ! SagaPersisted(sagaId, respondTo, order, phase)
@@ -64,7 +75,7 @@ abstract class SagaActor extends Actor with ActorLogging {
     state.deleteSaga(name, sagaId)
   }
 
-  private def internalHandleOrderContinue(me: ActorRef, sagaId: Long, respondTo: ActorRef, order: SagaInternalOrder): Unit = {
+  private def internalHandleOrderContinue(me: ActorRef, sagaId: Long, respondTo: String, order: SagaInternalOrder): Unit = {
     Future {
       handleOrder(order).onComplete {
         case Success(r) =>
@@ -72,14 +83,14 @@ abstract class SagaActor extends Actor with ActorLogging {
           case c: SagaContinues =>
             persistSagaStatusAndSendConfirm(me, sagaId, respondTo, c.order, CONTINUES)
           case c: SagaSucceded =>
-            respondTo ! c.response
+            context.system.actorSelection(respondTo) ! c.response
             deleteSagaStatus(sagaId)
           case c: SagaFailed =>
-            respondTo ! c.response
+            context.system.actorSelection(respondTo) ! c.response
             persistSagaStatusAndSendConfirm(me, sagaId, respondTo, order, REVERTING)
         }
         case Failure(ex) =>
-          respondTo ! SagaFailureResponse(List(ex.getMessage))
+          context.system.actorSelection(respondTo) ! SagaFailureResponse(List(ex.getMessage))
           persistSagaStatusAndSendConfirm(me, sagaId, respondTo, order, REVERTING)
       }
     } onFailure {
@@ -88,7 +99,7 @@ abstract class SagaActor extends Actor with ActorLogging {
   }
 
 
-  private def internalHandleRevert(me: ActorRef, sagaId: Long, respondTo: ActorRef, order: SagaInternalOrder): Unit = {
+  private def internalHandleRevert(me: ActorRef, sagaId: Long, respondTo: String, order: SagaInternalOrder): Unit = {
     Future {
       handleRevert(order).onComplete {
         case Success(r) =>

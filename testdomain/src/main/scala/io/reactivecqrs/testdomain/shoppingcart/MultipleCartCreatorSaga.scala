@@ -28,7 +28,6 @@ class MultipleCartCreatorSaga(val state: SagaState, val uidGenerator: ActorRef, 
 
   import context.dispatcher
 
-  implicit val timeout = Timeout(10 seconds)
   override val name = "MultipleCartCreatorSaga"
 
   override def handleOrder: ReceiveOrder = {

@@ -3,6 +3,13 @@ package io.reactivecqrs.core.saga
 import io.reactivecqrs.api.id.UserId
 
 
+object SagaPhase {
+  def byName(name: String) = name match {
+    case CONTINUES.name => CONTINUES
+    case REVERTING.name => REVERTING
+    case ERROR.name => ERROR
+  }
+}
 abstract class SagaPhase(val name: String)
 case object CONTINUES extends SagaPhase("continues")
 case object REVERTING extends SagaPhase("reverting")

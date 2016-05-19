@@ -24,8 +24,8 @@ class ReplayerRepositoryActorFactory[AGGREGATE_ROOT: TypeTag:ClassTag](aggregate
   def aggregateRootType = typeOf[AGGREGATE_ROOT]
 
   def create(context: ActorContext, aggregateId: AggregateId, eventStore: EventStoreState, eventsBus: ActorRef, actorName: String): ActorRef = {
-    context.actorOf(Props(new ReplayAggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventsBus, aggregateContext.eventHandlers,
-      None, () => aggregateContext.initialAggregateRoot)), actorName)
+    context.actorOf(Props(new ReplayAggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventsBus, aggregateContext.eventHandlers,
+      () => aggregateContext.initialAggregateRoot)), actorName)
   }
 
 }

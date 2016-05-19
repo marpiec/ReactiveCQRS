@@ -65,7 +65,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
       ReplayerRepositoryActorFactory(shoppingCartContext)
     ))))
 
-    val sagaState = new PostgresSagaState(serialization)
+    val sagaState = new PostgresSagaState(mpjsons)
     sagaState.initSchema()
 
     val multipleCartCreatorSaga: ActorRef = system.actorOf(
@@ -182,7 +182,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
       val fixture = Fixture
       import fixture._
 
-      val result: MultipleCartCreatorSagaResponse = multipleCartCreatorSaga ?? CreateMultipleCarts(userId, "My special cart", 500)
+      val result: MultipleCartCreatorSagaResponse = multipleCartCreatorSaga ?? CreateMultipleCarts(userId, "My special cart", 5000)
 
       Thread.sleep(500) // time to cleanup
     }
@@ -210,8 +210,18 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
       println("------------------------------------------------------"+result)
 
-      Thread.sleep(20000)
+      Thread.sleep(50000)
     }
-  }
+
+
+    scenario("Reinitialization") {
+
+      val fixture = Fixture
+      import fixture._
+
+      Thread.sleep(10000)
+
+      }
+    }
 
 }

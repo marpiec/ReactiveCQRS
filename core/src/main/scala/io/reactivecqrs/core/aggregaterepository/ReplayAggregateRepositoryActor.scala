@@ -4,7 +4,6 @@ import akka.actor.{Actor, ActorRef}
 import io.reactivecqrs.api.{AggregateType, AggregateVersion, Event}
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor.ReplayEvent
-import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.util.ActorLogging
 import io.reactivecqrs.core.eventbus.EventsBusActor.PublishReplayedEvent
 
@@ -16,10 +15,8 @@ object ReplayAggregateRepositoryActor {
 }
 
 class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: AggregateId,
-                                                                      eventStore: EventStoreState,
                                                                       eventsBus: ActorRef,
                                                                       eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
-                                                                      initialVersion: Option[AggregateVersion],
                                                                       initialState: () => AGGREGATE_ROOT) extends Actor with ActorLogging {
 
   private var version: AggregateVersion = AggregateVersion.ZERO
@@ -29,7 +26,6 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
   private def assureRestoredState(): Unit = {
     version = AggregateVersion.ZERO
     aggregateRoot = initialState()
-    eventStore.readAndProcessEvents[AGGREGATE_ROOT](aggregateId, initialVersion)(handleEvent)
   }
 
   assureRestoredState()

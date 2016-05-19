@@ -17,7 +17,8 @@ class PostgresSagaSchemaInitializer {
           creation_time TIMESTAMP,
           phase VARCHAR(16) NOT NULL,
           update_time TIMESTAMP,
-          saga_order bytea NOT NULL)
+          saga_order TEXT NOT NULL,
+          order_type VARCHAR(256) NOT NULL)
       """.execute().apply()
   }
 }
