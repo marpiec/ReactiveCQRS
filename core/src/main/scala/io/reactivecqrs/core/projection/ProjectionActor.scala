@@ -19,8 +19,6 @@ private case class DelayedQuery(until: Instant, respondTo: ActorRef, search: () 
 
 abstract class ProjectionActor extends Actor with ActorLogging {
 
-  val subscriptionsState: PostgresSubscriptionsState
-
   protected trait Listener[+AGGREGATE_ROOT]  {
     def aggregateRootType: Type
   }
@@ -134,18 +132,15 @@ abstract class ProjectionActor extends Actor with ActorLogging {
 
   override def preStart() {
     aggregateListenersMap.keySet.foreach { aggregateType =>
-      val lastEventId = subscriptionsState.eventsCountForAggregatesSubscription(self.path.name, aggregateType)
-      eventBusActor ! SubscribeForAggregates("", aggregateType, self, lastEventId)
+      eventBusActor ! SubscribeForAggregates("", aggregateType, self)
     }
 
     eventListenersMap.keySet.foreach { aggregateType =>
-      val lastEventId = subscriptionsState.eventsCountForEventsSubscription(self.path.name, aggregateType)
-      eventBusActor ! SubscribeForEvents("", aggregateType, self, lastEventId)
+      eventBusActor ! SubscribeForEvents("", aggregateType, self)
     }
 
     aggregateWithEventListenersMap.keySet.foreach { aggregateType =>
-      val lastEventId = subscriptionsState.eventsCountForAggregatesWithEventsSubscription(self.path.name, aggregateType)
-      eventBusActor ! SubscribeForAggregatesWithEvents("", aggregateType, self, lastEventId)
+      eventBusActor ! SubscribeForAggregatesWithEvents("", aggregateType, self)
     }
 
   }

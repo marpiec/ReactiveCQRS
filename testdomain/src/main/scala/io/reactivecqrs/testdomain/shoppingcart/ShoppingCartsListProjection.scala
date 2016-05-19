@@ -21,7 +21,6 @@ object ShoppingCartsListProjection {
 }
 
 class ShoppingCartsListProjectionEventsBased(val eventBusActor: ActorRef,
-                                             val subscriptionsState: PostgresSubscriptionsState,
                                              shoppingCartCommandBus: ActorRef,
                                              documentStore: DocumentStore[String, AggregateVersion]) extends ProjectionActor {
 
@@ -54,7 +53,6 @@ class ShoppingCartsListProjectionEventsBased(val eventBusActor: ActorRef,
 
 
 class ShoppingCartsListProjectionAggregatesBased(val eventBusActor: ActorRef,
-                                                 val subscriptionsState: PostgresSubscriptionsState,
                                                  documentStore: DocumentStore[String, AggregateVersion]) extends ProjectionActor {
   protected val listeners =  List(AggregateListener(shoppingCartUpdate))
 

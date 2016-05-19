@@ -6,6 +6,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEvent}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
+import io.reactivecqrs.core.eventsreplayer.BackPressureActor
 import io.reactivecqrs.core.util.{ActorLogging, RandomUtil}
 
 
@@ -15,16 +16,17 @@ object EventsBusActor {
                                             aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregate: Option[AGGREGATE_ROOT])
   case class PublishEventsAck(eventsIds: Seq[EventIdentifier])
 
-  case class PublishReplayedEvent[AGGREGATE_ROOT](aggregateType: AggregateType, event: IdentifiableEvent[AGGREGATE_ROOT],
+  case class PublishReplayedEvent[AGGREGATE_ROOT](backPressureActor: ActorRef,
+                                                   aggregateType: AggregateType, event: IdentifiableEvent[AGGREGATE_ROOT],
                                                    aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregate: Option[AGGREGATE_ROOT])
 
-  case class SubscribeForEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, lastEventId: Long, classifier: SubscriptionClassifier = AcceptAllClassifier)
+  case class SubscribeForEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier)
   case class SubscribedForEvents(messageId: String, aggregateType: AggregateType, subscriptionId: String)
 
-  case class SubscribeForAggregates(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, lastEventId: Long, classifier: AggregateSubscriptionClassifier = AcceptAllAggregateIdClassifier)
+  case class SubscribeForAggregates(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier = AcceptAllAggregateIdClassifier)
   case class SubscribedForAggregates(messageId: String, aggregateType: AggregateType, subscriptionId: String)
 
-  case class SubscribeForAggregatesWithEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, lastEventId: Long, classifier: SubscriptionClassifier = AcceptAllClassifier)
+  case class SubscribeForAggregatesWithEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier)
   case class SubscribedForAggregatesWithEvents(messageId: String, aggregateType: AggregateType, subscriptionId: String)
 
   case class MessagesPersisted(aggregateType: AggregateType, messages: Seq[MessageToSend])
@@ -56,9 +58,9 @@ class EventsBusActor(state: EventBusState) extends Actor with ActorLogging {
   private var eventsReceived: List[MessageAck] = List.empty
 
   override def receive: Receive = logReceive {
-    case SubscribeForEvents(messageId, aggregateType, subscriber, lastEventId, classifier) => handleSubscribeForEvents(messageId, aggregateType, subscriber, classifier)
-    case SubscribeForAggregates(messageId, aggregateType, subscriber, lastEventId, classifier) => handleSubscribeForAggregates(messageId, aggregateType, subscriber, classifier)
-    case SubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, lastEventId, classifier) => handleSubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, classifier)
+    case SubscribeForEvents(messageId, aggregateType, subscriber, classifier) => handleSubscribeForEvents(messageId, aggregateType, subscriber, classifier)
+    case SubscribeForAggregates(messageId, aggregateType, subscriber, classifier) => handleSubscribeForAggregates(messageId, aggregateType, subscriber, classifier)
+    case SubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, classifier) => handleSubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, classifier)
     case CancelSubscriptions(subscriptionsIds) => handleCancelSubscription(sender(), subscriptionsIds)
     case PublishEvents(aggregateType, events, aggregateId, aggregateVersion, aggregate) =>
       handlePublishEvents(sender(), aggregateType, events, aggregateId, aggregateVersion, aggregate)

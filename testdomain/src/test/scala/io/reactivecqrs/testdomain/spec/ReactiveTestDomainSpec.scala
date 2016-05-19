@@ -9,8 +9,6 @@ import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
 import io.reactivecqrs.core.commandlog.PostgresCommandLogState
 import io.reactivecqrs.core.documentstore.{MemoryDocumentStore, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus.{EventsBusActor, PostgresEventBusState}
-import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, ReplayEvents}
-import io.reactivecqrs.core.eventsreplayer.{EventsReplayerActor, ReplayerRepositoryActorFactory}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection.PostgresSubscriptionsState
 import io.reactivecqrs.core.saga.PostgresSagaState
@@ -61,10 +59,6 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val shoppingCartCommandBus: ActorRef = system.actorOf(
       AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandLogState, eventBusActor), "ShoppingCartCommandBus")
 
-    val replayerActor = system.actorOf(Props(new EventsReplayerActor(eventStoreState, eventBusActor, List(
-      ReplayerRepositoryActorFactory(shoppingCartContext)
-    ))))
-
     val sagaState = new PostgresSagaState(mpjsons)
     sagaState.initSchema()
 
@@ -96,8 +90,8 @@ class ReactiveTestDomainSpec extends CommonSpec {
     }
 
 
-    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusActor, subscriptionsState, shoppingCartCommandBus, storeA)), "ShoppingCartsListProjectionEventsBased")
-    val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusActor, subscriptionsState, storeB)), "ShoppingCartsListProjectionAggregatesBased")
+    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusActor, shoppingCartCommandBus, storeA)), "ShoppingCartsListProjectionEventsBased")
+    val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusActor, storeB)), "ShoppingCartsListProjectionAggregatesBased")
 
     Thread.sleep(100) // Wait until all subscriptions in place
 
@@ -182,7 +176,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
       val fixture = Fixture
       import fixture._
 
-      val result: MultipleCartCreatorSagaResponse = multipleCartCreatorSaga ?? CreateMultipleCarts(userId, "My special cart", 5000)
+      val result: MultipleCartCreatorSagaResponse = multipleCartCreatorSaga ?? CreateMultipleCarts(userId, "My special cart", 500)
 
       Thread.sleep(500) // time to cleanup
     }
@@ -199,19 +193,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
     }
 
 
-    scenario("Ability to replay events") {
 
-      val fixture = Fixture
-      import fixture._
-
-      Thread.sleep(500)
-
-      val result: EventsReplayed = replayerActor ?? ReplayEvents
-
-      println("------------------------------------------------------"+result)
-
-      Thread.sleep(50000)
-    }
 
 
     scenario("Reinitialization") {
