@@ -55,7 +55,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
 
 
-  private val aggregateTypeSimpleName = aggregateRootClassTag.runtimeClass.getSimpleName
+  val aggregateTypeSimpleName = aggregateRootClassTag.runtimeClass.getSimpleName
 
 
   private var nextAggregateId = 0L
@@ -75,6 +75,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     case ce: Command[_,_] => routeCommand(ce.asInstanceOf[Command[AGGREGATE_ROOT, CustomCommandResponse[_]]])
     case GetAggregate(id) => routeGetAggregateRoot(id)
     case GetAggregateForVersion(id, version) => routeGetAggregateRootForVersion(id, version)
+    case GetEventsForAggregate(id) => ???
+    case GetEventsForAggregateForVersion(id, version) => ???
     case m => throw new IllegalArgumentException("Cannot handle this kind of message: " + m + " class: " + m.getClass)
   }
 
@@ -117,11 +119,13 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   }
 
   private def getOrCreateAggregateRepositoryActorForVersion(aggregateId: AggregateId, aggregateVersion: AggregateVersion): ActorRef = {
-    context.child(aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong+"_"+aggregateVersion.asInt).getOrElse(
+    context.child(aggregateTypeSimpleName + "_AggregateRepositoryForVersion_" + aggregateId.asLong+"_"+aggregateVersion.asInt).getOrElse(
       context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventBus, eventHandlers, initialState, Some(aggregateVersion))),
-        aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong+"_"+aggregateVersion.asInt)
+        aggregateTypeSimpleName + "_AggregateRepositoryForVersion_" + aggregateId.asLong+"_"+aggregateVersion.asInt)
     )
   }
+
+
 
 
   private def routeConcurrentCommand[RESPONSE <: CustomCommandResponse[_]](command: ConcurrentCommand[AGGREGATE_ROOT, RESPONSE]): Unit = {

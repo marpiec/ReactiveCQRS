@@ -5,7 +5,7 @@ import java.time.Instant
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.id.{AggregateId, UserId}
-import io.reactivecqrs.api.{AggregateVersion, DuplicationEvent, Event, UndoEvent}
+import io.reactivecqrs.api._
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEventNoAggregateType}
 import scalikejdbc._
@@ -68,7 +68,6 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
             ).map(rs => rs.long(1)).single().apply().get
         }
 
-        println(eventId)
         versionsIncreased += 1
         (event, eventId)
       })
@@ -106,6 +105,22 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
           eventHandler(event, id, rs.boolean(5))
         } // otherwise it's to new event, TODO optimise as it reads all events from database, also those not needed here
       }
+    }
+  }
+
+
+  override def readAndProcessAllEvents(eventHandler: (Long, Event[_], AggregateId, AggregateVersion, AggregateType, UserId, Instant) => Unit): Unit = {
+    DB.readOnly { implicit session =>
+      sql"""SELECT events.id, event_type, event, events.version, events.aggregate_id, aggregates.type, user_id, event_time
+           FROM events
+           JOIN aggregates ON events.aggregate_id = aggregates.id
+           ORDER BY events.id"""
+        .foreach { rs =>
+          val event = mpjsons.deserialize[Event[_]](rs.string(3), rs.string(2))
+          val aggregateId = AggregateId(rs.long(5))
+          val version = AggregateVersion(rs.int(4))
+          eventHandler(rs.long(1), event, aggregateId, version, AggregateType(rs.string(6)), UserId(rs.long(7)), rs.timestamp(8).toInstant)
+        }
     }
   }
 

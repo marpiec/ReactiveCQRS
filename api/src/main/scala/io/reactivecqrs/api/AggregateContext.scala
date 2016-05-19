@@ -2,12 +2,18 @@ package io.reactivecqrs.api
 
 import io.reactivecqrs.api.id.AggregateId
 
+import scala.reflect.runtime.universe.TypeTag
 
 case class GetAggregate(id: AggregateId)
 case class GetAggregateForVersion(id: AggregateId, version: AggregateVersion)
 
-abstract class AggregateContext[AGGREGATE_ROOT] {
-   def initialAggregateRoot: AGGREGATE_ROOT
+case class GetEventsForAggregate(id: AggregateId)
+case class GetEventsForAggregateForVersion(id: AggregateId, version: AggregateVersion)
+
+case class SimulateEvent[AGGREGATE_ROOT](id: AggregateId, version: AggregateVersion, event: Event[AGGREGATE_ROOT])
+
+abstract class AggregateContext[AGGREGATE_ROOT: TypeTag] {
+  def initialAggregateRoot: AGGREGATE_ROOT
 
 
   type HandlerWrapper = (=> CustomCommandResult[Any]) => CustomCommandResult[CustomCommandResponse[_]]

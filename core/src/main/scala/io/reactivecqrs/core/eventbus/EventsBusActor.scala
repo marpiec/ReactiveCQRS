@@ -15,6 +15,8 @@ object EventsBusActor {
                                             aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregate: Option[AGGREGATE_ROOT])
   case class PublishEventsAck(eventsIds: Seq[EventIdentifier])
 
+  case class PublishReplayedEvent[AGGREGATE_ROOT](aggregateType: AggregateType, event: IdentifiableEvent[AGGREGATE_ROOT],
+                                                   aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregate: Option[AGGREGATE_ROOT])
 
   case class SubscribeForEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, lastEventId: Long, classifier: SubscriptionClassifier = AcceptAllClassifier)
   case class SubscribedForEvents(messageId: String, aggregateType: AggregateType, subscriptionId: String)
@@ -51,14 +53,15 @@ class EventsBusActor(eventBus: EventBusState) extends Actor with ActorLogging {
   private var subscriptions: Map[AggregateType, Vector[Subscription]] = Map()
   private var subscriptionsByIds = Map[String, Subscription]()
 
-
   override def receive: Receive = logReceive {
-  case SubscribeForEvents(messageId, aggregateType, subscriber, lastEventId, classifier) => handleSubscribeForEvents(messageId, aggregateType, subscriber, classifier)
+    case SubscribeForEvents(messageId, aggregateType, subscriber, lastEventId, classifier) => handleSubscribeForEvents(messageId, aggregateType, subscriber, classifier)
     case SubscribeForAggregates(messageId, aggregateType, subscriber, lastEventId, classifier) => handleSubscribeForAggregates(messageId, aggregateType, subscriber, classifier)
     case SubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, lastEventId, classifier) => handleSubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, classifier)
     case CancelSubscriptions(subscriptionsIds) => handleCancelSubscription(sender(), subscriptionsIds)
     case PublishEvents(aggregateType, events, aggregateId, aggregateVersion, aggregate) =>
       handlePublishEvents(sender(), aggregateType, events, aggregateId, aggregateVersion, aggregate)
+    case PublishReplayedEvent(aggregateType, event, aggregateId, aggregateVersion, aggregate) =>
+      handlePublishEvents(sender(), aggregateType, List(event), aggregateId, aggregateVersion, aggregate)
     case MessagesPersisted(aggregateType, messages) => handleMessagesPersisted(aggregateType, messages)
     case MessageAck(subscriber, aggregateId, version) => handleEventReceived(subscriber, aggregateId, version)
   }
@@ -146,8 +149,6 @@ class EventsBusActor(eventBus: EventBusState) extends Actor with ActorLogging {
             .map(event => MessageToSend(s.subscriber, event.aggregateId, event.version, AggregateWithTypeAndEvent(aggregateType, aggregateId, aggregateVersion, aggregateRoot, event.event, event.userId, event.timestamp)))
       }
 
-
-
 //    Future { // FIXME Future is to ensure non blocking access to db, but it broke order in which events for the same aggregate were persisted, maybe there should be an actor per aggregate instead of a future?
       eventBus.persistMessages(messagesToSend)
       respondTo ! PublishEventsAck(events.map(event => EventIdentifier(event.aggregateId, event.version)))
@@ -159,8 +160,8 @@ class EventsBusActor(eventBus: EventBusState) extends Actor with ActorLogging {
   }
 
 
-
   private def handleMessagesPersisted(aggregateType: AggregateType, messages: Seq[MessageToSend]): Unit = {
+
     messages.foreach { message =>
       message.subscriber ! message.message
     }

@@ -1,21 +1,24 @@
 package io.reactivecqrs.testdomain.spec
 
-import akka.actor.{ActorRef, Props}
+import akka.actor.{ActorRef, ActorSystem, Props}
 import akka.serialization.SerializationExtension
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
 import io.reactivecqrs.core.commandlog.PostgresCommandLogState
-import io.reactivecqrs.core.documentstore.MemoryDocumentStore
+import io.reactivecqrs.core.documentstore.{MemoryDocumentStore, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus.{EventsBusActor, PostgresEventBusState}
+import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, ReplayEvents}
+import io.reactivecqrs.core.eventsreplayer.{EventsReplayerActor, ReplayerRepositoryActorFactory}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection.PostgresSubscriptionsState
 import io.reactivecqrs.core.saga.PostgresSagaState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.{CreateMultipleCarts, MultipleCartCreatorSagaResponse}
-import io.reactivecqrs.testdomain.shoppingcart._
+import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCartAggregateContext, _}
 import io.reactivecqrs.testutils.CommonSpec
+import org.apache.commons.dbcp.BasicDataSource
 import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
 
 import scala.util.Try
@@ -34,6 +37,9 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
 
   def Fixture = new {
+
+    val system = ActorSystem("main-actor-system")
+
     val mpjsons = new MPJsons
     val eventStoreState = new PostgresEventStoreState(mpjsons) // or MemoryEventStore
     eventStoreState.initSchema()
@@ -51,8 +57,13 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val sagasUidGenerator = new PostgresUidGenerator("sagas_uids_seq") // or MemoryUidGenerator
     val uidGenerator = system.actorOf(Props(new UidGeneratorActor(aggregatesUidGenerator, commandsUidGenerator, sagasUidGenerator)), "uidGenerator")
     val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusState)), "eventBus")
+    val shoppingCartContext = new ShoppingCartAggregateContext
     val shoppingCartCommandBus: ActorRef = system.actorOf(
-      AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStoreState, commandLogState, eventBusActor), "ShoppingCartCommandBus")
+      AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandLogState, eventBusActor), "ShoppingCartCommandBus")
+
+    val replayerActor = system.actorOf(Props(new EventsReplayerActor(eventStoreState, eventBusActor, List(
+      ReplayerRepositoryActorFactory(shoppingCartContext)
+    ))))
 
     val sagaState = new PostgresSagaState(serialization)
     sagaState.initSchema()
@@ -62,8 +73,31 @@ class ReactiveTestDomainSpec extends CommonSpec {
     )
     val subscriptionsState = new PostgresSubscriptionsState
     subscriptionsState.initSchema()
-    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusActor, subscriptionsState, shoppingCartCommandBus, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionEventsBased")
-    val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusActor, subscriptionsState, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionAggregatesBased")
+
+
+    val dataSource = new BasicDataSource()
+    dataSource.setUsername("reactivecqrs")
+    dataSource.setPassword("reactivecqrs")
+    dataSource.setDriverClassName("org.postgresql.Driver")
+    dataSource.setUrl("jdbc:postgresql://localhost:5432/reactivecqrs")
+    dataSource.setInitialSize(5)
+
+    val inMemory = false
+
+    private val storeA = if(inMemory) {
+      new MemoryDocumentStore[String, AggregateVersion]
+    } else {
+      new PostgresDocumentStore[String, AggregateVersion]("storeA", dataSource, mpjsons)
+    }
+    private val storeB = if(inMemory) {
+      new MemoryDocumentStore[String, AggregateVersion]
+    } else {
+      new PostgresDocumentStore[String, AggregateVersion]("storeB", dataSource, mpjsons)
+    }
+
+
+    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusActor, subscriptionsState, shoppingCartCommandBus, storeA)), "ShoppingCartsListProjectionEventsBased")
+    val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusActor, subscriptionsState, storeB)), "ShoppingCartsListProjectionAggregatesBased")
 
     Thread.sleep(100) // Wait until all subscriptions in place
 
@@ -148,7 +182,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
       val fixture = Fixture
       import fixture._
 
-      val result: MultipleCartCreatorSagaResponse = multipleCartCreatorSaga ?? CreateMultipleCarts(userId, "My special cart", 5)
+      val result: MultipleCartCreatorSagaResponse = multipleCartCreatorSaga ?? CreateMultipleCarts(userId, "My special cart", 500)
 
       Thread.sleep(500) // time to cleanup
     }
@@ -162,6 +196,21 @@ class ReactiveTestDomainSpec extends CommonSpec {
       val result: MultipleCartCreatorSagaResponse = multipleCartCreatorSaga ?? CreateMultipleCarts(userId, "My special cart M", 5)
 
       Thread.sleep(500) // time to cleanup
+    }
+
+
+    scenario("Ability to replay events") {
+
+      val fixture = Fixture
+      import fixture._
+
+      Thread.sleep(500)
+
+      val result: EventsReplayed = replayerActor ?? ReplayEvents
+
+      println("------------------------------------------------------"+result)
+
+      Thread.sleep(20000)
     }
   }
 

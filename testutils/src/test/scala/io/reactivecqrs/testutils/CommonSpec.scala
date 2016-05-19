@@ -14,7 +14,7 @@ abstract class CommonSpec extends TestKit(ActorSystem("testsystem", ConfigFactor
           akka.actor.debug.lifecycle = off"""))) with FeatureSpecLike with GivenWhenThen with ActorAskSupport with MustMatchers {
 
   GlobalSettings.loggingSQLAndTime = LoggingSQLAndTimeSettings(
-    enabled = true,
+    enabled = false,
     singleLineMode = true,
     printUnprocessedStackTrace = false,
     stackTraceDepth= 1,

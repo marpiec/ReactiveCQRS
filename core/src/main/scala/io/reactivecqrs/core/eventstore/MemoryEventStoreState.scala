@@ -3,14 +3,21 @@ package io.reactivecqrs.core.eventstore
 import java.time.Instant
 
 import io.reactivecqrs.api.id.{AggregateId, UserId}
-import io.reactivecqrs.api.{AggregateVersion, Event, UndoEvent}
+import io.reactivecqrs.api.{AggregateType, AggregateVersion, Event, UndoEvent}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEventNoAggregateType}
+import io.reactivecqrs.core.eventstore.MemoryEventStoreState.EventRow
+
+object MemoryEventStoreState {
+  case class EventRow(eventId: Long, aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregateType: AggregateType,
+                      event: Event[_], userId: UserId, timestamp: Instant)
+}
 
 class MemoryEventStoreState extends EventStoreState {
 
-  private var eventStore: Map[AggregateId, Vector[Event[_]]] = Map()
-  private var eventsToPublish: Map[(AggregateId, Int), (UserId, Instant, Event[_], Long)] = Map()
+  private var eventsRows: List[EventRow] = List.empty
+  private var eventStore: Map[AggregateId, Vector[Event[_]]] = Map.empty
+  private var eventsToPublish: Map[(AggregateId, Int), (UserId, Instant, Event[_], Long)] = Map.empty
   private var eventIdSeq: Long = 0
 
 
@@ -24,8 +31,11 @@ class MemoryEventStoreState extends EventStoreState {
     var versionsIncreased = 0
     val eventsWithIds = eventsEnvelope.events.map(event => {
       eventsForAggregate :+= event
-      val key = (aggregateId, eventsEnvelope.expectedVersion.asInt + versionsIncreased)
       eventIdSeq += 1
+      eventsRows ::= EventRow(eventIdSeq, aggregateId, AggregateVersion(eventsEnvelope.expectedVersion.asInt + versionsIncreased),
+                    AggregateType(event.aggregateRootType.toString), event, eventsEnvelope.userId, eventsEnvelope.timestamp)
+      val key = (aggregateId, eventsEnvelope.expectedVersion.asInt + versionsIncreased)
+
       val value = (eventsEnvelope.userId, eventsEnvelope.timestamp, event, eventIdSeq)
       eventsToPublish += key -> value
       versionsIncreased += 1
@@ -44,8 +54,6 @@ class MemoryEventStoreState extends EventStoreState {
       eventsForAggregate = eventsForAggregate.take(upToVersion.get.asInt)
     }
 
-
-
     var undoEventsCount = 0
     val eventsWithNoop = eventsForAggregate.reverse.map(event => {
       if(undoEventsCount == 0) {
@@ -63,6 +71,12 @@ class MemoryEventStoreState extends EventStoreState {
     }).reverse
 
     eventsWithNoop.foreach(eventWithNoop => eventHandler(eventWithNoop._1, aggregateId, eventWithNoop._2))
+  }
+
+  override def readAndProcessAllEvents(eventHandler: (Long, Event[_], AggregateId, AggregateVersion, AggregateType, UserId, Instant) => Unit): Unit = {
+    eventsRows.foreach(row => {
+      eventHandler(row.eventId, row.event, row.aggregateId, row.aggregateVersion, row.aggregateType, row.userId, row.timestamp)
+    })
   }
 
   override def deletePublishedEventsToPublish(events: Seq[EventIdentifier]): Unit = {

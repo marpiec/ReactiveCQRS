@@ -1,13 +1,16 @@
 package io.reactivecqrs.core.eventstore
 
-import io.reactivecqrs.api.{AggregateVersion, Event}
-import io.reactivecqrs.api.id.AggregateId
+import java.time.Instant
+
+import io.reactivecqrs.api.{AggregateType, AggregateVersion, Event}
+import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEventNoAggregateType}
 
 abstract class EventStoreState {
   def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Seq[(Event[AGGREGATE_ROOT], Long)]
   def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, version: Option[AggregateVersion])(eventHandler: (Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit)
+  def readAndProcessAllEvents(eventHandler: (Long, Event[_], AggregateId, AggregateVersion, AggregateType, UserId, Instant) => Unit): Unit
   def deletePublishedEventsToPublish(events: Seq[EventIdentifier]): Unit
 
   def readAggregatesWithEventsToPublish(aggregateHandler: AggregateId => Unit): Unit
