@@ -18,6 +18,8 @@ object SagaActor {
 
 }
 
+// Actor per saga -  to recieve messages from command bus?
+// TODO manual reply of saga? as saga might not know that previous command succeded? or command idempotency?
 abstract class SagaActor extends Actor with ActorLogging {
 
   implicit val timeout = Timeout(50.seconds)

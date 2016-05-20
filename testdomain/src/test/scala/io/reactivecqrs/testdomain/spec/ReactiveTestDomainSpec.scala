@@ -176,9 +176,9 @@ class ReactiveTestDomainSpec extends CommonSpec {
       val fixture = Fixture
       import fixture._
 
-      val result: MultipleCartCreatorSagaResponse = multipleCartCreatorSaga ?? CreateMultipleCarts(userId, "My special cart", 500)
+      multipleCartCreatorSaga ! CreateMultipleCarts(userId, "My special cart", 5000)
 
-      Thread.sleep(500) // time to cleanup
+      Thread.sleep(50000) // time to cleanup
     }
 
     scenario("Fail to create multiple carts at once") {
@@ -193,15 +193,12 @@ class ReactiveTestDomainSpec extends CommonSpec {
     }
 
 
-
-
-
     scenario("Reinitialization") {
 
       val fixture = Fixture
       import fixture._
 
-      Thread.sleep(10000)
+      Thread.sleep(50000)
 
       }
     }

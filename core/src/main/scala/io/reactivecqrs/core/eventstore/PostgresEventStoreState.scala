@@ -114,7 +114,7 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
       sql"""SELECT events.id, event_type, event, events.version, events.aggregate_id, aggregates.type, user_id, event_time
            FROM events
            JOIN aggregates ON events.aggregate_id = aggregates.id
-           ORDER BY events.id"""
+           ORDER BY events.id""".fetchSize(1000)
         .foreach { rs =>
           val event = mpjsons.deserialize[Event[_]](rs.string(3), rs.string(2))
           val aggregateId = AggregateId(rs.long(5))
@@ -146,6 +146,10 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
     }
   }
 
+  override def countAllEvents(): Int =  DB.readOnly { implicit session =>
+    sql"""SELECT COUNT(*) FROM events""".stripMargin.map(rs => rs.int(1)).single().apply().get
+  }
+
   override def readEventsToPublishForAggregate[AGGREGATE_ROOT](aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]] = {
     var result = List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]]()
     DB.readOnly { implicit session =>
@@ -163,7 +167,6 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
     }
     result.reverse
   }
-
 
 
 }

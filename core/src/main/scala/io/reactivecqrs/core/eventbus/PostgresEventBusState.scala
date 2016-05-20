@@ -43,5 +43,10 @@ class PostgresEventBusState(serialization: Serialization) extends EventBusState 
 
   }
 
+  override def countMessages: Int = {
+    DB.readOnly { implicit session =>
+      sql"""SELECT COUNT(*) FROM events_to_route""".map(rs => rs.int(1)).single().apply().get
+    }
+  }
 
 }

@@ -25,5 +25,5 @@ class MemoryEventBusState extends EventBusState {
 
   }
 
-
+  override def countMessages: Int = events.size
 }

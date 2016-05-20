@@ -97,4 +97,6 @@ class MemoryEventStoreState extends EventStoreState {
       map(e => IdentifiableEventNoAggregateType[AGGREGATE_ROOT](e._2._4, e._1._1, AggregateVersion(e._1._2), e._2._3.asInstanceOf[Event[AGGREGATE_ROOT]], e._2._1, e._2._2))
 
   }
+
+  override def countAllEvents(): Int = eventsRows.size
 }

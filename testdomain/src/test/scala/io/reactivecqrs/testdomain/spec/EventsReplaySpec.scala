@@ -11,8 +11,21 @@ import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCartAggregateContext, ShoppingCartsListProjectionAggregatesBased, ShoppingCartsListProjectionEventsBased}
 import io.reactivecqrs.testutils.CommonSpec
 import org.apache.commons.dbcp.BasicDataSource
+import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
+
+import scala.concurrent.duration._
 
 class EventsReplaySpec extends CommonSpec {
+
+  val settings = ConnectionPoolSettings(
+    initialSize = 5,
+    maxSize = 20,
+    connectionTimeoutMillis = 3000L)
+
+  Class.forName("org.postgresql.Driver")
+  ConnectionPool.singleton("jdbc:postgresql://localhost:5432/reactivecqrs", "reactivecqrs", "reactivecqrs", settings)
+
+
 
   def Fixture = new {
 
@@ -64,13 +77,13 @@ class EventsReplaySpec extends CommonSpec {
       val fixture = Fixture
       import fixture._
 
-      Thread.sleep(500)
+      val start = System.currentTimeMillis()
+      val result: EventsReplayed = replayerActor.askActor(ReplayAllEvents)(50.seconds)
 
-      val result: EventsReplayed = replayerActor ?? ReplayAllEvents(10)
+      println(result+" in "+(System.currentTimeMillis() - start)+"mills")
 
-      println("------------------------------------------------------"+result)
+      Thread.sleep(20000)
 
-      Thread.sleep(50000)
     }
   }
 

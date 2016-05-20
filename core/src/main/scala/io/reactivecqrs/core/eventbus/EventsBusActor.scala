@@ -1,12 +1,11 @@
 package io.reactivecqrs.core.eventbus
 
 import akka.actor.{Actor, ActorRef}
-import akka.event.LoggingReceive
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEvent}
+import io.reactivecqrs.core.backpressure.BackPressureActor.{ConsumerAllowMoreStart, ConsumerAllowMoreStop, ConsumerAllowedMore}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
-import io.reactivecqrs.core.eventsreplayer.BackPressureActor
 import io.reactivecqrs.core.util.{ActorLogging, RandomUtil}
 
 
@@ -16,8 +15,7 @@ object EventsBusActor {
                                             aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregate: Option[AGGREGATE_ROOT])
   case class PublishEventsAck(eventsIds: Seq[EventIdentifier])
 
-  case class PublishReplayedEvent[AGGREGATE_ROOT](backPressureActor: ActorRef,
-                                                   aggregateType: AggregateType, event: IdentifiableEvent[AGGREGATE_ROOT],
+  case class PublishReplayedEvent[AGGREGATE_ROOT](aggregateType: AggregateType, event: IdentifiableEvent[AGGREGATE_ROOT],
                                                    aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregate: Option[AGGREGATE_ROOT])
 
   case class SubscribeForEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier)
@@ -57,6 +55,11 @@ class EventsBusActor(state: EventBusState) extends Actor with ActorLogging {
 
   private var eventsReceived: List[MessageAck] = List.empty
 
+  private val MAX_BUFFER_SIZE = 1000
+
+  private var backPressureProducerActor: Option[ActorRef] = None
+  private var orderedMessages = 0
+
   override def receive: Receive = logReceive {
     case SubscribeForEvents(messageId, aggregateType, subscriber, classifier) => handleSubscribeForEvents(messageId, aggregateType, subscriber, classifier)
     case SubscribeForAggregates(messageId, aggregateType, subscriber, classifier) => handleSubscribeForAggregates(messageId, aggregateType, subscriber, classifier)
@@ -68,6 +71,11 @@ class EventsBusActor(state: EventBusState) extends Actor with ActorLogging {
       handlePublishEvents(sender(), aggregateType, List(event), aggregateId, aggregateVersion, aggregate)
     case MessagesPersisted(aggregateType, messages) => handleMessagesPersisted(aggregateType, messages)
     case m: MessageAck => handleEventReceived(m)
+    case ConsumerAllowMoreStart =>
+      backPressureProducerActor = Some(sender)
+      sender ! ConsumerAllowedMore((MAX_BUFFER_SIZE - state.countMessages) / subscriptions.values.map(_.size).sum)
+      orderedMessages += MAX_BUFFER_SIZE - state.countMessages
+    case ConsumerAllowMoreStop => backPressureProducerActor = None
   }
 
 
@@ -157,10 +165,25 @@ class EventsBusActor(state: EventBusState) extends Actor with ActorLogging {
       state.persistMessages(messagesToSend)
       respondTo ! PublishEventsAck(events.map(event => EventIdentifier(event.aggregateId, event.version)))
       self ! MessagesPersisted(aggregateType, messagesToSend)
+
+    if(backPressureProducerActor.isDefined) {
+      orderedMessages -= messagesToSend.size
+    }
+
+    orderMoreMessagesToConsume()
+
 //    } onFailure {
 //      case e: Exception => throw new IllegalStateException(e)
 //    }
 
+  }
+
+
+  private def orderMoreMessagesToConsume(): Unit = {
+    if(backPressureProducerActor.isDefined && state.countMessages + orderedMessages < MAX_BUFFER_SIZE / 2) {
+      backPressureProducerActor.get ! ConsumerAllowedMore((MAX_BUFFER_SIZE - state.countMessages) / subscriptions.values.map(_.size).sum)
+      orderedMessages += MAX_BUFFER_SIZE - state.countMessages
+    }
   }
 
 
@@ -174,9 +197,11 @@ class EventsBusActor(state: EventBusState) extends Actor with ActorLogging {
   private def handleEventReceived(ack: MessageAck): Unit = {
     eventsReceived ::= ack
 
-    if(eventsReceived.length == 50) { //TODO important clear buffer on timer
+    if(eventsReceived.length == 1) { //TODO important clear buffer on timer
       state.deleteSentMessage(eventsReceived)
       eventsReceived = List.empty
+
+      orderMoreMessagesToConsume()
     }
 
   }
