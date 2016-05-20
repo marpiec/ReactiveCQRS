@@ -168,7 +168,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     }
   }
 
-  private def handleEvent(event: Event[AGGREGATE_ROOT], aggregateId: AggregateId, noopEvent: Boolean): Unit = {
+  private def handleEvent(event: Event[AGGREGATE_ROOT], aggId: AggregateId, noopEvent: Boolean): Unit = {
     if(!noopEvent) {
       try {
         aggregateRoot = eventHandlers(aggregateRoot)(event)
@@ -179,7 +179,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
       }
     }
 
-    if(aggregateId == aggregateId) { // otherwise it's event from base aggregate we don't want to count
+    if(aggregateId == aggId) { // otherwise it's event from base aggregate we don't want to count
       version = version.increment
     }
   }

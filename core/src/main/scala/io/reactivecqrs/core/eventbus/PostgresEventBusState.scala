@@ -9,9 +9,6 @@ import scalikejdbc._
 
 class PostgresEventBusState(serialization: Serialization) extends EventBusState {
 
-  val started = System.currentTimeMillis()
-  var counter = 0
-
   def initSchema(): Unit = {
     (new EventBusSchemaInitializer).initSchema()
   }
@@ -25,8 +22,6 @@ class PostgresEventBusState(serialization: Serialization) extends EventBusState 
             |VALUES (NEXTVAL('events_to_route_seq'), ?, ?, current_timestamp, ?, ?)""".stripMargin
         .batch(batchParams: _*).apply()
     }
-    counter += messages.size
-
   }
 
   def deleteSentMessage(messages: Seq[MessageAck]): Unit = {
@@ -36,11 +31,6 @@ class PostgresEventBusState(serialization: Serialization) extends EventBusState 
       sql"""DELETE FROM events_to_route WHERE aggregate_id = ? AND version = ? AND subscriber = ?"""
         .batch(batchParams: _*).apply()
     }
-    counter -= messages.length
-    if(counter == 0) {
-      println(messages.size + " of " + (counter + messages.size) + " messages removed " + (System.currentTimeMillis() - started))
-    }
-
   }
 
   override def countMessages: Int = {
