@@ -15,8 +15,8 @@ object EventBusSubscriptionsManager {
 }
 
 class EventBusSubscriptionsManagerApi(eventBusSubscriptionsManager: ActorRef) {
-  def subscribe(subscribe: List[SubscribeRequest]): Unit = {
-    eventBusSubscriptionsManager ! subscribe
+  def subscribe(requests: List[SubscribeRequest]): Unit = {
+    eventBusSubscriptionsManager ! Subscribe(requests)
   }
 
   def getSubscriptions(implicit timeout: Timeout): Future[List[SubscribeRequest]] = {
