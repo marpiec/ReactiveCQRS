@@ -51,7 +51,7 @@ class PostgresEventBusState(serialization: Serialization) extends EventBusState 
   override def readAllMessages(handler: EventToRoute => Unit) {
     DB.readOnly { implicit session =>
       sql"""SELECT subscriber, aggregate_id, version, message_type, message FROM events_to_route""".foreach { rs =>
-        val message = serialization.deserialize(rs.bytes(5), Class.forName(rs.string(4)))
+        val message = serialization.deserialize(rs.bytes(5), Class.forName(rs.string(4))).get.asInstanceOf[AnyRef]
         handler(EventToRoute(Right(rs.string(1)), AggregateId(rs.long(2)), AggregateVersion(rs.int(3)), message))
       }
     }

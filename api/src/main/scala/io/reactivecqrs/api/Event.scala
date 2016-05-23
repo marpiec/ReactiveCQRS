@@ -4,7 +4,7 @@ import io.reactivecqrs.api.id.AggregateId
 
 import scala.reflect.runtime.universe._
 
-abstract class Event[AGGREGATE_ROOT: TypeTag] {
+abstract class Event[AGGREGATE_ROOT: TypeTag] extends Serializable {
   def aggregateRootType = typeOf[AGGREGATE_ROOT]
 }
 
