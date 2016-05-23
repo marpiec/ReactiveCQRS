@@ -8,7 +8,8 @@ import akka.util.Timeout
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.api.{Aggregate, AggregateVersion, Event, GetAggregateForVersion}
 import io.reactivecqrs.core.documentstore.DocumentStore
-import io.reactivecqrs.core.projection.{PostgresSubscriptionsState, ProjectionActor}
+import io.reactivecqrs.core.eventbus.EventBusSubscriptionsManagerApi
+import io.reactivecqrs.core.projection.ProjectionActor
 import io.reactivecqrs.testdomain.shoppingcart.ShoppingCartsListProjection.GetAllCartsNames
 
 import scala.concurrent.Await
@@ -20,7 +21,7 @@ object ShoppingCartsListProjection {
   case class GetAllCartsNames()
 }
 
-class ShoppingCartsListProjectionEventsBased(val eventBusActor: ActorRef,
+class ShoppingCartsListProjectionEventsBased(val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi,
                                              shoppingCartCommandBus: ActorRef,
                                              documentStore: DocumentStore[String, AggregateVersion]) extends ProjectionActor {
 
@@ -52,7 +53,7 @@ class ShoppingCartsListProjectionEventsBased(val eventBusActor: ActorRef,
 
 
 
-class ShoppingCartsListProjectionAggregatesBased(val eventBusActor: ActorRef,
+class ShoppingCartsListProjectionAggregatesBased(val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi,
                                                  documentStore: DocumentStore[String, AggregateVersion]) extends ProjectionActor {
   protected val listeners =  List(AggregateListener(shoppingCartUpdate))
 

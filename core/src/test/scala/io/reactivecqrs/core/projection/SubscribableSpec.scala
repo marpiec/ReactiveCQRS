@@ -9,7 +9,7 @@ import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.api.{AggregateType, AggregateVersion, Event}
 import io.reactivecqrs.core.aggregaterepository.IdentifiableEvent
 import io.reactivecqrs.core.documentstore.NothingMetadata
-import io.reactivecqrs.core.eventbus.EventsBusActor.SubscribedForEvents
+import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubscriptionsManagerApi}
 import io.reactivecqrs.core.projection.Subscribable.{CancelProjectionSubscriptions, ProjectionSubscriptionsCancelled, SubscribedForProjectionUpdates, SubscriptionUpdated}
 import org.scalatest.{BeforeAndAfter, FeatureSpecLike, GivenWhenThen}
 
@@ -20,7 +20,7 @@ case class StringEvent(aggregate: String) extends Event[String]
 
 case class SubscribeForAll(subscriptionCode: String, listener: ActorRef)
 
-class SimpleProjection(val eventBusActor: ActorRef, val subscriptionsState: PostgresSubscriptionsState) extends ProjectionActor with Subscribable {
+class SimpleProjection(val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi, val subscriptionsState: PostgresSubscriptionsState) extends ProjectionActor with Subscribable {
 
   override def receiveSubscriptionRequest: Receive = {
     case SubscribeForAll(code, listener) => handleSubscribe(code, listener, (s: String) => Some((s, NothingMetadata())))
@@ -61,17 +61,13 @@ class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAnd
   implicit val timeout = Timeout(10 second)
 
   def fixture = new {
-    val eventBusActorStub = actorSystem.actorOf(Props(new Actor {
-      override def receive: Receive = { case _ => () }
-    }))
+
+    val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(TestActorRef(Props(new EventBusSubscriptionsManager)))
 
     val subscriptionsState = new PostgresSubscriptionsState
     subscriptionsState.initSchema()
 
-    val simpleProjectionActor = TestActorRef(Props(new SimpleProjection(eventBusActorStub, subscriptionsState)))
-
-    simpleProjectionActor ! SubscribedForEvents("someMessageId", AggregateType(classOf[String].getSimpleName), "someId1")
-
+    val simpleProjectionActor = TestActorRef(Props(new SimpleProjection(eventBusSubscriptionsManager, subscriptionsState)))
 
     // use this actor/probe combo - the actor is necessary to store subscription id
     val simpleListenerProbe = TestProbe()

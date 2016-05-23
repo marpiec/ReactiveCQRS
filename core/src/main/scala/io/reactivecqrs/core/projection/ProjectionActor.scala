@@ -3,11 +3,10 @@ package io.reactivecqrs.core.projection
 import java.time.Instant
 
 import akka.actor.{Actor, ActorRef}
-import akka.event.LoggingReceive
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.aggregaterepository.IdentifiableEvent
-import io.reactivecqrs.core.eventbus.EventsBusActor
+import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManagerApi, EventsBusActor}
 import EventsBusActor._
 import io.reactivecqrs.core.util.ActorLogging
 
@@ -59,10 +58,9 @@ abstract class ProjectionActor extends Actor with ActorLogging {
   }
 
 
-  protected val eventBusActor: ActorRef
+  protected val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi
 
   protected val listeners:List[Listener[Any]]
-
 
 
   private lazy val eventListenersMap = {
@@ -83,7 +81,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       .map(l => (AggregateType(l.aggregateRootType.toString), l.asInstanceOf[AggregateWithEventListener[Any]].listener)).toMap
   }
 
-  override def receive: Receive = logReceive (receiveSubscribed(aggregateListenersMap.keySet, eventListenersMap.keySet, aggregateWithEventListenersMap.keySet))
+  override def receive: Receive = receiveUpdate orElse receiveQuery
 
   private def validateListeners() = {
     if(listeners.exists(l => l.aggregateRootType == typeOf[Any] || l.aggregateRootType == typeOf[Nothing])) {
@@ -91,60 +89,37 @@ abstract class ProjectionActor extends Actor with ActorLogging {
     }
   }
 
-  private def receiveSubscribed(aggregateListenersRemaining: Set[AggregateType], eventsListenersRemaining: Set[AggregateType], aggregatesWithEventsListenersRemaining: Set[AggregateType]): Receive = LoggingReceive {
-    case SubscribedForAggregates(messageId, aggregateType, subscriptionId) =>
-
-      if(eventsListenersRemaining.isEmpty && aggregatesWithEventsListenersRemaining.isEmpty && aggregateListenersRemaining.size == 1 && aggregateListenersRemaining.head == aggregateType) {
-        context.become(logReceive (receiveUpdate orElse receiveQuery))
-      } else {
-        context.become(logReceive (receiveSubscribed(aggregateListenersRemaining.filterNot(_ == aggregateType), eventsListenersRemaining, aggregatesWithEventsListenersRemaining)))
-      }
-    case SubscribedForEvents(messageId, aggregateType, subscriptionId) =>
-      if(aggregateListenersRemaining.isEmpty && aggregatesWithEventsListenersRemaining.isEmpty && eventsListenersRemaining.size == 1 && eventsListenersRemaining.head == aggregateType) {
-        context.become(logReceive (receiveUpdate orElse receiveQuery))
-      } else {
-        context.become(logReceive (receiveSubscribed(aggregateListenersRemaining, eventsListenersRemaining.filterNot(_ == aggregateType), aggregatesWithEventsListenersRemaining)))
-      }
-    case SubscribedForAggregatesWithEvents(messageId, aggregateType, subscriptionId) =>
-      if(eventsListenersRemaining.isEmpty && aggregateListenersRemaining.isEmpty && aggregatesWithEventsListenersRemaining.size == 1 && aggregatesWithEventsListenersRemaining.head == aggregateType) {
-        context.become(logReceive (receiveUpdate orElse receiveQuery))
-      } else {
-        context.become(logReceive (receiveSubscribed(aggregateListenersRemaining, eventsListenersRemaining, aggregatesWithEventsListenersRemaining.filterNot(_ == aggregateType))))
-      }
-  }
-
   protected def receiveUpdate: Receive = logReceive  {
     case a: AggregateWithType[_] =>
       aggregateListenersMap(a.aggregateType)(a.id, a.version, a.aggregateRoot)
-      sender() ! MessageAck(self, a.id, a.version)
+      sender() ! EventAck(self, a.id, a.version)
       replayQueries()
     case ae: AggregateWithTypeAndEvent[_] =>
       aggregateWithEventListenersMap(ae.aggregateType)(ae.id, ae.version, ae.event.asInstanceOf[Event[Any]], ae.aggregateRoot, ae.userId, ae.timestamp)
-      sender() ! MessageAck(self, ae.id, ae.version)
+      sender() ! EventAck(self, ae.id, ae.version)
       replayQueries()
     case e: IdentifiableEvent[_] =>
       eventListenersMap(e.aggregateType)(e.aggregateId, e.version, e.event.asInstanceOf[Event[Any]], e.userId, e.timestamp)
-      sender() ! MessageAck(self, e.aggregateId, e.version)
+      sender() ! EventAck(self, e.aggregateId, e.version)
       replayQueries()
   }
 
   protected def receiveQuery: Receive
 
+
   override def preStart() {
-    aggregateListenersMap.keySet.foreach { aggregateType =>
-      eventBusActor ! SubscribeForAggregates("", aggregateType, self)
-    }
+    eventBusSubscriptionsManager.subscribe(aggregateListenersMap.keySet.toList.map { aggregateType =>
+      SubscribeForAggregates("", aggregateType, self)
+    })
 
-    eventListenersMap.keySet.foreach { aggregateType =>
-      eventBusActor ! SubscribeForEvents("", aggregateType, self)
-    }
+    eventBusSubscriptionsManager.subscribe(eventListenersMap.keySet.toList.map { aggregateType =>
+      SubscribeForEvents("", aggregateType, self)
+    })
 
-    aggregateWithEventListenersMap.keySet.foreach { aggregateType =>
-      eventBusActor ! SubscribeForAggregatesWithEvents("", aggregateType, self)
-    }
-
+    eventBusSubscriptionsManager.subscribe(aggregateWithEventListenersMap.keySet.toList.map { aggregateType =>
+      SubscribeForAggregatesWithEvents("", aggregateType, self)
+    })
   }
-
   // ************** Queries delay - needed if query is for document that might not been yet updated, but update is in it's way
 
   private var delayedQueries = List[DelayedQuery]()

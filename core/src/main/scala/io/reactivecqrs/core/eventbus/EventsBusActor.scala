@@ -1,12 +1,18 @@
 package io.reactivecqrs.core.eventbus
 
-import akka.actor.{Actor, ActorRef}
+import akka.actor.{Actor, ActorRef, ActorSelection}
+import akka.pattern.ask
+import akka.util.Timeout
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEvent}
 import io.reactivecqrs.core.backpressure.BackPressureActor.{ConsumerAllowMoreStart, ConsumerAllowMoreStop, ConsumerAllowedMore}
+import io.reactivecqrs.core.eventbus.EventBusSubscriptionsManager.GetSubscriptions
 import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.core.util.{ActorLogging, RandomUtil}
+
+import scala.concurrent.Await
+import scala.concurrent.duration._
 
 
 object EventsBusActor {
@@ -18,23 +24,15 @@ object EventsBusActor {
   case class PublishReplayedEvent[AGGREGATE_ROOT](aggregateType: AggregateType, event: IdentifiableEvent[AGGREGATE_ROOT],
                                                    aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregate: Option[AGGREGATE_ROOT])
 
-  case class SubscribeForEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier)
-  case class SubscribedForEvents(messageId: String, aggregateType: AggregateType, subscriptionId: String)
+  trait SubscribeRequest
+  case class SubscribeForEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier) extends SubscribeRequest
+  case class SubscribeForAggregates(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier = AcceptAllAggregateIdClassifier) extends SubscribeRequest
+  case class SubscribeForAggregatesWithEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier) extends SubscribeRequest
 
-  case class SubscribeForAggregates(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier = AcceptAllAggregateIdClassifier)
-  case class SubscribedForAggregates(messageId: String, aggregateType: AggregateType, subscriptionId: String)
+  case class MessagesPersisted(aggregateType: AggregateType, messages: Seq[EventToRoute])
 
-  case class SubscribeForAggregatesWithEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier)
-  case class SubscribedForAggregatesWithEvents(messageId: String, aggregateType: AggregateType, subscriptionId: String)
-
-  case class MessagesPersisted(aggregateType: AggregateType, messages: Seq[MessageToSend])
-
-  case class MessageToSend(subscriber: ActorRef, aggregateId: AggregateId, version: AggregateVersion, message: AnyRef)
-  case class MessageAck(subscriber: ActorRef, aggregateId: AggregateId, version: AggregateVersion)
-
-  
-  case class CancelSubscriptions(subscriptionId: List[String])
-  case class SubscriptionsCanceled(subscriptionId: List[String])
+  case class EventToRoute(subscriber: Either[ActorRef, String], aggregateId: AggregateId, version: AggregateVersion, message: AnyRef)
+  case class EventAck(subscriber: ActorRef, aggregateId: AggregateId, version: AggregateVersion)
 
 }
 
@@ -46,31 +44,59 @@ case class EventSubscription(subscriptionId: String, aggregateType: AggregateTyp
 case class AggregateSubscription(subscriptionId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier) extends Subscription
 case class AggregateWithEventSubscription(subscriptionId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier) extends Subscription
 
-class EventsBusActor(state: EventBusState) extends Actor with ActorLogging {
+
+
+
+class EventsBusActor(state: EventBusState, val subscriptionsManager: EventBusSubscriptionsManagerApi) extends Actor with ActorLogging {
 
   private val randomUtil = new RandomUtil
 
   private var subscriptions: Map[AggregateType, Vector[Subscription]] = Map()
   private var subscriptionsByIds = Map[String, Subscription]()
 
-  private var eventsReceived: List[MessageAck] = List.empty
+  private var eventsReceived: List[EventAck] = List.empty
 
   private val MAX_BUFFER_SIZE = 1000
 
   private var backPressureProducerActor: Option[ActorRef] = None
   private var orderedMessages = 0
 
-  override def receive: Receive = logReceive {
-    case SubscribeForEvents(messageId, aggregateType, subscriber, classifier) => handleSubscribeForEvents(messageId, aggregateType, subscriber, classifier)
-    case SubscribeForAggregates(messageId, aggregateType, subscriber, classifier) => handleSubscribeForAggregates(messageId, aggregateType, subscriber, classifier)
-    case SubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, classifier) => handleSubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, classifier)
-    case CancelSubscriptions(subscriptionsIds) => handleCancelSubscription(sender(), subscriptionsIds)
+  private def routeOldEvents(): Unit = {
+    state.readAllMessages((message: EventToRoute) => {
+      message.subscriber match {
+        case Left(s) => s ! message.message
+        case Right(path) => context.system.actorSelection(path) ! message.message
+      }
+    })
+  }
+
+  routeOldEvents()
+
+  def initSubscriptions(): Unit = {
+
+    implicit val timeout = Timeout(30.seconds)
+
+    Await.result(subscriptionsManager.getSubscriptions.mapTo[List[SubscribeRequest]], timeout.duration).foreach {
+      case SubscribeForEvents(messageId, aggregateType, subscriber, classifier) => handleSubscribeForEvents(messageId, aggregateType, subscriber, classifier)
+      case SubscribeForAggregates(messageId, aggregateType, subscriber, classifier) => handleSubscribeForAggregates(messageId, aggregateType, subscriber, classifier)
+      case SubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, classifier) => handleSubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, classifier)
+    }
+  }
+
+  override def receive: Receive = {
+    case anything =>
+      initSubscriptions()
+      context.become(receiveAfterInit)
+      receiveAfterInit(anything)
+  }
+
+  def receiveAfterInit: Receive = logReceive {
     case PublishEvents(aggregateType, events, aggregateId, aggregateVersion, aggregate) =>
       handlePublishEvents(sender(), aggregateType, events, aggregateId, aggregateVersion, aggregate)
     case PublishReplayedEvent(aggregateType, event, aggregateId, aggregateVersion, aggregate) =>
       handlePublishEvents(sender(), aggregateType, List(event), aggregateId, aggregateVersion, aggregate)
     case MessagesPersisted(aggregateType, messages) => handleMessagesPersisted(aggregateType, messages)
-    case m: MessageAck => handleEventReceived(m)
+    case m: EventAck => handleEventReceived(m)
     case ConsumerAllowMoreStart =>
       backPressureProducerActor = Some(sender)
       sender ! ConsumerAllowedMore((MAX_BUFFER_SIZE - state.countMessages) / subscriptions.values.map(_.size).sum)
@@ -92,7 +118,6 @@ class EventsBusActor(state: EventBusState) extends Actor with ActorLogging {
       subscriptions += aggregateType -> (subscribersForAggregateType :+ subscription)
       subscriptionsByIds += subscriptionId -> subscription
     }
-    subscriber ! SubscribedForEvents(messageId, aggregateType, subscriptionId)
   }
 
   private def handleSubscribeForAggregates(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier): Unit = {
@@ -106,7 +131,6 @@ class EventsBusActor(state: EventBusState) extends Actor with ActorLogging {
       subscriptions += aggregateType -> (subscribersForAggregateType :+ subscription)
       subscriptionsByIds += subscriptionId -> subscription
     }
-    subscriber ! SubscribedForAggregates(messageId, aggregateType, subscriptionId)
   }
 
   private def handleSubscribeForAggregatesWithEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier): Unit = {
@@ -120,24 +144,7 @@ class EventsBusActor(state: EventBusState) extends Actor with ActorLogging {
       subscriptions += aggregateType -> (subscribersForAggregateType :+ subscription)
       subscriptionsByIds += subscriptionId -> subscription
     }
-    subscriber ! SubscribedForAggregatesWithEvents(messageId, aggregateType, subscriptionId)
   }
-
-  def handleCancelSubscription(subscriber: ActorRef, subscriptionsIds: List[String]): Unit = {
-    subscriptionsIds.foreach {subscriptionId =>
-      subscriptionsByIds.get(subscriptionId) match {
-        case Some(subscription) =>
-          val subscriptionsForType = subscriptions.getOrElse(subscription.aggregateType, Vector()).filter(_.subscriptionId != subscriptionId)
-          subscriptions += subscription.aggregateType -> subscriptionsForType
-          subscriptionsByIds -= subscriptionId
-
-        case None => () // Do nothing, idempotency
-      }
-    }
-    subscriber ! SubscriptionsCanceled(subscriptionsIds)
-  }
-
-
 
 
   // ***************** PUBLISHING
@@ -148,17 +155,17 @@ class EventsBusActor(state: EventBusState) extends Actor with ActorLogging {
         case s: EventSubscription =>
           events
             .filter(event => s.classifier.accept(aggregateId, EventType(event.event.getClass.getName)))
-            .map(event => MessageToSend(s.subscriber, event.aggregateId, event.version, event))
+            .map(event => EventToRoute(Left(s.subscriber), event.aggregateId, event.version, event))
         case s: AggregateSubscription =>
           if(s.classifier.accept(aggregateId)) {
-            List(MessageToSend(s.subscriber, aggregateId, aggregateVersion, AggregateWithType(aggregateType, aggregateId, aggregateVersion, aggregateRoot)))
+            List(EventToRoute(Left(s.subscriber), aggregateId, aggregateVersion, AggregateWithType(aggregateType, aggregateId, aggregateVersion, aggregateRoot)))
           } else {
             List.empty
           }
         case s: AggregateWithEventSubscription =>
           events
             .filter(event => s.classifier.accept(aggregateId, EventType(event.event.getClass.getName)))
-            .map(event => MessageToSend(s.subscriber, event.aggregateId, event.version, AggregateWithTypeAndEvent(aggregateType, aggregateId, aggregateVersion, aggregateRoot, event.event, event.userId, event.timestamp)))
+            .map(event => EventToRoute(Left(s.subscriber), event.aggregateId, event.version, AggregateWithTypeAndEvent(aggregateType, aggregateId, aggregateVersion, aggregateRoot, event.event, event.userId, event.timestamp)))
       }
 
 //    Future { // FIXME Future is to ensure non blocking access to db, but it broke order in which events for the same aggregate were persisted, maybe there should be an actor per aggregate instead of a future?
@@ -187,14 +194,17 @@ class EventsBusActor(state: EventBusState) extends Actor with ActorLogging {
   }
 
 
-  private def handleMessagesPersisted(aggregateType: AggregateType, messages: Seq[MessageToSend]): Unit = {
+  private def handleMessagesPersisted(aggregateType: AggregateType, messages: Seq[EventToRoute]): Unit = {
 
     messages.foreach { message =>
-      message.subscriber ! message.message
+      message.subscriber match {
+        case Left(s) => s ! message.message
+        case Right(path) => context.system.actorSelection(path) ! message.message
+      }
     }
   }
 
-  private def handleEventReceived(ack: MessageAck): Unit = {
+  private def handleEventReceived(ack: EventAck): Unit = {
     eventsReceived ::= ack
 
     if(eventsReceived.length == 1) { //TODO important clear buffer on timer

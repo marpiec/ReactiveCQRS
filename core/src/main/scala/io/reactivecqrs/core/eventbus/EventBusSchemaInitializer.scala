@@ -28,6 +28,7 @@ class EventBusSchemaInitializer {
            version INT NOT NULL,
            message_time TIMESTAMP NOT NULL,
            subscriber VARCHAR(256) NOT NULL,
+           message_type VARCHAR(256) NOT NULL,
            message bytea NOT NULL)
        """.execute().apply()
 

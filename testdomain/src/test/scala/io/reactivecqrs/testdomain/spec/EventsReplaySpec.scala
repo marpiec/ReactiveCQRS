@@ -4,7 +4,7 @@ import akka.actor.{ActorSystem, Props}
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.AggregateVersion
 import io.reactivecqrs.core.documentstore.{MemoryDocumentStore, PostgresDocumentStore}
-import io.reactivecqrs.core.eventbus.{EventsBusActor, MemoryEventBusState}
+import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubscriptionsManagerApi, EventsBusActor, MemoryEventBusState}
 import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, ReplayAllEvents}
 import io.reactivecqrs.core.eventsreplayer.{EventsReplayerActor, ReplayerRepositoryActorFactory}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
@@ -36,13 +36,14 @@ class EventsReplaySpec extends CommonSpec {
     eventStoreState.initSchema()
 
 
+
+
     val eventBusState = new MemoryEventBusState
 
-    val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusState)), "eventBus")
+    val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(system.actorOf(Props(new EventBusSubscriptionsManager)))
 
-    val replayerActor = system.actorOf(Props(new EventsReplayerActor(eventStoreState, eventBusActor, List(
-      ReplayerRepositoryActorFactory(new ShoppingCartAggregateContext)
-    ))))
+
+
 
     val dataSource = new BasicDataSource()
     dataSource.setUsername("reactivecqrs")
@@ -64,8 +65,14 @@ class EventsReplaySpec extends CommonSpec {
       new PostgresDocumentStore[String, AggregateVersion]("storeB", dataSource, mpjsons)
     }
 
-    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusActor, null, storeA)), "ShoppingCartsListProjectionEventsBased")
-    val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusActor, storeB)), "ShoppingCartsListProjectionAggregatesBased")
+    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusSubscriptionsManager, null, storeA)), "ShoppingCartsListProjectionEventsBased")
+    val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusSubscriptionsManager, storeB)), "ShoppingCartsListProjectionAggregatesBased")
+
+    val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusState, eventBusSubscriptionsManager)), "eventBus")
+
+    val replayerActor = system.actorOf(Props(new EventsReplayerActor(eventStoreState, eventBusActor, List(
+      ReplayerRepositoryActorFactory(new ShoppingCartAggregateContext)
+    ))))
 
     Thread.sleep(100) // Wait until all subscriptions in place
 
