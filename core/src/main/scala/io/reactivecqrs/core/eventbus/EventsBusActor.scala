@@ -158,14 +158,14 @@ class EventsBusActor(state: EventBusState, val subscriptionsManager: EventBusSub
             .map(event => EventToRoute(Left(s.subscriber), event.aggregateId, event.version, event))
         case s: AggregateSubscription =>
           if(s.classifier.accept(aggregateId)) {
-            List(EventToRoute(Left(s.subscriber), aggregateId, aggregateVersion, AggregateWithType(aggregateType, aggregateId, aggregateVersion, aggregateRoot)))
+            List(EventToRoute(Left(s.subscriber), aggregateId, aggregateVersion, AggregateWithType(aggregateType, aggregateId, aggregateVersion, aggregateRoot, events.last.eventId)))
           } else {
             List.empty
           }
         case s: AggregateWithEventSubscription =>
           events
             .filter(event => s.classifier.accept(aggregateId, EventType(event.event.getClass.getName)))
-            .map(event => EventToRoute(Left(s.subscriber), event.aggregateId, event.version, AggregateWithTypeAndEvent(aggregateType, aggregateId, aggregateVersion, aggregateRoot, event.event, event.userId, event.timestamp)))
+            .map(event => EventToRoute(Left(s.subscriber), event.aggregateId, event.version, AggregateWithTypeAndEvent(aggregateType, aggregateId, aggregateVersion, aggregateRoot, event.event, event.eventId, event.userId, event.timestamp)))
       }
 
 //    Future { // FIXME Future is to ensure non blocking access to db, but it broke order in which events for the same aggregate were persisted, maybe there should be an actor per aggregate instead of a future?

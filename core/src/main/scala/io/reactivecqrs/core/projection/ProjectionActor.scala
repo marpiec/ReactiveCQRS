@@ -9,6 +9,7 @@ import io.reactivecqrs.core.aggregaterepository.IdentifiableEvent
 import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManagerApi, EventsBusActor}
 import EventsBusActor._
 import io.reactivecqrs.core.util.ActorLogging
+import scalikejdbc.{DB, DBSession}
 
 import scala.reflect.runtime.universe._
 
@@ -18,42 +19,44 @@ private case class DelayedQuery(until: Instant, respondTo: ActorRef, search: () 
 
 abstract class ProjectionActor extends Actor with ActorLogging {
 
+  val subscriptionsState: SubscriptionsState
+
   protected trait Listener[+AGGREGATE_ROOT]  {
     def aggregateRootType: Type
   }
 
   // ListenerParam and listener are separately so covariant type is allowed
-  protected class EventListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT], UserId, Instant) => Unit) extends Listener[AGGREGATE_ROOT] {
-    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Event[Any], UserId, Instant) => Unit]
+  protected class EventListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT], UserId, Instant) => (DBSession) => Unit) extends Listener[AGGREGATE_ROOT] {
+    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Event[Any], UserId, Instant) => (DBSession) => Unit]
     def aggregateRootType = typeOf[AGGREGATE_ROOT]
   }
 
   protected object EventListener {
-    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT], UserId, Instant) => Unit): EventListener[AGGREGATE_ROOT] =
+    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT], UserId, Instant) => (DBSession) => Unit): EventListener[AGGREGATE_ROOT] =
       new EventListener[AGGREGATE_ROOT](listener)
   }
 
 
   // ListenerParam and listener are separately so covariant type is allowed
-  protected class AggregateListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT]) => Unit) extends Listener[AGGREGATE_ROOT] {
-    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Option[Any]) => Unit]
+  protected class AggregateListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT]) => (DBSession) => Unit) extends Listener[AGGREGATE_ROOT] {
+    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Option[Any]) => (DBSession) => Unit]
     def aggregateRootType = typeOf[AGGREGATE_ROOT]
   }
 
   protected object AggregateListener {
-    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT]) => Unit): AggregateListener[AGGREGATE_ROOT] =
+    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT]) => (DBSession) => Unit): AggregateListener[AGGREGATE_ROOT] =
       new AggregateListener[AGGREGATE_ROOT](listener)
   }
 
 
   // ListenerParam and listener are separately so covariant type is allowed
-  protected class AggregateWithEventListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT], Option[AGGREGATE_ROOT], UserId, Instant) => Unit) extends Listener[AGGREGATE_ROOT] {
-    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Event[Any], Option[Any], UserId, Instant) => Unit]
+  protected class AggregateWithEventListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT], Option[AGGREGATE_ROOT], UserId, Instant) => (DBSession) => Unit) extends Listener[AGGREGATE_ROOT] {
+    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Event[Any], Option[Any], UserId, Instant) => (DBSession) => Unit]
     def aggregateRootType = typeOf[AGGREGATE_ROOT]
   }
 
   protected object AggregateWithEventListener {
-    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT], Option[AGGREGATE_ROOT], UserId, Instant) => Unit): AggregateWithEventListener[AGGREGATE_ROOT] =
+    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Event[AGGREGATE_ROOT], Option[AGGREGATE_ROOT], UserId, Instant) => (DBSession) => Unit): AggregateWithEventListener[AGGREGATE_ROOT] =
       new AggregateWithEventListener[AGGREGATE_ROOT](listener)
   }
 
@@ -91,17 +94,36 @@ abstract class ProjectionActor extends Actor with ActorLogging {
 
   protected def receiveUpdate: Receive = logReceive  {
     case a: AggregateWithType[_] =>
-      aggregateListenersMap(a.aggregateType)(a.id, a.version, a.aggregateRoot)
-      sender() ! EventAck(self, a.id, a.version)
-      replayQueries()
+      val lastEventId = subscriptionsState.lastEventIdForAggregatesSubscription(this.getClass.getName, a.aggregateType)
+      if(lastEventId < a.eventId) {
+        DB.localTx { session =>
+          aggregateListenersMap(a.aggregateType)(a.id, a.version, a.aggregateRoot)(session)
+          subscriptionsState.newEventIdForAggregatesSubscription(this.getClass.getName, a.aggregateType, lastEventId, a.eventId)
+        }
+        sender() ! EventAck(self, a.id, a.version)
+        replayQueries()
+      }
+
     case ae: AggregateWithTypeAndEvent[_] =>
-      aggregateWithEventListenersMap(ae.aggregateType)(ae.id, ae.version, ae.event.asInstanceOf[Event[Any]], ae.aggregateRoot, ae.userId, ae.timestamp)
-      sender() ! EventAck(self, ae.id, ae.version)
-      replayQueries()
+      val lastEventId = subscriptionsState.lastEventIdForAggregatesWithEventsSubscription(this.getClass.getName, ae.aggregateType)
+      if(lastEventId < ae.eventId) {
+        DB.localTx { session =>
+          aggregateWithEventListenersMap(ae.aggregateType)(ae.id, ae.version, ae.event.asInstanceOf[Event[Any]], ae.aggregateRoot, ae.userId, ae.timestamp)(session)
+          subscriptionsState.newEventIdForAggregatesWithEventsSubscription(this.getClass.getName, ae.aggregateType, lastEventId, ae.eventId)
+        }
+        sender() ! EventAck(self, ae.id, ae.version)
+        replayQueries()
+      }
     case e: IdentifiableEvent[_] =>
-      eventListenersMap(e.aggregateType)(e.aggregateId, e.version, e.event.asInstanceOf[Event[Any]], e.userId, e.timestamp)
-      sender() ! EventAck(self, e.aggregateId, e.version)
-      replayQueries()
+      val lastEventId = subscriptionsState.lastEventIdForEventsSubscription(this.getClass.getName, e.aggregateType)
+      if(lastEventId < e.eventId) {
+        DB.localTx { session =>
+          eventListenersMap(e.aggregateType)(e.aggregateId, e.version, e.event.asInstanceOf[Event[Any]], e.userId, e.timestamp)(session)
+          subscriptionsState.newEventIdForEventsSubscription(this.getClass.getName, e.aggregateType, lastEventId, e.eventId)
+        }
+        sender() ! EventAck(self, e.aggregateId, e.version)
+        replayQueries()
+      }
   }
 
   protected def receiveQuery: Receive

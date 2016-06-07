@@ -8,6 +8,7 @@ import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubs
 import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, ReplayAllEvents}
 import io.reactivecqrs.core.eventsreplayer.{EventsReplayerActor, ReplayerRepositoryActorFactory}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
+import io.reactivecqrs.core.projection.PostgresSubscriptionsState
 import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCartAggregateContext, ShoppingCartsListProjectionAggregatesBased, ShoppingCartsListProjectionEventsBased}
 import io.reactivecqrs.testutils.CommonSpec
 import org.apache.commons.dbcp.BasicDataSource
@@ -35,38 +36,27 @@ class EventsReplaySpec extends CommonSpec {
     val eventStoreState = new PostgresEventStoreState(mpjsons) // or MemoryEventStore
     eventStoreState.initSchema()
 
-
-
-
     val eventBusState = new MemoryEventBusState
 
-    val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(system.actorOf(Props(new EventBusSubscriptionsManager)))
-
-
-
-
-    val dataSource = new BasicDataSource()
-    dataSource.setUsername("reactivecqrs")
-    dataSource.setPassword("reactivecqrs")
-    dataSource.setDriverClassName("org.postgresql.Driver")
-    dataSource.setUrl("jdbc:postgresql://localhost:5432/reactivecqrs")
-    dataSource.setInitialSize(5)
+    val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(system.actorOf(Props(new EventBusSubscriptionsManager(0))))
+    val subscriptionState = new PostgresSubscriptionsState
+    subscriptionState.initSchema()
 
     val inMemory = false
 
     private val storeA = if(inMemory) {
       new MemoryDocumentStore[String, AggregateVersion]
     } else {
-      new PostgresDocumentStore[String, AggregateVersion]("storeA", dataSource, mpjsons)
+      new PostgresDocumentStore[String, AggregateVersion]("storeA", mpjsons)
     }
     private val storeB = if(inMemory) {
       new MemoryDocumentStore[String, AggregateVersion]
     } else {
-      new PostgresDocumentStore[String, AggregateVersion]("storeB", dataSource, mpjsons)
+      new PostgresDocumentStore[String, AggregateVersion]("storeB", mpjsons)
     }
 
-    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusSubscriptionsManager, null, storeA)), "ShoppingCartsListProjectionEventsBased")
-    val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusSubscriptionsManager, storeB)), "ShoppingCartsListProjectionAggregatesBased")
+    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusSubscriptionsManager, subscriptionState, null, storeA)), "ShoppingCartsListProjectionEventsBased")
+    val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusSubscriptionsManager, subscriptionState, storeB)), "ShoppingCartsListProjectionAggregatesBased")
 
     val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusState, eventBusSubscriptionsManager)), "eventBus")
 

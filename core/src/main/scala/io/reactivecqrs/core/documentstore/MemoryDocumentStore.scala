@@ -2,6 +2,8 @@ package io.reactivecqrs.core.documentstore
 
 import java.lang.reflect.Field
 
+import scalikejdbc.DBSession
+
 import scala.collection.parallel.mutable
 
 sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
@@ -9,25 +11,25 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
   val store = mutable.ParHashMap[Long, DocumentWithMetadata[T,M]]()
 
 
-  def findDocumentByPath(path: Seq[String], value: String): Map[Long, DocumentWithMetadata[T,M]] = {
+  def findDocumentByPath(path: Seq[String], value: String)(implicit session: DBSession): Map[Long, DocumentWithMetadata[T,M]] = {
     store.filter(keyValuePair => matches(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].document, path, value)).seq.toMap
   }
 
-  def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String]): Map[Long, DocumentWithMetadata[T,M]] = {
+  def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession): Map[Long, DocumentWithMetadata[T,M]] = {
     store.filter(keyValuePair => matchesMultiple(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].document, path, values)).seq.toMap
   }
 
-  def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
+  def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession): Map[Long, DocumentWithMetadata[T, M]] = {
     store.filter(keyValuePair => arrayMatchSeq(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].document, arrayPath).exists(matches(_, objectPath, value))).seq.toMap
   }
 
 
-  def findDocumentByMetadataObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
+  def findDocumentByMetadataObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession): Map[Long, DocumentWithMetadata[T, M]] = {
     store.filter(keyValuePair => arrayMatchSeq(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].metadata, arrayPath).exists(matches(_, objectPath, value))).seq.toMap
   }
 
 
-  def findAll(): Map[Long, DocumentWithMetadata[T,M]] = {
+  def findAll()(implicit session: DBSession): Map[Long, DocumentWithMetadata[T,M]] = {
     store.seq.toMap
   }
 
@@ -102,13 +104,13 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     value
   }
 
-  def getDocument(key: Long): Option[DocumentWithMetadata[T,M]] = store.get(key)
+  def getDocument(key: Long)(implicit session: DBSession): Option[DocumentWithMetadata[T,M]] = store.get(key)
 
-  def removeDocument(key: Long): Unit = store -= key
+  def removeDocument(key: Long)(implicit session: DBSession): Unit = store -= key
 
-  def getDocuments(keys: List[Long]): Map[Long, DocumentWithMetadata[T,M]] = (store filterKeys keys.toSet).seq.toMap
+  def getDocuments(keys: List[Long])(implicit session: DBSession): Map[Long, DocumentWithMetadata[T,M]] = (store filterKeys keys.toSet).seq.toMap
 
-  def updateDocument(key: Long, document: T, metadata: M): Unit = {
+  def updateDocument(key: Long, document: T, metadata: M)(implicit session: DBSession): Unit = {
     if (store.contains(key)) {
       store += key -> DocumentWithMetadata[T, M](document, metadata)
     } else {
@@ -121,7 +123,7 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
 class MemoryDocumentStore[T <: AnyRef, M <: AnyRef] extends DocumentStore[T,M] with MemoryDocumentStoreTrait[T, M] {
 
-  def insertDocument(key: Long, document: T, metadata: M): Unit =
+  def insertDocument(key: Long, document: T, metadata: M)(implicit session: DBSession): Unit =
     if (store.contains(key)) {
       throw new IllegalStateException("Attempting to re-insert document with key " + key)
     } else {
@@ -141,7 +143,7 @@ class MemoryDocumentStoreAutoId[T <: AnyRef, M <: AnyRef] extends DocumentStoreA
     id
   }
 
-  def insertDocument(document: T, metadata: M): Long = {
+  def insertDocument(document: T, metadata: M)(implicit session: DBSession): Long = {
     val key = generateNextId
     store += key -> DocumentWithMetadata[T, M](document, metadata)
     key

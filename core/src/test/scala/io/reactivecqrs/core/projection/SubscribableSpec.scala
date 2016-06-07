@@ -12,6 +12,7 @@ import io.reactivecqrs.core.documentstore.NothingMetadata
 import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubscriptionsManagerApi}
 import io.reactivecqrs.core.projection.Subscribable.{CancelProjectionSubscriptions, ProjectionSubscriptionsCancelled, SubscribedForProjectionUpdates, SubscriptionUpdated}
 import org.scalatest.{BeforeAndAfter, FeatureSpecLike, GivenWhenThen}
+import scalikejdbc.DBSession
 
 import scala.concurrent.duration._
 
@@ -32,7 +33,7 @@ class SimpleProjection(val eventBusSubscriptionsManager: EventBusSubscriptionsMa
 
   override protected val listeners: List[Listener[Any]] = List(EventListener(handleUpdate))
 
-  private def handleUpdate(aggregateId: AggregateId, version: AggregateVersion, event: Event[String], userId: UserId, instant: Instant) = {
+  private def handleUpdate(aggregateId: AggregateId, version: AggregateVersion, event: Event[String], userId: UserId, instant: Instant) = { implicit session: DBSession =>
     sendUpdate(event.asInstanceOf[StringEvent].aggregate)
   }
 
@@ -62,7 +63,7 @@ class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAnd
 
   def fixture = new {
 
-    val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(TestActorRef(Props(new EventBusSubscriptionsManager)))
+    val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(TestActorRef(Props(new EventBusSubscriptionsManager(0))))
 
     val subscriptionsState = new PostgresSubscriptionsState
     subscriptionsState.initSchema()

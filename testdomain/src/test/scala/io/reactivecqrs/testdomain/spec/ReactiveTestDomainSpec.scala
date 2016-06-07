@@ -54,8 +54,12 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val commandsUidGenerator = new PostgresUidGenerator("commands_uids_seq") // or MemoryUidGenerator
     val sagasUidGenerator = new PostgresUidGenerator("sagas_uids_seq") // or MemoryUidGenerator
     val uidGenerator = system.actorOf(Props(new UidGeneratorActor(aggregatesUidGenerator, commandsUidGenerator, sagasUidGenerator)), "uidGenerator")
-    val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(system.actorOf(Props(new EventBusSubscriptionsManager)))
+    val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(system.actorOf(Props(new EventBusSubscriptionsManager(2))))
     val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusState, eventBusSubscriptionsManager)), "eventBus")
+
+    val subscriptionState = new PostgresSubscriptionsState
+    subscriptionState.initSchema()
+
     val shoppingCartContext = new ShoppingCartAggregateContext
     val shoppingCartCommandBus: ActorRef = system.actorOf(
       AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandLogState, eventBusActor), "ShoppingCartCommandBus")
@@ -70,29 +74,22 @@ class ReactiveTestDomainSpec extends CommonSpec {
     subscriptionsState.initSchema()
 
 
-    val dataSource = new BasicDataSource()
-    dataSource.setUsername("reactivecqrs")
-    dataSource.setPassword("reactivecqrs")
-    dataSource.setDriverClassName("org.postgresql.Driver")
-    dataSource.setUrl("jdbc:postgresql://localhost:5432/reactivecqrs")
-    dataSource.setInitialSize(5)
-
     val inMemory = false
 
     private val storeA = if(inMemory) {
       new MemoryDocumentStore[String, AggregateVersion]
     } else {
-      new PostgresDocumentStore[String, AggregateVersion]("storeA", dataSource, mpjsons)
+      new PostgresDocumentStore[String, AggregateVersion]("storeA", mpjsons)
     }
     private val storeB = if(inMemory) {
       new MemoryDocumentStore[String, AggregateVersion]
     } else {
-      new PostgresDocumentStore[String, AggregateVersion]("storeB", dataSource, mpjsons)
+      new PostgresDocumentStore[String, AggregateVersion]("storeB", mpjsons)
     }
 
 
-    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusSubscriptionsManager, shoppingCartCommandBus, storeA)), "ShoppingCartsListProjectionEventsBased")
-    val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusSubscriptionsManager, storeB)), "ShoppingCartsListProjectionAggregatesBased")
+    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusSubscriptionsManager, subscriptionState, shoppingCartCommandBus, storeA)), "ShoppingCartsListProjectionEventsBased")
+    val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusSubscriptionsManager, subscriptionState, storeB)), "ShoppingCartsListProjectionAggregatesBased")
 
     Thread.sleep(100) // Wait until all subscriptions in place
 
@@ -137,7 +134,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
       shoppingCartA mustBe Aggregate(shoppingCartA.id, AggregateVersion(4), Some(ShoppingCart("Groceries", Vector(Item(2, "oranges")))))
 
 
-      Thread.sleep(300) // Projections are eventually consistent, so let's wait until they are consistent
+      Thread.sleep(500) // Projections are eventually consistent, so let's wait until they are consistent
 
       var cartsNames: Vector[String] = shoppingCartsListProjectionEventsBased ?? ShoppingCartsListProjection.GetAllCartsNames()
       cartsNames must have size 1

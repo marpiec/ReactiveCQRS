@@ -1,7 +1,8 @@
 package io.reactivecqrs.core.documentstore
 
-import org.scalatest.{BeforeAndAfter, GivenWhenThen, FeatureSpecLike}
+import org.scalatest.{BeforeAndAfter, FeatureSpecLike, GivenWhenThen}
 import org.scalatest.MustMatchers._
+import scalikejdbc.{DBSession, NoSession}
 
 case class NothingMetadata()
 
@@ -19,6 +20,7 @@ class MemoryDocumentStoreSpec extends FeatureSpecLike with GivenWhenThen with Be
     scenario("value exists") {
       Given("document store with some values")
       val documentStore = new MemoryDocumentStore[ComplexType, NothingMetadata]()
+      implicit val session = NoSession
       documentStore.insertDocument(1, ComplexType(List(SimpleType(1), SimpleType(2))), NothingMetadata())
       documentStore.insertDocument(2, ComplexType(List(SimpleType(1))), NothingMetadata())
       documentStore.insertDocument(3, ComplexType(List(SimpleType(2), SimpleType(3))), NothingMetadata())
@@ -35,6 +37,7 @@ class MemoryDocumentStoreSpec extends FeatureSpecLike with GivenWhenThen with Be
     scenario("option value exists") {
       Given("document store with one value")
       val documentStore = new MemoryDocumentStore[OptionIntType, NothingMetadata]()
+      implicit val session = NoSession
       documentStore.insertDocument(1, OptionIntType(Some(13)), NothingMetadata())
 
       When("searching by option value")

@@ -36,7 +36,7 @@ class EventBusSchemaInitializer {
 
 
   private def createEventsToRouteIndex() = DB.autoCommit { implicit session =>
-    sql"""CREATE INDEX events_to_route_idx ON events_to_route USING hash (aggregate_id, version, subscriber)""".execute().apply()
+    sql"""CREATE UNIQUE INDEX events_to_route_idx ON events_to_route (aggregate_id, version, subscriber)""".execute().apply()
   }
 
 
