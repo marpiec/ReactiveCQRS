@@ -27,42 +27,39 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
 
         val eventId = event match {
           case undoEvent: UndoEvent[_] =>
-            sql"""SELECT add_undo_event(?, ?, ?, ? ,? , ?, ?, ?, ?, ?)""".bind(
+            sql"""SELECT add_undo_event(?, ?, ?, ? ,? , ?, ?, ?, ?)""".bind(
               eventsEnvelope.commandId.asLong,
               eventsEnvelope.userId.asLong,
               aggregateId.asLong,
               eventsEnvelope.expectedVersion.asInt + versionsIncreased,
               event.aggregateRootType.typeSymbol.fullName,
               event.getClass.getName,
-              0,
               Timestamp.from(Instant.now),
               eventSerialized,
               undoEvent.eventsCount
             ).map(rs => rs.long(1)).single().apply().get
 
           case duplicationEvent: DuplicationEvent[_] =>
-            sql"""SELECT add_duplication_event(?, ?, ?, ? ,? , ?, ?, ?, ?, ?, ?)""".bind(
+            sql"""SELECT add_duplication_event(?, ?, ?, ? , ?, ?, ?, ?, ?, ?)""".bind(
               eventsEnvelope.commandId.asLong,
               eventsEnvelope.userId.asLong,
               aggregateId.asLong,
               eventsEnvelope.expectedVersion.asInt + versionsIncreased,
               event.aggregateRootType.typeSymbol.fullName,
               event.getClass.getName,
-              0,
               Timestamp.from(Instant.now),
               eventSerialized,
               duplicationEvent.baseAggregateId.asLong,
               duplicationEvent.baseAggregateVersion.asInt
             ).map(rs => rs.long(1)).single().apply().get
           case _ =>
-            sql"""SELECT add_event(?, ?, ?, ? ,? , ?, ? ,?, ?)""".bind(
+            sql"""SELECT add_event(?, ?, ?, ? ,? , ? ,?, ?)""".bind(
               eventsEnvelope.commandId.asLong,
               eventsEnvelope.userId.asLong,
               aggregateId.asLong,
               eventsEnvelope.expectedVersion.asInt + versionsIncreased,
               event.aggregateRootType.typeSymbol.fullName,
               event.getClass.getName,
-              0,
               Timestamp.from(Instant.now),
               eventSerialized
             ).map(rs => rs.long(1)).single().apply().get
@@ -153,15 +150,15 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
   override def readEventsToPublishForAggregate[AGGREGATE_ROOT](aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]] = {
     var result = List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]]()
     DB.readOnly { implicit session =>
-      sql"""SELECT events_to_publish.event_id, events_to_publish.version, events.event_type, events.event_type_version, events.event, events.user_id, events.event_time
+      sql"""SELECT events_to_publish.event_id, events_to_publish.version, events.event_type, events.event, events.user_id, events.event_time
            | FROM events_to_publish
            | JOIN events on events_to_publish.event_id = events.id
            | WHERE events_to_publish.aggregate_id = ?
            | ORDER BY events_to_publish.version""".stripMargin.bind(aggregateId.asLong).foreach { rs =>
 
-        val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(5), rs.string(3))
+        val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(4), rs.string(3))
 
-        result ::= IdentifiableEventNoAggregateType[AGGREGATE_ROOT](rs.long(1), aggregateId, AggregateVersion(rs.int(2)), event, UserId(rs.long(6)), rs.timestamp(7).toInstant)
+        result ::= IdentifiableEventNoAggregateType[AGGREGATE_ROOT](rs.long(1), aggregateId, AggregateVersion(rs.int(2)), event, UserId(rs.long(5)), rs.timestamp(6).toInstant)
 
       }
     }
