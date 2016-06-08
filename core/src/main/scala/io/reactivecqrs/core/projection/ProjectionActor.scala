@@ -100,7 +100,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
           aggregateListenersMap(a.aggregateType)(a.id, a.version, a.aggregateRoot)(session)
           subscriptionsState.newEventIdForAggregatesSubscription(this.getClass.getName, a.aggregateType, lastEventId, a.eventId)
         }
-        sender() ! EventAck(self, a.id, a.version)
+        sender() ! EventAck(a.eventId, self)
         replayQueries()
       }
 
@@ -111,7 +111,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
           aggregateWithEventListenersMap(ae.aggregateType)(ae.id, ae.version, ae.event.asInstanceOf[Event[Any]], ae.aggregateRoot, ae.userId, ae.timestamp)(session)
           subscriptionsState.newEventIdForAggregatesWithEventsSubscription(this.getClass.getName, ae.aggregateType, lastEventId, ae.eventId)
         }
-        sender() ! EventAck(self, ae.id, ae.version)
+        sender() ! EventAck(ae.eventId, self)
         replayQueries()
       }
     case e: IdentifiableEvent[_] =>
@@ -121,7 +121,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
           eventListenersMap(e.aggregateType)(e.aggregateId, e.version, e.event.asInstanceOf[Event[Any]], e.userId, e.timestamp)(session)
           subscriptionsState.newEventIdForEventsSubscription(this.getClass.getName, e.aggregateType, lastEventId, e.eventId)
         }
-        sender() ! EventAck(self, e.aggregateId, e.version)
+        sender() ! EventAck(e.eventId, self)
         replayQueries()
       }
   }

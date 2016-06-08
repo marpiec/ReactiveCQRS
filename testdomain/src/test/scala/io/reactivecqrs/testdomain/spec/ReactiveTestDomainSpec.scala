@@ -8,7 +8,7 @@ import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
 import io.reactivecqrs.core.commandlog.PostgresCommandLogState
 import io.reactivecqrs.core.documentstore.{MemoryDocumentStore, PostgresDocumentStore}
-import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubscriptionsManagerApi, EventsBusActor, PostgresEventBusState}
+import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubscriptionsManagerApi, EventsBusActor}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection.PostgresSubscriptionsState
 import io.reactivecqrs.core.saga.PostgresSagaState
@@ -47,15 +47,13 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
     val userId = UserId(1L)
     val serialization = SerializationExtension(system)
-    val eventBusState = new PostgresEventBusState(serialization) // or MemoryEventBusState
-    eventBusState.initSchema()
 
     val aggregatesUidGenerator = new PostgresUidGenerator("aggregates_uids_seq") // or MemoryUidGenerator
     val commandsUidGenerator = new PostgresUidGenerator("commands_uids_seq") // or MemoryUidGenerator
     val sagasUidGenerator = new PostgresUidGenerator("sagas_uids_seq") // or MemoryUidGenerator
     val uidGenerator = system.actorOf(Props(new UidGeneratorActor(aggregatesUidGenerator, commandsUidGenerator, sagasUidGenerator)), "uidGenerator")
     val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(system.actorOf(Props(new EventBusSubscriptionsManager(2))))
-    val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusState, eventBusSubscriptionsManager)), "eventBus")
+    val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusSubscriptionsManager)), "eventBus")
 
     val subscriptionState = new PostgresSubscriptionsState
     subscriptionState.initSchema()

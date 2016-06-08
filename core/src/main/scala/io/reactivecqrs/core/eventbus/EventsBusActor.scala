@@ -1,13 +1,11 @@
 package io.reactivecqrs.core.eventbus
 
-import akka.actor.{Actor, ActorRef, ActorSelection}
-import akka.pattern.ask
+import akka.actor.{Actor, ActorRef}
 import akka.util.Timeout
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEvent}
 import io.reactivecqrs.core.backpressure.BackPressureActor.{ConsumerAllowMoreStart, ConsumerAllowMoreStop, ConsumerAllowedMore}
-import io.reactivecqrs.core.eventbus.EventBusSubscriptionsManager.GetSubscriptions
 import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.core.util.{ActorLogging, RandomUtil}
 
@@ -19,7 +17,7 @@ object EventsBusActor {
 
   case class PublishEvents[AGGREGATE_ROOT](aggregateType: AggregateType, events: Seq[IdentifiableEvent[AGGREGATE_ROOT]],
                                             aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregate: Option[AGGREGATE_ROOT])
-  case class PublishEventsAck(eventsIds: Seq[EventIdentifier])
+  case class PublishEventAck(eventId: Long)
 
   case class PublishReplayedEvent[AGGREGATE_ROOT](aggregateType: AggregateType, event: IdentifiableEvent[AGGREGATE_ROOT],
                                                    aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregate: Option[AGGREGATE_ROOT])
@@ -31,8 +29,8 @@ object EventsBusActor {
 
   case class MessagesPersisted(aggregateType: AggregateType, messages: Seq[EventToRoute])
 
-  case class EventToRoute(subscriber: Either[ActorRef, String], aggregateId: AggregateId, version: AggregateVersion, message: AnyRef)
-  case class EventAck(subscriber: ActorRef, aggregateId: AggregateId, version: AggregateVersion)
+  case class EventToRoute(subscriber: Either[ActorRef, String], aggregateId: AggregateId, version: AggregateVersion, eventId: Long, message: AnyRef)
+  case class EventAck(eventId: Long, subscriber: ActorRef)
 
 }
 
@@ -47,30 +45,22 @@ case class AggregateWithEventSubscription(subscriptionId: String, aggregateType:
 
 
 
-class EventsBusActor(state: EventBusState, val subscriptionsManager: EventBusSubscriptionsManagerApi) extends Actor with ActorLogging {
+class EventsBusActor(val subscriptionsManager: EventBusSubscriptionsManagerApi) extends Actor with ActorLogging {
 
   private val randomUtil = new RandomUtil
 
   private var subscriptions: Map[AggregateType, Vector[Subscription]] = Map()
   private var subscriptionsByIds = Map[String, Subscription]()
 
-  private var eventsReceived: List[EventAck] = List.empty
-
   private val MAX_BUFFER_SIZE = 1000
 
   private var backPressureProducerActor: Option[ActorRef] = None
   private var orderedMessages = 0
 
-  private def routeOldEvents(): Unit = {
-    state.readAllMessages((message: EventToRoute) => {
-      message.subscriber match {
-        case Left(s) => s ! message.message
-        case Right(path) => context.system.actorSelection(path) ! message.message
-      }
-    })
-  }
-
-  routeOldEvents()
+  private var lastSendMessage: Option[Long] = None
+  private var messagesToSend: List[(Long, Vector[EventToRoute])] = List.empty
+  private var messagesSent: List[(Long, Vector[EventToRoute])] = List.empty
+  private var eventSenders: Map[Long, ActorRef] = Map.empty
 
   def initSubscriptions(): Unit = {
 
@@ -92,6 +82,7 @@ class EventsBusActor(state: EventBusState, val subscriptionsManager: EventBusSub
 
   def receiveAfterInit: Receive = logReceive {
     case PublishEvents(aggregateType, events, aggregateId, aggregateVersion, aggregate) =>
+      println("EBA PublishEvents " + events.size)
       handlePublishEvents(sender(), aggregateType, events, aggregateId, aggregateVersion, aggregate)
     case PublishReplayedEvent(aggregateType, event, aggregateId, aggregateVersion, aggregate) =>
       handlePublishEvents(sender(), aggregateType, List(event), aggregateId, aggregateVersion, aggregate)
@@ -99,8 +90,8 @@ class EventsBusActor(state: EventBusState, val subscriptionsManager: EventBusSub
     case m: EventAck => handleEventReceived(m)
     case ConsumerAllowMoreStart =>
       backPressureProducerActor = Some(sender)
-      sender ! ConsumerAllowedMore((MAX_BUFFER_SIZE - state.countMessages) / subscriptions.values.map(_.size).sum)
-      orderedMessages += MAX_BUFFER_SIZE - state.countMessages
+      sender ! ConsumerAllowedMore((MAX_BUFFER_SIZE - messagesToSend.size) / subscriptions.values.map(_.size).sum)
+      orderedMessages += MAX_BUFFER_SIZE - messagesToSend.size
     case ConsumerAllowMoreStop => backPressureProducerActor = None
   }
 
@@ -151,30 +142,47 @@ class EventsBusActor(state: EventBusState, val subscriptionsManager: EventBusSub
 
   private def handlePublishEvents(respondTo: ActorRef, aggregateType: AggregateType, events: Seq[IdentifiableEvent[Any]],
                                   aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregateRoot: Option[Any]): Unit = {
-    val messagesToSend = subscriptions.getOrElse(aggregateType, Vector.empty).flatMap {
+
+    val messagesToSendForEvents = events.map(event => {
+      val messagesToSend = subscriptions.getOrElse(aggregateType, Vector.empty).flatMap {
         case s: EventSubscription =>
-          events
+          Some(event)
             .filter(event => s.classifier.accept(aggregateId, EventType(event.event.getClass.getName)))
-            .map(event => EventToRoute(Left(s.subscriber), event.aggregateId, event.version, event))
+            .map(event => EventToRoute(Left(s.subscriber), event.aggregateId, event.version, event.eventId, event))
         case s: AggregateSubscription =>
           if(s.classifier.accept(aggregateId)) {
-            List(EventToRoute(Left(s.subscriber), aggregateId, aggregateVersion, AggregateWithType(aggregateType, aggregateId, aggregateVersion, aggregateRoot, events.last.eventId)))
+            List(EventToRoute(Left(s.subscriber), aggregateId, aggregateVersion, event.eventId, AggregateWithType(aggregateType, aggregateId, aggregateVersion, aggregateRoot, events.last.eventId)))
           } else {
             List.empty
           }
         case s: AggregateWithEventSubscription =>
-          events
+          Some(event)
             .filter(event => s.classifier.accept(aggregateId, EventType(event.event.getClass.getName)))
-            .map(event => EventToRoute(Left(s.subscriber), event.aggregateId, event.version, AggregateWithTypeAndEvent(aggregateType, aggregateId, aggregateVersion, aggregateRoot, event.event, event.eventId, event.userId, event.timestamp)))
+            .map(event => EventToRoute(Left(s.subscriber), event.aggregateId, event.version, event.eventId, AggregateWithTypeAndEvent(aggregateType, aggregateId, aggregateVersion, aggregateRoot, event.event, event.eventId, event.userId, event.timestamp)))
       }
+      (event.eventId, messagesToSend)
+    })
+
+
+    println("EBA New messages to send " + messagesToSendForEvents.map(_._2.size).sum)
+
+    messagesToSend = (messagesToSendForEvents.toList ::: messagesToSend).sortBy(_._1)
+    events.foreach(event => eventSenders += event.eventId -> respondTo)
+
+
+    val eventsPropagated = sendContinuousEventMessages()
+
+
+    println("EBA After sending " + messagesToSend.size+" -> "+messagesSent.size)
+
 
 //    Future { // FIXME Future is to ensure non blocking access to db, but it broke order in which events for the same aggregate were persisted, maybe there should be an actor per aggregate instead of a future?
-      state.persistMessages(messagesToSend)
-      respondTo ! PublishEventsAck(events.map(event => EventIdentifier(event.aggregateId, event.version)))
-      self ! MessagesPersisted(aggregateType, messagesToSend)
+//      state.persistMessages(messagesToSend)
+//      respondTo ! PublishEventsAck(events.map(event => EventIdentifier(event.aggregateId, event.version)))
+//      self ! MessagesPersisted(aggregateType, messagesToSend)
 
     if(backPressureProducerActor.isDefined) {
-      orderedMessages -= messagesToSend.size
+      orderedMessages -= eventsPropagated
     }
 
     orderMoreMessagesToConsume()
@@ -186,10 +194,32 @@ class EventsBusActor(state: EventBusState, val subscriptionsManager: EventBusSub
   }
 
 
+  private def sendContinuousEventMessages(): Int = {
+    var eventsPropagated = 0
+    messagesToSend.foreach { entry =>
+      val (eventId, messages) = entry
+      if(lastSendMessage.isEmpty || eventId == lastSendMessage.get + 1) {
+        messages.foreach { message =>
+          message.subscriber match {
+            case Left(s) => s ! message.message
+            case Right(path) => context.system.actorSelection(path) ! message.message
+          }
+          println("EBA Sent " + eventId+" "+message.subscriber)
+        }
+        lastSendMessage = Some(eventId)
+        messagesSent ::= entry
+        messagesToSend = messagesToSend.tail
+        eventsPropagated += 1
+      }
+    }
+    eventsPropagated
+  }
+
+
   private def orderMoreMessagesToConsume(): Unit = {
-    if(backPressureProducerActor.isDefined && state.countMessages + orderedMessages < MAX_BUFFER_SIZE / 2) {
-      backPressureProducerActor.get ! ConsumerAllowedMore((MAX_BUFFER_SIZE - state.countMessages) / subscriptions.values.map(_.size).sum)
-      orderedMessages += MAX_BUFFER_SIZE - state.countMessages
+    if(backPressureProducerActor.isDefined && messagesToSend.size + orderedMessages < MAX_BUFFER_SIZE / 2) {
+      backPressureProducerActor.get ! ConsumerAllowedMore((MAX_BUFFER_SIZE - messagesToSend.size) / subscriptions.values.map(_.size).sum)
+      orderedMessages += MAX_BUFFER_SIZE - messagesToSend.size
     }
   }
 
@@ -205,14 +235,31 @@ class EventsBusActor(state: EventBusState, val subscriptionsManager: EventBusSub
   }
 
   private def handleEventReceived(ack: EventAck): Unit = {
-    eventsReceived ::= ack
 
-    if(eventsReceived.length == 1) { //TODO important clear buffer on timer
-      state.deleteSentMessage(eventsReceived)
-      eventsReceived = List.empty
 
-      orderMoreMessagesToConsume()
+
+    val (eventId, messagesForEvent): (Long, Vector[EventToRoute]) = messagesSent.find(_._1 == ack.eventId).get
+
+    val remainingMessagesForEvent = messagesForEvent.filterNot(m => m.subscriber.fold(l => l.path.toString, r => r) == ack.subscriber.path.toString)
+
+    println("EBA Ack " + eventId+" "+remainingMessagesForEvent)
+
+    if(remainingMessagesForEvent.isEmpty) {
+      eventSenders(eventId) ! PublishEventAck(eventId)
+      println("EBA To Sender Ack " + eventId)
+      eventSenders -= eventId
+      messagesSent = messagesSent.filterNot(_._1 == eventId)
+    } else {
+      messagesSent = messagesSent.map(e => {
+        if(e._1 == eventId) {
+          (eventId, remainingMessagesForEvent)
+        } else {
+          e
+        }
+      })
     }
+
+    orderMoreMessagesToConsume()
 
   }
   

@@ -9,7 +9,7 @@ import io.reactivecqrs.core.util.ActorLogging
 import io.reactivecqrs.api._
 import akka.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
-import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
+import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventAck}
 
 import scala.concurrent.Future
 import scala.concurrent.duration._
@@ -105,8 +105,8 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
     case GetAggregateRoot(respondTo) =>
       receiveReturnAggregateRoot(respondTo)
-    case PublishEventsAck(events) =>
-      markPublishedEvents(events)
+    case PublishEventAck(event) =>
+      markPublishedEvent(event)
     case ResendPersistedMessages =>
       resendEventsToPublish()
   }
@@ -184,11 +184,13 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     }
   }
 
-  def markPublishedEvents(events: Seq[EventIdentifier]): Unit = {
+  def markPublishedEvent(eventId: Long): Unit = {
     import context.dispatcher
-    eventsToPublish = eventsToPublish.filterNot(e => events.exists(ep => ep.version == e.version))
+    eventsToPublish = eventsToPublish.filterNot(e => e.eventId == eventId)
+    val eventPublished = eventsToPublish.find(e => e.eventId == eventId).get
+
     Future { // Fire and forget
-      eventStore.deletePublishedEventsToPublish(events)
+      eventStore.deletePublishedEventsToPublish(List(EventIdentifier(eventPublished.eventId, eventPublished.aggregateId, eventPublished.version)))
     } onFailure {
       case e: Exception => throw new IllegalStateException(e)
     }
