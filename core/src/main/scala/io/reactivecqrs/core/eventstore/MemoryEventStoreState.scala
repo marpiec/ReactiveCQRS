@@ -17,7 +17,7 @@ class MemoryEventStoreState extends EventStoreState {
 
   private var eventsRows: List[EventRow] = List.empty
   private var eventStore: Map[AggregateId, Vector[Event[_]]] = Map.empty
-  private var eventsToPublish: Map[(AggregateId, Int), (UserId, Instant, Event[_], Long)] = Map.empty
+  private var eventsToPublish: Map[(Long, AggregateId, Int), (UserId, Instant, Event[_], Long)] = Map.empty
   private var eventIdSeq: Long = 0
 
 
@@ -34,7 +34,7 @@ class MemoryEventStoreState extends EventStoreState {
       eventIdSeq += 1
       eventsRows ::= EventRow(eventIdSeq, aggregateId, AggregateVersion(eventsEnvelope.expectedVersion.asInt + versionsIncreased),
                     AggregateType(event.aggregateRootType.toString), event, eventsEnvelope.userId, eventsEnvelope.timestamp)
-      val key = (aggregateId, eventsEnvelope.expectedVersion.asInt + versionsIncreased)
+      val key = (eventIdSeq, aggregateId, eventsEnvelope.expectedVersion.asInt + versionsIncreased)
 
       val value = (eventsEnvelope.userId, eventsEnvelope.timestamp, event, eventIdSeq)
       eventsToPublish += key -> value
@@ -79,22 +79,23 @@ class MemoryEventStoreState extends EventStoreState {
     })
   }
 
-  override def deletePublishedEventsToPublish(events: Seq[EventIdentifier]): Unit = {
+  override def deletePublishedEventsToPublish(eventsIds: Seq[Long]): Unit = {
 
-    events.foreach { event =>
-      eventsToPublish -= ((event.aggregateId, event.version.asInt))
+    eventsIds.foreach { eventId =>
+      val keyToDelete = eventsToPublish.keys.find(_._1 == eventId).get
+      eventsToPublish -= keyToDelete
     }
 
   }
 
   override def readAggregatesWithEventsToPublish(aggregateHandler: (AggregateId) => Unit): Unit = {
-    eventsToPublish.keys.groupBy(_._1).keys.foreach(aggregateHandler)
+    eventsToPublish.keys.groupBy(_._2).keys.foreach(aggregateHandler)
   }
 
   override def readEventsToPublishForAggregate[AGGREGATE_ROOT](aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]] = {
 
-    eventsToPublish.filterKeys(_._1 == aggregateId).toList.
-      map(e => IdentifiableEventNoAggregateType[AGGREGATE_ROOT](e._2._4, e._1._1, AggregateVersion(e._1._2), e._2._3.asInstanceOf[Event[AGGREGATE_ROOT]], e._2._1, e._2._2))
+    eventsToPublish.filterKeys(_._2 == aggregateId).toList.
+      map(e => IdentifiableEventNoAggregateType[AGGREGATE_ROOT](e._2._4, e._1._2, AggregateVersion(e._1._3), e._2._3.asInstanceOf[Event[AGGREGATE_ROOT]], e._2._1, e._2._2))
 
   }
 

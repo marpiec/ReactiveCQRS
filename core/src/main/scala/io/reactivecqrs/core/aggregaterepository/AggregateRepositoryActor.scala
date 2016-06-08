@@ -187,10 +187,9 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   def markPublishedEvent(eventId: Long): Unit = {
     import context.dispatcher
     eventsToPublish = eventsToPublish.filterNot(e => e.eventId == eventId)
-    val eventPublished = eventsToPublish.find(e => e.eventId == eventId).get
 
     Future { // Fire and forget
-      eventStore.deletePublishedEventsToPublish(List(EventIdentifier(eventPublished.eventId, eventPublished.aggregateId, eventPublished.version)))
+      eventStore.deletePublishedEventsToPublish(List(eventId))
     } onFailure {
       case e: Exception => throw new IllegalStateException(e)
     }

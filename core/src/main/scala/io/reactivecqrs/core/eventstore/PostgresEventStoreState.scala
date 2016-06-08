@@ -125,12 +125,12 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
   }
 
 
-  override def deletePublishedEventsToPublish(events: Seq[EventIdentifier]): Unit = {
+  override def deletePublishedEventsToPublish(eventsIds: Seq[Long]): Unit = {
     // TODO optimize SQL query so it will be one query
     DB.autoCommit { implicit session =>
-      events.foreach {event =>
-        sql"""DELETE FROM events_to_publish WHERE aggregate_id = ? AND version = ?"""
-          .bind(event.aggregateId.asLong, event.version.asInt)
+      eventsIds.foreach {eventId =>
+        sql"""DELETE FROM events_to_publish WHERE event_id = ?"""
+          .bind(eventId)
           .executeUpdate().apply()
       }
     }
