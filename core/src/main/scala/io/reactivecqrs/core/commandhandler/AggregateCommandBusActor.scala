@@ -10,6 +10,7 @@ import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.GetAggregateRoot
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.AggregateActors
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
+import io.reactivecqrs.core.commandlog.{CommandLogActor, CommandLogState}
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
 import io.reactivecqrs.core.util.ActorLogging
@@ -22,14 +23,15 @@ import scala.reflect.runtime.universe._
 
 object AggregateCommandBusActor {
 
-  private case class AggregateActors(commandHandler: ActorRef, repository: ActorRef)
+  private case class AggregateActors(commandHandler: ActorRef, repository: ActorRef, commandLog: ActorRef)
 
 
   def apply[AGGREGATE_ROOT:ClassTag:TypeTag](aggregate: AggregateContext[AGGREGATE_ROOT],
-                                             uidGenerator: ActorRef, eventStore: EventStoreState, eventBus: ActorRef): Props = {
+                                             uidGenerator: ActorRef, eventStoreState: EventStoreState, commandLogState: CommandLogState, eventBus: ActorRef): Props = {
     Props(new AggregateCommandBusActor[AGGREGATE_ROOT](
       uidGenerator,
-      eventStore,
+      eventStoreState,
+      commandLogState,
       aggregate.commandHandlers,
       aggregate.eventHandlers,
       eventBus,
@@ -44,6 +46,7 @@ object AggregateCommandBusActor {
 
 class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRef,
                                                        eventStore: EventStoreState,
+                                                       commandLogState: CommandLogState,
                                                        val commandsHandlers: AGGREGATE_ROOT => PartialFunction[Any, CustomCommandResult[Any]],
                                                        val eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
                                                        val eventBus: ActorRef,
@@ -52,7 +55,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
 
 
-  private val aggregateTypeSimpleName = aggregateRootClassTag.runtimeClass.getSimpleName
+  val aggregateTypeSimpleName = aggregateRootClassTag.runtimeClass.getSimpleName
 
 
   private var nextAggregateId = 0L
@@ -72,6 +75,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     case ce: Command[_,_] => routeCommand(ce.asInstanceOf[Command[AGGREGATE_ROOT, CustomCommandResponse[_]]])
     case GetAggregate(id) => routeGetAggregateRoot(id)
     case GetAggregateForVersion(id, version) => routeGetAggregateRootForVersion(id, version)
+    case GetEventsForAggregate(id) => ???
+    case GetEventsForAggregateForVersion(id, version) => ???
     case m => throw new IllegalArgumentException("Cannot handle this kind of message: " + m + " class: " + m.getClass)
   }
 
@@ -93,13 +98,15 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private def createAggregateActors(aggregateId: AggregateId): AggregateActors = {
     val repositoryActor = getOrCreateAggregateRepositoryActor(aggregateId)
 
+    val commandLogActor = context.actorOf(Props(new CommandLogActor[AGGREGATE_ROOT](aggregateId, commandLogState)), aggregateTypeSimpleName+"_CommandLog_" + aggregateId.asLong)
+
     val commandHandlerActor = context.actorOf(Props(new CommandHandlerActor[AGGREGATE_ROOT](
-      aggregateId, repositoryActor,
+      aggregateId, repositoryActor, commandLogActor,
       commandsHandlers.asInstanceOf[AGGREGATE_ROOT => PartialFunction[Any, CustomCommandResult[Any]]],
     initialState)),
       aggregateTypeSimpleName + "_CommandHandler_" + aggregateId.asLong)
 
-    val actors = AggregateActors(commandHandlerActor, repositoryActor)
+    val actors = AggregateActors(commandHandlerActor, repositoryActor, commandLogActor)
     aggregatesActors += aggregateId.asLong -> actors
     actors
   }
@@ -112,11 +119,13 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   }
 
   private def getOrCreateAggregateRepositoryActorForVersion(aggregateId: AggregateId, aggregateVersion: AggregateVersion): ActorRef = {
-    context.child(aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong+"_"+aggregateVersion.asInt).getOrElse(
+    context.child(aggregateTypeSimpleName + "_AggregateRepositoryForVersion_" + aggregateId.asLong+"_"+aggregateVersion.asInt).getOrElse(
       context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventBus, eventHandlers, initialState, Some(aggregateVersion))),
-        aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong+"_"+aggregateVersion.asInt)
+        aggregateTypeSimpleName + "_AggregateRepositoryForVersion_" + aggregateId.asLong+"_"+aggregateVersion.asInt)
     )
   }
+
+
 
 
   private def routeConcurrentCommand[RESPONSE <: CustomCommandResponse[_]](command: ConcurrentCommand[AGGREGATE_ROOT, RESPONSE]): Unit = {
@@ -156,9 +165,9 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private def takeNextAggregateId: AggregateId = {
     if(remainingAggregateIds == 0) {
       // TODO get rid of ask pattern
-      implicit val timeout = Timeout(5 seconds)
+      implicit val timeout = Timeout(60 seconds)
       val pool: Future[NewAggregatesIdsPool] = (uidGenerator ? UidGeneratorActor.GetNewAggregatesIdsPool).mapTo[NewAggregatesIdsPool]
-      val newAggregatesIdsPool: NewAggregatesIdsPool = Await.result(pool, 5 seconds)
+      val newAggregatesIdsPool: NewAggregatesIdsPool = Await.result(pool, 60 seconds)
       remainingAggregateIds = newAggregatesIdsPool.size
       nextAggregateId = newAggregatesIdsPool.from
     }
@@ -173,9 +182,9 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private def takeNextCommandId: CommandId = {
     if(remainingCommandsIds == 0) {
       // TODO get rid of ask pattern
-      implicit val timeout = Timeout(5 seconds)
+      implicit val timeout = Timeout(60 seconds)
       val pool: Future[NewCommandsIdsPool] = (uidGenerator ? UidGeneratorActor.GetNewCommandsIdsPool).mapTo[NewCommandsIdsPool]
-      val newCommandsIdsPool: NewCommandsIdsPool = Await.result(pool, 5 seconds)
+      val newCommandsIdsPool: NewCommandsIdsPool = Await.result(pool, 60 seconds)
       remainingCommandsIds = newCommandsIdsPool.size
       nextCommandId = newCommandsIdsPool.from
     }

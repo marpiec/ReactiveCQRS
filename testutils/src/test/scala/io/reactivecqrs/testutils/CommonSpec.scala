@@ -7,14 +7,14 @@ import org.scalatest.{FeatureSpecLike, GivenWhenThen, MustMatchers}
 import scalikejdbc.{GlobalSettings, LoggingSQLAndTimeSettings}
 
 abstract class CommonSpec extends TestKit(ActorSystem("testsystem", ConfigFactory.parseString("""
-          akka.loglevel = "DEBUG"
-          akka.actor.debug.receive = on
-          akka.actor.debug.receive = on
-          akka.actor.debug.fsm = on
-          akka.actor.debug.lifecycle = on"""))) with FeatureSpecLike with GivenWhenThen with ActorAskSupport with MustMatchers {
+          akka.loglevel = "WARNING"
+          akka.actor.debug.receive = off
+          akka.actor.debug.receive = off
+          akka.actor.debug.fsm = off
+          akka.actor.debug.lifecycle = off"""))) with FeatureSpecLike with GivenWhenThen with ActorAskSupport with MustMatchers {
 
   GlobalSettings.loggingSQLAndTime = LoggingSQLAndTimeSettings(
-    enabled = true,
+    enabled = false,
     singleLineMode = true,
     printUnprocessedStackTrace = false,
     stackTraceDepth= 1,

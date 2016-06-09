@@ -1,9 +1,11 @@
 package io.reactivecqrs.core.eventstore
 
+import java.time.Instant
+
 import akka.actor.ActorRef
 import io.mpjsons.MPJsons
-import io.reactivecqrs.api.{DuplicationEvent, UndoEvent, Event, AggregateVersion}
-import io.reactivecqrs.api.id.{UserId, CommandId, AggregateId}
+import io.reactivecqrs.api.{AggregateVersion, DuplicationEvent, Event, UndoEvent}
+import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.testutils.CommonSpec
 import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
@@ -29,7 +31,7 @@ class TestFixture(val eventStoreState: EventStoreState) {
 
   def storeEvents(events: Seq[Event[SomeAggregate]], id: AggregateId = aggregateId, exVersion: AggregateVersion = expectedVersion): Unit = {
     eventStoreState.persistEvents(id,
-      PersistEvents(ActorRef.noSender, id, commandId, userId, exVersion, events))
+      PersistEvents(ActorRef.noSender, commandId, userId, exVersion, Instant.now, events))
     if(exVersion == expectedVersion) {
       expectedVersion = expectedVersion.incrementBy(events.length)
     }
@@ -48,14 +50,6 @@ class TestFixture(val eventStoreState: EventStoreState) {
 
 
 abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends CommonSpec {
-
-  val settings = ConnectionPoolSettings(
-    initialSize = 5,
-    maxSize = 20,
-    connectionTimeoutMillis = 3000L)
-
-  Class.forName("org.postgresql.Driver")
-  ConnectionPool.singleton("jdbc:postgresql://localhost:5432/reactivecqrs", "reactivecqrs", "reactivecqrs", settings)
 
   feature("Can store and retrieve correct events for aggregate") {
 

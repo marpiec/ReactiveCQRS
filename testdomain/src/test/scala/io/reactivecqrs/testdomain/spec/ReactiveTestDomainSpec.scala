@@ -1,17 +1,22 @@
 package io.reactivecqrs.testdomain.spec
 
-import akka.actor.{ActorRef, Props}
+import akka.actor.{ActorRef, ActorSystem, Props}
 import akka.serialization.SerializationExtension
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
-import io.reactivecqrs.core.documentstore.MemoryDocumentStore
-import io.reactivecqrs.core.eventbus.{EventsBusActor, PostgresEventBusState}
+import io.reactivecqrs.core.commandlog.PostgresCommandLogState
+import io.reactivecqrs.core.documentstore.{MemoryDocumentStore, PostgresDocumentStore}
+import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubscriptionsManagerApi, EventsBusActor}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
+import io.reactivecqrs.core.projection.PostgresSubscriptionsState
+import io.reactivecqrs.core.saga.PostgresSagaState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
-import io.reactivecqrs.testdomain.shoppingcart._
+import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.{CreateMultipleCarts, MultipleCartCreatorSagaResponse}
+import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCartAggregateContext, _}
 import io.reactivecqrs.testutils.CommonSpec
+import org.apache.commons.dbcp.BasicDataSource
 import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
 
 import scala.util.Try
@@ -30,22 +35,59 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
 
   def Fixture = new {
-    val eventStoreState = new PostgresEventStoreState(new MPJsons) // or MemoryEventStore
+
+    val system = ActorSystem("main-actor-system")
+
+    val mpjsons = new MPJsons
+    val eventStoreState = new PostgresEventStoreState(mpjsons) // or MemoryEventStore
     eventStoreState.initSchema()
+
+    val commandLogState = new PostgresCommandLogState(mpjsons)
+    commandLogState.initSchema()
+
     val userId = UserId(1L)
     val serialization = SerializationExtension(system)
-    val eventBusState = new PostgresEventBusState(serialization) // or MemoryEventBusState
-    eventBusState.initSchema()
 
     val aggregatesUidGenerator = new PostgresUidGenerator("aggregates_uids_seq") // or MemoryUidGenerator
     val commandsUidGenerator = new PostgresUidGenerator("commands_uids_seq") // or MemoryUidGenerator
-    val uidGenerator = system.actorOf(Props(new UidGeneratorActor(aggregatesUidGenerator, commandsUidGenerator)), "uidGenerator")
-    val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusState)), "eventBus")
-    val shoppingCartCommandBus: ActorRef = system.actorOf(
-      AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStoreState, eventBusActor), "ShoppingCartCommandBus")
+    val sagasUidGenerator = new PostgresUidGenerator("sagas_uids_seq") // or MemoryUidGenerator
+    val uidGenerator = system.actorOf(Props(new UidGeneratorActor(aggregatesUidGenerator, commandsUidGenerator, sagasUidGenerator)), "uidGenerator")
+    val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(system.actorOf(Props(new EventBusSubscriptionsManager(2))))
+    val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusSubscriptionsManager)), "eventBus")
 
-    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusActor, shoppingCartCommandBus, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionEventsBased")
-    val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusActor, new MemoryDocumentStore[String, AggregateVersion])), "ShoppingCartsListProjectionAggregatesBased")
+    val subscriptionState = new PostgresSubscriptionsState
+    subscriptionState.initSchema()
+
+    val shoppingCartContext = new ShoppingCartAggregateContext
+    val shoppingCartCommandBus: ActorRef = system.actorOf(
+      AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandLogState, eventBusActor), "ShoppingCartCommandBus")
+
+    val sagaState = new PostgresSagaState(mpjsons)
+    sagaState.initSchema()
+
+    val multipleCartCreatorSaga: ActorRef = system.actorOf(
+      Props(new MultipleCartCreatorSaga(sagaState, uidGenerator, shoppingCartCommandBus))
+    )
+    val subscriptionsState = new PostgresSubscriptionsState
+    subscriptionsState.initSchema()
+
+
+    val inMemory = false
+
+    private val storeA = if(inMemory) {
+      new MemoryDocumentStore[String, AggregateVersion]
+    } else {
+      new PostgresDocumentStore[String, AggregateVersion]("storeA", mpjsons)
+    }
+    private val storeB = if(inMemory) {
+      new MemoryDocumentStore[String, AggregateVersion]
+    } else {
+      new PostgresDocumentStore[String, AggregateVersion]("storeB", mpjsons)
+    }
+
+
+    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusSubscriptionsManager, subscriptionState, shoppingCartCommandBus, storeA)), "ShoppingCartsListProjectionEventsBased")
+    val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusSubscriptionsManager, subscriptionState, storeB)), "ShoppingCartsListProjectionAggregatesBased")
 
     Thread.sleep(100) // Wait until all subscriptions in place
 
@@ -90,7 +132,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
       shoppingCartA mustBe Aggregate(shoppingCartA.id, AggregateVersion(4), Some(ShoppingCart("Groceries", Vector(Item(2, "oranges")))))
 
 
-      Thread.sleep(300) // Projections are eventually consistent, so let's wait until they are consistent
+      Thread.sleep(500) // Projections are eventually consistent, so let's wait until they are consistent
 
       var cartsNames: Vector[String] = shoppingCartsListProjectionEventsBased ?? ShoppingCartsListProjection.GetAllCartsNames()
       cartsNames must have size 1
@@ -125,6 +167,36 @@ class ReactiveTestDomainSpec extends CommonSpec {
     }
 
 
-  }
+    scenario("Create multiple carts at once") {
+
+      val fixture = Fixture
+      import fixture._
+
+      multipleCartCreatorSaga ! CreateMultipleCarts(userId, "My special cart", 5000)
+
+      Thread.sleep(10000) // time to cleanup
+    }
+
+    scenario("Fail to create multiple carts at once") {
+
+      val fixture = Fixture
+      import fixture._
+
+      // Will not be able to create cart ending with M 4
+      val result: MultipleCartCreatorSagaResponse = multipleCartCreatorSaga ?? CreateMultipleCarts(userId, "My special cart M", 5)
+
+      Thread.sleep(500) // time to cleanup
+    }
+
+
+    scenario("Reinitialization") {
+
+      val fixture = Fixture
+      import fixture._
+
+      Thread.sleep(10000)
+
+      }
+    }
 
 }

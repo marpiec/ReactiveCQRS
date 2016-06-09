@@ -1,10 +1,11 @@
 package io.reactivecqrs.core.documentstore
 
-import java.sql.ResultSet
+import java.sql.{Connection, ResultSet}
 import javax.sql.DataSource
 
 import io.mpjsons.MPJsons
 import org.slf4j.LoggerFactory
+import scalikejdbc.{DB, DBSession}
 
 import scala.collection.mutable
 import scala.reflect.runtime.universe._
@@ -15,7 +16,6 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
   implicit val m: TypeTag[M]
 
   val tableName: String
-  val dbDataSource: DataSource
   val mpjsons: MPJsons
 
   if (!tableName.matches( """[a-zA-Z0-9\_]+""")) {
@@ -47,30 +47,29 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
   init()
 
   protected def init(): Unit = {
-    createTableIfNotExists()
+    DB.localTx { implicit session =>
+      createTableIfNotExists()
+    }
   }
 
-  protected def createTableIfNotExists(): Unit = {
-    executeQuery(CREATE_TABLE_QUERY)
+  protected def createTableIfNotExists()(implicit session: DBSession): Unit = {
+    execute(CREATE_TABLE_QUERY)
   }
 
-  def executeQuery(query: String): Unit = {
-    val connection = dbDataSource.getConnection
-    try {
+  def execute(query: String)(implicit session: DBSession) = {
+
+    inSession { connection =>
       val statement = connection.prepareStatement(query)
       try {
         statement.execute()
       } finally {
         statement.close()
       }
-    } finally {
-      connection.close()
     }
   }
 
-  def updateDocument(key: Long, document: T, metadata: M): Unit = {
-    val connection = dbDataSource.getConnection
-    try {
+  def updateDocument(key: Long, document: T, metadata: M)(implicit session: DBSession): Unit = {
+    inSession { connection =>
       val statement = connection.prepareStatement(UPDATE_DOCUMENT_QUERY)
       try {
         statement.setString(1, mpjsons.serialize[T](document))
@@ -86,15 +85,12 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
       } finally {
         statement.close()
       }
-    } finally {
-      connection.close()
     }
   }
 
 
-  def getDocument(key: Long): Option[DocumentWithMetadata[T, M]] = {
-    val connection = dbDataSource.getConnection
-    try {
+  def getDocument(key: Long)(implicit session: DBSession): Option[DocumentWithMetadata[T, M]] = {
+    inSession { connection =>
       val statement = connection.prepareStatement(SELECT_DOCUMENT_BY_ID_QUERY)
       try {
         statement.setLong(1, key)
@@ -111,14 +107,11 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
       } finally {
         statement.close()
       }
-    } finally {
-      connection.close()
     }
   }
 
-  def removeDocument(key: Long): Unit = {
-    val connection = dbDataSource.getConnection
-    try {
+  def removeDocument(key: Long)(implicit session: DBSession): Unit = {
+    inSession { connection =>
       val statement = connection.prepareStatement(DELETE_DOCUMENT_BY_ID_QUERY)
       try {
         statement.setLong(1, key)
@@ -126,14 +119,11 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
       } finally {
         statement.close()
       }
-    } finally {
-      connection.close()
     }
   }
 
-  def findDocumentByPath(path: Seq[String], value: String): Map[Long, DocumentWithMetadata[T, M]] = {
-    val connection = dbDataSource.getConnection
-    try {
+  def findDocumentByPath(path: Seq[String], value: String)(implicit session: DBSession): Map[Long, DocumentWithMetadata[T, M]] = {
+    inSession { connection =>
       val statement = connection.prepareStatement(SELECT_DOCUMENT_BY_PATH(path.mkString(",")))
       try {
         statement.setString(1, value)
@@ -150,16 +140,13 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
       } finally {
         statement.close()
       }
-    } finally {
-      connection.close()
     }
   }
 
 
-  def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String]): Map[Long, DocumentWithMetadata[T, M]] = {
+  def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession): Map[Long, DocumentWithMetadata[T, M]] = {
     if (values.nonEmpty) {
-      val connection = dbDataSource.getConnection
-      try {
+      inSession { connection =>
         val statement = connection.prepareStatement(SELECT_DOCUMENT_BY_PATH_WITH_ONE_OF_THE_VALUES(path.mkString(","), values))
         try {
           val resultSet = statement.executeQuery()
@@ -175,23 +162,20 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
         } finally {
           statement.close()
         }
-      } finally {
-        connection.close()
       }
     } else Map()
   }
 
 
-  def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
+  def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession): Map[Long, DocumentWithMetadata[T, M]] = {
     findDocumentByObjectInArray("document", arrayPath, objectPath, value)
   }
 
-  def findDocumentByMetadataObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
+  def findDocumentByMetadataObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession): Map[Long, DocumentWithMetadata[T, M]] = {
     findDocumentByObjectInArray("metadata", arrayPath, objectPath, value)
   }
-  
-  protected def findDocumentByObjectInArray[V](columnName: String, array: Seq[String], objectPath: Seq[String], value: V): Map[Long, DocumentWithMetadata[T, M]] = {
-    val connection = dbDataSource.getConnection
+
+  protected def findDocumentByObjectInArray[V](columnName: String, array: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession): Map[Long, DocumentWithMetadata[T, M]] = {
 
     //sample query that works:
     // SELECT * FROM projection_processes_flows WHERE document #> '{state, cursors}' @> '[{"currentNodeId":2}]';
@@ -207,7 +191,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
         }
       }
 
-    try {
+    inSession { connection =>
       val statement = connection.prepareStatement(QUERY(array.mkString("{", ",", "}"), makeJson(objectPath, value)))
       try {
 //        statement.setString(1, value)
@@ -224,15 +208,12 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
       } finally {
         statement.close()
       }
-    } finally {
-      connection.close()
     }
   }
 
 
-  def findAll(): Map[Long, DocumentWithMetadata[T, M]] = {
-    val connection = dbDataSource.getConnection
-    try {
+  def findAll()(implicit session: DBSession): Map[Long, DocumentWithMetadata[T, M]] = {
+    inSession { connection =>
       val statement = connection.prepareStatement(SELECT_ALL)
       try {
         val resultSet = statement.executeQuery()
@@ -248,18 +229,15 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
       } finally {
         statement.close()
       }
-    } finally {
-      connection.close()
     }
   }
 
-  def getDocuments(keys: List[Long]): Map[Long, DocumentWithMetadata[T, M]] = {
+  def getDocuments(keys: List[Long])(implicit session: DBSession): Map[Long, DocumentWithMetadata[T, M]] = {
     if (keys.isEmpty) {
       Map[Long, DocumentWithMetadata[T, M]]()
     }
     else {
-      val connection = dbDataSource.getConnection
-      try {
+      inSession { connection =>
         val statement = connection.prepareStatement(SELECT_DOCUMENT_BY_IDS_QUERY(keys))
         try {
           val resultSet: ResultSet = statement.executeQuery()
@@ -275,22 +253,31 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
         } finally {
           statement.close()
         }
-      } finally {
-        connection.close()
       }
     }
   }
 
+
+  protected def inSession[RETURN_TYPE](body: Connection => RETURN_TYPE)(implicit session: DBSession): RETURN_TYPE = {
+    if(session == null) {
+      DB.localTx { s =>
+        body(s.connection)
+      }
+    } else {
+      body(session.connection)
+    }
+
+  }
+
 }
 
-class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val dbDataSource: DataSource, val mpjsons: MPJsons)(implicit val t: TypeTag[T], val m: TypeTag[M])
+class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val mpjsons: MPJsons)(implicit val t: TypeTag[T], val m: TypeTag[M])
   extends DocumentStore[T, M] with PostgresDocumentStoreTrait[T, M] {
 
   protected val INSERT_DOCUMENT_QUERY = s"INSERT INTO $projectionTableName (id, document, metadata) VALUES (?, ?::jsonb, ?::jsonb)"
 
-  override def insertDocument(key: Long, document: T, metadata: M): Unit = {
-    val connection = dbDataSource.getConnection
-    try {
+  override def insertDocument(key: Long, document: T, metadata: M)(implicit session: DBSession): Unit = {
+    inSession { connection =>
       val statement = connection.prepareStatement(INSERT_DOCUMENT_QUERY)
       try {
         statement.setLong(1, key)
@@ -300,14 +287,12 @@ class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val
       } finally {
         statement.close()
       }
-    } finally {
-      connection.close()
     }
   }
 
 }
 
-class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: String, val dbDataSource: DataSource, val mpjsons: MPJsons)(implicit val t: TypeTag[T], val m: TypeTag[M])
+class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: String, val mpjsons: MPJsons)(implicit val t: TypeTag[T], val m: TypeTag[M])
   extends DocumentStoreAutoId[T, M] with PostgresDocumentStoreTrait[T, M] {
 
   private final lazy val logger = LoggerFactory.getLogger(classOf[PostgresDocumentStoreAutoId[T, M]])
@@ -319,20 +304,20 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
   protected lazy val INSERT_DOCUMENT_QUERY = s"INSERT INTO $projectionTableName (id, document, metadata) VALUES (nextval('$sequenceName'), ?::jsonb, ?::jsonb) RETURNING currval('$sequenceName')"
 
 
-  override protected def createTableIfNotExists(): Unit = {
+  override protected def createTableIfNotExists()(implicit session: DBSession): Unit = {
     try {
-      executeQuery(CREATE_SEQUENCE_QUERY)
+      execute(CREATE_SEQUENCE_QUERY)
     } catch {
       case e: Exception => () // IF NOT EXIST workaround
     }
-    executeQuery(CREATE_TABLE_QUERY)
+    execute(CREATE_TABLE_QUERY)
   }
 
-  override def insertDocument(document: T, metadata: M): Long = {
-    val connection = dbDataSource.getConnection
-    try {
+  override def insertDocument(document: T, metadata: M)(implicit session: DBSession): Long = {
+    inSession { connection =>
       val statement = connection.prepareStatement(INSERT_DOCUMENT_QUERY)
       try {
+
         statement.setString(1, mpjsons.serialize(document))
         statement.setString(2, mpjsons.serialize(metadata))
         val resultSet = statement.executeQuery()
@@ -344,8 +329,6 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
       } finally {
         statement.close()
       }
-    } finally {
-      connection.close()
     }
   }
 }

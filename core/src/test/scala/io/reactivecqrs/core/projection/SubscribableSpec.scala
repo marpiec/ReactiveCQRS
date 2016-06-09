@@ -1,17 +1,18 @@
 package io.reactivecqrs.core.projection
 
-import java.time.Clock
+import java.time.Instant
 
 import akka.actor._
 import akka.testkit.{TestActorRef, TestProbe}
 import akka.util.Timeout
-import io.reactivecqrs.api.id.AggregateId
+import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.api.{AggregateType, AggregateVersion, Event}
 import io.reactivecqrs.core.aggregaterepository.IdentifiableEvent
 import io.reactivecqrs.core.documentstore.NothingMetadata
-import io.reactivecqrs.core.eventbus.EventsBusActor.SubscribedForEvents
-import io.reactivecqrs.core.projection.Subscribable.{CancelProjectionSubscriptions, SubscriptionUpdated, ProjectionSubscriptionsCancelled, SubscribedForProjectionUpdates}
+import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubscriptionsManagerApi}
+import io.reactivecqrs.core.projection.Subscribable.{CancelProjectionSubscriptions, ProjectionSubscriptionsCancelled, SubscribedForProjectionUpdates, SubscriptionUpdated}
 import org.scalatest.{BeforeAndAfter, FeatureSpecLike, GivenWhenThen}
+import scalikejdbc.DBSession
 
 import scala.concurrent.duration._
 
@@ -20,10 +21,10 @@ case class StringEvent(aggregate: String) extends Event[String]
 
 case class SubscribeForAll(subscriptionCode: String, listener: ActorRef)
 
-class SimpleProjection(val eventBusActor: ActorRef) extends ProjectionActor with Subscribable {
+class SimpleProjection(val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi, val subscriptionsState: PostgresSubscriptionsState) extends ProjectionActor with Subscribable {
 
   override def receiveSubscriptionRequest: Receive = {
-    case SubscribeForAll(code, listener) => handleSubscribe(code, listener, (s: String) => Some(s, NothingMetadata()))
+    case SubscribeForAll(code, listener) => handleSubscribe(code, listener, (s: String) => Some((s, NothingMetadata())))
   }
 
   override protected def receiveQuery: Receive = {
@@ -32,7 +33,7 @@ class SimpleProjection(val eventBusActor: ActorRef) extends ProjectionActor with
 
   override protected val listeners: List[Listener[Any]] = List(EventListener(handleUpdate))
 
-  private def handleUpdate(aggregateId: AggregateId, version: AggregateVersion, event: Event[String]) = {
+  private def handleUpdate(aggregateId: AggregateId, version: AggregateVersion, event: Event[String], userId: UserId, instant: Instant) = { implicit session: DBSession =>
     sendUpdate(event.asInstanceOf[StringEvent].aggregate)
   }
 
@@ -58,19 +59,16 @@ class SimpleListener(simpleListenerProbe: TestProbe) extends Actor {
 
 class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAndAfter {
   implicit val actorSystem = ActorSystem()
-  implicit val timeout = Timeout(1 second)
-
-  val clock = Clock.systemDefaultZone()
+  implicit val timeout = Timeout(10 second)
 
   def fixture = new {
-    val eventBusActorStub = actorSystem.actorOf(Props(new Actor {
-      override def receive: Receive = { case _ => () }
-    }))
 
-    val simpleProjectionActor = TestActorRef(Props(new SimpleProjection(eventBusActorStub)))
+    val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(TestActorRef(Props(new EventBusSubscriptionsManager(0))))
 
-    simpleProjectionActor ! SubscribedForEvents("someMessageId", AggregateType(classOf[String].getSimpleName), "someId1")
+    val subscriptionsState = new PostgresSubscriptionsState
+    subscriptionsState.initSchema()
 
+    val simpleProjectionActor = TestActorRef(Props(new SimpleProjection(eventBusSubscriptionsManager, subscriptionsState)))
 
     // use this actor/probe combo - the actor is necessary to store subscription id
     val simpleListenerProbe = TestProbe()
@@ -103,7 +101,7 @@ class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAnd
 
       When("projection is updated")
 
-      f.simpleProjectionActor ! IdentifiableEvent(stringType, AggregateId(0), AggregateVersion(1), StringEvent("some string"))
+      f.simpleProjectionActor ! IdentifiableEvent(1, stringType, AggregateId(0), AggregateVersion(1), StringEvent("some string"), UserId(1), Instant.now)
 
       Then("listener receives update")
 
@@ -125,7 +123,7 @@ class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAnd
 
       When("projection is updated")
 
-      f.simpleProjectionActor ! IdentifiableEvent(stringType, AggregateId(0), AggregateVersion(1), StringEvent("another string"))
+      f.simpleProjectionActor ! IdentifiableEvent(1, stringType, AggregateId(0), AggregateVersion(1), StringEvent("another string"), UserId(1), Instant.now)
 
       Then("listener receives nothing")
 
@@ -147,7 +145,7 @@ class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAnd
 
       When("projection is updated")
 
-      f.simpleProjectionActor ! IdentifiableEvent(stringType, AggregateId(0), AggregateVersion(1), StringEvent("some string"))
+      f.simpleProjectionActor ! IdentifiableEvent(1, stringType, AggregateId(0), AggregateVersion(1), StringEvent("some string"), UserId(1), Instant.now)
 
       Then("only listener one receives update")
 
@@ -164,7 +162,7 @@ class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAnd
 
       When("projection is updated")
 
-      f.simpleProjectionActor ! IdentifiableEvent(stringType, AggregateId(0), AggregateVersion(1), StringEvent("another string"))
+      f.simpleProjectionActor ! IdentifiableEvent(1, stringType, AggregateId(0), AggregateVersion(1), StringEvent("another string"), UserId(1), Instant.now)
 
       Then("both listeners receive update")
 
@@ -200,7 +198,7 @@ class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAnd
 
       When("projection is updated")
 
-      f.simpleProjectionActor ! IdentifiableEvent(stringType, AggregateId(0), AggregateVersion(1), StringEvent("another string"))
+      f.simpleProjectionActor ! IdentifiableEvent(1, stringType, AggregateId(0), AggregateVersion(1), StringEvent("another string"), UserId(1), Instant.now)
 
       Then("only listener two receives update")
 
