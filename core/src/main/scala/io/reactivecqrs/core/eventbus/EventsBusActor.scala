@@ -82,7 +82,6 @@ class EventsBusActor(val subscriptionsManager: EventBusSubscriptionsManagerApi) 
 
   def receiveAfterInit: Receive = logReceive {
     case PublishEvents(aggregateType, events, aggregateId, aggregateVersion, aggregate) =>
-      println("EBA PublishEvents " + events.size)
       handlePublishEvents(sender(), aggregateType, events, aggregateId, aggregateVersion, aggregate)
     case PublishReplayedEvent(aggregateType, event, aggregateId, aggregateVersion, aggregate) =>
       handlePublishEvents(sender(), aggregateType, List(event), aggregateId, aggregateVersion, aggregate)
@@ -164,16 +163,11 @@ class EventsBusActor(val subscriptionsManager: EventBusSubscriptionsManagerApi) 
     })
 
 
-    println("EBA New messages to send " + messagesToSendForEvents.map(_._2.size).sum)
-
     messagesToSend = (messagesToSendForEvents.toList ::: messagesToSend).sortBy(_._1)
     events.foreach(event => eventSenders += event.eventId -> respondTo)
 
 
     val eventsPropagated = sendContinuousEventMessages()
-
-
-    println("EBA After sending " + messagesToSend.size+" -> "+messagesSent.size)
 
 
 //    Future { // FIXME Future is to ensure non blocking access to db, but it broke order in which events for the same aggregate were persisted, maybe there should be an actor per aggregate instead of a future?
@@ -204,7 +198,6 @@ class EventsBusActor(val subscriptionsManager: EventBusSubscriptionsManagerApi) 
             case Left(s) => s ! message.message
             case Right(path) => context.system.actorSelection(path) ! message.message
           }
-          println("EBA Sent " + eventId+" "+message.subscriber)
         }
         lastSendMessage = Some(eventId)
         messagesSent ::= entry
@@ -242,11 +235,8 @@ class EventsBusActor(val subscriptionsManager: EventBusSubscriptionsManagerApi) 
 
     val remainingMessagesForEvent = messagesForEvent.filterNot(m => m.subscriber.fold(l => l.path.toString, r => r) == ack.subscriber.path.toString)
 
-    println("EBA Ack " + eventId+" "+remainingMessagesForEvent)
-
     if(remainingMessagesForEvent.isEmpty) {
       eventSenders(eventId) ! PublishEventAck(eventId)
-      println("EBA To Sender Ack " + eventId)
       eventSenders -= eventId
       messagesSent = messagesSent.filterNot(_._1 == eventId)
     } else {
