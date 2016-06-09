@@ -58,7 +58,7 @@ class PostgresEventStoreSchemaInitializer  {
   private def createAggregatesTable() = DB.autoCommit { implicit session =>
     sql"""
         CREATE TABLE IF NOT EXISTS aggregates (
-          id BIGINT NOT NULL,
+          id BIGINT NOT NULL PRIMARY KEY,
           type VARCHAR(1024) NOT NULL,
           base_order INT NOT NULL,
           base_id BIGINT NOT NULL,

@@ -22,7 +22,7 @@ object SagaActor {
 // TODO manual reply of saga? as saga might not know that previous command succeded? or command idempotency?
 abstract class SagaActor extends Actor with ActorLogging {
 
-  implicit val timeout = Timeout(50.seconds)
+  implicit val timeout = Timeout(60.seconds)
 
   import context.dispatcher
 
@@ -126,9 +126,9 @@ abstract class SagaActor extends Actor with ActorLogging {
   private def takeNextSagaId: Long = {
     if(remainingSagasIds == 0) {
       // TODO get rid of ask pattern
-      implicit val timeout = Timeout(10 seconds)
+      implicit val timeout = Timeout(60 seconds)
       val pool: Future[NewSagasIdsPool] = (uidGenerator ? UidGeneratorActor.GetNewSagasIdsPool).mapTo[NewSagasIdsPool]
-      val newSagasIdsPool: NewSagasIdsPool = Await.result(pool, 10 seconds)
+      val newSagasIdsPool: NewSagasIdsPool = Await.result(pool, 60 seconds)
       remainingSagasIds = newSagasIdsPool.size
       nextSagaId = newSagasIdsPool.from
     }

@@ -4,9 +4,7 @@ import io.reactivecqrs.api.id.{AggregateId, UserId}
 
 //
 //// First Command
-//
-//abstract class FirstCommand[AGGREGATE_ROOT, RESPONSE] extends AbstractCommand[AGGREGATE_ROOT]
-//
+
 
 abstract class FirstCommand[AGGREGATE_ROOT, RESPONSE <: CustomCommandResponse[_]] {
   val userId: UserId

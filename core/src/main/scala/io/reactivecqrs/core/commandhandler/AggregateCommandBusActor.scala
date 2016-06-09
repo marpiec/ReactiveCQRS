@@ -165,9 +165,9 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private def takeNextAggregateId: AggregateId = {
     if(remainingAggregateIds == 0) {
       // TODO get rid of ask pattern
-      implicit val timeout = Timeout(10 seconds)
+      implicit val timeout = Timeout(60 seconds)
       val pool: Future[NewAggregatesIdsPool] = (uidGenerator ? UidGeneratorActor.GetNewAggregatesIdsPool).mapTo[NewAggregatesIdsPool]
-      val newAggregatesIdsPool: NewAggregatesIdsPool = Await.result(pool, 10 seconds)
+      val newAggregatesIdsPool: NewAggregatesIdsPool = Await.result(pool, 60 seconds)
       remainingAggregateIds = newAggregatesIdsPool.size
       nextAggregateId = newAggregatesIdsPool.from
     }
@@ -182,9 +182,9 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private def takeNextCommandId: CommandId = {
     if(remainingCommandsIds == 0) {
       // TODO get rid of ask pattern
-      implicit val timeout = Timeout(10 seconds)
+      implicit val timeout = Timeout(60 seconds)
       val pool: Future[NewCommandsIdsPool] = (uidGenerator ? UidGeneratorActor.GetNewCommandsIdsPool).mapTo[NewCommandsIdsPool]
-      val newCommandsIdsPool: NewCommandsIdsPool = Await.result(pool, 10 seconds)
+      val newCommandsIdsPool: NewCommandsIdsPool = Await.result(pool, 60 seconds)
       remainingCommandsIds = newCommandsIdsPool.size
       nextCommandId = newCommandsIdsPool.from
     }

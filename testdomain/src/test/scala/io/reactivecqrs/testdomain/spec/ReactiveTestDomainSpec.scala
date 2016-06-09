@@ -167,7 +167,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
     }
 
 
-    scenario("Crate multiple carts at once") {
+    scenario("Create multiple carts at once") {
 
       val fixture = Fixture
       import fixture._
