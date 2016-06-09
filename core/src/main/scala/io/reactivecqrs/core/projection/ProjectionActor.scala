@@ -19,7 +19,12 @@ private case class DelayedQuery(until: Instant, respondTo: ActorRef, search: () 
 
 abstract class ProjectionActor extends Actor with ActorLogging {
 
-  val subscriptionsState: SubscriptionsState
+  protected val subscriptionsState: SubscriptionsState
+
+  protected val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi
+
+  protected val listeners:List[Listener[Any]]
+
 
   protected trait Listener[+AGGREGATE_ROOT]  {
     def aggregateRootType: Type
@@ -60,10 +65,6 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       new AggregateWithEventListener[AGGREGATE_ROOT](listener)
   }
 
-
-  protected val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi
-
-  protected val listeners:List[Listener[Any]]
 
 
   private lazy val eventListenersMap = {

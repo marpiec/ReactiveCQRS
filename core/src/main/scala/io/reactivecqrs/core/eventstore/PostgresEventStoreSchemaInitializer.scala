@@ -58,11 +58,13 @@ class PostgresEventStoreSchemaInitializer  {
   private def createAggregatesTable() = DB.autoCommit { implicit session =>
     sql"""
         CREATE TABLE IF NOT EXISTS aggregates (
-          id BIGINT NOT NULL PRIMARY KEY,
+          id BIGINT NOT NULL,
           type VARCHAR(1024) NOT NULL,
           base_order INT NOT NULL,
           base_id BIGINT NOT NULL,
-          base_version INT NOT NULL)
+          base_version INT NOT NULL,
+          CONSTRAINT aggregates_pk PRIMARY KEY (id, base_id))
+
       """.execute().apply()
   }
 
@@ -156,7 +158,7 @@ class PostgresEventStoreSchemaInitializer  {
           |          INSERT INTO aggregates (id, type, base_order, base_id, base_version) (select aggregate_id, aggregate_type, base_order, base_id, base_version
           |            from aggregates
           |            where id = _base_id);
-          |            current_version := 0;
+          |          current_version := 0;
           |          SELECT base_order INTO base_count FROM aggregates WHERE id = aggregate_id AND base_id = _base_id;
           |          INSERT INTO aggregates (id, type, base_order, base_id, base_version) VALUES (aggregate_id, aggregate_type, base_count + 1, aggregate_id, 0);
           |          UPDATE aggregates SET base_version = _base_version WHERE id = aggregate_id AND base_id = _base_id;

@@ -23,6 +23,21 @@ trait SubscriptionsState {
   def newEventIdForAggregatesWithEventsSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit
 }
 
+class MemorySubscriptionsState extends SubscriptionsState {
+
+  override def lastEventIdForAggregatesSubscription(name: String, aggregateType: AggregateType): Long = ???
+
+  override def lastEventIdForEventsSubscription(name: String, aggregateType: AggregateType): Long = ???
+
+  override def lastEventIdForAggregatesWithEventsSubscription(name: String, aggregateType: AggregateType): Long = ???
+
+  override def newEventIdForAggregatesSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit = ???
+
+  override def newEventIdForAggregatesWithEventsSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit = ???
+
+  override def newEventIdForEventsSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit = ???
+}
+
 
 class PostgresSubscriptionsState extends SubscriptionsState {
 

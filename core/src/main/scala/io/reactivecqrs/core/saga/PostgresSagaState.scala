@@ -38,7 +38,7 @@ class PostgresSagaState(mpjsons: MPJsons) extends SagaState {
     DB.readOnly { implicit session =>
       sql"""SELECT name, saga_id, user_id, respond_to, phase, saga_order, order_type FROM sagas"""
         .foreach { rs =>
-          handler(rs.string(1), rs.long(2), UserId(rs.long(3)), rs.string(4), SagaPhase.byName(rs.string(5)), mpjsons.deserialize(rs.string(6), rs.string(7)))
+          handler(rs.string(1), rs.long(2), UserId(rs.long(3)), rs.string(4), SagaPhase.byName(rs.string(5)), mpjsons.deserialize[SagaInternalOrder](rs.string(6), rs.string(7)))
         }
     }
   }

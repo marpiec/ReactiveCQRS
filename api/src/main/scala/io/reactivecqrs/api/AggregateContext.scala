@@ -12,7 +12,7 @@ case class GetEventsForAggregateForVersion(id: AggregateId, version: AggregateVe
 
 case class SimulateEvent[AGGREGATE_ROOT](id: AggregateId, version: AggregateVersion, event: Event[AGGREGATE_ROOT])
 
-abstract class AggregateContext[AGGREGATE_ROOT: TypeTag] {
+abstract class AggregateContext[AGGREGATE_ROOT] {
   def initialAggregateRoot: AGGREGATE_ROOT
 
 
