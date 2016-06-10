@@ -59,10 +59,13 @@ class EventBusSubscriptionsManager(minimumExpectedSubscriptions: Int) extends Ac
   }
 
   private def subscribe(subscribe: List[SubscribeRequest]): Unit = {
-    if(subscriptionsOpen) {
-      subscriptionsRequests :::= subscribe
-    } else {
-      throw new IllegalStateException("Subscriptions for Event Bus already closed! Got " + subscriptionsRequests.size+" of " + minimumExpectedSubscriptions+" "+subscribe)
+    val nonRepeated = subscribe.filterNot(s => subscriptionsRequests.contains(s))
+    if(nonRepeated.nonEmpty) {
+      if (subscriptionsOpen) {
+        subscriptionsRequests :::= subscribe
+      } else {
+        throw new IllegalStateException("Subscriptions for Event Bus already closed! Got " + subscriptionsRequests.size + " of " + minimumExpectedSubscriptions + " " + subscribe)
+      }
     }
   }
 

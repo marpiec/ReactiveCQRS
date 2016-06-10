@@ -110,7 +110,7 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
     DB.readOnly { implicit session =>
       sql"""SELECT events.id, event_type, event, events.version, events.aggregate_id, aggregates.type, user_id, event_time
            FROM events
-           JOIN aggregates ON events.aggregate_id = aggregates.id
+           JOIN aggregates ON events.aggregate_id = aggregates.id AND events.aggregate_id = aggregates.base_id
            ORDER BY events.id""".fetchSize(1000)
         .foreach { rs =>
           val event = mpjsons.deserialize[Event[_]](rs.string(3), rs.string(2))

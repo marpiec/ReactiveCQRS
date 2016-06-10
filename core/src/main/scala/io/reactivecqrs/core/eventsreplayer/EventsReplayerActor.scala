@@ -13,6 +13,7 @@ import io.reactivecqrs.core.backpressure.BackPressureActor
 import io.reactivecqrs.core.backpressure.BackPressureActor.{ProducerAllowMore, ProducerAllowedMore, Start, Stop}
 import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, ReplayAllEvents}
 import io.reactivecqrs.core.eventstore.EventStoreState
+import io.reactivecqrs.core.util.ActorLogging
 
 import scala.concurrent.Await
 import scala.reflect.runtime.universe._
@@ -44,7 +45,7 @@ object EventsReplayerActor {
 
 class EventsReplayerActor(eventStore: EventStoreState,
                           val eventsBus: ActorRef,
-                          actorsFactory: List[ReplayerRepositoryActorFactory[_]]) extends Actor {
+                          actorsFactory: List[ReplayerRepositoryActorFactory[_]]) extends Actor with ActorLogging {
 
   import context.dispatcher
 
@@ -65,6 +66,9 @@ class EventsReplayerActor(eventStore: EventStoreState,
     backPressureActor ! Start
     val allEvents: Int = eventStore.countAllEvents()
     var eventsSent: Long = 0
+
+    log.info("Will replay "+allEvents+" events")
+
     eventStore.readAndProcessAllEvents((eventId: Long, event: Event[_], aggregateId: AggregateId, version: AggregateVersion, aggregateType: AggregateType, userId: UserId, timestamp: Instant) => {
       if(messagesToProduceAllowed == 0) {
         // Ask is a way to block during fetching data from db
@@ -76,8 +80,8 @@ class EventsReplayerActor(eventStore: EventStoreState,
       messagesToProduceAllowed -= 1
 
       eventsSent += 1
-      if(eventsSent % 100 == 0) {
-        println("Replayed "+eventsSent+"/"+allEvents)
+      if(eventsSent < 10 || eventsSent < 100 && eventsSent % 10 == 0 || eventsSent % 100 == 0) {
+        println("Replayed "+eventsSent+"/"+allEvents+" events, allowed " + messagesToProduceAllowed+" "+eventId)
       }
     })
     backPressureActor ! Stop

@@ -57,7 +57,7 @@ class EventsBusActor(val subscriptionsManager: EventBusSubscriptionsManagerApi) 
   private var subscriptions: Map[AggregateType, Vector[Subscription]] = Map()
   private var subscriptionsByIds = Map[String, Subscription]()
 
-  private val MAX_BUFFER_SIZE = 1000
+  private val MAX_BUFFER_SIZE = 20
 
   private var backPressureProducerActor: Option[ActorRef] = None
   private var orderedMessages = 0
@@ -105,7 +105,7 @@ class EventsBusActor(val subscriptionsManager: EventBusSubscriptionsManagerApi) 
     case m: EventAck => handleEventReceived(m)
     case ConsumerAllowMoreStart =>
       backPressureProducerActor = Some(sender)
-      sender ! ConsumerAllowedMore((MAX_BUFFER_SIZE - messagesToSend.size) / subscriptions.values.map(_.size).sum)
+      sender ! ConsumerAllowedMore(MAX_BUFFER_SIZE - messagesToSend.size)
       orderedMessages += MAX_BUFFER_SIZE - messagesToSend.size
     case ConsumerAllowMoreStop => backPressureProducerActor = None
   }
@@ -228,7 +228,7 @@ class EventsBusActor(val subscriptionsManager: EventBusSubscriptionsManagerApi) 
 
   private def orderMoreMessagesToConsume(): Unit = {
     if(backPressureProducerActor.isDefined && messagesToSend.size + orderedMessages < MAX_BUFFER_SIZE / 2) {
-      backPressureProducerActor.get ! ConsumerAllowedMore((MAX_BUFFER_SIZE - messagesToSend.size) / subscriptions.values.map(_.size).sum)
+      backPressureProducerActor.get ! ConsumerAllowedMore(MAX_BUFFER_SIZE - messagesToSend.size)
       orderedMessages += MAX_BUFFER_SIZE - messagesToSend.size
     }
   }
