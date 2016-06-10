@@ -1,5 +1,7 @@
 package io.reactivecqrs.core.eventbus
 
+import java.time.Instant
+
 import akka.actor.{Actor, ActorRef}
 import akka.util.Timeout
 import io.reactivecqrs.api._
@@ -32,6 +34,9 @@ object EventsBusActor {
   case class EventToRoute(subscriber: Either[ActorRef, String], aggregateId: AggregateId, version: AggregateVersion, eventId: Long, message: AnyRef)
   case class EventAck(eventId: Long, subscriber: ActorRef)
 
+
+  case object CheckForOldEvents
+
 }
 
 abstract class Subscription {
@@ -62,6 +67,12 @@ class EventsBusActor(val subscriptionsManager: EventBusSubscriptionsManagerApi) 
   private var messagesSent: List[(Long, Vector[EventToRoute])] = List.empty
   private var eventSenders: Map[Long, ActorRef] = Map.empty
 
+  private var eventsTimestamps: Map[Long, Instant] = Map.empty
+
+  context.system.scheduler.schedule(60.seconds, 60.seconds) {
+    self ! CheckForOldEvents
+  }
+
   def initSubscriptions(): Unit = {
 
     implicit val timeout = Timeout(60.seconds)
@@ -74,6 +85,9 @@ class EventsBusActor(val subscriptionsManager: EventBusSubscriptionsManagerApi) 
   }
 
   override def receive: Receive = {
+    case CheckForOldEvents =>
+      eventsTimestamps.filter(_._2.plusSeconds(60).isBefore(Instant.now)).foreach(e =>
+        log.error("Message not broadcasted successfully " + messagesSent.find(m => m._1 == e._1)))
     case anything =>
       initSubscriptions()
       context.become(receiveAfterInit)
@@ -201,6 +215,7 @@ class EventsBusActor(val subscriptionsManager: EventBusSubscriptionsManagerApi) 
         }
         lastSendMessage = Some(eventId)
         messagesSent ::= entry
+        eventsTimestamps += eventId -> Instant.now()
         messagesToSend = messagesToSend.tail
         eventsPropagated += 1
       }
@@ -239,6 +254,7 @@ class EventsBusActor(val subscriptionsManager: EventBusSubscriptionsManagerApi) 
       eventSenders(eventId) ! PublishEventAck(eventId)
       eventSenders -= eventId
       messagesSent = messagesSent.filterNot(_._1 == eventId)
+      eventsTimestamps -= eventId
     } else {
       messagesSent = messagesSent.map(e => {
         if(e._1 == eventId) {
