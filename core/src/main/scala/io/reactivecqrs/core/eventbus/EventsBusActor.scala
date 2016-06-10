@@ -69,6 +69,8 @@ class EventsBusActor(val subscriptionsManager: EventBusSubscriptionsManagerApi) 
 
   private var eventsTimestamps: Map[Long, Instant] = Map.empty
 
+  import context.dispatcher
+
   context.system.scheduler.schedule(60.seconds, 60.seconds) {
     self ! CheckForOldEvents
   }
