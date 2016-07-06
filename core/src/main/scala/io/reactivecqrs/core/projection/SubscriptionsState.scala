@@ -4,6 +4,7 @@ import io.reactivecqrs.api.AggregateType
 import scalikejdbc._
 
 import scala.util.{Failure, Success, Try}
+import scala.collection.mutable
 
 class OptimisticLockingFailed extends Exception
 
@@ -21,21 +22,50 @@ trait SubscriptionsState {
   def newEventIdForAggregatesSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit
   def newEventIdForEventsSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit
   def newEventIdForAggregatesWithEventsSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit
+
+  def localTx(block: DBSession => Unit): Unit
 }
 
 class MemorySubscriptionsState extends SubscriptionsState {
 
-  override def lastEventIdForAggregatesSubscription(name: String, aggregateType: AggregateType): Long = ???
+  val subscriptions = new mutable.HashMap[(String, String, String), Long]()
 
-  override def lastEventIdForEventsSubscription(name: String, aggregateType: AggregateType): Long = ???
+  override def lastEventIdForAggregatesSubscription(name: String, aggregateType: AggregateType): Long =
+    eventsCount(name, aggregateType, SubscriptionsState.AGGREGATES)
 
-  override def lastEventIdForAggregatesWithEventsSubscription(name: String, aggregateType: AggregateType): Long = ???
+  override def lastEventIdForEventsSubscription(name: String, aggregateType: AggregateType): Long =
+    eventsCount(name, aggregateType, SubscriptionsState.EVENTS)
 
-  override def newEventIdForAggregatesSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit = ???
+  override def lastEventIdForAggregatesWithEventsSubscription(name: String, aggregateType: AggregateType): Long =
+    eventsCount(name, aggregateType, SubscriptionsState.AGGREGATES_WITH_EVENTS)
 
-  override def newEventIdForAggregatesWithEventsSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit = ???
+  override def newEventIdForAggregatesSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit =
+    newEventId(name, aggregateType, SubscriptionsState.AGGREGATES, lastEventId, eventId)
 
-  override def newEventIdForEventsSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit = ???
+  override def newEventIdForEventsSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit =
+    newEventId(name, aggregateType, SubscriptionsState.EVENTS, lastEventId, eventId)
+
+  override def newEventIdForAggregatesWithEventsSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit =
+    newEventId(name, aggregateType, SubscriptionsState.AGGREGATES_WITH_EVENTS, lastEventId, eventId)
+
+  override def localTx(block: DBSession => Unit): Unit = block(NoSession)
+
+  private def eventsCount(name: String, aggregateType: AggregateType, subscriptionType: String) = {
+     subscriptions.getOrElse((name, aggregateType.typeName, subscriptionType), {
+       subscriptions += (name, aggregateType.typeName, subscriptionType) -> 0L
+       0L
+     })
+  }
+
+  private def newEventId(name: String, aggregateType: AggregateType, subscriptionType: String, eventId: Long, lastEventId: Long): Try[Unit] = {
+    if (subscriptions.get((name, aggregateType.typeName, SubscriptionsState.AGGREGATES)).contains(lastEventId)) {
+      subscriptions += (name, aggregateType.typeName, SubscriptionsState.AGGREGATES) -> eventId
+      Success(())
+    } else {
+      Failure(new OptimisticLockingFailed)
+    }
+  }
+
 }
 
 
@@ -92,7 +122,7 @@ class PostgresSubscriptionsState extends SubscriptionsState {
     DB.localTx { implicit session =>
       val rowsUpdated = sql"""UPDATE subscriptions SET last_event_id = ? WHERE name = ? AND aggregate_type = ? AND subscription_type = ? AND last_event_id = ?"""
         .bind(eventId, name, aggregateType.typeName, subscriptionType, lastEventId).map(rs => rs.int(1)).single().executeUpdate().apply()
-      if(rowsUpdated == 1) {
+      if (rowsUpdated == 1) {
         Success(())
       } else {
         Failure(new OptimisticLockingFailed)
@@ -100,5 +130,9 @@ class PostgresSubscriptionsState extends SubscriptionsState {
     }
   }
 
+  override def localTx(block: DBSession => Unit): Unit =
+    DB.localTx { session =>
+      block(session)
+    }
 
 }
