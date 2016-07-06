@@ -1,5 +1,7 @@
 package io.reactivecqrs.core.projection
 
+import java.time.{Duration, Instant}
+
 import akka.actor.ActorRef
 import io.reactivecqrs.core.util.RandomUtil
 import io.reactivecqrs.core.projection.SubscribableProjectionActor._
@@ -17,7 +19,9 @@ object SubscribableProjectionActor {
   case class SubscriptionUpdated[UPDATE, METADATA](subscriptionId: String, data: UPDATE, metadata: METADATA)
 }
 
-trait SubscribableProjectionActor extends ProjectionActor {
+case class UpdateCacheEntry(arrived: Instant, value: Any)
+
+abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.ZERO) extends ProjectionActor {
 
   protected def receiveSubscriptionRequest: Receive
 
@@ -25,14 +29,13 @@ trait SubscribableProjectionActor extends ProjectionActor {
     case CancelProjectionSubscriptions(subscriptions) => sender ! ProjectionSubscriptionsCancelled(subscriptions.flatMap(handleUnsubscribe))
   }
 
-  abstract override protected def receiveUpdate = super.receiveUpdate orElse receiveSubscription
+  override protected def receiveUpdate = super.receiveUpdate orElse receiveSubscription
 
   private val subscriptionIdToListener = mutable.HashMap[String, ActorRef]()
   private val subscriptionIdToAcceptor = mutable.HashMap[String, _ => Option[_]]()
   private val typeToSubscriptionId = mutable.HashMap[String, List[String]]()
 
-  private val updatesCache: mutable.Queue[Any] = mutable.Queue.empty
-  private val MAX_SUBSCRIPTION_CACHE_SIZE = 100
+  private val updatesCache: mutable.Queue[UpdateCacheEntry] = mutable.Queue.empty
 
   protected def handleSubscribe[DATA: TypeTag, UPDATE, METADATA](code: String, listener: ActorRef,
                                                                  filter: (DATA) => Option[(UPDATE, METADATA)],
@@ -46,16 +49,21 @@ trait SubscribableProjectionActor extends ProjectionActor {
 
     listener ! SubscribedForProjectionUpdates(code, subscriptionId)
 
-    updatesCache.filter(d => missedUpdatesFilter(d.asInstanceOf[DATA]))
-      .map(d => filter(d.asInstanceOf[DATA])).filter(_.isDefined)
-      .foreach(result => listener ! SubscriptionUpdated(subscriptionId, result.get._1, result.get._2))
+    if(updatesCacheTTL != Duration.ZERO) {
+      val shouldArriveAfter = Instant.now().minus(updatesCacheTTL)
+      updatesCache.filter(d => d.arrived.isAfter(shouldArriveAfter) && missedUpdatesFilter(d.value.asInstanceOf[DATA]))
+        .map(d => filter(d.value.asInstanceOf[DATA])).filter(_.isDefined)
+        .foreach(result => listener ! SubscriptionUpdated(subscriptionId, result.get._1, result.get._2))
+    }
   }
 
   protected def sendUpdate[DATA: TypeTag](u: DATA) = {
 
-    updatesCache += u
-    if(updatesCache.size > MAX_SUBSCRIPTION_CACHE_SIZE) {
-      updatesCache.dequeue()
+
+    if(updatesCacheTTL != Duration.ZERO) {
+      updatesCache += UpdateCacheEntry(Instant.now(), u)
+      val shouldArriveAfter = Instant.now().minus(updatesCacheTTL)
+      updatesCache.dequeueAll(e => e.arrived.isBefore(shouldArriveAfter))
     }
 
     typeToSubscriptionId.get(typeTag[DATA].toString()) foreach { subscriptions =>
