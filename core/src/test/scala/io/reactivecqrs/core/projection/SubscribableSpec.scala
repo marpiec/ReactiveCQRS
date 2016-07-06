@@ -10,7 +10,7 @@ import io.reactivecqrs.api.{AggregateType, AggregateVersion, Event}
 import io.reactivecqrs.core.aggregaterepository.IdentifiableEvent
 import io.reactivecqrs.core.documentstore.NothingMetadata
 import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubscriptionsManagerApi}
-import io.reactivecqrs.core.projection.Subscribable.{CancelProjectionSubscriptions, ProjectionSubscriptionsCancelled, SubscribedForProjectionUpdates, SubscriptionUpdated}
+import io.reactivecqrs.core.projection.SubscribableProjectionActor.{CancelProjectionSubscriptions, ProjectionSubscriptionsCancelled, SubscribedForProjectionUpdates, SubscriptionUpdated}
 import org.scalatest.{BeforeAndAfter, FeatureSpecLike, GivenWhenThen}
 import scalikejdbc.DBSession
 
@@ -21,7 +21,7 @@ case class StringEvent(aggregate: String) extends Event[String]
 
 case class SubscribeForAll(subscriptionCode: String, listener: ActorRef)
 
-class SimpleProjection(val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi, val subscriptionsState: PostgresSubscriptionsState) extends ProjectionActor with Subscribable {
+class SimpleProjection(val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi, val subscriptionsState: PostgresSubscriptionsState) extends ProjectionActor with SubscribableProjectionActor {
 
   override def receiveSubscriptionRequest: Receive = {
     case SubscribeForAll(code, listener) => handleSubscribe(code, listener, (s: String) => Some((s, NothingMetadata())))

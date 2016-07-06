@@ -2,12 +2,12 @@ package io.reactivecqrs.core.projection
 
 import akka.actor.ActorRef
 import io.reactivecqrs.core.util.RandomUtil
-import io.reactivecqrs.core.projection.Subscribable._
+import io.reactivecqrs.core.projection.SubscribableProjectionActor._
 
 import scala.collection.mutable
 import scala.reflect.runtime.universe._
 
-object Subscribable {
+object SubscribableProjectionActor {
   case class SubscribedForProjectionUpdates(subscriptionCode: String, subscriptionId: String)
 
   case class CancelProjectionSubscriptions(subscriptions: List[String])
@@ -17,7 +17,7 @@ object Subscribable {
   case class SubscriptionUpdated[UPDATE, METADATA](subscriptionId: String, data: UPDATE, metadata: METADATA)
 }
 
-trait Subscribable extends ProjectionActor {
+trait SubscribableProjectionActor extends ProjectionActor {
 
   protected def receiveSubscriptionRequest: Receive
 
@@ -31,8 +31,12 @@ trait Subscribable extends ProjectionActor {
   private val subscriptionIdToAcceptor = mutable.HashMap[String, _ => Option[_]]()
   private val typeToSubscriptionId = mutable.HashMap[String, List[String]]()
 
+  private val updatesCache: mutable.Queue[Any] = mutable.Queue.empty
+  private val MAX_SUBSCRIPTION_CACHE_SIZE = 100
 
-  protected def handleSubscribe[DATA: TypeTag, UPDATE, METADATA](code: String, listener: ActorRef, filter: (DATA) => Option[(UPDATE, METADATA)]) = {
+  protected def handleSubscribe[DATA: TypeTag, UPDATE, METADATA](code: String, listener: ActorRef,
+                                                                 filter: (DATA) => Option[(UPDATE, METADATA)],
+                                                                 missedUpdatesFilter: DATA => Boolean = (d: DATA) => false): Unit = {
     val subscriptionId = generateNextSubscriptionId
     val typeTagString = typeTag[DATA].toString()
 
@@ -41,11 +45,19 @@ trait Subscribable extends ProjectionActor {
     typeToSubscriptionId += typeTagString -> (subscriptionId :: typeToSubscriptionId.getOrElse(typeTagString, Nil))
 
     listener ! SubscribedForProjectionUpdates(code, subscriptionId)
+
+    updatesCache.filter(d => missedUpdatesFilter(d.asInstanceOf[DATA]))
+      .map(d => filter(d.asInstanceOf[DATA])).filter(_.isDefined)
+      .foreach(result => listener ! SubscriptionUpdated(subscriptionId, result.get._1, result.get._2))
   }
 
-
-
   protected def sendUpdate[DATA: TypeTag](u: DATA) = {
+
+    updatesCache += u
+    if(updatesCache.size > MAX_SUBSCRIPTION_CACHE_SIZE) {
+      updatesCache.dequeue()
+    }
+
     typeToSubscriptionId.get(typeTag[DATA].toString()) foreach { subscriptions =>
       for {
         subscriptionId: String <- subscriptions
@@ -55,8 +67,6 @@ trait Subscribable extends ProjectionActor {
       } yield listener ! SubscriptionUpdated(subscriptionId, result._1, result._2)
     }
   }
-
-
 
   private def handleUnsubscribe(subscriptionId: String): Option[String] = {
     typeToSubscriptionId.find { _._2.contains(subscriptionId) } match {
