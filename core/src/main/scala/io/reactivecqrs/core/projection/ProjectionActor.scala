@@ -97,7 +97,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
     case a: AggregateWithType[_] =>
       val lastEventId = subscriptionsState.lastEventIdForAggregatesSubscription(this.getClass.getName, a.aggregateType)
       if(lastEventId < a.eventId) {
-        DB.localTx { session =>
+        subscriptionsState.localTx { session =>
           aggregateListenersMap(a.aggregateType)(a.id, a.version, a.aggregateRoot)(session)
           subscriptionsState.newEventIdForAggregatesSubscription(this.getClass.getName, a.aggregateType, lastEventId, a.eventId)
         }
@@ -108,7 +108,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
     case ae: AggregateWithTypeAndEvent[_] =>
       val lastEventId = subscriptionsState.lastEventIdForAggregatesWithEventsSubscription(this.getClass.getName, ae.aggregateType)
       if(lastEventId < ae.eventId) {
-        DB.localTx { session =>
+        subscriptionsState.localTx { session =>
           aggregateWithEventListenersMap(ae.aggregateType)(ae.id, ae.version, ae.event.asInstanceOf[Event[Any]], ae.aggregateRoot, ae.userId, ae.timestamp)(session)
           subscriptionsState.newEventIdForAggregatesWithEventsSubscription(this.getClass.getName, ae.aggregateType, lastEventId, ae.eventId)
         }
@@ -118,7 +118,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
     case e: IdentifiableEvent[_] =>
       val lastEventId = subscriptionsState.lastEventIdForEventsSubscription(this.getClass.getName, e.aggregateType)
       if(lastEventId < e.eventId) {
-        DB.localTx { session =>
+        subscriptionsState.localTx { session =>
           eventListenersMap(e.aggregateType)(e.aggregateId, e.version, e.event.asInstanceOf[Event[Any]], e.userId, e.timestamp)(session)
           subscriptionsState.newEventIdForEventsSubscription(this.getClass.getName, e.aggregateType, lastEventId, e.eventId)
         }
