@@ -13,8 +13,8 @@ case class AggregateType(typeName: String) {
 
 case class EventType(typeName: String)
 
-case class AggregateWithType[AGGREGATE_ROOT](aggregateType: AggregateType, id: AggregateId, version: AggregateVersion, aggregateRoot: Option[AGGREGATE_ROOT], eventId: Long)
+case class AggregateWithType[AGGREGATE_ROOT](aggregateType: AggregateType, id: AggregateId, version: AggregateVersion, aggregateRoot: Option[AGGREGATE_ROOT])
 
-case class AggregateWithTypeAndEvent[AGGREGATE_ROOT](aggregateType: AggregateType, id: AggregateId, version: AggregateVersion, aggregateRoot: Option[AGGREGATE_ROOT], event: Event[AGGREGATE_ROOT], eventId: Long, userId: UserId, timestamp: Instant)
+case class AggregateWithTypeAndEvent[AGGREGATE_ROOT](aggregateType: AggregateType, id: AggregateId, version: AggregateVersion, aggregateRoot: Option[AGGREGATE_ROOT], event: Event[AGGREGATE_ROOT], userId: UserId, timestamp: Instant)
 
 case class Aggregate[AGGREGATE_ROOT: TypeTag](id: AggregateId, version: AggregateVersion, aggregateRoot: Option[AGGREGATE_ROOT])

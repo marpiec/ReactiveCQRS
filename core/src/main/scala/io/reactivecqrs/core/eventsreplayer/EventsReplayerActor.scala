@@ -69,19 +69,19 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
     log.info("Will replay "+allEvents+" events")
 
-    eventStore.readAndProcessAllEvents((eventId: Long, event: Event[_], aggregateId: AggregateId, version: AggregateVersion, aggregateType: AggregateType, userId: UserId, timestamp: Instant) => {
+    eventStore.readAndProcessAllEvents((event: Event[_], aggregateId: AggregateId, version: AggregateVersion, aggregateType: AggregateType, userId: UserId, timestamp: Instant) => {
       if(messagesToProduceAllowed == 0) {
         // Ask is a way to block during fetching data from db
         messagesToProduceAllowed = Await.result((backPressureActor ? ProducerAllowMore).mapTo[ProducerAllowedMore].map(_.count), timeoutDuration)
       }
 
       val actor = getOrCreateReplayRepositoryActor(aggregateId, version, aggregateType)
-      actor ! ReplayEvent(IdentifiableEvent(eventId, aggregateType, aggregateId, version, event, userId, timestamp))
+      actor ! ReplayEvent(IdentifiableEvent(aggregateType, aggregateId, version, event, userId, timestamp))
       messagesToProduceAllowed -= 1
 
       eventsSent += 1
       if(eventsSent < 10 || eventsSent < 100 && eventsSent % 10 == 0 || eventsSent % 100 == 0) {
-        println("Replayed "+eventsSent+"/"+allEvents+" events, allowed " + messagesToProduceAllowed+" "+eventId)
+        println("Replayed "+eventsSent+"/"+allEvents+" events, allowed " + messagesToProduceAllowed)
       }
     })
     backPressureActor ! Stop

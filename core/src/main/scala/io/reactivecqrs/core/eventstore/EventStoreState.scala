@@ -10,10 +10,10 @@ import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEv
 abstract class EventStoreState {
 
   def countAllEvents(): Int
-  def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Seq[(Event[AGGREGATE_ROOT], Long)]
+  def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]
   def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, version: Option[AggregateVersion])(eventHandler: (Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit)
-  def readAndProcessAllEvents(eventHandler: (Long, Event[_], AggregateId, AggregateVersion, AggregateType, UserId, Instant) => Unit): Unit
-  def deletePublishedEventsToPublish(eventsIds: Seq[Long]): Unit
+  def readAndProcessAllEvents(eventHandler: (Event[_], AggregateId, AggregateVersion, AggregateType, UserId, Instant) => Unit): Unit
+  def deletePublishedEventsToPublish(eventsIds: Seq[EventIdentifier]): Unit
 
   def readAggregatesWithEventsToPublish(aggregateHandler: AggregateId => Unit): Unit
   def readEventsToPublishForAggregate[AGGREGATE_ROOT](aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]]

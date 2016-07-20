@@ -95,35 +95,47 @@ abstract class ProjectionActor extends Actor with ActorLogging {
 
   protected def receiveUpdate: Receive = logReceive  {
     case a: AggregateWithType[_] =>
-      val lastEventId = subscriptionsState.lastEventIdForAggregatesSubscription(this.getClass.getName, a.aggregateType)
-      if(lastEventId < a.eventId) {
+      val lastVersion = subscriptionsState.lastVersionForAggregateSubscription(this.getClass.getName, a.id)
+      if(a.version.isJustAfter(lastVersion)) {
         subscriptionsState.localTx { session =>
           aggregateListenersMap(a.aggregateType)(a.id, a.version, a.aggregateRoot)(session)
-          subscriptionsState.newEventIdForAggregatesSubscription(this.getClass.getName, a.aggregateType, lastEventId, a.eventId)
+          subscriptionsState.newVersionForAggregatesSubscription(this.getClass.getName, a.id, lastVersion, a.version)
         }
-        sender() ! EventAck(a.eventId, self)
+        sender() ! EventAck(self, a.id, a.version)
         replayQueries()
+      } else if (a.version < lastVersion) {
+        sender() ! EventAck(self, a.id, a.version)
+      } else {
+        ??? //TODO implement handling non consecutive update, delay this message
       }
 
     case ae: AggregateWithTypeAndEvent[_] =>
-      val lastEventId = subscriptionsState.lastEventIdForAggregatesWithEventsSubscription(this.getClass.getName, ae.aggregateType)
-      if(lastEventId < ae.eventId) {
+      val lastVersion = subscriptionsState.lastVersionForAggregatesWithEventsSubscription(this.getClass.getName, ae.id)
+      if(ae.version.isJustAfter(lastVersion)) {
         subscriptionsState.localTx { session =>
           aggregateWithEventListenersMap(ae.aggregateType)(ae.id, ae.version, ae.event.asInstanceOf[Event[Any]], ae.aggregateRoot, ae.userId, ae.timestamp)(session)
-          subscriptionsState.newEventIdForAggregatesWithEventsSubscription(this.getClass.getName, ae.aggregateType, lastEventId, ae.eventId)
+          subscriptionsState.newVersionForAggregatesWithEventsSubscription(this.getClass.getName, ae.id, lastVersion, ae.version)
         }
-        sender() ! EventAck(ae.eventId, self)
+        sender() ! EventAck(self, ae.id, ae.version)
         replayQueries()
+      } else if (ae.version < lastVersion) {
+        sender() ! EventAck(self, ae.id, ae.version)
+      } else {
+        ??? //TODO implement handling non consecutive update, delay this message
       }
     case e: IdentifiableEvent[_] =>
-      val lastEventId = subscriptionsState.lastEventIdForEventsSubscription(this.getClass.getName, e.aggregateType)
-      if(lastEventId < e.eventId) {
+      val lastVersion = subscriptionsState.lastVersionForEventsSubscription(this.getClass.getName, e.aggregateId)
+      if(e.version.isJustAfter(lastVersion)) {
         subscriptionsState.localTx { session =>
           eventListenersMap(e.aggregateType)(e.aggregateId, e.version, e.event.asInstanceOf[Event[Any]], e.userId, e.timestamp)(session)
-          subscriptionsState.newEventIdForEventsSubscription(this.getClass.getName, e.aggregateType, lastEventId, e.eventId)
+          subscriptionsState.newVersionForEventsSubscription(this.getClass.getName, e.aggregateId, lastVersion, e.version)
         }
-        sender() ! EventAck(e.eventId, self)
+        sender() ! EventAck(self, e.aggregateId, e.version)
         replayQueries()
+      } else if (e.version < lastVersion) {
+        sender() ! EventAck(self, e.aggregateId, e.version)
+      } else {
+        ??? //TODO implement handling non consecutive update, delay this message
       }
   }
 

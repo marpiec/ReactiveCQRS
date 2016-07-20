@@ -76,7 +76,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
               case _ => CustomSuccessResponse(aggregateId, AggregateVersion(s.events.size), success.responseInfo)
             }
             val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, response.asInstanceOf[RESPONSE], responseTimeout)), nextResultAggregatorName)
-            repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, commandId, command.userId, AggregateVersion.ZERO, Instant.now, success.events)
+            repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, commandId, command.userId, None, Instant.now, success.events)
             commandLogActor ! LogFirstCommand(commandId, command)
           case failure: CommandFailure[_, _] =>
             respondTo ! failure.response
@@ -128,7 +128,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
             case _ => CustomSuccessResponse(aggregateId, expectedVersion.incrementBy(success.events.size), success.responseInfo)
           }
           val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, response.asInstanceOf[RESPONSE], responseTimeout)), nextResultAggregatorName)
-          repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, commandId, userId, expectedVersion, Instant.now, success.events)
+          repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, commandId, userId, Some(expectedVersion), Instant.now, success.events)
           command match {
             case c: Command[_, _] => commandLogActor ! LogCommand(commandId, c)
             case c: ConcurrentCommand[_, _] => commandLogActor ! LogConcurrentCommand(commandId, c)

@@ -16,57 +16,56 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
     (new PostgresEventStoreSchemaInitializer).initSchema()
   }
 
-  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Seq[(Event[AGGREGATE_ROOT], Long)] = {
-    var versionsIncreased = 0
+  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
+    var lastEventVersion: Option[Int] = None
 
-    DB.autoCommit { implicit session =>
+    DB.localTx { implicit session =>
 
       eventsEnvelope.events.map(event => {
 
         val eventSerialized = mpjsons.serialize(event, event.getClass.getName)
 
-        val eventId = event match {
+        lastEventVersion = Some(event match {
           case undoEvent: UndoEvent[_] =>
             sql"""SELECT add_undo_event(?, ?, ?, ? ,? , ?, ?, ?, ?)""".bind(
               eventsEnvelope.commandId.asLong,
               eventsEnvelope.userId.asLong,
               aggregateId.asLong,
-              eventsEnvelope.expectedVersion.asInt + versionsIncreased,
+              eventsEnvelope.expectedVersion.map(v => lastEventVersion.getOrElse(v.asInt)).getOrElse(-1),
               event.aggregateRootType.typeSymbol.fullName,
               event.getClass.getName,
               Timestamp.from(Instant.now),
               eventSerialized,
               undoEvent.eventsCount
-            ).map(rs => rs.long(1)).single().apply().get
+            ).map(rs => rs.int(1)).single().apply().get
 
           case duplicationEvent: DuplicationEvent[_] =>
             sql"""SELECT add_duplication_event(?, ?, ?, ? , ?, ?, ?, ?, ?, ?)""".bind(
               eventsEnvelope.commandId.asLong,
               eventsEnvelope.userId.asLong,
               aggregateId.asLong,
-              eventsEnvelope.expectedVersion.asInt + versionsIncreased,
+              eventsEnvelope.expectedVersion.map(v => lastEventVersion.getOrElse(v.asInt)).getOrElse(-1),
               event.aggregateRootType.typeSymbol.fullName,
               event.getClass.getName,
               Timestamp.from(Instant.now),
               eventSerialized,
               duplicationEvent.baseAggregateId.asLong,
               duplicationEvent.baseAggregateVersion.asInt
-            ).map(rs => rs.long(1)).single().apply().get
+            ).map(rs => rs.int(1)).single().apply().get
           case _ =>
             sql"""SELECT add_event(?, ?, ?, ? ,? , ? ,?, ?)""".bind(
               eventsEnvelope.commandId.asLong,
               eventsEnvelope.userId.asLong,
               aggregateId.asLong,
-              eventsEnvelope.expectedVersion.asInt + versionsIncreased,
+              eventsEnvelope.expectedVersion.map(v => lastEventVersion.getOrElse(v.asInt)).getOrElse(-1),
               event.aggregateRootType.typeSymbol.fullName,
               event.getClass.getName,
               Timestamp.from(Instant.now),
               eventSerialized
-            ).map(rs => rs.long(1)).single().apply().get
-        }
+            ).map(rs => rs.int(1)).single().apply().get
+        })
 
-        versionsIncreased += 1
-        (event, eventId)
+        (event, AggregateVersion(lastEventVersion.get))
       })
     }
 
@@ -106,28 +105,28 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
   }
 
 
-  override def readAndProcessAllEvents(eventHandler: (Long, Event[_], AggregateId, AggregateVersion, AggregateType, UserId, Instant) => Unit): Unit = {
+  override def readAndProcessAllEvents(eventHandler: (Event[_], AggregateId, AggregateVersion, AggregateType, UserId, Instant) => Unit): Unit = {
     DB.readOnly { implicit session =>
-      sql"""SELECT events.id, event_type, event, events.version, events.aggregate_id, aggregates.type, user_id, event_time
+      sql"""SELECT event_type, event, events.version, events.aggregate_id, aggregates.type, user_id, event_time
            FROM events
            JOIN aggregates ON events.aggregate_id = aggregates.id AND events.aggregate_id = aggregates.base_id
            ORDER BY events.id""".fetchSize(1000)
         .foreach { rs =>
-          val event = mpjsons.deserialize[Event[_]](rs.string(3), rs.string(2))
-          val aggregateId = AggregateId(rs.long(5))
-          val version = AggregateVersion(rs.int(4))
-          eventHandler(rs.long(1), event, aggregateId, version, AggregateType(rs.string(6)), UserId(rs.long(7)), rs.timestamp(8).toInstant)
+          val event = mpjsons.deserialize[Event[_]](rs.string(2), rs.string(1))
+          val aggregateId = AggregateId(rs.long(4))
+          val version = AggregateVersion(rs.int(3))
+          eventHandler(event, aggregateId, version, AggregateType(rs.string(5)), UserId(rs.long(6)), rs.timestamp(7).toInstant)
         }
     }
   }
 
 
-  override def deletePublishedEventsToPublish(eventsIds: Seq[Long]): Unit = {
+  override def deletePublishedEventsToPublish(eventsIds: Seq[EventIdentifier]): Unit = {
     // TODO optimize SQL query so it will be one query
     DB.autoCommit { implicit session =>
       eventsIds.foreach {eventId =>
-        sql"""DELETE FROM events_to_publish WHERE event_id = ?"""
-          .bind(eventId)
+        sql"""DELETE FROM events_to_publish WHERE aggregate_id = ? AND version = ?"""
+          .bind(eventId.aggregateId.asLong, eventId.version.asInt)
           .executeUpdate().apply()
       }
     }
@@ -150,15 +149,15 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
   override def readEventsToPublishForAggregate[AGGREGATE_ROOT](aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]] = {
     var result = List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]]()
     DB.readOnly { implicit session =>
-      sql"""SELECT events_to_publish.event_id, events_to_publish.version, events.event_type, events.event, events.user_id, events.event_time
+      sql"""SELECT events_to_publish.version, events.event_type, events.event, events.user_id, events.event_time
            | FROM events_to_publish
            | JOIN events on events_to_publish.event_id = events.id
            | WHERE events_to_publish.aggregate_id = ?
            | ORDER BY events_to_publish.version""".stripMargin.bind(aggregateId.asLong).foreach { rs =>
 
-        val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(4), rs.string(3))
+        val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(3), rs.string(2))
 
-        result ::= IdentifiableEventNoAggregateType[AGGREGATE_ROOT](rs.long(1), aggregateId, AggregateVersion(rs.int(2)), event, UserId(rs.long(5)), rs.timestamp(6).toInstant)
+        result ::= IdentifiableEventNoAggregateType[AGGREGATE_ROOT](aggregateId, AggregateVersion(rs.int(1)), event, UserId(rs.long(4)), rs.timestamp(5).toInstant)
 
       }
     }

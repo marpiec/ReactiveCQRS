@@ -19,7 +19,7 @@ object EventsBusActor {
 
   case class PublishEvents[AGGREGATE_ROOT](aggregateType: AggregateType, events: Seq[IdentifiableEvent[AGGREGATE_ROOT]],
                                             aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregate: Option[AGGREGATE_ROOT])
-  case class PublishEventAck(eventId: Long)
+  case class PublishEventAck(eventId: EventIdentifier)
 
   case class PublishReplayedEvent[AGGREGATE_ROOT](aggregateType: AggregateType, event: IdentifiableEvent[AGGREGATE_ROOT],
                                                    aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregate: Option[AGGREGATE_ROOT])
@@ -31,8 +31,8 @@ object EventsBusActor {
 
   case class MessagesPersisted(aggregateType: AggregateType, messages: Seq[EventToRoute])
 
-  case class EventToRoute(subscriber: Either[ActorRef, String], aggregateId: AggregateId, version: AggregateVersion, eventId: Long, message: AnyRef)
-  case class EventAck(eventId: Long, subscriber: ActorRef)
+  case class EventToRoute(subscriber: Either[ActorRef, String], aggregateId: AggregateId, version: AggregateVersion, message: AnyRef)
+  case class EventAck(subscriber: ActorRef, aggregateId: AggregateId, aggregateVersion: AggregateVersion)
 
 
   case object CheckForOldEvents
@@ -65,7 +65,7 @@ class EventsBusActor(val subscriptionsManager: EventBusSubscriptionsManagerApi) 
   private var lastSendMessage: Option[Long] = None
   private var messagesToSend: List[(Long, Vector[EventToRoute])] = List.empty
   private var messagesSent: List[(Long, Vector[EventToRoute])] = List.empty
-  private var eventSenders: Map[Long, ActorRef] = Map.empty
+  private var eventSenders: Map[EventIdentifier, ActorRef] = Map.empty
 
   private var eventsTimestamps: Map[Long, Instant] = Map.empty
 
@@ -163,24 +163,24 @@ class EventsBusActor(val subscriptionsManager: EventBusSubscriptionsManagerApi) 
         case s: EventSubscription =>
           Some(event)
             .filter(event => s.classifier.accept(aggregateId, EventType(event.event.getClass.getName)))
-            .map(event => EventToRoute(Left(s.subscriber), event.aggregateId, event.version, event.eventId, event))
+            .map(event => EventToRoute(Left(s.subscriber), event.aggregateId, event.version, event))
         case s: AggregateSubscription =>
           if(s.classifier.accept(aggregateId)) {
-            List(EventToRoute(Left(s.subscriber), aggregateId, aggregateVersion, event.eventId, AggregateWithType(aggregateType, aggregateId, aggregateVersion, aggregateRoot, events.last.eventId)))
+            List(EventToRoute(Left(s.subscriber), aggregateId, aggregateVersion, AggregateWithType(aggregateType, aggregateId, aggregateVersion, aggregateRoot)))
           } else {
             List.empty
           }
         case s: AggregateWithEventSubscription =>
           Some(event)
             .filter(event => s.classifier.accept(aggregateId, EventType(event.event.getClass.getName)))
-            .map(event => EventToRoute(Left(s.subscriber), event.aggregateId, event.version, event.eventId, AggregateWithTypeAndEvent(aggregateType, aggregateId, aggregateVersion, aggregateRoot, event.event, event.eventId, event.userId, event.timestamp)))
+            .map(event => EventToRoute(Left(s.subscriber), event.aggregateId, event.version, AggregateWithTypeAndEvent(aggregateType, aggregateId, aggregateVersion, aggregateRoot, event.event, event.userId, event.timestamp)))
       }
-      (event.eventId, messagesToSend)
+      (event.version, messagesToSend)
     })
 
 
     messagesToSend = (messagesToSendForEvents.toList ::: messagesToSend).sortBy(_._1)
-    events.foreach(event => eventSenders += event.eventId -> respondTo)
+    events.foreach(event => eventSenders += EventIdentifier(event.aggregateId, event.version) -> respondTo)
 
 
     val eventsPropagated = sendContinuousEventMessages()
