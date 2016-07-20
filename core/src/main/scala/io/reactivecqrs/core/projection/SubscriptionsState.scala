@@ -31,7 +31,7 @@ class MemorySubscriptionsState extends SubscriptionsState {
 
   private case class SubscriptionsKey(subscriberName: String, subscriptionType: String, aggregateId: AggregateId)
 
-  val subscriptions = new mutable.HashMap[SubscriptionsKey, AggregateVersion]()
+  val state = new mutable.HashMap[SubscriptionsKey, AggregateVersion]()
 
   override def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion =
     eventsCount(subscriberName, aggregateId, SubscriptionsState.AGGREGATES)
@@ -55,16 +55,16 @@ class MemorySubscriptionsState extends SubscriptionsState {
 
   private def eventsCount(subscriberName: String, aggregateId: AggregateId, subscriptionType: String): AggregateVersion = {
     val key = SubscriptionsKey(subscriberName, subscriptionType, aggregateId)
-    subscriptions.getOrElse(key, {
-       subscriptions += key -> AggregateVersion.ZERO
+    state.getOrElse(key, {
+       state += key -> AggregateVersion.ZERO
       AggregateVersion.ZERO
      })
   }
 
   private def newEventId(subscriberName: String, aggregateId: AggregateId, subscriptionType: String, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Try[Unit] = {
     val key = SubscriptionsKey(subscriberName, subscriptionType, aggregateId)
-    if (subscriptions.get(key).contains(lastAggregateVersion)) {
-      subscriptions += key -> aggregateVersion
+    if (state.get(key).contains(lastAggregateVersion)) {
+      state += key -> aggregateVersion
       Success(())
     } else {
       Failure(new OptimisticLockingFailed)
@@ -77,7 +77,28 @@ class MemorySubscriptionsState extends SubscriptionsState {
 class PostgresSubscriptionsState extends SubscriptionsState {
 
   def initSchema(): Unit = {
-    new PostgresSubscriptionsStateSchemaInitializer().initSchema()
+    createSubscriptionsTable()
+    try {
+      createSubscriptionsSequence()
+    } catch {
+      case e: Exception => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
+    }
+  }
+
+  private def createSubscriptionsTable() = DB.autoCommit { implicit session =>
+    sql"""
+         CREATE TABLE IF NOT EXISTS subscriptions (
+           id BIGINT NOT NULL PRIMARY KEY,
+           subscriber_name VARCHAR(256) NOT NULL,
+           subscription_type VARCHAR(32) NOT NULL,
+           aggregate_id BIGINT NOT NULL,
+           aggregate_version INT NOT NULL)
+       """.execute().apply()
+
+  }
+
+  private def createSubscriptionsSequence() = DB.autoCommit { implicit session =>
+    sql"""CREATE SEQUENCE subscriptions_seq""".execute().apply()
   }
 
   override def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion = {
@@ -95,11 +116,11 @@ class PostgresSubscriptionsState extends SubscriptionsState {
   private def lastAggregateVersion(subscriberName: String, subscriptionType: String, aggregateId: AggregateId): AggregateVersion = {
     DB.localTx { implicit session =>
 
-      val eventIdOption = sql"""SELECT aggregate_version FROM subscriptions WHERE subscriber_name = ? AND subscription_type = ? AND aggregate_id = ?"""
+      val versionOption = sql"""SELECT aggregate_version FROM subscriptions WHERE subscriber_name = ? AND subscription_type = ? AND aggregate_id = ?"""
         .bind(subscriberName, subscriptionType, aggregateId.asLong).map(rs => AggregateVersion(rs.int(1))).single().apply()
 
-      eventIdOption match {
-        case Some(eventId) => eventId
+      versionOption match {
+        case Some(version) => version
         case None => addSubscriptionEntry(subscriberName, subscriptionType, aggregateId)
       }
     }
