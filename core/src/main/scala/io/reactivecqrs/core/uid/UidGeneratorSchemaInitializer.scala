@@ -1,5 +1,6 @@
 package io.reactivecqrs.core.uid
 
+import org.postgresql.util.PSQLException
 import scalikejdbc._
 
 class UidGeneratorSchemaInitializer  {
@@ -18,7 +19,7 @@ class UidGeneratorSchemaInitializer  {
         sql"""CREATE SEQUENCE aggregates_uids_seq INCREMENT BY 100 START 1001;""".execute().apply()
       }
     } catch {
-      case e: Exception => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
+      case e: PSQLException => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
     }
   }
 
@@ -29,7 +30,7 @@ class UidGeneratorSchemaInitializer  {
         sql"""CREATE SEQUENCE commands_uids_seq INCREMENT BY 100 START 1;""".execute().apply()
       }
     } catch {
-      case e: Exception => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
+      case e: PSQLException => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
     }
   }
 
@@ -40,7 +41,7 @@ class UidGeneratorSchemaInitializer  {
         sql"""CREATE SEQUENCE sagas_uids_seq INCREMENT BY 100 START 1;""".execute().apply()
       }
     } catch {
-      case e: Exception => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
+      case e: PSQLException => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
     }
   }
 }

@@ -2,6 +2,7 @@ package io.reactivecqrs.core.projection
 
 import io.reactivecqrs.api.AggregateVersion
 import io.reactivecqrs.api.id.AggregateId
+import org.postgresql.util.PSQLException
 import scalikejdbc._
 
 import scala.util.{Failure, Success, Try}
@@ -76,13 +77,19 @@ class MemorySubscriptionsState extends SubscriptionsState {
 
 class PostgresSubscriptionsState extends SubscriptionsState {
 
-  def initSchema(): Unit = {
+  def initSchema(): PostgresSubscriptionsState = {
     createSubscriptionsTable()
     try {
       createSubscriptionsSequence()
     } catch {
-      case e: Exception => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
+      case e: PSQLException => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
     }
+    try {
+      createSubscriberTypeAggregateIdIndex()
+    } catch {
+      case e: PSQLException => () //ignore until CREATE UNIQUE INDEX IF NOT EXISTS is available in PostgreSQL
+    }
+    this
   }
 
   private def createSubscriptionsTable() = DB.autoCommit { implicit session =>
@@ -99,6 +106,10 @@ class PostgresSubscriptionsState extends SubscriptionsState {
 
   private def createSubscriptionsSequence() = DB.autoCommit { implicit session =>
     sql"""CREATE SEQUENCE subscriptions_seq""".execute().apply()
+  }
+
+  private def createSubscriberTypeAggregateIdIndex() = DB.autoCommit { implicit session =>
+    sql"""CREATE UNIQUE INDEX subscriptions_sub_type_agg_id_idx ON event_bus (subscriber_name, subscription_type, aggregate_id)""".execute().apply()
   }
 
   override def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion = {

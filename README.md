@@ -7,3 +7,6 @@ CQRS framework implementation leveraging Scala and Akka framework, for building 
 
 # TODO
 - Improve ConcurrentCommand handling and add custom concurrency problem validation
+
+
+- Handle OptimisticLockingFailed
