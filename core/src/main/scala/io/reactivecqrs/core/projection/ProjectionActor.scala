@@ -101,10 +101,10 @@ abstract class ProjectionActor extends Actor with ActorLogging {
           aggregateListenersMap(a.aggregateType)(a.id, a.version, a.aggregateRoot)(session)
           subscriptionsState.newVersionForAggregatesSubscription(this.getClass.getName, a.id, lastVersion, a.version)
         }
-        sender() ! EventAck(self, a.id, a.version)
+        sender() ! MessageAck(self, a.id, a.version)
         replayQueries()
       } else if (a.version < lastVersion) {
-        sender() ! EventAck(self, a.id, a.version)
+        sender() ! MessageAck(self, a.id, a.version)
       } else {
         ??? //TODO implement handling non consecutive update, delay this message
       }
@@ -116,10 +116,10 @@ abstract class ProjectionActor extends Actor with ActorLogging {
           aggregateWithEventListenersMap(ae.aggregateType)(ae.id, ae.version, ae.event.asInstanceOf[Event[Any]], ae.aggregateRoot, ae.userId, ae.timestamp)(session)
           subscriptionsState.newVersionForAggregatesWithEventsSubscription(this.getClass.getName, ae.id, lastVersion, ae.version)
         }
-        sender() ! EventAck(self, ae.id, ae.version)
+        sender() ! MessageAck(self, ae.id, ae.version)
         replayQueries()
       } else if (ae.version < lastVersion) {
-        sender() ! EventAck(self, ae.id, ae.version)
+        sender() ! MessageAck(self, ae.id, ae.version)
       } else {
         ??? //TODO implement handling non consecutive update, delay this message
       }
@@ -130,10 +130,10 @@ abstract class ProjectionActor extends Actor with ActorLogging {
           eventListenersMap(e.aggregateType)(e.aggregateId, e.version, e.event.asInstanceOf[Event[Any]], e.userId, e.timestamp)(session)
           subscriptionsState.newVersionForEventsSubscription(this.getClass.getName, e.aggregateId, lastVersion, e.version)
         }
-        sender() ! EventAck(self, e.aggregateId, e.version)
+        sender() ! MessageAck(self, e.aggregateId, e.version)
         replayQueries()
       } else if (e.version < lastVersion) {
-        sender() ! EventAck(self, e.aggregateId, e.version)
+        sender() ! MessageAck(self, e.aggregateId, e.version)
       } else {
         ??? //TODO implement handling non consecutive update, delay this message
       }

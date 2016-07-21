@@ -61,7 +61,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   private def resendEventsToPublish(): Unit = {
     if(eventsToPublish.nonEmpty) {
-      eventsBus ! PublishEvents(aggregateType, eventsToPublish.map(e => IdentifiableEvent(aggregateType, aggregateId, e.version, e.event, e.userId, e.timestamp)), aggregateId, version, Option(aggregateRoot))
+      eventsBus ! PublishEvents(aggregateType, eventsToPublish.map(e => IdentifiableEvent(aggregateType, aggregateId, e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
     }
   }
 
@@ -80,7 +80,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     case ee: PersistEvents[_] => handlePersistEvents(ee)
     case ep: EventsPersisted[_] => handleEventsPersisted(ep)
     case GetAggregateRoot(respondTo) => receiveReturnAggregateRoot(respondTo)
-    case PublishEventAck(event) => markPublishedEvent(event)
+    case PublishEventAck(aggregateId, aggregateVersion) => markPublishedEvent(aggregateId, aggregateVersion)
     case ResendPersistedMessages => resendEventsToPublish()
   }
 
@@ -93,7 +93,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     } else {
       ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.foreach(eventIdentifier => handleEvent(eventIdentifier.event, aggregateId, false))
     }
-    eventsBus ! PublishEvents(aggregateType, ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events, aggregateId, version, Option(aggregateRoot))
+    eventsBus ! PublishEvents(aggregateType, ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events, aggregateId, Option(aggregateRoot))
   }
 
   private def handlePersistEvents(ee: PersistEvents[_]): Unit = {
@@ -183,12 +183,12 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     }
   }
 
-  def markPublishedEvent(eventId: EventIdentifier): Unit = {
+  def markPublishedEvent(aggregateId: AggregateId, aggregateVersion: AggregateVersion): Unit = {
     import context.dispatcher
-    eventsToPublish = eventsToPublish.filterNot(e => e.aggregateId == eventId.aggregateId && e.version == eventId.version)
+    eventsToPublish = eventsToPublish.filterNot(e => e.aggregateId == aggregateId && e.version == aggregateVersion)
 
     Future { // Fire and forget
-      eventStore.deletePublishedEventsToPublish(List(eventId))
+      eventStore.deletePublishedEventsToPublish(List(EventIdentifier(aggregateId, aggregateVersion)))
     } onFailure {
       case e: Exception => throw new IllegalStateException(e)
     }

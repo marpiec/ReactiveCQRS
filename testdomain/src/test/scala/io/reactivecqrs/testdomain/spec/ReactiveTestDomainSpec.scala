@@ -8,7 +8,7 @@ import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
 import io.reactivecqrs.core.commandlog.PostgresCommandLogState
 import io.reactivecqrs.core.documentstore.{MemoryDocumentStore, PostgresDocumentStore}
-import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubscriptionsManagerApi, EventsBusActor}
+import io.reactivecqrs.core.eventbus._
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection.PostgresSubscriptionsState
 import io.reactivecqrs.core.saga.PostgresSagaState
@@ -39,11 +39,9 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val system = ActorSystem("main-actor-system")
 
     val mpjsons = new MPJsons
-    val eventStoreState = new PostgresEventStoreState(mpjsons) // or MemoryEventStore
-    eventStoreState.initSchema()
+    val eventStoreState = new PostgresEventStoreState(mpjsons).initSchema() // or MemoryEventStore
 
-    val commandLogState = new PostgresCommandLogState(mpjsons)
-    commandLogState.initSchema()
+    val commandLogState = new PostgresCommandLogState(mpjsons).initSchema()
 
     val userId = UserId(1L)
     val serialization = SerializationExtension(system)
@@ -53,7 +51,9 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val sagasUidGenerator = new PostgresUidGenerator("sagas_uids_seq") // or MemoryUidGenerator
     val uidGenerator = system.actorOf(Props(new UidGeneratorActor(aggregatesUidGenerator, commandsUidGenerator, sagasUidGenerator)), "uidGenerator")
     val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(system.actorOf(Props(new EventBusSubscriptionsManager(2))))
-    val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusSubscriptionsManager)), "eventBus")
+    private val eventBusState = new PostgresEventBusState().initSchema()
+
+    val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusState, eventBusSubscriptionsManager)), "eventBus")
 
     val subscriptionState = new PostgresSubscriptionsState
     subscriptionState.initSchema()
@@ -134,13 +134,6 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
       Thread.sleep(500) // Projections are eventually consistent, so let's wait until they are consistent
 
-      var cartsNames: Vector[String] = shoppingCartsListProjectionEventsBased ?? ShoppingCartsListProjection.GetAllCartsNames()
-      cartsNames must have size 1
-
-      cartsNames = shoppingCartsListProjectionAggregatesBased ?? ShoppingCartsListProjection.GetAllCartsNames()
-      cartsNames must have size 1
-
-
       step("Undo removing items from cart")
 
       shoppingCartA = shoppingCartCommand(UndoShoppingCartChange(userId, shoppingCartA.id, AggregateVersion(4), 1))
@@ -164,6 +157,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
       shoppingCartA = getShoppingCartForVersion(shoppingCartA.id, AggregateVersion(4))
       shoppingCartA mustBe Aggregate(shoppingCartA.id, AggregateVersion(4), Some(ShoppingCart("Groceries", Vector(Item(2, "oranges")))))
 
+      Thread.sleep(500) // time to cleanup
     }
 
 

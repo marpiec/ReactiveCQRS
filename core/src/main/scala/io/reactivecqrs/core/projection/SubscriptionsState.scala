@@ -31,7 +31,7 @@ class MemorySubscriptionsState extends SubscriptionsState {
 
   private case class SubscriptionsKey(subscriberName: String, subscriptionType: String, aggregateId: AggregateId)
 
-  val state = new mutable.HashMap[SubscriptionsKey, AggregateVersion]()
+  private val state = new mutable.HashMap[SubscriptionsKey, AggregateVersion]()
 
   override def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion =
     eventsCount(subscriberName, aggregateId, SubscriptionsState.AGGREGATES)
