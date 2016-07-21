@@ -89,10 +89,10 @@ class PostgresEventStoreSchemaInitializer  {
           |    current_version INT;
           |    event_id BIGINT;
           |BEGIN
-          | SELECT aggregates.base_version INTO current_version FROM aggregates WHERE id = aggregate_id AND base_id = aggregate_id;
+          |    UPDATE aggregates SET base_version = base_version + 1 WHERE id = aggregate_id AND base_id = aggregate_id RETURNING base_version - 1 INTO current_version;
           |    IF NOT FOUND THEN
           |        IF expected_version = 0 THEN
-          |            INSERT INTO AGGREGATES (id, type, base_order, base_id, base_version) VALUES (aggregate_id, aggregate_type, 1, aggregate_id, 0);
+          |            INSERT INTO AGGREGATES (id, type, base_order, base_id, base_version) VALUES (aggregate_id, aggregate_type, 1, aggregate_id, 1);
           |            current_version := 0;
           |        ELSE
           |	           RAISE EXCEPTION 'aggregate not found, id %, aggregate_type %', aggregate_id, aggregate_type;
@@ -104,7 +104,6 @@ class PostgresEventStoreSchemaInitializer  {
           |    SELECT NEXTVAL('events_seq') INTO event_id;
           |    INSERT INTO events (id, command_id, user_id, aggregate_id, event_time, version, event_type, event) VALUES (event_id, command_id, user_id, aggregate_id, event_time, current_version + 1, event_type, event);
           |    INSERT INTO events_to_publish (event_id, aggregate_id, version, user_id, event_time) VALUES(event_id, aggregate_id, current_version + 1, user_id, event_time);
-          |    UPDATE aggregates SET base_version = current_version + 1 WHERE id = aggregate_id AND base_id = aggregate_id;
           |    RETURN current_version + 1;
           |END;
           |$$
@@ -121,16 +120,16 @@ class PostgresEventStoreSchemaInitializer  {
           |    current_version INT;
           |    event_id BIGINT;
           |BEGIN
-          | SELECT aggregates.base_version INTO current_version FROM aggregates WHERE id = _aggregate_id AND base_id = _aggregate_id;
+          |    UPDATE aggregates SET base_version = base_version + 1 WHERE id = _aggregate_id AND base_id = _aggregate_id RETURNING base_version - 1 INTO current_version;
           |    IF NOT FOUND THEN
           |        IF expected_version = 0 THEN
           |            RAISE EXCEPTION 'Cannot undo event for non existing aggregate';
           |        ELSE
-          |	    RAISE EXCEPTION 'aggregate not found, id %, aggregate_type %', _aggregate_id, aggregate_type;
+          |	           RAISE EXCEPTION 'aggregate not found, id %, aggregate_type %', _aggregate_id, aggregate_type;
           |        END IF;
           |    END IF;
           |    IF expected_version >= 0 AND current_version != expected_version THEN
-          |	RAISE EXCEPTION 'Concurrent aggregate modification exception, command id %, user id %, aggregate id %, expected version %, current_version %, event_type %, event %', command_id, user_id, aggregate_id, expected_version, current_version, event_type, event;
+          |	       RAISE EXCEPTION 'Concurrent aggregate modification exception, command id %, user id %, aggregate id %, expected version %, current_version %, event_type %, event %', command_id, user_id, aggregate_id, expected_version, current_version, event_type, event;
           |    END IF;
           |    SELECT NEXTVAL('events_seq') INTO event_id;
           |    INSERT INTO noop_events (id, from_version) (select events.id, current_version + 1
@@ -140,7 +139,6 @@ class PostgresEventStoreSchemaInitializer  {
           |    INSERT INTO noop_events(id, from_version) VALUES (event_id, current_version + 1);
           |    INSERT INTO events (id, command_id, user_id, aggregate_id, event_time, version, event_type, event) VALUES (event_id, command_id, user_id, _aggregate_id, event_time, current_version + 1, event_type, event);
           |    INSERT INTO events_to_publish (event_id, aggregate_id, version, user_id, event_time) VALUES(event_id, _aggregate_id, current_version + 1, user_id, event_time);
-          |    UPDATE aggregates SET base_version = current_version + 1 WHERE id = _aggregate_id AND base_id = _aggregate_id;
           |    RETURN current_version + 1;
           |END;
           |$$
@@ -158,7 +156,7 @@ class PostgresEventStoreSchemaInitializer  {
           |    base_count INT;
           |    event_id BIGINT;
           |BEGIN
-          |    SELECT aggregates.base_version INTO current_version FROM aggregates WHERE id = aggregate_id AND base_id = aggregate_id;
+          |    UPDATE aggregates SET base_version = base_version + 1 WHERE id = aggregate_id AND base_id = aggregate_id RETURNING base_version - 1 INTO current_version;
           |    IF NOT FOUND THEN
           |        IF expected_version >= 0 AND expected_version != 0 THEN
           |          RAISE EXCEPTION 'Duplication event might occur only for non existing aggregate, so expected version need to be 0';
@@ -168,7 +166,7 @@ class PostgresEventStoreSchemaInitializer  {
           |            where id = _base_id);
           |          current_version := 0;
           |          SELECT base_order INTO base_count FROM aggregates WHERE id = aggregate_id AND base_id = _base_id;
-          |          INSERT INTO aggregates (id, type, base_order, base_id, base_version) VALUES (aggregate_id, aggregate_type, base_count + 1, aggregate_id, 0);
+          |          INSERT INTO aggregates (id, type, base_order, base_id, base_version) VALUES (aggregate_id, aggregate_type, base_count + 1, aggregate_id, 1);
           |          UPDATE aggregates SET base_version = _base_version WHERE id = aggregate_id AND base_id = _base_id;
           |        END IF;
           |    ELSE
@@ -177,7 +175,6 @@ class PostgresEventStoreSchemaInitializer  {
           |    SELECT NEXTVAL('events_seq') INTO event_id;
           |    INSERT INTO events (id, command_id, user_id, aggregate_id, event_time, version, event_type, event) VALUES (event_id, command_id, user_id, aggregate_id, event_time, current_version + 1, event_type, event);
           |    INSERT INTO events_to_publish (event_id, aggregate_id, version, user_id, event_time) VALUES(event_id, aggregate_id, current_version + 1, user_id, event_time);
-          |    UPDATE aggregates SET base_version = current_version + 1 WHERE id = aggregate_id AND base_id = aggregate_id;
           |    RETURN current_version + 1;
           |END;
           |$$
