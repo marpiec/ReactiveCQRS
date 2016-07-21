@@ -11,6 +11,7 @@ import EventsBusActor._
 import io.reactivecqrs.core.util.ActorLogging
 import scalikejdbc.{DB, DBSession}
 
+import scala.collection.mutable
 import scala.reflect.runtime.universe._
 
 
@@ -24,6 +25,10 @@ abstract class ProjectionActor extends Actor with ActorLogging {
   protected val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi
 
   protected val listeners:List[Listener[Any]]
+
+  private val delayedAggregateWithType = mutable.Map[AggregateId, List[AggregateWithType[_]]]()
+  private val delayedAggregateWithTypeAndEvent = mutable.Map[AggregateId, List[AggregateWithTypeAndEvent[_]]]()
+  private val delayedIdentifiableEvent = mutable.Map[AggregateId, List[IdentifiableEvent[_]]]()
 
 
   protected trait Listener[+AGGREGATE_ROOT]  {
@@ -85,7 +90,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       .map(l => (AggregateType(l.aggregateRootType.toString), l.asInstanceOf[AggregateWithEventListener[Any]].listener)).toMap
   }
 
-  override def receive: Receive = receiveUpdate orElse receiveQuery
+  override def receive: Receive = logReceive {receiveUpdate orElse receiveQuery}
 
   private def validateListeners() = {
     if(listeners.exists(l => l.aggregateRootType == typeOf[Any] || l.aggregateRootType == typeOf[Nothing])) {
@@ -93,7 +98,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
     }
   }
 
-  protected def receiveUpdate: Receive = logReceive  {
+  protected def receiveUpdate: Receive =  {
     case a: AggregateWithType[_] =>
       val lastVersion = subscriptionsState.lastVersionForAggregateSubscription(this.getClass.getName, a.id)
       if(a.version.isJustAfter(lastVersion)) {
@@ -103,11 +108,23 @@ abstract class ProjectionActor extends Actor with ActorLogging {
         }
         sender() ! MessageAck(self, a.id, a.version)
         replayQueries()
+        delayedAggregateWithType.get(a.id) match {
+          case Some(delayed) if delayed.head.version.isJustAfter(a.version) =>
+            if(delayed.length > 1) {
+              delayedAggregateWithType += a.id -> delayed.tail
+            } else {
+              delayedAggregateWithType -= a.id
+            }
+            receiveUpdate(delayed.head)
+          case _ => ()
+        }
       } else if (a.version <= lastVersion) {
         sender() ! MessageAck(self, a.id, a.version)
       } else {
-        println(s"Non concecutive update now ${a.version} but last one was ${lastVersion}")
-        ??? //TODO implement handling non consecutive update, delay this message
+        delayedAggregateWithType.get(a.id) match {
+          case None => delayedAggregateWithType += a.id -> List(a)
+          case Some(delayed) => delayedAggregateWithType += a.id -> (a :: delayed).sortBy(_.version.asInt)
+        }
       }
 
     case ae: AggregateWithTypeAndEvent[_] =>
@@ -119,11 +136,23 @@ abstract class ProjectionActor extends Actor with ActorLogging {
         }
         sender() ! MessageAck(self, ae.id, ae.version)
         replayQueries()
+        delayedAggregateWithTypeAndEvent.get(ae.id) match {
+          case Some(delayed) if delayed.head.version.isJustAfter(ae.version) =>
+            if(delayed.length > 1) {
+              delayedAggregateWithTypeAndEvent += ae.id -> delayed.tail
+            } else {
+              delayedAggregateWithTypeAndEvent -= ae.id
+            }
+            receiveUpdate(delayed.head)
+          case _ => ()
+        }
       } else if (ae.version <= lastVersion) {
         sender() ! MessageAck(self, ae.id, ae.version)
       } else {
-        println(s"Non concecutive update now ${ae.version} but last one was ${lastVersion}")
-        ??? //TODO implement handling non consecutive update, delay this message
+        delayedAggregateWithTypeAndEvent.get(ae.id) match {
+          case None => delayedAggregateWithTypeAndEvent += ae.id -> List(ae)
+          case Some(delayed) => delayedAggregateWithTypeAndEvent += ae.id -> (ae :: delayed).sortBy(_.version.asInt)
+        }
       }
     case e: IdentifiableEvent[_] =>
       val lastVersion = subscriptionsState.lastVersionForEventsSubscription(this.getClass.getName, e.aggregateId)
@@ -134,11 +163,23 @@ abstract class ProjectionActor extends Actor with ActorLogging {
         }
         sender() ! MessageAck(self, e.aggregateId, e.version)
         replayQueries()
+        delayedIdentifiableEvent.get(e.aggregateId) match {
+          case Some(delayed) if delayed.head.version.isJustAfter(e.version) =>
+            if(delayed.length > 1) {
+              delayedIdentifiableEvent += e.aggregateId -> delayed.tail
+            } else {
+              delayedIdentifiableEvent -= e.aggregateId
+            }
+            receiveUpdate(delayed.head)
+          case _ => ()
+        }
       } else if (e.version <= lastVersion) {
         sender() ! MessageAck(self, e.aggregateId, e.version)
       } else {
-        println(s"Non concecutive update now ${e.version} but last one was ${lastVersion}")
-        ??? //TODO implement handling non consecutive update, delay this message
+        delayedIdentifiableEvent.get(e.aggregateId) match {
+          case None => delayedIdentifiableEvent += e.aggregateId -> List(e)
+          case Some(delayed) => delayedIdentifiableEvent += e.aggregateId -> (e :: delayed).sortBy(_.version.asInt)
+        }
       }
   }
 
