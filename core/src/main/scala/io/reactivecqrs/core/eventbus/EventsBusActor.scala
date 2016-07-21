@@ -150,6 +150,8 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
     val lastPublishedVersion = getLastPublishedVersion(aggregateId)
 
+    events.filter(_.version <= lastPublishedVersion).foreach(e => respondTo ! PublishEventAck(aggregateId, e.version))
+
     val eventsToPropagate = events.filter(_.version > lastPublishedVersion)
     val messagesToSendPerEvent = eventsToPropagate.map(event => {
       subscriptions.getOrElse(aggregateType, Vector.empty).flatMap {

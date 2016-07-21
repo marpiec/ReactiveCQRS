@@ -61,6 +61,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   private def resendEventsToPublish(): Unit = {
     if(eventsToPublish.nonEmpty) {
+      log.info("Resending messages for " + aggregateType+" "+aggregateId+" " + eventsToPublish.map(e => e.version))
       eventsBus ! PublishEvents(aggregateType, eventsToPublish.map(e => IdentifiableEvent(aggregateType, aggregateId, e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
     }
   }

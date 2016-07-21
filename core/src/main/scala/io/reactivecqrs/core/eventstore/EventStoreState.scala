@@ -15,7 +15,7 @@ abstract class EventStoreState {
   def readAndProcessAllEvents(eventHandler: (Event[_], AggregateId, AggregateVersion, AggregateType, UserId, Instant) => Unit): Unit
   def deletePublishedEventsToPublish(eventsIds: Seq[EventIdentifier]): Unit
 
-  def readAggregatesWithEventsToPublish(aggregateHandler: AggregateId => Unit): Unit
+  def readAggregatesWithEventsToPublish(oldOnly: Boolean)(aggregateHandler: AggregateId => Unit): Unit
   def readEventsToPublishForAggregate[AGGREGATE_ROOT](aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]]
 }
 

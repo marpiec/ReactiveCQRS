@@ -103,9 +103,10 @@ abstract class ProjectionActor extends Actor with ActorLogging {
         }
         sender() ! MessageAck(self, a.id, a.version)
         replayQueries()
-      } else if (a.version < lastVersion) {
+      } else if (a.version <= lastVersion) {
         sender() ! MessageAck(self, a.id, a.version)
       } else {
+        println(s"Non concecutive update now ${a.version} but last one was ${lastVersion}")
         ??? //TODO implement handling non consecutive update, delay this message
       }
 
@@ -118,9 +119,10 @@ abstract class ProjectionActor extends Actor with ActorLogging {
         }
         sender() ! MessageAck(self, ae.id, ae.version)
         replayQueries()
-      } else if (ae.version < lastVersion) {
+      } else if (ae.version <= lastVersion) {
         sender() ! MessageAck(self, ae.id, ae.version)
       } else {
+        println(s"Non concecutive update now ${ae.version} but last one was ${lastVersion}")
         ??? //TODO implement handling non consecutive update, delay this message
       }
     case e: IdentifiableEvent[_] =>
@@ -132,9 +134,10 @@ abstract class ProjectionActor extends Actor with ActorLogging {
         }
         sender() ! MessageAck(self, e.aggregateId, e.version)
         replayQueries()
-      } else if (e.version < lastVersion) {
+      } else if (e.version <= lastVersion) {
         sender() ! MessageAck(self, e.aggregateId, e.version)
       } else {
+        println(s"Non concecutive update now ${e.version} but last one was ${lastVersion}")
         ??? //TODO implement handling non consecutive update, delay this message
       }
   }

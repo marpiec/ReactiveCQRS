@@ -133,11 +133,18 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
     }
   }
 
-  override def readAggregatesWithEventsToPublish(aggregateHandler: AggregateId => Unit): Unit = {
+  override def readAggregatesWithEventsToPublish(oldOnly: Boolean)(aggregateHandler: AggregateId => Unit): Unit = {
     DB.readOnly { implicit session =>
-      sql"""SELECT DISTINCT aggregate_id
-           | FROM events_to_publish
-           """.stripMargin.foreach { rs =>
+      if(oldOnly) {
+        sql"""SELECT DISTINCT aggregate_id
+              | FROM events_to_publish
+              | WHERE event_time < NOW() - INTERVAL '1 minute'
+           """
+      } else {
+        sql"""SELECT DISTINCT aggregate_id
+              | FROM events_to_publish
+           """
+      }.stripMargin.foreach { rs =>
         aggregateHandler(AggregateId(rs.int(1)))
       }
     }

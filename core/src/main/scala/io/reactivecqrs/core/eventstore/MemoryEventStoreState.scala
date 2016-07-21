@@ -88,8 +88,12 @@ class MemoryEventStoreState extends EventStoreState {
 
   }
 
-  override def readAggregatesWithEventsToPublish(aggregateHandler: (AggregateId) => Unit): Unit = {
-    eventsToPublish.keys.groupBy(_._1).keys.foreach(aggregateHandler)
+  override def readAggregatesWithEventsToPublish(oldOnly: Boolean)(aggregateHandler: (AggregateId) => Unit): Unit = {
+    if(oldOnly) {
+      eventsToPublish.filter(_._2._2.isBefore(Instant.now().minusSeconds(60))).keys.groupBy(_._1).keys.foreach(aggregateHandler)
+    } else {
+      eventsToPublish.keys.groupBy(_._1).keys.foreach(aggregateHandler)
+    }
   }
 
   override def readEventsToPublishForAggregate[AGGREGATE_ROOT](aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]] = {
