@@ -3,6 +3,7 @@ package io.reactivecqrs.core.eventbus
 import io.reactivecqrs.api.AggregateVersion
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.projection.OptimisticLockingFailed
+import org.postgresql.util.PSQLException
 import scalikejdbc._
 
 import scala.collection.mutable
@@ -37,16 +38,27 @@ class MemoryEventBusState extends EventBusState {
 class PostgresEventBusState extends EventBusState {
 
   def initSchema(): PostgresEventBusState = {
-    createEventBusInputTable()
+    createEventBusTable()
+
     try {
-      createEventBusInputSequence()
+      createEventBusSequence()
     } catch {
-      case e: Exception => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
+      case e: PSQLException => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
+    }
+    try {
+      createAggregateIdIndex()
+    } catch {
+      case e: PSQLException => () //ignore until CREATE UNIQUE INDEX IF NOT EXISTS is available in PostgreSQL
+    }
+    try {
+      createAggregateIdVersionIndex()
+    } catch {
+      case e: PSQLException => () //ignore until CREATE UNIQUE INDEX IF NOT EXISTS is available in PostgreSQL
     }
     this
   }
 
-  private def createEventBusInputTable() = DB.autoCommit { implicit session =>
+  private def createEventBusTable() = DB.autoCommit { implicit session =>
     sql"""
        CREATE TABLE IF NOT EXISTS event_bus (
          id BIGINT NOT NULL PRIMARY KEY,
@@ -55,8 +67,16 @@ class PostgresEventBusState extends EventBusState {
      """.execute().apply()
   }
 
-  private def createEventBusInputSequence() = DB.autoCommit { implicit session =>
+  private def createEventBusSequence() = DB.autoCommit { implicit session =>
     sql"""CREATE SEQUENCE event_bus_seq""".execute().apply()
+  }
+
+  private def createAggregateIdIndex() = DB.autoCommit { implicit session =>
+    sql"""CREATE UNIQUE INDEX event_bus_agg_id_idx ON event_bus (aggregate_id)""".execute().apply()
+  }
+
+  private def createAggregateIdVersionIndex() = DB.autoCommit { implicit session =>
+    sql"""CREATE UNIQUE INDEX event_bus_agg_id_version_idx ON event_bus (aggregate_id, aggregate_version)""".execute().apply()
   }
 
   override def lastPublishedEventForAggregate(aggregateId: AggregateId): AggregateVersion = {
