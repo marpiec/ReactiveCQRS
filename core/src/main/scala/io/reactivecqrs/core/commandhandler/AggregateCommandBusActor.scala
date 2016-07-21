@@ -1,14 +1,13 @@
 package io.reactivecqrs.core.commandhandler
 
 import akka.actor.{Actor, ActorRef, Props}
-import akka.event.LoggingReceive
 import akka.pattern.ask
 import akka.util.Timeout
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.GetAggregateRoot
-import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.AggregateActors
+import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{AggregateActors, EnsureEventsPublished}
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
 import io.reactivecqrs.core.commandlog.{CommandLogActor, CommandLogState}
 import io.reactivecqrs.core.eventstore.EventStoreState
@@ -25,6 +24,7 @@ object AggregateCommandBusActor {
 
   private case class AggregateActors(commandHandler: ActorRef, repository: ActorRef, commandLog: ActorRef)
 
+  private case class EnsureEventsPublished(oldOnly: Boolean)
 
   def apply[AGGREGATE_ROOT:ClassTag:TypeTag](aggregate: AggregateContext[AGGREGATE_ROOT],
                                              uidGenerator: ActorRef, eventStoreState: EventStoreState, commandLogState: CommandLogState, eventBus: ActorRef): Props = {
@@ -45,7 +45,7 @@ object AggregateCommandBusActor {
 
 
 class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRef,
-                                                       eventStore: EventStoreState,
+                                                       eventStoreState: EventStoreState,
                                                        commandLogState: CommandLogState,
                                                        val commandsHandlers: AGGREGATE_ROOT => PartialFunction[Any, CustomCommandResult[Any]],
                                                        val eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
@@ -64,10 +64,10 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private var nextCommandId = 0L
   private var remainingCommandsIds = 0L
 
-
-
   private val aggregatesActors = mutable.HashMap[Long, AggregateActors]()
 
+  context.system.scheduler.scheduleOnce(1.second, self, EnsureEventsPublished(false))(context.dispatcher)
+  context.system.scheduler.schedule(60.seconds, 60.seconds, self, EnsureEventsPublished(true))(context.dispatcher)
 
   override def receive: Receive = logReceive {
     case fce: FirstCommand[_,_] => routeFirstCommand(fce.asInstanceOf[FirstCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]])
@@ -77,7 +77,15 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     case GetAggregateForVersion(id, version) => routeGetAggregateRootForVersion(id, version)
     case GetEventsForAggregate(id) => ???
     case GetEventsForAggregateForVersion(id, version) => ???
+    case EnsureEventsPublished(oldOnly) => ensureEventsPublished(oldOnly)
     case m => throw new IllegalArgumentException("Cannot handle this kind of message: " + m + " class: " + m.getClass)
+  }
+
+  private def ensureEventsPublished(oldOnly: Boolean): Unit = {
+    eventStoreState.readAggregatesWithEventsToPublish(oldOnly)(aggregateId => {
+      log.info("Initializing Aggregate to resend events " + aggregateId)
+      createAggregateActorsIfNeeded(aggregateId)
+    })
   }
 
   private def routeFirstCommand[RESPONSE <: CustomCommandResponse[_]](firstCommand: FirstCommand[AGGREGATE_ROOT, RESPONSE]): Unit = {
@@ -113,14 +121,14 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
   private def getOrCreateAggregateRepositoryActor(aggregateId: AggregateId): ActorRef = {
     context.child(aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong).getOrElse(
-      context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventBus, eventHandlers, initialState, None)),
+      context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, eventBus, eventHandlers, initialState, None)),
         aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong)
     )
   }
 
   private def getOrCreateAggregateRepositoryActorForVersion(aggregateId: AggregateId, aggregateVersion: AggregateVersion): ActorRef = {
     context.child(aggregateTypeSimpleName + "_AggregateRepositoryForVersion_" + aggregateId.asLong+"_"+aggregateVersion.asInt).getOrElse(
-      context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventBus, eventHandlers, initialState, Some(aggregateVersion))),
+      context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, eventBus, eventHandlers, initialState, Some(aggregateVersion))),
         aggregateTypeSimpleName + "_AggregateRepositoryForVersion_" + aggregateId.asLong+"_"+aggregateVersion.asInt)
     )
   }

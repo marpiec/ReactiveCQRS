@@ -11,6 +11,7 @@ import EventsBusActor._
 import io.reactivecqrs.core.util.ActorLogging
 import scalikejdbc.{DB, DBSession}
 
+import scala.collection.mutable
 import scala.reflect.runtime.universe._
 
 
@@ -24,6 +25,10 @@ abstract class ProjectionActor extends Actor with ActorLogging {
   protected val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi
 
   protected val listeners:List[Listener[Any]]
+
+  private val delayedAggregateWithType = mutable.Map[AggregateId, List[AggregateWithType[_]]]()
+  private val delayedAggregateWithTypeAndEvent = mutable.Map[AggregateId, List[AggregateWithTypeAndEvent[_]]]()
+  private val delayedIdentifiableEvent = mutable.Map[AggregateId, List[IdentifiableEvent[_]]]()
 
 
   protected trait Listener[+AGGREGATE_ROOT]  {
@@ -85,7 +90,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       .map(l => (AggregateType(l.aggregateRootType.toString), l.asInstanceOf[AggregateWithEventListener[Any]].listener)).toMap
   }
 
-  override def receive: Receive = receiveUpdate orElse receiveQuery
+  override def receive: Receive = logReceive {receiveUpdate orElse receiveQuery}
 
   private def validateListeners() = {
     if(listeners.exists(l => l.aggregateRootType == typeOf[Any] || l.aggregateRootType == typeOf[Nothing])) {
@@ -93,37 +98,88 @@ abstract class ProjectionActor extends Actor with ActorLogging {
     }
   }
 
-  protected def receiveUpdate: Receive = logReceive  {
+  protected def receiveUpdate: Receive =  {
     case a: AggregateWithType[_] =>
-      val lastEventId = subscriptionsState.lastEventIdForAggregatesSubscription(this.getClass.getName, a.aggregateType)
-      if(lastEventId < a.eventId) {
+      val lastVersion = subscriptionsState.lastVersionForAggregateSubscription(this.getClass.getName, a.id)
+      if(a.version.isJustAfter(lastVersion)) {
         subscriptionsState.localTx { session =>
           aggregateListenersMap(a.aggregateType)(a.id, a.version, a.aggregateRoot)(session)
-          subscriptionsState.newEventIdForAggregatesSubscription(this.getClass.getName, a.aggregateType, lastEventId, a.eventId)
+          subscriptionsState.newVersionForAggregatesSubscription(this.getClass.getName, a.id, lastVersion, a.version)
         }
-        sender() ! EventAck(a.eventId, self)
+        sender() ! MessageAck(self, a.id, a.version)
         replayQueries()
+        delayedAggregateWithType.get(a.id) match {
+          case Some(delayed) if delayed.head.version.isJustAfter(a.version) =>
+            if(delayed.length > 1) {
+              delayedAggregateWithType += a.id -> delayed.tail
+            } else {
+              delayedAggregateWithType -= a.id
+            }
+            receiveUpdate(delayed.head)
+          case _ => ()
+        }
+      } else if (a.version <= lastVersion) {
+        sender() ! MessageAck(self, a.id, a.version)
+      } else {
+        delayedAggregateWithType.get(a.id) match {
+          case None => delayedAggregateWithType += a.id -> List(a)
+          case Some(delayed) => delayedAggregateWithType += a.id -> (a :: delayed).sortBy(_.version.asInt)
+        }
       }
 
     case ae: AggregateWithTypeAndEvent[_] =>
-      val lastEventId = subscriptionsState.lastEventIdForAggregatesWithEventsSubscription(this.getClass.getName, ae.aggregateType)
-      if(lastEventId < ae.eventId) {
+      val lastVersion = subscriptionsState.lastVersionForAggregatesWithEventsSubscription(this.getClass.getName, ae.id)
+      if(ae.version.isJustAfter(lastVersion)) {
         subscriptionsState.localTx { session =>
           aggregateWithEventListenersMap(ae.aggregateType)(ae.id, ae.version, ae.event.asInstanceOf[Event[Any]], ae.aggregateRoot, ae.userId, ae.timestamp)(session)
-          subscriptionsState.newEventIdForAggregatesWithEventsSubscription(this.getClass.getName, ae.aggregateType, lastEventId, ae.eventId)
+          subscriptionsState.newVersionForAggregatesWithEventsSubscription(this.getClass.getName, ae.id, lastVersion, ae.version)
         }
-        sender() ! EventAck(ae.eventId, self)
+        sender() ! MessageAck(self, ae.id, ae.version)
         replayQueries()
+        delayedAggregateWithTypeAndEvent.get(ae.id) match {
+          case Some(delayed) if delayed.head.version.isJustAfter(ae.version) =>
+            if(delayed.length > 1) {
+              delayedAggregateWithTypeAndEvent += ae.id -> delayed.tail
+            } else {
+              delayedAggregateWithTypeAndEvent -= ae.id
+            }
+            receiveUpdate(delayed.head)
+          case _ => ()
+        }
+      } else if (ae.version <= lastVersion) {
+        sender() ! MessageAck(self, ae.id, ae.version)
+      } else {
+        delayedAggregateWithTypeAndEvent.get(ae.id) match {
+          case None => delayedAggregateWithTypeAndEvent += ae.id -> List(ae)
+          case Some(delayed) => delayedAggregateWithTypeAndEvent += ae.id -> (ae :: delayed).sortBy(_.version.asInt)
+        }
       }
     case e: IdentifiableEvent[_] =>
-      val lastEventId = subscriptionsState.lastEventIdForEventsSubscription(this.getClass.getName, e.aggregateType)
-      if(lastEventId < e.eventId) {
+      val lastVersion = subscriptionsState.lastVersionForEventsSubscription(this.getClass.getName, e.aggregateId)
+      if(e.version.isJustAfter(lastVersion)) {
         subscriptionsState.localTx { session =>
           eventListenersMap(e.aggregateType)(e.aggregateId, e.version, e.event.asInstanceOf[Event[Any]], e.userId, e.timestamp)(session)
-          subscriptionsState.newEventIdForEventsSubscription(this.getClass.getName, e.aggregateType, lastEventId, e.eventId)
+          subscriptionsState.newVersionForEventsSubscription(this.getClass.getName, e.aggregateId, lastVersion, e.version)
         }
-        sender() ! EventAck(e.eventId, self)
+        sender() ! MessageAck(self, e.aggregateId, e.version)
         replayQueries()
+        delayedIdentifiableEvent.get(e.aggregateId) match {
+          case Some(delayed) if delayed.head.version.isJustAfter(e.version) =>
+            if(delayed.length > 1) {
+              delayedIdentifiableEvent += e.aggregateId -> delayed.tail
+            } else {
+              delayedIdentifiableEvent -= e.aggregateId
+            }
+            receiveUpdate(delayed.head)
+          case _ => ()
+        }
+      } else if (e.version <= lastVersion) {
+        sender() ! MessageAck(self, e.aggregateId, e.version)
+      } else {
+        delayedIdentifiableEvent.get(e.aggregateId) match {
+          case None => delayedIdentifiableEvent += e.aggregateId -> List(e)
+          case Some(delayed) => delayedIdentifiableEvent += e.aggregateId -> (e :: delayed).sortBy(_.version.asInt)
+        }
       }
   }
 

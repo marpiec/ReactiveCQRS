@@ -1,5 +1,6 @@
 package io.reactivecqrs.core.commandlog
 
+import org.postgresql.util.PSQLException
 import scalikejdbc._
 
 class PostgresCommandLogSchemaInitializer {
@@ -9,7 +10,7 @@ class PostgresCommandLogSchemaInitializer {
     try {
       createCommandLogSequence()
     } catch {
-      case e: Exception => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
+      case e: PSQLException => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
     }
   }
 

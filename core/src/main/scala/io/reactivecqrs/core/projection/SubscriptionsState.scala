@@ -1,6 +1,8 @@
 package io.reactivecqrs.core.projection
 
-import io.reactivecqrs.api.AggregateType
+import io.reactivecqrs.api.AggregateVersion
+import io.reactivecqrs.api.id.AggregateId
+import org.postgresql.util.PSQLException
 import scalikejdbc._
 
 import scala.util.{Failure, Success, Try}
@@ -15,51 +17,55 @@ object SubscriptionsState {
 }
 
 trait SubscriptionsState {
-  def lastEventIdForAggregatesSubscription(name: String, aggregateType: AggregateType): Long
-  def lastEventIdForEventsSubscription(name: String, aggregateType: AggregateType): Long
-  def lastEventIdForAggregatesWithEventsSubscription(name: String, aggregateType: AggregateType): Long
+  def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion
+  def lastVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion
+  def lastVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion
 
-  def newEventIdForAggregatesSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit
-  def newEventIdForEventsSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit
-  def newEventIdForAggregatesWithEventsSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit
+  def newVersionForAggregatesSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit
+  def newVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit
+  def newVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit
 
   def localTx(block: DBSession => Unit): Unit
 }
 
 class MemorySubscriptionsState extends SubscriptionsState {
 
-  val subscriptions = new mutable.HashMap[(String, String, String), Long]()
+  private case class SubscriptionsKey(subscriberName: String, subscriptionType: String, aggregateId: AggregateId)
 
-  override def lastEventIdForAggregatesSubscription(name: String, aggregateType: AggregateType): Long =
-    eventsCount(name, aggregateType, SubscriptionsState.AGGREGATES)
+  private val state = new mutable.HashMap[SubscriptionsKey, AggregateVersion]()
 
-  override def lastEventIdForEventsSubscription(name: String, aggregateType: AggregateType): Long =
-    eventsCount(name, aggregateType, SubscriptionsState.EVENTS)
+  override def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion =
+    eventsCount(subscriberName, aggregateId, SubscriptionsState.AGGREGATES)
 
-  override def lastEventIdForAggregatesWithEventsSubscription(name: String, aggregateType: AggregateType): Long =
-    eventsCount(name, aggregateType, SubscriptionsState.AGGREGATES_WITH_EVENTS)
+  override def lastVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion =
+    eventsCount(subscriberName, aggregateId, SubscriptionsState.EVENTS)
 
-  override def newEventIdForAggregatesSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit =
-    newEventId(name, aggregateType, SubscriptionsState.AGGREGATES, lastEventId, eventId)
+  override def lastVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion =
+    eventsCount(subscriberName, aggregateId, SubscriptionsState.AGGREGATES_WITH_EVENTS)
 
-  override def newEventIdForEventsSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit =
-    newEventId(name, aggregateType, SubscriptionsState.EVENTS, lastEventId, eventId)
+  override def newVersionForAggregatesSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit =
+    newEventId(subscriberName, aggregateId, SubscriptionsState.AGGREGATES, lastAggregateVersion, aggregateVersion)
 
-  override def newEventIdForAggregatesWithEventsSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit =
-    newEventId(name, aggregateType, SubscriptionsState.AGGREGATES_WITH_EVENTS, lastEventId, eventId)
+  override def newVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit =
+    newEventId(subscriberName, aggregateId, SubscriptionsState.EVENTS, lastAggregateVersion, aggregateVersion)
+
+  override def newVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit =
+    newEventId(subscriberName, aggregateId, SubscriptionsState.AGGREGATES_WITH_EVENTS, lastAggregateVersion, aggregateVersion)
 
   override def localTx(block: DBSession => Unit): Unit = block(NoSession)
 
-  private def eventsCount(name: String, aggregateType: AggregateType, subscriptionType: String) = {
-     subscriptions.getOrElse((name, aggregateType.typeName, subscriptionType), {
-       subscriptions += (name, aggregateType.typeName, subscriptionType) -> 0L
-       0L
+  private def eventsCount(subscriberName: String, aggregateId: AggregateId, subscriptionType: String): AggregateVersion = {
+    val key = SubscriptionsKey(subscriberName, subscriptionType, aggregateId)
+    state.getOrElse(key, {
+       state += key -> AggregateVersion.ZERO
+      AggregateVersion.ZERO
      })
   }
 
-  private def newEventId(name: String, aggregateType: AggregateType, subscriptionType: String, eventId: Long, lastEventId: Long): Try[Unit] = {
-    if (subscriptions.get((name, aggregateType.typeName, SubscriptionsState.AGGREGATES)).contains(lastEventId)) {
-      subscriptions += (name, aggregateType.typeName, SubscriptionsState.AGGREGATES) -> eventId
+  private def newEventId(subscriberName: String, aggregateId: AggregateId, subscriptionType: String, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Try[Unit] = {
+    val key = SubscriptionsKey(subscriberName, subscriptionType, aggregateId)
+    if (state.get(key).contains(lastAggregateVersion)) {
+      state += key -> aggregateVersion
       Success(())
     } else {
       Failure(new OptimisticLockingFailed)
@@ -71,61 +77,92 @@ class MemorySubscriptionsState extends SubscriptionsState {
 
 class PostgresSubscriptionsState extends SubscriptionsState {
 
-  def initSchema(): Unit = {
-    new PostgresSubscriptionsStateSchemaInitializer().initSchema()
+  def initSchema(): PostgresSubscriptionsState = {
+    createSubscriptionsTable()
+    try {
+      createSubscriptionsSequence()
+    } catch {
+      case e: PSQLException => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
+    }
+    try {
+      createSubscriberTypeAggregateIdIndex()
+    } catch {
+      case e: PSQLException => () //ignore until CREATE UNIQUE INDEX IF NOT EXISTS is available in PostgreSQL
+    }
+    this
   }
 
-  override def lastEventIdForAggregatesSubscription(name: String, aggregateType: AggregateType): Long = {
-    eventsCount(name, aggregateType, SubscriptionsState.AGGREGATES)
+  private def createSubscriptionsTable() = DB.autoCommit { implicit session =>
+    sql"""
+         CREATE TABLE IF NOT EXISTS subscriptions (
+           id BIGINT NOT NULL PRIMARY KEY,
+           subscriber_name VARCHAR(256) NOT NULL,
+           subscription_type VARCHAR(32) NOT NULL,
+           aggregate_id BIGINT NOT NULL,
+           aggregate_version INT NOT NULL)
+       """.execute().apply()
+
   }
 
-  override def lastEventIdForEventsSubscription(name: String, aggregateType: AggregateType): Long = {
-    eventsCount(name, aggregateType, SubscriptionsState.EVENTS)
+  private def createSubscriptionsSequence() = DB.autoCommit { implicit session =>
+    sql"""CREATE SEQUENCE subscriptions_seq""".execute().apply()
   }
 
-  override def lastEventIdForAggregatesWithEventsSubscription(name: String, aggregateType: AggregateType): Long = {
-    eventsCount(name, aggregateType, SubscriptionsState.AGGREGATES_WITH_EVENTS)
+  private def createSubscriberTypeAggregateIdIndex() = DB.autoCommit { implicit session =>
+    sql"""CREATE UNIQUE INDEX subscriptions_sub_type_agg_id_idx ON event_bus (subscriber_name, subscription_type, aggregate_id)""".execute().apply()
   }
 
-  private def eventsCount(name: String, aggregateType: AggregateType, subscriptionType: String): Long = {
+  override def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion = {
+    lastAggregateVersion(subscriberName, SubscriptionsState.AGGREGATES, aggregateId: AggregateId)
+  }
+
+  override def lastVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion = {
+    lastAggregateVersion(subscriberName, SubscriptionsState.EVENTS, aggregateId: AggregateId)
+  }
+
+  override def lastVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion = {
+    lastAggregateVersion(subscriberName, SubscriptionsState.AGGREGATES_WITH_EVENTS, aggregateId: AggregateId)
+  }
+
+  private def lastAggregateVersion(subscriberName: String, subscriptionType: String, aggregateId: AggregateId): AggregateVersion = {
     DB.localTx { implicit session =>
 
-      val eventIdOption = sql"""SELECT last_event_id FROM subscriptions WHERE name = ? AND aggregate_type = ? AND subscription_type = ?"""
-        .bind(name, aggregateType.typeName, subscriptionType).map(rs => rs.long(1)).single().apply()
+      val versionOption = sql"""SELECT aggregate_version FROM subscriptions WHERE subscriber_name = ? AND subscription_type = ? AND aggregate_id = ?"""
+        .bind(subscriberName, subscriptionType, aggregateId.asLong).map(rs => AggregateVersion(rs.int(1))).single().apply()
 
-      eventIdOption match {
-        case Some(eventId) => eventId
-        case None => addSubscriptionEntry(name, aggregateType, subscriptionType)
+      versionOption match {
+        case Some(version) => version
+        case None => addSubscriptionEntry(subscriberName, subscriptionType, aggregateId)
       }
     }
   }
 
-  private def addSubscriptionEntry(name: String, aggregateType: AggregateType, subscriptionType: String)(implicit session: DBSession): Long = {
-    sql"""INSERT INTO subscriptions (id, name, aggregate_type, subscription_type, last_event_id) VALUES (nextval('subscriptions_seq'), ?, ?, ?, 0)"""
-      .bind(name, aggregateType.typeName, subscriptionType).executeUpdate().apply()
-    0L
+  private def addSubscriptionEntry(subscriberName: String, subscriptionType: String, aggregateId: AggregateId)(implicit session: DBSession): AggregateVersion = {
+    sql"""INSERT INTO subscriptions (id, subscriber_name, subscription_type, aggregate_id, aggregate_version) VALUES (nextval('subscriptions_seq'), ?, ?, ?, 0)"""
+      .bind(subscriberName, subscriptionType, aggregateId.asLong).executeUpdate().apply()
+    AggregateVersion.ZERO
   }
 
-  override def newEventIdForAggregatesSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit = {
-    newEventId(name, aggregateType, SubscriptionsState.AGGREGATES, lastEventId, eventId)
+  override def newVersionForAggregatesSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit = {
+    newEventId(subscriberName, SubscriptionsState.AGGREGATES, aggregateId, lastAggregateVersion, aggregateVersion)
   }
 
-  override def newEventIdForEventsSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit = {
-    newEventId(name, aggregateType, SubscriptionsState.EVENTS, lastEventId, eventId)
+  override def newVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit = {
+    newEventId(subscriberName, SubscriptionsState.EVENTS, aggregateId, lastAggregateVersion, aggregateVersion)
   }
 
-  override def newEventIdForAggregatesWithEventsSubscription(name: String, aggregateType: AggregateType, lastEventId: Long, eventId: Long): Unit = {
-    newEventId(name, aggregateType, SubscriptionsState.AGGREGATES_WITH_EVENTS, lastEventId, eventId)
+  override def newVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit = {
+    newEventId(subscriberName, SubscriptionsState.AGGREGATES_WITH_EVENTS, aggregateId, lastAggregateVersion, aggregateVersion)
   }
 
-  private def newEventId(name: String, aggregateType: AggregateType, subscriptionType: String, lastEventId: Long, eventId: Long): Try[Unit] = {
+  private def newEventId(subscriberName: String, subscriptionType: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Try[Unit] = {
     DB.localTx { implicit session =>
-      val rowsUpdated = sql"""UPDATE subscriptions SET last_event_id = ? WHERE name = ? AND aggregate_type = ? AND subscription_type = ? AND last_event_id = ?"""
-        .bind(eventId, name, aggregateType.typeName, subscriptionType, lastEventId).map(rs => rs.int(1)).single().executeUpdate().apply()
+      val rowsUpdated = sql"""UPDATE subscriptions SET aggregate_version = ? WHERE subscriber_name = ? AND subscription_type = ? AND aggregate_id = ? AND aggregate_version = ?"""
+        .bind(aggregateVersion.asInt, subscriberName, subscriptionType, aggregateId.asLong, lastAggregateVersion.asInt).map(rs => rs.int(1)).single().executeUpdate().apply()
       if (rowsUpdated == 1) {
         Success(())
       } else {
-        Failure(new OptimisticLockingFailed)
+        Failure(new OptimisticLockingFailed) // TODO handle this
       }
     }
   }

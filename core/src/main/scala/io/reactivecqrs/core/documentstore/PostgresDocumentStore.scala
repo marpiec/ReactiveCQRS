@@ -1,9 +1,9 @@
 package io.reactivecqrs.core.documentstore
 
 import java.sql.{Connection, ResultSet}
-import javax.sql.DataSource
 
 import io.mpjsons.MPJsons
+import org.postgresql.util.PSQLException
 import org.slf4j.LoggerFactory
 import scalikejdbc.{DB, DBSession}
 
@@ -310,7 +310,7 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
         execute(CREATE_SEQUENCE_QUERY)
       }
     } catch {
-      case e: Exception => () // IF NOT EXIST workaround
+      case e: PSQLException => () // IF NOT EXIST workaround
     }
     DB.autoCommit { implicit session =>
       execute(CREATE_TABLE_QUERY)

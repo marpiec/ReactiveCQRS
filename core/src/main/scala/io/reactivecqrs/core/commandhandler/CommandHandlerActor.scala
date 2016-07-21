@@ -76,7 +76,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
               case _ => CustomSuccessResponse(aggregateId, AggregateVersion(s.events.size), success.responseInfo)
             }
             val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, response.asInstanceOf[RESPONSE], responseTimeout)), nextResultAggregatorName)
-            repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, commandId, command.userId, AggregateVersion.ZERO, Instant.now, success.events)
+            repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, commandId, command.userId, Some(AggregateVersion.ZERO), Instant.now, success.events)
             commandLogActor ! LogFirstCommand(commandId, command)
           case failure: CommandFailure[_, _] =>
             respondTo ! failure.response
@@ -106,14 +106,14 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
   // TODO handling concurrent command is not thread safe
   private def handleFollowingCommand[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE <: CustomCommandResponse[_]](envelope: InternalCommandEnvelope[AGGREGATE_ROOT, RESPONSE], aggregate: Aggregate[AGGREGATE_ROOT]): Unit = envelope match {
     case InternalConcurrentCommandEnvelope(respondTo, commandId, command) =>
-      handleFollowingCommandVersionAware(aggregate, respondTo, command.userId, commandId, command, aggregate.version)
+      handleFollowingCommandVersionAware(aggregate, respondTo, command.userId, commandId, command, None)
     case InternalFollowingCommandEnvelope(respondTo, commandId, command) =>
-      handleFollowingCommandVersionAware(aggregate, respondTo, command.userId, commandId, command, command.expectedVersion)
+      handleFollowingCommandVersionAware(aggregate, respondTo, command.userId, commandId, command, Some(command.expectedVersion))
     case e => throw new IllegalArgumentException(s"Unsupported envelope type [$e]")
   }
 
   private def handleFollowingCommandVersionAware[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE <: CustomCommandResponse[_]](aggregate: Aggregate[AGGREGATE_ROOT], respondTo: ActorRef,
-                                                                                                                                     userId: UserId, commandId: CommandId, command: Any, expectedVersion: AggregateVersion): Unit = {
+                                                                                                                                     userId: UserId, commandId: CommandId, command: Any, expectedVersion: Option[AggregateVersion]): Unit = {
 
     val resultTry:Try[CustomCommandResult[Any]] = Try {
       commandHandlers(aggregate.aggregateRoot.get)(command)
@@ -124,8 +124,9 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
         case s: CommandSuccess[_, _] =>
           val success = s.asInstanceOf[CommandSuccess[AGGREGATE_ROOT, AnyRef]]
           val response = success.responseInfo match {
-            case r: Nothing => SuccessResponse(aggregateId, expectedVersion.incrementBy(success.events.size))
-            case _ => CustomSuccessResponse(aggregateId, expectedVersion.incrementBy(success.events.size), success.responseInfo)
+            // if concurrent command then expected aggregate version will be sent, that mmigth be inaccurate, but this should not be a problem for concurrent command
+            case r: Nothing => SuccessResponse(aggregateId, expectedVersion.getOrElse(aggregate.version).incrementBy(success.events.size))
+            case _ => CustomSuccessResponse(aggregateId, expectedVersion.getOrElse(aggregate.version).incrementBy(success.events.size), success.responseInfo)
           }
           val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, response.asInstanceOf[RESPONSE], responseTimeout)), nextResultAggregatorName)
           repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, commandId, userId, expectedVersion, Instant.now, success.events)
