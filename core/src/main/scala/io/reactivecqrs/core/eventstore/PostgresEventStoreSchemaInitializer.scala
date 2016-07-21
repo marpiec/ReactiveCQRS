@@ -15,13 +15,14 @@ class PostgresEventStoreSchemaInitializer  {
     } catch {
       case e: Exception => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
     }
+    dropExistingFunctions()
     createAddEventFunction()
     createAddUndoEventFunction()
     createAddDuplicationEventFunction()
   }
 
 
-  private def createEventsTable() = DB.autoCommit { implicit session =>
+  private def createEventsTable(): Unit = DB.autoCommit { implicit session =>
     sql"""
         CREATE TABLE IF NOT EXISTS events (
           id BIGINT NOT NULL PRIMARY KEY,
@@ -43,7 +44,7 @@ class PostgresEventStoreSchemaInitializer  {
       """.execute().apply()
   }
 
-  private def createEventsBroadcastTable() = DB.autoCommit { implicit session =>
+  private def createEventsBroadcastTable(): Unit = DB.autoCommit { implicit session =>
     sql"""
         CREATE TABLE IF NOT EXISTS events_to_publish (
           event_id BIGINT NOT NULL PRIMARY KEY,
@@ -55,7 +56,7 @@ class PostgresEventStoreSchemaInitializer  {
 
   }
 
-  private def createAggregatesTable() = DB.autoCommit { implicit session =>
+  private def createAggregatesTable(): Unit = DB.autoCommit { implicit session =>
     sql"""
         CREATE TABLE IF NOT EXISTS aggregates (
           id BIGINT NOT NULL,
@@ -68,8 +69,14 @@ class PostgresEventStoreSchemaInitializer  {
       """.execute().apply()
   }
 
-  private def createEventsSequence() = DB.autoCommit { implicit session =>
+  private def createEventsSequence(): Unit = DB.autoCommit { implicit session =>
     sql"""CREATE SEQUENCE events_seq""".execute().apply()
+  }
+
+  private def dropExistingFunctions(): Unit = DB.autoCommit { implicit session =>
+    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, BIGINT, INT, VARCHAR(128), VARCHAR(128), TIMESTAMP, VARCHAR(10240))""".execute().apply()
+    sql"""DROP FUNCTION IF EXISTS add_undo_event(BIGINT, BIGINT, BIGINT, INT, VARCHAR(128), VARCHAR(128), TIMESTAMP, VARCHAR(10240), INT)""".execute().apply()
+    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, BIGINT, INT, VARCHAR(128), VARCHAR(128), TIMESTAMP, VARCHAR(10240), BIGINT, INT)""".execute().apply()
   }
 
   private def createAddEventFunction(): Unit = DB.autoCommit { implicit session =>
