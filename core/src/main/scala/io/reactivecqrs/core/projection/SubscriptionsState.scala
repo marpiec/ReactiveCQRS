@@ -17,15 +17,15 @@ object SubscriptionsState {
 }
 
 trait SubscriptionsState {
-  def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion
-  def lastVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion
-  def lastVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion
+  def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId)(implicit session: DBSession): AggregateVersion
+  def lastVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId)(implicit session: DBSession): AggregateVersion
+  def lastVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId)(implicit session: DBSession): AggregateVersion
 
-  def newVersionForAggregatesSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit
-  def newVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit
-  def newVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit
+  def newVersionForAggregatesSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit
+  def newVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit
+  def newVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit
 
-  def localTx(block: DBSession => Unit): Unit
+  def localTx[A](block: DBSession => A): A
 }
 
 class MemorySubscriptionsState extends SubscriptionsState {
@@ -34,25 +34,25 @@ class MemorySubscriptionsState extends SubscriptionsState {
 
   private val state = new mutable.HashMap[SubscriptionsKey, AggregateVersion]()
 
-  override def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion =
+  override def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId)(implicit session: DBSession): AggregateVersion =
     eventsCount(subscriberName, aggregateId, SubscriptionsState.AGGREGATES)
 
-  override def lastVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion =
+  override def lastVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId)(implicit session: DBSession): AggregateVersion =
     eventsCount(subscriberName, aggregateId, SubscriptionsState.EVENTS)
 
-  override def lastVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion =
+  override def lastVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId)(implicit session: DBSession): AggregateVersion =
     eventsCount(subscriberName, aggregateId, SubscriptionsState.AGGREGATES_WITH_EVENTS)
 
-  override def newVersionForAggregatesSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit =
+  override def newVersionForAggregatesSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit =
     newEventId(subscriberName, aggregateId, SubscriptionsState.AGGREGATES, lastAggregateVersion, aggregateVersion)
 
-  override def newVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit =
+  override def newVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit =
     newEventId(subscriberName, aggregateId, SubscriptionsState.EVENTS, lastAggregateVersion, aggregateVersion)
 
-  override def newVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit =
+  override def newVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit =
     newEventId(subscriberName, aggregateId, SubscriptionsState.AGGREGATES_WITH_EVENTS, lastAggregateVersion, aggregateVersion)
 
-  override def localTx(block: DBSession => Unit): Unit = block(NoSession)
+  override def localTx[A](block: DBSession => A): A = block(NoSession)
 
   private def eventsCount(subscriberName: String, aggregateId: AggregateId, subscriptionType: String): AggregateVersion = {
     val key = SubscriptionsKey(subscriberName, subscriptionType, aggregateId)
@@ -112,28 +112,25 @@ class PostgresSubscriptionsState extends SubscriptionsState {
     sql"""CREATE UNIQUE INDEX subscriptions_sub_type_agg_id_idx ON subscriptions (subscriber_name, subscription_type, aggregate_id)""".execute().apply()
   }
 
-  override def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion = {
+  override def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId)(implicit session: DBSession): AggregateVersion = {
     lastAggregateVersion(subscriberName, SubscriptionsState.AGGREGATES, aggregateId: AggregateId)
   }
 
-  override def lastVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion = {
+  override def lastVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId)(implicit session: DBSession): AggregateVersion = {
     lastAggregateVersion(subscriberName, SubscriptionsState.EVENTS, aggregateId: AggregateId)
   }
 
-  override def lastVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion = {
+  override def lastVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId)(implicit session: DBSession): AggregateVersion = {
     lastAggregateVersion(subscriberName, SubscriptionsState.AGGREGATES_WITH_EVENTS, aggregateId: AggregateId)
   }
 
-  private def lastAggregateVersion(subscriberName: String, subscriptionType: String, aggregateId: AggregateId): AggregateVersion = {
-    DB.localTx { implicit session =>
+  private def lastAggregateVersion(subscriberName: String, subscriptionType: String, aggregateId: AggregateId)(implicit session: DBSession): AggregateVersion = {
+    val versionOption = sql"""SELECT aggregate_version FROM subscriptions WHERE subscriber_name = ? AND subscription_type = ? AND aggregate_id = ?"""
+      .bind(subscriberName, subscriptionType, aggregateId.asLong).map(rs => AggregateVersion(rs.int(1))).single().apply()
 
-      val versionOption = sql"""SELECT aggregate_version FROM subscriptions WHERE subscriber_name = ? AND subscription_type = ? AND aggregate_id = ?"""
-        .bind(subscriberName, subscriptionType, aggregateId.asLong).map(rs => AggregateVersion(rs.int(1))).single().apply()
-
-      versionOption match {
-        case Some(version) => version
-        case None => addSubscriptionEntry(subscriberName, subscriptionType, aggregateId)
-      }
+    versionOption match {
+      case Some(version) => version
+      case None => addSubscriptionEntry(subscriberName, subscriptionType, aggregateId)
     }
   }
 
@@ -143,31 +140,29 @@ class PostgresSubscriptionsState extends SubscriptionsState {
     AggregateVersion.ZERO
   }
 
-  override def newVersionForAggregatesSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit = {
+  override def newVersionForAggregatesSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit = {
     newEventId(subscriberName, SubscriptionsState.AGGREGATES, aggregateId, lastAggregateVersion, aggregateVersion)
   }
 
-  override def newVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit = {
+  override def newVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit = {
     newEventId(subscriberName, SubscriptionsState.EVENTS, aggregateId, lastAggregateVersion, aggregateVersion)
   }
 
-  override def newVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit = {
+  override def newVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit = {
     newEventId(subscriberName, SubscriptionsState.AGGREGATES_WITH_EVENTS, aggregateId, lastAggregateVersion, aggregateVersion)
   }
 
-  private def newEventId(subscriberName: String, subscriptionType: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Try[Unit] = {
-    DB.localTx { implicit session =>
-      val rowsUpdated = sql"""UPDATE subscriptions SET aggregate_version = ? WHERE subscriber_name = ? AND subscription_type = ? AND aggregate_id = ? AND aggregate_version = ?"""
-        .bind(aggregateVersion.asInt, subscriberName, subscriptionType, aggregateId.asLong, lastAggregateVersion.asInt).map(rs => rs.int(1)).single().executeUpdate().apply()
-      if (rowsUpdated == 1) {
-        Success(())
-      } else {
-        Failure(new OptimisticLockingFailed) // TODO handle this
-      }
+  private def newEventId(subscriberName: String, subscriptionType: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Try[Unit] = {
+    val rowsUpdated = sql"""UPDATE subscriptions SET aggregate_version = ? WHERE subscriber_name = ? AND subscription_type = ? AND aggregate_id = ? AND aggregate_version = ?"""
+      .bind(aggregateVersion.asInt, subscriberName, subscriptionType, aggregateId.asLong, lastAggregateVersion.asInt).map(rs => rs.int(1)).single().executeUpdate().apply()
+    if (rowsUpdated == 1) {
+      Success(())
+    } else {
+      Failure(new OptimisticLockingFailed) // TODO handle this
     }
   }
 
-  override def localTx(block: DBSession => Unit): Unit =
+  override def localTx[A](block: DBSession => A): A =
     DB.localTx { session =>
       block(session)
     }

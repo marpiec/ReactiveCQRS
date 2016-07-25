@@ -100,11 +100,13 @@ abstract class ProjectionActor extends Actor with ActorLogging {
 
   protected def receiveUpdate: Receive =  {
     case a: AggregateWithType[_] =>
-      val lastVersion = subscriptionsState.lastVersionForAggregateSubscription(this.getClass.getName, a.id)
+      val lastVersion = subscriptionsState.localTx { implicit session =>
+        subscriptionsState.lastVersionForAggregateSubscription(this.getClass.getName, a.id)
+      }
       if(a.version.isJustAfter(lastVersion)) {
         subscriptionsState.localTx { session =>
           aggregateListenersMap(a.aggregateType)(a.id, a.version, a.aggregateRoot)(session)
-          subscriptionsState.newVersionForAggregatesSubscription(this.getClass.getName, a.id, lastVersion, a.version)
+          subscriptionsState.newVersionForAggregatesSubscription(this.getClass.getName, a.id, lastVersion, a.version)(session)
         }
         sender() ! MessageAck(self, a.id, a.version)
         replayQueries()
@@ -128,11 +130,13 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       }
 
     case ae: AggregateWithTypeAndEvent[_] =>
-      val lastVersion = subscriptionsState.lastVersionForAggregatesWithEventsSubscription(this.getClass.getName, ae.id)
+      val lastVersion = subscriptionsState.localTx { implicit session =>
+        subscriptionsState.lastVersionForAggregatesWithEventsSubscription(this.getClass.getName, ae.id)
+      }
       if(ae.version.isJustAfter(lastVersion)) {
         subscriptionsState.localTx { session =>
           aggregateWithEventListenersMap(ae.aggregateType)(ae.id, ae.version, ae.event.asInstanceOf[Event[Any]], ae.aggregateRoot, ae.userId, ae.timestamp)(session)
-          subscriptionsState.newVersionForAggregatesWithEventsSubscription(this.getClass.getName, ae.id, lastVersion, ae.version)
+          subscriptionsState.newVersionForAggregatesWithEventsSubscription(this.getClass.getName, ae.id, lastVersion, ae.version)(session)
         }
         sender() ! MessageAck(self, ae.id, ae.version)
         replayQueries()
@@ -155,11 +159,13 @@ abstract class ProjectionActor extends Actor with ActorLogging {
         }
       }
     case e: IdentifiableEvent[_] =>
-      val lastVersion = subscriptionsState.lastVersionForEventsSubscription(this.getClass.getName, e.aggregateId)
+      val lastVersion = subscriptionsState.localTx { implicit session =>
+        subscriptionsState.lastVersionForEventsSubscription(this.getClass.getName, e.aggregateId)
+      }
       if(e.version.isJustAfter(lastVersion)) {
         subscriptionsState.localTx { session =>
           eventListenersMap(e.aggregateType)(e.aggregateId, e.version, e.event.asInstanceOf[Event[Any]], e.userId, e.timestamp)(session)
-          subscriptionsState.newVersionForEventsSubscription(this.getClass.getName, e.aggregateId, lastVersion, e.version)
+          subscriptionsState.newVersionForEventsSubscription(this.getClass.getName, e.aggregateId, lastVersion, e.version)(session)
 //          println("handled event " + e.event)
         }
         sender() ! MessageAck(self, e.aggregateId, e.version)

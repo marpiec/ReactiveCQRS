@@ -187,7 +187,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
       val fixture = Fixture
       import fixture._
 
-      Thread.sleep(10000)
+      Thread.sleep(20000)
 
       }
     }
