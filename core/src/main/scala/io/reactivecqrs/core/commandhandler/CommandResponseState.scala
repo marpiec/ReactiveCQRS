@@ -8,7 +8,7 @@ import scalikejdbc._
 
 
 trait CommandResponseState {
-  def storeResponse(key: String, response: CustomCommandResponse[_]): Unit
+  def storeResponse(key: String, response: CustomCommandResponse[_])(implicit session: DBSession): Unit
   def responseByKey(key: String): Option[CustomCommandResponse[_]]
 }
 
@@ -49,11 +49,9 @@ class PostgresCommandResponseState(mpjsons: MPJsons) extends CommandResponseStat
     sql"""CREATE UNIQUE INDEX commands_responses_key_idx ON commands_responses (aggregate_id, key)""".execute().apply()
   }
 
-  override def storeResponse(key: String, response: CustomCommandResponse[_]): Unit = {
-    DB.autoCommit { implicit session =>
-      sql"""INSERT INTO commands_responses (id, key, handling_timestamp, response, response_type) VALUES (nextval('commands_responses_seq'), ?, current_timestamp, ?, ?)"""
-        .bind(key, mpjsons.serialize(response, response.getClass.getName), response.getClass.getName).executeUpdate().apply()
-    }
+  override def storeResponse(key: String, response: CustomCommandResponse[_])(implicit session: DBSession): Unit = {
+    sql"""INSERT INTO commands_responses (id, key, handling_timestamp, response, response_type) VALUES (nextval('commands_responses_seq'), ?, current_timestamp, ?, ?)"""
+      .bind(key, mpjsons.serialize(response, response.getClass.getName), response.getClass.getName).executeUpdate().apply()
   }
 
   override def responseByKey(key: String): Option[CustomCommandResponse[_]] = {

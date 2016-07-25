@@ -52,12 +52,10 @@ class MultipleCartCreatorSaga(val state: SagaState, val uidGenerator: ActorRef, 
   private def createShoppingCart(sagaStep: SagaStep, userId: UserId, cartName: String, cartsCount: Int, createdCarts: List[AggregateIdWithVersion]) = {
 
     val currentCartId = createdCarts.size + 1
-    println("Creating cart " + cartName + " "+currentCartId+", step "+sagaStep.step)
     (shoppingCartCommandBus ? CreateShoppingCart(Some(sagaStep), userId, cartName + " "+currentCartId))
       .mapTo[CustomCommandResponse[_]]
       .map {
         case c: SuccessResponse if createdCarts.length + 1 < cartsCount =>
-          println("Command succeded")
           SagaContinues(CreateRemainingCarts(userId, cartName, cartsCount, AggregateIdWithVersion(c.aggregateId, c.aggregateVersion) :: createdCarts))
         case c: SuccessResponse =>
           SagaSucceded(CartsCreated(AggregateIdWithVersion(c.aggregateId, c.aggregateVersion) :: createdCarts))

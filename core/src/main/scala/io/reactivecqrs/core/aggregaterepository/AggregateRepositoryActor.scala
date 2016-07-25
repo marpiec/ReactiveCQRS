@@ -11,7 +11,7 @@ import akka.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventAck, PublishEvents}
 import io.reactivecqrs.core.commandhandler.CommandResponseState
-import scalikejdbc.DB
+import scalikejdbc.{DB, DBSession}
 
 import scala.concurrent.Future
 import scala.concurrent.duration._
@@ -160,7 +160,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 //    }
   }
 
-  private def persistIdempotentCommandResponse(commandInfo: Option[IdempotentCommandInfo]): Unit = {
+  private def persistIdempotentCommandResponse(commandInfo: Option[IdempotentCommandInfo])(implicit session: DBSession): Unit = {
     commandInfo match {
       case Some(ci) =>
         ci.command match {
