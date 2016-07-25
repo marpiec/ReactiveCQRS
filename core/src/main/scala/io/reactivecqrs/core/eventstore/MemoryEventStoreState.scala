@@ -7,6 +7,7 @@ import io.reactivecqrs.api.{AggregateType, AggregateVersion, Event, UndoEvent}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEventNoAggregateType}
 import io.reactivecqrs.core.eventstore.MemoryEventStoreState.EventRow
+import scalikejdbc.DBSession
 
 object MemoryEventStoreState {
   case class EventRow(eventId: Long, aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregateType: AggregateType,
@@ -21,7 +22,7 @@ class MemoryEventStoreState extends EventStoreState {
   private var eventIdSeq: Long = 0
 
 
-  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
+  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
 
     var eventsForAggregate: Vector[Event[_]] = eventStore.getOrElse(aggregateId, Vector())
 
@@ -92,7 +93,7 @@ class MemoryEventStoreState extends EventStoreState {
     if(oldOnly) {
       eventsToPublish.filter(_._2._2.isBefore(Instant.now().minusSeconds(60))).keys.groupBy(_._1).keys.foreach(aggregateHandler)
     } else {
-      eventsToPublish.keys.groupBy(_._1).keys.foreach(aggregateHandler)
+      eventsToPublish.filter(_._2._2.isBefore(Instant.now().minusSeconds(10))).keys.groupBy(_._1).keys.foreach(aggregateHandler)
     }
   }
 

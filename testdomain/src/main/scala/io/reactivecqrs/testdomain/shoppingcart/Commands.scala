@@ -4,7 +4,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 
 
-case class CreateShoppingCart(userId: UserId, name: String) extends FirstCommand[ShoppingCart, CustomCommandResponse[_]]
+case class CreateShoppingCart(idempotencyId: Option[SagaStep], userId: UserId, name: String) extends FirstCommand[ShoppingCart, CustomCommandResponse[_]] with IdempotentCommand[SagaStep]
 
 case class DuplicateShoppingCart(userId: UserId, baseAggregateId: AggregateId, baseAggregateVersion: AggregateVersion) extends FirstCommand[ShoppingCart, CustomCommandResponse[_]]
 
@@ -17,7 +17,7 @@ case class RemoveItem(userId: UserId, aggregateId: AggregateId, expectedVersion:
 case class UndoShoppingCartChange(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
                                   stepsToUndo: Int) extends Command[ShoppingCart, CustomCommandResponse[_]]
 
-case class DeleteShoppingCart(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion)
-  extends Command[ShoppingCart, CustomCommandResponse[_]]
+case class DeleteShoppingCart(idempotencyId: Option[SagaStep], userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion)
+  extends Command[ShoppingCart, CustomCommandResponse[_]] with IdempotentCommand[SagaStep]
 
 

@@ -17,60 +17,57 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
     this
   }
 
-  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
+  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
     var lastEventVersion: Option[Int] = None
 
-    DB.localTx { implicit session =>
+    eventsEnvelope.events.map(event => {
 
-      eventsEnvelope.events.map(event => {
+      val eventSerialized = mpjsons.serialize(event, event.getClass.getName)
 
-        val eventSerialized = mpjsons.serialize(event, event.getClass.getName)
+      lastEventVersion = Some(event match {
+        case undoEvent: UndoEvent[_] =>
+          sql"""SELECT add_undo_event(?, ?, ?, ? ,? , ?, ?, ?, ?)""".bind(
+            eventsEnvelope.commandId.asLong,
+            eventsEnvelope.userId.asLong,
+            aggregateId.asLong,
+            eventsEnvelope.expectedVersion.map(v => lastEventVersion.getOrElse(v.asInt)).getOrElse(-1),
+            event.aggregateRootType.typeSymbol.fullName,
+            event.getClass.getName,
+            Timestamp.from(Instant.now),
+            eventSerialized,
+            undoEvent.eventsCount
+          ).map(rs => rs.int(1)).single().apply().get
 
-        lastEventVersion = Some(event match {
-          case undoEvent: UndoEvent[_] =>
-            sql"""SELECT add_undo_event(?, ?, ?, ? ,? , ?, ?, ?, ?)""".bind(
-              eventsEnvelope.commandId.asLong,
-              eventsEnvelope.userId.asLong,
-              aggregateId.asLong,
-              eventsEnvelope.expectedVersion.map(v => lastEventVersion.getOrElse(v.asInt)).getOrElse(-1),
-              event.aggregateRootType.typeSymbol.fullName,
-              event.getClass.getName,
-              Timestamp.from(Instant.now),
-              eventSerialized,
-              undoEvent.eventsCount
-            ).map(rs => rs.int(1)).single().apply().get
-
-          case duplicationEvent: DuplicationEvent[_] =>
-            sql"""SELECT add_duplication_event(?, ?, ?, ? , ?, ?, ?, ?, ?, ?)""".bind(
-              eventsEnvelope.commandId.asLong,
-              eventsEnvelope.userId.asLong,
-              aggregateId.asLong,
-              eventsEnvelope.expectedVersion.map(v => lastEventVersion.getOrElse(v.asInt)).getOrElse(-1),
-              event.aggregateRootType.typeSymbol.fullName,
-              event.getClass.getName,
-              Timestamp.from(Instant.now),
-              eventSerialized,
-              duplicationEvent.baseAggregateId.asLong,
-              duplicationEvent.baseAggregateVersion.asInt
-            ).map(rs => rs.int(1)).single().apply().get
-          case _ =>
-            sql"""SELECT add_event(?, ?, ?, ? ,? , ? ,?, ?)""".bind(
-              eventsEnvelope.commandId.asLong,
-              eventsEnvelope.userId.asLong,
-              aggregateId.asLong,
-              eventsEnvelope.expectedVersion.map(v => lastEventVersion.getOrElse(v.asInt)).getOrElse(-1),
-              event.aggregateRootType.typeSymbol.fullName,
-              event.getClass.getName,
-              Timestamp.from(Instant.now),
-              eventSerialized
-            ).map(rs => rs.int(1)).single().apply().get
-        })
-
-        (event, AggregateVersion(lastEventVersion.get))
+        case duplicationEvent: DuplicationEvent[_] =>
+          sql"""SELECT add_duplication_event(?, ?, ?, ? , ?, ?, ?, ?, ?, ?)""".bind(
+            eventsEnvelope.commandId.asLong,
+            eventsEnvelope.userId.asLong,
+            aggregateId.asLong,
+            eventsEnvelope.expectedVersion.map(v => lastEventVersion.getOrElse(v.asInt)).getOrElse(-1),
+            event.aggregateRootType.typeSymbol.fullName,
+            event.getClass.getName,
+            Timestamp.from(Instant.now),
+            eventSerialized,
+            duplicationEvent.baseAggregateId.asLong,
+            duplicationEvent.baseAggregateVersion.asInt
+          ).map(rs => rs.int(1)).single().apply().get
+        case _ =>
+          sql"""SELECT add_event(?, ?, ?, ? ,? , ? ,?, ?)""".bind(
+            eventsEnvelope.commandId.asLong,
+            eventsEnvelope.userId.asLong,
+            aggregateId.asLong,
+            eventsEnvelope.expectedVersion.map(v => lastEventVersion.getOrElse(v.asInt)).getOrElse(-1),
+            event.aggregateRootType.typeSymbol.fullName,
+            event.getClass.getName,
+            Timestamp.from(Instant.now),
+            eventSerialized
+          ).map(rs => rs.int(1)).single().apply().get
       })
-    }
 
+      (event, AggregateVersion(lastEventVersion.get))
+    })
   }
+
 
   override def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, version: Option[AggregateVersion])
                                                    (eventHandler: (Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit = {  //event, id, noop
@@ -143,6 +140,7 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
       } else {
         sql"""SELECT DISTINCT aggregate_id
               | FROM events_to_publish
+              | WHERE event_time < NOW() - INTERVAL '10 seconds'
            """
       }.stripMargin.foreach { rs =>
         aggregateHandler(AggregateId(rs.int(1)))

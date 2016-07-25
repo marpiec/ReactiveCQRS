@@ -5,7 +5,7 @@ import akka.serialization.SerializationExtension
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
-import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
+import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.commandlog.PostgresCommandLogState
 import io.reactivecqrs.core.documentstore.{MemoryDocumentStore, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus._
@@ -43,6 +43,8 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
     val commandLogState = new PostgresCommandLogState(mpjsons).initSchema()
 
+    val commandResponseState = new PostgresCommandResponseState(mpjsons).initSchema()
+
     val userId = UserId(1L)
     val serialization = SerializationExtension(system)
 
@@ -57,7 +59,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
     val shoppingCartContext = new ShoppingCartAggregateContext
     val shoppingCartCommandBus: ActorRef = system.actorOf(
-      AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandLogState, eventBusActor), "ShoppingCartCommandBus")
+      AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandLogState, commandResponseState, eventBusActor), "ShoppingCartCommandBus")
 
     val sagaState = new PostgresSagaState(mpjsons)
     sagaState.initSchema()
@@ -114,7 +116,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
       step("Create shopping cart")
 
-      var shoppingCartA = shoppingCartCommand(CreateShoppingCart(userId,"Groceries"))
+      var shoppingCartA = shoppingCartCommand(CreateShoppingCart(None, userId,"Groceries"))
       shoppingCartA mustBe Aggregate(shoppingCartA.id, AggregateVersion(1), Some(ShoppingCart("Groceries", Vector())))
 
       step("Add items to cart")

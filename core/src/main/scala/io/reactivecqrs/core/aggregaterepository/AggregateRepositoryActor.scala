@@ -9,23 +9,28 @@ import io.reactivecqrs.core.util.ActorLogging
 import io.reactivecqrs.api._
 import akka.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
-import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventAck}
+import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventAck, PublishEvents}
+import io.reactivecqrs.core.commandhandler.CommandResponseState
+import scalikejdbc.DB
 
 import scala.concurrent.Future
 import scala.concurrent.duration._
 import scala.reflect._
 import scala.reflect.runtime.universe._
-import scala.util.{Failure, Success, Try}
+import scala.util.{Failure, Success}
 
 object AggregateRepositoryActor {
   case class GetAggregateRoot(respondTo: ActorRef)
+
+  case class IdempotentCommandInfo(command: Any, response: CustomCommandResponse[_])
 
   case class PersistEvents[AGGREGATE_ROOT](respondTo: ActorRef,
                                             commandId: CommandId,
                                             userId: UserId,
                                             expectedVersion: Option[AggregateVersion],
                                             timestamp: Instant,
-                                            events: Seq[Event[AGGREGATE_ROOT]])
+                                            events: Seq[Event[AGGREGATE_ROOT]],
+                                            commandInfo: Option[IdempotentCommandInfo])
 
   case class EventsPersisted[AGGREGATE_ROOT](events: Seq[IdentifiableEvent[AGGREGATE_ROOT]])
 
@@ -35,6 +40,7 @@ object AggregateRepositoryActor {
 
 class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: AggregateId,
                                                                 eventStore: EventStoreState,
+                                                                commandResponseState: CommandResponseState,
                                                                 eventsBus: ActorRef,
                                                                 eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
                                                                 initialState: () => AGGREGATE_ROOT,
@@ -138,7 +144,11 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   private def persist(eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(afterPersist: Seq[Event[AGGREGATE_ROOT]] => Unit): Unit = {
     //Future { FIXME this future can broke order in which events are stored
+    val eventsWithVersions = DB.localTx {implicit session =>
       val eventsWithVersions = eventStore.persistEvents(aggregateId, eventsEnvelope.asInstanceOf[PersistEvents[AnyRef]])
+      persistIdempotentCommandResponse(eventsEnvelope.commandInfo)
+      eventsWithVersions
+    }
       var mappedEvents = 0
       self ! EventsPersisted(eventsWithVersions.map { case (event, eventVersion) =>
         mappedEvents += 1
@@ -148,6 +158,20 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 //    } onFailure {
 //      case e: Exception => throw new IllegalStateException(e)
 //    }
+  }
+
+  private def persistIdempotentCommandResponse(commandInfo: Option[IdempotentCommandInfo]): Unit = {
+    commandInfo match {
+      case Some(ci) =>
+        ci.command match {
+          case idm: IdempotentCommand[_] if idm.idempotencyId.isDefined =>
+            val key = idm.idempotencyId.get.asDbKey
+            commandResponseState.storeResponse(key, ci.response)
+          case _ => ()
+        }
+      case None => ()
+    }
+
   }
 
   private def respond(respondTo: ActorRef)(events: Seq[Event[AGGREGATE_ROOT]]): Unit = {

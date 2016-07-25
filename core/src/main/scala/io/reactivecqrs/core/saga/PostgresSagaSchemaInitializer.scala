@@ -16,6 +16,7 @@ class PostgresSagaSchemaInitializer {
           respond_to VARCHAR(256) NOT NULL,
           creation_time TIMESTAMP,
           phase VARCHAR(16) NOT NULL,
+          step INT NOT NULL,
           update_time TIMESTAMP,
           saga_order TEXT NOT NULL,
           order_type VARCHAR(256) NOT NULL)

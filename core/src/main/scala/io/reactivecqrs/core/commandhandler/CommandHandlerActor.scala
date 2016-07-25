@@ -7,7 +7,7 @@ import akka.actor.{Actor, ActorRef, Props}
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.command.{LogCommand, LogConcurrentCommand, LogFirstCommand}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRoot, PersistEvents}
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{IdempotentCommandInfo, GetAggregateRoot, PersistEvents}
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalCommandEnvelope, InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
 import io.reactivecqrs.core.util.ActorLogging
 
@@ -35,20 +35,41 @@ object CommandHandlerActor {
 class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
                                           repositoryActor: ActorRef,
                                           commandLogActor: ActorRef,
+                                          commandResponseState: CommandResponseState,
                                           commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, CustomCommandResult[Any]],
                                           initialState: () => AGGREGATE_ROOT) extends Actor with ActorLogging {
-  
+
   var resultAggregatorsCounter = 0
 
   val responseTimeout = 60.seconds // timeout for Response handler, we assume one minute is maximum for someone to wait for response
 
   private def waitingForCommand = logReceive {
     case commandEnvelope: InternalFirstCommandEnvelope[_, _] =>
-      handleFirstCommand(commandEnvelope.asInstanceOf[InternalFirstCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]])
+      respondIfAlreadyHandled(commandEnvelope.respondTo, commandEnvelope.commandEnvelope) {
+        handleFirstCommand(commandEnvelope.asInstanceOf[InternalFirstCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]])
+      }
     case commandEnvelope: InternalConcurrentCommandEnvelope[_, _] =>
-      requestAggregateForCommandHandling(commandEnvelope.asInstanceOf[InternalConcurrentCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]])
+      respondIfAlreadyHandled(commandEnvelope.respondTo, commandEnvelope.commandEnvelope) {
+        requestAggregateForCommandHandling(commandEnvelope.asInstanceOf[InternalConcurrentCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]])
+      }
     case commandEnvelope: InternalFollowingCommandEnvelope[_, _] =>
-      requestAggregateForCommandHandling(commandEnvelope.asInstanceOf[InternalFollowingCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]])
+      respondIfAlreadyHandled(commandEnvelope.respondTo, commandEnvelope.commandEnvelope) {
+        requestAggregateForCommandHandling(commandEnvelope.asInstanceOf[InternalFollowingCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]])
+      }
+  }
+
+  private def respondIfAlreadyHandled(respondTo: ActorRef, command: Any)(block: => Unit): Unit = {
+    command match {
+      case idm: IdempotentCommand[_] if idm.idempotencyId.isDefined =>
+        val key = idm.idempotencyId.get.asDbKey
+        commandResponseState.responseByKey(key) match {
+          case Some(response) =>
+            println("Command repeated " + idm)
+            respondTo ! response
+          case None => block
+        }
+      case _ => block
+    }
   }
 
   private def waitingForAggregate(command: InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]) = logReceive {
@@ -68,7 +89,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
       }
 
       resultTry match {
-        case  Success(result) => result match {
+        case Success(result) => result match {
           case s: CommandSuccess[_, _] =>
             val success = s.asInstanceOf[CommandSuccess[AGGREGATE_ROOT, AnyRef]]
             val response = success.responseInfo match {
@@ -76,8 +97,9 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
               case _ => CustomSuccessResponse(aggregateId, AggregateVersion(s.events.size), success.responseInfo)
             }
             val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, response.asInstanceOf[RESPONSE], responseTimeout)), nextResultAggregatorName)
-            repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, commandId, command.userId, Some(AggregateVersion.ZERO), Instant.now, success.events)
+            repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, commandId, command.userId, Some(AggregateVersion.ZERO), Instant.now, success.events, idempotentCommandInfo(command, response))
             commandLogActor ! LogFirstCommand(commandId, command)
+
           case failure: CommandFailure[_, _] =>
             respondTo ! failure.response
         }
@@ -85,6 +107,13 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
           respondTo ! CommandHandlingError(command.getClass.getSimpleName, stackTraceToString(exception), commandId)
           log.error(exception, "Error handling command")
       }
+  }
+
+  private def idempotentCommandInfo(command: Any, response: CustomCommandResponse[_]): Option[IdempotentCommandInfo] = {
+    command match {
+      case idm: IdempotentCommand[_] if idm.idempotencyId.isDefined => Some(IdempotentCommandInfo(idm, response))
+      case _ => None
+    }
   }
 
   private def stackTraceToString(e: Throwable) = {
@@ -129,12 +158,11 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
             case _ => CustomSuccessResponse(aggregateId, expectedVersion.getOrElse(aggregate.version).incrementBy(success.events.size), success.responseInfo)
           }
           val resultAggregator = context.actorOf(Props(new ResultAggregator[RESPONSE](respondTo, response.asInstanceOf[RESPONSE], responseTimeout)), nextResultAggregatorName)
-          repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, commandId, userId, expectedVersion, Instant.now, success.events)
+          repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, commandId, userId, expectedVersion, Instant.now, success.events, idempotentCommandInfo(command, response))
           command match {
             case c: Command[_, _] => commandLogActor ! LogCommand(commandId, c)
             case c: ConcurrentCommand[_, _] => commandLogActor ! LogConcurrentCommand(commandId, c)
           }
-
         case failure: CommandFailure[_, _] =>
           respondTo ! failure.response
       }

@@ -160,6 +160,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
         subscriptionsState.localTx { session =>
           eventListenersMap(e.aggregateType)(e.aggregateId, e.version, e.event.asInstanceOf[Event[Any]], e.userId, e.timestamp)(session)
           subscriptionsState.newVersionForEventsSubscription(this.getClass.getName, e.aggregateId, lastVersion, e.version)
+//          println("handled event " + e.event)
         }
         sender() ! MessageAck(self, e.aggregateId, e.version)
         replayQueries()
@@ -170,11 +171,13 @@ abstract class ProjectionActor extends Actor with ActorLogging {
             } else {
               delayedIdentifiableEvent -= e.aggregateId
             }
+//            println("replaying delayed event " + e.event)
             receiveUpdate(delayed.head)
           case _ => ()
         }
       } else if (e.version <= lastVersion) {
         sender() ! MessageAck(self, e.aggregateId, e.version)
+//        println("event already handled " + e.event)
       } else {
         delayedIdentifiableEvent.get(e.aggregateId) match {
           case None => delayedIdentifiableEvent += e.aggregateId -> List(e)

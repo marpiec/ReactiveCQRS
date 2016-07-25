@@ -1,6 +1,6 @@
 package io.reactivecqrs.api
 
-import io.reactivecqrs.api.id.{AggregateId, UserId}
+import io.reactivecqrs.api.id.{AggregateId, SagaId, UserId}
 
 //
 //// First Command
@@ -22,7 +22,17 @@ abstract class Command[AGGREGATE_ROOT, RESPONSE <: CustomCommandResponse[_]] {
 }
 
 
+trait CommandIdempotencyId {
+  def asDbKey: String
+}
 
+case class SagaStep(sagaId: SagaId, step: Int) extends CommandIdempotencyId {
+  override def asDbKey: String = sagaId+"|"+step
+}
+
+trait IdempotentCommand[IID <: CommandIdempotencyId] {
+  val idempotencyId: Option[IID]
+}
 
 /**
  * Trait used when command have to be transformed before stored in Command Log.

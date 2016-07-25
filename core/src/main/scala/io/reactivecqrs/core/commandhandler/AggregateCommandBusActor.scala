@@ -27,11 +27,14 @@ object AggregateCommandBusActor {
   private case class EnsureEventsPublished(oldOnly: Boolean)
 
   def apply[AGGREGATE_ROOT:ClassTag:TypeTag](aggregate: AggregateContext[AGGREGATE_ROOT],
-                                             uidGenerator: ActorRef, eventStoreState: EventStoreState, commandLogState: CommandLogState, eventBus: ActorRef): Props = {
+                                             uidGenerator: ActorRef, eventStoreState: EventStoreState, commandLogState: CommandLogState,
+                                             commandResponseState: CommandResponseState,
+                                             eventBus: ActorRef): Props = {
     Props(new AggregateCommandBusActor[AGGREGATE_ROOT](
       uidGenerator,
       eventStoreState,
       commandLogState,
+      commandResponseState,
       aggregate.commandHandlers,
       aggregate.eventHandlers,
       eventBus,
@@ -47,6 +50,7 @@ object AggregateCommandBusActor {
 class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRef,
                                                        eventStoreState: EventStoreState,
                                                        commandLogState: CommandLogState,
+                                                       commandResponseState: CommandResponseState,
                                                        val commandsHandlers: AGGREGATE_ROOT => PartialFunction[Any, CustomCommandResult[Any]],
                                                        val eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
                                                        val eventBus: ActorRef,
@@ -83,7 +87,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
   private def ensureEventsPublished(oldOnly: Boolean): Unit = {
     eventStoreState.readAggregatesWithEventsToPublish(oldOnly)(aggregateId => {
-      log.info("Initializing Aggregate to resend events " + aggregateId)
+      log.info("Initializing Aggregate to resend events (oldOnly="+oldOnly+") " + aggregateId)
       createAggregateActorsIfNeeded(aggregateId)
     })
   }
@@ -109,7 +113,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     val commandLogActor = context.actorOf(Props(new CommandLogActor[AGGREGATE_ROOT](aggregateId, commandLogState)), aggregateTypeSimpleName+"_CommandLog_" + aggregateId.asLong)
 
     val commandHandlerActor = context.actorOf(Props(new CommandHandlerActor[AGGREGATE_ROOT](
-      aggregateId, repositoryActor, commandLogActor,
+      aggregateId, repositoryActor, commandLogActor, commandResponseState,
       commandsHandlers.asInstanceOf[AGGREGATE_ROOT => PartialFunction[Any, CustomCommandResult[Any]]],
     initialState)),
       aggregateTypeSimpleName + "_CommandHandler_" + aggregateId.asLong)
@@ -121,14 +125,14 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
   private def getOrCreateAggregateRepositoryActor(aggregateId: AggregateId): ActorRef = {
     context.child(aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong).getOrElse(
-      context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, eventBus, eventHandlers, initialState, None)),
+      context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, commandResponseState, eventBus, eventHandlers, initialState, None)),
         aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong)
     )
   }
 
   private def getOrCreateAggregateRepositoryActorForVersion(aggregateId: AggregateId, aggregateVersion: AggregateVersion): ActorRef = {
     context.child(aggregateTypeSimpleName + "_AggregateRepositoryForVersion_" + aggregateId.asLong+"_"+aggregateVersion.asInt).getOrElse(
-      context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, eventBus, eventHandlers, initialState, Some(aggregateVersion))),
+      context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, commandResponseState, eventBus, eventHandlers, initialState, Some(aggregateVersion))),
         aggregateTypeSimpleName + "_AggregateRepositoryForVersion_" + aggregateId.asLong+"_"+aggregateVersion.asInt)
     )
   }

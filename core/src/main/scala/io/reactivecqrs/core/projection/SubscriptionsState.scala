@@ -109,7 +109,7 @@ class PostgresSubscriptionsState extends SubscriptionsState {
   }
 
   private def createSubscriberTypeAggregateIdIndex() = DB.autoCommit { implicit session =>
-    sql"""CREATE UNIQUE INDEX subscriptions_sub_type_agg_id_idx ON event_bus (subscriber_name, subscription_type, aggregate_id)""".execute().apply()
+    sql"""CREATE UNIQUE INDEX subscriptions_sub_type_agg_id_idx ON subscriptions (subscriber_name, subscription_type, aggregate_id)""".execute().apply()
   }
 
   override def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion = {

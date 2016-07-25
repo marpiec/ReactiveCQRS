@@ -7,7 +7,7 @@ CQRS framework implementation leveraging Scala and Akka framework, for building 
 
 # TODO
 - Projection rebuild
-- Sagas based on events
+- Sagas based on events - no, instead idempotent sagas commands
 - Event bus database writes optimization
 - Handle OptimisticLockingFailed
 - Common transaction for document stores

@@ -1,18 +1,17 @@
 package io.reactivecqrs.core.saga
 
-import akka.actor.ActorRef
-import io.reactivecqrs.api.id.UserId
+import io.reactivecqrs.api.id.{SagaId, UserId}
 
 
 abstract class SagaState {
 
-  def createSaga(name: String, sagaId: Long, respondTo: String, order: SagaInternalOrder): Unit
+  def createSaga(name: String, sagaId: SagaId, respondTo: String, order: SagaInternalOrder): Unit
 
-  def updateSaga(name: String, sagaId: Long, order: SagaInternalOrder, phase: SagaPhase): Unit
+  def updateSaga(name: String, sagaId: SagaId, order: SagaInternalOrder, phase: SagaPhase, step: Int): Unit
 
-  def deleteSaga(name: String, sagaId: Long): Unit
+  def deleteSaga(name: String, sagaId: SagaId): Unit
 
-  def loadAllSagas(handler: (String, Long, UserId, String, SagaPhase, SagaInternalOrder) => Unit): Unit
+  def loadAllSagas(handler: (String, SagaId, UserId, String, SagaPhase, Int, SagaInternalOrder) => Unit): Unit
 }
 
 
