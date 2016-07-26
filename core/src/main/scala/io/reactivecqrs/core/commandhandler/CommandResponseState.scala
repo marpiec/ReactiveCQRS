@@ -12,6 +12,18 @@ trait CommandResponseState {
   def responseByKey(key: String): Option[CustomCommandResponse[_]]
 }
 
+class MemoryCommandResponseState extends CommandResponseState {
+
+  var cache = Map[String, CustomCommandResponse[_]]()
+
+  override def storeResponse(key: String, response: CustomCommandResponse[_])(implicit session: DBSession): Unit = {
+    cache += key -> response
+  }
+
+  override def responseByKey(key: String): Option[CustomCommandResponse[_]] = {
+    cache.get(key)
+  }
+}
 
 class PostgresCommandResponseState(mpjsons: MPJsons, typesNamesState: TypesNamesState) extends CommandResponseState {
 
