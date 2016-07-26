@@ -9,10 +9,9 @@ import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, 
 import io.reactivecqrs.core.eventsreplayer.{EventsReplayerActor, ReplayerRepositoryActorFactory}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection.PostgresSubscriptionsState
-import io.reactivecqrs.core.types.PostgresTypesState
+import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCartAggregateContext, ShoppingCartsListProjectionAggregatesBased, ShoppingCartsListProjectionEventsBased}
 import io.reactivecqrs.testutils.CommonSpec
-import org.apache.commons.dbcp.BasicDataSource
 import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
 
 import scala.concurrent.duration._
@@ -34,13 +33,13 @@ class EventsReplaySpec extends CommonSpec {
     val system = ActorSystem("main-actor-system")
 
     val mpjsons = new MPJsons
-    val typesState = new PostgresTypesState().initSchema()
-    val eventStoreState = new PostgresEventStoreState(mpjsons, typesState) // or MemoryEventStore
+    val typesTypesState = new PostgresTypesNamesState().initSchema()
+    val eventStoreState = new PostgresEventStoreState(mpjsons, typesTypesState) // or MemoryEventStore
     eventStoreState.initSchema()
 
 
     val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(system.actorOf(Props(new EventBusSubscriptionsManager(0))))
-    val subscriptionState = new PostgresSubscriptionsState
+    val subscriptionState = new PostgresSubscriptionsState(typesTypesState)
     subscriptionState.initSchema()
 
     val inMemory = false

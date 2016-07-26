@@ -32,7 +32,7 @@ class PostgresEventStoreSchemaInitializer  {
           aggregate_id BIGINT NOT NULL,
           event_time TIMESTAMP NOT NULL,
           version INT NOT NULL,
-          event_type VARCHAR(1024) NOT NULL,
+          event_type_id SMALLINT NOT NULL,
           event TEXT NOT NULL)
       """.execute().apply()
   }
@@ -40,7 +40,7 @@ class PostgresEventStoreSchemaInitializer  {
   private def createNoopEventTable(): Unit = DB.autoCommit { implicit session =>
     sql"""
         CREATE TABLE IF NOT EXISTS noop_events (
-          id INT NOT NULL PRIMARY KEY,
+          id BIGINT NOT NULL PRIMARY KEY,
           from_version INT NOT NULL)
       """.execute().apply()
   }
@@ -61,7 +61,7 @@ class PostgresEventStoreSchemaInitializer  {
     sql"""
         CREATE TABLE IF NOT EXISTS aggregates (
           id BIGINT NOT NULL,
-          type_id INT NOT NULL,
+          type_id SMALLINT NOT NULL,
           base_order INT NOT NULL,
           base_id BIGINT NOT NULL,
           base_version INT NOT NULL,
@@ -75,14 +75,14 @@ class PostgresEventStoreSchemaInitializer  {
   }
 
   private def dropExistingFunctions(): Unit = DB.autoCommit { implicit session =>
-    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, BIGINT, INT, INT, VARCHAR(128), TIMESTAMP, VARCHAR(10240))""".execute().apply()
-    sql"""DROP FUNCTION IF EXISTS add_undo_event(BIGINT, BIGINT, BIGINT, INT, INT, VARCHAR(128), TIMESTAMP, VARCHAR(10240), INT)""".execute().apply()
-    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, BIGINT, INT, INT, VARCHAR(128), TIMESTAMP, VARCHAR(10240), BIGINT, INT)""".execute().apply()
+    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, BIGINT, INT, INT, INT, TIMESTAMP, VARCHAR(10240))""".execute().apply()
+    sql"""DROP FUNCTION IF EXISTS add_undo_event(BIGINT, BIGINT, BIGINT, INT, INT, INT, TIMESTAMP, VARCHAR(10240), INT)""".execute().apply()
+    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, BIGINT, INT, INT, INT, TIMESTAMP, VARCHAR(10240), BIGINT, INT)""".execute().apply()
   }
 
   private def createAddEventFunction(): Unit = DB.autoCommit { implicit session =>
     SQL("""
-          |CREATE OR REPLACE FUNCTION add_event(command_id BIGINT, user_id BIGINT, aggregate_id BIGINT, expected_version INT, aggregate_type_id INT, event_type VARCHAR(128), event_time TIMESTAMP, event VARCHAR(10240))
+          |CREATE OR REPLACE FUNCTION add_event(command_id BIGINT, user_id BIGINT, aggregate_id BIGINT, expected_version INT, aggregate_type_id SMALLINT, event_type_id SMALLINT, event_time TIMESTAMP, event VARCHAR(10240))
           |RETURNS BIGINT AS
           |$$
           |DECLARE
@@ -99,10 +99,10 @@ class PostgresEventStoreSchemaInitializer  {
           |        END IF;
           |    END IF;
           |    IF expected_version >= 0 AND current_version != expected_version THEN
-          |  	     RAISE EXCEPTION 'Concurrent aggregate modification exception, command id %, user id %, aggregate id %, expected version %, current_version %, event_type %, event %', command_id, user_id, aggregate_id, expected_version, current_version, event_type, event;
+          |  	     RAISE EXCEPTION 'Concurrent aggregate modification exception, command id %, user id %, aggregate id %, expected version %, current_version %, event_type_id %, event %', command_id, user_id, aggregate_id, expected_version, current_version, event_type_id, event;
           |    END IF;
           |    SELECT NEXTVAL('events_seq') INTO event_id;
-          |    INSERT INTO events (id, command_id, user_id, aggregate_id, event_time, version, event_type, event) VALUES (event_id, command_id, user_id, aggregate_id, event_time, current_version + 1, event_type, event);
+          |    INSERT INTO events (id, command_id, user_id, aggregate_id, event_time, version, event_type_id, event) VALUES (event_id, command_id, user_id, aggregate_id, event_time, current_version + 1, event_type_id, event);
           |    INSERT INTO events_to_publish (event_id, aggregate_id, version, user_id, event_time) VALUES(event_id, aggregate_id, current_version + 1, user_id, event_time);
           |    RETURN current_version + 1;
           |END;
@@ -113,7 +113,7 @@ class PostgresEventStoreSchemaInitializer  {
 
   private def createAddUndoEventFunction(): Unit = DB.autoCommit { implicit session =>
     SQL("""
-          |CREATE OR REPLACE FUNCTION add_undo_event(command_id BIGINT, user_id BIGINT, _aggregate_id BIGINT, expected_version INT, aggregate_type_id INT, event_type VARCHAR(128), event_time TIMESTAMP, event VARCHAR(10240), undo_count INT)
+          |CREATE OR REPLACE FUNCTION add_undo_event(command_id BIGINT, user_id BIGINT, _aggregate_id BIGINT, expected_version INT, aggregate_type_id SMALLINT, event_type_id SMALLINT, event_time TIMESTAMP, event VARCHAR(10240), undo_count INT)
           |RETURNS BIGINT AS
           |$$
           |DECLARE
@@ -129,7 +129,7 @@ class PostgresEventStoreSchemaInitializer  {
           |        END IF;
           |    END IF;
           |    IF expected_version >= 0 AND current_version != expected_version THEN
-          |	       RAISE EXCEPTION 'Concurrent aggregate modification exception, command id %, user id %, aggregate id %, expected version %, current_version %, event_type %, event %', command_id, user_id, aggregate_id, expected_version, current_version, event_type, event;
+          |	       RAISE EXCEPTION 'Concurrent aggregate modification exception, command id %, user id %, aggregate id %, expected version %, current_version %, event_type_id %, event %', command_id, user_id, aggregate_id, expected_version, current_version, event_type_id, event;
           |    END IF;
           |    SELECT NEXTVAL('events_seq') INTO event_id;
           |    INSERT INTO noop_events (id, from_version) (select events.id, current_version + 1
@@ -137,7 +137,7 @@ class PostgresEventStoreSchemaInitializer  {
           |     left join noop_events on events.id = noop_events.id
           |     where events.aggregate_id = _aggregate_id AND noop_events.id is null order by events.version desc limit undo_count);
           |    INSERT INTO noop_events(id, from_version) VALUES (event_id, current_version + 1);
-          |    INSERT INTO events (id, command_id, user_id, aggregate_id, event_time, version, event_type, event) VALUES (event_id, command_id, user_id, _aggregate_id, event_time, current_version + 1, event_type, event);
+          |    INSERT INTO events (id, command_id, user_id, aggregate_id, event_time, version, event_type_id, event) VALUES (event_id, command_id, user_id, _aggregate_id, event_time, current_version + 1, event_type_id, event);
           |    INSERT INTO events_to_publish (event_id, aggregate_id, version, user_id, event_time) VALUES(event_id, _aggregate_id, current_version + 1, user_id, event_time);
           |    RETURN current_version + 1;
           |END;
@@ -148,7 +148,7 @@ class PostgresEventStoreSchemaInitializer  {
 
   private def createAddDuplicationEventFunction(): Unit = DB.autoCommit { implicit session =>
     SQL("""
-          |CREATE OR REPLACE FUNCTION add_duplication_event(command_id BIGINT, user_id BIGINT, aggregate_id BIGINT, expected_version INT, aggregate_type_id INT, event_type VARCHAR(128), event_time TIMESTAMP, event VARCHAR(10240), _base_id BIGINT, _base_version INT)
+          |CREATE OR REPLACE FUNCTION add_duplication_event(command_id BIGINT, user_id BIGINT, aggregate_id BIGINT, expected_version INT, aggregate_type_id SMALLINT, event_type_id SMALLINT, event_time TIMESTAMP, event VARCHAR(10240), _base_id BIGINT, _base_version INT)
           |RETURNS BIGINT AS
           |$$
           |DECLARE
@@ -173,7 +173,7 @@ class PostgresEventStoreSchemaInitializer  {
           |      RAISE EXCEPTION 'Duplication event might occur only for non existing aggregate, but such was found';
           |    END IF;
           |    SELECT NEXTVAL('events_seq') INTO event_id;
-          |    INSERT INTO events (id, command_id, user_id, aggregate_id, event_time, version, event_type, event) VALUES (event_id, command_id, user_id, aggregate_id, event_time, current_version + 1, event_type, event);
+          |    INSERT INTO events (id, command_id, user_id, aggregate_id, event_time, version, event_type_id, event) VALUES (event_id, command_id, user_id, aggregate_id, event_time, current_version + 1, event_type_id, event);
           |    INSERT INTO events_to_publish (event_id, aggregate_id, version, user_id, event_time) VALUES(event_id, aggregate_id, current_version + 1, user_id, event_time);
           |    RETURN current_version + 1;
           |END;

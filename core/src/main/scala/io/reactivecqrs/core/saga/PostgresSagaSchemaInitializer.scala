@@ -19,7 +19,7 @@ class PostgresSagaSchemaInitializer {
           step INT NOT NULL,
           update_time TIMESTAMP,
           saga_order TEXT NOT NULL,
-          order_type VARCHAR(256) NOT NULL)
+          order_type_id INT NOT NULL)
       """.execute().apply()
   }
 }

@@ -1,7 +1,7 @@
 package io.reactivecqrs.core.eventstore
 
 import io.mpjsons.MPJsons
-import io.reactivecqrs.core.types.PostgresTypesState
+import io.reactivecqrs.core.types.PostgresTypesNamesState
 import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
 
 object PostgresEventStoreStateSpec {
@@ -14,9 +14,9 @@ object PostgresEventStoreStateSpec {
     Class.forName("org.postgresql.Driver")
     ConnectionPool.singleton("jdbc:postgresql://localhost:5432/reactivecqrs", "reactivecqrs", "reactivecqrs", settings)
 
-    val typesState = new PostgresTypesState().initSchema()
+    val typesNamesState = new PostgresTypesNamesState().initSchema()
 
-    new PostgresEventStoreState(new MPJsons, typesState).initSchema()
+    new PostgresEventStoreState(new MPJsons, typesNamesState).initSchema()
   }
 }
 

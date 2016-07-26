@@ -11,6 +11,7 @@ import io.reactivecqrs.core.aggregaterepository.IdentifiableEvent
 import io.reactivecqrs.core.documentstore.NothingMetadata
 import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubscriptionsManagerApi}
 import io.reactivecqrs.core.projection.SubscribableProjectionActor.{CancelProjectionSubscriptions, ProjectionSubscriptionsCancelled, SubscribedForProjectionUpdates, SubscriptionUpdated}
+import io.reactivecqrs.core.types.PostgresTypesNamesState
 import org.scalatest.{BeforeAndAfter, FeatureSpecLike, GivenWhenThen}
 import scalikejdbc.DBSession
 
@@ -65,7 +66,8 @@ class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAnd
 
     val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(TestActorRef(Props(new EventBusSubscriptionsManager(0))))
 
-    val subscriptionsState = new PostgresSubscriptionsState
+    val typesNamesState = new PostgresTypesNamesState
+    val subscriptionsState = new PostgresSubscriptionsState(typesNamesState)
     subscriptionsState.initSchema()
 
     val simpleProjectionActor = TestActorRef(Props(new SimpleProjection(eventBusSubscriptionsManager, subscriptionsState)))

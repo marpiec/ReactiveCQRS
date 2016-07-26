@@ -4,13 +4,40 @@ import io.mpjsons.MPJsons
 import scalikejdbc._
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
+import io.reactivecqrs.core.types.TypesNamesState
+import org.postgresql.util.PSQLException
 
-class PostgresCommandLogState(mpjsons: MPJsons) extends CommandLogState {
+class PostgresCommandLogState(mpjsons: MPJsons, typesNamesState: TypesNamesState) extends CommandLogState {
+
 
   def initSchema(): PostgresCommandLogState = {
-    new PostgresCommandLogSchemaInitializer().initSchema()
+    createCommandLogTable()
+    try {
+      createCommandLogSequence()
+    } catch {
+      case e: PSQLException => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
+    }
     this
   }
+
+  private def createCommandLogTable() = DB.autoCommit { implicit session =>
+    sql"""
+        CREATE TABLE IF NOT EXISTS commands (
+          id BIGINT NOT NULL PRIMARY KEY,
+          command_id BIGINT NOT NULL,
+          user_id BIGINT NOT NULL,
+          aggregate_id BIGINT NOT NULL,
+          command_time TIMESTAMP NOT NULL,
+          expected_version INT NOT NULL,
+          command_type_id SMALLINT NOT NULL,
+          command TEXT NOT NULL)
+      """.execute().apply()
+  }
+
+  private def createCommandLogSequence() = DB.autoCommit { implicit session =>
+    sql"""CREATE SEQUENCE commands_seq""".execute().apply()
+  }
+
 
   def storeFirstCommand(commandId: CommandId, aggregateId: AggregateId, command: FirstCommand[_, _ <: CustomCommandResponse[_]]): Unit = {
 
@@ -44,9 +71,9 @@ class PostgresCommandLogState(mpjsons: MPJsons) extends CommandLogState {
 
   private def storeAnyCommand(commandId: CommandId, userId: UserId, aggregateId: AggregateId, expectedVersion: Int, commandType: String, commandJson: String): Unit = {
     DB.autoCommit { implicit session =>
-      sql"""INSERT INTO commands (id ,command_id ,user_id ,aggregate_id ,command_time ,expected_version ,command_type ,command)
+      sql"""INSERT INTO commands (id, command_id, user_id, aggregate_id, command_time, expected_version, command_type_id, command)
           |VALUES (NEXTVAL('commands_seq'), ?, ?, ?, current_timestamp, ?, ?, ?)""".stripMargin
-        .bind(commandId.asLong, userId.asLong, aggregateId.asLong, expectedVersion, commandType, commandJson).executeUpdate().apply()
+        .bind(commandId.asLong, userId.asLong, aggregateId.asLong, expectedVersion, typesNamesState.typeIdByClassName(commandType), commandJson).executeUpdate().apply()
       }
   }
 

@@ -5,19 +5,19 @@ import scalikejdbc._
 
 import scala.collection.mutable
 
-trait TypesState {
-  def typeIdByClass(clazz: Class[_]): Int = typeIdByClassName(clazz.getName)
-  def typeIdByClassName(className: String): Int
-  def classNameById(id: Int): String
+trait TypesNamesState {
+  def typeIdByClass(clazz: Class[_]): Short = typeIdByClassName(clazz.getName)
+  def typeIdByClassName(className: String): Short
+  def classNameById(id: Short): String
 }
 
 
-class PostgresTypesState extends TypesState {
+class PostgresTypesNamesState extends TypesNamesState {
 
-  private val cache = mutable.HashMap[String, Int]()
-  private val cacheReverse = mutable.HashMap[Int, String]()
+  private val cache = mutable.HashMap[String, Short]()
+  private val cacheReverse = mutable.HashMap[Short, String]()
 
-  def initSchema(): PostgresTypesState = {
+  def initSchema(): PostgresTypesNamesState = {
     createTypesNamesTable()
     try {
       createTypesNamesSequence()
@@ -35,7 +35,7 @@ class PostgresTypesState extends TypesState {
   private def createTypesNamesTable() = DB.autoCommit { implicit session =>
     sql"""
        CREATE TABLE IF NOT EXISTS types_names (
-         id INT NOT NULL PRIMARY KEY,
+         id SMALLINT NOT NULL PRIMARY KEY,
          name VARCHAR(255) NOT NULL)
      """.execute().apply()
   }
@@ -48,20 +48,20 @@ class PostgresTypesState extends TypesState {
     sql"""CREATE UNIQUE INDEX types_names_names_idx ON types_names (name)""".execute().apply()
   }
 
-  override def typeIdByClassName(className: String): Int = {
+  override def typeIdByClassName(className: String): Short = {
     cache.getOrElseUpdate(className, getTypeIdFromDB(className))
   }
 
-  override def classNameById(id: Int): String = {
+  override def classNameById(id: Short): String = {
     cacheReverse.getOrElseUpdate(id, getTypeNameFromDB(id))
   }
 
-  private def getTypeIdFromDB(className: String): Int = synchronized {
+  private def getTypeIdFromDB(className: String): Short = synchronized {
     cache.get(className) match {
       case Some(id) => id
       case None => DB.localTx { implicit session =>
         val idOption = sql"""SELECT id FROM types_names WHERE name = ?"""
-          .bind(className).map(_.int(1)).single().apply()
+          .bind(className).map(_.short(1)).single().apply()
         idOption match {
           case Some(id) => id
           case None => insertName(className)
@@ -70,7 +70,7 @@ class PostgresTypesState extends TypesState {
     }
   }
 
-  private def getTypeNameFromDB(id: Int): String = synchronized {
+  private def getTypeNameFromDB(id: Short): String = synchronized {
     cacheReverse.get(id) match {
       case Some(className) => className
       case None => DB.localTx { implicit session =>
@@ -80,9 +80,9 @@ class PostgresTypesState extends TypesState {
     }
   }
 
-  private def insertName(className: String)(implicit session: DBSession): Int = {
+  private def insertName(className: String)(implicit session: DBSession): Short = {
     sql"""INSERT INTO types_names (id, name) VALUES (nextval('types_names_seq'), ?) RETURNING currval('types_names_seq')"""
-      .bind(className).map(_.int(1)).single().apply().get
+      .bind(className).map(_.short(1)).single().apply().get
   }
 
 }

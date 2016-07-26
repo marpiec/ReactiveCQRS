@@ -2,7 +2,7 @@ package io.reactivecqrs.core.commandhandler
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.CustomCommandResponse
-import io.reactivecqrs.api.id.AggregateId
+import io.reactivecqrs.core.types.TypesNamesState
 import org.postgresql.util.PSQLException
 import scalikejdbc._
 
@@ -13,7 +13,7 @@ trait CommandResponseState {
 }
 
 
-class PostgresCommandResponseState(mpjsons: MPJsons) extends CommandResponseState {
+class PostgresCommandResponseState(mpjsons: MPJsons, typesNamesState: TypesNamesState) extends CommandResponseState {
 
   def initSchema(): PostgresCommandResponseState = {
     createCommandResponseTable()
@@ -37,7 +37,7 @@ class PostgresCommandResponseState(mpjsons: MPJsons) extends CommandResponseStat
            key VARCHAR(256) NOT NULL,
            handling_timestamp TIMESTAMP,
            response TEXT NOT NULL,
-           response_type VARCHAR(256) NOT NULL)
+           response_type_id SMALLINT NOT NULL)
        """.execute().apply()
   }
 
@@ -50,14 +50,14 @@ class PostgresCommandResponseState(mpjsons: MPJsons) extends CommandResponseStat
   }
 
   override def storeResponse(key: String, response: CustomCommandResponse[_])(implicit session: DBSession): Unit = {
-    sql"""INSERT INTO commands_responses (id, key, handling_timestamp, response, response_type) VALUES (nextval('commands_responses_seq'), ?, current_timestamp, ?, ?)"""
-      .bind(key, mpjsons.serialize(response, response.getClass.getName), response.getClass.getName).executeUpdate().apply()
+    sql"""INSERT INTO commands_responses (id, key, handling_timestamp, response, response_type_id) VALUES (nextval('commands_responses_seq'), ?, current_timestamp, ?, ?)"""
+      .bind(key, mpjsons.serialize(response, response.getClass.getName), typesNamesState.typeIdByClass(response.getClass)).executeUpdate().apply()
   }
 
   override def responseByKey(key: String): Option[CustomCommandResponse[_]] = {
     DB.readOnly { implicit session =>
-      sql"""SELECT response, response_type FROM commands_responses WHERE key = ?"""
-        .bind(key).map(rs => mpjsons.deserialize[CustomCommandResponse[_]](rs.string(1), rs.string(2))).single.apply()
+      sql"""SELECT response, response_type_id FROM commands_responses WHERE key = ?"""
+        .bind(key).map(rs => mpjsons.deserialize[CustomCommandResponse[_]](rs.string(1), typesNamesState.classNameById(rs.short(2)))).single.apply()
     }
   }
 }

@@ -27,7 +27,7 @@ trait CommandIdempotencyId {
 }
 
 case class SagaStep(sagaId: SagaId, step: Int) extends CommandIdempotencyId {
-  override def asDbKey: String = sagaId+"|"+step
+  override def asDbKey: String = sagaId.asLong+"|"+step
 }
 
 trait IdempotentCommand[IID <: CommandIdempotencyId] {

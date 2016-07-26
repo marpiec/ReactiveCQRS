@@ -12,12 +12,11 @@ import io.reactivecqrs.core.eventbus._
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection.PostgresSubscriptionsState
 import io.reactivecqrs.core.saga.PostgresSagaState
-import io.reactivecqrs.core.types.PostgresTypesState
+import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.{CreateMultipleCarts, MultipleCartCreatorSagaResponse}
 import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCartAggregateContext, _}
 import io.reactivecqrs.testutils.CommonSpec
-import org.apache.commons.dbcp.BasicDataSource
 import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
 
 import scala.util.Try
@@ -40,12 +39,11 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val system = ActorSystem("main-actor-system")
 
     val mpjsons = new MPJsons
-    val typesState = new PostgresTypesState().initSchema()
-    val eventStoreState = new PostgresEventStoreState(mpjsons, typesState).initSchema() // or MemoryEventStore
+    val typesNamesState = new PostgresTypesNamesState().initSchema()
+    val eventStoreState = new PostgresEventStoreState(mpjsons, typesNamesState).initSchema() // or MemoryEventStore
+    val commandLogState = new PostgresCommandLogState(mpjsons, typesNamesState).initSchema()
 
-    val commandLogState = new PostgresCommandLogState(mpjsons).initSchema()
-
-    val commandResponseState = new PostgresCommandResponseState(mpjsons).initSchema()
+    val commandResponseState = new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema()
 
     val userId = UserId(1L)
     val serialization = SerializationExtension(system)
@@ -63,13 +61,13 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val shoppingCartCommandBus: ActorRef = system.actorOf(
       AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandLogState, commandResponseState, eventBusActor), "ShoppingCartCommandBus")
 
-    val sagaState = new PostgresSagaState(mpjsons)
+    val sagaState = new PostgresSagaState(mpjsons, typesNamesState)
     sagaState.initSchema()
 
     val multipleCartCreatorSaga: ActorRef = system.actorOf(
       Props(new MultipleCartCreatorSaga(sagaState, uidGenerator, shoppingCartCommandBus))
     )
-    val subscriptionsState = new PostgresSubscriptionsState
+    val subscriptionsState = new PostgresSubscriptionsState(typesNamesState)
     subscriptionsState.initSchema()
 
 
