@@ -18,7 +18,7 @@ class MemoryTypesNamesState extends TypesNamesState {
 
   override def typeIdByClassName(className: String): Short = synchronized {
     cache.getOrElse(className, {
-      idGenerator += 1
+      idGenerator = (idGenerator + 1).toShort
       cache += className -> idGenerator
       cacheReverse += idGenerator -> className
       idGenerator
