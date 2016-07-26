@@ -8,9 +8,10 @@ import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEventNoAggregateType}
+import io.reactivecqrs.core.types.TypesState
 import scalikejdbc._
 
-class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
+class PostgresEventStoreState(mpjsons: MPJsons, typesState: TypesState) extends EventStoreState {
 
   def initSchema(): PostgresEventStoreState = {
     (new PostgresEventStoreSchemaInitializer).initSchema()
@@ -31,7 +32,7 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
             eventsEnvelope.userId.asLong,
             aggregateId.asLong,
             eventsEnvelope.expectedVersion.map(v => lastEventVersion.getOrElse(v.asInt)).getOrElse(-1),
-            event.aggregateRootType.typeSymbol.fullName,
+            typesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
             event.getClass.getName,
             Timestamp.from(Instant.now),
             eventSerialized,
@@ -44,7 +45,7 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
             eventsEnvelope.userId.asLong,
             aggregateId.asLong,
             eventsEnvelope.expectedVersion.map(v => lastEventVersion.getOrElse(v.asInt)).getOrElse(-1),
-            event.aggregateRootType.typeSymbol.fullName,
+            typesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
             event.getClass.getName,
             Timestamp.from(Instant.now),
             eventSerialized,
@@ -57,7 +58,7 @@ class PostgresEventStoreState(mpjsons: MPJsons) extends EventStoreState {
             eventsEnvelope.userId.asLong,
             aggregateId.asLong,
             eventsEnvelope.expectedVersion.map(v => lastEventVersion.getOrElse(v.asInt)).getOrElse(-1),
-            event.aggregateRootType.typeSymbol.fullName,
+            typesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
             event.getClass.getName,
             Timestamp.from(Instant.now),
             eventSerialized

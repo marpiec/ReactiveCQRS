@@ -7,7 +7,7 @@ CQRS framework implementation leveraging Scala and Akka framework, for building 
 
 # TODO
 - Projection rebuild
-- Sagas based on events - no, instead idempotent sagas commands
 - Event bus database writes optimization
 - Handle OptimisticLockingFailed
+- extract class_names to separate table - to reduce tables size
 - Common transaction for document stores

@@ -9,6 +9,7 @@ import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, 
 import io.reactivecqrs.core.eventsreplayer.{EventsReplayerActor, ReplayerRepositoryActorFactory}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection.PostgresSubscriptionsState
+import io.reactivecqrs.core.types.PostgresTypesState
 import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCartAggregateContext, ShoppingCartsListProjectionAggregatesBased, ShoppingCartsListProjectionEventsBased}
 import io.reactivecqrs.testutils.CommonSpec
 import org.apache.commons.dbcp.BasicDataSource
@@ -33,7 +34,8 @@ class EventsReplaySpec extends CommonSpec {
     val system = ActorSystem("main-actor-system")
 
     val mpjsons = new MPJsons
-    val eventStoreState = new PostgresEventStoreState(mpjsons) // or MemoryEventStore
+    val typesState = new PostgresTypesState().initSchema()
+    val eventStoreState = new PostgresEventStoreState(mpjsons, typesState) // or MemoryEventStore
     eventStoreState.initSchema()
 
 

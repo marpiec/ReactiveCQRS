@@ -12,6 +12,7 @@ import io.reactivecqrs.core.eventbus._
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection.PostgresSubscriptionsState
 import io.reactivecqrs.core.saga.PostgresSagaState
+import io.reactivecqrs.core.types.PostgresTypesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.{CreateMultipleCarts, MultipleCartCreatorSagaResponse}
 import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCartAggregateContext, _}
@@ -39,7 +40,8 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val system = ActorSystem("main-actor-system")
 
     val mpjsons = new MPJsons
-    val eventStoreState = new PostgresEventStoreState(mpjsons).initSchema() // or MemoryEventStore
+    val typesState = new PostgresTypesState().initSchema()
+    val eventStoreState = new PostgresEventStoreState(mpjsons, typesState).initSchema() // or MemoryEventStore
 
     val commandLogState = new PostgresCommandLogState(mpjsons).initSchema()
 
