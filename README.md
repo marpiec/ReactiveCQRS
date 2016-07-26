@@ -13,3 +13,6 @@ CQRS framework implementation leveraging Scala and Akka framework, for building 
 - Caching document store - to improve performance of projection rebuilding
 - document store based on scalikejdbc - to improve logging of queries
 - verify and optimize db indieces
+- clock injected to framework
+- Query for events and aggregate state
+- Pass execution context to command handlers?
