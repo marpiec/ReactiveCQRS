@@ -7,7 +7,7 @@ CQRS framework implementation leveraging Scala and Akka framework, for building 
 
 # TODO
 - Projection rebuild
-- Event bus database writes optimization
+- Event bus database writes optimization - aggregate update in chunks
 - Handle OptimisticLockingFailed
-- extract class_names to separate table - to reduce tables size
 - Common transaction for document stores
+- Caching document store - to improve performance of projection rebuilding
