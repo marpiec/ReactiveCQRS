@@ -11,6 +11,24 @@ trait TypesNamesState {
   def classNameById(id: Short): String
 }
 
+class MemoryTypesNamesState extends TypesNamesState {
+  private var idGenerator: Short = 0
+  private val cache = mutable.HashMap[String, Short]()
+  private val cacheReverse = mutable.HashMap[Short, String]()
+
+  override def typeIdByClassName(className: String): Short = synchronized {
+    cache.getOrElse(className, {
+      idGenerator += 1
+      cache += className -> idGenerator
+      cacheReverse += idGenerator -> className
+      idGenerator
+    })
+  }
+
+  override def classNameById(id: Short): String = synchronized {
+    cacheReverse(id)
+  }
+}
 
 class PostgresTypesNamesState extends TypesNamesState {
 
