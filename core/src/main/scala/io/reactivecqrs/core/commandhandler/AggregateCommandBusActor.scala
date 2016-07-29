@@ -59,6 +59,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
 
 
+  val aggregateTypeName = aggregateRootClassTag.runtimeClass.getName
   val aggregateTypeSimpleName = aggregateRootClassTag.runtimeClass.getSimpleName
 
 
@@ -86,7 +87,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   }
 
   private def ensureEventsPublished(oldOnly: Boolean): Unit = {
-    eventStoreState.readAggregatesWithEventsToPublish(oldOnly)(aggregateId => {
+    eventStoreState.readAggregatesWithEventsToPublish(aggregateTypeName, oldOnly)(aggregateId => {
       log.info("Initializing Aggregate to resend events (oldOnly="+oldOnly+") " + aggregateId)
       createAggregateActorsIfNeeded(aggregateId)
     })

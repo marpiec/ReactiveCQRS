@@ -32,6 +32,7 @@ class MemoryTypesNamesState extends TypesNamesState {
 
 class PostgresTypesNamesState extends TypesNamesState {
 
+  private var notInitiated = true
   private val cache = mutable.HashMap[String, Short]()
   private val cacheReverse = mutable.HashMap[Short, String]()
 
@@ -75,6 +76,7 @@ class PostgresTypesNamesState extends TypesNamesState {
   }
 
   private def getTypeIdFromDB(className: String): Short = synchronized {
+    init()
     cache.get(className) match {
       case Some(id) => id
       case None => DB.localTx { implicit session =>
@@ -89,6 +91,7 @@ class PostgresTypesNamesState extends TypesNamesState {
   }
 
   private def getTypeNameFromDB(id: Short): String = synchronized {
+    init()
     cacheReverse.get(id) match {
       case Some(className) => className
       case None => DB.localTx { implicit session =>
@@ -101,6 +104,21 @@ class PostgresTypesNamesState extends TypesNamesState {
   private def insertName(className: String)(implicit session: DBSession): Short = {
     sql"""INSERT INTO types_names (id, name) VALUES (nextval('types_names_seq'), ?) RETURNING currval('types_names_seq')"""
       .bind(className).map(_.short(1)).single().apply().get
+  }
+
+  private def init(): Unit = {
+    if(notInitiated) {
+      DB.readOnly { implicit session =>
+        sql"""SELECT id, name FROM types_names"""
+          .foreach(rs => {
+            val id = rs.short(1)
+            val name = rs.string(2)
+            cache += name -> id
+            cacheReverse += id -> name
+          })
+      }
+      notInitiated = false
+    }
   }
 
 }

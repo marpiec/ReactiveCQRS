@@ -59,7 +59,7 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
   }
 
   private def replayEvent(event: IdentifiableEvent[AGGREGATE_ROOT]): Unit = {
-    handleEvent(event.event, event.aggregateId, false)
+    handleEvent(event.event, event.aggregateId, noopEvent = false)
     val messageToSend: PublishReplayedEvent[AGGREGATE_ROOT] = PublishReplayedEvent(aggregateType, event, aggregateId, Option(aggregateRoot))
     eventsBus ! messageToSend
   }

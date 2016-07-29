@@ -165,7 +165,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
       val fixture = Fixture
       import fixture._
 
-      multipleCartCreatorSaga ! CreateMultipleCarts(userId, "My special cart", 5000)
+      multipleCartCreatorSaga ! CreateMultipleCarts(userId, "My special cart", 100)
 
       Thread.sleep(10000) // time to cleanup
     }
