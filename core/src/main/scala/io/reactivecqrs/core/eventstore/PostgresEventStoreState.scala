@@ -106,7 +106,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 
   override def readAndProcessAllEvents(eventHandler: (Event[_], AggregateId, AggregateVersion, AggregateType, UserId, Instant) => Unit): Unit = {
     DB.readOnly { implicit session =>
-      sql"""SELECT event_type_id, event, events.version, events.aggregate_id, aggregates.type, user_id, event_time
+      sql"""SELECT event_type_id, event, events.version, events.aggregate_id, aggregates.type_id, user_id, event_time
            FROM events
            JOIN aggregates ON events.aggregate_id = aggregates.id AND events.aggregate_id = aggregates.base_id
            ORDER BY events.id""".fetchSize(1000)
@@ -114,7 +114,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
           val event = mpjsons.deserialize[Event[_]](rs.string(2), typesNamesState.classNameById(rs.short(1)))
           val aggregateId = AggregateId(rs.long(4))
           val version = AggregateVersion(rs.int(3))
-          eventHandler(event, aggregateId, version, AggregateType(rs.string(5)), UserId(rs.long(6)), rs.timestamp(7).toInstant)
+          eventHandler(event, aggregateId, version, AggregateType(typesNamesState.classNameById(rs.short(5))), UserId(rs.long(6)), rs.timestamp(7).toInstant)
         }
     }
   }
