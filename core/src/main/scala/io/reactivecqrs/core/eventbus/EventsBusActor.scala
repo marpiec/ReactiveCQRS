@@ -67,6 +67,12 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   private val eventsPropagatedNotPersisted = mutable.HashMap[AggregateId, List[AggregateVersion]]()
   private val eventsAlreadyPropagated = mutable.HashMap[AggregateId, AggregateVersion]()
 
+  context.system.scheduler.schedule(5.seconds, 5.seconds, new Runnable {
+    override def run(): Unit = {
+      inputState.flushUpdates()
+    }
+  })(context.dispatcher)
+
   def initSubscriptions(): Unit = {
 
     implicit val timeout = Timeout(60.seconds)

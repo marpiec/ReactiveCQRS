@@ -1,6 +1,6 @@
 package io.reactivecqrs.core.eventsreplayer
 
-import java.time.Instant
+import java.time.{Instant, LocalDateTime}
 
 import akka.pattern.ask
 import akka.actor.{Actor, ActorContext, ActorRef, Props}
@@ -81,7 +81,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
       eventsSent += 1
       if(eventsSent < 10 || eventsSent < 100 && eventsSent % 10 == 0 || eventsSent % 100 == 0) {
-        println("Replayed "+eventsSent+"/"+allEvents+" events, allowed " + messagesToProduceAllowed)
+        println("Replayed "+eventsSent+"/"+allEvents+" events, allowed " + messagesToProduceAllowed+" at " + LocalDateTime.now())
       }
     })
     backPressureActor ! Stop

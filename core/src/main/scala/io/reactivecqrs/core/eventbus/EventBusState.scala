@@ -2,6 +2,7 @@ package io.reactivecqrs.core.eventbus
 
 import io.reactivecqrs.api.AggregateVersion
 import io.reactivecqrs.api.id.AggregateId
+import io.reactivecqrs.core.eventbus.PostgresEventBusState.CacheValue
 import io.reactivecqrs.core.projection.OptimisticLockingFailed
 import org.postgresql.util.PSQLException
 import scalikejdbc._
@@ -12,6 +13,7 @@ import scala.util.{Failure, Success, Try}
 abstract class EventBusState {
   def lastPublishedEventForAggregate(aggregateId: AggregateId): AggregateVersion
   def eventPublished(aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Try[Unit]
+  def flushUpdates(): Try[Unit]
 }
 
 class MemoryEventBusState extends EventBusState {
@@ -33,6 +35,14 @@ class MemoryEventBusState extends EventBusState {
       Failure(new OptimisticLockingFailed)
     }
   }
+
+  override def flushUpdates(): Try[Unit] = {
+    Success(())
+  }
+}
+
+object PostgresEventBusState {
+  case class CacheValue(last: AggregateVersion, current: AggregateVersion)
 }
 
 class PostgresEventBusState extends EventBusState {
@@ -97,18 +107,62 @@ class PostgresEventBusState extends EventBusState {
     AggregateVersion.ZERO
   }
 
-  override def eventPublished(aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Try[Unit] = {
-    DB.localTx { implicit session =>
-      val rowsUpdated = sql"""UPDATE event_bus SET aggregate_version = ? WHERE aggregate_id = ? AND aggregate_version = ?"""
-        .bind(aggregateVersion.asInt, aggregateId.asLong, lastAggregateVersion.asInt).map(rs => rs.int(1)).single().executeUpdate().apply()
-      if (rowsUpdated == 1) {
-        Success(())
-      } else {
-        Failure(new OptimisticLockingFailed) // TODO handle this
-      }
+  // aggregate id -> (base version, current version)
+  private var aggregatesToUpdate = Map[AggregateId, CacheValue]()
+
+
+  override def eventPublished(aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Try[Unit] = synchronized {
+
+    aggregatesToUpdate.get(aggregateId) match {
+      case None => aggregatesToUpdate += aggregateId -> CacheValue(lastAggregateVersion, aggregateVersion)
+      case Some(CacheValue(last, current)) => aggregatesToUpdate += aggregateId -> CacheValue(last, aggregateVersion)
     }
+
+    if(aggregatesToUpdate.size > 20) {
+      flushUpdates()
+    } else {
+      Success(())
+    }
+
+
+//    DB.localTx { implicit session =>
+//      val rowsUpdated = sql"""UPDATE event_bus SET aggregate_version = ? WHERE aggregate_id = ? AND aggregate_version = ?"""
+//        .bind(aggregateVersion.asInt, aggregateId.asLong, lastAggregateVersion.asInt).map(rs => rs.int(1)).single().executeUpdate().apply()
+//      if (rowsUpdated == 1) {
+//        Success(())
+//      } else {
+//        Failure(new OptimisticLockingFailed) // TODO handle this
+//      }
+//    }
   }
 
+//TODO handle optimistic lockong!!!!
+  override def flushUpdates(): Try[Unit] = synchronized {
+    println("Trying to flush " + aggregatesToUpdate.size)
+    if(aggregatesToUpdate.nonEmpty) {
+      try {
+        DB.localTx { implicit session =>
+          val params: Seq[Seq[Any]] = aggregatesToUpdate.toSeq.map {
+            case (key, CacheValue(last, current))=> Seq(current.asInt, key.asLong, last.asInt)
+          }
+
+          aggregatesToUpdate = Map[AggregateId, CacheValue]()
+
+          sql"""UPDATE event_bus SET aggregate_version = ? WHERE aggregate_id = ? AND aggregate_version = ?"""
+            .batch(params: _*).apply()
+
+          // TODO check if all updates occured
+
+          println("Flushed " + params.size)
+
+        }
+      } catch {
+        case e: Exception => e.printStackTrace(); throw e;
+      }
+
+    }
+    Success(())
+  }
 
 
 }
