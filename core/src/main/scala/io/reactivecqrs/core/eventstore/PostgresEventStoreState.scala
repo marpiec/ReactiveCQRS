@@ -171,5 +171,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     result.reverse
   }
 
-
+  override def localTx[A](block: (DBSession) => A): A = DB.localTx { session =>
+    block(session)
+  }
 }

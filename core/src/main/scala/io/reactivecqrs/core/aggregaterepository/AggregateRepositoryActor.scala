@@ -144,7 +144,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   private def persist(eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(afterPersist: Seq[Event[AGGREGATE_ROOT]] => Unit): Unit = {
     //Future { FIXME this future can broke order in which events are stored
-    val eventsWithVersions = DB.localTx {implicit session =>
+    val eventsWithVersions = eventStore.localTx {implicit session =>
       val eventsWithVersions = eventStore.persistEvents(aggregateId, eventsEnvelope.asInstanceOf[PersistEvents[AnyRef]])
       persistIdempotentCommandResponse(eventsEnvelope.commandInfo)
       eventsWithVersions

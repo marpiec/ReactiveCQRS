@@ -18,6 +18,8 @@ abstract class EventStoreState {
 
   def readAggregatesWithEventsToPublish(oldOnly: Boolean)(aggregateHandler: AggregateId => Unit): Unit
   def readEventsToPublishForAggregate[AGGREGATE_ROOT](aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]]
+
+  def localTx[A](block: DBSession => A): A
 }
 
 

@@ -7,7 +7,7 @@ import io.reactivecqrs.api.{AggregateType, AggregateVersion, Event, UndoEvent}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEventNoAggregateType}
 import io.reactivecqrs.core.eventstore.MemoryEventStoreState.EventRow
-import scalikejdbc.DBSession
+import scalikejdbc.{DBSession, NoSession}
 
 object MemoryEventStoreState {
   case class EventRow(eventId: Long, aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregateType: AggregateType,
@@ -105,4 +105,9 @@ class MemoryEventStoreState extends EventStoreState {
   }
 
   override def countAllEvents(): Int = eventsRows.size
+
+  override def localTx[A](block: (DBSession) => A): A = {
+    block(NoSession)
+  }
+
 }
