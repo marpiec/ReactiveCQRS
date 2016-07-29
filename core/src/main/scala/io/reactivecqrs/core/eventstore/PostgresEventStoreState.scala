@@ -131,19 +131,25 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     }
   }
 
-  override def readAggregatesWithEventsToPublish(oldOnly: Boolean)(aggregateHandler: AggregateId => Unit): Unit = {
+  override def readAggregatesWithEventsToPublish(aggregateTypeName: String, oldOnly: Boolean)(aggregateHandler: AggregateId => Unit): Unit = {
     DB.readOnly { implicit session =>
       if(oldOnly) {
         sql"""SELECT DISTINCT aggregate_id
               | FROM events_to_publish
-              | WHERE event_time < NOW() - INTERVAL '1 minute'
+              | JOIN aggregates
+              | ON events_to_publish.aggregate_id = aggregates.id
+              | WHERE aggregates.type_id = ?
+              | AND event_time < NOW() - INTERVAL '1 minute'
            """
       } else {
         sql"""SELECT DISTINCT aggregate_id
               | FROM events_to_publish
-              | WHERE event_time < NOW() - INTERVAL '10 seconds'
+              | JOIN aggregates
+              | ON events_to_publish.aggregate_id = aggregates.id
+              | WHERE aggregates.type_id = ?
+              | AND event_time < NOW() - INTERVAL '10 seconds'
            """
-      }.stripMargin.foreach { rs =>
+      }.bind(typesNamesState.typeIdByClassName(aggregateTypeName)).stripMargin.foreach { rs =>
         aggregateHandler(AggregateId(rs.int(1)))
       }
     }
