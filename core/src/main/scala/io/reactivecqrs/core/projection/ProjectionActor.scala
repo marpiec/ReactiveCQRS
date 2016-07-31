@@ -48,13 +48,13 @@ abstract class ProjectionActor extends Actor with ActorLogging {
 
 
   // ListenerParam and listener are separately so covariant type is allowed
-  protected class AggregateListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT]) => (DBSession) => Unit) extends Listener[AGGREGATE_ROOT] {
-    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Option[Any]) => (DBSession) => Unit]
+  protected class AggregateListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Int, Option[AGGREGATE_ROOT]) => (DBSession) => Unit) extends Listener[AGGREGATE_ROOT] {
+    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Int, Option[Any]) => (DBSession) => Unit]
     def aggregateRootType = typeOf[AGGREGATE_ROOT]
   }
 
   protected object AggregateListener {
-    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT]) => (DBSession) => Unit): AggregateListener[AGGREGATE_ROOT] =
+    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Int, Option[AGGREGATE_ROOT]) => (DBSession) => Unit): AggregateListener[AGGREGATE_ROOT] =
       new AggregateListener[AGGREGATE_ROOT](listener)
   }
 
@@ -105,7 +105,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       }
       if(a.version.isJustAfter(lastVersion)) {
         subscriptionsState.localTx { session =>
-          aggregateListenersMap(a.aggregateType)(a.id, a.version, a.aggregateRoot)(session)
+          aggregateListenersMap(a.aggregateType)(a.id, a.version, 1, a.aggregateRoot)(session)
           subscriptionsState.newVersionForAggregatesSubscription(this.getClass.getName, a.id, lastVersion, a.version)(session)
         }
         sender() ! MessageAck(self, a.id, a.version)

@@ -10,8 +10,6 @@ class PostgresDocumentStoreSpec extends FeatureSpec with GivenWhenThen with Befo
   val mpjsons = new MPJsons
 
   val testTable = "test_table"
-  val dropQuery = s"DROP TABLE projection_$testTable;"
-  val dropSequenceQuery = s"DROP SEQUENCE sequence_$testTable;"
 
   after {
 
@@ -33,7 +31,7 @@ class PostgresDocumentStoreSpec extends FeatureSpec with GivenWhenThen with Befo
         Then("correct documents are retrieved")
         result.keySet mustBe Set(1, 3)
 
-        documentStore.execute(dropQuery)
+        documentStore.dropTable()
       }
     }
   }
@@ -51,7 +49,7 @@ class PostgresDocumentStoreSpec extends FeatureSpec with GivenWhenThen with Befo
         Then("correct document is retrieved")
         result.keySet mustBe Set(1)
 
-        documentStore.execute(dropQuery)
+        documentStore.dropTable()
       }
     }
   }
@@ -74,8 +72,7 @@ class PostgresDocumentStoreSpec extends FeatureSpec with GivenWhenThen with Befo
         Then("another id must be 2")
         another mustBe 2
 
-        documentStore.execute(dropQuery)
-        documentStore.execute(dropSequenceQuery)
+        documentStore.dropTable()
       }
     }
   }

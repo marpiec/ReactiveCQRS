@@ -9,6 +9,7 @@ import scalikejdbc.{DB, DBSession}
 
 import scala.collection.mutable
 import scala.reflect.runtime.universe._
+import scalikejdbc._
 
 sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
@@ -24,25 +25,12 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
   protected final val projectionTableName = "projection_" + tableName
 
-  protected val CREATE_TABLE_QUERY = s"CREATE TABLE IF NOT EXISTS $projectionTableName (" +
-    "id BIGINT NOT NULL PRIMARY KEY, " +
-    "document JSONB NOT NULL, metadata JSONB NOT NULL)"
-
-  protected val UPDATE_DOCUMENT_QUERY = s"UPDATE $projectionTableName SET document = ?::jsonb, metadata = ?::jsonb WHERE id = ? "
-
-  protected val SELECT_DOCUMENT_BY_ID_QUERY = s"SELECT document, metadata FROM $projectionTableName WHERE id = ?"
-
-  protected def SELECT_DOCUMENT_BY_IDS_QUERY(ids: Seq[Long]) =
-    s"SELECT id, document, metadata FROM $projectionTableName WHERE id IN ( ${ids.mkString(",")} )"
-
-  protected val DELETE_DOCUMENT_BY_ID_QUERY = s"DELETE FROM $projectionTableName WHERE id = ?"
+  protected val tableNameSQL = SQLSyntax.createUnsafely(projectionTableName)
 
   protected def SELECT_DOCUMENT_BY_PATH(path: String) = s"SELECT id, document, metadata FROM $projectionTableName WHERE document #>> '{$path}' = ?"
 
   protected def SELECT_DOCUMENT_BY_PATH_WITH_ONE_OF_THE_VALUES(path: String, values: Set[String]) =
     s"SELECT id, document, metadata FROM $projectionTableName WHERE document #>> '{$path}' in (${values.map("'"+_+"'").mkString(",")})"
-
-  protected val SELECT_ALL = s"SELECT id, document, metadata FROM $projectionTableName"
 
   init()
 
@@ -50,80 +38,76 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     createTableIfNotExists()
   }
 
-  protected def createTableIfNotExists(): Unit = {
-    DB.autoCommit { implicit session =>
-      execute(CREATE_TABLE_QUERY)
-    }
+  protected def createTableIfNotExists(): Unit = DB.autoCommit { implicit session =>
+    sql"""CREATE TABLE IF NOT EXISTS ${tableNameSQL} (
+          |id BIGINT NOT NULL PRIMARY KEY,
+          |version INT NOT NULL,
+          |document JSONB NOT NULL, metadata JSONB NOT NULL)"""
+      .stripMargin.execute().apply()
   }
 
-  def execute(query: String)(implicit session: DBSession) = {
+  def dropTable(): Unit = DB.autoCommit { implicit session =>
+    sql"""DROP TABLE ${tableNameSQL}"""
+      .stripMargin.execute().apply()
+  }
 
-    inSession { connection =>
-      val statement = connection.prepareStatement(query)
-      try {
-        statement.execute()
-      } finally {
-        statement.close()
+  def overwriteDocument(key: Long, document: T, metadata: M)(implicit session: DBSession): Unit = {
+
+    inSession { implicit session =>
+      val updated = sql"UPDATE ${tableNameSQL} SET document = ?::JSONB, metadata = ?::JSONB WHERE id = ?"
+        .bind(mpjsons.serialize[T](document), mpjsons.serialize[M](metadata), key)
+        .map(_.int(1)).single().executeUpdate().apply()
+
+      if (updated != 1) {
+        throw new IllegalStateException("Expected 1, updated " + updated + " records")
       }
     }
   }
 
-  def updateDocument(key: Long, document: T, metadata: M)(implicit session: DBSession): Unit = {
-    inSession { connection =>
-      val statement = connection.prepareStatement(UPDATE_DOCUMENT_QUERY)
-      try {
-        statement.setString(1, mpjsons.serialize[T](document))
-        statement.setString(2, mpjsons.serialize[M](metadata))
-        statement.setLong(3, key)
+  // Optimistic locking update
+  def updateDocument(key: Long, modify: DocumentWithMetadata[T, M] => DocumentWithMetadata[T, M])(implicit session: DBSession): Unit = {
 
-        val numberOfUpdated = statement.executeUpdate()
+    inSession { implicit session =>
+      sql"SELECT version, document, metadata FROM ${tableNameSQL} WHERE id = ?"
+        .bind(key).map(rs => {
+        (rs.int(1), mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3)))
+      }).single().apply() match {
+        case None => throw new IllegalStateException("Document in "+tableName+" not found for key " + key)
+        case Some((version, document, metadata)) =>
+          val modified = modify(DocumentWithMetadata(document, metadata))
 
-        if (numberOfUpdated != 1) {
-          throw new IllegalStateException("Expected 1, updated " + numberOfUpdated + " records")
-        }
+          val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB, metadata = ?::JSONB WHERE id = ? AND version = ?"
+            .bind(version + 1, mpjsons.serialize[T](modified.document), mpjsons.serialize[M](modified.metadata), key, version)
+            .map(_.int(1)).single().executeUpdate().apply()
 
-      } finally {
-        statement.close()
+          if(updated == 0) {
+            updateDocument(key, modify)
+          }
       }
     }
   }
 
 
   def getDocument(key: Long)(implicit session: DBSession = null): Option[DocumentWithMetadata[T, M]] = {
-    inSession { connection =>
-      val statement = connection.prepareStatement(SELECT_DOCUMENT_BY_ID_QUERY)
-      try {
-        statement.setLong(1, key)
-        val resultSet = statement.executeQuery()
-        try {
-          if (resultSet.next()) {
-            Some(DocumentWithMetadata[T, M](mpjsons.deserialize[T](resultSet.getString(1)), mpjsons.deserialize[M](resultSet.getString(2))))
-          } else {
-            None
-          }
-        } finally {
-          resultSet.close()
-        }
-      } finally {
-        statement.close()
-      }
+    inSession { implicit session =>
+      sql"SELECT document, metadata FROM ${tableNameSQL} WHERE id = ?"
+          .bind(key).map(rs => {
+        DocumentWithMetadata[T, M](mpjsons.deserialize[T](rs.string(1)), mpjsons.deserialize[M](rs.string(2)))
+      }).single().apply()
     }
   }
 
   def removeDocument(key: Long)(implicit session: DBSession): Unit = {
-    inSession { connection =>
-      val statement = connection.prepareStatement(DELETE_DOCUMENT_BY_ID_QUERY)
-      try {
-        statement.setLong(1, key)
-        statement.execute()
-      } finally {
-        statement.close()
-      }
+
+    inSession { implicit session =>
+      sql"DELETE FROM ${tableNameSQL} WHERE id = ?"
+        .bind(key).executeUpdate().apply()
     }
+
   }
 
   def findDocumentByPath(path: Seq[String], value: String)(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T, M]] = {
-    inSession { connection =>
+    inConnection { connection =>
       val statement = connection.prepareStatement(SELECT_DOCUMENT_BY_PATH(path.mkString(",")))
       try {
         statement.setString(1, value)
@@ -146,7 +130,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
   def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T, M]] = {
     if (values.nonEmpty) {
-      inSession { connection =>
+      inConnection { connection =>
         val statement = connection.prepareStatement(SELECT_DOCUMENT_BY_PATH_WITH_ONE_OF_THE_VALUES(path.mkString(","), values))
         try {
           val resultSet = statement.executeQuery()
@@ -191,7 +175,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
         }
       }
 
-    inSession { connection =>
+    inConnection { connection =>
       val statement = connection.prepareStatement(QUERY(array.mkString("{", ",", "}"), makeJson(objectPath, value)))
       try {
 //        statement.setString(1, value)
@@ -213,52 +197,40 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
 
   def findAll()(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T, M]] = {
-    inSession { connection =>
-      val statement = connection.prepareStatement(SELECT_ALL)
-      try {
-        val resultSet = statement.executeQuery()
-        try {
-          val results = mutable.ListMap[Long, DocumentWithMetadata[T, M]]()
-          while (resultSet.next()) {
-            results += resultSet.getLong(1) -> DocumentWithMetadata[T,M](mpjsons.deserialize[T](resultSet.getString(2)), mpjsons.deserialize[M](resultSet.getString(3)))
-          }
-          results.toMap
-        } finally {
-          resultSet.close()
-        }
-      } finally {
-        statement.close()
-      }
+    inSession { implicit session =>
+      val tuples = sql"SELECT id, document, metadata FROM ${tableNameSQL}"
+          .map(rs => rs.long(1) -> DocumentWithMetadata[T,M](mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3))))
+        .list.apply()
+      tuples.toMap
     }
   }
 
   def getDocuments(keys: List[Long])(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T, M]] = {
     if (keys.isEmpty) {
       Map[Long, DocumentWithMetadata[T, M]]()
-    }
-    else {
-      inSession { connection =>
-        val statement = connection.prepareStatement(SELECT_DOCUMENT_BY_IDS_QUERY(keys))
-        try {
-          val resultSet: ResultSet = statement.executeQuery()
-          try {
-            val results = mutable.ListMap[Long, DocumentWithMetadata[T, M]]()
-            while (resultSet.next()) {
-              results += resultSet.getLong(1) -> DocumentWithMetadata[T,M](mpjsons.deserialize[T](resultSet.getString(2)), mpjsons.deserialize[M](resultSet.getString(3)))
-            }
-            results.toMap
-          } finally {
-            resultSet.close()
-          }
-        } finally {
-          statement.close()
-        }
+    } else {
+      inSession { implicit session =>
+        val tuples = sql"SELECT id, document, metadata FROM ${tableNameSQL} WHERE id IN ${keys}"
+          .map(rs => {
+            rs.long(1) -> DocumentWithMetadata[T, M](mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3)))
+          }).list().apply()
+        tuples.toMap
       }
     }
   }
 
 
-  protected def inSession[RETURN_TYPE](body: Connection => RETURN_TYPE)(implicit session: DBSession): RETURN_TYPE = {
+  protected def inSession[RETURN_TYPE](body: DBSession => RETURN_TYPE)(implicit session: DBSession): RETURN_TYPE = {
+    if(session == null) {
+      DB.readOnly { s =>
+        body(s)
+      }
+    } else {
+      body(session)
+    }
+  }
+
+  protected def inConnection[RETURN_TYPE](body: Connection => RETURN_TYPE)(implicit session: DBSession): RETURN_TYPE = {
     if(session == null) {
       DB.readOnly { s =>
         body(s.connection)
@@ -266,7 +238,6 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     } else {
       body(session.connection)
     }
-
   }
 
 }
@@ -274,19 +245,11 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val mpjsons: MPJsons)(implicit val t: TypeTag[T], val m: TypeTag[M])
   extends DocumentStore[T, M] with PostgresDocumentStoreTrait[T, M] {
 
-  protected val INSERT_DOCUMENT_QUERY = s"INSERT INTO $projectionTableName (id, document, metadata) VALUES (?, ?::jsonb, ?::jsonb)"
-
   override def insertDocument(key: Long, document: T, metadata: M)(implicit session: DBSession): Unit = {
-    inSession { connection =>
-      val statement = connection.prepareStatement(INSERT_DOCUMENT_QUERY)
-      try {
-        statement.setLong(1, key)
-        statement.setString(2, mpjsons.serialize(document))
-        statement.setString(3, mpjsons.serialize(metadata))
-        statement.execute()
-      } finally {
-        statement.close()
-      }
+    inSession { implicit session =>
+      sql"INSERT INTO ${tableNameSQL} (id, version, document, metadata) VALUES (?, 1, ?::jsonb, ?::jsonb)"
+        .bind(key, mpjsons.serialize(document), mpjsons.serialize(metadata))
+        .executeUpdate().apply()
     }
   }
 
@@ -303,8 +266,22 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
 
   protected lazy val INSERT_DOCUMENT_QUERY = s"INSERT INTO $projectionTableName (id, document, metadata) VALUES (nextval('$sequenceName'), ?::jsonb, ?::jsonb) RETURNING currval('$sequenceName')"
 
+  def execute(query: String)(implicit session: DBSession) = {
+
+    inConnection { connection =>
+      val statement = connection.prepareStatement(query)
+      try {
+        statement.execute()
+      } finally {
+        statement.close()
+      }
+    }
+  }
+
+
 
   override protected def createTableIfNotExists(): Unit = {
+    super.createTableIfNotExists()
     try {
       DB.autoCommit { implicit session =>
         execute(CREATE_SEQUENCE_QUERY)
@@ -312,13 +289,17 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
     } catch {
       case e: PSQLException => () // IF NOT EXIST workaround
     }
-    DB.autoCommit { implicit session =>
-      execute(CREATE_TABLE_QUERY)
-    }
+  }
+
+  override def dropTable(): Unit = DB.autoCommit { implicit session =>
+    sql"""DROP TABLE ${tableNameSQL}"""
+      .stripMargin.execute().apply()
+
+    // TODO drop sequence
   }
 
   override def insertDocument(document: T, metadata: M)(implicit session: DBSession): Long = {
-    inSession { connection =>
+    inConnection { connection =>
       val statement = connection.prepareStatement(INSERT_DOCUMENT_QUERY)
       try {
 
