@@ -54,7 +54,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
   def overwriteDocument(key: Long, document: T, metadata: M)(implicit session: DBSession): Unit = {
 
     inSession { implicit session =>
-      val updated = sql"UPDATE ${tableNameSQL} SET document = ?::JSONB, metadata = ?::JSONB WHERE id = ?"
+      val updated = sql"UPDATE ${tableNameSQL} SET document = ?::JSONB, metadata = ?::JSONB , version = version + 1 WHERE id = ?"
         .bind(mpjsons.serialize[T](document), mpjsons.serialize[M](metadata), key)
         .map(_.int(1)).single().executeUpdate().apply()
 
@@ -258,33 +258,17 @@ class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val
 class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: String, val mpjsons: MPJsons)(implicit val t: TypeTag[T], val m: TypeTag[M])
   extends DocumentStoreAutoId[T, M] with PostgresDocumentStoreTrait[T, M] {
 
-  private final lazy val logger = LoggerFactory.getLogger(classOf[PostgresDocumentStoreAutoId[T, M]])
-
   protected final lazy val sequenceName = "sequence_" + tableName
 
-  protected lazy val CREATE_SEQUENCE_QUERY = s"CREATE SEQUENCE $sequenceName START 1"
-
-  protected lazy val INSERT_DOCUMENT_QUERY = s"INSERT INTO $projectionTableName (id, document, metadata) VALUES (nextval('$sequenceName'), ?::jsonb, ?::jsonb) RETURNING currval('$sequenceName')"
-
-  def execute(query: String)(implicit session: DBSession) = {
-
-    inConnection { connection =>
-      val statement = connection.prepareStatement(query)
-      try {
-        statement.execute()
-      } finally {
-        statement.close()
-      }
-    }
-  }
-
+  protected val sequenceNameSQL = SQLSyntax.createUnsafely(sequenceName)
 
 
   override protected def createTableIfNotExists(): Unit = {
     super.createTableIfNotExists()
     try {
       DB.autoCommit { implicit session =>
-        execute(CREATE_SEQUENCE_QUERY)
+        sql"CREATE SEQUENCE ${sequenceNameSQL} START 1"
+          .executeUpdate().apply()
       }
     } catch {
       case e: PSQLException => () // IF NOT EXIST workaround
@@ -295,25 +279,17 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
     sql"""DROP TABLE ${tableNameSQL}"""
       .stripMargin.execute().apply()
 
-    // TODO drop sequence
+    sql"""DROP SEQUENCE ${sequenceNameSQL}"""
+      .stripMargin.execute().apply()
+
   }
 
   override def insertDocument(document: T, metadata: M)(implicit session: DBSession): Long = {
-    inConnection { connection =>
-      val statement = connection.prepareStatement(INSERT_DOCUMENT_QUERY)
-      try {
-
-        statement.setString(1, mpjsons.serialize(document))
-        statement.setString(2, mpjsons.serialize(metadata))
-        val resultSet = statement.executeQuery()
-        if (resultSet.next()) {
-          resultSet.getLong(1)
-        } else {
-          throw new Exception("Result set has no next :(")
-        }
-      } finally {
-        statement.close()
-      }
+    inSession {implicit session =>
+      sql"INSERT INTO ${tableNameSQL} (id, version, document, metadata) VALUES (nextval('${sequenceNameSQL}'), 1, ?::jsonb, ?::jsonb) RETURNING currval('${sequenceNameSQL}')"
+          .bind(mpjsons.serialize(document), mpjsons.serialize(metadata))
+          .map(_.long(1)).single().apply().get
     }
   }
 }
+
