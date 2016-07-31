@@ -210,7 +210,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
       Map[Long, DocumentWithMetadata[T, M]]()
     } else {
       inSession { implicit session =>
-        val tuples = sql"SELECT id, document, metadata FROM ${tableNameSQL} WHERE id IN ${keys}"
+        val tuples = sql"SELECT id, document, metadata FROM ${tableNameSQL} WHERE id IN (${keys})"
           .map(rs => {
             rs.long(1) -> DocumentWithMetadata[T, M](mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3)))
           }).list().apply()

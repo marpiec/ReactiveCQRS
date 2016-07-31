@@ -138,7 +138,6 @@ class PostgresEventBusState extends EventBusState {
 
 //TODO handle optimistic lockong!!!!
   override def flushUpdates(): Try[Unit] = synchronized {
-    println("Trying to flush " + aggregatesToUpdate.size)
     if(aggregatesToUpdate.nonEmpty) {
       try {
         DB.localTx { implicit session =>
