@@ -260,7 +260,7 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
 
   protected final lazy val sequenceName = "sequence_" + tableName
 
-  protected val sequenceNameSQL = SQLSyntax.createUnsafely(sequenceName)
+  protected final lazy val sequenceNameSQL = SQLSyntax.createUnsafely(sequenceName)
 
 
   override protected def createTableIfNotExists(): Unit = {
@@ -271,7 +271,7 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
           .executeUpdate().apply()
       }
     } catch {
-      case e: PSQLException => () // IF NOT EXIST workaround
+      case e: PSQLException if e.getServerErrorMessage.toString.contains("already exists")=> () // IF NOT EXIST workaround
     }
   }
 
