@@ -1,7 +1,7 @@
 package io.reactivecqrs.core.aggregaterepository
 
 import akka.actor.{Actor, ActorRef}
-import io.reactivecqrs.api.{AggregateType, AggregateVersion, Event, IdentifiableEvents}
+import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor.ReplayEvent
 import io.reactivecqrs.core.util.ActorLogging
@@ -59,6 +59,14 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
   }
 
   private def replayEvent(events: IdentifiableEvents[AGGREGATE_ROOT]): Unit = {
+
+    if(events.events.head.event.isInstanceOf[DuplicationEvent[AGGREGATE_ROOT]]) {
+      // We need state from original aggregate
+      version = AggregateVersion.ZERO
+      aggregateRoot = initialState()
+      eventStore.readAndProcessEvents[AGGREGATE_ROOT](aggregateId, aggregateVersion)(handleEvent)
+    }
+
     events.events.foreach(event => {
       handleEvent(event.event, events.aggregateId, noopEvent = false)
     })

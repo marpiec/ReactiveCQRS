@@ -62,8 +62,6 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     aggregateRoot = initialState()
     eventStore.readAndProcessEvents[AGGREGATE_ROOT](aggregateId, singleReadForVersionOnly)(handleEvent)
 
-    sedfasd // TODO restore state for dupliocated aggregate in restored state
-
     eventsToPublish = eventStore.readEventsToPublishForAggregate[AGGREGATE_ROOT](aggregateId)
   }
 
