@@ -3,9 +3,8 @@ package io.reactivecqrs.core.eventstore
 import java.time.Instant
 
 import io.reactivecqrs.api.id.{AggregateId, UserId}
-import io.reactivecqrs.api.{AggregateType, AggregateVersion, Event, UndoEvent}
+import io.reactivecqrs.api._
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
-import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEventNoAggregateType}
 import io.reactivecqrs.core.eventstore.MemoryEventStoreState.EventRow
 import scalikejdbc.{DBSession, NoSession}
 

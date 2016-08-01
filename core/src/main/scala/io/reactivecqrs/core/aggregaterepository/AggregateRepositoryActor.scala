@@ -9,9 +9,9 @@ import io.reactivecqrs.core.util.ActorLogging
 import io.reactivecqrs.api._
 import akka.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
-import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventAck, PublishEvents}
+import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventsAck, PublishEvents}
 import io.reactivecqrs.core.commandhandler.CommandResponseState
-import scalikejdbc.{DB, DBSession}
+import scalikejdbc.DBSession
 
 import scala.concurrent.Future
 import scala.concurrent.duration._
@@ -68,7 +68,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   private def resendEventsToPublish(): Unit = {
     if(eventsToPublish.nonEmpty) {
       log.info("Resending messages for " + aggregateType+" "+aggregateId+" " + eventsToPublish.map(e => e.version))
-      eventsBus ! PublishEvents(aggregateType, eventsToPublish.map(e => IdentifiableEvent(aggregateType, aggregateId, e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
+      eventsBus ! PublishEvents(aggregateType, eventsToPublish.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
     }
   }
 
@@ -87,7 +87,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     case ee: PersistEvents[_] => handlePersistEvents(ee)
     case ep: EventsPersisted[_] => handleEventsPersisted(ep)
     case GetAggregateRoot(respondTo) => receiveReturnAggregateRoot(respondTo)
-    case PublishEventAck(aggregateId, aggregateVersion) => markPublishedEvent(aggregateId, aggregateVersion)
+    case PublishEventsAck(aggId, versions) => markPublishedEvents(aggregateId, versions)
     case ResendPersistedMessages => resendEventsToPublish()
   }
 
@@ -98,9 +98,9 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
       // In case of those events it's easier to re read past events
       assureRestoredState()
     } else {
-      ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.foreach(eventIdentifier => handleEvent(eventIdentifier.event, aggregateId, false))
+      ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.foreach(eventIdentifier => handleEvent(eventIdentifier.event, aggregateId, noopEvent = false))
     }
-    eventsBus ! PublishEvents(aggregateType, ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events, aggregateId, Option(aggregateRoot))
+    eventsBus ! PublishEvents(aggregateType, ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
   }
 
   private def handlePersistEvents(ee: PersistEvents[_]): Unit = {
@@ -208,12 +208,12 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     }
   }
 
-  def markPublishedEvent(aggregateId: AggregateId, aggregateVersion: AggregateVersion): Unit = {
+  def markPublishedEvents(aggregateId: AggregateId, versions: Seq[AggregateVersion]): Unit = {
     import context.dispatcher
-    eventsToPublish = eventsToPublish.filterNot(e => e.aggregateId == aggregateId && e.version == aggregateVersion)
+    eventsToPublish = eventsToPublish.filterNot(e => e.aggregateId == aggregateId && versions.contains(e.version))
 
     Future { // Fire and forget
-      eventStore.deletePublishedEventsToPublish(List(EventIdentifier(aggregateId, aggregateVersion)))
+      eventStore.deletePublishedEventsToPublish(versions.map(v => EventIdentifier(aggregateId, v)))
     } onFailure {
       case e: Exception => throw new IllegalStateException(e)
     }

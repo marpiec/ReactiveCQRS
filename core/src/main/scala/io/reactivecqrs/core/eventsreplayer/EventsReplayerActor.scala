@@ -5,9 +5,9 @@ import java.time.{Instant, LocalDateTime}
 import akka.pattern.ask
 import akka.actor.{Actor, ActorContext, ActorRef, Props}
 import akka.util.Timeout
-import io.reactivecqrs.api.{AggregateContext, AggregateType, AggregateVersion, Event}
+import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
-import io.reactivecqrs.core.aggregaterepository.{IdentifiableEvent, ReplayAggregateRepositoryActor}
+import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor
 import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor.ReplayEvent
 import io.reactivecqrs.core.backpressure.BackPressureActor
 import io.reactivecqrs.core.backpressure.BackPressureActor.{ProducerAllowMore, ProducerAllowedMore, Start, Stop}
@@ -76,7 +76,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
       }
 
       val actor = getOrCreateReplayRepositoryActor(aggregateId, version, aggregateType)
-      actor ! ReplayEvent(IdentifiableEvent(aggregateType, aggregateId, version, event, userId, timestamp))
+      actor ! ReplayEvent(IdentifiableEvents(aggregateType, aggregateId, Seq(EventInfo(version, event, userId, timestamp))))
       messagesToProduceAllowed -= 1
 
       eventsSent += 1

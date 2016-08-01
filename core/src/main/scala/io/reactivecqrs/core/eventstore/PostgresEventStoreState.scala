@@ -7,7 +7,6 @@ import io.mpjsons.MPJsons
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
-import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEventNoAggregateType}
 import io.reactivecqrs.core.types.TypesNamesState
 import scalikejdbc._
 

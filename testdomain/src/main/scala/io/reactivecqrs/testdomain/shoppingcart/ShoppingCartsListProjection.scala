@@ -1,12 +1,10 @@
 package io.reactivecqrs.testdomain.shoppingcart
 
-import java.time.Instant
-
 import akka.actor.ActorRef
 import akka.pattern.ask
 import akka.util.Timeout
-import io.reactivecqrs.api.id.{AggregateId, UserId}
-import io.reactivecqrs.api.{Aggregate, AggregateVersion, Event, GetAggregateForVersion}
+import io.reactivecqrs.api.id.AggregateId
+import io.reactivecqrs.api._
 import io.reactivecqrs.core.documentstore.{DocumentStore, DocumentWithMetadata}
 import io.reactivecqrs.core.eventbus.EventBusSubscriptionsManagerApi
 import io.reactivecqrs.core.projection.{ProjectionActor, SubscriptionsState}
@@ -27,10 +25,16 @@ class ShoppingCartsListProjectionEventsBased(val eventBusSubscriptionsManager: E
                                              shoppingCartCommandBus: ActorRef,
                                              documentStore: DocumentStore[String, AggregateVersion]) extends ProjectionActor {
 
-  protected val listeners = List(EventListener(shoppingCartUpdate))
+  protected val listeners = List(EventsListener(shoppingCartUpdate))
 
-  private def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, event: Event[ShoppingCart], userId: UserId, timestamp: Instant) = { implicit session: DBSession =>
-    event match {
+  private def shoppingCartUpdate(aggregateId: AggregateId, events: Seq[EventInfo[ShoppingCart]]) = { implicit session: DBSession =>
+    events.foreach(event => {
+      shoppingCartUpdateSingleEvent(aggregateId, event.version, event)(session)
+    })
+  }
+
+  private def shoppingCartUpdateSingleEvent(aggregateId: AggregateId, version: AggregateVersion, event: EventInfo[ShoppingCart])(implicit session: DBSession) {
+    event.event match {
       case ShoppingCartCreated(name) =>
         documentStore.insertDocument(aggregateId.asLong, name, version)
       case ShoppingCartDuplicated(baseId, baseVersion) =>

@@ -2,10 +2,9 @@ package io.reactivecqrs.core.eventstore
 
 import java.time.Instant
 
-import io.reactivecqrs.api.{AggregateType, AggregateVersion, Event}
+import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
-import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEventNoAggregateType}
 import scalikejdbc.DBSession
 
 abstract class EventStoreState {

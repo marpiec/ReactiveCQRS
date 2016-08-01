@@ -136,7 +136,7 @@ class PostgresEventBusState extends EventBusState {
 //    }
   }
 
-//TODO handle optimistic lockong!!!!
+//TODO handle optimistic locking!!!!
   override def flushUpdates(): Try[Unit] = synchronized {
     if(aggregatesToUpdate.nonEmpty) {
       try {
@@ -151,8 +151,6 @@ class PostgresEventBusState extends EventBusState {
             .batch(params: _*).apply()
 
           // TODO check if all updates occured
-
-          println("Flushed " + params.size)
 
         }
       } catch {
