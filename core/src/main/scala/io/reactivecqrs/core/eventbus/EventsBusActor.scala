@@ -155,33 +155,38 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
     val (alreadyPublished, eventsToPropagate) = events.span(_.version <= lastPublishedVersion)
 
-    if(alreadyPublished.nonEmpty) {
+    if (alreadyPublished.nonEmpty) {
       respondTo ! PublishEventsAck(aggregateId, alreadyPublished.map(_.version))
     }
 
-    val messagesToSend = subscriptions.getOrElse(aggregateType, Vector.empty).flatMap {
-      case s: EventSubscription =>
-        val eventsForSubscriber = eventsToPropagate.filter(event => s.classifier.accept(aggregateId, EventType(event.event.getClass.getName)))
-        if (eventsForSubscriber.nonEmpty) {
-          Some(MessagesToRoute(s.subscriber, aggregateId, eventsForSubscriber.map(_.version), IdentifiableEvents(aggregateType, aggregateId, eventsForSubscriber)))
-        } else {
-          None
-        }
-      case s: AggregateSubscription =>
-        if(s.classifier.accept(aggregateId)) {
-          Some(MessagesToRoute(s.subscriber, aggregateId, eventsToPropagate.map(_.version), AggregateWithType(aggregateType, aggregateId, eventsToPropagate.last.version, eventsToPropagate.size, aggregateRoot)))
-        } else {
-          None
-        }
-      case s: AggregateWithEventSubscription =>
-        val eventsForSubscriber = eventsToPropagate.filter(event => s.classifier.accept(aggregateId, EventType(event.event.getClass.getName)))
-        if (eventsForSubscriber.nonEmpty) {
-          Some(MessagesToRoute(s.subscriber, aggregateId, eventsForSubscriber.map(_.version),
-            AggregateWithTypeAndEvents(aggregateType, aggregateId, aggregateRoot, eventsForSubscriber)))
-        } else {
-          None
-        }
+    val messagesToSend = if (eventsToPropagate.nonEmpty) {
+      subscriptions.getOrElse(aggregateType, Vector.empty).flatMap {
+        case s: EventSubscription =>
+          val eventsForSubscriber = eventsToPropagate.filter(event => s.classifier.accept(aggregateId, EventType(event.event.getClass.getName)))
+          if (eventsForSubscriber.nonEmpty) {
+            Some(MessagesToRoute(s.subscriber, aggregateId, eventsForSubscriber.map(_.version), IdentifiableEvents(aggregateType, aggregateId, eventsForSubscriber)))
+          } else {
+            None
+          }
+        case s: AggregateSubscription =>
+          if (s.classifier.accept(aggregateId)) {
+            Some(MessagesToRoute(s.subscriber, aggregateId, eventsToPropagate.map(_.version), AggregateWithType(aggregateType, aggregateId, eventsToPropagate.last.version, eventsToPropagate.size, aggregateRoot)))
+          } else {
+            None
+          }
+        case s: AggregateWithEventSubscription =>
+          val eventsForSubscriber = eventsToPropagate.filter(event => s.classifier.accept(aggregateId, EventType(event.event.getClass.getName)))
+          if (eventsForSubscriber.nonEmpty) {
+            Some(MessagesToRoute(s.subscriber, aggregateId, eventsForSubscriber.map(_.version),
+              AggregateWithTypeAndEvents(aggregateType, aggregateId, aggregateRoot, eventsForSubscriber)))
+          } else {
+            None
+          }
+      }
+    } else {
+      Vector.empty
     }
+
 
 
     eventsToPropagate.foreach(event => {
@@ -198,7 +203,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     })
 
     if(backPressureProducerActor.isDefined) {
-      orderedMessages -= eventsToPropagate.size
+      orderedMessages -= events.size
     }
 
     orderMoreMessagesToConsume()

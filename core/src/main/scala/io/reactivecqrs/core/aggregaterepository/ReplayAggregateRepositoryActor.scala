@@ -3,7 +3,7 @@ package io.reactivecqrs.core.aggregaterepository
 import akka.actor.{Actor, ActorRef}
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor.ReplayEvent
+import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor.ReplayEvents
 import io.reactivecqrs.core.util.ActorLogging
 import io.reactivecqrs.core.eventbus.EventsBusActor.PublishReplayedEvent
 import io.reactivecqrs.core.eventstore.EventStoreState
@@ -12,7 +12,7 @@ import scala.reflect.{ClassTag, classTag}
 import scala.reflect.runtime.universe.TypeTag
 
 object ReplayAggregateRepositoryActor {
-  case class ReplayEvent[AGGREGATE_ROOT](event: IdentifiableEvents[AGGREGATE_ROOT])
+  case class ReplayEvents[AGGREGATE_ROOT](event: IdentifiableEvents[AGGREGATE_ROOT])
 }
 
 class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: AggregateId,
@@ -55,7 +55,7 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
   }
 
   override def receive: Receive = {
-    case ReplayEvent(event) => replayEvent(event.asInstanceOf[IdentifiableEvents[AGGREGATE_ROOT]])
+    case ReplayEvents(event) => replayEvent(event.asInstanceOf[IdentifiableEvents[AGGREGATE_ROOT]])
   }
 
   private def replayEvent(events: IdentifiableEvents[AGGREGATE_ROOT]): Unit = {

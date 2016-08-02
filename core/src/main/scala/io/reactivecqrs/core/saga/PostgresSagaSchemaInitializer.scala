@@ -14,10 +14,10 @@ class PostgresSagaSchemaInitializer {
           saga_id BIGINT NOT NULL,
           user_id BIGINT NOT NULL,
           respond_to VARCHAR(256) NOT NULL,
-          creation_time TIMESTAMP,
+          creation_time TIMESTAMP NOT NULL,
           phase VARCHAR(16) NOT NULL,
           step INT NOT NULL,
-          update_time TIMESTAMP,
+          update_time TIMESTAMP NOT NULL,
           saga_order TEXT NOT NULL,
           order_type_id INT NOT NULL)
       """.execute().apply()
