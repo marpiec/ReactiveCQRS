@@ -257,35 +257,24 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
       val lastPublishedVersion = getLastPublishedVersion(ack.aggregateId)
 
-      if(eventsIds.head.version.isJustAfter(lastPublishedVersion)) {
+      val eventsSorted = eventsIds.toList.sortBy(_.version.asInt)
+
+      if(eventsSorted.head.version.isJustAfter(lastPublishedVersion)) {
         val notPersistedYet = eventsPropagatedNotPersisted.getOrElse(ack.aggregateId, List.empty)
-        var newVersion = eventsIds.last.version
+        var newVersion = eventsSorted.last.version
         notPersistedYet.foreach(notPersisted => if(notPersisted.isJustAfter(newVersion)) {
           newVersion = notPersisted
         })
         inputState.eventPublished(ack.aggregateId, lastPublishedVersion, newVersion)
         eventsAlreadyPropagated += ack.aggregateId -> newVersion
       } else {
-        val newVersions: List[AggregateVersion] = eventsIds.map(_.version).toList
+        val newVersions: List[AggregateVersion] = eventsSorted.map(_.version)
         eventsPropagatedNotPersisted.get(ack.aggregateId) match {
           case None => eventsPropagatedNotPersisted += ack.aggregateId -> newVersions
           case Some(versions) => eventsPropagatedNotPersisted += ack.aggregateId -> (newVersions ::: versions).sortBy(_.asInt)
         }
       }
     }
-
-
-    withoutConfirmedPerEvent foreach {
-      case (eventId, withoutConfirmed) =>
-        if(withoutConfirmed.nonEmpty) {
-
-        } else {
-
-        }
-    }
-
-
-
 
 
     orderMoreMessagesToConsume()

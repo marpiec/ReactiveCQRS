@@ -102,7 +102,8 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       val lastVersion = subscriptionsState.localTx { implicit session =>
         subscriptionsState.lastVersionForAggregateSubscription(this.getClass.getName, a.id)
       }
-      if(a.version.isJustAfter(lastVersion)) {
+      val firstEventVersion: AggregateVersion = AggregateVersion(a.version.asInt - a.eventsCount + 1)
+      if(firstEventVersion.isJustAfter(lastVersion)) {
         subscriptionsState.localTx { session =>
           aggregateListenersMap(a.aggregateType)(a.id, a.version, 1, a.aggregateRoot)(session)
           subscriptionsState.newVersionForAggregatesSubscription(this.getClass.getName, a.id, lastVersion, a.version)(session)
