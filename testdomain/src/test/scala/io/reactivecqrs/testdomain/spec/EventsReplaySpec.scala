@@ -99,7 +99,7 @@ class EventsReplaySpec extends CommonSpec {
       import fixture._
 
       val start = System.currentTimeMillis()
-      val result: EventsReplayed = replayerActor.askActor[EventsReplayed](ReplayAllEvents)(50.seconds)
+      val result: EventsReplayed = replayerActor.askActor[EventsReplayed](ReplayAllEvents(false))(50.seconds)
 
       println(result+" in "+(System.currentTimeMillis() - start)+"mills")
 

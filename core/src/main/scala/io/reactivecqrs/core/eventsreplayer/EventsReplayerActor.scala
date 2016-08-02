@@ -38,7 +38,7 @@ class ReplayerRepositoryActorFactory[AGGREGATE_ROOT: TypeTag:ClassTag](aggregate
 }
 
 object EventsReplayerActor {
-  case object ReplayAllEvents
+  case class ReplayAllEvents(batchPerAggregate: Boolean)
   case class EventsReplayed(eventsCount: Long)
 }
 
@@ -59,17 +59,17 @@ class EventsReplayerActor(eventStore: EventStoreState,
   var backPressureActor: ActorRef = context.actorOf(Props(new BackPressureActor(eventsBus)), "BackPressure")
 
   override def receive: Receive = {
-    case ReplayAllEvents => replayAllEvents(sender)
+    case ReplayAllEvents(batchPerAggregate) => replayAllEvents(sender, batchPerAggregate)
   }
 
-  private def replayAllEvents(respondTo: ActorRef) {
+  private def replayAllEvents(respondTo: ActorRef, batchPerAggregate: Boolean) {
     backPressureActor ! Start
     val allEvents: Int = eventStore.countAllEvents()
     var eventsSent: Long = 0
 
     log.info("Will replay "+allEvents+" events")
 
-    eventStore.readAndProcessAllEvents((events: Seq[EventInfo[_]], aggregateId: AggregateId, aggregateType: AggregateType) => {
+    eventStore.readAndProcessAllEvents(batchPerAggregate, (events: Seq[EventInfo[_]], aggregateId: AggregateId, aggregateType: AggregateType) => {
       if(messagesToProduceAllowed == 0) {
         // Ask is a way to block during fetching data from db
         messagesToProduceAllowed = Await.result((backPressureActor ? ProducerAllowMore).mapTo[ProducerAllowedMore].map(_.count), timeoutDuration)

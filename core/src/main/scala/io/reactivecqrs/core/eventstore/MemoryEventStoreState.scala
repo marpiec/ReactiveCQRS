@@ -73,7 +73,7 @@ class MemoryEventStoreState extends EventStoreState {
     eventsWithNoop.foreach(eventWithNoop => eventHandler(eventWithNoop._1, aggregateId, eventWithNoop._2))
   }
 
-  override def readAndProcessAllEvents(eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit = {
+  override def readAndProcessAllEvents(batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit = {
     eventsRows.foreach(row => {
       eventHandler(Seq(EventInfo(row.aggregateVersion, row.event, row.userId, row.timestamp)), row.aggregateId, row.aggregateType)
     })

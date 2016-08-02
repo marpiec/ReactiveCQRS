@@ -103,23 +103,31 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
 
 
-  override def readAndProcessAllEvents(eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit = {
+  override def readAndProcessAllEvents(batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit = {
     var buffer = List[EventInfo[Any]]()
     var lastAggregateId = AggregateId(-1)
     var lastAggregateType = AggregateType("")
     DB.readOnly { implicit session =>
-      sql"""SELECT event_type_id, event, events.version, events.aggregate_id, aggregates.type_id, user_id, event_time
+      val query = if(batchPerAggregate) {
+        sql"""SELECT event_type_id, event, events.version, events.aggregate_id, aggregates.type_id, user_id, event_time
            FROM events
            JOIN aggregates ON events.aggregate_id = aggregates.id AND events.aggregate_id = aggregates.base_id
-           ORDER BY aggregates.creation_time, aggregates.id, events.id""".fetchSize(1000)
-        .foreach { rs =>
+           ORDER BY aggregates.creation_time, aggregates.id, events.id"""
+      } else {
+        sql"""SELECT event_type_id, event, events.version, events.aggregate_id, aggregates.type_id, user_id, event_time
+           FROM events
+           JOIN aggregates ON events.aggregate_id = aggregates.id AND events.aggregate_id = aggregates.base_id
+           ORDER BY events.id"""
+      }
+
+      query.fetchSize(1000).foreach { rs =>
           val event = mpjsons.deserialize[Event[_]](rs.string(2), typesNamesState.classNameById(rs.short(1)))
           val aggregateId = AggregateId(rs.long(4))
           val version = AggregateVersion(rs.int(3))
           val eventInfo: EventInfo[Any] = EventInfo[Any](version, event.asInstanceOf[Event[Any]], UserId(rs.long(6)), rs.timestamp(7).toInstant)
           val aggregateType =  AggregateType(typesNamesState.classNameById(rs.short(5)))
 
-          if(lastAggregateId != aggregateId) {
+          if(!batchPerAggregate || lastAggregateId != aggregateId) {
             if(buffer.nonEmpty) {
               eventHandler(buffer.reverse, lastAggregateId, lastAggregateType)
             }
