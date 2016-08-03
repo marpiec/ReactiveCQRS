@@ -44,7 +44,7 @@ case class AggregateWithEventSubscription(subscriptionId: String, aggregateType:
 
 
 
-/** TODO acess to DB in Future */
+/** TODO get rid of state, memory only */
 class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: EventBusSubscriptionsManagerApi) extends Actor with ActorLogging {
 
   private val randomUtil = new RandomUtil
@@ -69,6 +69,13 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       inputState.flushUpdates()
     }
   })(context.dispatcher)
+
+  // UNCOMMENT THIS FOR DEBUG PURPOSE
+//  context.system.scheduler.schedule(200.milli, 200.milli, new Runnable {
+//    override def run(): Unit = {
+//      log.debug("Messages propagated, not confirmed: " + messagesSent.size)
+//    }
+//  })(context.dispatcher)
 
   def initSubscriptions(): Unit = {
 
