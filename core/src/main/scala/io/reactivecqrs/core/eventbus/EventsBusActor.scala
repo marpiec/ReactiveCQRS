@@ -70,12 +70,22 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     }
   })(context.dispatcher)
 
-  // UNCOMMENT THIS FOR DEBUG PURPOSE
-//  context.system.scheduler.schedule(200.milli, 200.milli, new Runnable {
-//    override def run(): Unit = {
-//      log.debug("Messages propagated, not confirmed: " + messagesSent.size)
-//    }
-//  })(context.dispatcher)
+  private var lastLogWasNotZero = false
+
+  // FOR DEBUG PURPOSE
+  context.system.scheduler.schedule(200.milli, 200.milli, new Runnable {
+    override def run(): Unit = {
+      if(messagesSent.nonEmpty || lastLogWasNotZero) {
+        log.debug("Messages propagated, not confirmed: " + messagesSent.size)
+        if(messagesSent.nonEmpty) {
+          lastLogWasNotZero = true
+        }
+      } else {
+        lastLogWasNotZero = false
+      }
+
+    }
+  })(context.dispatcher)
 
   def initSubscriptions(): Unit = {
 
