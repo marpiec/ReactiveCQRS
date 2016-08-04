@@ -3,9 +3,8 @@ package io.reactivecqrs.core.eventstore
 import java.time.Instant
 
 import io.reactivecqrs.api.id.{AggregateId, UserId}
-import io.reactivecqrs.api.{AggregateType, AggregateVersion, Event, UndoEvent}
+import io.reactivecqrs.api._
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
-import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEventNoAggregateType}
 import io.reactivecqrs.core.eventstore.MemoryEventStoreState.EventRow
 import scalikejdbc.{DBSession, NoSession}
 
@@ -74,9 +73,9 @@ class MemoryEventStoreState extends EventStoreState {
     eventsWithNoop.foreach(eventWithNoop => eventHandler(eventWithNoop._1, aggregateId, eventWithNoop._2))
   }
 
-  override def readAndProcessAllEvents(eventHandler: (Event[_], AggregateId, AggregateVersion, AggregateType, UserId, Instant) => Unit): Unit = {
+  override def readAndProcessAllEvents(batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit = {
     eventsRows.foreach(row => {
-      eventHandler(row.event, row.aggregateId, row.aggregateVersion, row.aggregateType, row.userId, row.timestamp)
+      eventHandler(Seq(EventInfo(row.aggregateVersion, row.event, row.userId, row.timestamp)), row.aggregateId, row.aggregateType)
     })
   }
 

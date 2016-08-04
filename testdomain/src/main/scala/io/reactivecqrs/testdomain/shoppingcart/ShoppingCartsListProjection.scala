@@ -1,13 +1,11 @@
 package io.reactivecqrs.testdomain.shoppingcart
 
-import java.time.Instant
-
 import akka.actor.ActorRef
 import akka.pattern.ask
 import akka.util.Timeout
-import io.reactivecqrs.api.id.{AggregateId, UserId}
-import io.reactivecqrs.api.{Aggregate, AggregateVersion, Event, GetAggregateForVersion}
-import io.reactivecqrs.core.documentstore.DocumentStore
+import io.reactivecqrs.api.id.AggregateId
+import io.reactivecqrs.api._
+import io.reactivecqrs.core.documentstore.{DocumentStore, DocumentWithMetadata}
 import io.reactivecqrs.core.eventbus.EventBusSubscriptionsManagerApi
 import io.reactivecqrs.core.projection.{ProjectionActor, SubscriptionsState}
 import io.reactivecqrs.testdomain.shoppingcart.ShoppingCartsListProjection.GetAllCartsNames
@@ -27,10 +25,16 @@ class ShoppingCartsListProjectionEventsBased(val eventBusSubscriptionsManager: E
                                              shoppingCartCommandBus: ActorRef,
                                              documentStore: DocumentStore[String, AggregateVersion]) extends ProjectionActor {
 
-  protected val listeners = List(EventListener(shoppingCartUpdate))
+  protected val listeners = List(EventsListener(shoppingCartUpdate))
 
-  private def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, event: Event[ShoppingCart], userId: UserId, timestamp: Instant) = { implicit session: DBSession =>
-    event match {
+  private def shoppingCartUpdate(aggregateId: AggregateId, events: Seq[EventInfo[ShoppingCart]]) = { implicit session: DBSession =>
+    events.foreach(event => {
+      shoppingCartUpdateSingleEvent(aggregateId, event.version, event)(session)
+    })
+  }
+
+  private def shoppingCartUpdateSingleEvent(aggregateId: AggregateId, version: AggregateVersion, event: EventInfo[ShoppingCart])(implicit session: DBSession) {
+    event.event match {
       case ShoppingCartCreated(name) =>
         documentStore.insertDocument(aggregateId.asLong, name, version)
       case ShoppingCartDuplicated(baseId, baseVersion) =>
@@ -39,11 +43,13 @@ class ShoppingCartsListProjectionEventsBased(val eventBusSubscriptionsManager: E
       val baseShoppingCart: Try[Aggregate[ShoppingCart]] = Await.result(future, 60 seconds)
         documentStore.insertDocument(aggregateId.asLong, baseShoppingCart.get.aggregateRoot.get.name, version)
       case ItemAdded(name) =>
-        val document = documentStore.getDocument(aggregateId.asLong)
-        documentStore.updateDocument(aggregateId.asLong, document.get.document, version)
+        documentStore.updateDocument(aggregateId.asLong, documentWithMetadata => {
+          DocumentWithMetadata(documentWithMetadata.document, version)
+        })
       case ItemRemoved(id) =>
-        val document = documentStore.getDocument(aggregateId.asLong)
-        documentStore.updateDocument(aggregateId.asLong, document.get.document, version)
+        documentStore.updateDocument(aggregateId.asLong, documentWithMetadata => {
+          DocumentWithMetadata(documentWithMetadata.document, version)
+        })
       case ShoppingCartDeleted() =>
         documentStore.removeDocument(aggregateId.asLong)
       case ShoppingCartChangesUndone(count) => println("Sorry :(")
@@ -62,13 +68,13 @@ class ShoppingCartsListProjectionAggregatesBased(val eventBusSubscriptionsManage
                                                  documentStore: DocumentStore[String, AggregateVersion]) extends ProjectionActor {
   protected val listeners =  List(AggregateListener(shoppingCartUpdate))
 
-  private def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, aggregateRoot: Option[ShoppingCart]) = { implicit session: DBSession =>
+  private def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, eventsCount: Int, aggregateRoot: Option[ShoppingCart]) = { implicit session: DBSession =>
     aggregateRoot match {
       case Some(a) =>
-        val document = documentStore.getDocument(aggregateId.asLong)
-        document match {
-          case Some(d) => documentStore.updateDocument(aggregateId.asLong, a.name, version)
-          case None => documentStore.insertDocument(aggregateId.asLong, a.name, version)
+        if(version.asInt == eventsCount) {
+          documentStore.insertDocument(aggregateId.asLong, a.name, version)
+        } else {
+          documentStore.overwriteDocument(aggregateId.asLong, a.name, version)
         }
       case None =>
         documentStore.removeDocument(aggregateId.asLong)

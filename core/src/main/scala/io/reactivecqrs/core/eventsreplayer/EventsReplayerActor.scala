@@ -1,14 +1,14 @@
 package io.reactivecqrs.core.eventsreplayer
 
-import java.time.Instant
+import java.time.{Instant, LocalDateTime}
 
 import akka.pattern.ask
 import akka.actor.{Actor, ActorContext, ActorRef, Props}
 import akka.util.Timeout
-import io.reactivecqrs.api.{AggregateContext, AggregateType, AggregateVersion, Event}
+import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
-import io.reactivecqrs.core.aggregaterepository.{IdentifiableEvent, ReplayAggregateRepositoryActor}
-import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor.ReplayEvent
+import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor
+import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor.ReplayEvents
 import io.reactivecqrs.core.backpressure.BackPressureActor
 import io.reactivecqrs.core.backpressure.BackPressureActor.{ProducerAllowMore, ProducerAllowedMore, Start, Stop}
 import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, ReplayAllEvents}
@@ -38,7 +38,7 @@ class ReplayerRepositoryActorFactory[AGGREGATE_ROOT: TypeTag:ClassTag](aggregate
 }
 
 object EventsReplayerActor {
-  case object ReplayAllEvents
+  case class ReplayAllEvents(batchPerAggregate: Boolean)
   case class EventsReplayed(eventsCount: Long)
 }
 
@@ -59,32 +59,33 @@ class EventsReplayerActor(eventStore: EventStoreState,
   var backPressureActor: ActorRef = context.actorOf(Props(new BackPressureActor(eventsBus)), "BackPressure")
 
   override def receive: Receive = {
-    case ReplayAllEvents => replayAllEvents(sender)
+    case ReplayAllEvents(batchPerAggregate) => replayAllEvents(sender, batchPerAggregate)
   }
 
-  private def replayAllEvents(respondTo: ActorRef) {
+  private def replayAllEvents(respondTo: ActorRef, batchPerAggregate: Boolean) {
     backPressureActor ! Start
     val allEvents: Int = eventStore.countAllEvents()
     var eventsSent: Long = 0
 
     log.info("Will replay "+allEvents+" events")
 
-    eventStore.readAndProcessAllEvents((event: Event[_], aggregateId: AggregateId, version: AggregateVersion, aggregateType: AggregateType, userId: UserId, timestamp: Instant) => {
+    eventStore.readAndProcessAllEvents(batchPerAggregate, (events: Seq[EventInfo[_]], aggregateId: AggregateId, aggregateType: AggregateType) => {
       if(messagesToProduceAllowed == 0) {
         // Ask is a way to block during fetching data from db
         messagesToProduceAllowed = Await.result((backPressureActor ? ProducerAllowMore).mapTo[ProducerAllowedMore].map(_.count), timeoutDuration)
       }
 
-      val actor = getOrCreateReplayRepositoryActor(aggregateId, version, aggregateType)
-      actor ! ReplayEvent(IdentifiableEvent(aggregateType, aggregateId, version, event, userId, timestamp))
+      val actor = getOrCreateReplayRepositoryActor(aggregateId, events.head.version, aggregateType)
+      actor ! ReplayEvents(IdentifiableEvents(aggregateType, aggregateId, events.asInstanceOf[Seq[EventInfo[Any]]]))
       messagesToProduceAllowed -= 1
 
-      eventsSent += 1
+      eventsSent += events.size
       if(eventsSent < 10 || eventsSent < 100 && eventsSent % 10 == 0 || eventsSent % 100 == 0) {
-        println("Replayed "+eventsSent+"/"+allEvents+" events, allowed " + messagesToProduceAllowed)
+        println("Replayed "+eventsSent+"/"+allEvents+" events, allowed " + messagesToProduceAllowed+" at " + LocalDateTime.now())
       }
     })
     backPressureActor ! Stop
+    println("Replayed "+eventsSent+"/"+allEvents+" events, allowed " + messagesToProduceAllowed+" at " + LocalDateTime.now())
     respondTo ! EventsReplayed(eventsSent)
   }
 

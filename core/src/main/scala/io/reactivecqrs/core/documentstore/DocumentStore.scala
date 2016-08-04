@@ -14,7 +14,9 @@ sealed abstract class AbstractDocumentStore[T <: AnyRef, M <: AnyRef] {
 
   def findDocumentByMetadataObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T,M]]
 
-  def updateDocument(key: Long, document: T, metadata: M)(implicit session: DBSession): Unit
+  def overwriteDocument(key: Long, document: T, metadata: M)(implicit session: DBSession): Unit
+
+  def updateDocument(key: Long, modify: DocumentWithMetadata[T, M] => DocumentWithMetadata[T, M])(implicit session: DBSession): Unit
 
   def getDocument(key: Long)(implicit session: DBSession = null): Option[DocumentWithMetadata[T, M]]
 

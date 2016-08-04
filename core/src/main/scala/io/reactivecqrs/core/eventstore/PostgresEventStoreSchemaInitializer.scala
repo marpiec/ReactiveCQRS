@@ -61,6 +61,7 @@ class PostgresEventStoreSchemaInitializer  {
     sql"""
         CREATE TABLE IF NOT EXISTS aggregates (
           id BIGINT NOT NULL,
+          creation_time TIMESTAMP NOT NULL,
           type_id SMALLINT NOT NULL,
           base_order INT NOT NULL,
           base_id BIGINT NOT NULL,
@@ -92,7 +93,7 @@ class PostgresEventStoreSchemaInitializer  {
           |    UPDATE aggregates SET base_version = base_version + 1 WHERE id = aggregate_id AND base_id = aggregate_id RETURNING base_version - 1 INTO current_version;
           |    IF NOT FOUND THEN
           |        IF expected_version = 0 THEN
-          |            INSERT INTO AGGREGATES (id, type_id, base_order, base_id, base_version) VALUES (aggregate_id, aggregate_type_id, 1, aggregate_id, 1);
+          |            INSERT INTO AGGREGATES (id, creation_time, type_id, base_order, base_id, base_version) VALUES (aggregate_id, current_timestamp, aggregate_type_id, 1, aggregate_id, 1);
           |            current_version := 0;
           |        ELSE
           |	           RAISE EXCEPTION 'aggregate not found, id %, aggregate_type_id %', aggregate_id, aggregate_type_id;
@@ -161,12 +162,12 @@ class PostgresEventStoreSchemaInitializer  {
           |        IF expected_version >= 0 AND expected_version != 0 THEN
           |          RAISE EXCEPTION 'Duplication event might occur only for non existing aggregate, so expected version need to be 0';
           |        ELSE
-          |          INSERT INTO aggregates (id, type_id, base_order, base_id, base_version) (select aggregate_id, aggregate_type_id, base_order, base_id, base_version
+          |          INSERT INTO aggregates (id, creation_time, type_id, base_order, base_id, base_version) (select aggregate_id, current_timestamp, aggregate_type_id, base_order, base_id, base_version
           |            from aggregates
           |            where id = _base_id);
           |          current_version := 0;
           |          SELECT base_order INTO base_count FROM aggregates WHERE id = aggregate_id AND base_id = _base_id;
-          |          INSERT INTO aggregates (id, type_id, base_order, base_id, base_version) VALUES (aggregate_id, aggregate_type_id, base_count + 1, aggregate_id, 1);
+          |          INSERT INTO aggregates (id, creation_time, type_id, base_order, base_id, base_version) VALUES (aggregate_id, current_timestamp, aggregate_type_id, base_count + 1, aggregate_id, 1);
           |          UPDATE aggregates SET base_version = _base_version WHERE id = aggregate_id AND base_id = _base_id;
           |        END IF;
           |    ELSE

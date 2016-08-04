@@ -110,9 +110,17 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
   def getDocuments(keys: List[Long])(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T,M]] = (store filterKeys keys.toSet).seq.toMap
 
-  def updateDocument(key: Long, document: T, metadata: M)(implicit session: DBSession = null): Unit = {
+  def overwriteDocument(key: Long, document: T, metadata: M)(implicit session: DBSession = null): Unit = {
     if (store.contains(key)) {
       store += key -> DocumentWithMetadata[T, M](document, metadata)
+    } else {
+      throw new IllegalStateException("Attempting update on non-existing document with key " + key)
+    }
+  }
+
+  def updateDocument(key: Long, modify: DocumentWithMetadata[T, M] => DocumentWithMetadata[T, M])(implicit session: DBSession = null): Unit = {
+    if (store.contains(key)) {
+      store += key -> modify(store(key))
     } else {
       throw new IllegalStateException("Attempting update on non-existing document with key " + key)
     }

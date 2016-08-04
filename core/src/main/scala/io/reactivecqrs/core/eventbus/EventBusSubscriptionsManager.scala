@@ -48,13 +48,16 @@ class EventBusSubscriptionsManager(minimumExpectedSubscriptions: Int) extends Ac
           eventBusWaiting = None
         }
       })
+      if(eventBusWaiting.isDefined) {
+        log.info("Subscribed: " + subscriptionsRequests.length+"/"+minimumExpectedSubscriptions)
+      }
     case GetSubscriptions =>
       if(subscriptionsRequests.size < minimumExpectedSubscriptions) {
         eventBusWaiting = Some(sender())
       } else {
         subscriptionsOpen = false
         sender ! subscriptionsRequests
-        log.info("Subscriptions count: " + subscriptionsRequests.length)
+        log.info("Subscriptions count: " + subscriptionsRequests.length+"/"+minimumExpectedSubscriptions)
       }
   }
 

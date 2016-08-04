@@ -1,8 +1,10 @@
 package io.reactivecqrs.testdomain.spec
 
-import akka.actor.{ActorSystem, Props}
+import akka.actor.{ActorRef, ActorSystem, Props}
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.AggregateVersion
+import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
+import io.reactivecqrs.core.commandlog.PostgresCommandLogState
 import io.reactivecqrs.core.documentstore.{MemoryDocumentStore, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus._
 import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, ReplayAllEvents}
@@ -10,6 +12,7 @@ import io.reactivecqrs.core.eventsreplayer.{EventsReplayerActor, ReplayerReposit
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection.PostgresSubscriptionsState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
+import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCartAggregateContext, ShoppingCartsListProjectionAggregatesBased, ShoppingCartsListProjectionEventsBased}
 import io.reactivecqrs.testutils.CommonSpec
 import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
@@ -44,6 +47,27 @@ class EventsReplaySpec extends CommonSpec {
 
     val inMemory = false
 
+    val typesNamesState = new PostgresTypesNamesState().initSchema()
+    val commandLogState = new PostgresCommandLogState(mpjsons, typesNamesState).initSchema()
+
+
+    private val eventBusState = if(inMemory) {
+      new MemoryEventBusState
+    } else {
+      new PostgresEventBusState().initSchema()
+    }
+
+    val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusState, eventBusSubscriptionsManager)), "eventBus")
+
+    val commandResponseState = new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema()
+    val aggregatesUidGenerator = new PostgresUidGenerator("aggregates_uids_seq") // or MemoryUidGenerator
+    val commandsUidGenerator = new PostgresUidGenerator("commands_uids_seq") // or MemoryUidGenerator
+    val sagasUidGenerator = new PostgresUidGenerator("sagas_uids_seq") // or MemoryUidGenerator
+    val uidGenerator = system.actorOf(Props(new UidGeneratorActor(aggregatesUidGenerator, commandsUidGenerator, sagasUidGenerator)), "uidGenerator")
+    val shoppingCartContext = new ShoppingCartAggregateContext
+    val shoppingCartCommandBus: ActorRef = system.actorOf(
+      AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandLogState, commandResponseState, eventBusActor), "ShoppingCartCommandBus")
+
     private val storeA = if(inMemory) {
       new MemoryDocumentStore[String, AggregateVersion]
     } else {
@@ -55,16 +79,10 @@ class EventsReplaySpec extends CommonSpec {
       new PostgresDocumentStore[String, AggregateVersion]("storeB", mpjsons)
     }
 
-    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusSubscriptionsManager, subscriptionState, null, storeA)), "ShoppingCartsListProjectionEventsBased")
+    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusSubscriptionsManager, subscriptionState, shoppingCartCommandBus, storeA)), "ShoppingCartsListProjectionEventsBased")
     val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusSubscriptionsManager, subscriptionState, storeB)), "ShoppingCartsListProjectionAggregatesBased")
 
-    private val eventBusState = if(inMemory) {
-      new MemoryEventBusState
-    } else {
-      new PostgresEventBusState().initSchema()
-    }
 
-    val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusState, eventBusSubscriptionsManager)), "eventBus")
 
     val replayerActor = system.actorOf(Props(new EventsReplayerActor(eventStoreState, eventBusActor, List(
       ReplayerRepositoryActorFactory(new ShoppingCartAggregateContext)
@@ -81,7 +99,7 @@ class EventsReplaySpec extends CommonSpec {
       import fixture._
 
       val start = System.currentTimeMillis()
-      val result: EventsReplayed = replayerActor.askActor[EventsReplayed](ReplayAllEvents)(50.seconds)
+      val result: EventsReplayed = replayerActor.askActor[EventsReplayed](ReplayAllEvents(false))(50.seconds)
 
       println(result+" in "+(System.currentTimeMillis() - start)+"mills")
 

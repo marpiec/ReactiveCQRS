@@ -7,7 +7,6 @@ import io.mpjsons.MPJsons
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
-import io.reactivecqrs.core.aggregaterepository.{EventIdentifier, IdentifiableEventNoAggregateType}
 import io.reactivecqrs.core.types.TypesNamesState
 import scalikejdbc._
 
@@ -104,18 +103,44 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
 
 
-  override def readAndProcessAllEvents(eventHandler: (Event[_], AggregateId, AggregateVersion, AggregateType, UserId, Instant) => Unit): Unit = {
+  override def readAndProcessAllEvents(batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit = {
+    var buffer = List[EventInfo[Any]]()
+    var lastAggregateId = AggregateId(-1)
+    var lastAggregateType = AggregateType("")
     DB.readOnly { implicit session =>
-      sql"""SELECT event_type_id, event, events.version, events.aggregate_id, aggregates.type_id, user_id, event_time
+      val query = if(batchPerAggregate) {
+        sql"""SELECT event_type_id, event, events.version, events.aggregate_id, aggregates.type_id, user_id, event_time
            FROM events
            JOIN aggregates ON events.aggregate_id = aggregates.id AND events.aggregate_id = aggregates.base_id
-           ORDER BY events.id""".fetchSize(1000)
-        .foreach { rs =>
+           ORDER BY aggregates.creation_time, aggregates.id, events.id"""
+      } else {
+        sql"""SELECT event_type_id, event, events.version, events.aggregate_id, aggregates.type_id, user_id, event_time
+           FROM events
+           JOIN aggregates ON events.aggregate_id = aggregates.id AND events.aggregate_id = aggregates.base_id
+           ORDER BY events.id"""
+      }
+
+      query.fetchSize(1000).foreach { rs =>
           val event = mpjsons.deserialize[Event[_]](rs.string(2), typesNamesState.classNameById(rs.short(1)))
           val aggregateId = AggregateId(rs.long(4))
           val version = AggregateVersion(rs.int(3))
-          eventHandler(event, aggregateId, version, AggregateType(typesNamesState.classNameById(rs.short(5))), UserId(rs.long(6)), rs.timestamp(7).toInstant)
+          val eventInfo: EventInfo[Any] = EventInfo[Any](version, event.asInstanceOf[Event[Any]], UserId(rs.long(6)), rs.timestamp(7).toInstant)
+          val aggregateType =  AggregateType(typesNamesState.classNameById(rs.short(5)))
+
+          if(!batchPerAggregate || lastAggregateId != aggregateId) {
+            if(buffer.nonEmpty) {
+              eventHandler(buffer.reverse, lastAggregateId, lastAggregateType)
+            }
+            buffer = List(eventInfo)
+            lastAggregateId = aggregateId
+            lastAggregateType = aggregateType
+          } else {
+            buffer ::= eventInfo
+          }
         }
+      if(buffer.nonEmpty) {
+        eventHandler(buffer.reverse, lastAggregateId, lastAggregateType)
+      }
     }
   }
 
