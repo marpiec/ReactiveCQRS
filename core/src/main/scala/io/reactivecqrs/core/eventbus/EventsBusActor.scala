@@ -70,20 +70,15 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     }
   })(context.dispatcher)
 
-  private var lastLogWasNotZero = false
+  private var lastLogged = 0
 
   // FOR DEBUG PURPOSE
   context.system.scheduler.schedule(200.milli, 200.milli, new Runnable {
     override def run(): Unit = {
-      if(messagesSent.nonEmpty || lastLogWasNotZero) {
+      if(messagesSent.size != lastLogged) {
         log.debug("Messages propagated, not confirmed: " + messagesSent.size)
-        if(messagesSent.nonEmpty) {
-          lastLogWasNotZero = true
-        }
-      } else {
-        lastLogWasNotZero = false
       }
-
+      lastLogged = messagesSent.size
     }
   })(context.dispatcher)
 
