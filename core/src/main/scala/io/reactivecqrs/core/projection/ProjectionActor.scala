@@ -103,22 +103,26 @@ abstract class ProjectionActor extends Actor with ActorLogging {
         subscriptionsState.lastVersionForAggregateSubscription(this.getClass.getName, a.id)
       }
       val firstEventVersion: AggregateVersion = AggregateVersion(a.version.asInt - a.eventsCount + 1)
-      if(firstEventVersion.isJustAfter(lastVersion)) {
-        subscriptionsState.localTx { session =>
-          aggregateListenersMap(a.aggregateType)(a.id, a.version, 1, a.aggregateRoot)(session)
-          subscriptionsState.newVersionForAggregatesSubscription(this.getClass.getName, a.id, lastVersion, a.version)(session)
-        }
-        sender() ! MessageAck(self, a.id, AggregateVersion.upTo(a.version, a.eventsCount))
-        replayQueries()
-        delayedAggregateWithType.get(a.id) match {
-          case Some(delayed) if delayed.head.version.isJustAfter(a.version) =>
-            if(delayed.length > 1) {
-              delayedAggregateWithType += a.id -> delayed.tail
-            } else {
-              delayedAggregateWithType -= a.id
-            }
-            receiveUpdate(delayed.head)
-          case _ => ()
+      if (firstEventVersion.isJustAfter(lastVersion)) {
+        try {
+          subscriptionsState.localTx { session =>
+            aggregateListenersMap(a.aggregateType)(a.id, a.version, 1, a.aggregateRoot)(session)
+            subscriptionsState.newVersionForAggregatesSubscription(this.getClass.getName, a.id, lastVersion, a.version)(session)
+          }
+          sender() ! MessageAck(self, a.id, AggregateVersion.upTo(a.version, a.eventsCount))
+          replayQueries()
+          delayedAggregateWithType.get(a.id) match {
+            case Some(delayed) if delayed.head.version.isJustAfter(a.version) =>
+              if (delayed.length > 1) {
+                delayedAggregateWithType += a.id -> delayed.tail
+              } else {
+                delayedAggregateWithType -= a.id
+              }
+              receiveUpdate(delayed.head)
+            case _ => ()
+          }
+        } catch {
+          case e: Exception => log.error(e, "Error handling update " + a.version.asInt)
         }
       } else if (a.version <= lastVersion) {
         sender() ! MessageAck(self, a.id, AggregateVersion.upTo(a.version, a.eventsCount))
@@ -128,27 +132,30 @@ abstract class ProjectionActor extends Actor with ActorLogging {
           case Some(delayed) => delayedAggregateWithType += a.id -> (a :: delayed).sortBy(_.version.asInt)
         }
       }
-
     case ae: AggregateWithTypeAndEvents[_] =>
       val lastVersion = subscriptionsState.localTx { implicit session =>
         subscriptionsState.lastVersionForAggregatesWithEventsSubscription(this.getClass.getName, ae.id)
       }
       if(ae.events.head.version.isJustAfter(lastVersion)) {
-        subscriptionsState.localTx { session =>
-          aggregateWithEventListenersMap(ae.aggregateType)(ae.id, ae.events.last.version, ae.aggregateRoot, ae.events.asInstanceOf[Seq[EventInfo[Any]]])(session)
-          subscriptionsState.newVersionForAggregatesWithEventsSubscription(this.getClass.getName, ae.id, lastVersion, ae.events.last.version)(session)
-        }
-        sender() ! MessageAck(self, ae.id, ae.events.map(_.version))
-        replayQueries()
-        delayedAggregateWithTypeAndEvent.get(ae.id) match {
-          case Some(delayed) if delayed.head.events.head.version.isJustAfter(ae.events.last.version) =>
-            if(delayed.length > 1) {
-              delayedAggregateWithTypeAndEvent += ae.id -> delayed.tail
-            } else {
-              delayedAggregateWithTypeAndEvent -= ae.id
-            }
-            receiveUpdate(delayed.head)
-          case _ => ()
+        try {
+          subscriptionsState.localTx { session =>
+            aggregateWithEventListenersMap(ae.aggregateType)(ae.id, ae.events.last.version, ae.aggregateRoot, ae.events.asInstanceOf[Seq[EventInfo[Any]]])(session)
+            subscriptionsState.newVersionForAggregatesWithEventsSubscription(this.getClass.getName, ae.id, lastVersion, ae.events.last.version)(session)
+          }
+          sender() ! MessageAck(self, ae.id, ae.events.map(_.version))
+          replayQueries()
+          delayedAggregateWithTypeAndEvent.get(ae.id) match {
+            case Some(delayed) if delayed.head.events.head.version.isJustAfter(ae.events.last.version) =>
+              if (delayed.length > 1) {
+                delayedAggregateWithTypeAndEvent += ae.id -> delayed.tail
+              } else {
+                delayedAggregateWithTypeAndEvent -= ae.id
+              }
+              receiveUpdate(delayed.head)
+            case _ => ()
+          }
+        } catch {
+          case e: Exception => log.error(e, "Error handling update " + ae.events.head.version.asInt +"-"+ae.events.last.version.asInt)
         }
       } else if (ae.events.last.version <= lastVersion) {
         sender() ! MessageAck(self, ae.id, ae.events.map(_.version))
@@ -163,23 +170,27 @@ abstract class ProjectionActor extends Actor with ActorLogging {
         subscriptionsState.lastVersionForEventsSubscription(this.getClass.getName, e.aggregateId)
       }
       if(e.events.head.version.isJustAfter(lastVersion)) {
-        subscriptionsState.localTx { session =>
-          eventListenersMap(e.aggregateType)(e.aggregateId, e.events.asInstanceOf[Seq[EventInfo[Any]]])(session)
-          subscriptionsState.newVersionForEventsSubscription(this.getClass.getName, e.aggregateId, lastVersion, e.events.last.version)(session)
-//          println("handled event " + e.event)
-        }
-        sender() ! MessageAck(self, e.aggregateId, e.events.map(_.version))
-        replayQueries()
-        delayedIdentifiableEvent.get(e.aggregateId) match {
-          case Some(delayed) if delayed.head.events.head.version.isJustAfter(e.events.last.version) =>
-            if(delayed.length > 1) {
-              delayedIdentifiableEvent += e.aggregateId -> delayed.tail
-            } else {
-              delayedIdentifiableEvent -= e.aggregateId
-            }
-//            println("replaying delayed event " + e.event)
-            receiveUpdate(delayed.head)
-          case _ => ()
+        try {
+          subscriptionsState.localTx { session =>
+            eventListenersMap(e.aggregateType)(e.aggregateId, e.events.asInstanceOf[Seq[EventInfo[Any]]])(session)
+            subscriptionsState.newVersionForEventsSubscription(this.getClass.getName, e.aggregateId, lastVersion, e.events.last.version)(session)
+            //          println("handled event " + e.event)
+          }
+          sender() ! MessageAck(self, e.aggregateId, e.events.map(_.version))
+          replayQueries()
+          delayedIdentifiableEvent.get(e.aggregateId) match {
+            case Some(delayed) if delayed.head.events.head.version.isJustAfter(e.events.last.version) =>
+              if (delayed.length > 1) {
+                delayedIdentifiableEvent += e.aggregateId -> delayed.tail
+              } else {
+                delayedIdentifiableEvent -= e.aggregateId
+              }
+              //            println("replaying delayed event " + e.event)
+              receiveUpdate(delayed.head)
+            case _ => ()
+          }
+        } catch {
+          case ex: Exception => log.error(ex, "Error handling update " + e.events.head.version.asInt +"-"+e.events.last.version.asInt)
         }
       } else if (e.events.last.version <= lastVersion) {
         sender() ! MessageAck(self, e.aggregateId, e.events.map(_.version))

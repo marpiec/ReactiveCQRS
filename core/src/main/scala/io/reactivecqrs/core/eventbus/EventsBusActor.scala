@@ -5,7 +5,7 @@ import akka.util.Timeout
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.backpressure.BackPressureActor.{ConsumerAllowMoreStart, ConsumerAllowMoreStop, ConsumerAllowedMore}
-import io.reactivecqrs.core.eventbus.EventsBusActor._
+import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventsAck, _}
 import io.reactivecqrs.core.util.{ActorLogging, RandomUtil}
 
 import scala.collection.mutable
@@ -253,19 +253,16 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
     if(finishedEvents.nonEmpty) {
 
-      finishedEvents.keys.map(eventSenders).toSet.foreach((sender: ActorRef) => {
+      val eventsToConfirm: Iterable[EventIdentifier] = finishedEvents.keys
 
-        val eventsForSender = eventSenders.filter {
-          case (eventId, s) => s == sender
-        } map {
-          case (eventId, s) => eventId
-        }
 
-        sender ! PublishEventsAck(ack.aggregateId, eventsForSender.map(_.version).toSeq.sortBy(_.asInt))
-      })
+      // TODO optimize by grouping versions ber sender
+      finishedEvents.keys.foreach(e =>
+        eventSenders(e) ! PublishEventsAck(ack.aggregateId, Seq(e.version))
+      )
 
-      messagesSent --= finishedEvents.keys
-      eventSenders --= finishedEvents.keys
+      messagesSent --= eventsToConfirm
+      eventSenders --= eventsToConfirm
 
       val lastPublishedVersion = getLastPublishedVersion(ack.aggregateId)
 

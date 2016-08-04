@@ -73,9 +73,8 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   }
 
   assureRestoredState()
-  resendEventsToPublish()
 
-  context.system.scheduler.schedule(60.seconds, 60.seconds, self, ResendPersistedMessages)(context.dispatcher)
+  context.system.scheduler.schedule(10.seconds, 60.seconds, self, ResendPersistedMessages)(context.dispatcher)
 
   private def stackTraceToString(e: Throwable) = {
     val sw = new StringWriter()
