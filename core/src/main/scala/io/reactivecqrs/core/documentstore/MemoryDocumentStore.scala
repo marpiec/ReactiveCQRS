@@ -8,28 +8,28 @@ import scala.collection.parallel.mutable
 
 sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
-  val store = mutable.ParHashMap[Long, DocumentWithMetadata[T,M]]()
+  val store = mutable.ParHashMap[Long, Document[T,M]]()
 
 
-  def findDocumentByPath(path: Seq[String], value: String)(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T,M]] = {
-    store.filter(keyValuePair => matches(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].document, path, value)).seq.toMap
+  def findDocumentByPath(path: Seq[String], value: String)(implicit session: DBSession = null): Map[Long, Document[T,M]] = {
+    store.filter(keyValuePair => matches(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].document, path, value)).seq.toMap
   }
 
-  def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T,M]] = {
-    store.filter(keyValuePair => matchesMultiple(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].document, path, values)).seq.toMap
+  def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession = null): Map[Long, Document[T,M]] = {
+    store.filter(keyValuePair => matchesMultiple(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].document, path, values)).seq.toMap
   }
 
-  def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T, M]] = {
-    store.filter(keyValuePair => arrayMatchSeq(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].document, arrayPath).exists(matches(_, objectPath, value))).seq.toMap
-  }
-
-
-  def findDocumentByMetadataObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T, M]] = {
-    store.filter(keyValuePair => arrayMatchSeq(keyValuePair._2.asInstanceOf[DocumentWithMetadata[AnyRef, AnyRef]].metadata, arrayPath).exists(matches(_, objectPath, value))).seq.toMap
+  def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
+    store.filter(keyValuePair => arrayMatchSeq(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].document, arrayPath).exists(matches(_, objectPath, value))).seq.toMap
   }
 
 
-  def findAll()(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T,M]] = {
+  def findDocumentByMetadataObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
+    store.filter(keyValuePair => arrayMatchSeq(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].metadata, arrayPath).exists(matches(_, objectPath, value))).seq.toMap
+  }
+
+
+  def findAll()(implicit session: DBSession = null): Map[Long, Document[T,M]] = {
     store.seq.toMap
   }
 
@@ -104,26 +104,22 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     value
   }
 
-  def getDocument(key: Long)(implicit session: DBSession = null): Option[DocumentWithMetadata[T,M]] = store.get(key)
+  def getDocument(key: Long)(implicit session: DBSession = null): Option[Document[T,M]] = store.get(key)
 
   def removeDocument(key: Long)(implicit session: DBSession = null): Unit = store -= key
 
-  def getDocuments(keys: List[Long])(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T,M]] = (store filterKeys keys.toSet).seq.toMap
+  def getDocuments(keys: List[Long])(implicit session: DBSession = null): Map[Long, Document[T,M]] = (store filterKeys keys.toSet).seq.toMap
 
   def overwriteDocument(key: Long, document: T, metadata: M)(implicit session: DBSession = null): Unit = {
     if (store.contains(key)) {
-      store += key -> DocumentWithMetadata[T, M](document, metadata)
+      store += key -> Document[T, M](document, metadata)
     } else {
       throw new IllegalStateException("Attempting update on non-existing document with key " + key)
     }
   }
 
-  def updateDocument(key: Long, modify: DocumentWithMetadata[T, M] => DocumentWithMetadata[T, M])(implicit session: DBSession = null): Unit = {
-    if (store.contains(key)) {
-      store += key -> modify(store(key))
-    } else {
-      throw new IllegalStateException("Attempting update on non-existing document with key " + key)
-    }
+  def updateDocument(key: Long, modify: Option[Document[T, M]] => Document[T, M])(implicit session: DBSession = null): Unit = {
+    store += key -> modify(store.get(key))
   }
 
 
@@ -135,7 +131,7 @@ class MemoryDocumentStore[T <: AnyRef, M <: AnyRef] extends DocumentStore[T,M] w
     if (store.contains(key)) {
       throw new IllegalStateException("Attempting to re-insert document with key " + key)
     } else {
-      store += key -> DocumentWithMetadata[T, M](document, metadata)
+      store += key -> Document[T, M](document, metadata)
     }
 }
 
@@ -153,7 +149,7 @@ class MemoryDocumentStoreAutoId[T <: AnyRef, M <: AnyRef] extends DocumentStoreA
 
   def insertDocument(document: T, metadata: M)(implicit session: DBSession = null): Long = {
     val key = generateNextId
-    store += key -> DocumentWithMetadata[T, M](document, metadata)
+    store += key -> Document[T, M](document, metadata)
     key
   }
 }

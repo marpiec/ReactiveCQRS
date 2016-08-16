@@ -5,7 +5,7 @@ import akka.pattern.ask
 import akka.util.Timeout
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.api._
-import io.reactivecqrs.core.documentstore.{DocumentStore, DocumentWithMetadata}
+import io.reactivecqrs.core.documentstore.{DocumentStore, Document}
 import io.reactivecqrs.core.eventbus.EventBusSubscriptionsManagerApi
 import io.reactivecqrs.core.projection.{ProjectionActor, SubscriptionsState}
 import io.reactivecqrs.testdomain.shoppingcart.ShoppingCartsListProjection.GetAllCartsNames
@@ -43,12 +43,12 @@ class ShoppingCartsListProjectionEventsBased(val eventBusSubscriptionsManager: E
       val baseShoppingCart: Try[Aggregate[ShoppingCart]] = Await.result(future, 60 seconds)
         documentStore.insertDocument(aggregateId.asLong, baseShoppingCart.get.aggregateRoot.get.name, version)
       case ItemAdded(name) =>
-        documentStore.updateDocument(aggregateId.asLong, documentWithMetadata => {
-          DocumentWithMetadata(documentWithMetadata.document, version)
+        documentStore.updateDocument(aggregateId.asLong, {
+          case Some(doc) => Document(doc.document, version)
         })
       case ItemRemoved(id) =>
-        documentStore.updateDocument(aggregateId.asLong, documentWithMetadata => {
-          DocumentWithMetadata(documentWithMetadata.document, version)
+        documentStore.updateDocument(aggregateId.asLong, {
+          case Some(doc) => Document(doc.document, version)
         })
       case ShoppingCartDeleted() =>
         documentStore.removeDocument(aggregateId.asLong)

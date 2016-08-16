@@ -2,29 +2,29 @@ package io.reactivecqrs.core.documentstore
 
 import scalikejdbc.DBSession
 
-case class DocumentWithMetadata[T <: AnyRef, M <: AnyRef](document: T, metadata: M)
+case class Document[T <: AnyRef, M <: AnyRef](document: T, metadata: M)
 
 sealed abstract class AbstractDocumentStore[T <: AnyRef, M <: AnyRef] {
 
-  def findDocumentByPath(path: Seq[String], value: String)(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T,M]]
+  def findDocumentByPath(path: Seq[String], value: String)(implicit session: DBSession = null): Map[Long, Document[T,M]]
 
-  def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T,M]]
+  def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession = null): Map[Long, Document[T,M]]
 
-  def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T, M]]
+  def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, Document[T, M]]
 
-  def findDocumentByMetadataObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T,M]]
+  def findDocumentByMetadataObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, Document[T,M]]
 
   def overwriteDocument(key: Long, document: T, metadata: M)(implicit session: DBSession): Unit
 
-  def updateDocument(key: Long, modify: DocumentWithMetadata[T, M] => DocumentWithMetadata[T, M])(implicit session: DBSession): Unit
+  def updateDocument(key: Long, modify: Option[Document[T, M]] => Document[T, M])(implicit session: DBSession): Unit
 
-  def getDocument(key: Long)(implicit session: DBSession = null): Option[DocumentWithMetadata[T, M]]
+  def getDocument(key: Long)(implicit session: DBSession = null): Option[Document[T, M]]
 
-  def getDocuments(keys: List[Long])(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T, M]]
+  def getDocuments(keys: List[Long])(implicit session: DBSession = null): Map[Long, Document[T, M]]
 
   def removeDocument(key: Long)(implicit session: DBSession): Unit
 
-  def findAll()(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T, M]]
+  def findAll()(implicit session: DBSession = null): Map[Long, Document[T, M]]
 
 }
 

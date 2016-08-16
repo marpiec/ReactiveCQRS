@@ -64,35 +64,11 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     }
   }
 
-  // Optimistic locking update
-  def updateDocument(key: Long, modify: DocumentWithMetadata[T, M] => DocumentWithMetadata[T, M])(implicit session: DBSession): Unit = {
-
-    inSession { implicit session =>
-      sql"SELECT version, document, metadata FROM ${tableNameSQL} WHERE id = ?"
-        .bind(key).map(rs => {
-        (rs.int(1), mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3)))
-      }).single().apply() match {
-        case None => throw new IllegalStateException("Document in "+tableName+" not found for key " + key)
-        case Some((version, document, metadata)) =>
-          val modified = modify(DocumentWithMetadata(document, metadata))
-
-          val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB, metadata = ?::JSONB WHERE id = ? AND version = ?"
-            .bind(version + 1, mpjsons.serialize[T](modified.document), mpjsons.serialize[M](modified.metadata), key, version)
-            .map(_.int(1)).single().executeUpdate().apply()
-
-          if(updated == 0) {
-            updateDocument(key, modify)
-          }
-      }
-    }
-  }
-
-
-  def getDocument(key: Long)(implicit session: DBSession = null): Option[DocumentWithMetadata[T, M]] = {
+  def getDocument(key: Long)(implicit session: DBSession = null): Option[Document[T, M]] = {
     inSession { implicit session =>
       sql"SELECT document, metadata FROM ${tableNameSQL} WHERE id = ?"
           .bind(key).map(rs => {
-        DocumentWithMetadata[T, M](mpjsons.deserialize[T](rs.string(1)), mpjsons.deserialize[M](rs.string(2)))
+        Document[T, M](mpjsons.deserialize[T](rs.string(1)), mpjsons.deserialize[M](rs.string(2)))
       }).single().apply()
     }
   }
@@ -106,16 +82,16 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
   }
 
-  def findDocumentByPath(path: Seq[String], value: String)(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T, M]] = {
+  def findDocumentByPath(path: Seq[String], value: String)(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
     inConnection { connection =>
       val statement = connection.prepareStatement(SELECT_DOCUMENT_BY_PATH(path.mkString(",")))
       try {
         statement.setString(1, value)
         val resultSet = statement.executeQuery()
         try {
-          val results = mutable.ListMap[Long, DocumentWithMetadata[T, M]]()
+          val results = mutable.ListMap[Long, Document[T, M]]()
           while (resultSet.next()) {
-            results += resultSet.getLong(1) -> DocumentWithMetadata[T,M](mpjsons.deserialize[T](resultSet.getString(2)), mpjsons.deserialize[M](resultSet.getString(3)))
+            results += resultSet.getLong(1) -> Document[T,M](mpjsons.deserialize[T](resultSet.getString(2)), mpjsons.deserialize[M](resultSet.getString(3)))
           }
           results.toMap
         } finally {
@@ -128,16 +104,16 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
   }
 
 
-  def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T, M]] = {
+  def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
     if (values.nonEmpty) {
       inConnection { connection =>
         val statement = connection.prepareStatement(SELECT_DOCUMENT_BY_PATH_WITH_ONE_OF_THE_VALUES(path.mkString(","), values))
         try {
           val resultSet = statement.executeQuery()
           try {
-            val results = mutable.ListMap[Long, DocumentWithMetadata[T, M]]()
+            val results = mutable.ListMap[Long, Document[T, M]]()
             while (resultSet.next()) {
-              results += resultSet.getLong(1) -> DocumentWithMetadata[T, M](mpjsons.deserialize[T](resultSet.getString(2)), mpjsons.deserialize[M](resultSet.getString(3)))
+              results += resultSet.getLong(1) -> Document[T, M](mpjsons.deserialize[T](resultSet.getString(2)), mpjsons.deserialize[M](resultSet.getString(3)))
             }
             results.toMap
           } finally {
@@ -151,15 +127,15 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
   }
 
 
-  def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T, M]] = {
+  def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
     findDocumentByObjectInArray("document", arrayPath, objectPath, value)
   }
 
-  def findDocumentByMetadataObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T, M]] = {
+  def findDocumentByMetadataObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
     findDocumentByObjectInArray("metadata", arrayPath, objectPath, value)
   }
 
-  protected def findDocumentByObjectInArray[V](columnName: String, array: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession): Map[Long, DocumentWithMetadata[T, M]] = {
+  protected def findDocumentByObjectInArray[V](columnName: String, array: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession): Map[Long, Document[T, M]] = {
 
     //sample query that works:
     // SELECT * FROM projection_processes_flows WHERE document #> '{state, cursors}' @> '[{"currentNodeId":2}]';
@@ -181,9 +157,9 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 //        statement.setString(1, value)
         val resultSet = statement.executeQuery()
         try {
-          val results = mutable.ListMap[Long, DocumentWithMetadata[T, M]]()
+          val results = mutable.ListMap[Long, Document[T, M]]()
           while (resultSet.next()) {
-            results += resultSet.getLong(1) -> DocumentWithMetadata[T,M](mpjsons.deserialize[T](resultSet.getString(2)), mpjsons.deserialize[M](resultSet.getString(3)))
+            results += resultSet.getLong(1) -> Document[T,M](mpjsons.deserialize[T](resultSet.getString(2)), mpjsons.deserialize[M](resultSet.getString(3)))
           }
           results.toMap
         } finally {
@@ -196,23 +172,23 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
   }
 
 
-  def findAll()(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T, M]] = {
+  def findAll()(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
     inSession { implicit session =>
       val tuples = sql"SELECT id, document, metadata FROM ${tableNameSQL}"
-          .map(rs => rs.long(1) -> DocumentWithMetadata[T,M](mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3))))
+          .map(rs => rs.long(1) -> Document[T,M](mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3))))
         .list.apply()
       tuples.toMap
     }
   }
 
-  def getDocuments(keys: List[Long])(implicit session: DBSession = null): Map[Long, DocumentWithMetadata[T, M]] = {
+  def getDocuments(keys: List[Long])(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
     if (keys.isEmpty) {
-      Map[Long, DocumentWithMetadata[T, M]]()
+      Map[Long, Document[T, M]]()
     } else {
       inSession { implicit session =>
         val tuples = sql"SELECT id, document, metadata FROM ${tableNameSQL} WHERE id IN (${keys})"
           .map(rs => {
-            rs.long(1) -> DocumentWithMetadata[T, M](mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3)))
+            rs.long(1) -> Document[T, M](mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3)))
           }).list().apply()
         tuples.toMap
       }
@@ -253,6 +229,33 @@ class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val
     }
   }
 
+  // Optimistic locking update
+  def updateDocument(key: Long, modify: Option[Document[T, M]] => Document[T, M])(implicit session: DBSession): Unit = {
+
+    inSession { implicit session =>
+      sql"SELECT version, document, metadata FROM ${tableNameSQL} WHERE id = ?"
+        .bind(key).map(rs => {
+        (rs.int(1), mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3)))
+      }).single().apply() match {
+        case None =>
+          val modified = modify(None)
+          insertDocument(key, modified.document, modified.metadata)
+
+        case Some((version, document, metadata)) =>
+          val modified = modify(Some(Document(document, metadata)))
+
+          val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB, metadata = ?::JSONB WHERE id = ? AND version = ?"
+            .bind(version + 1, mpjsons.serialize[T](modified.document), mpjsons.serialize[M](modified.metadata), key, version)
+            .map(_.int(1)).single().executeUpdate().apply()
+
+          if(updated == 0) {
+            updateDocument(key, modify)
+          }
+      }
+    }
+  }
+
+
 }
 
 class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: String, val mpjsons: MPJsons)(implicit val t: TypeTag[T], val m: TypeTag[M])
@@ -289,6 +292,29 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
       sql"INSERT INTO ${tableNameSQL} (id, version, document, metadata) VALUES (nextval('${sequenceNameSQL}'), 1, ?::jsonb, ?::jsonb) RETURNING currval('${sequenceNameSQL}')"
           .bind(mpjsons.serialize(document), mpjsons.serialize(metadata))
           .map(_.long(1)).single().apply().get
+    }
+  }
+
+  // Optimistic locking update
+  def updateDocument(key: Long, modify: Option[Document[T, M]] => Document[T, M])(implicit session: DBSession): Unit = {
+
+    inSession { implicit session =>
+      sql"SELECT version, document, metadata FROM ${tableNameSQL} WHERE id = ?"
+        .bind(key).map(rs => {
+        (rs.int(1), mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3)))
+      }).single().apply() match {
+        case None => throw new IllegalStateException(s"Document for key $key not found!")
+        case Some((version, document, metadata)) =>
+          val modified = modify(Some(Document(document, metadata)))
+
+          val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB, metadata = ?::JSONB WHERE id = ? AND version = ?"
+            .bind(version + 1, mpjsons.serialize[T](modified.document), mpjsons.serialize[M](modified.metadata), key, version)
+            .map(_.int(1)).single().executeUpdate().apply()
+
+          if(updated == 0) {
+            updateDocument(key, modify)
+          }
+      }
     }
   }
 }
