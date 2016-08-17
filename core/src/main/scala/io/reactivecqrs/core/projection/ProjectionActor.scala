@@ -212,11 +212,10 @@ abstract class ProjectionActor extends Actor with ActorLogging {
   private def clearProjectionData(replyTo: ActorRef): Unit = {
     subscriptionsState.clearSubscriptionsInfo(this.getClass.getName)
     replyTo ! ProjectionDataCleared
+    onClearProjectionData()
   }
 
-  protected def onClearProjectionData(): Unit = {
-    // override by child if needed
-  }
+  protected def onClearProjectionData(): Unit
 
   override def preStart() {
     eventBusSubscriptionsManager.subscribe(aggregateListenersMap.keySet.toList.map { aggregateType =>
