@@ -59,6 +59,10 @@ class ShoppingCartsListProjectionEventsBased(val eventBusSubscriptionsManager: E
   override protected def receiveQuery: Receive = {
     case GetAllCartsNames() => sender() ! documentStore.findAll().values.map(_.document).toVector
   }
+
+  override protected def onClearProjectionData(): Unit = {
+    // do nothing
+  }
 }
 
 
@@ -83,5 +87,9 @@ class ShoppingCartsListProjectionAggregatesBased(val eventBusSubscriptionsManage
 
   override protected def receiveQuery: Receive = {
     case GetAllCartsNames() => sender() ! documentStore.findAll().values.map(_.document).toVector
+  }
+
+  override protected def onClearProjectionData(): Unit = {
+    // do nothing
   }
 }
