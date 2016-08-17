@@ -11,7 +11,7 @@ abstract class EventStoreState {
 
   def countAllEvents(): Int
   def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]
-  def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, version: Option[AggregateVersion])(eventHandler: (Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit)
+  def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, version: Option[AggregateVersion])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit)
   def readAndProcessAllEvents(batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit
   def deletePublishedEventsToPublish(eventsIds: Seq[EventIdentifier]): Unit
 

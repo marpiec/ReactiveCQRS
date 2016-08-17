@@ -39,7 +39,7 @@ class TestFixture(val eventStoreState: EventStoreState) {
 
   def getEvents(version: Option[AggregateVersion] = None, id: AggregateId = aggregateId): Vector[Event[SomeAggregate]] = {
     var events = Vector[Event[SomeAggregate]]()
-    eventStoreState.readAndProcessEvents[SomeAggregate](id, version)((event: Event[SomeAggregate], id: AggregateId, noop: Boolean) => {
+    eventStoreState.readAndProcessEvents[SomeAggregate](id, version)((userId: UserId, timestamp: Instant, event: Event[SomeAggregate], id: AggregateId, noop: Boolean) => {
         if(!noop) {
           events :+= event
         }

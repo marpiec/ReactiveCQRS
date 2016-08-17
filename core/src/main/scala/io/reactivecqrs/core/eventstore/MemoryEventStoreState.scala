@@ -13,24 +13,26 @@ object MemoryEventStoreState {
                       event: Event[_], userId: UserId, timestamp: Instant)
 }
 
+case class EventStoreEntry[AGGREGATE_ROOT](userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT])
+
 class MemoryEventStoreState extends EventStoreState {
 
   private var eventsRows: List[EventRow] = List.empty
-  private var eventStore: Map[AggregateId, Vector[Event[_]]] = Map.empty
+  private var eventStore: Map[AggregateId, Vector[EventStoreEntry[_]]] = Map.empty
   private var eventsToPublish: Map[(AggregateId, AggregateVersion), (UserId, Instant, Event[_], Long)] = Map.empty
   private var eventIdSeq: Long = 0
 
 
   override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
 
-    var eventsForAggregate: Vector[Event[_]] = eventStore.getOrElse(aggregateId, Vector())
+    var eventsForAggregate: Vector[EventStoreEntry[_]] = eventStore.getOrElse(aggregateId, Vector())
 
     if (eventsEnvelope.expectedVersion.isDefined && eventsEnvelope.expectedVersion.get.asInt != eventsForAggregate.size) {
       throw new IllegalStateException("Incorrect version for event, expected " + eventsEnvelope.expectedVersion.get.asInt + " but was " + eventsForAggregate.size)
     }
     var versionsIncreased = 0
     val eventsWithVersions = eventsEnvelope.events.map(event => {
-      eventsForAggregate :+= event
+      eventsForAggregate :+= EventStoreEntry(eventsEnvelope.userId, eventsEnvelope.timestamp, event)
       eventIdSeq += 1
       eventsRows ::= EventRow(eventIdSeq, aggregateId, AggregateVersion(eventsForAggregate.size + versionsIncreased),
                     AggregateType(event.aggregateRootType.toString), event, eventsEnvelope.userId, eventsEnvelope.timestamp)
@@ -47,8 +49,8 @@ class MemoryEventStoreState extends EventStoreState {
   }
 
 
-  override def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, upToVersion: Option[AggregateVersion])(eventHandler: (Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit = {
-    var eventsForAggregate: Vector[Event[AGGREGATE_ROOT]] = eventStore.getOrElse(aggregateId, Vector()).asInstanceOf[Vector[Event[AGGREGATE_ROOT]]]
+  override def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, upToVersion: Option[AggregateVersion])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit = {
+    var eventsForAggregate: Vector[EventStoreEntry[AGGREGATE_ROOT]] = eventStore.getOrElse(aggregateId, Vector()).asInstanceOf[Vector[EventStoreEntry[AGGREGATE_ROOT]]]
 
     if(upToVersion.isDefined) {
       eventsForAggregate = eventsForAggregate.take(upToVersion.get.asInt)
@@ -57,7 +59,7 @@ class MemoryEventStoreState extends EventStoreState {
     var undoEventsCount = 0
     val eventsWithNoop = eventsForAggregate.reverse.map(event => {
       if(undoEventsCount == 0) {
-        event match {
+        event.event match {
           case e:UndoEvent[_] =>
             undoEventsCount += e.eventsCount
             (event, true)
@@ -70,7 +72,7 @@ class MemoryEventStoreState extends EventStoreState {
       }
     }).reverse
 
-    eventsWithNoop.foreach(eventWithNoop => eventHandler(eventWithNoop._1, aggregateId, eventWithNoop._2))
+    eventsWithNoop.foreach(eventWithNoop => eventHandler(eventWithNoop._1.userId, eventWithNoop._1.timestamp, eventWithNoop._1.event, aggregateId, eventWithNoop._2))
   }
 
   override def readAndProcessAllEvents(batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit = {

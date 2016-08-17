@@ -1,10 +1,12 @@
 package io.reactivecqrs.core.commandhandler
 
+import java.time.Instant
+
 import akka.actor.{Actor, ActorRef, Props}
 import akka.pattern.ask
 import akka.util.Timeout
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.{AggregateId, CommandId}
+import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.GetAggregateRoot
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{AggregateActors, EnsureEventsPublished}
@@ -52,7 +54,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
                                                        commandLogState: CommandLogState,
                                                        commandResponseState: CommandResponseState,
                                                        val commandsHandlers: AGGREGATE_ROOT => PartialFunction[Any, CustomCommandResult[Any]],
-                                                       val eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
+                                                       val eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
                                                        val eventBus: ActorRef,
                                                        val initialState: () => AGGREGATE_ROOT)
                                                         (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor with ActorLogging {

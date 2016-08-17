@@ -8,7 +8,7 @@ import EventsHandlers._
 class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
 
 
-  override def commandHandlers = (shoppingCart: ShoppingCart) => {
+  override def commandHandlers = (shoppingCart) => {
     case c: CreateShoppingCart => createShoppingCart(c.userId, c)
     case c: DuplicateShoppingCart => duplicateShoppingCart(c)
     case c: AddItem => addItem(c.userId, c.aggregateId, c.expectedVersion, shoppingCart)(c)
@@ -17,7 +17,7 @@ class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
     case c: UndoShoppingCartChange => undoShoppingCartChange(c)
   }
 
-  override def eventHandlers = (shoppingCart: ShoppingCart) => {
+  override def eventHandlers = (userId, timestamp, shoppingCart) => {
     case e: ShoppingCartDuplicated => shoppingCart
     case e: ShoppingCartCreated => shoppingCartCreated(e)
     case e: ItemAdded => itemAdded(shoppingCart, e)

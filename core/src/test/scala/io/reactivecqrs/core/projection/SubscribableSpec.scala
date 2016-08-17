@@ -39,6 +39,9 @@ class SimpleProjection(val eventBusSubscriptionsManager: EventBusSubscriptionsMa
     })
   }
 
+  override protected def onClearProjectionData(): Unit = {
+    // do nothing
+  }
 }
 
 class SimpleListener(simpleListenerProbe: TestProbe) extends Actor {

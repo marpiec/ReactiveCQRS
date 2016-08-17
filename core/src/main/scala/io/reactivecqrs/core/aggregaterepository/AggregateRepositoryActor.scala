@@ -42,7 +42,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
                                                                 eventStore: EventStoreState,
                                                                 commandResponseState: CommandResponseState,
                                                                 eventsBus: ActorRef,
-                                                                eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
+                                                                eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
                                                                 initialState: () => AGGREGATE_ROOT,
                                                                 singleReadForVersionOnly: Option[AggregateVersion]) extends Actor with ActorLogging {
 
@@ -97,7 +97,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
       // In case of those events it's easier to re read past events
       assureRestoredState()
     } else {
-      ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.foreach(eventIdentifier => handleEvent(eventIdentifier.event, aggregateId, noopEvent = false))
+      ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.foreach(eventIdentifier => handleEvent(eventIdentifier.userId, eventIdentifier.timestamp, eventIdentifier.event, aggregateId, noopEvent = false))
     }
     eventsBus ! PublishEvents(aggregateType, ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
   }
@@ -105,7 +105,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   private def handlePersistEvents(ee: PersistEvents[_]): Unit = {
     val result = ee.asInstanceOf[PersistEvents[AGGREGATE_ROOT]].events.foldLeft(Right(aggregateRoot).asInstanceOf[Either[(Exception, Event[AGGREGATE_ROOT]), AGGREGATE_ROOT]])((aggEither, event) => {
       aggEither match {
-        case Right(agg) => tryToHandleEvent(event, false, agg)
+        case Right(agg) => tryToHandleEvent(ee.userId, ee.timestamp, event, noopEvent = false, agg)
         case f: Left[_, _] => f
       }
     })
@@ -177,10 +177,10 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     respondTo ! ResultAggregator.AggregateModified
   }
 
-  private def tryToHandleEvent(event: Event[AGGREGATE_ROOT], noopEvent: Boolean, tmpAggregateRoot: AGGREGATE_ROOT): Either[(Exception, Event[AGGREGATE_ROOT]), AGGREGATE_ROOT] = {
+  private def tryToHandleEvent(userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT], noopEvent: Boolean, tmpAggregateRoot: AGGREGATE_ROOT): Either[(Exception, Event[AGGREGATE_ROOT]), AGGREGATE_ROOT] = {
     if(!noopEvent) {
       try {
-        Right(eventHandlers(tmpAggregateRoot)(event))
+        Right(eventHandlers(userId, timestamp, tmpAggregateRoot)(event))
       } catch {
         case e: Exception =>
           log.error("Error while handling event tryout : " + event)
@@ -191,10 +191,10 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     }
   }
 
-  private def handleEvent(event: Event[AGGREGATE_ROOT], aggId: AggregateId, noopEvent: Boolean): Unit = {
+  private def handleEvent(userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT], aggId: AggregateId, noopEvent: Boolean): Unit = {
     if(!noopEvent) {
       try {
-        aggregateRoot = eventHandlers(aggregateRoot)(event)
+        aggregateRoot = eventHandlers(userId, timestamp, aggregateRoot)(event)
       } catch {
         case e: Exception =>
           log.error("Error while handling event: " + event)

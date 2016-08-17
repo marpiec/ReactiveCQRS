@@ -1,6 +1,8 @@
 package io.reactivecqrs.api
 
-import io.reactivecqrs.api.id.AggregateId
+import java.time.Instant
+
+import io.reactivecqrs.api.id.{AggregateId, UserId}
 
 import scala.reflect.runtime.universe.TypeTag
 
@@ -22,7 +24,7 @@ abstract class AggregateContext[AGGREGATE_ROOT] {
   type CommandHandler = AGGREGATE_ROOT => PartialFunction[Any, CustomCommandResult[Any]]
   type CommandHandlerWrapper = Function[CommandHandler, CommandHandler]
 
-  type EventHandler = AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT]
+  type EventHandler = (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT]
 
   def eventHandlers: EventHandler
 

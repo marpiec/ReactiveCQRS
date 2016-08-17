@@ -70,20 +70,20 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 
 
   override def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, version: Option[AggregateVersion])
-                                                   (eventHandler: (Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit = {  //event, id, noop
+                                                   (eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit = {  //event, id, noop
 
     DB.readOnly { implicit session =>
 
       val query = version match {
         case Some(v) =>
-          sql"""SELECT event_type_id, event, events.version, events.aggregate_id,
+          sql"""SELECT user_id, event_time, event_type_id, event, events.version, events.aggregate_id,
                 noop_events.id IS NOT NULL AND (events.aggregate_id != ? AND noop_events.from_version <= aggregates.base_version OR events.aggregate_id = ? AND noop_events.from_version <= ?) as noop
              FROM events
              JOIN aggregates ON events.aggregate_id = aggregates.base_id AND (events.aggregate_id != ? AND events.version <= aggregates.base_version OR events.aggregate_id = ? AND events.version <= ?)
              LEFT JOIN noop_events ON events.id = noop_events.id AND noop_events.from_version <= aggregates.base_version
              WHERE aggregates.id = ? ORDER BY aggregates.base_order, version""".stripMargin.bind(aggregateId.asLong, aggregateId.asLong, v.asInt, aggregateId.asLong, aggregateId.asLong, v.asInt, aggregateId.asLong)
         case None =>
-          sql"""SELECT event_type_id, event, events.version, events.aggregate_id, noop_events.id IS NOT NULL AND noop_events.from_version <= aggregates.base_version as noop
+          sql"""SELECT user_id, event_time, event_type_id, event, events.version, events.aggregate_id, noop_events.id IS NOT NULL AND noop_events.from_version <= aggregates.base_version as noop
              FROM events
              JOIN aggregates ON events.aggregate_id = aggregates.base_id AND events.version <= aggregates.base_version
              LEFT JOIN noop_events ON events.id = noop_events.id AND noop_events.from_version <= aggregates.base_version
@@ -92,11 +92,11 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 
       query.foreach { rs =>
 
-        val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(2), typesNamesState.classNameById(rs.short(1)))
-        val id = AggregateId(rs.long(4))
-        val eventVersion = rs.long(3)
+        val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(4), typesNamesState.classNameById(rs.short(3)))
+        val id = AggregateId(rs.long(6))
+        val eventVersion = rs.long(5)
         if(version.isEmpty || id != aggregateId || eventVersion <= version.get.asInt) {
-          eventHandler(event, id, rs.boolean(5))
+          eventHandler(UserId(rs.long(1)), rs.timestamp(2).toInstant, event, id, rs.boolean(7))
         } // otherwise it's to new event, TODO optimise as it reads all events from database, also those not needed here
       }
     }

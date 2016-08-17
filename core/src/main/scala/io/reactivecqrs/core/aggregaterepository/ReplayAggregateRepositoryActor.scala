@@ -1,8 +1,10 @@
 package io.reactivecqrs.core.aggregaterepository
 
+import java.time.Instant
+
 import akka.actor.{Actor, ActorRef}
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.AggregateId
+import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor.ReplayEvents
 import io.reactivecqrs.core.util.ActorLogging
 import io.reactivecqrs.core.eventbus.EventsBusActor.PublishReplayedEvent
@@ -18,7 +20,7 @@ object ReplayAggregateRepositoryActor {
 class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: AggregateId,
                                                                       eventStore: EventStoreState,
                                                                       eventsBus: ActorRef,
-                                                                      eventHandlers: AGGREGATE_ROOT => PartialFunction[Any, AGGREGATE_ROOT],
+                                                                      eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
                                                                       initialState: () => AGGREGATE_ROOT,
                                                                       aggregateVersion: Option[AggregateVersion]) extends Actor with ActorLogging {
 
@@ -38,10 +40,10 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
 
   assureRestoredState()
 
-  private def handleEvent(event: Event[AGGREGATE_ROOT], aggId: AggregateId, noopEvent: Boolean): Unit = {
+  private def handleEvent(userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT], aggId: AggregateId, noopEvent: Boolean): Unit = {
     if(!noopEvent) {
       try {
-        aggregateRoot = eventHandlers(aggregateRoot)(event)
+        aggregateRoot = eventHandlers(userId, timestamp, aggregateRoot)(event)
       } catch {
         case e: Exception =>
           log.error("Error while handling event: " + event)
@@ -68,7 +70,7 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
     }
 
     events.events.foreach(event => {
-      handleEvent(event.event, events.aggregateId, noopEvent = false)
+      handleEvent(event.userId, event.timestamp, event.event, events.aggregateId, noopEvent = false)
     })
 
     val messageToSend: PublishReplayedEvent[AGGREGATE_ROOT] = PublishReplayedEvent(aggregateType, events.events, aggregateId, Option(aggregateRoot))
