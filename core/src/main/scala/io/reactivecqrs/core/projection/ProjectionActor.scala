@@ -17,6 +17,9 @@ import scala.reflect.runtime.universe._
 
 private case class DelayedQuery(until: Instant, respondTo: ActorRef, search: () => Option[Any])
 
+case object ClearProjectionData
+case object ProjectionDataCleared
+
 abstract class ProjectionActor extends Actor with ActorLogging {
 
   protected val subscriptionsState: SubscriptionsState
@@ -201,10 +204,19 @@ abstract class ProjectionActor extends Actor with ActorLogging {
           case Some(delayed) => delayedIdentifiableEvent += e.aggregateId -> (e :: delayed).sortBy(_.events.head.version.asInt)
         }
       }
+    case ClearProjectionData => clearProjectionData(sender())
   }
 
   protected def receiveQuery: Receive
 
+  private def clearProjectionData(replyTo: ActorRef): Unit = {
+    subscriptionsState.clearSubscriptionsInfo(this.getClass.getName)
+    replyTo ! ProjectionDataCleared
+  }
+
+  protected def onClearProjectionData(): Unit = {
+    // override by child if needed
+  }
 
   override def preStart() {
     eventBusSubscriptionsManager.subscribe(aggregateListenersMap.keySet.toList.map { aggregateType =>

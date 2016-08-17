@@ -26,6 +26,8 @@ sealed abstract class AbstractDocumentStore[T <: AnyRef, M <: AnyRef] {
 
   def findAll()(implicit session: DBSession = null): Map[Long, Document[T, M]]
 
+  def clearAllData()(implicit session: DBSession = null): Unit
+
 }
 
 abstract class DocumentStore[T <: AnyRef, M <: AnyRef] extends AbstractDocumentStore[T, M] {

@@ -122,6 +122,10 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     store += key -> modify(store.get(key))
   }
 
+  def clearAllData()(implicit session: DBSession): Unit = {
+    store.clear()
+  }
+
 
 }
 

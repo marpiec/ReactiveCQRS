@@ -255,6 +255,11 @@ class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val
     }
   }
 
+  def clearAllData()(implicit session: DBSession): Unit = {
+    inSession { implicit session =>
+      sql"TRUNCATE TABLE ${tableNameSQL}".executeUpdate().apply()
+    }
+  }
 
 }
 
@@ -315,6 +320,13 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
             updateDocument(key, modify)
           }
       }
+    }
+  }
+
+  def clearAllData()(implicit session: DBSession): Unit = {
+    inSession { implicit session =>
+      sql"TRUNCATE TABLE ${tableNameSQL}".executeUpdate().apply()
+      sql"ALTER SEQUENCE ${sequenceNameSQL} RESTART WITH 1".executeUpdate().apply()
     }
   }
 }

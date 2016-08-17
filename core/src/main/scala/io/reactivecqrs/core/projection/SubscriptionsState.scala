@@ -20,6 +20,8 @@ object SubscriptionType {
 }
 
 trait SubscriptionsState {
+
+
   def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId)(implicit session: DBSession): AggregateVersion
   def lastVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId)(implicit session: DBSession): AggregateVersion
   def lastVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId)(implicit session: DBSession): AggregateVersion
@@ -27,6 +29,8 @@ trait SubscriptionsState {
   def newVersionForAggregatesSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit
   def newVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit
   def newVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit
+
+  def clearSubscriptionsInfo(subscriberName: String): Unit
 
   def localTx[A](block: DBSession => A): A
 }
@@ -54,6 +58,10 @@ class MemorySubscriptionsState extends SubscriptionsState {
 
   override def newVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit =
     newEventId(subscriberName, aggregateId, SubscriptionType.AGGREGATES_WITH_EVENTS, lastAggregateVersion, aggregateVersion)
+
+  override def clearSubscriptionsInfo(subscriberName: String): Unit = {
+    state --= state.keys.filter(_.subscriberName != subscriberName)
+  }
 
   override def localTx[A](block: DBSession => A): A = block(NoSession)
 
@@ -211,4 +219,8 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState) extends Subsc
       block(session)
     }
 
+  override def clearSubscriptionsInfo(subscriberName: String): Unit = DB.autoCommit { implicit session =>
+    sql"""DELETE FROM subscriptions WHERE subscriber_type_id = ?"""
+      .bind(typesNamesState.typeIdByClassName(subscriberName)).executeUpdate().apply()
+  }
 }
