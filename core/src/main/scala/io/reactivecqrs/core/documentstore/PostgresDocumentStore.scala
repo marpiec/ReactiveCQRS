@@ -181,6 +181,15 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     }
   }
 
+  def countAll()(implicit session: DBSession = null): Int = {
+    inSession { implicit session =>
+      sql"SELECT count(*) FROM ${tableNameSQL}"
+        .map(rs => rs.int(1))
+        .single().apply().get
+    }
+  }
+
+
   def getDocuments(keys: List[Long])(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
     if (keys.isEmpty) {
       Map[Long, Document[T, M]]()

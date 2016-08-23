@@ -33,6 +33,10 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     store.seq.toMap
   }
 
+  def countAll()(implicit session: DBSession = null): Int = {
+    store.size
+  }
+
   protected def arrayMatchSeq(element: AnyRef, arrayPath: Seq[String]): Seq[AnyRef] = {
     val innerElement: AnyRef = element match {
       case None if arrayPath.head == "value" => return Seq()
