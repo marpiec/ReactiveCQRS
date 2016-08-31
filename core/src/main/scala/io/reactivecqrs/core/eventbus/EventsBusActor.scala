@@ -1,5 +1,7 @@
 package io.reactivecqrs.core.eventbus
 
+import java.time.Instant
+
 import akka.actor.{Actor, ActorRef}
 import akka.util.Timeout
 import io.reactivecqrs.api._
@@ -58,7 +60,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   private var orderedMessages = 0
 
   /** Message to subscribers that not yet confirmed receiving message */
-  private val messagesSent = mutable.HashMap[EventIdentifier, Vector[ActorRef]]()
+  private val messagesSent = mutable.HashMap[EventIdentifier, Vector[(Instant, ActorRef)]]()
   private val eventSenders = mutable.HashMap[EventIdentifier, ActorRef]()
 
   private val eventsPropagatedNotPersisted = mutable.HashMap[AggregateId, List[AggregateVersion]]()
@@ -73,12 +75,19 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   private var lastLogged = 0
 
   // FOR DEBUG PURPOSE
-  context.system.scheduler.schedule(200.milli, 200.milli, new Runnable {
+  context.system.scheduler.schedule(2000.milli, 2000.milli, new Runnable {
     override def run(): Unit = {
-      if(messagesSent.size != lastLogged) {
-        log.debug("Messages propagated, not confirmed: " + messagesSent.size)
+
+      val now = Instant.now()
+      val oldMessages = messagesSent.flatMap(m => m._2.map(r => (m._1, r._1, r._2))).filter(e => e._2.plusMillis(5000).isBefore(now))
+
+      if(oldMessages.size != lastLogged) {
+        log.warning("Messages propagated, not confirmed: " + oldMessages.size)
+        oldMessages.foreach(m => {
+          log.warning("Message not confirmed: " + m._3.path.toStringWithoutAddress+" "+m._1)
+        })
       }
-      lastLogged = messagesSent.size
+      lastLogged = oldMessages.size
     }
   })(context.dispatcher)
 
@@ -210,7 +219,8 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     })
 
     eventsToPropagate.foreach(event => {
-      val receiversForEvent = messagesToSend.filter(m => m.versions.contains(event.version)).map(_.subscriber)
+      val timestasmp = Instant.now()
+      val receiversForEvent = messagesToSend.filter(m => m.versions.contains(event.version)).map(e => (timestasmp, e.subscriber))
       messagesSent += EventIdentifier(aggregateId, event.version) -> receiversForEvent
     })
 
@@ -239,7 +249,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     val receiversToConfirm = messagesSent.filterKeys(e => eventsIds.contains(e))
 
     val withoutConfirmedPerEvent = receiversToConfirm.map {
-      case (eventId, receivers) => eventId -> receivers.filterNot(_ == ack.subscriber)
+      case (eventId, receivers) => eventId -> receivers.filterNot(_._2 == ack.subscriber)
     }
 
 
