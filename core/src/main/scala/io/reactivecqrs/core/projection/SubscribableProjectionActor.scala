@@ -7,45 +7,58 @@ import io.reactivecqrs.core.util.RandomUtil
 import io.reactivecqrs.core.projection.SubscribableProjectionActor._
 
 import scala.collection.mutable
+import scala.concurrent.duration.DurationDouble
 import scala.reflect.runtime.universe._
 
 object SubscribableProjectionActor {
+
+  val subscriptionTTL = 600000 // 10 minutes
+
   case class SubscribedForProjectionUpdates(subscriptionCode: String, subscriptionId: String)
 
   case class CancelProjectionSubscriptions(subscriptions: List[String])
 
+  case class RenewSubscription(subscriptionId: String)
+
   case class ProjectionSubscriptionsCancelled(subscriptions: List[String])
 
   case class SubscriptionUpdated[UPDATE, METADATA](subscriptionId: String, data: UPDATE, metadata: METADATA)
+
+  case object ClearIdleSubscriptions
 }
 
 case class UpdateCacheEntry(arrived: Instant, value: Any)
+
+case class SubscriptionInfo(subscriptionId: String, listener: ActorRef, acceptor: _ => Option[_], typeName: String, renewal: Instant)
 
 abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.ZERO) extends ProjectionActor {
 
   protected def receiveSubscriptionRequest: Receive
 
   protected def receiveSubscription: Receive = receiveSubscriptionRequest orElse {
-    case CancelProjectionSubscriptions(subscriptions) => sender ! ProjectionSubscriptionsCancelled(subscriptions.flatMap(handleUnsubscribe))
+    case CancelProjectionSubscriptions(subscriptionsToCancel) =>
+      subscriptionsToCancel.foreach(handleUnsubscribe)
+      sender ! ProjectionSubscriptionsCancelled(subscriptionsToCancel)
+    case RenewSubscription(subscriptionId) => renewSubscription(subscriptionId)
+    case ClearIdleSubscriptions => clearIdleSubscriptions()
   }
 
   override protected def receiveUpdate = super.receiveUpdate orElse receiveSubscription
 
-  private val subscriptionIdToListener = mutable.HashMap[String, ActorRef]()
-  private val subscriptionIdToAcceptor = mutable.HashMap[String, _ => Option[_]]()
-  private val typeToSubscriptionId = mutable.HashMap[String, List[String]]()
-
+  private val subscriptions = mutable.HashMap[String, SubscriptionInfo]()
+  private val subscriptionsPerType = mutable.HashMap[String, List[String]]()
   private val updatesCache: mutable.Queue[UpdateCacheEntry] = mutable.Queue.empty
+
+  context.system.scheduler.schedule(1.minute, 1.minute, self, ClearIdleSubscriptions)(context.dispatcher)
 
   protected def handleSubscribe[DATA: TypeTag, UPDATE, METADATA](code: String, listener: ActorRef,
                                                                  filter: (DATA) => Option[(UPDATE, METADATA)],
                                                                  missedUpdatesFilter: DATA => Boolean = (d: DATA) => false): Unit = {
     val subscriptionId = generateNextSubscriptionId
-    val typeTagString = typeTag[DATA].toString()
+    val typeName = typeTag[DATA].toString()
 
-    subscriptionIdToListener += subscriptionId -> listener
-    subscriptionIdToAcceptor += subscriptionId -> filter
-    typeToSubscriptionId += typeTagString -> (subscriptionId :: typeToSubscriptionId.getOrElse(typeTagString, Nil))
+    subscriptions += subscriptionId -> SubscriptionInfo(subscriptionId, listener, filter, typeName, Instant.now())
+    subscriptionsPerType += typeName -> (subscriptionId :: subscriptionsPerType.getOrElse(typeName, Nil))
 
     listener ! SubscribedForProjectionUpdates(code, subscriptionId)
 
@@ -55,10 +68,13 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
         .map(d => filter(d.value.asInstanceOf[DATA])).filter(_.isDefined)
         .foreach(result => listener ! SubscriptionUpdated(subscriptionId, result.get._1, result.get._2))
     }
+
+    if(log.isDebugEnabled) {
+      log.debug("New subscription for " + listener.path.toStringWithoutAddress + " on " + typeName+", id: "+subscriptionId+", subscriptions count: "+subscriptions.size)
+    }
   }
 
   protected def sendUpdate[DATA: TypeTag](u: DATA) = {
-
 
     if(updatesCacheTTL != Duration.ZERO) {
       updatesCache += UpdateCacheEntry(Instant.now(), u)
@@ -66,37 +82,62 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
       updatesCache.dequeueAll(e => e.arrived.isBefore(shouldArriveAfter))
     }
 
-    typeToSubscriptionId.get(typeTag[DATA].toString()) foreach { subscriptions =>
+    // Find subscriptions for given type
+    subscriptionsPerType.getOrElse(typeTag[DATA].toString(), List.empty).map(subscriptions) foreach { subscription =>
       for {
-        subscriptionId: String <- subscriptions
-        listener: ActorRef <- subscriptionIdToListener.get(subscriptionId)
-        filter <- subscriptionIdToAcceptor.get(subscriptionId)
-        result <- filter.asInstanceOf[DATA => Option[(_, _)]](u)
-      } yield listener ! SubscriptionUpdated(subscriptionId, result._1, result._2)
+        result <- subscription.acceptor.asInstanceOf[DATA => Option[(_, _)]](u) // and translate data to message for subscriber
+      } yield subscription.listener ! SubscriptionUpdated(subscription.subscriptionId, result._1, result._2) // and send message if not None
     }
   }
 
-  private def handleUnsubscribe(subscriptionId: String): Option[String] = {
-    typeToSubscriptionId.find { _._2.contains(subscriptionId) } match {
-      case Some((aggregateId, subscriptions)) =>
-        val filtered = subscriptions.filterNot(_ == subscriptionId)
-        if (filtered.isEmpty) {
-          typeToSubscriptionId -= aggregateId
+  private def renewSubscription(subscriptionId: String): Unit = {
+    subscriptions.get(subscriptionId) match {
+      case None => () // ??? Should we send info that subscription is no longer valid? Or should we create new one?
+      case Some(subscription) => subscriptions += subscriptionId -> subscription.copy(renewal = Instant.now())
+    }
+  }
+
+  private def clearIdleSubscriptions(): Unit = {
+    val now = Instant.now()
+    val subscriptionsToInvalidate = subscriptions.values.filter(_.renewal.plusMillis(subscriptionTTL).isBefore(now))
+
+    subscriptions --= subscriptionsToInvalidate.map(_.subscriptionId)
+
+    subscriptionsToInvalidate.foreach(subscription => {
+      val subscriptionsForType = subscriptionsPerType(subscription.typeName)
+
+      val subscriptionId = subscription.subscriptionId
+      if(subscriptionsForType.length == 1) {
+        subscriptionsPerType -= subscriptionId
+      } else {
+        subscriptionsPerType += subscriptionId -> subscriptionsForType.filterNot(_ == subscriptionId)
+      }
+    })
+
+    if(subscriptionsToInvalidate.nonEmpty && log.isDebugEnabled) {
+      log.debug("Invalidated idle subscriptions " + subscriptionsToInvalidate+ ", remains " + subscriptions.size+" subscriptions")
+    }
+
+  }
+
+  private def handleUnsubscribe(subscriptionId: String): Unit = {
+
+    subscriptions.get(subscriptionId) match {
+      case None => () // nothing to do
+      case Some(subscription) =>
+        subscriptions -= subscriptionId
+
+        val subscriptionsForType = subscriptionsPerType(subscription.typeName)
+
+        if(subscriptionsForType.length == 1) {
+          subscriptionsPerType -= subscriptionId
         } else {
-          typeToSubscriptionId += aggregateId -> filtered
+          subscriptionsPerType += subscriptionId -> subscriptionsForType.filterNot(_ == subscriptionId)
         }
-      case None => ()
     }
-    subscriptionIdToAcceptor.get(subscriptionId) match {
-      case Some(_) =>
-        subscriptionIdToAcceptor -= subscriptionId
-      case None => ()
-    }
-    subscriptionIdToListener.get(subscriptionId) match {
-      case Some(subscriber) =>
-        subscriptionIdToListener -= subscriptionId
-        Some(subscriptionId)
-      case None => None
+
+    if(log.isDebugEnabled) {
+      log.debug("Subscription cancelled for subscription id " + subscriptionId+", subscriptions count: "+subscriptions.size)
     }
   }
 
@@ -108,7 +149,7 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
     var subscriptionId: String = null
     do {
       subscriptionId = randomUtil.generateRandomString(32)
-    } while (subscriptionIdToListener.contains(subscriptionId))
+    } while (subscriptions.contains(subscriptionId))
     subscriptionId
   }
 }
