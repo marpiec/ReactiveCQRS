@@ -130,9 +130,9 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
         val subscriptionsForType = subscriptionsPerType(subscription.typeName)
 
         if(subscriptionsForType.length == 1) {
-          subscriptionsPerType -= subscriptionId
+          subscriptionsPerType -= subscription.typeName
         } else {
-          subscriptionsPerType += subscriptionId -> subscriptionsForType.filterNot(_ == subscriptionId)
+          subscriptionsPerType += subscription.typeName -> subscriptionsForType.filterNot(_ == subscriptionId)
         }
     }
 
