@@ -75,11 +75,11 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   private var lastLogged = 0
 
   // FOR DEBUG PURPOSE
-  context.system.scheduler.schedule(2000.milli, 2000.milli, new Runnable {
+  context.system.scheduler.schedule(5000.milli, 5000.milli, new Runnable {
     override def run(): Unit = {
 
       val now = Instant.now()
-      val oldMessages = messagesSent.flatMap(m => m._2.map(r => (m._1, r._1, r._2))).filter(e => e._2.plusMillis(5000).isBefore(now))
+      val oldMessages = messagesSent.flatMap(m => m._2.map(r => (m._1, r._1, r._2))).filter(e => e._2.plusMillis(60000).isBefore(now))
 
       if(oldMessages.size != lastLogged) {
         log.warning("Messages propagated, not confirmed: " + oldMessages.size)
