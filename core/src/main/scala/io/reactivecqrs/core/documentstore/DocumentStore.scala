@@ -2,6 +2,8 @@ package io.reactivecqrs.core.documentstore
 
 import scalikejdbc.DBSession
 
+case class VersionedDocument[T <: AnyRef, M <: AnyRef](version: Int, document: T, metadata: M)
+
 case class Document[T <: AnyRef, M <: AnyRef](document: T, metadata: M)
 
 sealed abstract class AbstractDocumentStore[T <: AnyRef, M <: AnyRef] {

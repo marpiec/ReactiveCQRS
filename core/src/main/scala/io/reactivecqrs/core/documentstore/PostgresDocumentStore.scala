@@ -18,6 +18,9 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
   val tableName: String
   val mpjsons: MPJsons
+  val cache: DocumentStoreCache[T, M]
+
+  protected var localCache: Map[Long, VersionedDocument[T, M]] = Map.empty
 
   if (!tableName.matches( """[a-zA-Z0-9\_]+""")) {
     throw new IllegalArgumentException("Invalid table name, only alphanumeric characters and underscore allowed")
@@ -54,23 +57,38 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
   def overwriteDocument(key: Long, document: T, metadata: M)(implicit session: DBSession): Unit = {
 
     inSession { implicit session =>
-      val updated = sql"UPDATE ${tableNameSQL} SET document = ?::JSONB, metadata = ?::JSONB , version = version + 1 WHERE id = ?"
+      val updated = sql"UPDATE ${tableNameSQL} SET document = ?::JSONB, metadata = ?::JSONB, version = version + 1 WHERE id = ? RETURNING version"
         .bind(mpjsons.serialize[T](document), mpjsons.serialize[M](metadata), key)
-        .map(_.int(1)).single().executeUpdate().apply()
+        .map(_.int(1)).list().apply()
 
-      if (updated != 1) {
+      if (updated.size != 1) {
         throw new IllegalStateException("Expected 1, updated " + updated + " records")
+      } else {
+        putInCache(key, VersionedDocument(updated.head, document, metadata), None)
       }
     }
   }
 
+
+
   def getDocument(key: Long)(implicit session: DBSession = null): Option[Document[T, M]] = {
-    inSession { implicit session =>
-      sql"SELECT document, metadata FROM ${tableNameSQL} WHERE id = ?"
-          .bind(key).map(rs => {
-        Document[T, M](mpjsons.deserialize[T](rs.string(1)), mpjsons.deserialize[M](rs.string(2)))
-      }).single().apply()
-    }
+
+    cache.get(key) match {
+      case Some(VersionedDocument(version, document, metadata)) => Some(Document(document, metadata))
+      case None =>
+        inSession { implicit session =>
+          val loaded = sql"SELECT version, document, metadata FROM ${tableNameSQL} WHERE id = ?"
+            .bind(key).map(rs => {
+            VersionedDocument[T, M](rs.int(1), mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3)))
+          }).single().apply()
+          loaded match {
+            case Some(doc) =>
+              putInCache(key, doc, None)
+              Some(Document(doc.document, doc.metadata))
+            case None => None
+          }
+        }
+      }
   }
 
   def removeDocument(key: Long)(implicit session: DBSession): Unit = {
@@ -78,6 +96,8 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     inSession { implicit session =>
       sql"DELETE FROM ${tableNameSQL} WHERE id = ?"
         .bind(key).executeUpdate().apply()
+      cache.remove(key)
+      localCache -= key
     }
 
   }
@@ -173,12 +193,13 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
 
   def findAll()(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
-    inSession { implicit session =>
-      val tuples = sql"SELECT id, document, metadata FROM ${tableNameSQL}"
-          .map(rs => rs.long(1) -> Document[T,M](mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3))))
+    val loaded = inSession { implicit session =>
+      sql"SELECT id, version, document, metadata FROM ${tableNameSQL}"
+          .map(rs => rs.long(1) -> VersionedDocument[T,M](rs.int(2), mpjsons.deserialize[T](rs.string(3)), mpjsons.deserialize[M](rs.string(4))))
         .list.apply()
-      tuples.toMap
     }
+    loaded.foreach(t => putInCache(t._1, t._2, None))
+    loaded.toMap.mapValues(v => Document(v.document, v.metadata))
   }
 
   def countAll()(implicit session: DBSession = null): Int = {
@@ -191,16 +212,24 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
 
   def getDocuments(keys: List[Long])(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
-    if (keys.isEmpty) {
-      Map[Long, Document[T, M]]()
+
+    val keysSet: Set[Long] = keys.toSet
+    val fromCache = cache.getAll(keysSet)
+    val toLoad = keysSet -- fromCache.keySet
+
+    val fromCacheValues = fromCache.map {case (key, value) => (key, Document(value.document, value.metadata))}
+
+    if (toLoad.isEmpty) {
+      fromCacheValues
     } else {
-      inSession { implicit session =>
-        val tuples = sql"SELECT id, document, metadata FROM ${tableNameSQL} WHERE id IN (${keys})"
+      val loaded = inSession { implicit session =>
+        sql"SELECT id, version, document, metadata FROM ${tableNameSQL} WHERE id IN (${toLoad})"
           .map(rs => {
-            rs.long(1) -> Document[T, M](mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3)))
+            rs.long(1) -> VersionedDocument[T, M](rs.int(2), mpjsons.deserialize[T](rs.string(3)), mpjsons.deserialize[M](rs.string(4)))
           }).list().apply()
-        tuples.toMap
       }
+      loaded.foreach(t => putInCache(t._1, t._2, None))
+      fromCacheValues ++ loaded.toMap.mapValues(v => Document(v.document, v.metadata))
     }
   }
 
@@ -225,9 +254,43 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     }
   }
 
+  protected def putInCache(key: Long, document: VersionedDocument[T, M], oldValue: Option[VersionedDocument[T, M]]): Unit = {
+
+    Option(oldValue.getOrElse(localCache.getOrElse(key, cache.get(key).orNull))) match {
+      case Some(oValue) =>
+        if(oValue.version >= document.version) {
+          // newer version already inplace
+          localCache += key -> oValue
+        } else {
+          if(cache.replace(key, oValue, document)) {
+            // Hurray
+            localCache += key -> document
+          } else {
+            putInCache(key, document, cache.get(key))
+          }
+        }
+      case None =>
+        val previous = cache.putIfAbsent(key, document)
+        if(previous.isEmpty) {
+          // Hurray
+          localCache += key -> document
+        } else {
+          putInCache(key, document, previous)
+        }
+    }
+  }
+
+
+  protected def getFromCacheOrDB(key: Long)(implicit session: DBSession): Option[VersionedDocument[T, M]] = {
+    Option(localCache.getOrElse(key, cache.get(key).getOrElse(sql"SELECT version, document, metadata FROM ${tableNameSQL} WHERE id = ?"
+      .bind(key).map(rs => {
+      VersionedDocument[T, M](rs.int(1), mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3)))
+    }).single().apply().orNull)))
+  }
+
 }
 
-class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val mpjsons: MPJsons)(implicit val t: TypeTag[T], val m: TypeTag[M])
+class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val mpjsons: MPJsons, val cache: DocumentStoreCache[T, M])(implicit val t: TypeTag[T], val m: TypeTag[M])
   extends DocumentStore[T, M] with PostgresDocumentStoreTrait[T, M] {
 
   override def insertDocument(key: Long, document: T, metadata: M)(implicit session: DBSession): Unit = {
@@ -235,6 +298,7 @@ class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val
       sql"INSERT INTO ${tableNameSQL} (id, version, document, metadata) VALUES (?, 1, ?::jsonb, ?::jsonb)"
         .bind(key, mpjsons.serialize(document), mpjsons.serialize(metadata))
         .executeUpdate().apply()
+      putInCache(key, VersionedDocument(1, document, metadata), None)
     }
   }
 
@@ -242,15 +306,12 @@ class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val
   def updateDocument(key: Long, modify: Option[Document[T, M]] => Document[T, M])(implicit session: DBSession): Document[T, M] = {
 
     inSession { implicit session =>
-      sql"SELECT version, document, metadata FROM ${tableNameSQL} WHERE id = ?"
-        .bind(key).map(rs => {
-        (rs.int(1), mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3)))
-      }).single().apply() match {
+      getFromCacheOrDB(key) match {
         case None =>
           val modified = modify(None)
           insertDocument(key, modified.document, modified.metadata)
           modified
-        case Some((version, document, metadata)) =>
+        case Some(VersionedDocument(version, document, metadata)) =>
           val modified = modify(Some(Document(document, metadata)))
 
           val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB, metadata = ?::JSONB WHERE id = ? AND version = ?"
@@ -260,21 +321,25 @@ class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val
           if(updated == 0) {
             updateDocument(key, modify)
           } else {
+            putInCache(key, VersionedDocument(version + 1, modified.document, modified.metadata), None)
             modified
           }
       }
     }
   }
 
+
   def clearAllData()(implicit session: DBSession): Unit = {
     inSession { implicit session =>
       sql"TRUNCATE TABLE ${tableNameSQL}".executeUpdate().apply()
+      localCache = Map.empty
+      cache.clear()
     }
   }
 
 }
 
-class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: String, val mpjsons: MPJsons)(implicit val t: TypeTag[T], val m: TypeTag[M])
+class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: String, val mpjsons: MPJsons, val cache: DocumentStoreCache[T, M])(implicit val t: TypeTag[T], val m: TypeTag[M])
   extends DocumentStoreAutoId[T, M] with PostgresDocumentStoreTrait[T, M] {
 
   protected final lazy val sequenceName = "sequence_" + tableName
@@ -305,9 +370,11 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
 
   override def insertDocument(document: T, metadata: M)(implicit session: DBSession): Long = {
     inSession {implicit session =>
-      sql"INSERT INTO ${tableNameSQL} (id, version, document, metadata) VALUES (nextval('${sequenceNameSQL}'), 1, ?::jsonb, ?::jsonb) RETURNING currval('${sequenceNameSQL}')"
+      val key = sql"INSERT INTO ${tableNameSQL} (id, version, document, metadata) VALUES (nextval('${sequenceNameSQL}'), 1, ?::jsonb, ?::jsonb) RETURNING currval('${sequenceNameSQL}')"
           .bind(mpjsons.serialize(document), mpjsons.serialize(metadata))
           .map(_.long(1)).single().apply().get
+      putInCache(key, VersionedDocument(1, document, metadata), None)
+      key
     }
   }
 
@@ -315,12 +382,9 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
   def updateDocument(key: Long, modify: Option[Document[T, M]] => Document[T, M])(implicit session: DBSession): Document[T, M] = {
 
     inSession { implicit session =>
-      sql"SELECT version, document, metadata FROM ${tableNameSQL} WHERE id = ?"
-        .bind(key).map(rs => {
-        (rs.int(1), mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3)))
-      }).single().apply() match {
+      getFromCacheOrDB(key) match {
         case None => throw new IllegalStateException(s"Document for key $key not found!")
-        case Some((version, document, metadata)) =>
+        case Some(VersionedDocument(version, document, metadata)) =>
           val modified = modify(Some(Document(document, metadata)))
 
           val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB, metadata = ?::JSONB WHERE id = ? AND version = ?"
@@ -330,6 +394,7 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
           if(updated == 0) {
             updateDocument(key, modify)
           } else {
+            putInCache(key, VersionedDocument(version + 1, modified.document, modified.metadata), None)
             modified
           }
       }
@@ -340,6 +405,8 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
     inSession { implicit session =>
       sql"TRUNCATE TABLE ${tableNameSQL}".executeUpdate().apply()
       sql"ALTER SEQUENCE ${sequenceNameSQL} RESTART WITH 1".executeUpdate().apply()
+      localCache = Map.empty
+      cache.clear()
     }
   }
 }

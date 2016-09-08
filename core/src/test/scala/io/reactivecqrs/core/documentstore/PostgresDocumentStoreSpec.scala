@@ -18,7 +18,7 @@ class PostgresDocumentStoreSpec extends FeatureSpec with GivenWhenThen with Befo
   feature("can find documents by path with one array") {
     scenario("value exists") {
       Given("document store with some values")
-      val documentStore = new PostgresDocumentStore[ComplexType, NothingMetadata](testTable, mpjsons)
+      val documentStore = new PostgresDocumentStore[ComplexType, NothingMetadata](testTable, mpjsons, new NoopDocumentStoreCache)
       DB.localTx { implicit connection =>
 
         documentStore.insertDocument(1, ComplexType(List(SimpleType(1), SimpleType(2))), NothingMetadata())
@@ -39,7 +39,7 @@ class PostgresDocumentStoreSpec extends FeatureSpec with GivenWhenThen with Befo
   feature("can find by option value") {
     scenario("option value exists") {
       Given("document store with one value")
-      val documentStore = new PostgresDocumentStore[OptionIntType, NothingMetadata](testTable, mpjsons)
+      val documentStore = new PostgresDocumentStore[OptionIntType, NothingMetadata](testTable, mpjsons, new NoopDocumentStoreCache)
       DB.localTx { implicit connection =>
         documentStore.insertDocument(1, OptionIntType(Some(13)), NothingMetadata())
 
@@ -57,7 +57,7 @@ class PostgresDocumentStoreSpec extends FeatureSpec with GivenWhenThen with Befo
   feature("i can has auto id") {
     scenario("inserting document and getting auto id back") {
       Given("empty document store")
-      val documentStore = new PostgresDocumentStoreAutoId[SimpleType, NothingMetadata](testTable, mpjsons)
+      val documentStore = new PostgresDocumentStoreAutoId[SimpleType, NothingMetadata](testTable, mpjsons, new NoopDocumentStoreCache)
 
       DB.localTx { implicit connection =>
         When("document is inserted")
