@@ -122,8 +122,10 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     }
   }
 
-  def updateDocument(key: Long, modify: Option[Document[T, M]] => Document[T, M])(implicit session: DBSession = null): Unit = {
-    store += key -> modify(store.get(key))
+  def updateDocument(key: Long, modify: Option[Document[T, M]] => Document[T, M])(implicit session: DBSession = null): Document[T, M] = {
+    val modified: Document[T, M] = modify(store.get(key))
+    store += key -> modified
+    modified
   }
 
   def clearAllData()(implicit session: DBSession): Unit = {

@@ -83,7 +83,15 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
     }
 
     // Find subscriptions for given type
-    subscriptionsPerType.getOrElse(typeTag[DATA].toString(), List.empty).map(subscriptions) foreach { subscription =>
+    //TODO what to do if subscriptions.get rturns none?
+    subscriptionsPerType.getOrElse(typeTag[DATA].toString(), List.empty).flatMap(s => {
+      subscriptions.get(s) match {
+        case found: Some[_] => found
+        case None =>
+          log.warning("Subscription not found for key " + s + "!")
+          None
+      }
+    }) foreach { subscription =>
       for {
         result <- subscription.acceptor.asInstanceOf[DATA => Option[(_, _)]](u) // and translate data to message for subscriber
       } yield subscription.listener ! SubscriptionUpdated(subscription.subscriptionId, result._1, result._2) // and send message if not None

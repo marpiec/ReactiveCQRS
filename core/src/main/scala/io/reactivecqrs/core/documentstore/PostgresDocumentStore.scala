@@ -239,7 +239,7 @@ class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val
   }
 
   // Optimistic locking update
-  def updateDocument(key: Long, modify: Option[Document[T, M]] => Document[T, M])(implicit session: DBSession): Unit = {
+  def updateDocument(key: Long, modify: Option[Document[T, M]] => Document[T, M])(implicit session: DBSession): Document[T, M] = {
 
     inSession { implicit session =>
       sql"SELECT version, document, metadata FROM ${tableNameSQL} WHERE id = ?"
@@ -249,7 +249,7 @@ class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val
         case None =>
           val modified = modify(None)
           insertDocument(key, modified.document, modified.metadata)
-
+          modified
         case Some((version, document, metadata)) =>
           val modified = modify(Some(Document(document, metadata)))
 
@@ -259,6 +259,8 @@ class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val
 
           if(updated == 0) {
             updateDocument(key, modify)
+          } else {
+            modified
           }
       }
     }
@@ -310,7 +312,7 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
   }
 
   // Optimistic locking update
-  def updateDocument(key: Long, modify: Option[Document[T, M]] => Document[T, M])(implicit session: DBSession): Unit = {
+  def updateDocument(key: Long, modify: Option[Document[T, M]] => Document[T, M])(implicit session: DBSession): Document[T, M] = {
 
     inSession { implicit session =>
       sql"SELECT version, document, metadata FROM ${tableNameSQL} WHERE id = ?"
@@ -327,6 +329,8 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
 
           if(updated == 0) {
             updateDocument(key, modify)
+          } else {
+            modified
           }
       }
     }
