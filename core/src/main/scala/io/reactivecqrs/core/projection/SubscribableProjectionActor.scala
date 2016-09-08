@@ -54,47 +54,54 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
   protected def handleSubscribe[DATA: TypeTag, UPDATE, METADATA](code: String, listener: ActorRef,
                                                                  filter: (DATA) => Option[(UPDATE, METADATA)],
                                                                  missedUpdatesFilter: DATA => Boolean = (d: DATA) => false): Unit = {
-    val subscriptionId = generateNextSubscriptionId
-    val typeName = typeTag[DATA].toString()
+    try {
+      val subscriptionId = generateNextSubscriptionId
+      val typeName = typeTag[DATA].toString()
 
-    subscriptions += subscriptionId -> SubscriptionInfo(subscriptionId, listener, filter, typeName, Instant.now())
-    subscriptionsPerType += typeName -> (subscriptionId :: subscriptionsPerType.getOrElse(typeName, Nil))
+      subscriptions += subscriptionId -> SubscriptionInfo(subscriptionId, listener, filter, typeName, Instant.now())
+      subscriptionsPerType += typeName -> (subscriptionId :: subscriptionsPerType.getOrElse(typeName, Nil))
 
-    listener ! SubscribedForProjectionUpdates(code, subscriptionId)
+      listener ! SubscribedForProjectionUpdates(code, subscriptionId)
 
-    if(updatesCacheTTL != Duration.ZERO) {
-      val shouldArriveAfter = Instant.now().minus(updatesCacheTTL)
-      updatesCache.filter(d => d.arrived.isAfter(shouldArriveAfter) && missedUpdatesFilter(d.value.asInstanceOf[DATA]))
-        .map(d => filter(d.value.asInstanceOf[DATA])).filter(_.isDefined)
-        .foreach(result => listener ! SubscriptionUpdated(subscriptionId, result.get._1, result.get._2))
-    }
+      if (updatesCacheTTL != Duration.ZERO) {
+        val shouldArriveAfter = Instant.now().minus(updatesCacheTTL)
+        updatesCache.filter(d => d.arrived.isAfter(shouldArriveAfter) && missedUpdatesFilter(d.value.asInstanceOf[DATA]))
+          .map(d => filter(d.value.asInstanceOf[DATA])).filter(_.isDefined)
+          .foreach(result => listener ! SubscriptionUpdated(subscriptionId, result.get._1, result.get._2))
+      }
 
-    if(log.isDebugEnabled) {
-      log.debug("New subscription for " + listener.path.toStringWithoutAddress + " on " + typeName+", id: "+subscriptionId+", subscriptions count: "+subscriptions.size)
+      if (log.isDebugEnabled) {
+        log.debug("New subscription for " + listener.path.toStringWithoutAddress + " on " + typeName + ", id: " + subscriptionId + ", subscriptions count: " + subscriptions.size)
+      }
+    } catch {
+      case e: Exception => log.error("Exception while handling subscription", e) //log only because projection update is more important than subscription
     }
   }
 
   protected def sendUpdate[DATA: TypeTag](u: DATA) = {
-
-    if(updatesCacheTTL != Duration.ZERO) {
-      updatesCache += UpdateCacheEntry(Instant.now(), u)
-      val shouldArriveAfter = Instant.now().minus(updatesCacheTTL)
-      updatesCache.dequeueAll(e => e.arrived.isBefore(shouldArriveAfter))
-    }
-
-    // Find subscriptions for given type
-    //TODO what to do if subscriptions.get rturns none?
-    subscriptionsPerType.getOrElse(typeTag[DATA].toString(), List.empty).filter(s => {
-      if(subscriptions.contains(s)) {
-        true
-      } else {
-        log.warning("Subscription not found for key " + s + "!")
-        false
+    try {
+      if(updatesCacheTTL != Duration.ZERO) {
+        updatesCache += UpdateCacheEntry(Instant.now(), u)
+        val shouldArriveAfter = Instant.now().minus(updatesCacheTTL)
+        updatesCache.dequeueAll(e => e.arrived.isBefore(shouldArriveAfter))
       }
-    }).map(subscriptions) foreach { subscription =>
-      for {
-        result <- subscription.acceptor.asInstanceOf[DATA => Option[(_, _)]](u) // and translate data to message for subscriber
-      } yield subscription.listener ! SubscriptionUpdated(subscription.subscriptionId, result._1, result._2) // and send message if not None
+
+      // Find subscriptions for given type
+      //TODO what to do if subscriptions.get rturns none?
+      subscriptionsPerType.getOrElse(typeTag[DATA].toString(), List.empty).filter(s => {
+        if(subscriptions.contains(s)) {
+          true
+        } else {
+          log.warning("Subscription not found for key " + s + "!")
+          false
+        }
+      }).map(subscriptions) foreach { subscription =>
+        for {
+          result <- subscription.acceptor.asInstanceOf[DATA => Option[(_, _)]](u) // and translate data to message for subscriber
+        } yield subscription.listener ! SubscriptionUpdated(subscription.subscriptionId, result._1, result._2) // and send message if not None
+      }
+    } catch {
+      case e: Exception => log.error("Exception while handling subscription update", e) //log only because projection update is more important than subscription
     }
   }
 
