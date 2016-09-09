@@ -30,10 +30,10 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
   protected val tableNameSQL = SQLSyntax.createUnsafely(projectionTableName)
 
-  protected def SELECT_DOCUMENT_BY_PATH(path: String) = s"SELECT id, document, metadata FROM $projectionTableName WHERE document #>> '{$path}' = ?"
+  protected def SELECT_DOCUMENT_BY_PATH(path: String) = s"SELECT id, version, document, metadata FROM $projectionTableName WHERE document #>> '{$path}' = ?"
 
   protected def SELECT_DOCUMENT_BY_PATH_WITH_ONE_OF_THE_VALUES(path: String, values: Set[String]) =
-    s"SELECT id, document, metadata FROM $projectionTableName WHERE document #>> '{$path}' in (${values.map("'"+_+"'").mkString(",")})"
+    s"SELECT id, version, document, metadata FROM $projectionTableName WHERE document #>> '{$path}' in (${values.map("'"+_+"'").mkString(",")})"
 
   init()
 
@@ -106,47 +106,33 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
   }
 
   def findDocumentByPath(path: Seq[String], value: String)(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
-    inConnection { connection =>
-      val statement = connection.prepareStatement(SELECT_DOCUMENT_BY_PATH(path.mkString(",")))
-      try {
-        statement.setString(1, value)
-        val resultSet = statement.executeQuery()
-        try {
-          val results = mutable.ListMap[Long, Document[T, M]]()
-          while (resultSet.next()) {
-            results += resultSet.getLong(1) -> Document[T,M](mpjsons.deserialize[T](resultSet.getString(2)), mpjsons.deserialize[M](resultSet.getString(3)))
-          }
-          results.toMap
-        } finally {
-          resultSet.close()
-        }
-      } finally {
-        statement.close()
-      }
+    inSession { implicit session =>
+      val loaded = SQL(SELECT_DOCUMENT_BY_PATH(path.mkString(",")))
+        .bind(value).map(rs => rs.long(1) -> VersionedDocument[T, M](rs.int(2), mpjsons.deserialize[T](rs.string(3)), mpjsons.deserialize[M](rs.string(4))))
+        .list().apply()
+
+      loaded.foreach(t => putInCache(t._1, Some(t._2), NotInCache))
+      loaded.map({case (key, value) => (key, Document[T, M](value.document, value.metadata))}).toMap
     }
   }
 
 
+  //TODO WARNING change to proper sql construction
   def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
-    if (values.nonEmpty) {
-      inConnection { connection =>
-        val statement = connection.prepareStatement(SELECT_DOCUMENT_BY_PATH_WITH_ONE_OF_THE_VALUES(path.mkString(","), values))
-        try {
-          val resultSet = statement.executeQuery()
-          try {
-            val results = mutable.ListMap[Long, Document[T, M]]()
-            while (resultSet.next()) {
-              results += resultSet.getLong(1) -> Document[T, M](mpjsons.deserialize[T](resultSet.getString(2)), mpjsons.deserialize[M](resultSet.getString(3)))
-            }
-            results.toMap
-          } finally {
-            resultSet.close()
-          }
-        } finally {
-          statement.close()
-        }
+
+    if(values.nonEmpty) {
+      inSession { implicit session =>
+        val loaded = SQL(SELECT_DOCUMENT_BY_PATH_WITH_ONE_OF_THE_VALUES(path.mkString(","), values))
+          .map(rs => rs.long(1) -> VersionedDocument[T, M](rs.int(2), mpjsons.deserialize[T](rs.string(3)), mpjsons.deserialize[M](rs.string(4))))
+          .list().apply()
+
+        loaded.foreach(t => putInCache(t._1, Some(t._2), NotInCache))
+        loaded.map({case (key, value) => (key, Document[T, M](value.document, value.metadata))}).toMap
       }
-    } else Map()
+    } else {
+      Map.empty
+    }
+
   }
 
 
@@ -160,10 +146,8 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
   protected def findDocumentByObjectInArray[V](columnName: String, array: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession): Map[Long, Document[T, M]] = {
 
-    //sample query that works:
-    // SELECT * FROM projection_processes_flows WHERE document #> '{state, cursors}' @> '[{"currentNodeId":2}]';
     def QUERY(arrayPath: String, path: String) =
-      s"SELECT id, document, metadata FROM $projectionTableName WHERE $columnName #> '$arrayPath' @> '[$path]'"
+      s"SELECT id, version, document, metadata FROM $projectionTableName WHERE $columnName #> '$arrayPath' @> '[$path]'"
 
     def makeJson(path: Seq[String], value: V): String =
       path match {
@@ -174,23 +158,13 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
         }
       }
 
-    inConnection { connection =>
-      val statement = connection.prepareStatement(QUERY(array.mkString("{", ",", "}"), makeJson(objectPath, value)))
-      try {
-//        statement.setString(1, value)
-        val resultSet = statement.executeQuery()
-        try {
-          val results = mutable.ListMap[Long, Document[T, M]]()
-          while (resultSet.next()) {
-            results += resultSet.getLong(1) -> Document[T,M](mpjsons.deserialize[T](resultSet.getString(2)), mpjsons.deserialize[M](resultSet.getString(3)))
-          }
-          results.toMap
-        } finally {
-          resultSet.close()
-        }
-      } finally {
-        statement.close()
-      }
+    inSession { implicit session =>
+      val loaded = SQL(QUERY(array.mkString("{", ",", "}"), makeJson(objectPath, value)))
+        .map(rs => rs.long(1) -> VersionedDocument[T, M](rs.int(2), mpjsons.deserialize[T](rs.string(3)), mpjsons.deserialize[M](rs.string(4))))
+        .list().apply()
+
+      loaded.foreach(t => putInCache(t._1, Some(t._2), NotInCache))
+      loaded.map({case (key, v) => (key, Document[T, M](v.document, v.metadata))}).toMap
     }
   }
 
@@ -254,16 +228,6 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
       }
     } else {
       body(session)
-    }
-  }
-
-  protected def inConnection[RETURN_TYPE](body: Connection => RETURN_TYPE)(implicit session: DBSession): RETURN_TYPE = {
-    if(session == null) {
-      DB.readOnly { s =>
-        body(s.connection)
-      }
-    } else {
-      body(session.connection)
     }
   }
 
