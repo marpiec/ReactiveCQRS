@@ -7,7 +7,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.commandlog.PostgresCommandLogState
-import io.reactivecqrs.core.documentstore.{MemoryDocumentStore, PostgresDocumentStore}
+import io.reactivecqrs.core.documentstore.{MemoryDocumentStore, NoopDocumentStoreCache, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus._
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection.PostgresSubscriptionsState
@@ -76,12 +76,12 @@ class ReactiveTestDomainSpec extends CommonSpec {
     private val storeA = if(inMemory) {
       new MemoryDocumentStore[String, AggregateVersion]
     } else {
-      new PostgresDocumentStore[String, AggregateVersion]("storeA", mpjsons)
+      new PostgresDocumentStore[String, AggregateVersion]("storeA", mpjsons, new NoopDocumentStoreCache)
     }
     private val storeB = if(inMemory) {
       new MemoryDocumentStore[String, AggregateVersion]
     } else {
-      new PostgresDocumentStore[String, AggregateVersion]("storeB", mpjsons)
+      new PostgresDocumentStore[String, AggregateVersion]("storeB", mpjsons, new NoopDocumentStoreCache)
     }
 
 
