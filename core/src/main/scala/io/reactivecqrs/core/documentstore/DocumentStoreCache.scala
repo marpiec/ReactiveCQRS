@@ -4,18 +4,18 @@ sealed trait CacheEntry[+T] {
   /**
     * @return Some for InCache, None for InCacheEmpty, Some(default) for NotInCache
     */
-  def getOrElse[B >: T](default: => B): Option[B]
+  def getOrElse[B >: T](default: => Option[B]): Option[B]
 }
 
 case class InCache[+T](value: T) extends CacheEntry[T] {
-  def getOrElse[B >: T](default: => B): Option[B] = Some(value)
+  def getOrElse[B >: T](default: => Option[B]): Option[B] = Some(value)
 }
 case object InCacheEmpty extends CacheEntry[Nothing] {
-  def getOrElse[B](default: => B): Option[B] = None
+  def getOrElse[B](default: => Option[B]): Option[B] = None
 }
 
 case object NotInCache extends CacheEntry[Nothing] {
-  def getOrElse[B](default: => B): Option[B] = Some(default)
+  def getOrElse[B](default: => Option[B]): Option[B] = default
 }
 
 

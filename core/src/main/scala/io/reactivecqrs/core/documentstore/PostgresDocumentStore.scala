@@ -288,7 +288,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     localCache.getOrElse(key, cache.get(key).getOrElse(sql"SELECT version, document, metadata FROM ${tableNameSQL} WHERE id = ?"
       .bind(key).map(rs => {
       VersionedDocument[T, M](rs.int(1), mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3)))
-    }).single().apply().orNull))
+    }).single().apply()))
   }
 
 }
