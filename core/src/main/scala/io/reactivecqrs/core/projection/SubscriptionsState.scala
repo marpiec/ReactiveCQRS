@@ -110,21 +110,27 @@ class PostgresSubscriptionsStateForAggregate(typesNamesState: TypesNamesState, a
   }
 
   private def addSubscriptionEntry(subscriberName: String, subscriptionType: SubscriptionType)(implicit session: DBSession): AggregateVersion = {
-    sql"""INSERT INTO subscriptions (id, subscriber_type_id, subscription_type, aggregate_id, aggregate_version) VALUES (nextval('subscriptions_seq'), ?, ?, ?, 0)"""
-      .bind(typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong).executeUpdate().apply()
     cache += CacheKey(subscriberName, subscriptionType) -> AggregateVersion.ZERO
     AggregateVersion.ZERO
   }
 
   def newEventId(subscriberName: String, subscriptionType: SubscriptionType, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Try[Unit] = synchronized {
-    val rowsUpdated = sql"""UPDATE subscriptions SET aggregate_version = ? WHERE subscriber_type_id = ? AND subscription_type = ? AND aggregate_id = ? AND aggregate_version = ?"""
-      .bind(aggregateVersion.asInt, typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, lastAggregateVersion.asInt).map(rs => rs.int(1)).single().executeUpdate().apply()
-    if (rowsUpdated == 1) {
+    if(lastAggregateVersion == AggregateVersion.ZERO) {
+      sql"""INSERT INTO subscriptions (id, subscriber_type_id, subscription_type, aggregate_id, aggregate_version) VALUES (nextval('subscriptions_seq'), ?, ?, ?, ?)"""
+       .bind(typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, aggregateVersion.asInt).executeUpdate().apply()
       cache += CacheKey(subscriberName, subscriptionType) -> aggregateVersion
       Success(())
     } else {
-      Failure(new OptimisticLockingFailed) // TODO handle this
+      val rowsUpdated = sql"""UPDATE subscriptions SET aggregate_version = ? WHERE subscriber_type_id = ? AND subscription_type = ? AND aggregate_id = ? AND aggregate_version = ?"""
+        .bind(aggregateVersion.asInt, typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, lastAggregateVersion.asInt).map(rs => rs.int(1)).single().executeUpdate().apply()
+      if (rowsUpdated == 1) {
+        cache += CacheKey(subscriberName, subscriptionType) -> aggregateVersion
+        Success(())
+      } else {
+        Failure(new OptimisticLockingFailed) // TODO handle this
+      }
     }
+
   }
 
 }
