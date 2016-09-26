@@ -28,23 +28,20 @@ object AggregateCommandBusActor {
 
   private case class EnsureEventsPublished(oldOnly: Boolean)
 
-  def apply[AGGREGATE_ROOT:ClassTag:TypeTag](aggregate: AggregateContext[AGGREGATE_ROOT],
+  def apply[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateContext: AggregateContext[AGGREGATE_ROOT],
                                              uidGenerator: ActorRef, eventStoreState: EventStoreState, commandLogState: CommandLogState,
                                              commandResponseState: CommandResponseState,
-                                             eventsVersions: List[EventVersion[AGGREGATE_ROOT]],
                                              eventBus: ActorRef): Props = {
     Props(new AggregateCommandBusActor[AGGREGATE_ROOT](
       uidGenerator,
       eventStoreState,
       commandLogState,
       commandResponseState,
-      aggregate.commandHandlers,
-      aggregate.eventHandlers,
+      aggregateContext.commandHandlers,
+      aggregateContext.eventHandlers,
       eventBus,
-      eventsVersions,
-    aggregate.initialAggregateRoot _))
-
-
+      aggregateContext.eventsVersions,
+      aggregateContext.initialAggregateRoot _))
   }
 
 

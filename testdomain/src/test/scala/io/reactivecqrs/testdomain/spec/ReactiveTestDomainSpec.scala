@@ -59,7 +59,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
     val shoppingCartContext = new ShoppingCartAggregateContext
     val shoppingCartCommandBus: ActorRef = system.actorOf(
-      AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandLogState, commandResponseState, List.empty, eventBusActor), "ShoppingCartCommandBus")
+      AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandLogState, commandResponseState, eventBusActor), "ShoppingCartCommandBus")
 
     val sagaState = new PostgresSagaState(mpjsons, typesNamesState)
     sagaState.initSchema()
