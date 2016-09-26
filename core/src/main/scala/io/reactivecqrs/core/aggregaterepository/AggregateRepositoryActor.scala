@@ -44,7 +44,9 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
                                                                 eventsBus: ActorRef,
                                                                 eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
                                                                 initialState: () => AGGREGATE_ROOT,
-                                                                singleReadForVersionOnly: Option[AggregateVersion]) extends Actor with ActorLogging {
+                                                                singleReadForVersionOnly: Option[AggregateVersion],
+                                                                eventsVersionsMap: Map[EventTypeVersion, String],
+                                                                eventsVersionsMapReverse: Map[String, EventTypeVersion]) extends Actor with ActorLogging {
 
   import AggregateRepositoryActor._
 
@@ -60,9 +62,9 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     //TODO make it future
     version = AggregateVersion.ZERO
     aggregateRoot = initialState()
-    eventStore.readAndProcessEvents[AGGREGATE_ROOT](aggregateId, singleReadForVersionOnly)(handleEvent)
+    eventStore.readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap, aggregateId, singleReadForVersionOnly)(handleEvent)
 
-    eventsToPublish = eventStore.readEventsToPublishForAggregate[AGGREGATE_ROOT](aggregateId)
+    eventsToPublish = eventStore.readEventsToPublishForAggregate[AGGREGATE_ROOT](eventsVersionsMap, aggregateId)
   }
 
   private def resendEventsToPublish(): Unit = {
@@ -144,7 +146,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   private def persist(eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(afterPersist: Seq[Event[AGGREGATE_ROOT]] => Unit): Unit = {
     //Future { FIXME this future can broke order in which events are stored
     val eventsWithVersions = eventStore.localTx {implicit session =>
-      val eventsWithVersions = eventStore.persistEvents(aggregateId, eventsEnvelope.asInstanceOf[PersistEvents[AnyRef]])
+      val eventsWithVersions = eventStore.persistEvents(eventsVersionsMapReverse, aggregateId, eventsEnvelope.asInstanceOf[PersistEvents[AnyRef]])
       persistIdempotentCommandResponse(eventsEnvelope.commandInfo)
       eventsWithVersions
     }

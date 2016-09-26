@@ -23,7 +23,7 @@ class MemoryEventStoreState extends EventStoreState {
   private var eventIdSeq: Long = 0
 
 
-  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
+  override def persistEvents[AGGREGATE_ROOT](eventsVersionsMapReverse: Map[String, EventTypeVersion], aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
 
     var eventsForAggregate: Vector[EventStoreEntry[_]] = eventStore.getOrElse(aggregateId, Vector())
 
@@ -49,7 +49,7 @@ class MemoryEventStoreState extends EventStoreState {
   }
 
 
-  override def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, upToVersion: Option[AggregateVersion])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit = {
+  override def readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId, upToVersion: Option[AggregateVersion])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit = {
     var eventsForAggregate: Vector[EventStoreEntry[AGGREGATE_ROOT]] = eventStore.getOrElse(aggregateId, Vector()).asInstanceOf[Vector[EventStoreEntry[AGGREGATE_ROOT]]]
 
     if(upToVersion.isDefined) {
@@ -75,7 +75,7 @@ class MemoryEventStoreState extends EventStoreState {
     eventsWithNoop.foreach(eventWithNoop => eventHandler(eventWithNoop._1.userId, eventWithNoop._1.timestamp, eventWithNoop._1.event, aggregateId, eventWithNoop._2))
   }
 
-  override def readAndProcessAllEvents(batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit = {
+  override def readAndProcessAllEvents(eventsVersionsMap: Map[EventTypeVersion, String], batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit = {
     eventsRows.foreach(row => {
       eventHandler(Seq(EventInfo(row.aggregateVersion, row.event, row.userId, row.timestamp)), row.aggregateId, row.aggregateType)
     })
@@ -99,7 +99,7 @@ class MemoryEventStoreState extends EventStoreState {
     }
   }
 
-  override def readEventsToPublishForAggregate[AGGREGATE_ROOT](aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]] = {
+  override def readEventsToPublishForAggregate[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]] = {
 
     eventsToPublish.filterKeys(_._2 == aggregateId).toList.
       map(e => IdentifiableEventNoAggregateType[AGGREGATE_ROOT](e._1._1, e._1._2, e._2._3.asInstanceOf[Event[AGGREGATE_ROOT]], e._2._1, e._2._2))

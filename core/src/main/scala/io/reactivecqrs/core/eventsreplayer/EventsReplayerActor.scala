@@ -28,11 +28,19 @@ object ReplayerRepositoryActorFactory {
 
 class ReplayerRepositoryActorFactory[AGGREGATE_ROOT: TypeTag:ClassTag](aggregateContext: AggregateContext[AGGREGATE_ROOT]) {
 
+  val eventsVersionsMap: Map[EventTypeVersion, String] = {
+    aggregateContext.eventsVersions.flatMap(evs => evs.mapping.map(e => EventTypeVersion(evs.eventBaseType, e.version) -> e.eventType)).toMap
+  }
+
+  val eventsVersionsMapReverse: Map[String, EventTypeVersion] = {
+    aggregateContext.eventsVersions.flatMap(evs => evs.mapping.map(e => e.eventType -> EventTypeVersion(evs.eventBaseType, e.version))).toMap
+  }
+
   def aggregateRootType = typeOf[AGGREGATE_ROOT]
 
   def create(context: ActorContext, aggregateId: AggregateId, aggregateVersion: Option[AggregateVersion], eventStore: EventStoreState, eventsBus: ActorRef, actorName: String): ActorRef = {
     context.actorOf(Props(new ReplayAggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventsBus, aggregateContext.eventHandlers,
-      () => aggregateContext.initialAggregateRoot, aggregateVersion)), actorName)
+      () => aggregateContext.initialAggregateRoot, aggregateVersion, eventsVersionsMap, eventsVersionsMapReverse)), actorName)
   }
 
 }
@@ -58,6 +66,8 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
   var backPressureActor: ActorRef = context.actorOf(Props(new BackPressureActor(eventsBus)), "BackPressure")
 
+  val combinedEventsVersionsMap = actorsFactory.map(_.eventsVersionsMap).foldLeft(Map[EventTypeVersion, String]())((acc, m) => acc ++ m)
+
   override def receive: Receive = {
     case ReplayAllEvents(batchPerAggregate) => replayAllEvents(sender, batchPerAggregate)
   }
@@ -69,7 +79,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
     log.info("Will replay "+allEvents+" events")
 
-    eventStore.readAndProcessAllEvents(batchPerAggregate, (events: Seq[EventInfo[_]], aggregateId: AggregateId, aggregateType: AggregateType) => {
+    eventStore.readAndProcessAllEvents(combinedEventsVersionsMap, batchPerAggregate, (events: Seq[EventInfo[_]], aggregateId: AggregateId, aggregateType: AggregateType) => {
       if(messagesToProduceAllowed == 0) {
         // Ask is a way to block during fetching data from db
         messagesToProduceAllowed = Await.result((backPressureActor ? ProducerAllowMore).mapTo[ProducerAllowedMore].map(_.count), timeoutDuration)

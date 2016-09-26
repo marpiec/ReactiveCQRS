@@ -22,7 +22,9 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
                                                                       eventsBus: ActorRef,
                                                                       eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
                                                                       initialState: () => AGGREGATE_ROOT,
-                                                                      aggregateVersion: Option[AggregateVersion]) extends Actor with ActorLogging {
+                                                                      aggregateVersion: Option[AggregateVersion],
+                                                                      eventsVersionsMap: Map[EventTypeVersion, String],
+                                                                      eventsVersionsMapReverse: Map[String, EventTypeVersion]) extends Actor with ActorLogging {
 
   private var version: AggregateVersion = AggregateVersion.ZERO
   private var aggregateRoot: AGGREGATE_ROOT = initialState()
@@ -33,7 +35,7 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
     aggregateRoot = initialState()
 
     if(aggregateVersion.isDefined) {
-      eventStore.readAndProcessEvents[AGGREGATE_ROOT](aggregateId, aggregateVersion)(handleEvent)
+      eventStore.readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap, aggregateId, aggregateVersion)(handleEvent)
     }
 
   }
@@ -66,7 +68,7 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
       // We need state from original aggregate
       version = AggregateVersion.ZERO
       aggregateRoot = initialState()
-      eventStore.readAndProcessEvents[AGGREGATE_ROOT](aggregateId, aggregateVersion)(handleEvent)
+      eventStore.readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap, aggregateId, aggregateVersion)(handleEvent)
     }
 
     events.events.foreach(event => {
