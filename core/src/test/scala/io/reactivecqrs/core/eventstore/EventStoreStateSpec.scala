@@ -30,7 +30,7 @@ class TestFixture(val eventStoreState: EventStoreState) {
   var expectedVersion = AggregateVersion(0)
 
   def storeEvents(events: Seq[Event[SomeAggregate]], id: AggregateId = aggregateId, exVersion: AggregateVersion = expectedVersion): Unit = {
-    eventStoreState.persistEvents(id,
+    eventStoreState.persistEvents(Map.empty, id,
       PersistEvents(ActorRef.noSender, commandId, userId, Some(exVersion), Instant.now, events, None))(NoSession)
     if(exVersion == expectedVersion) {
       expectedVersion = expectedVersion.incrementBy(events.length)
@@ -39,7 +39,7 @@ class TestFixture(val eventStoreState: EventStoreState) {
 
   def getEvents(version: Option[AggregateVersion] = None, id: AggregateId = aggregateId): Vector[Event[SomeAggregate]] = {
     var events = Vector[Event[SomeAggregate]]()
-    eventStoreState.readAndProcessEvents[SomeAggregate](id, version)((userId: UserId, timestamp: Instant, event: Event[SomeAggregate], id: AggregateId, noop: Boolean) => {
+    eventStoreState.readAndProcessEvents[SomeAggregate](Map.empty, id, version)((userId: UserId, timestamp: Instant, event: Event[SomeAggregate], id: AggregateId, noop: Boolean) => {
         if(!noop) {
           events :+= event
         }

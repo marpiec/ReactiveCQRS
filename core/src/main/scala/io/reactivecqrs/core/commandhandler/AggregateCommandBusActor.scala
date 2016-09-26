@@ -31,6 +31,7 @@ object AggregateCommandBusActor {
   def apply[AGGREGATE_ROOT:ClassTag:TypeTag](aggregate: AggregateContext[AGGREGATE_ROOT],
                                              uidGenerator: ActorRef, eventStoreState: EventStoreState, commandLogState: CommandLogState,
                                              commandResponseState: CommandResponseState,
+                                             eventsVersions: List[EventVersion[AGGREGATE_ROOT]],
                                              eventBus: ActorRef): Props = {
     Props(new AggregateCommandBusActor[AGGREGATE_ROOT](
       uidGenerator,
@@ -40,6 +41,7 @@ object AggregateCommandBusActor {
       aggregate.commandHandlers,
       aggregate.eventHandlers,
       eventBus,
+      eventsVersions,
     aggregate.initialAggregateRoot _))
 
 
@@ -56,10 +58,17 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
                                                        val commandsHandlers: AGGREGATE_ROOT => PartialFunction[Any, CustomCommandResult[Any]],
                                                        val eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
                                                        val eventBus: ActorRef,
+                                                       val eventsVersions: List[EventVersion[AGGREGATE_ROOT]],
                                                        val initialState: () => AGGREGATE_ROOT)
                                                         (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor with ActorLogging {
 
+  val eventsVersionsMap: Map[EventTypeVersion, String] = {
+    eventsVersions.flatMap(evs => evs.mapping.map(e => EventTypeVersion(evs.eventBaseType, e.version) -> e.eventType)).toMap
+  }
 
+  val eventsVersionsMapReverse: Map[String, EventTypeVersion] = {
+    eventsVersions.flatMap(evs => evs.mapping.map(e => e.eventType -> EventTypeVersion(evs.eventBaseType, e.version))).toMap
+  }
 
   val aggregateTypeName = aggregateRootClassTag.runtimeClass.getName
   val aggregateTypeSimpleName = aggregateRootClassTag.runtimeClass.getSimpleName
@@ -128,14 +137,14 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
   private def getOrCreateAggregateRepositoryActor(aggregateId: AggregateId): ActorRef = {
     context.child(aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong).getOrElse(
-      context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, commandResponseState, eventBus, eventHandlers, initialState, None)),
+      context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, commandResponseState, eventBus, eventHandlers, initialState, None, eventsVersionsMap, eventsVersionsMapReverse)),
         aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong)
     )
   }
 
   private def getOrCreateAggregateRepositoryActorForVersion(aggregateId: AggregateId, aggregateVersion: AggregateVersion): ActorRef = {
     context.child(aggregateTypeSimpleName + "_AggregateRepositoryForVersion_" + aggregateId.asLong+"_"+aggregateVersion.asInt).getOrElse(
-      context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, commandResponseState, eventBus, eventHandlers, initialState, Some(aggregateVersion))),
+      context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, commandResponseState, eventBus, eventHandlers, initialState, Some(aggregateVersion), eventsVersionsMap, eventsVersionsMapReverse)),
         aggregateTypeSimpleName + "_AggregateRepositoryForVersion_" + aggregateId.asLong+"_"+aggregateVersion.asInt)
     )
   }
