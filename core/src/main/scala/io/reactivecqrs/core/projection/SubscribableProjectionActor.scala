@@ -14,7 +14,7 @@ object SubscribableProjectionActor {
 
   val subscriptionTTL = 600000 // 10 minutes
 
-  case class SubscribedForProjectionUpdates(subscriptionCode: String, subscriptionId: String)
+  case class SubscribedForProjectionUpdates(subscriptionId: String)
 
   case class CancelProjectionSubscriptions(subscriptions: List[String])
 
@@ -51,17 +51,16 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
 
   context.system.scheduler.schedule(1.minute, 1.minute, self, ClearIdleSubscriptions)(context.dispatcher)
 
-  protected def handleSubscribe[DATA: TypeTag, UPDATE, METADATA](code: String, listener: ActorRef,
+  protected def handleSubscribe[DATA: TypeTag, UPDATE, METADATA](subscriptionId: String, listener: ActorRef,
                                                                  filter: (DATA) => Option[(UPDATE, METADATA)],
                                                                  missedUpdatesFilter: DATA => Boolean = (d: DATA) => false): Unit = {
     try {
-      val subscriptionId = generateNextSubscriptionId
       val typeName = typeTag[DATA].toString()
 
       subscriptions += subscriptionId -> SubscriptionInfo(subscriptionId, listener, filter, typeName, Instant.now())
       subscriptionsPerType += typeName -> (subscriptionId :: subscriptionsPerType.getOrElse(typeName, Nil))
 
-      listener ! SubscribedForProjectionUpdates(code, subscriptionId)
+      listener ! SubscribedForProjectionUpdates(subscriptionId)
 
       if (updatesCacheTTL != Duration.ZERO) {
         val shouldArriveAfter = Instant.now().minus(updatesCacheTTL)
@@ -96,9 +95,8 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
           false
         }
       }).map(subscriptions) foreach { subscription =>
-        for {
-          result <- subscription.acceptor.asInstanceOf[DATA => Option[(_, _)]](u) // and translate data to message for subscriber
-        } yield subscription.listener ! SubscriptionUpdated(subscription.subscriptionId, result._1, result._2) // and send message if not None
+        val result = subscription.acceptor.asInstanceOf[DATA => Option[(_, _)]](u) // and translate data to message for subscriber
+        result.foreach(r => subscription.listener ! SubscriptionUpdated(subscription.subscriptionId, r._1, r._2))// and send message if not None
       }
     } catch {
       case e: Exception => log.error("Exception while handling subscription update", e) //log only because projection update is more important than subscription
@@ -154,17 +152,5 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
     if(log.isDebugEnabled) {
       log.debug("Subscription cancelled for subscription id " + subscriptionId+", subscriptions count: "+subscriptions.size)
     }
-  }
-
-  // utilities
-
-  private val randomUtil = new RandomUtil
-
-  private def generateNextSubscriptionId: String = {
-    var subscriptionId: String = null
-    do {
-      subscriptionId = randomUtil.generateRandomString(32)
-    } while (subscriptions.contains(subscriptionId))
-    subscriptionId
   }
 }
