@@ -64,11 +64,13 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
 
   private def replayEvent(events: IdentifiableEvents[AGGREGATE_ROOT]): Unit = {
 
-    if(events.events.head.event.isInstanceOf[DuplicationEvent[AGGREGATE_ROOT]]) {
-      // We need state from original aggregate
-      version = AggregateVersion.ZERO
-      aggregateRoot = initialState()
-      eventStore.readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap, aggregateId, aggregateVersion)(handleEvent)
+    events.events.head.event match {
+      case duplicationEvent: DuplicationEvent[_] =>
+        // We need state from original aggregate
+        version = AggregateVersion.ZERO
+        aggregateRoot = initialState()
+        eventStore.readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap, duplicationEvent.baseAggregateId, Some(duplicationEvent.baseAggregateVersion))(handleEvent)
+      case _ => ()
     }
 
     events.events.foreach(event => {
