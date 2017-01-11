@@ -91,7 +91,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     case GetEventsForAggregate(id) => ???
     case GetEventsForAggregateForVersion(id, version) => ???
     case EnsureEventsPublished(oldOnly) => ensureEventsPublished(oldOnly)
-    case m => throw new IllegalArgumentException("Cannot handle this kind of message: " + m + " class: " + m.getClass)
+    case m => throw new IllegalArgumentException("Cannot handle this kind of message: " + m + " class: " + m.getClass+". Maybe it should extend Command trait.")
   }
 
   private def ensureEventsPublished(oldOnly: Boolean): Unit = {
