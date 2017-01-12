@@ -54,7 +54,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   private var subscriptions: Map[AggregateType, Vector[Subscription]] = Map()
   private var subscriptionsByIds = Map[String, Subscription]()
 
-  private val MAX_BUFFER_SIZE = 100
+  private val MAX_BUFFER_SIZE = 1000
 
   private var backPressureProducerActor: Option[ActorRef] = None
   private var orderedMessages = 0
@@ -118,8 +118,10 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     case MessagesPersisted(aggregateType, messages) => ??? //handleMessagesPersisted(aggregateType, messages)
     case ConsumerAllowMoreStart =>
       backPressureProducerActor = Some(sender)
-      sender ! ConsumerAllowedMore(MAX_BUFFER_SIZE - messagesSent.size)
-      orderedMessages += MAX_BUFFER_SIZE - messagesSent.size
+      if(messagesSent.size + orderedMessages < MAX_BUFFER_SIZE / 2) {
+        sender ! ConsumerAllowedMore(MAX_BUFFER_SIZE - messagesSent.size)
+        orderedMessages += MAX_BUFFER_SIZE - messagesSent.size
+      }
     case ConsumerAllowMoreStop => backPressureProducerActor = None
   }
 
@@ -225,7 +227,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     })
 
     if(backPressureProducerActor.isDefined) {
-      orderedMessages -= events.size
+      orderedMessages = Math.max(0, orderedMessages - events.size) // it is possible to receive more messages than ordered
     }
 
     orderMoreMessagesToConsume()

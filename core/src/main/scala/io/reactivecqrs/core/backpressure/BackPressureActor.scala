@@ -1,6 +1,7 @@
 package io.reactivecqrs.core.backpressure
 
 import akka.actor.{Actor, ActorRef}
+import io.reactivecqrs.core.util.ActorLogging
 
 object BackPressureActor {
   case object Start
@@ -14,7 +15,7 @@ object BackPressureActor {
   case class ProducerAllowedMore(count: Int)
 }
 
-class BackPressureActor(consumer: ActorRef) extends Actor {
+class BackPressureActor(consumer: ActorRef) extends Actor with ActorLogging {
 
   import BackPressureActor._
 
