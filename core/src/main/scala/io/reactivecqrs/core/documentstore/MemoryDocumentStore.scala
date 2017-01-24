@@ -48,7 +48,7 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     val tail = arrayPath.tail
     if (tail.isEmpty) {
       innerElement match {
-        case seq: Seq[_] => seq.asInstanceOf[Seq[AnyRef]]
+        case iter: Iterable[_] => iter.asInstanceOf[Iterable[AnyRef]].toSeq
         case _ => Seq()
       }
     } else {

@@ -47,9 +47,9 @@ class SimpleProjection(val eventBusSubscriptionsManager: EventBusSubscriptionsMa
 class SimpleListener(simpleListenerProbe: TestProbe) extends Actor {
   private var subscriptionId: Option[String] = None
   override def receive: Receive = {
-    case SubscribedForProjectionUpdates(code, id) => {
+    case SubscribedForProjectionUpdates(id) => {
       subscriptionId = Some(id)
-      simpleListenerProbe.ref ! SubscribedForProjectionUpdates(code, id)
+      simpleListenerProbe.ref ! SubscribedForProjectionUpdates(id)
     }
     case ProjectionSubscriptionsCancelled(id :: Nil) => {
       if (subscriptionId.get == id) {
