@@ -130,6 +130,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       } else if (a.version <= lastVersion) {
         sender() ! MessageAck(self, a.id, AggregateVersion.upTo(a.version, a.eventsCount))
       } else {
+        log.debug("Delaying aggregate update handling for aggregate "+a.aggregateType.simpleName+":"+a.id.asLong+", got update for version " + Range(a.version.asInt - a.eventsCount + 1, a.version.asInt + 1).mkString(", ")+" but only processed version " + lastVersion.asInt)
         delayedAggregateWithType.get(a.id) match {
           case None => delayedAggregateWithType += a.id -> List(a)
           case Some(delayed) => delayedAggregateWithType += a.id -> (a :: delayed).sortBy(_.version.asInt)
@@ -163,6 +164,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       } else if (ae.events.last.version <= lastVersion) {
         sender() ! MessageAck(self, ae.id, ae.events.map(_.version))
       } else {
+        log.debug("Delaying aggregate with events update handling for aggregate "+ae.aggregateType.simpleName+":"+ae.id.asLong+", got update for version " + ae.events.map(_.version.asInt).mkString(", ")+" but only processed version " + lastVersion.asInt)
         delayedAggregateWithTypeAndEvent.get(ae.id) match {
           case None => delayedAggregateWithTypeAndEvent += ae.id -> List(ae)
           case Some(delayed) => delayedAggregateWithTypeAndEvent += ae.id -> (ae :: delayed).sortBy(_.events.head.version.asInt)
@@ -197,8 +199,8 @@ abstract class ProjectionActor extends Actor with ActorLogging {
         }
       } else if (e.events.last.version <= lastVersion) {
         sender() ! MessageAck(self, e.aggregateId, e.events.map(_.version))
-//        println("event already handled " + e.event)
       } else {
+        log.debug("Delaying events update handling for aggregate "+e.aggregateType.simpleName+":"+e.aggregateId.asLong+", got update for version " + e.events.map(_.version.asInt).mkString(", ")+" but only processed version " + lastVersion.asInt)
         delayedIdentifiableEvent.get(e.aggregateId) match {
           case None => delayedIdentifiableEvent += e.aggregateId -> List(e)
           case Some(delayed) => delayedIdentifiableEvent += e.aggregateId -> (e :: delayed).sortBy(_.events.head.version.asInt)
