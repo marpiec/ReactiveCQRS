@@ -6,6 +6,12 @@ CQRS framework implementation leveraging Scala and Akka framework, for building 
 
 
 ### TODO
+- Asunchronous command handlers- Pass execution context to command handlers?
+- Backpressure for projection rebuild
+- Externalize datastore
+- Non persistent projections
+
+### TODO
 - Projection rebuild
 - Event bus database writes optimization - aggregate update in chunks
 - Handle OptimisticLockingFailed
@@ -15,4 +21,3 @@ CQRS framework implementation leveraging Scala and Akka framework, for building 
 - verify and optimize db indieces
 - clock injected to framework
 - Query for events and aggregate state
-- Pass execution context to command handlers?

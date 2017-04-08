@@ -4,6 +4,7 @@ import java.time.Instant
 
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 
+import scala.concurrent.Future
 import scala.reflect.{ClassTag, classTag}
 
 case class GetAggregate(id: AggregateId)
@@ -26,12 +27,7 @@ abstract class AggregateContext[AGGREGATE_ROOT] {
 
   def initialAggregateRoot: AGGREGATE_ROOT
 
-
-  type HandlerWrapper = (=> CustomCommandResult[Any]) => CustomCommandResult[CustomCommandResponse[_]]
-
-  type SingleHandler = (_ <: Command[AGGREGATE_ROOT, CustomCommandResponse[Any]]) => CustomCommandResult[Any]
-  type CommandHandler = AGGREGATE_ROOT => PartialFunction[Any, CustomCommandResult[Any]]
-  type CommandHandlerWrapper = Function[CommandHandler, CommandHandler]
+  type CommandHandler = AGGREGATE_ROOT => PartialFunction[Any, Future[CustomCommandResult[Any]]]
 
   type EventHandler = (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT]
 
