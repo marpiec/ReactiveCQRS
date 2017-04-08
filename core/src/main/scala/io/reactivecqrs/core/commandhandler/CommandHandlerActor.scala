@@ -37,7 +37,7 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
                                           repositoryActor: ActorRef,
                                           commandLogActor: ActorRef,
                                           commandResponseState: CommandResponseState,
-                                          commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, Future[CustomCommandResult[Any]]],
+                                          commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]],
                                           initialState: () => AGGREGATE_ROOT) extends Actor with ActorLogging {
 
   private implicit val ec = context.dispatcher
@@ -86,9 +86,12 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
   private def handleFirstCommand[COMMAND <: FirstCommand[AGGREGATE_ROOT, RESPONSE], RESPONSE <: CustomCommandResponse[_]](envelope: InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE]) = {
     val InternalFirstCommandEnvelope(respondTo, commandId, command) = envelope
     try {
-      val resultFuture = commandHandlers(initialState())(command.asInstanceOf[FirstCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]])
-      resultFuture.onSuccess {case result => handleCommandResult(AggregateVersion.ZERO, respondTo, command.userId, commandId, command, Some(AggregateVersion.ZERO), result)}
-      resultFuture.onFailure {case exception => handleCommandHandlingException(respondTo, commandId, command, exception)}
+      commandHandlers(initialState())(command.asInstanceOf[FirstCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]]) match {
+        case result: CustomCommandResult[_] => handleCommandResult(AggregateVersion.ZERO, respondTo, command.userId, commandId, command, Some(AggregateVersion.ZERO), result)
+        case result: AsyncCommandResult[_] =>
+          result.future.onSuccess {case result => handleCommandResult(AggregateVersion.ZERO, respondTo, command.userId, commandId, command, Some(AggregateVersion.ZERO), result)}
+          result.future.onFailure {case exception => handleCommandHandlingException(respondTo, commandId, command, exception)}
+      }
     } catch {
       case exception: Exception => handleCommandHandlingException(respondTo, commandId, command, exception)
     }
@@ -97,9 +100,14 @@ class CommandHandlerActor[AGGREGATE_ROOT](aggregateId: AggregateId,
 
   private def handleFollowingCommandVersionAware[COMMAND <: Command[AGGREGATE_ROOT, RESPONSE], RESPONSE <: CustomCommandResponse[_]](aggregate: Aggregate[AGGREGATE_ROOT], respondTo: ActorRef, userId: UserId, commandId: CommandId, command: Any, expectedVersion: Option[AggregateVersion]): Unit = {
     try {
-      val resultFuture: Future[CustomCommandResult[Any]] = commandHandlers(aggregate.aggregateRoot.get)(command)
-      resultFuture.onFailure {case exception => handleCommandHandlingException(respondTo, commandId, command, exception)}
-      resultFuture.onSuccess {case result => handleCommandResult(aggregate.version, respondTo, userId, commandId, command, expectedVersion, result)}
+      commandHandlers(aggregate.aggregateRoot.get)(command) match {
+        case result: CustomCommandResult[_] =>
+          handleCommandResult(aggregate.version, respondTo, userId, commandId, command, expectedVersion, result)
+        case result: AsyncCommandResult[_] =>
+          result.future.onFailure {case exception => handleCommandHandlingException(respondTo, commandId, command, exception)}
+          result.future.onSuccess {case result => handleCommandResult(aggregate.version, respondTo, userId, commandId, command, expectedVersion, result)}
+      }
+
     } catch {
       case exception: Exception => handleCommandHandlingException(respondTo, commandId, command, exception)
     }

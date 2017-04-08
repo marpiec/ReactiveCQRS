@@ -52,7 +52,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
                                                        eventStoreState: EventStoreState,
                                                        commandLogState: CommandLogState,
                                                        commandResponseState: CommandResponseState,
-                                                       val commandsHandlers: AGGREGATE_ROOT => PartialFunction[Any, Future[CustomCommandResult[Any]]],
+                                                       val commandsHandlers: AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]],
                                                        val eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
                                                        val eventBus: ActorRef,
                                                        val eventsVersions: List[EventVersion[AGGREGATE_ROOT]],
@@ -123,7 +123,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
     val commandHandlerActor = context.actorOf(Props(new CommandHandlerActor[AGGREGATE_ROOT](
       aggregateId, repositoryActor, commandLogActor, commandResponseState,
-      commandsHandlers.asInstanceOf[AGGREGATE_ROOT => PartialFunction[Any, Future[CustomCommandResult[Any]]]],
+      commandsHandlers.asInstanceOf[AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]]],
     initialState)),
       aggregateTypeSimpleName + "_CommandHandler_" + aggregateId.asLong)
 

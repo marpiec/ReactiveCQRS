@@ -4,19 +4,17 @@ import io.reactivecqrs.api._
 import CommandsHandlers._
 import EventsHandlers._
 
-import scala.concurrent.Future
-
 class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
 
   override val eventsVersions = EV[ShoppingCartCreated](0 -> classOf[ShoppingCartCreated]) :: Nil
 
   override def commandHandlers = (shoppingCart) => {
     case c: CreateShoppingCart => createShoppingCart(c.userId, c)
-    case c: DuplicateShoppingCart => Future.successful(duplicateShoppingCart(c))
+    case c: DuplicateShoppingCart => duplicateShoppingCart(c)
     case c: AddItem => addItem(c.userId, c.aggregateId, c.expectedVersion, shoppingCart)(c)
-    case c: RemoveItem => Future.successful(removeItem(c))
-    case c: DeleteShoppingCart => Future.successful(deleteShoppingCart(c))
-    case c: UndoShoppingCartChange => Future.successful(undoShoppingCartChange(c))
+    case c: RemoveItem => removeItem(c)
+    case c: DeleteShoppingCart => deleteShoppingCart(c)
+    case c: UndoShoppingCartChange => undoShoppingCartChange(c)
   }
 
   override def eventHandlers = (userId, timestamp, shoppingCart) => {
