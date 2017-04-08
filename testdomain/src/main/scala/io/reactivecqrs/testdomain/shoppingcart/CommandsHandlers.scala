@@ -3,14 +3,20 @@ package io.reactivecqrs.testdomain.shoppingcart
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.api._
 
+import scala.concurrent.Future
+
+import scala.concurrent.ExecutionContext.Implicits.global
+
 object CommandsHandlers {
 
 
   def createShoppingCart(userId: UserId, command: CreateShoppingCart) = {
-    if(command.name.endsWith("M 4")) {
-      CommandFailure("Cannot add cart *M 4")
-    } else {
-      CommandSuccess(ShoppingCartCreated(command.name))
+    Future {
+      if (command.name.endsWith("M 4")) {
+        CommandFailure("Cannot add cart *M 4")
+      } else {
+        CommandSuccess(ShoppingCartCreated(command.name))
+      }
     }
 
   }
@@ -22,10 +28,12 @@ object CommandsHandlers {
   def addItem(userId: UserId,
               aggregateId: AggregateId, expectedVersion: AggregateVersion,
               shoppingCart: ShoppingCart)(command: AddItem) = {
-    if(shoppingCart.items.size > 5) {
-      CommandFailure("Cannot have more than 5 items in your cart")
-    } else {
-      CommandSuccess(ItemAdded(command.name))
+    Future {
+      if (shoppingCart.items.size > 5) {
+        CommandFailure("Cannot have more than 5 items in your cart")
+      } else {
+        CommandSuccess(ItemAdded(command.name))
+      }
     }
   }
 
