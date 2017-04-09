@@ -20,7 +20,8 @@ import scala.reflect.runtime.universe._
 import scala.util.{Failure, Success}
 
 object AggregateRepositoryActor {
-  case class GetAggregateRoot(respondTo: ActorRef)
+  case class GetAggregateRootCurrentVersion(respondTo: ActorRef)
+  case class GetAggregateRootExactVersion(respondTo: ActorRef, version: AggregateVersion)
 
   case class IdempotentCommandInfo(command: Any, response: CustomCommandResponse[_])
 
@@ -87,7 +88,8 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   override def receive = logReceive {
     case ee: PersistEvents[_] => handlePersistEvents(ee)
     case ep: EventsPersisted[_] => handleEventsPersisted(ep)
-    case GetAggregateRoot(respondTo) => receiveReturnAggregateRoot(respondTo)
+    case GetAggregateRootCurrentVersion(respondTo) => receiveReturnAggregateRoot(respondTo, None)
+    case GetAggregateRootExactVersion(respondTo, version) => receiveReturnAggregateRoot(respondTo, Some(version)) // for following command
     case PublishEventsAck(aggId, versions) => markPublishedEvents(aggregateId, versions)
     case ResendPersistedMessages => resendEventsToPublish()
   }
@@ -129,11 +131,15 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   }
 
-  private def receiveReturnAggregateRoot(respondTo: ActorRef): Unit = {
+  private def receiveReturnAggregateRoot(respondTo: ActorRef, requestedVersion: Option[AggregateVersion]): Unit = {
     if(version == AggregateVersion.ZERO) {
       respondTo ! Failure(new NoEventsForAggregateException(aggregateId))
     } else {
-      respondTo ! Success(Aggregate[AGGREGATE_ROOT](aggregateId, version, Some(aggregateRoot)))
+      requestedVersion match {
+        case Some(v) if v != version => respondTo ! Failure(new AggregateInIncorrectVersionException(aggregateId, version, v))
+        case _ => respondTo ! Success(Aggregate[AGGREGATE_ROOT](aggregateId, version, Some(aggregateRoot)))
+      }
+
     }
 
     if(singleReadForVersionOnly.isDefined) {
