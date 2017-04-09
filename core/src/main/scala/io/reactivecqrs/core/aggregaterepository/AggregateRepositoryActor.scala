@@ -3,14 +3,13 @@ package io.reactivecqrs.core.aggregaterepository
 import java.io.{PrintWriter, StringWriter}
 import java.time.Instant
 
-import io.reactivecqrs.core.commandhandler.ResultAggregator
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.util.ActorLogging
 import io.reactivecqrs.api._
 import akka.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
-import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventsAck, PublishEvents}
-import io.reactivecqrs.core.commandhandler.CommandResponseState
+import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
+import io.reactivecqrs.core.commandhandler.{CommandResponseState, CommandExecutorActor}
 import scalikejdbc.DBSession
 
 import scala.concurrent.Future
@@ -182,7 +181,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   }
 
   private def respond(respondTo: ActorRef)(events: Seq[Event[AGGREGATE_ROOT]]): Unit = {
-    respondTo ! ResultAggregator.AggregateModified
+    respondTo ! CommandExecutorActor.AggregateModified
   }
 
   private def tryToHandleEvent(userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT], noopEvent: Boolean, tmpAggregateRoot: AGGREGATE_ROOT): Either[(Exception, Event[AGGREGATE_ROOT]), AGGREGATE_ROOT] = {

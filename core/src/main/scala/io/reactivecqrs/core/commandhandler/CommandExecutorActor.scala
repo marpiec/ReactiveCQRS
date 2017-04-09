@@ -8,6 +8,7 @@ import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.command.{LogCommand, LogConcurrentCommand, LogFirstCommand}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{IdempotentCommandInfo, PersistEvents}
+import io.reactivecqrs.core.commandhandler.CommandExecutorActor.AggregateModified
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalCommandEnvelope, InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
 import io.reactivecqrs.core.util.ActorLogging
 
@@ -15,9 +16,11 @@ import scala.concurrent.duration._
 import scala.concurrent.duration.FiniteDuration
 import scala.util.{Failure, Success}
 
-class CommandExecutorActor[AGGREGATE_ROOT]
-                                          (parentContext: ActorContext,
-                                            aggregateId: AggregateId,
+object CommandExecutorActor {
+  case object AggregateModified
+}
+
+class CommandExecutorActor[AGGREGATE_ROOT](aggregateId: AggregateId,
                                            commandEnvelope: InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]],
                                            repositoryActor: ActorRef,
                                            commandLogActor: ActorRef,
@@ -36,9 +39,24 @@ class CommandExecutorActor[AGGREGATE_ROOT]
   override def receive: Receive = logReceive {
     case s:Success[_] =>
       handleFollowingCommand(s.get.asInstanceOf[Aggregate[AGGREGATE_ROOT]])
-      context.stop(self)
     case f:Failure[_] =>
-      handleCommandHandlingException(f.exception)
+      handleCommandHandlingExceptionAndStop(f.exception)
+  }
+
+  private def waitingForResult(response: CustomCommandResponse[_]) = logReceive {
+    case AggregateModified =>
+      commandEnvelope.respondTo ! response
+      context.stop(self)
+    case e: AggregateConcurrentModificationError =>
+      commandEnvelope.respondTo ! e
+      context.stop(self)
+    case e: CommandHandlingError =>
+      log.error("CommandHandlingError " + e.commandName +"\n" + e.stackTrace)
+      commandEnvelope.respondTo ! e
+      context.stop(self)
+    case e: EventHandlingError =>
+      log.error("EventHandlingError " + e.eventName +"\n" + e.stackTrace)
+      commandEnvelope.respondTo ! e
       context.stop(self)
   }
 
@@ -51,7 +69,9 @@ class CommandExecutorActor[AGGREGATE_ROOT]
       handleFollowingCommandVersionAware(aggregate, respondTo, command.userId, commandId, command, None)
     case InternalFollowingCommandEnvelope(respondTo, commandId, command) =>
       handleFollowingCommandVersionAware(aggregate, respondTo, command.userId, commandId, command, Some(command.expectedVersion))
-    case e => log.error(s"Unsupported envelope type [$e]")
+    case e =>
+      log.error(s"Unsupported envelope type [$e]")
+      context.stop(self)
 
   }
 
@@ -63,12 +83,12 @@ class CommandExecutorActor[AGGREGATE_ROOT]
         case result: CustomCommandResult[_] =>
           handleCommandResult(aggregate.version, userId, expectedVersion, result)
         case result: AsyncCommandResult[_] =>
-          result.future.onFailure {case exception => handleCommandHandlingException(exception)}
+          result.future.onFailure {case exception => handleCommandHandlingExceptionAndStop(exception)}
           result.future.onSuccess {case r => handleCommandResult(aggregate.version, userId, expectedVersion, r)}
       }
 
     } catch {
-      case exception: Exception => handleCommandHandlingException(exception)
+      case exception: Exception => handleCommandHandlingExceptionAndStop(exception)
     }
   }
 
@@ -77,11 +97,11 @@ class CommandExecutorActor[AGGREGATE_ROOT]
       commandHandlers(initialState())(command.asInstanceOf[FirstCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]]) match {
         case result: CustomCommandResult[_] => handleCommandResult(AggregateVersion.ZERO, command.userId, Some(AggregateVersion.ZERO), result)
         case result: AsyncCommandResult[_] =>
-          result.future.onFailure { case exception => handleCommandHandlingException(exception) }
+          result.future.onFailure { case exception => handleCommandHandlingExceptionAndStop(exception) }
           result.future.onSuccess { case r => handleCommandResult(AggregateVersion.ZERO, command.userId, Some(AggregateVersion.ZERO), r) }
       }
     } catch {
-      case exception: Exception => handleCommandHandlingException(exception)
+      case exception: Exception => handleCommandHandlingExceptionAndStop(exception)
     }
   }
 
@@ -96,8 +116,8 @@ class CommandExecutorActor[AGGREGATE_ROOT]
           case r: Nothing => SuccessResponse(aggregateId, version.incrementBy(success.events.size))
           case _ => CustomSuccessResponse(aggregateId, version.incrementBy(success.events.size), success.responseInfo)
         }
-        val resultAggregator = parentContext.actorOf(Props(new ResultAggregator[CustomCommandResponse[_]](commandEnvelope.respondTo, response, responseTimeout)), resultAggregatorName)
-        repositoryActor ! PersistEvents[AGGREGATE_ROOT](resultAggregator, commandEnvelope.commandId, userId, expectedVersion, Instant.now, success.events, idempotentCommandInfo(commandEnvelope.command, response))
+        context.become(waitingForResult(response))
+        repositoryActor ! PersistEvents[AGGREGATE_ROOT](self, commandEnvelope.commandId, userId, expectedVersion, Instant.now, success.events, idempotentCommandInfo(commandEnvelope.command, response))
         commandEnvelope.command match {
           case c: FirstCommand[_, _] => commandLogActor ! LogFirstCommand(commandEnvelope.commandId, c)
           case c: Command[_, _] => commandLogActor ! LogCommand(commandEnvelope.commandId, c)
@@ -117,9 +137,10 @@ class CommandExecutorActor[AGGREGATE_ROOT]
     }
   }
 
-  private def handleCommandHandlingException(exception: Throwable) = {
+  private def handleCommandHandlingExceptionAndStop(exception: Throwable) = {
     commandEnvelope.respondTo ! CommandHandlingError(commandEnvelope.command.getClass.getSimpleName, stackTraceToString(exception), commandEnvelope.commandId)
     log.error(exception, "Error handling command")
+    context.stop(self)
   }
 
   private def stackTraceToString(e: Throwable) = {
