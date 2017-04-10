@@ -43,20 +43,26 @@ class CommandExecutorActor[AGGREGATE_ROOT](aggregateId: AggregateId,
       handleFollowingCommand(s.get.asInstanceOf[Aggregate[AGGREGATE_ROOT]])
     case f:Failure[_] =>
       handleCommandHandlingExceptionAndStop(f.exception)
-    case m => log.error("receiveAggregate Unsupported message received" + m)
+    case m =>
+      log.error("receiveAggregate Unsupported message received" + m)
+      unhandled(m)
   }
 
 
   private def receiveFirstCommandHandlingResult(userId: UserId) = logReceive {
     case result: CustomCommandResult[_] => handleCommandResult(AggregateVersion.ZERO, userId, Some(AggregateVersion.ZERO), result)
     case exception: Exception => handleCommandHandlingExceptionAndStop(exception)
-    case m => log.error("receiveFirstCommandHandlingResult Unsupported message received" + m)
+    case m =>
+      log.error("receiveFirstCommandHandlingResult Unsupported message received" + m)
+      unhandled(m)
   }
 
   private def receiveCommandHandlingResult(currentVersion: AggregateVersion, expectedVersion: Option[AggregateVersion], userId: UserId) = logReceive {
     case result: CustomCommandResult[_] => handleCommandResult(currentVersion, userId, expectedVersion, result)
     case exception: Exception => handleCommandHandlingExceptionAndStop(exception)
-    case m => log.error("receiveCommandHandlingResult Unsupported message received" + m)
+    case m =>
+      log.error("receiveCommandHandlingResult Unsupported message received" + m)
+      unhandled(m)
   }
 
   private def receiveEventsPersistResult(response: CustomCommandResponse[_]) = logReceive {
@@ -70,7 +76,9 @@ class CommandExecutorActor[AGGREGATE_ROOT](aggregateId: AggregateId,
       log.error("EventHandlingError " + e.eventName +"\n" + e.stackTrace)
       commandEnvelope.respondTo ! e
       context.stop(self)
-    case m => log.error("receiveEventsPersistResult Unsupported message received" + m)
+    case m =>
+      log.error("receiveEventsPersistResult Unsupported message received" + m)
+      unhandled(m)
   }
 
 
