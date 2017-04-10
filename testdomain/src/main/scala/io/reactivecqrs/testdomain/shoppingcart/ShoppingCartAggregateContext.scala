@@ -1,7 +1,6 @@
 package io.reactivecqrs.testdomain.shoppingcart
 
 import io.reactivecqrs.api._
-
 import CommandsHandlers._
 import EventsHandlers._
 

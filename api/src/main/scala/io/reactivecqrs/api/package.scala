@@ -1,6 +1,8 @@
 package io.reactivecqrs
 
 package object api {
-  type CommandResult = CustomCommandResult[Nothing]
+  type CommandResult = GenericCommandResult[Nothing]
   type CommandResponse = CustomCommandResponse[Nothing]
+
+
 }

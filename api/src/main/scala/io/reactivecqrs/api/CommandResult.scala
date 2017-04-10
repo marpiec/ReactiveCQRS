@@ -1,14 +1,20 @@
 package io.reactivecqrs.api
 
+import scala.concurrent.Future
+
 // Command handling result
 
-sealed abstract class CustomCommandResult[+RESPONSE_INFO]
+sealed abstract class GenericCommandResult[+RESPONSE_INFO]
+
+sealed abstract class CustomCommandResult[+RESPONSE_INFO] extends GenericCommandResult[RESPONSE_INFO]
 
 case class CommandSuccess[AGGREGATE_ROOT, RESPONSE_INFO](events: Seq[Event[AGGREGATE_ROOT]], responseInfo: RESPONSE_INFO)
   extends CustomCommandResult[RESPONSE_INFO]
 
 case class CommandFailure[AGGREGATE_ROOT, RESPONSE_INFO](response: FailureResponse)
   extends CustomCommandResult[RESPONSE_INFO]
+
+case class AsyncCommandResult[RESPONSE_INFO](future: Future[CustomCommandResult[RESPONSE_INFO]]) extends GenericCommandResult[RESPONSE_INFO]
 
 
 

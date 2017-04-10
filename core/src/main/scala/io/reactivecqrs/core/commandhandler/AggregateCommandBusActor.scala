@@ -8,7 +8,7 @@ import akka.util.Timeout
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.GetAggregateRoot
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRootCurrentVersion, GetAggregateRootExactVersion}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{AggregateActors, EnsureEventsPublished}
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
 import io.reactivecqrs.core.commandlog.{CommandLogActor, CommandLogState}
@@ -52,7 +52,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
                                                        eventStoreState: EventStoreState,
                                                        commandLogState: CommandLogState,
                                                        commandResponseState: CommandResponseState,
-                                                       val commandsHandlers: AGGREGATE_ROOT => PartialFunction[Any, CustomCommandResult[Any]],
+                                                       val commandsHandlers: AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]],
                                                        val eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
                                                        val eventBus: ActorRef,
                                                        val eventsVersions: List[EventVersion[AGGREGATE_ROOT]],
@@ -123,7 +123,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
     val commandHandlerActor = context.actorOf(Props(new CommandHandlerActor[AGGREGATE_ROOT](
       aggregateId, repositoryActor, commandLogActor, commandResponseState,
-      commandsHandlers.asInstanceOf[AGGREGATE_ROOT => PartialFunction[Any, CustomCommandResult[Any]]],
+      commandsHandlers.asInstanceOf[AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]]],
     initialState)),
       aggregateTypeSimpleName + "_CommandHandler_" + aggregateId.asLong)
 
@@ -173,14 +173,14 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     val respondTo = sender()
     val aggregateRepository = getOrCreateAggregateRepositoryActor(id)
 
-    aggregateRepository ! GetAggregateRoot(respondTo)
+    aggregateRepository ! GetAggregateRootCurrentVersion(respondTo)
   }
 
   private def routeGetAggregateRootForVersion(id: AggregateId, version: AggregateVersion): Unit = {
     val respondTo = sender()
     val temporaryAggregateRepositoryForVersion = getOrCreateAggregateRepositoryActorForVersion(id, version)
 
-    temporaryAggregateRepositoryForVersion ! GetAggregateRoot(respondTo)
+    temporaryAggregateRepositoryForVersion ! GetAggregateRootCurrentVersion(respondTo)
   }
 
   private def takeNextAggregateId: AggregateId = {

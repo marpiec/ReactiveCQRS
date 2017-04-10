@@ -3,14 +3,13 @@ package io.reactivecqrs.core.aggregaterepository
 import java.io.{PrintWriter, StringWriter}
 import java.time.Instant
 
-import io.reactivecqrs.core.commandhandler.ResultAggregator
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.util.ActorLogging
 import io.reactivecqrs.api._
 import akka.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
-import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventsAck, PublishEvents}
-import io.reactivecqrs.core.commandhandler.CommandResponseState
+import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
+import io.reactivecqrs.core.commandhandler.{CommandResponseState, CommandExecutorActor}
 import scalikejdbc.DBSession
 
 import scala.concurrent.Future
@@ -20,7 +19,8 @@ import scala.reflect.runtime.universe._
 import scala.util.{Failure, Success}
 
 object AggregateRepositoryActor {
-  case class GetAggregateRoot(respondTo: ActorRef)
+  case class GetAggregateRootCurrentVersion(respondTo: ActorRef)
+  case class GetAggregateRootExactVersion(respondTo: ActorRef, version: AggregateVersion)
 
   case class IdempotentCommandInfo(command: Any, response: CustomCommandResponse[_])
 
@@ -87,7 +87,8 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   override def receive = logReceive {
     case ee: PersistEvents[_] => handlePersistEvents(ee)
     case ep: EventsPersisted[_] => handleEventsPersisted(ep)
-    case GetAggregateRoot(respondTo) => receiveReturnAggregateRoot(respondTo)
+    case GetAggregateRootCurrentVersion(respondTo) => receiveReturnAggregateRoot(respondTo, None)
+    case GetAggregateRootExactVersion(respondTo, version) => receiveReturnAggregateRoot(respondTo, Some(version)) // for following command
     case PublishEventsAck(aggId, versions) => markPublishedEvents(aggregateId, versions)
     case ResendPersistedMessages => resendEventsToPublish()
   }
@@ -129,11 +130,15 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   }
 
-  private def receiveReturnAggregateRoot(respondTo: ActorRef): Unit = {
+  private def receiveReturnAggregateRoot(respondTo: ActorRef, requestedVersion: Option[AggregateVersion]): Unit = {
     if(version == AggregateVersion.ZERO) {
       respondTo ! Failure(new NoEventsForAggregateException(aggregateId))
     } else {
-      respondTo ! Success(Aggregate[AGGREGATE_ROOT](aggregateId, version, Some(aggregateRoot)))
+      requestedVersion match {
+        case Some(v) if v != version => respondTo ! Failure(new AggregateInIncorrectVersionException(aggregateId, version, v))
+        case _ => respondTo ! Success(Aggregate[AGGREGATE_ROOT](aggregateId, version, Some(aggregateRoot)))
+      }
+
     }
 
     if(singleReadForVersionOnly.isDefined) {
@@ -176,7 +181,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   }
 
   private def respond(respondTo: ActorRef)(events: Seq[Event[AGGREGATE_ROOT]]): Unit = {
-    respondTo ! ResultAggregator.AggregateModified
+    respondTo ! CommandExecutorActor.AggregateModified
   }
 
   private def tryToHandleEvent(userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT], noopEvent: Boolean, tmpAggregateRoot: AGGREGATE_ROOT): Either[(Exception, Event[AGGREGATE_ROOT]), AGGREGATE_ROOT] = {

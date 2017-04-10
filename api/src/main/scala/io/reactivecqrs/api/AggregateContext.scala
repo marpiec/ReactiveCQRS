@@ -4,6 +4,7 @@ import java.time.Instant
 
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 
+import scala.concurrent.Future
 import scala.reflect.{ClassTag, classTag}
 
 case class GetAggregate(id: AggregateId)
@@ -20,18 +21,17 @@ case class EventVersion[AGGREGATE_ROOT](eventBaseType: String, mapping: List[Eve
 
 abstract class AggregateContext[AGGREGATE_ROOT] {
 
+  protected implicit def future2AsyncResult[T](future: Future[CustomCommandResult[T]]): AsyncCommandResult[T] = {
+    AsyncCommandResult(future)
+  }
+
   protected def EV[EVENT_BASE <: Event[AGGREGATE_ROOT] : ClassTag](versionedType: (Int, Class[_ <: Event[AGGREGATE_ROOT]])*) = {
     EventVersion[AGGREGATE_ROOT](classTag[EVENT_BASE].toString, versionedType.map(vt => EventTypeVersion(vt._2.getTypeName, vt._1.toShort)).toList)
   }
 
   def initialAggregateRoot: AGGREGATE_ROOT
 
-
-  type HandlerWrapper = (=> CustomCommandResult[Any]) => CustomCommandResult[CustomCommandResponse[_]]
-
-  type SingleHandler = (_ <: Command[AGGREGATE_ROOT, CustomCommandResponse[Any]]) => CustomCommandResult[Any]
-  type CommandHandler = AGGREGATE_ROOT => PartialFunction[Any, CustomCommandResult[Any]]
-  type CommandHandlerWrapper = Function[CommandHandler, CommandHandler]
+  type CommandHandler = AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]]
 
   type EventHandler = (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT]
 
