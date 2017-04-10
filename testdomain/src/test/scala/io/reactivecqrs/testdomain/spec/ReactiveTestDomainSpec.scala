@@ -61,12 +61,12 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val shoppingCartCommandBus: ActorRef = system.actorOf(
       AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandLogState, commandResponseState, eventBusActor), "ShoppingCartCommandBus")
 
-//    val sagaState = new PostgresSagaState(mpjsons, typesNamesState)
-//    sagaState.initSchema()
-//
-//    val multipleCartCreatorSaga: ActorRef = system.actorOf(
-//      Props(new MultipleCartCreatorSaga(sagaState, uidGenerator, shoppingCartCommandBus))
-//    )
+    val sagaState = new PostgresSagaState(mpjsons, typesNamesState)
+    sagaState.initSchema()
+
+    val multipleCartCreatorSaga: ActorRef = system.actorOf(
+      Props(new MultipleCartCreatorSaga(sagaState, uidGenerator, shoppingCartCommandBus))
+    )
     val subscriptionsState = new PostgresSubscriptionsState(typesNamesState)
     subscriptionsState.initSchema()
 
@@ -159,37 +159,37 @@ class ReactiveTestDomainSpec extends CommonSpec {
       Thread.sleep(500) // time to cleanup
     }
 
-//
-//    scenario("Create multiple carts at once") {
-//
-//      val fixture = Fixture
-//      import fixture._
-//
-//      multipleCartCreatorSaga ! CreateMultipleCarts(userId, "My special cart", 100)
-//
-//      Thread.sleep(10000) // time to cleanup
-//    }
-//
-//    scenario("Fail to create multiple carts at once") {
-//
-//      val fixture = Fixture
-//      import fixture._
-//
-//      // Will not be able to create cart ending with M 4
-//      val result: MultipleCartCreatorSagaResponse = multipleCartCreatorSaga ?? CreateMultipleCarts(userId, "My special cart M", 5)
-//
-//      Thread.sleep(500) // time to cleanup
-//    }
-//
-//
-//    scenario("Reinitialization") {
-//
-//      val fixture = Fixture
-//      import fixture._
-//
-//      Thread.sleep(20000)
-//
-//      }
+
+    scenario("Create multiple carts at once") {
+
+      val fixture = Fixture
+      import fixture._
+
+      multipleCartCreatorSaga ! CreateMultipleCarts(userId, "My special cart", 100)
+
+      Thread.sleep(10000) // time to cleanup
+    }
+
+    scenario("Fail to create multiple carts at once") {
+
+      val fixture = Fixture
+      import fixture._
+
+      // Will not be able to create cart ending with M 4
+      val result: MultipleCartCreatorSagaResponse = multipleCartCreatorSaga ?? CreateMultipleCarts(userId, "My special cart M", 5)
+
+      Thread.sleep(500) // time to cleanup
+    }
+
+
+    scenario("Reinitialization") {
+
+      val fixture = Fixture
+      import fixture._
+
+      Thread.sleep(20000)
+
+      }
     }
 
 }
