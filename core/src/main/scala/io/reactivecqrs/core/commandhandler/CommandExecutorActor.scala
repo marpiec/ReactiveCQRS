@@ -35,29 +35,42 @@ class CommandExecutorActor[AGGREGATE_ROOT](aggregateId: AggregateId,
 
   context.system.scheduler.scheduleOnce(responseTimeout, self, PoisonPill) // wait for maximum 60s for a response
 
+  override def receive = receiveAggregate
+
   // Receiving aggregate from aggregate repository
-  override def receive: Receive = logReceive {
+  private def receiveAggregate: Receive = logReceive {
     case s:Success[_] =>
       handleFollowingCommand(s.get.asInstanceOf[Aggregate[AGGREGATE_ROOT]])
     case f:Failure[_] =>
       handleCommandHandlingExceptionAndStop(f.exception)
+    case m => log.error("receiveAggregate Unsupported message received" + m)
   }
 
-  private def waitingForResult(response: CustomCommandResponse[_]) = logReceive {
+
+  private def receiveFirstCommandHandlingResult(userId: UserId) = logReceive {
+    case result: CustomCommandResult[_] => handleCommandResult(AggregateVersion.ZERO, userId, Some(AggregateVersion.ZERO), result)
+    case exception: Exception => handleCommandHandlingExceptionAndStop(exception)
+    case m => log.error("receiveFirstCommandHandlingResult Unsupported message received" + m)
+  }
+
+  private def receiveCommandHandlingResult(currentVersion: AggregateVersion, expectedVersion: Option[AggregateVersion], userId: UserId) = logReceive {
+    case result: CustomCommandResult[_] => handleCommandResult(currentVersion, userId, expectedVersion, result)
+    case exception: Exception => handleCommandHandlingExceptionAndStop(exception)
+    case m => log.error("receiveCommandHandlingResult Unsupported message received" + m)
+  }
+
+  private def receiveEventsPersistResult(response: CustomCommandResponse[_]) = logReceive {
     case AggregateModified =>
       commandEnvelope.respondTo ! response
       context.stop(self)
     case e: AggregateConcurrentModificationError =>
       commandEnvelope.respondTo ! e
       context.stop(self)
-    case e: CommandHandlingError =>
-      log.error("CommandHandlingError " + e.commandName +"\n" + e.stackTrace)
-      commandEnvelope.respondTo ! e
-      context.stop(self)
     case e: EventHandlingError =>
       log.error("EventHandlingError " + e.eventName +"\n" + e.stackTrace)
       commandEnvelope.respondTo ! e
       context.stop(self)
+    case m => log.error("receiveEventsPersistResult Unsupported message received" + m)
   }
 
 
@@ -78,30 +91,30 @@ class CommandExecutorActor[AGGREGATE_ROOT](aggregateId: AggregateId,
 
   private def handleFollowingCommandVersionAware(aggregate: Aggregate[AGGREGATE_ROOT], respondTo: ActorRef, userId: UserId, commandId: CommandId,
                                                  command: Any, expectedVersion: Option[AggregateVersion]): Unit = {
+    context.become(receiveCommandHandlingResult(aggregate.version, expectedVersion, userId))
     try {
       commandHandlers(aggregate.aggregateRoot.get)(command) match {
-        case result: CustomCommandResult[_] =>
-          handleCommandResult(aggregate.version, userId, expectedVersion, result)
-        case result: AsyncCommandResult[_] =>
-          result.future.onFailure {case exception => handleCommandHandlingExceptionAndStop(exception)}
-          result.future.onSuccess {case r => handleCommandResult(aggregate.version, userId, expectedVersion, r)}
+        case result: CustomCommandResult[_] => self ! result
+        case asyncResult: AsyncCommandResult[_] =>
+          asyncResult.future.onFailure {case exception => self ! exception}
+          asyncResult.future.onSuccess {case result => self ! result }
       }
-
     } catch {
-      case exception: Exception => handleCommandHandlingExceptionAndStop(exception)
+      case exception: Exception => self ! exception
     }
   }
 
   private def handleFirstCommand(respondTo: ActorRef, commandId: CommandId, command: FirstCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]) = {
+    context.become(receiveFirstCommandHandlingResult(commandEnvelope.command.asInstanceOf[FirstCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]].userId))
     try {
       commandHandlers(initialState())(command.asInstanceOf[FirstCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]]) match {
-        case result: CustomCommandResult[_] => handleCommandResult(AggregateVersion.ZERO, command.userId, Some(AggregateVersion.ZERO), result)
-        case result: AsyncCommandResult[_] =>
-          result.future.onFailure { case exception => handleCommandHandlingExceptionAndStop(exception) }
-          result.future.onSuccess { case r => handleCommandResult(AggregateVersion.ZERO, command.userId, Some(AggregateVersion.ZERO), r) }
+        case result: CustomCommandResult[_] => self ! result
+        case asyncResult: AsyncCommandResult[_] =>
+          asyncResult.future.onFailure { case exception => self ! exception}
+          asyncResult.future.onSuccess { case result => self ! result}
       }
     } catch {
-      case exception: Exception => handleCommandHandlingExceptionAndStop(exception)
+      case exception: Exception => self ! exception
     }
   }
 
@@ -116,7 +129,7 @@ class CommandExecutorActor[AGGREGATE_ROOT](aggregateId: AggregateId,
           case r: Nothing => SuccessResponse(aggregateId, version.incrementBy(success.events.size))
           case _ => CustomSuccessResponse(aggregateId, version.incrementBy(success.events.size), success.responseInfo)
         }
-        context.become(waitingForResult(response))
+        context.become(receiveEventsPersistResult(response))
         repositoryActor ! PersistEvents[AGGREGATE_ROOT](self, commandEnvelope.commandId, userId, expectedVersion, Instant.now, success.events, idempotentCommandInfo(commandEnvelope.command, response))
         commandEnvelope.command match {
           case c: FirstCommand[_, _] => commandLogActor ! LogFirstCommand(commandEnvelope.commandId, c)

@@ -53,7 +53,7 @@ class CommandHandlerActor[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId,
       respondIfAlreadyHandled(commandEnvelope.respondTo, commandEnvelope.command) {
 
         val commandExecutorActor = context.actorOf(Props(new CommandExecutorActor[AGGREGATE_ROOT](aggregateId, commandEnvelope.asInstanceOf[InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]], repositoryActor, commandLogActor,
-          commandResponseState, nextResultAggregatorName, commandHandlers, initialState)), aggregateTypeSimpleName+"_CommandLog_" + aggregateId.asLong)
+          commandResponseState, nextResultAggregatorName, commandHandlers, initialState)), aggregateTypeSimpleName+"_CommandExecutor_" + aggregateId.asLong)
 
         // Pass initial state immediatelly to command executor
         commandExecutorActor ! Success(Aggregate(aggregateId, AggregateVersion.ZERO, Some(initialState())))
@@ -62,14 +62,14 @@ class CommandHandlerActor[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId,
     case commandEnvelope: InternalConcurrentCommandEnvelope[_, _] =>
       respondIfAlreadyHandled(commandEnvelope.respondTo, commandEnvelope.command) {
         val commandExecutorActor = context.actorOf(Props(new CommandExecutorActor[AGGREGATE_ROOT](aggregateId, commandEnvelope.asInstanceOf[InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]], repositoryActor, commandLogActor,
-          commandResponseState, nextResultAggregatorName, commandHandlers, initialState)), aggregateTypeSimpleName+"_CommandLog_" + aggregateId.asLong)
+          commandResponseState, nextResultAggregatorName, commandHandlers, initialState)), aggregateTypeSimpleName+"_CommandExecutor_" + aggregateId.asLong)
 
         repositoryActor ! GetAggregateRootCurrentVersion(commandExecutorActor)
       }
     case commandEnvelope: InternalFollowingCommandEnvelope[_, _] =>
       respondIfAlreadyHandled(commandEnvelope.respondTo, commandEnvelope.command) {
         val commandExecutorActor = context.actorOf(Props(new CommandExecutorActor[AGGREGATE_ROOT](aggregateId, commandEnvelope.asInstanceOf[InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]], repositoryActor, commandLogActor,
-          commandResponseState, nextResultAggregatorName, commandHandlers, initialState)), aggregateTypeSimpleName+"_CommandLog_" + aggregateId.asLong)
+          commandResponseState, nextResultAggregatorName, commandHandlers, initialState)), aggregateTypeSimpleName+"_CommandExecutor_" + aggregateId.asLong)
 
         repositoryActor ! GetAggregateRootExactVersion(commandExecutorActor, commandEnvelope.command.expectedVersion)
       }
