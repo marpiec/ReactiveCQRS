@@ -358,7 +358,7 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
           .executeUpdate().apply()
       }
     } catch {
-      case e: PSQLException if e.getServerErrorMessage.toString.contains("already exists")=> () // IF NOT EXIST workaround
+      case e: PSQLException if e.getServerErrorMessage.getSQLState == "42P07" => () // IF NOT EXIST workaround, 42P07 - PostgreSQL duplicate_table
     }
   }
 
