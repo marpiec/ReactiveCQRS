@@ -47,14 +47,12 @@ case class AggregateWithEventSubscription(subscriptionId: String, aggregateType:
 
 
 /** TODO get rid of state, memory only */
-class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: EventBusSubscriptionsManagerApi) extends Actor with ActorLogging {
+class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: EventBusSubscriptionsManagerApi, val MAX_BUFFER_SIZE: Int = 1000) extends Actor with ActorLogging {
 
   private val randomUtil = new RandomUtil
 
   private var subscriptions: Map[AggregateType, Vector[Subscription]] = Map()
   private var subscriptionsByIds = Map[String, Subscription]()
-
-  private val MAX_BUFFER_SIZE = 1000
 
   private var backPressureProducerActor: Option[ActorRef] = None
   private var orderedMessages = 0
