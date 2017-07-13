@@ -13,7 +13,7 @@ import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection.PostgresSubscriptionsState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
-import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCartAggregateContext, ShoppingCartsListProjectionAggregatesBased, ShoppingCartsListProjectionEventsBased}
+import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCart, ShoppingCartAggregateContext, ShoppingCartsListProjectionAggregatesBased, ShoppingCartsListProjectionEventsBased}
 import io.reactivecqrs.testutils.CommonSpec
 import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
 
@@ -99,7 +99,7 @@ class EventsReplaySpec extends CommonSpec {
       import fixture._
 
       val start = System.currentTimeMillis()
-      val result: EventsReplayed = replayerActor.askActor[EventsReplayed](ReplayAllEvents(false))(50.seconds)
+      val result: EventsReplayed = replayerActor.askActor[EventsReplayed](ReplayAllEvents(false, Seq(classOf[ShoppingCart].getName)))(50.seconds)
 
       println(result+" in "+(System.currentTimeMillis() - start)+"mills")
 

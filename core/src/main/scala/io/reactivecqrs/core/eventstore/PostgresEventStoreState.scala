@@ -115,8 +115,11 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
 
 
-  override def readAndProcessAllEvents(eventsVersionsMap: Map[EventTypeVersion, String],
+  override def readAndProcessAllEvents(eventsVersionsMap: Map[EventTypeVersion, String], aggregateType: String,
                                        batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit = {
+
+    val aggregateTypeId = typesNamesState.typeIdByClassName(aggregateType)
+
     var buffer = List[EventInfo[Any]]()
     var lastAggregateId = AggregateId(-1)
     var lastAggregateType = AggregateType("")
@@ -125,12 +128,14 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
         sql"""SELECT event_type_id, event_type_version, event, events.version, events.aggregate_id, aggregates.type_id, user_id, event_time
            FROM events
            JOIN aggregates ON events.aggregate_id = aggregates.id AND events.aggregate_id = aggregates.base_id
-           ORDER BY aggregates.creation_time, aggregates.id, events.id"""
+           WHERE aggregates.type_id = ?
+           ORDER BY aggregates.creation_time, aggregates.id, events.id""".bind(aggregateTypeId)
       } else {
         sql"""SELECT event_type_id, event_type_version, event, events.version, events.aggregate_id, aggregates.type_id, user_id, event_time
            FROM events
            JOIN aggregates ON events.aggregate_id = aggregates.id AND events.aggregate_id = aggregates.base_id
-           ORDER BY events.id"""
+           WHERE aggregates.type_id = ?
+           ORDER BY events.id""".bind(aggregateTypeId)
       }
 
       query.fetchSize(1000).foreach { rs =>
