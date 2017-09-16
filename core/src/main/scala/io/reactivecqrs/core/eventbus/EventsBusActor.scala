@@ -56,6 +56,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
   private var backPressureProducerActor: Option[ActorRef] = None
   private var orderedMessages = 0
+  private var receivedInProgressMessages = 0
 
   /** Message to subscribers that not yet confirmed receiving message */
   private val messagesSent = mutable.HashMap[EventIdentifier, Vector[(Instant, ActorRef)]]()
@@ -73,17 +74,17 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   private var lastLogged = 0
 
   // FOR DEBUG PURPOSE
-  context.system.scheduler.schedule(5000.milli, 5000.milli, new Runnable {
+  context.system.scheduler.schedule(10.second, 10.seconds, new Runnable {
     override def run(): Unit = {
 
       val now = Instant.now()
-      val oldMessages = messagesSent.flatMap(m => m._2.map(r => (m._1, r._1, r._2))).filter(e => e._2.plusMillis(60000).isBefore(now))
+      val oldMessages = messagesSent.flatMap(m => m._2.map(r => (m._1, r._1, r._2))).filter(e => e._2.plusMillis(120000).isBefore(now))
 
       if(oldMessages.size != lastLogged) {
         log.warning("Messages propagated, not confirmed: " + oldMessages.size)
-        oldMessages.foreach(m => {
-          log.warning("Message not confirmed: " + m._3.path.toStringWithoutAddress+" "+m._1)
-        })
+//        oldMessages.foreach(m => {
+//          log.warning("Message not confirmed: " + m._3.path.toStringWithoutAddress+" "+m._1)
+//        })
       }
       lastLogged = oldMessages.size
     }
@@ -116,9 +117,9 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     case MessagesPersisted(aggregateType, messages) => ??? //handleMessagesPersisted(aggregateType, messages)
     case ConsumerAllowMoreStart =>
       backPressureProducerActor = Some(sender)
-      if(messagesSent.size + orderedMessages < MAX_BUFFER_SIZE / 2) {
-        sender ! ConsumerAllowedMore(MAX_BUFFER_SIZE - messagesSent.size)
-        orderedMessages += MAX_BUFFER_SIZE - messagesSent.size
+      if(receivedInProgressMessages + orderedMessages < MAX_BUFFER_SIZE) {
+        sender ! ConsumerAllowedMore(MAX_BUFFER_SIZE - receivedInProgressMessages - orderedMessages)
+        orderedMessages = MAX_BUFFER_SIZE
       }
     case ConsumerAllowMoreStop => backPressureProducerActor = None
   }
@@ -225,7 +226,8 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     })
 
     if(backPressureProducerActor.isDefined) {
-      orderedMessages = Math.max(0, orderedMessages - events.size) // it is possible to receive more messages than ordered
+      orderedMessages -= events.size // it is possible to receive more messages than ordered
+      receivedInProgressMessages += events.size
     }
 
     orderMoreMessagesToConsume()
@@ -265,6 +267,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
       val eventsToConfirm: Iterable[EventIdentifier] = finishedEvents.keys
 
+      receivedInProgressMessages -= finishedEvents.size
 
       // TODO optimize by grouping versions ber sender
       finishedEvents.keys.foreach(e =>
@@ -301,9 +304,9 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   }
 
   private def orderMoreMessagesToConsume(): Unit = {
-    if(backPressureProducerActor.isDefined && messagesSent.size + orderedMessages < MAX_BUFFER_SIZE / 2) {
-      backPressureProducerActor.get ! ConsumerAllowedMore(MAX_BUFFER_SIZE - messagesSent.size)
-      orderedMessages += MAX_BUFFER_SIZE - messagesSent.size
+    if(backPressureProducerActor.isDefined && receivedInProgressMessages + orderedMessages < MAX_BUFFER_SIZE) {
+      backPressureProducerActor.get ! ConsumerAllowedMore(MAX_BUFFER_SIZE - receivedInProgressMessages - orderedMessages)
+      orderedMessages = MAX_BUFFER_SIZE
     }
   }
   

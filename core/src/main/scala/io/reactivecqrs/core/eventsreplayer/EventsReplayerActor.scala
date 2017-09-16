@@ -46,7 +46,7 @@ class ReplayerRepositoryActorFactory[AGGREGATE_ROOT: TypeTag:ClassTag](aggregate
 }
 
 object EventsReplayerActor {
-  case class ReplayAllEvents(batchPerAggregate: Boolean, aggregatesTypes: Seq[String])
+  case class ReplayAllEvents(batchPerAggregate: Boolean, aggregatesTypes: Seq[String], delayBetweenAggregateTypes: Long)
   case class EventsReplayed(eventsCount: Long)
 }
 
@@ -62,17 +62,17 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
   val factories: Map[String, ReplayerRepositoryActorFactory[_]] = actorsFactory.map(f => f.aggregateRootType.toString -> f).toMap
 
-  var messagesToProduceAllowed = 0L
+  var eventsToProduceAllowed = 0L
 
   var backPressureActor: ActorRef = context.actorOf(Props(new BackPressureActor(eventsBus)), "BackPressure")
 
   val combinedEventsVersionsMap = actorsFactory.map(_.eventsVersionsMap).foldLeft(Map[EventTypeVersion, String]())((acc, m) => acc ++ m)
 
   override def receive: Receive = {
-    case ReplayAllEvents(batchPerAggregate, aggregatesTypes) => replayAllEvents(sender, batchPerAggregate, aggregatesTypes)
+    case ReplayAllEvents(batchPerAggregate, aggregatesTypes, delayBetweenAggregateTypes) => replayAllEvents(sender, batchPerAggregate, aggregatesTypes, delayBetweenAggregateTypes)
   }
 
-  private def replayAllEvents(respondTo: ActorRef, batchPerAggregate: Boolean, aggregatesTypes: Seq[String]) {
+  private def replayAllEvents(respondTo: ActorRef, batchPerAggregate: Boolean, aggregatesTypes: Seq[String], delayBetweenAggregateTypes: Long) {
     backPressureActor ! Start
     val allEvents: Int = eventStore.countAllEvents()
     var eventsSent: Long = 0
@@ -81,30 +81,34 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
     aggregatesTypes.foreach(aggregateType => {
       eventStore.readAndProcessAllEvents(combinedEventsVersionsMap, aggregateType, batchPerAggregate, (events: Seq[EventInfo[_]], aggregateId: AggregateId, aggregateType: AggregateType) => {
-        if(messagesToProduceAllowed == 0) {
+        if(eventsToProduceAllowed <= 0) {
           // Ask is a way to block during fetching data from db
-          messagesToProduceAllowed = Await.result((backPressureActor ? ProducerAllowMore).mapTo[ProducerAllowedMore].map(_.count), timeoutDuration)
+//          print("Replayer: Waiting more allowed messages, now allowed " + eventsToProduceAllowed)
+          eventsToProduceAllowed += Await.result((backPressureActor ? ProducerAllowMore).mapTo[ProducerAllowedMore].map(_.count), timeoutDuration)
+//          println("Replayer: Allowed to produce " + eventsToProduceAllowed +" more")
         }
 
         val actor = getOrCreateReplayRepositoryActor(aggregateId, events.head.version, aggregateType)
         actor ! ReplayEvents(IdentifiableEvents(aggregateType, aggregateId, events.asInstanceOf[Seq[EventInfo[Any]]]))
-        messagesToProduceAllowed -= 1
+        eventsToProduceAllowed -= events.size
 
         eventsSent += events.size
         if(eventsSent < 10 || eventsSent < 100 && eventsSent % 10 == 0 || eventsSent % 100 == 0) {
-          println("Replayed "+eventsSent+"/"+allEvents+" events, allowed " + messagesToProduceAllowed+" at " + LocalDateTime.now())
+          println("Replayed "+eventsSent+"/"+allEvents+" events")
         }
 
       })
       println("Read events for " + aggregateType)
-      Thread.sleep(5000)
+      if(delayBetweenAggregateTypes > 0) {
+        Thread.sleep(delayBetweenAggregateTypes)
+      }
     })
 
 
 
 
     backPressureActor ! Stop
-    println("Replayed "+eventsSent+"/"+allEvents+" events, allowed " + messagesToProduceAllowed+" at " + LocalDateTime.now())
+    println("Replayed "+eventsSent+"/"+allEvents+" events")
     respondTo ! EventsReplayed(eventsSent)
   }
 
