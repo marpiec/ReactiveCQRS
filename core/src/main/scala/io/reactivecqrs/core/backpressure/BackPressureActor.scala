@@ -7,12 +7,15 @@ object BackPressureActor {
   case object Start
   case object Stop
 
-  case object ConsumerAllowMoreStart
+  case object ConsumerStart
   case class ConsumerAllowedMore(count: Int)
-  case object ConsumerAllowMoreStop
+  case object ConsumerStop
 
   case object ProducerAllowMore
   case class ProducerAllowedMore(count: Int)
+
+  case object ConsumerFinished
+  case object Finished
 }
 
 class BackPressureActor(consumer: ActorRef) extends Actor with ActorLogging {
@@ -20,19 +23,21 @@ class BackPressureActor(consumer: ActorRef) extends Actor with ActorLogging {
   import BackPressureActor._
 
   var allowed: Int = 0
-  var waitingProducer: Option[ActorRef] = None
+  var producer: Option[ActorRef] = None
+  var stopSender: Option[ActorRef] = None
 
   override def receive: Receive = {
     case Start =>
       allowed = 0
-      consumer ! ConsumerAllowMoreStart
+      consumer ! ConsumerStart
     case Stop =>
-      consumer ! ConsumerAllowMoreStop
+      consumer ! ConsumerStop
+      stopSender = Some(sender())
     case ConsumerAllowedMore(count) =>
-      waitingProducer match {
-        case Some(producer) =>
-          producer ! ProducerAllowedMore(count + allowed)
-          waitingProducer = None
+      producer match {
+        case Some(p) =>
+          p ! ProducerAllowedMore(count + allowed)
+          producer = None
           allowed = 0
         case None =>
           allowed += count
@@ -42,7 +47,9 @@ class BackPressureActor(consumer: ActorRef) extends Actor with ActorLogging {
         sender ! ProducerAllowedMore(allowed)
         allowed = 0
       } else {
-        waitingProducer = Some(sender())
+        producer = Some(sender())
       }
+    case ConsumerFinished =>
+      stopSender.foreach(p => p ! Finished)
   }
 }

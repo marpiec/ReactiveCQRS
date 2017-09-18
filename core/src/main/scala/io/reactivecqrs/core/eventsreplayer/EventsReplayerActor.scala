@@ -1,6 +1,7 @@
 package io.reactivecqrs.core.eventsreplayer
 
 import java.time.{Instant, LocalDateTime}
+import java.util.Date
 
 import akka.pattern.ask
 import akka.actor.{Actor, ActorContext, ActorRef, Props}
@@ -10,7 +11,7 @@ import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor
 import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor.ReplayEvents
 import io.reactivecqrs.core.backpressure.BackPressureActor
-import io.reactivecqrs.core.backpressure.BackPressureActor.{ProducerAllowMore, ProducerAllowedMore, Start, Stop}
+import io.reactivecqrs.core.backpressure.BackPressureActor.{Finished, ProducerAllowMore, ProducerAllowedMore, Start, Stop}
 import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, ReplayAllEvents}
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.util.ActorLogging
@@ -79,7 +80,10 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
     log.info("Will replay "+allEvents+" events")
 
+
+
     aggregatesTypes.foreach(aggregateType => {
+      val start = new Date().getTime
       eventStore.readAndProcessAllEvents(combinedEventsVersionsMap, aggregateType, batchPerAggregate, (events: Seq[EventInfo[_]], aggregateId: AggregateId, aggregateType: AggregateType) => {
         if(eventsToProduceAllowed <= 0) {
           // Ask is a way to block during fetching data from db
@@ -98,7 +102,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
         }
 
       })
-      println("Read events for " + aggregateType)
+      println("Read events for " + aggregateType + " in "+(new Date().getTime - start)+"ms")
       if(delayBetweenAggregateTypes > 0) {
         Thread.sleep(delayBetweenAggregateTypes)
       }
@@ -106,10 +110,11 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
 
 
-
-    backPressureActor ! Stop
-    println("Replayed "+eventsSent+"/"+allEvents+" events")
-    respondTo ! EventsReplayed(eventsSent)
+    Await.result(backPressureActor ? Stop, timeoutDuration) match {
+      case Finished =>
+        println("Replayed "+eventsSent+"/"+allEvents+" events")
+        respondTo ! EventsReplayed(eventsSent)
+    }
   }
 
   // Assumption - we replay events from first event so there is not need to have more than one actor for each event

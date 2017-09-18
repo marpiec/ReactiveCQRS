@@ -6,7 +6,7 @@ import akka.actor.{Actor, ActorRef}
 import akka.util.Timeout
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.core.backpressure.BackPressureActor.{ConsumerAllowMoreStart, ConsumerAllowMoreStop, ConsumerAllowedMore}
+import io.reactivecqrs.core.backpressure.BackPressureActor._
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventsAck, _}
 import io.reactivecqrs.core.util.{ActorLogging, RandomUtil}
 
@@ -65,6 +65,8 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   private val eventsPropagatedNotPersisted = mutable.HashMap[AggregateId, List[AggregateVersion]]()
   private val eventsAlreadyPropagated = mutable.HashMap[AggregateId, AggregateVersion]()
 
+  private var afterFinishRespondTo: Option[ActorRef] = None
+
   context.system.scheduler.schedule(5.seconds, 5.seconds, new Runnable {
     override def run(): Unit = {
       inputState.flushUpdates()
@@ -115,13 +117,19 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       handlePublishEvents(sender(), aggregateType, aggregateId, events, aggregate)
     case m: MessageAck => handleMessageAck(m)
     case MessagesPersisted(aggregateType, messages) => ??? //handleMessagesPersisted(aggregateType, messages)
-    case ConsumerAllowMoreStart =>
+    case ConsumerStart =>
       backPressureProducerActor = Some(sender)
       if(receivedInProgressMessages + orderedMessages < MAX_BUFFER_SIZE) {
         sender ! ConsumerAllowedMore(MAX_BUFFER_SIZE - receivedInProgressMessages - orderedMessages)
         orderedMessages = MAX_BUFFER_SIZE
       }
-    case ConsumerAllowMoreStop => backPressureProducerActor = None
+    case ConsumerStop =>
+      println("EventBus Stop, processing "+receivedInProgressMessages)
+      afterFinishRespondTo = Some(sender())
+      backPressureProducerActor = None
+      if(receivedInProgressMessages == 0) {
+        afterFinishRespondTo.get ! ConsumerFinished
+      }
   }
 
 
@@ -298,8 +306,11 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       }
     }
 
-
-    orderMoreMessagesToConsume()
+    if(receivedInProgressMessages == 0 && afterFinishRespondTo.isDefined) {
+      afterFinishRespondTo.get ! ConsumerFinished
+    } else {
+      orderMoreMessagesToConsume()
+    }
 
   }
 
