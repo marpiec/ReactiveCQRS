@@ -7,7 +7,7 @@ object Common {
 
     organization := "io.reactivecqrs",
     name := s"reactivecqrs-$moduleName",
-    version := "0.10.7",
+    version := "0.10.8",
     scalaVersion := "2.11.7",
 
     /* required for Scalate to avoid version mismatch */

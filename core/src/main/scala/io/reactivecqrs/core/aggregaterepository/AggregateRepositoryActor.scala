@@ -27,7 +27,7 @@ object AggregateRepositoryActor {
   case class PersistEvents[AGGREGATE_ROOT](respondTo: ActorRef,
                                             commandId: CommandId,
                                             userId: UserId,
-                                            expectedVersion: Option[AggregateVersion],
+                                            expectedVersion: AggregateVersion,
                                             timestamp: Instant,
                                             events: Seq[Event[AGGREGATE_ROOT]],
                                             commandInfo: Option[IdempotentCommandInfo])
@@ -122,10 +122,12 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   }
 
   private def persistEvents(eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Unit = {
-    if (eventsEnvelope.expectedVersion.isEmpty || eventsEnvelope.expectedVersion.get == version) {
+    if (eventsEnvelope.expectedVersion == version) {
       persist(eventsEnvelope)(respond(eventsEnvelope.respondTo))
+//      println("AggregateRepository persisted events for expected version " + eventsEnvelope.expectedVersion)
     } else {
-      eventsEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateId, aggregateType.simpleName, eventsEnvelope.expectedVersion.get, version)
+      eventsEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateId, aggregateType.simpleName, eventsEnvelope.expectedVersion, version)
+//      println("AggregateRepository AggregateConcurrentModificationError expected " + eventsEnvelope.expectedVersion.asInt + " but i have " + version.asInt)
     }
 
   }
@@ -134,6 +136,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     if(version == AggregateVersion.ZERO) {
       respondTo ! Failure(new NoEventsForAggregateException(aggregateId))
     } else {
+//      println("RepositoryActor "+this.toString+" Someone requested aggregate " + aggregateId.asLong + " of version " + requestedVersion.map(_.asInt.toString).getOrElse("None") + " and now I have version " + version.asInt)
       requestedVersion match {
         case Some(v) if v != version => respondTo ! Failure(new AggregateInIncorrectVersionException(aggregateId, version, v))
         case _ => respondTo ! Success(Aggregate[AGGREGATE_ROOT](aggregateId, version, Some(aggregateRoot)))

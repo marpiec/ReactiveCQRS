@@ -27,8 +27,8 @@ class MemoryEventStoreState extends EventStoreState {
 
     var eventsForAggregate: Vector[EventStoreEntry[_]] = eventStore.getOrElse(aggregateId, Vector())
 
-    if (eventsEnvelope.expectedVersion.isDefined && eventsEnvelope.expectedVersion.get.asInt != eventsForAggregate.size) {
-      throw new IllegalStateException("Incorrect version for event, expected " + eventsEnvelope.expectedVersion.get.asInt + " but was " + eventsForAggregate.size)
+    if (eventsEnvelope.expectedVersion.asInt != eventsForAggregate.size) {
+      throw new IllegalStateException("Incorrect version for event, expected " + eventsEnvelope.expectedVersion.asInt + " but was " + eventsForAggregate.size)
     }
     var versionsIncreased = 0
     val eventsWithVersions = eventsEnvelope.events.map(event => {
