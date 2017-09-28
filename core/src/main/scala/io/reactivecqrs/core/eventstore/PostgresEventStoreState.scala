@@ -10,6 +10,8 @@ import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.Persist
 import io.reactivecqrs.core.types.TypesNamesState
 import scalikejdbc._
 
+import scala.util.Try
+
 class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState) extends EventStoreState {
 
   def initSchema(): PostgresEventStoreState = {
@@ -18,7 +20,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
 
   override def persistEvents[AGGREGATE_ROOT](eventsVersionsMapReverse: Map[String, EventTypeVersion],
-                                             aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
+                                             aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = Try {
     var lastEventVersion: Option[Int] = None
 
     eventsEnvelope.events.map(event => {

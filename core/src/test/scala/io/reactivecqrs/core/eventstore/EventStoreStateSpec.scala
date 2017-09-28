@@ -31,7 +31,7 @@ class TestFixture(val eventStoreState: EventStoreState) {
 
   def storeEvents(events: Seq[Event[SomeAggregate]], id: AggregateId = aggregateId, exVersion: AggregateVersion = expectedVersion): Unit = {
     eventStoreState.persistEvents(Map.empty, id,
-      PersistEvents(ActorRef.noSender, commandId, userId, Some(exVersion), Instant.now, events, None))(NoSession)
+      PersistEvents(ActorRef.noSender, commandId, userId, exVersion, Instant.now, events, None))(NoSession)
     if(exVersion == expectedVersion) {
       expectedVersion = expectedVersion.incrementBy(events.length)
     }

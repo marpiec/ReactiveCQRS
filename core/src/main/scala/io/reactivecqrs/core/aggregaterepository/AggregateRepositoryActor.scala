@@ -9,7 +9,8 @@ import io.reactivecqrs.api._
 import akka.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
-import io.reactivecqrs.core.commandhandler.{CommandResponseState, CommandExecutorActor}
+import io.reactivecqrs.core.commandhandler.{CommandExecutorActor, CommandResponseState}
+import org.postgresql.util.PSQLException
 import scalikejdbc.DBSession
 
 import scala.concurrent.Future
@@ -153,17 +154,28 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   private def persist(eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(afterPersist: Seq[Event[AGGREGATE_ROOT]] => Unit): Unit = {
     //Future { FIXME this future can broke order in which events are stored
-    val eventsWithVersions = eventStore.localTx {implicit session =>
-      val eventsWithVersions = eventStore.persistEvents(eventsVersionsMapReverse, aggregateId, eventsEnvelope.asInstanceOf[PersistEvents[AnyRef]])
-      persistIdempotentCommandResponse(eventsEnvelope.commandInfo)
-      eventsWithVersions
+    val eventsWithVersionsTry = eventStore.localTx {implicit session =>
+      eventStore.persistEvents(eventsVersionsMapReverse, aggregateId, eventsEnvelope.asInstanceOf[PersistEvents[AnyRef]]) match {
+        case Failure(exception) => Failure(exception)
+        case Success(eventsWithVersions) =>
+          persistIdempotentCommandResponse(eventsEnvelope.commandInfo)
+          Success(eventsWithVersions)
+      }
     }
-      var mappedEvents = 0
-      self ! EventsPersisted(eventsWithVersions.map { case (event, eventVersion) =>
-        mappedEvents += 1
-        IdentifiableEvent(AggregateType(event.aggregateRootType.toString), aggregateId, eventVersion, event, eventsEnvelope.userId, eventsEnvelope.timestamp)
-      })
-      afterPersist(eventsEnvelope.events)
+
+    eventsWithVersionsTry match {
+      case Failure(exception) => exception match {
+        case e: PSQLException if e.getLocalizedMessage.contains("Concurrent aggregate modification exception") => eventsEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateId, aggregateType.simpleName, eventsEnvelope.expectedVersion, version)
+        case e => eventsEnvelope.respondTo ! EventHandlingError(eventsEnvelope.events.head.getClass.getSimpleName, stackTraceToString(e), eventsEnvelope.commandId)
+      }
+      case Success(eventsWithVersions) =>
+        var mappedEvents = 0
+        self ! EventsPersisted(eventsWithVersions.map { case (event, eventVersion) =>
+          mappedEvents += 1
+          IdentifiableEvent(AggregateType(event.aggregateRootType.toString), aggregateId, eventVersion, event, eventsEnvelope.userId, eventsEnvelope.timestamp)
+        })
+        afterPersist(eventsEnvelope.events)
+    }
 //    } onFailure {
 //      case e: Exception => throw new IllegalStateException(e)
 //    }

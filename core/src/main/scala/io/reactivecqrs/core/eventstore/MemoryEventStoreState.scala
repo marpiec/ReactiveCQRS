@@ -8,6 +8,8 @@ import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.Persist
 import io.reactivecqrs.core.eventstore.MemoryEventStoreState.EventRow
 import scalikejdbc.{DBSession, NoSession}
 
+import scala.util.Try
+
 object MemoryEventStoreState {
   case class EventRow(eventId: Long, aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregateType: AggregateType,
                       event: Event[_], userId: UserId, timestamp: Instant)
@@ -23,7 +25,7 @@ class MemoryEventStoreState extends EventStoreState {
   private var eventIdSeq: Long = 0
 
 
-  override def persistEvents[AGGREGATE_ROOT](eventsVersionsMapReverse: Map[String, EventTypeVersion], aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
+  override def persistEvents[AGGREGATE_ROOT](eventsVersionsMapReverse: Map[String, EventTypeVersion], aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = Try {
 
     var eventsForAggregate: Vector[EventStoreEntry[_]] = eventStore.getOrElse(aggregateId, Vector())
 
