@@ -109,7 +109,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       if (firstEventVersion <= lastVersion.incrementBy(1) && a.version > lastVersion) {
         try {
           subscriptionsState.localTx { session =>
-            aggregateListenersMap(a.aggregateType)(a.id, a.version, 1, a.aggregateRoot)(session)
+            aggregateListenersMap(a.aggregateType)(a.id, a.version, a.eventsCount, a.aggregateRoot)(session)
             subscriptionsState.newVersionForAggregatesSubscription(this.getClass.getName, a.id, lastVersion, a.version)(session)
           }
           sender() ! MessageAck(self, a.id, AggregateVersion.upTo(a.version, a.eventsCount))

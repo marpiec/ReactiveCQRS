@@ -149,6 +149,11 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState) extends Subsc
     } catch {
       case e: PSQLException => () //ignore until CREATE UNIQUE INDEX IF NOT EXISTS is available in PostgreSQL
     }
+    try {
+      createAggregateIdIndex()
+    } catch {
+      case e: PSQLException => () //ignore until CREATE UNIQUE INDEX IF NOT EXISTS is available in PostgreSQL
+    }
     this
   }
 
@@ -173,6 +178,11 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState) extends Subsc
 
   private def createSubscriberTypeAggregateIdIndex() = DB.autoCommit { implicit session =>
     sql"""CREATE UNIQUE INDEX subscriptions_sub_type_agg_id_idx ON subscriptions (subscriber_type_id, subscription_type, aggregate_id)""".execute().apply()
+  }
+
+
+  private def createAggregateIdIndex() = DB.autoCommit { implicit session =>
+    sql"""CREATE INDEX subscriptions_agg_id_idx ON subscriptions (aggregate_id)""".execute().apply()
   }
 
   override def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId)(implicit session: DBSession): AggregateVersion = {
