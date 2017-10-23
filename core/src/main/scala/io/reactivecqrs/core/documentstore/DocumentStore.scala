@@ -6,6 +6,12 @@ case class VersionedDocument[T <: AnyRef, M <: AnyRef](version: Int, document: T
 
 case class Document[T <: AnyRef, M <: AnyRef](document: T, metadata: M)
 
+sealed trait Index
+
+case class MultipleIndex(path: Seq[String]) extends Index
+
+case class UniqueIndex(path: Seq[String]) extends Index
+
 sealed abstract class AbstractDocumentStore[T <: AnyRef, M <: AnyRef] {
 
   def findDocumentByPath(path: Seq[String], value: String)(implicit session: DBSession = null): Map[Long, Document[T,M]]

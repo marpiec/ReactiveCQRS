@@ -19,6 +19,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
   val tableName: String
   val mpjsons: MPJsons
   val cache: DocumentStoreCache[T, M]
+  val indicies: Seq[Index]
 
   protected var localCache: Map[Long, Option[VersionedDocument[T, M]]] = Map.empty
 
@@ -39,6 +40,11 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
   protected def init(): Unit = {
     createTableIfNotExists()
+    if(indicies.size > 5) {
+      throw new IllegalArgumentException("Only up to 5 indieces are supported now")
+    }
+    1 to 5 foreach dropIndex
+    indicies.zipWithIndex.foreach{case (index, id) => createIndex(id, index)}
   }
 
   protected def createTableIfNotExists(): Unit = DB.autoCommit { implicit session =>
@@ -47,6 +53,21 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
           |version INT NOT NULL,
           |document JSONB NOT NULL, metadata JSONB NOT NULL)"""
       .stripMargin.execute().apply()
+  }
+
+  private def dropIndex(id: Int): Unit = DB.autoCommit { implicit session =>
+    sql"""DROP INDEX IF EXISTS ${tableNameSQL}_idx_${id}""".execute().apply()
+  }
+
+  private def createIndex(id: Int, index: Index): Unit = DB.autoCommit { implicit session =>
+    index match {
+      case MultipleIndex(path) =>
+        val p = path.mkString(",")
+        SQL(s"CREATE INDEX ${projectionTableName}_idx_${id} ON ${projectionTableName} ((document #>> '{$p}'))").execute().apply()
+      case UniqueIndex(path) =>
+        val p = path.mkString(",")
+        SQL(s"CREATE UNIQUE INDEX ${projectionTableName}_idx_${id} ON ${projectionTableName} ((document #>> '{$p}'))").execute().apply()
+    }
   }
 
   def dropTable(): Unit = DB.autoCommit { implicit session =>
@@ -293,7 +314,8 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
 }
 
-class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val mpjsons: MPJsons, val cache: DocumentStoreCache[T, M])(implicit val t: TypeTag[T], val m: TypeTag[M])
+class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val mpjsons: MPJsons,
+                                                      val cache: DocumentStoreCache[T, M], val indicies: Seq[Index] = Seq.empty)(implicit val t: TypeTag[T], val m: TypeTag[M])
   extends DocumentStore[T, M] with PostgresDocumentStoreTrait[T, M] {
 
   override def insertDocument(key: Long, document: T, metadata: M)(implicit session: DBSession): Unit = {
@@ -342,7 +364,8 @@ class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val
 
 }
 
-class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: String, val mpjsons: MPJsons, val cache: DocumentStoreCache[T, M])(implicit val t: TypeTag[T], val m: TypeTag[M])
+class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: String, val mpjsons: MPJsons,
+                                                            val cache: DocumentStoreCache[T, M], val indicies: Seq[Index] = Seq.empty)(implicit val t: TypeTag[T], val m: TypeTag[M])
   extends DocumentStoreAutoId[T, M] with PostgresDocumentStoreTrait[T, M] {
 
   protected final lazy val sequenceName = "sequence_" + tableName
