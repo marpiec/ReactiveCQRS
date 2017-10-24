@@ -44,7 +44,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
       throw new IllegalArgumentException("Only up to 5 indieces are supported now")
     }
     1 to 5 foreach dropIndex
-    indicies.zipWithIndex.foreach{case (index, id) => createIndex(id, index)}
+    indicies.zipWithIndex.foreach{case (index, id) => createIndex(id + 1, index)}
   }
 
   protected def createTableIfNotExists(): Unit = DB.autoCommit { implicit session =>
