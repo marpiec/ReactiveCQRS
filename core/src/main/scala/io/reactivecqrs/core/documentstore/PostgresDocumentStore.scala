@@ -43,6 +43,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     if(indicies.size > 5) {
       throw new IllegalArgumentException("Only up to 5 indieces are supported now")
     }
+    // TODO get index info from pg_indexes and compare to currently created index;
     1 to 5 foreach dropIndex
     indicies.zipWithIndex.foreach{case (index, id) => createIndex(id + 1, index)}
   }
@@ -56,7 +57,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
   }
 
   private def dropIndex(id: Int): Unit = DB.autoCommit { implicit session =>
-    sql"""DROP INDEX IF EXISTS ${tableNameSQL}_idx_${id}""".execute().apply()
+    SQL(s"DROP INDEX IF EXISTS ${projectionTableName}_idx_${id}").execute().apply()
   }
 
   private def createIndex(id: Int, index: Index): Unit = DB.autoCommit { implicit session =>
