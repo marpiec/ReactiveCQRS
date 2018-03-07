@@ -7,7 +7,7 @@ object Common {
 
     organization := "io.reactivecqrs",
     name := s"reactivecqrs-$moduleName",
-    version := "0.10.14",
+    version := "0.10.15",
     scalaVersion := "2.11.7",
 
     /* required for Scalate to avoid version mismatch */
@@ -52,12 +52,12 @@ object Common {
 
   object dependencies {
 
-    val akkaVersion = "2.3.12"
+    val akkaVersion = "2.3.16"
 
     val common = Seq(
-      "io.mpjsons" %% "mpjsons" % "0.6.12",
+      "io.mpjsons" %% "mpjsons" % "0.6.26",
       "com.typesafe" % "config" % "1.2.1",
-      "org.slf4j" % "slf4j-api" % "1.7.10",
+      "org.slf4j" % "slf4j-api" % "1.7.25",
       "org.scalatest" %% "scalatest" % "2.2.4" % Test
     )
 
@@ -68,15 +68,15 @@ object Common {
     )
 
     val scalikejdbc = Seq(
-      "org.scalikejdbc" %% "scalikejdbc" % "2.2.6"
+      "org.scalikejdbc" %% "scalikejdbc" % "2.5.2"
     )
 
     val postgresql = Seq(
-      "org.postgresql" % "postgresql" % "9.4-1201-jdbc41"
+      "org.postgresql" % "postgresql" % "9.4-1206-jdbc41"
     )
 
     val logback = Seq(
-      "ch.qos.logback" % "logback-classic" % "1.1.3" % Test
+      "ch.qos.logback" % "logback-classic" % "1.1.11" % Test
     )
   }
 }
