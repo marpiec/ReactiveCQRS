@@ -86,7 +86,7 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
       }
 
       // Find subscriptions for given type
-      //TODO what to do if subscriptions.get rturns none?
+      //TODO what to do if subscriptions.get returns none?
       subscriptionsPerType.getOrElse(typeTag[DATA].toString(), List.empty).filter(s => {
         if(subscriptions.contains(s)) {
           true
@@ -99,7 +99,7 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
         result.foreach(r => subscription.listener ! SubscriptionUpdated(subscription.subscriptionId, r._1, r._2))// and send message if not None
       }
     } catch {
-      case e: Exception => log.error("Exception while handling subscription update", e) //log only because projection update is more important than subscription
+      case e: Exception => log.error(e, "Exception while handling subscription update") //log only because projection update is more important than subscription
     }
   }
 
