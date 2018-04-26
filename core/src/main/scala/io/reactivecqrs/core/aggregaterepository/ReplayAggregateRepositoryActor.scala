@@ -48,7 +48,7 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
         aggregateRoot = eventHandlers(userId, timestamp, aggregateRoot)(event)
       } catch {
         case e: Exception =>
-          log.error("Error while handling event: " + event)
+          log.error(e, "Error while handling event: " + event +", aggregateRoot: " + aggregateRoot)
           throw e;
       }
     }

@@ -205,7 +205,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
         Right(eventHandlers(userId, timestamp, tmpAggregateRoot)(event))
       } catch {
         case e: Exception =>
-          log.error("Error while handling event tryout : " + event)
+          log.error(e, "Error while handling event tryout : " + event +", aggregateRoot: " + aggregateRoot)
           Left((e, event))
       }
     } else {
@@ -219,7 +219,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
         aggregateRoot = eventHandlers(userId, timestamp, aggregateRoot)(event)
       } catch {
         case e: Exception =>
-          log.error("Error while handling event: " + event)
+          log.error(e, "Error while handling event: " + event +", aggregateRoot: " + aggregateRoot)
           throw e;
       }
     }
