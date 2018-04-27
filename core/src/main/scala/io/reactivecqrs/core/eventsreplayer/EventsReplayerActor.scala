@@ -80,6 +80,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
     log.info("Will replay "+allEvents+" events")
 
+    var lastUpdate = System.currentTimeMillis()
 
 
     aggregatesTypes.foreach(aggregateType => {
@@ -97,8 +98,10 @@ class EventsReplayerActor(eventStore: EventStoreState,
         eventsToProduceAllowed -= events.size
 
         eventsSent += events.size
-        if(eventsSent < 10 || eventsSent < 100 && eventsSent % 10 == 0 || eventsSent % 100 == 0) {
-          println("Replayed "+eventsSent+"/"+allEvents+" events")
+        val now = System.currentTimeMillis()
+        if(eventsSent < 10 || eventsSent < 100 && eventsSent % 10 == 0 || eventsSent % 100 == 0 || now - lastUpdate > 10000) {
+          println("Replayed " + eventsSent + "/" + allEvents + " events")
+          lastUpdate = System.currentTimeMillis()
         }
 
       })
