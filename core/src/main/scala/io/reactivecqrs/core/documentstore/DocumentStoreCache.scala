@@ -1,5 +1,7 @@
 package io.reactivecqrs.core.documentstore
 
+import scala.collection.mutable
+
 sealed trait CacheEntry[+T] {
   /**
     * @return Some for InCache, None for InCacheEmpty, Some(default) for NotInCache
@@ -21,9 +23,8 @@ case object NotInCache extends CacheEntry[Nothing] {
 
 trait DocumentStoreCache[D <: AnyRef, M <: AnyRef] {
 
-  def putIfAbsent(key: Long, document: Option[VersionedDocument[D, M]]): CacheEntry[VersionedDocument[D, M]]
+  def put(key: Long, value: Option[VersionedDocument[D, M]]): Unit
   def get(key: Long): CacheEntry[VersionedDocument[D, M]]
-  def replace(key: Long, newValue: Option[VersionedDocument[D, M]], oldValue: Option[VersionedDocument[D, M]]): Boolean
   def getAll(keys: Set[Long]): Map[Long, CacheEntry[VersionedDocument[D, M]]]
   def remove(key: Long): Unit
   def clear(): Unit
@@ -33,9 +34,8 @@ trait DocumentStoreCache[D <: AnyRef, M <: AnyRef] {
 
 class NoopDocumentStoreCache[D <: AnyRef, M <: AnyRef] extends DocumentStoreCache[D, M] {
 
-  override def putIfAbsent(key: Long, document: Option[VersionedDocument[D, M]]): CacheEntry[VersionedDocument[D, M]] = NotInCache
+  override def put(key: Long, value: Option[VersionedDocument[D, M]]): Unit = ()
   override def get(key: Long): CacheEntry[VersionedDocument[D, M]] = NotInCache
-  override def replace(key: Long, newValue: Option[VersionedDocument[D, M]], oldValue: Option[VersionedDocument[D, M]]): Boolean = true
   override def clear(): Unit = {}
   override def remove(key: Long): Unit = {}
   override def getAll(keys: Set[Long]): Map[Long, CacheEntry[VersionedDocument[D, M]]] = Map.empty
