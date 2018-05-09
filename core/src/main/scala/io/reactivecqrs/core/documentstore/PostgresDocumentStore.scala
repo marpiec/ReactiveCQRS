@@ -257,7 +257,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 }
 
 class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val mpjsons: MPJsons,
-                                                      val cache: DocumentStoreCache[T, M], val localCacheSize: Int, val indicies: Seq[Index] = Seq.empty)(implicit val t: TypeTag[T], val m: TypeTag[M])
+                                                      val cache: DocumentStoreCache[T, M], val indicies: Seq[Index] = Seq.empty)(implicit val t: TypeTag[T], val m: TypeTag[M])
   extends DocumentStore[T, M] with PostgresDocumentStoreTrait[T, M] {
 
   override def insertDocument(key: Long, document: T, metadata: M)(implicit session: DBSession): Unit = {
@@ -306,7 +306,7 @@ class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val
 }
 
 class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: String, val mpjsons: MPJsons,
-                                                            val cache: DocumentStoreCache[T, M], val localCacheSize: Int, val indicies: Seq[Index] = Seq.empty)(implicit val t: TypeTag[T], val m: TypeTag[M])
+                                                            val cache: DocumentStoreCache[T, M], val indicies: Seq[Index] = Seq.empty)(implicit val t: TypeTag[T], val m: TypeTag[M])
   extends DocumentStoreAutoId[T, M] with PostgresDocumentStoreTrait[T, M] {
 
   protected final lazy val sequenceName = "sequence_" + tableName
