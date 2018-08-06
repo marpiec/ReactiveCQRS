@@ -125,7 +125,7 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
       }
     } else {
 //      println("CommandExecutorActor AggregateConcurrentModificationError "+aggregateId.asLong+" expected " + expectedVersion.asInt+" was " + aggregate.version.asInt)
-      self ! AggregateConcurrentModificationError(aggregateId, classTag[AGGREGATE_ROOT].toString, expectedVersion, aggregate.version)
+      self ! AggregateConcurrentModificationError(aggregateId, AggregateType(classTag[AGGREGATE_ROOT].toString), expectedVersion, aggregate.version)
     }
   }
 
@@ -176,8 +176,12 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
   }
 
   private def handleCommandHandlingExceptionAndStop(exception: Throwable): Unit = {
-    commandEnvelope.respondTo ! CommandHandlingError(commandEnvelope.command.getClass.getSimpleName, stackTraceToString(exception), commandEnvelope.commandId)
-    log.error(exception, "Error handling command")
+    exception match {
+      case e: AggregateInIncorrectVersionException => commandEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateId, e.aggregateType, e.requestedVersion, e.currentVersion)
+      case _ =>
+        commandEnvelope.respondTo ! CommandHandlingError(commandEnvelope.command.getClass.getSimpleName, stackTraceToString(exception), commandEnvelope.commandId)
+        log.error(exception, "Error handling command")
+    }
     context.stop(self)
   }
 

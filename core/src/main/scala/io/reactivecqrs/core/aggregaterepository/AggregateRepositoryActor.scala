@@ -127,7 +127,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
       persist(eventsEnvelope)(respond(eventsEnvelope.respondTo))
 //      println("AggregateRepository persisted events for expected version " + eventsEnvelope.expectedVersion)
     } else {
-      eventsEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateId, aggregateType.simpleName, eventsEnvelope.expectedVersion, version)
+      eventsEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateId, aggregateType, eventsEnvelope.expectedVersion, version)
 //      println("AggregateRepository AggregateConcurrentModificationError expected " + eventsEnvelope.expectedVersion.asInt + " but i have " + version.asInt)
     }
 
@@ -135,11 +135,11 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   private def receiveReturnAggregateRoot(respondTo: ActorRef, requestedVersion: Option[AggregateVersion]): Unit = {
     if(version == AggregateVersion.ZERO) {
-      respondTo ! Failure(new NoEventsForAggregateException(aggregateId))
+      respondTo ! Failure(new NoEventsForAggregateException(aggregateId, aggregateType))
     } else {
 //      println("RepositoryActor "+this.toString+" Someone requested aggregate " + aggregateId.asLong + " of version " + requestedVersion.map(_.asInt.toString).getOrElse("None") + " and now I have version " + version.asInt)
       requestedVersion match {
-        case Some(v) if v != version => respondTo ! Failure(new AggregateInIncorrectVersionException(aggregateId, version, v))
+        case Some(v) if v != version => respondTo ! Failure(new AggregateInIncorrectVersionException(aggregateId, aggregateType, version, v))
         case _ => respondTo ! Success(Aggregate[AGGREGATE_ROOT](aggregateId, version, Some(aggregateRoot)))
       }
 
@@ -165,7 +165,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
     eventsWithVersionsTry match {
       case Failure(exception) => exception match {
-        case e: PSQLException if e.getLocalizedMessage.contains("Concurrent aggregate modification exception") => eventsEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateId, aggregateType.simpleName, eventsEnvelope.expectedVersion, version)
+        case e: PSQLException if e.getLocalizedMessage.contains("Concurrent aggregate modification exception") => eventsEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateId, aggregateType, eventsEnvelope.expectedVersion, version)
         case e => eventsEnvelope.respondTo ! EventHandlingError(eventsEnvelope.events.head.getClass.getSimpleName, stackTraceToString(e), eventsEnvelope.commandId)
       }
       case Success(eventsWithVersions) =>
