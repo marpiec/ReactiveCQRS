@@ -239,6 +239,11 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     }
 
     orderMoreMessagesToConsume()
+
+    if(messagesToSend.isEmpty) {
+      // in case there are no listeners for given events we need to trigger confirmation
+      handleMessageAck(MessageAck(self, aggregateId, events.map(_.version)))
+    }
   }
 
 
@@ -254,7 +259,9 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
   private def handleMessageAck(ack: MessageAck): Unit = {
 
-    val eventsIds = ack.versions.map(v => EventIdentifier(ack.aggregateId, v)).toSet
+    val aggregateId = ack.aggregateId
+
+    val eventsIds = ack.versions.map(v => EventIdentifier(aggregateId, v)).toSet
 
     val receiversToConfirm = messagesSent.filterKeys(e => eventsIds.contains(e))
 
@@ -279,29 +286,29 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
       // TODO optimize by grouping versions ber sender
       finishedEvents.keys.foreach(e =>
-        eventSenders(e) ! PublishEventsAck(ack.aggregateId, Seq(e.version))
+        eventSenders(e) ! PublishEventsAck(aggregateId, Seq(e.version))
       )
 
       messagesSent --= eventsToConfirm
       eventSenders --= eventsToConfirm
 
-      val lastPublishedVersion = getLastPublishedVersion(ack.aggregateId)
+      val lastPublishedVersion = getLastPublishedVersion(aggregateId)
 
       val eventsSorted = eventsIds.toList.sortBy(_.version.asInt)
 
       if(eventsSorted.head.version.isJustAfter(lastPublishedVersion)) {
-        val notPersistedYet = eventsPropagatedNotPersisted.getOrElse(ack.aggregateId, List.empty)
+        val notPersistedYet = eventsPropagatedNotPersisted.getOrElse(aggregateId, List.empty)
         var newVersion = eventsSorted.last.version
         notPersistedYet.foreach(notPersisted => if(notPersisted.isJustAfter(newVersion)) {
           newVersion = notPersisted
         })
-        inputState.eventPublished(ack.aggregateId, lastPublishedVersion, newVersion)
-        eventsAlreadyPropagated += ack.aggregateId -> newVersion
+        inputState.eventPublished(aggregateId, lastPublishedVersion, newVersion)
+        eventsAlreadyPropagated += aggregateId -> newVersion
       } else {
         val newVersions: List[AggregateVersion] = eventsSorted.map(_.version)
-        eventsPropagatedNotPersisted.get(ack.aggregateId) match {
-          case None => eventsPropagatedNotPersisted += ack.aggregateId -> newVersions
-          case Some(versions) => eventsPropagatedNotPersisted += ack.aggregateId -> (newVersions ::: versions).sortBy(_.asInt)
+        eventsPropagatedNotPersisted.get(aggregateId) match {
+          case None => eventsPropagatedNotPersisted += aggregateId -> newVersions
+          case Some(versions) => eventsPropagatedNotPersisted += aggregateId -> (newVersions ::: versions).sortBy(_.asInt)
         }
       }
     }
