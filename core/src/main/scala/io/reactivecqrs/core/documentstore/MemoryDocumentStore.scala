@@ -6,6 +6,8 @@ import scalikejdbc.DBSession
 
 import scala.collection.parallel.mutable
 
+import scala.reflect.runtime.universe._
+
 sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
   val store = mutable.ParHashMap[Long, Document[T,M]]()
@@ -14,6 +16,28 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
   def findDocumentByPath(path: Seq[String], value: String)(implicit session: DBSession = null): Map[Long, Document[T,M]] = {
     store.filter(keyValuePair => matches(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].document, path, value)).seq.toMap
   }
+
+  def findDocumentByPaths(values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, Document[T,M]] = {
+    store.filter(keyValuePair => values.forall(v => matches(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].document, v.path, v.value))).seq.toMap
+  }
+
+  def findDocumentPartByPaths[P: TypeTag](part: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, P] = {
+    findDocumentByPaths(values:_*).map(d => d._1 -> valueAt[P](d._2.document, part))
+  }
+
+  def findDocument2PartsByPaths[P1: TypeTag, P2: TypeTag](part1: List[String], part2: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, (P1, P2)] = {
+    findDocumentByPaths(values:_*).map(d => d._1 -> (valueAt[P1](d._2.document, part1), valueAt[P2](d._2.document, part2)))
+  }
+
+  def findDocument3PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag](part1: List[String], part2: List[String], part3: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, (P1, P2, P3)] = {
+    findDocumentByPaths(values:_*).map(d => d._1 -> (valueAt[P1](d._2.document, part1), valueAt[P2](d._2.document, part2), valueAt[P3](d._2.document, part3)))
+  }
+
+  def findDocument4PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag, P4: TypeTag](part1: List[String], part2: List[String], part3: List[String], part4: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, (P1, P2, P3, P4)] = {
+    findDocumentByPaths(values:_*).map(d => d._1 -> (valueAt[P1](d._2.document, part1), valueAt[P2](d._2.document, part2), valueAt[P3](d._2.document, part3), valueAt[P4](d._2.document, part4)))
+  }
+
+
 
   def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession = null): Map[Long, Document[T,M]] = {
     store.filter(keyValuePair => matchesMultiple(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].document, path, values)).seq.toMap
@@ -70,6 +94,21 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
         innerElement.toString == value.toString
       } else {
         matches(innerElement, tail, value)
+      }
+    } catch {
+      case e: NoSuchFieldException => throw new IllegalArgumentException(s"No field [${path.head}] found in type [${element.getClass}] for element $element")
+    }
+  }
+
+  protected def valueAt[V](element: AnyRef, path: Seq[String]): V = {
+    try {
+      val field = element.getClass.getDeclaredField(path.head)
+      val innerElement = getPrivateValue(element, field)
+      val tail = path.tail
+      if (tail.isEmpty) {
+        innerElement.asInstanceOf[V]
+      } else {
+        valueAt(innerElement, tail)
       }
     } catch {
       case e: NoSuchFieldException => throw new IllegalArgumentException(s"No field [${path.head}] found in type [${element.getClass}] for element $element")
