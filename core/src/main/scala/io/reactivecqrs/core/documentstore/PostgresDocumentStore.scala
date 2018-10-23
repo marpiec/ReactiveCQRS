@@ -133,6 +133,70 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
   }
 
 
+  def findDocumentByPaths(values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, Document[T,M]] = {
+    val query = SQL("SELECT id, version, document, metadata FROM " + projectionTableName + " WHERE" + values.map(v => "document #>> '{"+v.path.mkString(",")+"}' = ?").mkString(" ", " AND ", " "))
+    inSession { implicit session =>
+
+      val loaded = query
+        .bind(values.map(_.value): _*).map(rs => rs.long(1) -> VersionedDocument[T, M](rs.int(2), mpjsons.deserialize[T](rs.string(3)), mpjsons.deserialize[M](rs.string(4))))
+        .list().apply()
+
+      loaded.foreach(t => cache.put(t._1, Some(t._2)))
+      loaded.map({case (key, value) => (key, Document[T, M](value.document, value.metadata))}).toMap
+    }
+  }
+
+  def findDocumentPartByPaths[P: TypeTag](part: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, P] = {
+    val query = SQL("SELECT id, document::json#>>'{"+part.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + values.map(v => "document #>> '{"+v.path.mkString(",")+"}' = ?").mkString(" ", " AND ", " "))
+    inSession { implicit session =>
+      query
+        .bind(values.map(_.value): _*)
+        .map(rs => rs.long(1) -> mpjsons.deserialize[P](rs.string(2)))
+        .list().apply().toMap
+    }
+  }
+
+  def findDocument2PartsByPaths[P1: TypeTag, P2: TypeTag](part1: List[String], part2: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, (P1, P2)] = {
+    val query = SQL("SELECT id, document::json#>>'{"+part1.mkString(",")+"}', document::json#>>'{"+part2.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + values.map(v => "document #>> '{"+v.path.mkString(",")+"}' = ?").mkString(" ", " AND ", " "))
+    inSession { implicit session =>
+
+      val loaded = query
+        .bind(values.map(_.value): _*)
+        .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3))))
+        .list().apply()
+
+      loaded.toMap
+    }
+  }
+
+  def findDocument3PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag](part1: List[String], part2: List[String], part3: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, (P1, P2, P3)] = {
+    val query = SQL("SELECT id, document::json#>>'{"+part1.mkString(",")+"}', document::json#>>'{"+part2.mkString(",")+"}', document::json#>>'{"+part3.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + values.map(v => "document #>> '{"+v.path.mkString(",")+"}' = ?").mkString(" ", " AND ", " "))
+    inSession { implicit session =>
+
+      val loaded = query
+        .bind(values.map(_.value): _*)
+        .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3)), mpjsons.deserialize[P3](rs.string(4))))
+        .list().apply()
+
+      loaded.toMap
+    }
+  }
+
+  def findDocument4PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag, P4: TypeTag](part1: List[String], part2: List[String], part3: List[String], part4: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, (P1, P2, P3, P4)] = {
+    val query = SQL("SELECT id, document::json#>>'{"+part1.mkString(",")+"}', document::json#>>'{"+part2.mkString(",")+"}', document::json#>>'{"+part3.mkString(",")+"}', document::json#>>'{"+part4.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + values.map(v => "document #>> '{"+v.path.mkString(",")+"}' = ?").mkString(" ", " AND ", " "))
+    inSession { implicit session =>
+
+      val loaded = query
+        .bind(values.map(_.value): _*)
+        .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3)), mpjsons.deserialize[P3](rs.string(4)), mpjsons.deserialize[P4](rs.string(5))))
+        .list().apply()
+
+      loaded.toMap
+    }
+  }
+
+
+
   //TODO WARNING change to proper sql construction
   def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
 
