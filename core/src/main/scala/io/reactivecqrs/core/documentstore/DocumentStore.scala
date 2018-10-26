@@ -12,7 +12,11 @@ case class MultipleIndex(path: Seq[String]) extends Index
 
 case class UniqueIndex(path: Seq[String]) extends Index
 
-case class ExpectedValue(path: Seq[String], value: String)
+sealed trait ExpectedValue
+
+case class ExpectedSingleValue(path: Seq[String], value: String) extends ExpectedValue
+
+case class ExpectedMultipleValues(path: Seq[String], values: Set[String]) extends ExpectedValue
 
 import scala.reflect.runtime.universe._
 

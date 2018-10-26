@@ -134,11 +134,11 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
 
   def findDocumentByPaths(values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, Document[T,M]] = {
-    val query = SQL("SELECT id, version, document, metadata FROM " + projectionTableName + " WHERE" + values.map(v => "document #>> '{"+v.path.mkString(",")+"}' = ?").mkString(" ", " AND ", " "))
+    val query = SQL("SELECT id, version, document, metadata FROM " + projectionTableName + " WHERE" + constructWhereClauseForExpectedValues(values))
     inSession { implicit session =>
 
       val loaded = query
-        .bind(values.map(_.value): _*).map(rs => rs.long(1) -> VersionedDocument[T, M](rs.int(2), mpjsons.deserialize[T](rs.string(3)), mpjsons.deserialize[M](rs.string(4))))
+        .bind(getAllValues(values): _*).map(rs => rs.long(1) -> VersionedDocument[T, M](rs.int(2), mpjsons.deserialize[T](rs.string(3)), mpjsons.deserialize[M](rs.string(4))))
         .list().apply()
 
       loaded.foreach(t => cache.put(t._1, Some(t._2)))
@@ -147,21 +147,21 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
   }
 
   def findDocumentPartByPaths[P: TypeTag](part: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, P] = {
-    val query = SQL("SELECT id, document::json#>>'{"+part.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + values.map(v => "document #>> '{"+v.path.mkString(",")+"}' = ?").mkString(" ", " AND ", " "))
+    val query = SQL("SELECT id, document::json#>>'{"+part.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + constructWhereClauseForExpectedValues(values))
     inSession { implicit session =>
       query
-        .bind(values.map(_.value): _*)
+        .bind(getAllValues(values): _*)
         .map(rs => rs.long(1) -> mpjsons.deserialize[P](rs.string(2)))
         .list().apply().toMap
     }
   }
 
   def findDocument2PartsByPaths[P1: TypeTag, P2: TypeTag](part1: List[String], part2: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, (P1, P2)] = {
-    val query = SQL("SELECT id, document::json#>>'{"+part1.mkString(",")+"}', document::json#>>'{"+part2.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + values.map(v => "document #>> '{"+v.path.mkString(",")+"}' = ?").mkString(" ", " AND ", " "))
+    val query = SQL("SELECT id, document::json#>>'{"+part1.mkString(",")+"}', document::json#>>'{"+part2.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + constructWhereClauseForExpectedValues(values))
     inSession { implicit session =>
 
       val loaded = query
-        .bind(values.map(_.value): _*)
+        .bind(getAllValues(values): _*)
         .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3))))
         .list().apply()
 
@@ -170,11 +170,11 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
   }
 
   def findDocument3PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag](part1: List[String], part2: List[String], part3: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, (P1, P2, P3)] = {
-    val query = SQL("SELECT id, document::json#>>'{"+part1.mkString(",")+"}', document::json#>>'{"+part2.mkString(",")+"}', document::json#>>'{"+part3.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + values.map(v => "document #>> '{"+v.path.mkString(",")+"}' = ?").mkString(" ", " AND ", " "))
+    val query = SQL("SELECT id, document::json#>>'{"+part1.mkString(",")+"}', document::json#>>'{"+part2.mkString(",")+"}', document::json#>>'{"+part3.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + constructWhereClauseForExpectedValues(values))
     inSession { implicit session =>
 
       val loaded = query
-        .bind(values.map(_.value): _*)
+        .bind(getAllValues(values): _*)
         .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3)), mpjsons.deserialize[P3](rs.string(4))))
         .list().apply()
 
@@ -183,11 +183,11 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
   }
 
   def findDocument4PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag, P4: TypeTag](part1: List[String], part2: List[String], part3: List[String], part4: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, (P1, P2, P3, P4)] = {
-    val query = SQL("SELECT id, document::json#>>'{"+part1.mkString(",")+"}', document::json#>>'{"+part2.mkString(",")+"}', document::json#>>'{"+part3.mkString(",")+"}', document::json#>>'{"+part4.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + values.map(v => "document #>> '{"+v.path.mkString(",")+"}' = ?").mkString(" ", " AND ", " "))
+    val query = SQL("SELECT id, document::json#>>'{"+part1.mkString(",")+"}', document::json#>>'{"+part2.mkString(",")+"}', document::json#>>'{"+part3.mkString(",")+"}', document::json#>>'{"+part4.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + constructWhereClauseForExpectedValues(values))
     inSession { implicit session =>
 
       val loaded = query
-        .bind(values.map(_.value): _*)
+        .bind(getAllValues(values): _*)
         .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3)), mpjsons.deserialize[P3](rs.string(4)), mpjsons.deserialize[P4](rs.string(5))))
         .list().apply()
 
@@ -195,14 +195,13 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     }
   }
 
-
-
-  //TODO WARNING change to proper sql construction
   def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
+
+    val query = SQL(s"SELECT id, version, document, metadata FROM $projectionTableName WHERE document #>> '{${path.mkString(",")}}' in (${List.fill(values.size)("?").mkString(",")})")
 
     if(values.nonEmpty) {
       inSession { implicit session =>
-        val loaded = SQL(SELECT_DOCUMENT_BY_PATH_WITH_ONE_OF_THE_VALUES(path.mkString(","), values))
+        val loaded = query.bind(values.toSeq: _*)
           .map(rs => rs.long(1) -> VersionedDocument[T, M](rs.int(2), mpjsons.deserialize[T](rs.string(3)), mpjsons.deserialize[M](rs.string(4))))
           .list().apply()
 
@@ -212,9 +211,21 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     } else {
       Map.empty
     }
-
   }
 
+  private def constructWhereClauseForExpectedValues(values: Seq[ExpectedValue]): String = {
+    values.map{
+      case ExpectedMultipleValues(path, values) => s"document #>> '{${path.mkString(",")}}' in (${List.fill(values.size)("?").mkString(",")})"
+      case ExpectedSingleValue(path, _) => s"document #>> '{${path.mkString(",")}}' = ?"
+    }.mkString(" ", " AND ", " ")
+  }
+
+  private def getAllValues(values: Seq[ExpectedValue]): Seq[String] = {
+    values.flatMap{
+      case ExpectedMultipleValues(_, vals) => vals
+      case ExpectedSingleValue(_, value) => Seq(value)
+    }
+  }
 
   def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
     findDocumentByObjectInArray("document", arrayPath, objectPath, value)
