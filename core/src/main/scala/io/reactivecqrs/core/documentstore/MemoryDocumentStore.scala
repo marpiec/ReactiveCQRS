@@ -18,7 +18,10 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
   }
 
   def findDocumentByPaths(values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, Document[T,M]] = {
-    store.filter(keyValuePair => values.forall(v => matches(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].document, v.path, v.value))).seq.toMap
+    store.filter(keyValuePair => values.forall {
+      case ExpectedSingleValue(path, value) => matches(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].document, path, value)
+      case ExpectedMultipleValues(path, vals) => vals.exists(value => matches(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].document, path, value))
+    }).seq.toMap
   }
 
   def findDocumentPartByPaths[P: TypeTag](part: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, P] = {
@@ -37,8 +40,6 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     findDocumentByPaths(values:_*).map(d => d._1 -> (valueAt[P1](d._2.document, part1), valueAt[P2](d._2.document, part2), valueAt[P3](d._2.document, part3), valueAt[P4](d._2.document, part4)))
   }
 
-
-
   def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession = null): Map[Long, Document[T,M]] = {
     store.filter(keyValuePair => matchesMultiple(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].document, path, values)).seq.toMap
   }
@@ -47,11 +48,9 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     store.filter(keyValuePair => arrayMatchSeq(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].document, arrayPath).exists(matches(_, objectPath, value))).seq.toMap
   }
 
-
   def findDocumentByMetadataObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
     store.filter(keyValuePair => arrayMatchSeq(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].metadata, arrayPath).exists(matches(_, objectPath, value))).seq.toMap
   }
-
 
   def findAll()(implicit session: DBSession = null): Map[Long, Document[T,M]] = {
     store.seq.toMap

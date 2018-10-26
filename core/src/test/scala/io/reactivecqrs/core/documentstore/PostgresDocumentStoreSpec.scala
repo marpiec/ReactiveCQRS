@@ -1,7 +1,6 @@
 package io.reactivecqrs.core.documentstore
 
 import io.mpjsons.MPJsons
-import org.apache.commons.dbcp.BasicDataSource
 import org.scalatest._
 import scalikejdbc.DB
 
