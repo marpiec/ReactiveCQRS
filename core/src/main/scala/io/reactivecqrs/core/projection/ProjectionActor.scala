@@ -244,6 +244,11 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       SubscribeForAggregatesWithEvents("", aggregateType, self)
     })
   }
+
+  override def postRestart(reason: Throwable) {
+    // do not call preStart
+  }
+
   // ************** Queries delay - needed if query is for document that might not been yet updated, but update is in it's way
 
   private var delayedQueries = List[DelayedQuery]()

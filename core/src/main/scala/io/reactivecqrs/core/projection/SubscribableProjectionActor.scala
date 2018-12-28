@@ -50,7 +50,7 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
   private val updatesCache: mutable.Queue[UpdateCacheEntry] = mutable.Queue.empty
 
   override def preStart() {
-    super.preStart();
+    super.preStart()
     context.system.scheduler.schedule(1.minute, 1.minute, self, ClearIdleSubscriptions)(context.dispatcher)
   }
 
