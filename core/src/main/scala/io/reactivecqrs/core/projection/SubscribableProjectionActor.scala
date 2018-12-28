@@ -49,7 +49,13 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
   private val subscriptionsPerType = mutable.HashMap[String, List[String]]()
   private val updatesCache: mutable.Queue[UpdateCacheEntry] = mutable.Queue.empty
 
-  context.system.scheduler.schedule(1.minute, 1.minute, self, ClearIdleSubscriptions)(context.dispatcher)
+  override def preStart() {
+    context.system.scheduler.schedule(1.minute, 1.minute, self, ClearIdleSubscriptions)(context.dispatcher)
+  }
+
+  override def postRestart(reason: Throwable) {
+    // do not call preStart
+  }
 
   protected def handleSubscribe[DATA: TypeTag, UPDATE, METADATA](subscriptionId: String, listener: ActorRef,
                                                                  filter: (DATA) => Option[(UPDATE, METADATA)],

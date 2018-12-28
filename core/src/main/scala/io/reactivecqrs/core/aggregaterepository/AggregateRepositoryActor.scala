@@ -77,7 +77,13 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   assureRestoredState()
 
-  context.system.scheduler.schedule(10.seconds, 60.seconds, self, ResendPersistedMessages)(context.dispatcher)
+  override def preStart() {
+    context.system.scheduler.schedule(10.seconds, 60.seconds, self, ResendPersistedMessages)(context.dispatcher)
+  }
+
+  override def postRestart(reason: Throwable) {
+    // do not call preStart
+  }
 
   private def stackTraceToString(e: Throwable) = {
     val sw = new StringWriter()

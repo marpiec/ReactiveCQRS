@@ -67,30 +67,38 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
   private var afterFinishRespondTo: Option[ActorRef] = None
 
-  context.system.scheduler.schedule(5.seconds, 5.seconds, new Runnable {
-    override def run(): Unit = {
-      inputState.flushUpdates()
-    }
-  })(context.dispatcher)
-
   private var lastLogged = 0
 
-  // FOR DEBUG PURPOSE
-  context.system.scheduler.schedule(10.second, 10.seconds, new Runnable {
-    override def run(): Unit = {
+  override def preStart() {
 
-      val now = Instant.now()
-      val oldMessages = messagesSent.flatMap(m => m._2.map(r => (m._1, r._1, r._2))).filter(e => e._2.plusMillis(120000).isBefore(now))
-
-      if(oldMessages.size != lastLogged) {
-        log.warning("Messages propagated, not confirmed: " + oldMessages.size)
-//        oldMessages.foreach(m => {
-//          log.warning("Message not confirmed: " + m._3.path.toStringWithoutAddress+" "+m._1)
-//        })
+    context.system.scheduler.schedule(5.seconds, 5.seconds, new Runnable {
+      override def run(): Unit = {
+        inputState.flushUpdates()
       }
-      lastLogged = oldMessages.size
-    }
-  })(context.dispatcher)
+    })(context.dispatcher)
+
+    // FOR DEBUG PURPOSE
+    context.system.scheduler.schedule(10.second, 10.seconds, new Runnable {
+      override def run(): Unit = {
+
+        val now = Instant.now()
+        val oldMessages = messagesSent.flatMap(m => m._2.map(r => (m._1, r._1, r._2))).filter(e => e._2.plusMillis(120000).isBefore(now))
+
+        if(oldMessages.size != lastLogged) {
+          log.warning("Messages propagated, not confirmed: " + oldMessages.size)
+          //        oldMessages.foreach(m => {
+          //          log.warning("Message not confirmed: " + m._3.path.toStringWithoutAddress+" "+m._1)
+          //        })
+        }
+        lastLogged = oldMessages.size
+      }
+    })(context.dispatcher)
+  }
+
+  override def postRestart(reason: Throwable) {
+    // do not call preStart
+  }
+
 
   def initSubscriptions(): Unit = {
 
