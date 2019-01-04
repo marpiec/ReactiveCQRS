@@ -14,6 +14,8 @@ case class UniqueIndex(path: Seq[String]) extends Index
 
 sealed trait ExpectedValue
 
+case class ExpectedNoValue(path: Seq[String]) extends ExpectedValue
+
 case class ExpectedSingleValue(path: Seq[String], value: String) extends ExpectedValue
 
 case class ExpectedMultipleValues(path: Seq[String], values: Set[String]) extends ExpectedValue

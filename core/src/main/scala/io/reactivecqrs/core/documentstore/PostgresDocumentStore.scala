@@ -215,13 +215,15 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
   private def constructWhereClauseForExpectedValues(values: Seq[ExpectedValue]): String = {
     values.map{
-      case ExpectedMultipleValues(path, values) => s"document #>> '{${path.mkString(",")}}' in (${List.fill(values.size)("?").mkString(",")})"
+      case ExpectedNoValue(path) => s"document #>> '{${path.mkString(",")}}' IS NULL"
+      case ExpectedMultipleValues(path, v) => s"document #>> '{${path.mkString(",")}}' in (${List.fill(v.size)("?").mkString(",")})"
       case ExpectedSingleValue(path, _) => s"document #>> '{${path.mkString(",")}}' = ?"
     }.mkString(" ", " AND ", " ")
   }
 
   private def getAllValues(values: Seq[ExpectedValue]): Seq[String] = {
     values.flatMap{
+      case ExpectedNoValue(_) => Seq.empty
       case ExpectedMultipleValues(_, vals) => vals
       case ExpectedSingleValue(_, value) => Seq(value)
     }

@@ -19,6 +19,7 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
   def findDocumentByPaths(values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, Document[T,M]] = {
     store.filter(keyValuePair => values.forall {
+      case ExpectedNoValue(path) => ???
       case ExpectedSingleValue(path, value) => matches(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].document, path, value)
       case ExpectedMultipleValues(path, vals) => vals.exists(value => matches(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].document, path, value))
     }).seq.toMap
