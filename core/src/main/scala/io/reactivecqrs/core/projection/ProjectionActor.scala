@@ -15,7 +15,6 @@ import scala.collection.mutable
 import scala.concurrent.Future
 import scala.reflect.runtime.universe._
 import scala.util.{Failure, Success}
-import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.FiniteDuration
 
 sealed trait DelayedQuery {
@@ -318,7 +317,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       case Success(result@Some(_)) => respondTo ! result
       case Success(None) => self ! AsyncDelayedQuery(until, respondTo, search)
       case Failure(ex) => respondTo ! Status.Failure(ex)
-    }
+    }(context.system.dispatcher)
   }
 
   var replayQueriesScheduled: Option[Cancellable] = None
@@ -332,7 +331,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       val earliest = delayedQueries.minBy(_.until)
 
       val duration = FiniteDuration(earliest.until.toEpochMilli - Instant.now().toEpochMilli, TimeUnit.MILLISECONDS)
-      replayQueriesScheduled = Some(context.system.scheduler.scheduleOnce(duration, self, ReplayQueries))
+      replayQueriesScheduled = Some(context.system.scheduler.scheduleOnce(duration, self, ReplayQueries)(context.system.dispatcher))
     }
   }
 }
