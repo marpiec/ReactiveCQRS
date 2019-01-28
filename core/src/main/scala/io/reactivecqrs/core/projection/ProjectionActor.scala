@@ -1,21 +1,29 @@
 package io.reactivecqrs.core.projection
 
-import java.time.Instant
+import java.time.{Duration, Instant}
+import java.util.concurrent.TimeUnit
 
-import akka.actor.{Actor, ActorRef}
-import io.reactivecqrs.api.id.{AggregateId, UserId}
+import akka.actor.{Actor, ActorRef, Cancellable, Status}
+import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManagerApi, EventsBusActor}
 import EventsBusActor._
 import io.reactivecqrs.core.util.ActorLogging
-import scalikejdbc.{DB, DBSession}
+import scalikejdbc.DBSession
 
 import scala.collection.mutable
+import scala.concurrent.Future
 import scala.reflect.runtime.universe._
+import scala.util.{Failure, Success}
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.duration.FiniteDuration
 
-
-
-private case class DelayedQuery(until: Instant, respondTo: ActorRef, search: () => Option[Any])
+sealed trait DelayedQuery {
+  val until: Instant
+  val respondTo: ActorRef
+}
+private case class SyncDelayedQuery(until: Instant, respondTo: ActorRef, search: () => Option[Any]) extends DelayedQuery
+private case class AsyncDelayedQuery(until: Instant, respondTo: ActorRef, search: () => Future[Option[Any]]) extends DelayedQuery
 
 case object ClearProjectionData
 case object ProjectionDataCleared
@@ -72,6 +80,8 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       new AggregateWithEventsListener[AGGREGATE_ROOT](listener)
   }
 
+  object ReplayQueries
+
 
 
   private lazy val eventListenersMap = {
@@ -101,6 +111,10 @@ abstract class ProjectionActor extends Actor with ActorLogging {
   }
 
   protected def receiveUpdate: Receive =  {
+    case q: AsyncDelayedQuery =>
+      delayedQueries ::= q
+      scheduleNearest()
+    case ReplayQueries => replayQueries()
     case a: AggregateWithType[_] =>
       val lastVersion = subscriptionsState.localTx { implicit session =>
         subscriptionsState.lastVersionForAggregateSubscription(this.getClass.getName, a.id)
@@ -255,30 +269,70 @@ abstract class ProjectionActor extends Actor with ActorLogging {
 
   private def replayQueries(): Unit = {
 
-    var delayAgain = List[DelayedQuery]()
     val now = Instant.now()
-    delayedQueries.filter(_.until.isAfter(now)).foreach(query => {
-      val result:Option[Any] = query.search()
-      if(result.isDefined) {
-        query.respondTo ! result
+
+    val queries = delayedQueries
+    delayedQueries = List.empty
+
+    queries.foreach(query => {
+      if(query.until.isAfter(now)) {
+        query match {
+          case q: SyncDelayedQuery => delayIfNotAvailable(q.respondTo, q.search, q.until)
+          case q: AsyncDelayedQuery => delayIfNotAvailableAsync(q.respondTo, q.search, q.until)
+        }
       } else {
-        delayAgain ::= query
+        query.respondTo ! None
       }
     })
 
-    delayedQueries = delayAgain
-
+    scheduleNearest()
   }
 
 
-  protected def delayIfNotAvailable[T](respondTo: ActorRef, search: () => Option[T], forMaximumMillis: Int) {
-    val result: Option[Any] = search()
+  protected def delayIfNotAvailable[T](respondTo: ActorRef, search: () => Option[T], forMaximumMillis: Int): Unit = {
+    delayIfNotAvailable(respondTo, search, Instant.now().plusMillis(forMaximumMillis))
+  }
+
+  protected def delayIfNotAvailableAsync[T](respondTo: ActorRef, search: () => Future[Option[T]], forMaximumMillis: Int): Unit = {
+    delayIfNotAvailableAsync(respondTo, search, Instant.now().plusMillis(forMaximumMillis))
+  }
+
+  protected def delayIfNotAvailable[T](respondTo: ActorRef, search: () => Option[T], until: Instant): Unit = {
+    val result: Option[Any] = try {
+      search()
+    } catch {
+      case ex: Exception =>
+        respondTo ! Status.Failure(ex)
+        throw ex
+    }
     if (result.isDefined) {
       respondTo ! result
     } else {
-      delayedQueries ::= DelayedQuery(Instant.now().plusMillis(forMaximumMillis), respondTo, search)
+      delayedQueries ::= SyncDelayedQuery(until, respondTo, search)
+      scheduleNearest()
     }
-
   }
-   
+
+  protected def delayIfNotAvailableAsync[T](respondTo: ActorRef, search: () => Future[Option[T]], until: Instant): Unit = {
+    search().onComplete {
+      case Success(result@Some(_)) => respondTo ! result
+      case Success(None) => self ! AsyncDelayedQuery(until, respondTo, search)
+      case Failure(ex) => respondTo ! Status.Failure(ex)
+    }
+  }
+
+  var replayQueriesScheduled: Option[Cancellable] = None
+
+  private def scheduleNearest(): Unit = {
+
+    replayQueriesScheduled.foreach(_.cancel())
+    replayQueriesScheduled = None
+
+    if(delayedQueries.nonEmpty) {
+      val earliest = delayedQueries.minBy(_.until)
+
+      val duration = FiniteDuration(earliest.until.toEpochMilli - Instant.now().toEpochMilli, TimeUnit.MILLISECONDS)
+      replayQueriesScheduled = Some(context.system.scheduler.scheduleOnce(duration, self, ReplayQueries))
+    }
+  }
 }
