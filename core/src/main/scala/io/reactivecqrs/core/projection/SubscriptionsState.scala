@@ -1,5 +1,7 @@
 package io.reactivecqrs.core.projection
 
+import java.sql.BatchUpdateException
+
 import io.reactivecqrs.api.AggregateVersion
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.projection.PostgresSubscriptionsState.CacheKey
@@ -33,6 +35,8 @@ trait SubscriptionsState {
   def clearSubscriptionsInfo(subscriberName: String): Unit
 
   def localTx[A](block: DBSession => A): A
+
+  def dump(): Unit
 }
 
 class MemorySubscriptionsState extends SubscriptionsState {
@@ -83,20 +87,23 @@ class MemorySubscriptionsState extends SubscriptionsState {
     }
   }
 
+
+  override def dump(): Unit = ()
+
 }
 
 object PostgresSubscriptionsState {
   case class CacheKey(subscriberName: String, subscriptionType: SubscriptionType)
 }
 
-class PostgresSubscriptionsStateForAggregate(typesNamesState: TypesNamesState, aggregateId: AggregateId) {
+class PostgresSubscriptionsStateForAggregate(typesNamesState: TypesNamesState, aggregateId: AggregateId, keepInMemory: Boolean) {
 
   private var cache = mutable.HashMap[CacheKey, AggregateVersion]()
 
   def lastAggregateVersion(subscriberName: String, subscriptionType: SubscriptionType)(implicit session: DBSession): AggregateVersion = synchronized {
 
     val key = CacheKey(subscriberName, subscriptionType)
-    if(cache.isEmpty) {
+    if(!keepInMemory && cache.isEmpty) {
       sql"""SELECT aggregate_version, subscriber_type_id, subscription_type FROM subscriptions WHERE aggregate_id = ?"""
         .bind(aggregateId.asLong).foreach(rs => {
         cache += CacheKey(typesNamesState.classNameById(rs.short(2)), SubscriptionType(rs.short(3))) -> AggregateVersion(rs.int(1))
@@ -114,28 +121,40 @@ class PostgresSubscriptionsStateForAggregate(typesNamesState: TypesNamesState, a
     AggregateVersion.ZERO
   }
 
-  def newEventId(subscriberName: String, subscriptionType: SubscriptionType, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Try[Unit] = synchronized {
+  def newEventId(subscriberName: String, subscriptionType: SubscriptionType, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit = synchronized {
     if(lastAggregateVersion == AggregateVersion.ZERO) {
-      sql"""INSERT INTO subscriptions (id, subscriber_type_id, subscription_type, aggregate_id, aggregate_version) VALUES (nextval('subscriptions_seq'), ?, ?, ?, ?)"""
-       .bind(typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, aggregateVersion.asInt).executeUpdate().apply()
+      if(!keepInMemory) {
+        sql"""INSERT INTO subscriptions (id, subscriber_type_id, subscription_type, aggregate_id, aggregate_version) VALUES (nextval('subscriptions_seq'), ?, ?, ?, ?)"""
+          .bind(typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, aggregateVersion.asInt).executeUpdate().apply()
+      }
       cache += CacheKey(subscriberName, subscriptionType) -> aggregateVersion
-      Success(())
     } else {
-      val rowsUpdated = sql"""UPDATE subscriptions SET aggregate_version = ? WHERE subscriber_type_id = ? AND subscription_type = ? AND aggregate_id = ? AND aggregate_version = ?"""
-        .bind(aggregateVersion.asInt, typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, lastAggregateVersion.asInt).map(rs => rs.int(1)).single().executeUpdate().apply()
-      if (rowsUpdated == 1) {
+      if (keepInMemory) {
         cache += CacheKey(subscriberName, subscriptionType) -> aggregateVersion
-        Success(())
       } else {
-        Failure(new OptimisticLockingFailed) // TODO handle this
+        val rowsUpdated =
+          sql"""UPDATE subscriptions SET aggregate_version = ? WHERE subscriber_type_id = ? AND subscription_type = ? AND aggregate_id = ? AND aggregate_version = ?"""
+            .bind(aggregateVersion.asInt, typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, lastAggregateVersion.asInt).map(rs => rs.int(1)).single().executeUpdate().apply()
+        if (rowsUpdated == 1) {
+          cache += CacheKey(subscriberName, subscriptionType) -> aggregateVersion
+        } else {
+          throw new OptimisticLockingFailed // TODO handle this
+        }
       }
     }
 
   }
 
+
+  def batchParams()(implicit session: DBSession): Seq[Seq[Any]] = {
+    cache.map {
+      case (key, value) => Seq(typesNamesState.typeIdByClassName(key.subscriberName), key.subscriptionType.id, aggregateId.asLong, value.asInt)
+    } toSeq
+  }
+
 }
 
-class PostgresSubscriptionsState(typesNamesState: TypesNamesState) extends SubscriptionsState {
+class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory: Boolean) extends SubscriptionsState {
 
   def initSchema(): PostgresSubscriptionsState = {
     createSubscriptionsTable()
@@ -206,7 +225,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState) extends Subsc
     perAggregate.getOrElse(aggregateId, {
       synchronized {
         perAggregate.getOrElse(aggregateId, {
-          val state = new PostgresSubscriptionsStateForAggregate(typesNamesState, aggregateId)
+          val state = new PostgresSubscriptionsStateForAggregate(typesNamesState, aggregateId, keepInMemory)
           perAggregate += aggregateId -> state
           state
         })
@@ -226,7 +245,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState) extends Subsc
     newEventId(subscriberName, SubscriptionType.AGGREGATES_WITH_EVENTS, aggregateId, lastAggregateVersion, aggregateVersion)
   }
 
-  private def newEventId(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Try[Unit] = {
+  private def newEventId(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit = {
     stateForAggregate(aggregateId).newEventId(subscriberName, subscriptionType, lastAggregateVersion, aggregateVersion)
   }
 
@@ -238,5 +257,15 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState) extends Subsc
   override def clearSubscriptionsInfo(subscriberName: String): Unit = DB.autoCommit { implicit session =>
     sql"""DELETE FROM subscriptions WHERE subscriber_type_id = ?"""
       .bind(typesNamesState.typeIdByClassName(subscriberName)).executeUpdate().apply()
+  }
+
+  override def dump(): Unit = DB.autoCommit { implicit session =>
+    try {
+      val toInsert: Seq[Seq[Any]] = perAggregate.values.toSeq.flatMap(_.batchParams())
+      sql"""INSERT INTO subscriptions (id, subscriber_type_id, subscription_type, aggregate_id, aggregate_version) VALUES (nextval('subscriptions_seq'), ?, ?, ?, ?)"""
+        .batch(toInsert: _*).apply()
+    } catch {
+      case e: BatchUpdateException => throw e.getNextException
+    }
   }
 }

@@ -116,7 +116,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     inSession { implicit session =>
       sql"DELETE FROM ${tableNameSQL} WHERE id = ?"
         .bind(key).executeUpdate().apply()
-      cache.remove(key)
+      cache.put(key, None)
     }
 
   }

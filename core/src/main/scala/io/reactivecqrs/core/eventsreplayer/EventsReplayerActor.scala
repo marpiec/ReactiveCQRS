@@ -14,6 +14,7 @@ import io.reactivecqrs.core.backpressure.BackPressureActor
 import io.reactivecqrs.core.backpressure.BackPressureActor.{Finished, ProducerAllowMore, ProducerAllowedMore, Start, Stop}
 import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, ReplayAllEvents}
 import io.reactivecqrs.core.eventstore.EventStoreState
+import io.reactivecqrs.core.projection.SubscriptionsState
 import io.reactivecqrs.core.util.ActorLogging
 
 import scala.concurrent.Await
@@ -54,6 +55,7 @@ object EventsReplayerActor {
 
 class EventsReplayerActor(eventStore: EventStoreState,
                           val eventsBus: ActorRef,
+                          subscriptionsState: SubscriptionsState,
                           actorsFactory: List[ReplayerRepositoryActorFactory[_]]) extends Actor with ActorLogging {
 
   import context.dispatcher
@@ -99,13 +101,13 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
         eventsSent += events.size
         val now = System.currentTimeMillis()
-        if(eventsSent < 10 || eventsSent < 100 && eventsSent % 10 == 0 || eventsSent % 100 == 0 || now - lastUpdate > 10000) {
+        if(eventsSent < 10 || eventsSent < 100 && eventsSent % 10 == 0 || eventsSent < 1000 && eventsSent % 100 == 0 || eventsSent % 1000 == 0 || now - lastUpdate > 10000) {
           println("Replayed " + eventsSent + "/" + allEvents + " events")
           lastUpdate = System.currentTimeMillis()
         }
 
       })
-      println("Read events for " + aggregateType + " in "+(new Date().getTime - start)+"ms")
+      println("Read events for " + aggregateType + " in "+formatMillis(new Date().getTime - start))
       if(delayBetweenAggregateTypes > 0) {
         Thread.sleep(delayBetweenAggregateTypes)
       }
@@ -116,7 +118,20 @@ class EventsReplayerActor(eventStore: EventStoreState,
     Await.result(backPressureActor ? Stop, timeoutDuration) match {
       case Finished =>
         println("Replayed "+eventsSent+"/"+allEvents+" events")
+        print("Dumping subscriptions state...")
+        subscriptionsState.dump()
+        println("DONE")
         respondTo ! EventsReplayed(eventsSent)
+    }
+  }
+
+  private def formatMillis(millis: Long): String = {
+    if(millis > 60000) {
+      (millis/60000)+"m "+((millis%60000)/1000)+"s "+(millis%1000)+"ms"
+    } else if(millis > 1000) {
+      (millis/1000)+"s "+(millis%1000)+"ms"
+    } else {
+      millis+"ms"
     }
   }
 
