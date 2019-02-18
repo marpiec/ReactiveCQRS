@@ -8,9 +8,19 @@ class PostgresEventStoreSchemaInitializer  {
 
   def initSchema(): Unit = {
     createEventsTable()
+    try {
+      createEventsIndex()
+    } catch {
+      case e: PSQLException => () //ignore until CREATE INDEX IF NOT EXISTS is available in PostgreSQL
+    }
     createNoopEventTable()
     createEventsBroadcastTable()
     createAggregatesTable()
+    try {
+      createAggregatesIndex()
+    } catch {
+      case e: PSQLException => () //ignore until CREATE INDEX IF NOT EXISTS is available in PostgreSQL
+    }
     try {
       createEventsSequence()
     } catch {
@@ -37,6 +47,21 @@ class PostgresEventStoreSchemaInitializer  {
           event TEXT NOT NULL)
       """.execute().apply()
   }
+
+  private def createEventsIndex(): Unit = DB.autoCommit { implicit session =>
+    sql"""
+        CREATE INDEX events_aggregates_idx ON events (aggregate_id);
+      """.execute().apply()
+  }
+
+  private def createAggregatesIndex(): Unit = DB.autoCommit { implicit session =>
+    sql"""
+        CREATE INDEX aggregates_type_idx ON aggregates (type_id);
+      """.execute().apply()
+  }
+
+
+
 
   private def createNoopEventTable(): Unit = DB.autoCommit { implicit session =>
     sql"""
