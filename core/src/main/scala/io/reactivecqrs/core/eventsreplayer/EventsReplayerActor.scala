@@ -60,7 +60,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
   import context.dispatcher
 
-  val timeoutDuration: FiniteDuration = 300.seconds
+  val timeoutDuration: FiniteDuration = 600.seconds
   implicit val timeout = Timeout(timeoutDuration)
 
   val factories: Map[String, ReplayerRepositoryActorFactory[_]] = actorsFactory.map(f => f.aggregateRootType.toString -> f).toMap
