@@ -20,7 +20,7 @@ object AggregateVersion {
   def unapply(version: AggregateVersion): Option[Int] = Some(version.asInt)
 }
 
-class AggregateVersion(val asInt: Int) {
+class AggregateVersion(val asInt: Int) extends Serializable {
 
   def < (other: AggregateVersion): Boolean = this.asInt < other.asInt
   def <= (other: AggregateVersion): Boolean = this.asInt <= other.asInt

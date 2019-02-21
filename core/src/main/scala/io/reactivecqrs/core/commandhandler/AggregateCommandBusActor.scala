@@ -31,7 +31,7 @@ object AggregateCommandBusActor {
   def apply[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateContext: AggregateContext[AGGREGATE_ROOT],
                                              uidGenerator: ActorRef, eventStoreState: EventStoreState, commandLogState: CommandLogState,
                                              commandResponseState: CommandResponseState,
-                                             eventBus: ActorRef): Props = {
+                                             eventBus: ActorRef, eventsReplayMode: Boolean): Props = {
     Props(new AggregateCommandBusActor[AGGREGATE_ROOT](
       uidGenerator,
       eventStoreState,
@@ -41,6 +41,7 @@ object AggregateCommandBusActor {
       aggregateContext.eventHandlers,
       eventBus,
       aggregateContext.eventsVersions,
+      eventsReplayMode,
       aggregateContext.initialAggregateRoot _))
   }
 
@@ -56,6 +57,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
                                                        val eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
                                                        val eventBus: ActorRef,
                                                        val eventsVersions: List[EventVersion[AGGREGATE_ROOT]],
+                                                       val eventsReplayMode: Boolean,
                                                        val initialState: () => AGGREGATE_ROOT)
                                                         (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor with ActorLogging {
 
@@ -79,10 +81,14 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
   private val aggregatesActors = mutable.HashMap[Long, AggregateActors]()
 
-  context.system.scheduler.scheduleOnce(1.second, self, EnsureEventsPublished(false))(context.dispatcher)
+  if(!eventsReplayMode) {
+    context.system.scheduler.scheduleOnce(1.second, self, EnsureEventsPublished(false))(context.dispatcher)
+  }
 
   override def preStart() {
-    context.system.scheduler.schedule(60.seconds, 60.seconds, self, EnsureEventsPublished(true))(context.dispatcher)
+    if(!eventsReplayMode) {
+      context.system.scheduler.schedule(60.seconds, 60.seconds, self, EnsureEventsPublished(true))(context.dispatcher)
+    }
   }
 
   override def postRestart(reason: Throwable) {

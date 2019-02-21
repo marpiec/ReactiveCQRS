@@ -180,6 +180,13 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     }
   }
 
+  override def readNotYetPublishedEvents(): Map[AggregateId, AggregateVersion] = {
+    DB.readOnly { implicit session =>
+      sql"""SELECT aggregate_id, MIN(version) FROM events_to_publish GROUP BY aggregate_id"""
+        .map(rs => (AggregateId(rs.long(1)), AggregateVersion(rs.int(2)))).list().apply().toMap
+    }
+  }
+
   override def readAggregatesWithEventsToPublish(aggregateTypeName: String, oldOnly: Boolean)(aggregateHandler: AggregateId => Unit): Unit = {
     DB.readOnly { implicit session =>
       if(oldOnly) {

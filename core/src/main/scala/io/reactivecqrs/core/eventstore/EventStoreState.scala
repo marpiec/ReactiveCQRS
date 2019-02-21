@@ -22,6 +22,8 @@ abstract class EventStoreState {
   def readEventsToPublishForAggregate[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]]
 
   def localTx[A](block: DBSession => A): A
+
+  def readNotYetPublishedEvents(): Map[AggregateId, AggregateVersion]
 }
 
 

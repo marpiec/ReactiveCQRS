@@ -114,4 +114,8 @@ class MemoryEventStoreState extends EventStoreState {
     block(NoSession)
   }
 
+  override def readNotYetPublishedEvents(): Map[AggregateId, AggregateVersion] = {
+    eventsToPublish.keys.groupBy(_._1).map(a => a._1 -> AggregateVersion(a._2.map(_._2.asInt).min))
+  }
+
 }

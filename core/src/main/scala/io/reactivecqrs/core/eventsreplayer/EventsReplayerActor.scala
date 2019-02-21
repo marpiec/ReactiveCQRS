@@ -84,6 +84,8 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
     var lastUpdate = System.currentTimeMillis()
 
+    val notYetPublishedAggregatesVersions = eventStore.readNotYetPublishedEvents()
+
 
     aggregatesTypes.foreach(aggregateType => {
       val start = new Date().getTime
@@ -95,8 +97,15 @@ class EventsReplayerActor(eventStore: EventStoreState,
 //          println("Replayer: Allowed to produce " + eventsToProduceAllowed +" more")
         }
 
-        val actor = getOrCreateReplayRepositoryActor(aggregateId, events.head.version, aggregateType)
-        actor ! ReplayEvents(IdentifiableEvents(aggregateType, aggregateId, events.asInstanceOf[Seq[EventInfo[Any]]]))
+        notYetPublishedAggregatesVersions.get(aggregateId) match {
+          case None =>
+            val actor = getOrCreateReplayRepositoryActor(aggregateId, events.head.version, aggregateType)
+            actor ! ReplayEvents(IdentifiableEvents(aggregateType, aggregateId, events.asInstanceOf[Seq[EventInfo[Any]]]))
+          case Some(notPublishedVersion) if events.head.version < notPublishedVersion =>
+            val actor = getOrCreateReplayRepositoryActor(aggregateId, events.head.version, aggregateType)
+            actor ! ReplayEvents(IdentifiableEvents(aggregateType, aggregateId, events.takeWhile(_.version < notPublishedVersion).asInstanceOf[Seq[EventInfo[Any]]]))
+          case Some(notPublishedVersion) => ()
+        }
         eventsToProduceAllowed -= events.size
 
         eventsSent += events.size
