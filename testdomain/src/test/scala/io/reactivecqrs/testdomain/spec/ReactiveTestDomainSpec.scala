@@ -6,7 +6,6 @@ import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
-import io.reactivecqrs.core.commandlog.PostgresCommandLogState
 import io.reactivecqrs.core.documentstore.{MemoryDocumentStore, NoopDocumentStoreCache, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus._
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
@@ -41,7 +40,6 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val mpjsons = new MPJsons
     val typesNamesState = new PostgresTypesNamesState().initSchema()
     val eventStoreState = new PostgresEventStoreState(mpjsons, typesNamesState).initSchema() // or MemoryEventStore
-    val commandLogState = new PostgresCommandLogState(mpjsons, typesNamesState).initSchema()
 
     val commandResponseState = new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema()
 

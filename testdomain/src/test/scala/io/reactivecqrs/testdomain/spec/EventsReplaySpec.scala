@@ -4,7 +4,6 @@ import akka.actor.{ActorRef, ActorSystem, Props}
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.AggregateVersion
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
-import io.reactivecqrs.core.commandlog.PostgresCommandLogState
 import io.reactivecqrs.core.documentstore.{MemoryDocumentStore, NoopDocumentStoreCache, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus._
 import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, ReplayAllEvents}
@@ -48,7 +47,6 @@ class EventsReplaySpec extends CommonSpec {
     val inMemory = false
 
     val typesNamesState = new PostgresTypesNamesState().initSchema()
-    val commandLogState = new PostgresCommandLogState(mpjsons, typesNamesState).initSchema()
 
 
     private val eventBusState = if(inMemory) {
@@ -66,7 +64,7 @@ class EventsReplaySpec extends CommonSpec {
     val uidGenerator = system.actorOf(Props(new UidGeneratorActor(aggregatesUidGenerator, commandsUidGenerator, sagasUidGenerator)), "uidGenerator")
     val shoppingCartContext = new ShoppingCartAggregateContext
     val shoppingCartCommandBus: ActorRef = system.actorOf(
-      AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandLogState, commandResponseState, eventBusActor), "ShoppingCartCommandBus")
+      AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandResponseState, eventBusActor), "ShoppingCartCommandBus")
 
     private val storeA = if(inMemory) {
       new MemoryDocumentStore[String, AggregateVersion]

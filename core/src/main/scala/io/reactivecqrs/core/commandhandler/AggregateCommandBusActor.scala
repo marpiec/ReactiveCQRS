@@ -11,7 +11,6 @@ import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRootCurrentVersion}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{AggregateActors, EnsureEventsPublished}
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
-import io.reactivecqrs.core.commandlog.{CommandLogActor, CommandLogState}
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
 import io.reactivecqrs.core.util.ActorLogging
@@ -24,18 +23,17 @@ import scala.reflect.runtime.universe._
 
 object AggregateCommandBusActor {
 
-  private case class AggregateActors(commandHandler: ActorRef, repository: ActorRef, commandLog: ActorRef)
+  private case class AggregateActors(commandHandler: ActorRef, repository: ActorRef)
 
   private case class EnsureEventsPublished(oldOnly: Boolean)
 
   def apply[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateContext: AggregateContext[AGGREGATE_ROOT],
-                                             uidGenerator: ActorRef, eventStoreState: EventStoreState, commandLogState: CommandLogState,
+                                             uidGenerator: ActorRef, eventStoreState: EventStoreState,
                                              commandResponseState: CommandResponseState,
                                              eventBus: ActorRef): Props = {
     Props(new AggregateCommandBusActor[AGGREGATE_ROOT](
       uidGenerator,
       eventStoreState,
-      commandLogState,
       commandResponseState,
       aggregateContext.commandHandlers,
       aggregateContext.eventHandlers,
@@ -50,7 +48,6 @@ object AggregateCommandBusActor {
 
 class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRef,
                                                        eventStoreState: EventStoreState,
-                                                       commandLogState: CommandLogState,
                                                        commandResponseState: CommandResponseState,
                                                        val commandsHandlers: AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]],
                                                        val eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
@@ -126,15 +123,13 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private def createAggregateActors(aggregateId: AggregateId): AggregateActors = {
     val repositoryActor = getOrCreateAggregateRepositoryActor(aggregateId)
 
-    val commandLogActor = context.actorOf(Props(new CommandLogActor[AGGREGATE_ROOT](aggregateId, commandLogState)), aggregateTypeSimpleName+"_CommandLog_" + aggregateId.asLong)
-
     val commandHandlerActor = context.actorOf(Props(new CommandHandlerActor[AGGREGATE_ROOT](
-      aggregateId, repositoryActor, commandLogActor, commandResponseState,
+      aggregateId, repositoryActor, commandResponseState,
       commandsHandlers.asInstanceOf[AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]]],
     initialState)),
       aggregateTypeSimpleName + "_CommandHandler_" + aggregateId.asLong)
 
-    val actors = AggregateActors(commandHandlerActor, repositoryActor, commandLogActor)
+    val actors = AggregateActors(commandHandlerActor, repositoryActor)
     aggregatesActors += aggregateId.asLong -> actors
     actors
   }

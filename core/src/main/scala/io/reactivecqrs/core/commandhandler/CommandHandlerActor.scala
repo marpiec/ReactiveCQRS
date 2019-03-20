@@ -36,7 +36,6 @@ object CommandHandlerActor {
 
 class CommandHandlerActor[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId,
                                           repositoryActor: ActorRef,
-                                          commandLogActor: ActorRef,
                                           commandResponseState: CommandResponseState,
                                           commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]],
                                           initialState: () => AGGREGATE_ROOT)
@@ -52,7 +51,7 @@ class CommandHandlerActor[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId,
     case commandEnvelope: InternalFirstCommandEnvelope[_, _] =>
       respondIfAlreadyHandled(commandEnvelope.respondTo, commandEnvelope.command) {
 
-        val commandExecutorActor = context.actorOf(Props(new CommandExecutorActor[AGGREGATE_ROOT](aggregateId, commandEnvelope.asInstanceOf[InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]], repositoryActor, commandLogActor,
+        val commandExecutorActor = context.actorOf(Props(new CommandExecutorActor[AGGREGATE_ROOT](aggregateId, commandEnvelope.asInstanceOf[InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]], repositoryActor,
           commandResponseState, nextResultAggregatorName, commandHandlers, initialState)), aggregateTypeSimpleName+"_CommandExecutor_" + aggregateId.asLong+"_"+commandEnvelope.commandId.asLong)
 
         // Pass initial state immediatelly to command executor
@@ -61,14 +60,14 @@ class CommandHandlerActor[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId,
       }
     case commandEnvelope: InternalConcurrentCommandEnvelope[_, _] =>
       respondIfAlreadyHandled(commandEnvelope.respondTo, commandEnvelope.command) {
-        val commandExecutorActor = context.actorOf(Props(new CommandExecutorActor[AGGREGATE_ROOT](aggregateId, commandEnvelope.asInstanceOf[InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]], repositoryActor, commandLogActor,
+        val commandExecutorActor = context.actorOf(Props(new CommandExecutorActor[AGGREGATE_ROOT](aggregateId, commandEnvelope.asInstanceOf[InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]], repositoryActor,
           commandResponseState, nextResultAggregatorName, commandHandlers, initialState)), aggregateTypeSimpleName+"_CommandExecutor_" + aggregateId.asLong+"_"+commandEnvelope.commandId.asLong)
 
         repositoryActor ! GetAggregateRootCurrentVersion(commandExecutorActor)
       }
     case commandEnvelope: InternalFollowingCommandEnvelope[_, _] =>
       respondIfAlreadyHandled(commandEnvelope.respondTo, commandEnvelope.command) {
-        val commandExecutorActor = context.actorOf(Props(new CommandExecutorActor[AGGREGATE_ROOT](aggregateId, commandEnvelope.asInstanceOf[InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]], repositoryActor, commandLogActor,
+        val commandExecutorActor = context.actorOf(Props(new CommandExecutorActor[AGGREGATE_ROOT](aggregateId, commandEnvelope.asInstanceOf[InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]], repositoryActor,
           commandResponseState, nextResultAggregatorName, commandHandlers, initialState)), aggregateTypeSimpleName+"_CommandExecutor_" + aggregateId.asLong+"_"+commandEnvelope.commandId.asLong)
 
         repositoryActor ! GetAggregateRootExactVersion(commandExecutorActor, commandEnvelope.command.expectedVersion)
