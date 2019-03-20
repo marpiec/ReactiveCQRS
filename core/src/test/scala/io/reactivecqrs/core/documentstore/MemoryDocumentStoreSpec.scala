@@ -4,8 +4,6 @@ import org.scalatest.{BeforeAndAfter, FeatureSpecLike, GivenWhenThen}
 import org.scalatest.MustMatchers._
 import scalikejdbc.{DBSession, NoSession}
 
-case class NothingMetadata()
-
 case class SimpleType(field: Int)
 
 case class ComplexType(simpleArray: List[SimpleType])
@@ -19,11 +17,11 @@ class MemoryDocumentStoreSpec extends FeatureSpecLike with GivenWhenThen with Be
   feature("can find documents by path with one array") {
     scenario("value exists") {
       Given("document store with some values")
-      val documentStore = new MemoryDocumentStore[ComplexType, NothingMetadata]()
+      val documentStore = new MemoryDocumentStore[ComplexType]()
       implicit val session = NoSession
-      documentStore.insertDocument(1, ComplexType(List(SimpleType(1), SimpleType(2))), NothingMetadata())
-      documentStore.insertDocument(2, ComplexType(List(SimpleType(1))), NothingMetadata())
-      documentStore.insertDocument(3, ComplexType(List(SimpleType(2), SimpleType(3))), NothingMetadata())
+      documentStore.insertDocument(0, 1, ComplexType(List(SimpleType(1), SimpleType(2))))
+      documentStore.insertDocument(0, 2, ComplexType(List(SimpleType(1))))
+      documentStore.insertDocument(0, 3, ComplexType(List(SimpleType(2), SimpleType(3))))
 
       When("document store is searched by array value")
       val result = documentStore.findDocumentByObjectInArray(List("simpleArray"), Seq("field"), 2)
@@ -36,9 +34,9 @@ class MemoryDocumentStoreSpec extends FeatureSpecLike with GivenWhenThen with Be
   feature("can find by option value") {
     scenario("option value exists") {
       Given("document store with one value")
-      val documentStore = new MemoryDocumentStore[OptionIntType, NothingMetadata]()
+      val documentStore = new MemoryDocumentStore[OptionIntType]()
       implicit val session = NoSession
-      documentStore.insertDocument(1, OptionIntType(Some(13)), NothingMetadata())
+      documentStore.insertDocument(0, 1, OptionIntType(Some(13)))
 
       When("searching by option value")
       val result = documentStore.findDocumentByPath(Seq("option", "value"), "13")
