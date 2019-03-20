@@ -7,9 +7,9 @@ import io.reactivecqrs.api.AggregateVersion
  *
  * @param asLong unique long identifier across aggregates.
  */
-case class AggregateId(asLong: Long) extends AnyVal
+case class AggregateId(asLong: Long)
 
 
 case class AggregateIdWithVersion(id: AggregateId, version: AggregateVersion)
 
-case class SpaceId(asLong: Long) extends AnyVal
+case class SpaceId(asLong: Long)

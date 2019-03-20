@@ -57,7 +57,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
     val shoppingCartContext = new ShoppingCartAggregateContext
     val shoppingCartCommandBus: ActorRef = system.actorOf(
-      AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandResponseState, eventBusActor), "ShoppingCartCommandBus")
+      AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandResponseState, eventBusActor, false), "ShoppingCartCommandBus")
 
     val sagaState = new PostgresSagaState(mpjsons, typesNamesState)
     sagaState.initSchema()
@@ -72,14 +72,14 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val inMemory = false
 
     private val storeA = if(inMemory) {
-      new MemoryDocumentStore[String, AggregateVersion]
+      new MemoryDocumentStore[String]
     } else {
-      new PostgresDocumentStore[String, AggregateVersion]("storeA", mpjsons, new NoopDocumentStoreCache)
+      new PostgresDocumentStore[String]("storeA", mpjsons, new NoopDocumentStoreCache)
     }
     private val storeB = if(inMemory) {
-      new MemoryDocumentStore[String, AggregateVersion]
+      new MemoryDocumentStore[String]
     } else {
-      new PostgresDocumentStore[String, AggregateVersion]("storeB", mpjsons, new NoopDocumentStoreCache)
+      new PostgresDocumentStore[String]("storeB", mpjsons, new NoopDocumentStoreCache)
     }
 
 
