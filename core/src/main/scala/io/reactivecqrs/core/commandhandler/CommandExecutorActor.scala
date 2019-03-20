@@ -26,7 +26,6 @@ object CommandExecutorActor {
 class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: AggregateId,
                                            commandEnvelope: InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]],
                                            repositoryActor: ActorRef,
-                                           commandLogActor: ActorRef,
                                            commandResponseState: CommandResponseState,
                                            resultAggregatorName: String,
                                            commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]],
@@ -156,11 +155,6 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
         }
         context.become(receiveEventsPersistResult(response))
         repositoryActor ! PersistEvents[AGGREGATE_ROOT](self, commandEnvelope.commandId, userId, expectedVersion, Instant.now, success.events, idempotentCommandInfo(commandEnvelope.command, response))
-        commandEnvelope.command match {
-          case c: FirstCommand[_, _] => commandLogActor ! LogFirstCommand(commandEnvelope.commandId, c)
-          case c: Command[_, _] => commandLogActor ! LogCommand(commandEnvelope.commandId, c)
-          case c: ConcurrentCommand[_, _] => commandLogActor ! LogConcurrentCommand(commandEnvelope.commandId, c)
-        }
       case failure: CommandFailure[_, _] =>
         commandEnvelope.respondTo ! failure.response
     }
