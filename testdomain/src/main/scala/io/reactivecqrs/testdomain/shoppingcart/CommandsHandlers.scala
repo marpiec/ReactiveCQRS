@@ -1,10 +1,9 @@
 package io.reactivecqrs.testdomain.shoppingcart
 
-import io.reactivecqrs.api.id.{AggregateId, UserId}
+import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 import io.reactivecqrs.api._
 
 import scala.concurrent.Future
-
 import scala.concurrent.ExecutionContext.Implicits.global
 
 object CommandsHandlers {
@@ -22,7 +21,7 @@ object CommandsHandlers {
   }
 
   def duplicateShoppingCart(command: DuplicateShoppingCart) = {
-    CommandSuccess(ShoppingCartDuplicated(command.baseAggregateId, command.baseAggregateVersion))
+    CommandSuccess(ShoppingCartDuplicated(SpaceId(0), command.baseAggregateId, command.baseAggregateVersion))
   }
 
   def addItem(userId: UserId,

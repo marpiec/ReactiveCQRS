@@ -21,23 +21,23 @@ case object NotInCache extends CacheEntry[Nothing] {
 }
 
 
-trait DocumentStoreCache[D <: AnyRef, M <: AnyRef] {
+trait DocumentStoreCache[D <: AnyRef] {
 
-  def put(key: Long, value: Option[VersionedDocument[D, M]]): Unit
-  def get(key: Long): CacheEntry[VersionedDocument[D, M]]
-  def getAll(keys: Set[Long]): Map[Long, CacheEntry[VersionedDocument[D, M]]]
+  def put(key: Long, value: Option[VersionedDocument[D]]): Unit
+  def get(key: Long): CacheEntry[VersionedDocument[D]]
+  def getAll(keys: Set[Long]): Map[Long, CacheEntry[VersionedDocument[D]]]
   def remove(key: Long): Unit
   def clear(): Unit
 
 }
 
 
-class NoopDocumentStoreCache[D <: AnyRef, M <: AnyRef] extends DocumentStoreCache[D, M] {
+class NoopDocumentStoreCache[D <: AnyRef, M <: AnyRef] extends DocumentStoreCache[D] {
 
-  override def put(key: Long, value: Option[VersionedDocument[D, M]]): Unit = ()
-  override def get(key: Long): CacheEntry[VersionedDocument[D, M]] = NotInCache
+  override def put(key: Long, value: Option[VersionedDocument[D]]): Unit = ()
+  override def get(key: Long): CacheEntry[VersionedDocument[D]] = NotInCache
   override def clear(): Unit = {}
   override def remove(key: Long): Unit = {}
-  override def getAll(keys: Set[Long]): Map[Long, CacheEntry[VersionedDocument[D, M]]] = Map.empty
+  override def getAll(keys: Set[Long]): Map[Long, CacheEntry[VersionedDocument[D]]] = Map.empty
 
 }

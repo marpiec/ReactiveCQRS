@@ -1,13 +1,13 @@
 package io.reactivecqrs.testdomain.shoppingcart
 
-import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.api.{AggregateVersion, DuplicationEvent, UndoEvent, Event}
+import io.reactivecqrs.api.id.{AggregateId, SpaceId}
+import io.reactivecqrs.api.{AggregateVersion, DuplicationEvent, Event, UndoEvent}
 
 
 
 case class ShoppingCartCreated(name: String) extends Event[ShoppingCart]
 
-case class ShoppingCartDuplicated(baseAggregateId: AggregateId, baseAggregateVersion: AggregateVersion) extends DuplicationEvent[ShoppingCart]
+case class ShoppingCartDuplicated(spaceId: SpaceId, baseAggregateId: AggregateId, baseAggregateVersion: AggregateVersion) extends DuplicationEvent[ShoppingCart]
 
 case class ItemAdded(name: String) extends Event[ShoppingCart]
 

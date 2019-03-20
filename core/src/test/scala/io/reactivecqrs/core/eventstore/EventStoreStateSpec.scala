@@ -5,7 +5,7 @@ import java.time.Instant
 import akka.actor.ActorRef
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.{AggregateVersion, DuplicationEvent, Event, UndoEvent}
-import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
+import io.reactivecqrs.api.id.{AggregateId, CommandId, SpaceId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.testutils.CommonSpec
 import scalikejdbc.{ConnectionPool, ConnectionPoolSettings, DBSession, NoSession}
@@ -18,7 +18,7 @@ case class EventC(predicate: Boolean) extends Event[SomeAggregate]
 
 case class Undo(eventsCount: Int) extends UndoEvent[SomeAggregate]
 
-case class Copy(baseAggregateId: AggregateId, baseAggregateVersion: AggregateVersion)
+case class Copy(spaceId: SpaceId, baseAggregateId: AggregateId, baseAggregateVersion: AggregateVersion)
   extends DuplicationEvent[SomeAggregate]
 
 
@@ -146,7 +146,7 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     storeEvents(List(Undo(1)))//5
     storeEvents(List(EventB(5)))//6
 
-    storeEvents(List(Copy(aggregateId, AggregateVersion(6))), aggregateBId, AggregateVersion(0))
+    storeEvents(List(Copy(SpaceId(1), aggregateId, AggregateVersion(6))), aggregateBId, AggregateVersion(0))
     storeEvents(List(EventA("newSix")), aggregateBId, AggregateVersion(1))
 
     storeEvents(List(EventA("oldSix")))
@@ -154,7 +154,7 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     Then("We can get all events in correct order")
 
     getEvents() mustBe List(EventA("one"), EventB(2), EventC(false), EventB(5), EventA("oldSix"))
-    getEvents(None, aggregateBId) mustBe List(EventA("one"), EventB(2), EventC(false), EventB(5), Copy(aggregateId, AggregateVersion(6)), EventA("newSix"))
+    getEvents(None, aggregateBId) mustBe List(EventA("one"), EventB(2), EventC(false), EventB(5), Copy(SpaceId(1), aggregateId, AggregateVersion(6)), EventA("newSix"))
 
   }
 

@@ -47,9 +47,10 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
           ).map(rs => rs.int(1)).single().apply().get
 
         case duplicationEvent: DuplicationEvent[_] =>
-          sql"""SELECT add_duplication_event(?, ?, ?, ? , ?, ?, ?, ?, ?, ?, ?)""".bind(
+          sql"""SELECT add_duplication_event(?, ?, ?, ?, ? , ?, ?, ?, ?, ?, ?, ?)""".bind(
             eventsEnvelope.commandId.asLong,
             eventsEnvelope.userId.asLong,
+            duplicationEvent.spaceId.asLong,
             aggregateId.asLong,
             lastEventVersion.getOrElse(eventsEnvelope.expectedVersion.asInt),
             typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
@@ -60,10 +61,25 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
             duplicationEvent.baseAggregateId.asLong,
             duplicationEvent.baseAggregateVersion.asInt
           ).map(rs => rs.int(1)).single().apply().get
-        case _ =>
-          sql"""SELECT add_event(?, ?, ?, ? ,? , ? ,?, ?, ?)""".bind(
+        case firstEvent: FirstEvent[_] => {
+          sql"""SELECT add_event(?, ?, ?, ?, ? ,? , ? ,?, ?, ?)""".bind(
             eventsEnvelope.commandId.asLong,
             eventsEnvelope.userId.asLong,
+            firstEvent.spaceId.asLong,
+            aggregateId.asLong,
+            lastEventVersion.getOrElse(eventsEnvelope.expectedVersion.asInt),
+            typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
+            eventBaseTypeId,
+            eventVersion,
+            Timestamp.from(Instant.now),
+            eventSerialized
+          ).map(rs => rs.int(1)).single().apply().get
+        }
+        case _ =>
+          sql"""SELECT add_event(?, ?, ?, ?, ? ,? , ? ,?, ?, ?)""".bind(
+            eventsEnvelope.commandId.asLong,
+            eventsEnvelope.userId.asLong,
+            -1L,
             aggregateId.asLong,
             lastEventVersion.getOrElse(eventsEnvelope.expectedVersion.asInt),
             typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),

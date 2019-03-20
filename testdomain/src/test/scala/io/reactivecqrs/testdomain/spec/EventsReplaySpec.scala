@@ -41,7 +41,7 @@ class EventsReplaySpec extends CommonSpec {
 
 
     val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(system.actorOf(Props(new EventBusSubscriptionsManager(0))))
-    val subscriptionState = new PostgresSubscriptionsState(typesTypesState)
+    val subscriptionState = new PostgresSubscriptionsState(typesTypesState, true)
     subscriptionState.initSchema()
 
     val inMemory = false
@@ -67,14 +67,14 @@ class EventsReplaySpec extends CommonSpec {
       AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandResponseState, eventBusActor), "ShoppingCartCommandBus")
 
     private val storeA = if(inMemory) {
-      new MemoryDocumentStore[String, AggregateVersion]
+      new MemoryDocumentStore[String]
     } else {
-      new PostgresDocumentStore[String, AggregateVersion]("storeA", mpjsons, new NoopDocumentStoreCache)
+      new PostgresDocumentStore[String]("storeA", mpjsons, new NoopDocumentStoreCache)
     }
     private val storeB = if(inMemory) {
-      new MemoryDocumentStore[String, AggregateVersion]
+      new MemoryDocumentStore[String]
     } else {
-      new PostgresDocumentStore[String, AggregateVersion]("storeB", mpjsons, new NoopDocumentStoreCache)
+      new PostgresDocumentStore[String]("storeB", mpjsons, new NoopDocumentStoreCache)
     }
 
     val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusSubscriptionsManager, subscriptionState, shoppingCartCommandBus, storeA)), "ShoppingCartsListProjectionEventsBased")
@@ -82,7 +82,7 @@ class EventsReplaySpec extends CommonSpec {
 
 
 
-    val replayerActor = system.actorOf(Props(new EventsReplayerActor(eventStoreState, eventBusActor, List(
+    val replayerActor = system.actorOf(Props(new EventsReplayerActor(eventStoreState, eventBusActor, subscriptionState, List(
       ReplayerRepositoryActorFactory(new ShoppingCartAggregateContext)
     ))))
 
