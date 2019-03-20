@@ -3,12 +3,11 @@ package io.reactivecqrs.core.eventstore
 import java.time.Instant
 
 import akka.actor.ActorRef
-import io.mpjsons.MPJsons
 import io.reactivecqrs.api.{AggregateVersion, DuplicationEvent, Event, UndoEvent}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, SpaceId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.testutils.CommonSpec
-import scalikejdbc.{ConnectionPool, ConnectionPoolSettings, DBSession, NoSession}
+import scalikejdbc.NoSession
 
 case class SomeAggregate()
 
@@ -39,7 +38,7 @@ class TestFixture(val eventStoreState: EventStoreState) {
 
   def getEvents(version: Option[AggregateVersion] = None, id: AggregateId = aggregateId): Vector[Event[SomeAggregate]] = {
     var events = Vector[Event[SomeAggregate]]()
-    eventStoreState.readAndProcessEvents[SomeAggregate](Map.empty, id, version)((userId: UserId, timestamp: Instant, event: Event[SomeAggregate], id: AggregateId, noop: Boolean) => {
+    eventStoreState.readAndProcessEvents[SomeAggregate](Map.empty, id, version)((userId: UserId, timestamp: Instant, event: Event[SomeAggregate], id: AggregateId, eventVersion: Int, noop: Boolean) => {
         if(!noop) {
           events :+= event
         }

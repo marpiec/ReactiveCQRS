@@ -21,3 +21,7 @@ case class DeleteShoppingCart(idempotencyId: Option[SagaStep], userId: UserId, a
   extends Command[ShoppingCart, CustomCommandResponse[_]] with IdempotentCommand[SagaStep]
 
 
+case class RewriteCartName(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
+                           name: String) extends RewriteHistoryCommand[ShoppingCart, CustomCommandResponse[_]] {
+  override def eventsTypes: Set[String] = Set(classOf[ShoppingCartCreated].getName)
+}

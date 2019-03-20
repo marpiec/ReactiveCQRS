@@ -22,6 +22,7 @@ import scala.util.{Failure, Success}
 object AggregateRepositoryActor {
   case class GetAggregateRootCurrentVersion(respondTo: ActorRef)
   case class GetAggregateRootExactVersion(respondTo: ActorRef, version: AggregateVersion)
+  case class GetAggregateRootWithEventsExactVersion(respondTo: ActorRef, version: AggregateVersion, eventTypes: Set[String])
 
   case class IdempotentCommandInfo(command: Any, response: CustomCommandResponse[_])
 
@@ -33,9 +34,16 @@ object AggregateRepositoryActor {
                                             events: Seq[Event[AGGREGATE_ROOT]],
                                             commandInfo: Option[IdempotentCommandInfo])
 
+  case class OverrideAndPersistEvents[AGGREGATE_ROOT](rewriteEvents: Iterable[EventWithVersion[AGGREGATE_ROOT]],
+                                                      persist: PersistEvents[AGGREGATE_ROOT])
+
+
   case class EventsPersisted[AGGREGATE_ROOT](events: Seq[IdentifiableEvent[AGGREGATE_ROOT]])
 
   case object ResendPersistedMessages
+
+
+  case class AggregateWithSelectedEvents[AGGREGATE_ROOT](aggregate: Aggregate[AGGREGATE_ROOT], events: Iterable[EventWithVersion[AGGREGATE_ROOT]])
 }
 
 
@@ -93,9 +101,11 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   override def receive = logReceive {
     case ee: PersistEvents[_] => handlePersistEvents(ee)
+    case ee: OverrideAndPersistEvents[_] => handleOverrideAndPersistEvents(ee)
     case ep: EventsPersisted[_] => handleEventsPersisted(ep)
     case GetAggregateRootCurrentVersion(respondTo) => receiveReturnAggregateRoot(respondTo, None)
     case GetAggregateRootExactVersion(respondTo, version) => receiveReturnAggregateRoot(respondTo, Some(version)) // for following command
+    case GetAggregateRootWithEventsExactVersion(respondTo, version, eventTypes) => receiveReturnAggregateRootWithEvents(respondTo, Some(version), eventTypes) // for following command
     case PublishEventsAck(aggId, versions) => markPublishedEvents(aggregateId, versions)
     case ResendPersistedMessages => resendEventsToPublish()
   }
@@ -107,20 +117,22 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
       // In case of those events it's easier to re read past events
       assureRestoredState()
     } else {
-      ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.foreach(eventIdentifier => handleEvent(eventIdentifier.userId, eventIdentifier.timestamp, eventIdentifier.event, aggregateId, noopEvent = false))
+      ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.foreach(eventIdentifier => handleEvent(eventIdentifier.userId, eventIdentifier.timestamp, eventIdentifier.event, aggregateId, eventIdentifier.version.asInt, noopEvent = false))
     }
     eventsBus ! PublishEvents(aggregateType, ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
   }
 
-  private def handlePersistEvents(ee: PersistEvents[_]): Unit = {
-    val result = ee.asInstanceOf[PersistEvents[AGGREGATE_ROOT]].events.foldLeft(Right(aggregateRoot).asInstanceOf[Either[(Exception, Event[AGGREGATE_ROOT]), AGGREGATE_ROOT]])((aggEither, event) => {
-      aggEither match {
-        case Right(agg) => tryToHandleEvent(ee.userId, ee.timestamp, event, noopEvent = false, agg)
-        case f: Left[_, _] => f
-      }
-    })
+  private def handleOverrideAndPersistEvents(ee: OverrideAndPersistEvents[_]): Unit = {
+    tryToApplyEvents(ee.persist) match {
+      case s: Right[_, _] => overrideAndPersistEvents(ee.asInstanceOf[OverrideAndPersistEvents[AGGREGATE_ROOT]])
+      case Left((exception, event)) =>
+        ee.persist.respondTo ! EventHandlingError(event.getClass.getSimpleName, stackTraceToString(exception), ee.persist.commandId)
+        log.error(exception, "Error handling event")
+    }
+  }
 
-    result match {
+  private def handlePersistEvents(ee: PersistEvents[_]): Unit = {
+    tryToApplyEvents(ee) match {
       case s: Right[_, _] => persistEvents(ee.asInstanceOf[PersistEvents[AGGREGATE_ROOT]])
       case Left((exception, event)) =>
         ee.respondTo ! EventHandlingError(event.getClass.getSimpleName, stackTraceToString(exception), ee.commandId)
@@ -128,9 +140,28 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     }
   }
 
+  private def tryToApplyEvents(ee: PersistEvents[_]) = {
+    ee.asInstanceOf[PersistEvents[AGGREGATE_ROOT]].events.foldLeft(Right(aggregateRoot).asInstanceOf[Either[(Exception, Event[AGGREGATE_ROOT]), AGGREGATE_ROOT]])((aggEither, event) => {
+      aggEither match {
+        case Right(agg) => tryToHandleEvent(ee.userId, ee.timestamp, event, noopEvent = false, agg)
+        case f: Left[_, _] => f
+      }
+    })
+  }
+
+  private def overrideAndPersistEvents(eventsEnvelope: OverrideAndPersistEvents[AGGREGATE_ROOT]): Unit = {
+    if (eventsEnvelope.persist.expectedVersion == version) {
+      persist(eventsEnvelope.persist, eventsEnvelope.rewriteEvents)(respond(eventsEnvelope.persist.respondTo))
+      //      println("AggregateRepository persisted events for expected version " + eventsEnvelope.expectedVersion)
+    } else {
+      eventsEnvelope.persist.respondTo ! AggregateConcurrentModificationError(aggregateId, aggregateType, eventsEnvelope.persist.expectedVersion, version)
+      //      println("AggregateRepository AggregateConcurrentModificationError expected " + eventsEnvelope.expectedVersion.asInt + " but i have " + version.asInt)
+    }
+  }
+
   private def persistEvents(eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Unit = {
     if (eventsEnvelope.expectedVersion == version) {
-      persist(eventsEnvelope)(respond(eventsEnvelope.respondTo))
+      persist(eventsEnvelope, Seq.empty)(respond(eventsEnvelope.respondTo))
 //      println("AggregateRepository persisted events for expected version " + eventsEnvelope.expectedVersion)
     } else {
       eventsEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateId, aggregateType, eventsEnvelope.expectedVersion, version)
@@ -158,9 +189,40 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   }
 
 
-  private def persist(eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(afterPersist: Seq[Event[AGGREGATE_ROOT]] => Unit): Unit = {
+  private def receiveReturnAggregateRootWithEvents(respondTo: ActorRef, requestedVersion: Option[AggregateVersion], eventTypes: Set[String]): Unit = {
+    if(version == AggregateVersion.ZERO) {
+      respondTo ! Failure(new NoEventsForAggregateException(aggregateId, aggregateType))
+    } else {
+
+      //      println("RepositoryActor "+this.toString+" Someone requested aggregate " + aggregateId.asLong + " of version " + requestedVersion.map(_.asInt.toString).getOrElse("None") + " and now I have version " + version.asInt)
+      requestedVersion match {
+        case Some(v) if v != version => respondTo ! Failure(new AggregateInIncorrectVersionException(aggregateId, aggregateType, version, v))
+        case _ => {
+          var events: List[EventWithVersion[AGGREGATE_ROOT]] = List.empty
+          eventStore.readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap, aggregateId, singleReadForVersionOnly)((userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT], aggId: AggregateId, eventVersion: Int, noopEvent: Boolean) => {
+            if(eventTypes.contains(event.getClass.getName)) {
+              events ::= EventWithVersion(AggregateVersion(eventVersion), event)
+            }
+          })
+          respondTo ! Success(AggregateWithSelectedEvents[AGGREGATE_ROOT](Aggregate[AGGREGATE_ROOT](aggregateId, version, Some(aggregateRoot)), events.reverse))
+        }
+      }
+
+    }
+
+    if(singleReadForVersionOnly.isDefined) {
+      self ! PoisonPill
+    }
+
+  }
+  private def persist(eventsEnvelope: PersistEvents[AGGREGATE_ROOT], overwrite: Iterable[EventWithVersion[AGGREGATE_ROOT]])(afterPersist: Seq[Event[AGGREGATE_ROOT]] => Unit): Unit = {
     //Future { FIXME this future can broke order in which events are stored
     val eventsWithVersionsTry = eventStore.localTx {implicit session =>
+
+      if(overwrite.nonEmpty) {
+        eventStore.overwriteEvents(aggregateId, overwrite)
+      }
+
       eventStore.persistEvents(eventsVersionsMapReverse, aggregateId, eventsEnvelope.asInstanceOf[PersistEvents[AnyRef]]) match {
         case Failure(exception) => Failure(exception)
         case Success(eventsWithVersions) =>
@@ -219,7 +281,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     }
   }
 
-  private def handleEvent(userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT], aggId: AggregateId, noopEvent: Boolean): Unit = {
+  private def handleEvent(userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT], aggId: AggregateId, eventVersion: Int, noopEvent: Boolean): Unit = {
     if(!noopEvent) {
       try {
         aggregateRoot = eventHandlers(userId, timestamp, aggregateRoot)(event)

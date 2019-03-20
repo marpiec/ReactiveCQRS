@@ -35,9 +35,15 @@ abstract class AggregateContext[AGGREGATE_ROOT] {
 
   type EventHandler = (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT]
 
+  type RewriteHistoryCommandHandler = (Iterable[EventWithVersion[AGGREGATE_ROOT]], AGGREGATE_ROOT) => PartialFunction[Any, GenericCommandResult[Any]]
+
   def eventHandlers: EventHandler
 
   def commandHandlers: CommandHandler
+
+  def rewriteHistoryCommandHandlers: RewriteHistoryCommandHandler = (events, AGGREGATE_ROOT) => {
+    case _ => throw new IllegalStateException("Please implement rewriteHistoryCommandHandlers in AggregateContext "+this.getClass.getSimpleName)
+  }
 
   val eventsVersions: List[EventVersion[AGGREGATE_ROOT]] = List.empty
 

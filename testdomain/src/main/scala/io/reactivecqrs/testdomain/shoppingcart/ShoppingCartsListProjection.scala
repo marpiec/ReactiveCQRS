@@ -50,6 +50,10 @@ class ShoppingCartsListProjectionEventsBased(val eventBusSubscriptionsManager: E
         documentStore.updateDocument(0, aggregateId.asLong, {
           case Some(doc) => Document(doc.document)
         })
+      case CartNameRewritten(name) =>
+        documentStore.updateDocument(0, aggregateId.asLong, {
+          case Some(doc) => Document(doc.document)
+        })
       case ShoppingCartDeleted() =>
         documentStore.removeDocument(aggregateId.asLong)
       case ShoppingCartChangesUndone(count) => println("Sorry :(")

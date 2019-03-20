@@ -26,7 +26,9 @@ abstract class DuplicationEvent[AGGREGATE_ROOT: TypeTag] extends FirstEvent[AGGR
 
 
 abstract class FirstEvent[AGGREGATE_ROOT: TypeTag] extends Event[AGGREGATE_ROOT] {
-  val spaceId: SpaceId
+  def spaceId: SpaceId
 }
 
 abstract class PermanentDeleteEvent[AGGREGATE_ROOT: TypeTag] extends Event[AGGREGATE_ROOT]
+
+abstract class RewriteHistoryEvent[AGGREGATE_ROOT: TypeTag] extends Event[AGGREGATE_ROOT]

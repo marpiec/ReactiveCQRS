@@ -187,7 +187,34 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
       Thread.sleep(20000)
 
-      }
     }
+
+    scenario("History rewrite") {
+
+      step("Create shopping cart")
+
+
+      val fixture = Fixture
+      import fixture._
+
+
+      var shoppingCartA = shoppingCartCommand(CreateShoppingCart(None, userId,"Groceries"))
+      shoppingCartA mustBe Aggregate(shoppingCartA.id, AggregateVersion(1), Some(ShoppingCart("Groceries", Vector())))
+
+      step("Add items to cart")
+
+      shoppingCartA = shoppingCartCommand(AddItem(userId, shoppingCartA.id, AggregateVersion(1), "apples"))
+      shoppingCartA = shoppingCartCommand(AddItem(userId, shoppingCartA.id, AggregateVersion(2), "oranges"))
+      shoppingCartA mustBe Aggregate(shoppingCartA.id, AggregateVersion(3), Some(ShoppingCart("Groceries", Vector(Item(1, "apples"), Item(2, "oranges")))))
+
+
+      step("Change cart name")
+
+      shoppingCartA = shoppingCartCommand(RewriteCartName(userId, shoppingCartA.id, AggregateVersion(3), "anonimized"))
+
+      shoppingCartA mustBe Aggregate(shoppingCartA.id, AggregateVersion(4), Some(ShoppingCart("anonimized", Vector(Item(1, "apples"), Item(2, "oranges")))))
+    }
+
+  }
 
 }

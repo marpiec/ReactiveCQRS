@@ -21,6 +21,12 @@ abstract class Command[AGGREGATE_ROOT, RESPONSE <: CustomCommandResponse[_]] {
   val expectedVersion: AggregateVersion
 }
 
+abstract class RewriteHistoryCommand[AGGREGATE_ROOT, RESPONSE <: CustomCommandResponse[_]] {
+  val userId: UserId
+  val aggregateId: AggregateId
+  val expectedVersion: AggregateVersion
+  def eventsTypes: Set[String]
+}
 
 trait CommandIdempotencyId {
   def asDbKey: String

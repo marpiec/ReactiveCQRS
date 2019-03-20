@@ -38,3 +38,5 @@ case class IdentifiableEvent[AGGREGATE_ROOT](aggregateType: AggregateType, aggre
 case class EventIdentifier(aggregateId: AggregateId, version: AggregateVersion)
 
 case class EventsIdentifiers(aggregateId: AggregateId, versions: Seq[AggregateVersion])
+
+case class EventWithVersion[AGGREGATE_ROOT](version: AggregateVersion, event: Event[AGGREGATE_ROOT])

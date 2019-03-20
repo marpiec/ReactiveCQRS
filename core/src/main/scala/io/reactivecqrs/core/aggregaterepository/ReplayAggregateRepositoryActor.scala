@@ -48,7 +48,7 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
 
   assureRestoredState()
 
-  private def handleEvent(userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT], aggId: AggregateId, noopEvent: Boolean): Unit = {
+  private def handleEvent(userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT], aggId: AggregateId, eventVersion: Int, noopEvent: Boolean): Unit = {
     if(!noopEvent) {
       try {
         aggregateRoot = eventHandlers(userId, timestamp, aggregateRoot)(event)
@@ -83,7 +83,7 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
     }
 
     events.events.foreach(event => {
-      handleEvent(event.userId, event.timestamp, event.event, events.aggregateId, noopEvent = false)
+      handleEvent(event.userId, event.timestamp, event.event, events.aggregateId, event.version.asInt, noopEvent = false)
     })
 
     val messageToSend: PublishReplayedEvent[AGGREGATE_ROOT] = PublishReplayedEvent(aggregateType, events.events, aggregateId, Option(aggregateRoot))
