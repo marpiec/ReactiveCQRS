@@ -25,8 +25,6 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
   protected val tableNameSQL = SQLSyntax.createUnsafely(projectionTableName)
 
-  protected def SELECT_DOCUMENT_BY_PATH(path: String) = s"SELECT id, version, document FROM $projectionTableName WHERE document #>> '{$path}' = ?"
-
   init()
 
   protected def init(): Unit = {
@@ -131,47 +129,81 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
   }
 
-  def findDocumentByPath(path: Seq[String], value: String)(implicit session: DBSession = null): Map[Long, Document[T]] = {
-    inSession { implicit session =>
-      val loaded = SQL(SELECT_DOCUMENT_BY_PATH(path.mkString(",")))
-        .bind(value).map(rs => rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3))))
-        .list().apply()
 
-      loaded.foreach(t => cache.put(t._1, Some(t._2)))
-      loaded.map({case (key, value) => (key, Document[T](value.document))}).toMap
+  private def createQuery(searchParams: DocumentStoreQuery) = {
+    searchParams.sortBy match {
+      case None =>
+        SQL("SELECT id, version, document FROM " + projectionTableName +
+          " WHERE" + constructWhereClauseForExpectedValues(searchParams.where) +
+          " LIMIT " + searchParams.limit)
+      case Some(sort) =>
+        SQL("SELECT id, version, document FROM " + projectionTableName +
+          " WHERE" + constructWhereClauseForExpectedValues(searchParams.where) +
+          " ORDER BY " + sort +
+          " LIMIT " + searchParams.limit)
     }
   }
 
+  private def createPartsQuery(parts: Seq[Seq[String]], searchParams: DocumentStoreQuery) = {
 
-  def findDocumentByPaths(values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, Document[T]] = {
-    val query = SQL("SELECT id, version, document FROM " + projectionTableName + " WHERE" + constructWhereClauseForExpectedValues(values))
+    val partsQuery = parts.map(part => "document::json#>>'{"+part.mkString(",")+"}'").mkString(", ")
+
+    searchParams.sortBy match {
+      case None =>
+        SQL("SELECT id, " + partsQuery + " FROM " + projectionTableName +
+          " WHERE" + constructWhereClauseForExpectedValues(searchParams.where) +
+          " LIMIT " + searchParams.limit)
+      case Some(sort) =>
+        SQL("SELECT id, " + partsQuery + " FROM " + projectionTableName +
+          " WHERE" + constructWhereClauseForExpectedValues(searchParams.where) +
+          " ORDER BY " + sort +
+          " LIMIT " + searchParams.limit)
+    }
+  }
+
+  def findDocument(searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, Document[T]] = {
+    val query = createQuery(searchParams)
     inSession { implicit session =>
-
       val loaded = query
-        .bind(getAllValues(values): _*).map(rs => rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3))))
+        .bind(getAllValues(searchParams.where): _*).map(rs => rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3))))
         .list().apply()
-
       loaded.foreach(t => cache.put(t._1, Some(t._2)))
       loaded.map({case (key, value) => (key, Document[T](value.document))}).toMap
     }
   }
 
-  def findDocumentPartByPaths[P: TypeTag](part: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, P] = {
-    val query = SQL("SELECT id, document::json#>>'{"+part.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + constructWhereClauseForExpectedValues(values))
+  def findDocumentWithTransform[TT <: AnyRef](searchParams: DocumentStoreQuery, transform: T => TT)(implicit session: DBSession = null): Map[Long, Document[TT]] = {
+    val query = createQuery(searchParams)
+    inSession { implicit session =>
+      val loaded = query
+        .bind(getAllValues(searchParams.where): _*).map(rs => {
+        val id = rs.long(1)
+        val version = rs.int(2)
+        val beforeTransform = mpjsons.deserialize[T](rs.string(3))
+        cache.put(id, Some(VersionedDocument[T](version, beforeTransform)))
+        id -> VersionedDocument[TT](version, transform(beforeTransform))
+      }).list().apply()
+      loaded.map({case (key, value) => (key, Document[TT](value.document))}).toMap
+    }
+  }
+
+  def findDocumentPartByPaths[P: TypeTag](part: List[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, P] = {
+    val query = createPartsQuery(Seq(part), searchParams)
+
     inSession { implicit session =>
       query
-        .bind(getAllValues(values): _*)
+        .bind(getAllValues(searchParams.where): _*)
         .map(rs => rs.long(1) -> mpjsons.deserialize[P](rs.string(2)))
         .list().apply().toMap
     }
   }
 
-  def findDocument2PartsByPaths[P1: TypeTag, P2: TypeTag](part1: List[String], part2: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, (P1, P2)] = {
-    val query = SQL("SELECT id, document::json#>>'{"+part1.mkString(",")+"}', document::json#>>'{"+part2.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + constructWhereClauseForExpectedValues(values))
-    inSession { implicit session =>
+  def findDocument2PartsByPaths[P1: TypeTag, P2: TypeTag](part1: List[String], part2: List[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, (P1, P2)] = {
+    val query = createPartsQuery(Seq(part1, part2), searchParams)
 
+    inSession { implicit session =>
       val loaded = query
-        .bind(getAllValues(values): _*)
+        .bind(getAllValues(searchParams.where): _*)
         .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3))))
         .list().apply()
 
@@ -179,12 +211,12 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     }
   }
 
-  def findDocument3PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag](part1: List[String], part2: List[String], part3: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, (P1, P2, P3)] = {
-    val query = SQL("SELECT id, document::json#>>'{"+part1.mkString(",")+"}', document::json#>>'{"+part2.mkString(",")+"}', document::json#>>'{"+part3.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + constructWhereClauseForExpectedValues(values))
-    inSession { implicit session =>
+  def findDocument3PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag](part1: List[String], part2: List[String], part3: List[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, (P1, P2, P3)] = {
+    val query = createPartsQuery(Seq(part1, part2, part3), searchParams)
 
+    inSession { implicit session =>
       val loaded = query
-        .bind(getAllValues(values): _*)
+        .bind(getAllValues(searchParams.where): _*)
         .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3)), mpjsons.deserialize[P3](rs.string(4))))
         .list().apply()
 
@@ -192,12 +224,12 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     }
   }
 
-  def findDocument4PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag, P4: TypeTag](part1: List[String], part2: List[String], part3: List[String], part4: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, (P1, P2, P3, P4)] = {
-    val query = SQL("SELECT id, document::json#>>'{"+part1.mkString(",")+"}', document::json#>>'{"+part2.mkString(",")+"}', document::json#>>'{"+part3.mkString(",")+"}', document::json#>>'{"+part4.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + constructWhereClauseForExpectedValues(values))
-    inSession { implicit session =>
+  def findDocument4PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag, P4: TypeTag](part1: List[String], part2: List[String], part3: List[String], part4: List[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, (P1, P2, P3, P4)] = {
+    val query = createPartsQuery(Seq(part1, part2, part3, part4), searchParams)
 
+    inSession { implicit session =>
       val loaded = query
-        .bind(getAllValues(values): _*)
+        .bind(getAllValues(searchParams.where): _*)
         .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3)), mpjsons.deserialize[P3](rs.string(4)), mpjsons.deserialize[P4](rs.string(5))))
         .list().apply()
 
@@ -205,37 +237,31 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     }
   }
 
-  def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession = null): Map[Long, Document[T]] = {
-
-    val query = SQL(s"SELECT id, version, document FROM $projectionTableName WHERE document #>> '{${path.mkString(",")}}' in (${List.fill(values.size)("?").mkString(",")})")
-
-    if(values.nonEmpty) {
-      inSession { implicit session =>
-        val loaded = query.bind(values.toSeq: _*)
-          .map(rs => rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3))))
-          .list().apply()
-
-        loaded.foreach(t =>cache.put(t._1, Some(t._2)))
-        loaded.map({case (key, value) => (key, Document[T](value.document))}).toMap
-      }
-    } else {
-      Map.empty
-    }
-  }
-
   private def constructWhereClauseForExpectedValues(values: Seq[ExpectedValue]): String = {
     values.map{
       case ExpectedNoValue(path) => s"document #>> '{${path.mkString(",")}}' IS NULL"
       case ExpectedMultipleValues(path, v) => s"document #>> '{${path.mkString(",")}}' in (${List.fill(v.size)("?").mkString(",")})"
+      case ExpectedMultipleIntValues(path, v) => s"(document #>> '{${path.mkString(",")}}')::int in (${List.fill(v.size)("?").mkString(",")})"
+      case ExpectedMultipleLongValues(path, v) => s"(document #>> '{${path.mkString(",")}}')::bigint in (${List.fill(v.size)("?").mkString(",")})"
       case ExpectedSingleValue(path, _) => s"document #>> '{${path.mkString(",")}}' = ?"
+      case ExpectedSingleIntValue(path, _) => s"(document #>> '{${path.mkString(",")}}')::int = ?"
+      case ExpectedSingleLongValue(path, _) => s"(document #>> '{${path.mkString(",")}}')::bigint = ?"
+      case ExpectedGreaterThanIntValue(path, _) => s"(document #>> '{${path.mkString(",")}}')::int > ?"
+      case ExpectedLessThanIntValue(path, _) => s"(document #>> '{${path.mkString(",")}}')::int < ?"
     }.mkString(" ", " AND ", " ")
   }
 
-  private def getAllValues(values: Seq[ExpectedValue]): Seq[String] = {
+  private def getAllValues(values: Seq[ExpectedValue]): Seq[Any] = {
     values.flatMap{
-      case ExpectedNoValue(_) => Seq.empty
+      case ExpectedNoValue(_) => Iterable.empty
       case ExpectedMultipleValues(_, vals) => vals
-      case ExpectedSingleValue(_, value) => Seq(value)
+      case ExpectedMultipleIntValues(_, vals) => vals
+      case ExpectedMultipleLongValues(_, vals) => vals
+      case ExpectedSingleValue(_, value) => Iterable(value)
+      case ExpectedSingleIntValue(_, value) => Iterable(value)
+      case ExpectedSingleLongValue(_, value) => Iterable(value)
+      case ExpectedGreaterThanIntValue(_, value) => Iterable(value)
+      case ExpectedLessThanIntValue(_, value) => Iterable(value)
     }
   }
 
@@ -246,7 +272,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
   protected def findDocumentByObjectInArray[V](columnName: String, array: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession): Map[Long, Document[T]] = {
 
     def QUERY(arrayPath: String, path: String) =
-      s"SELECT id, version, document FROM $projectionTableName WHERE $columnName #> '$arrayPath' @> '[$path]'"
+      s"SELECT id, version, document FROM $projectionTableName WHERE $columnName #> '$arrayPath' @> '[$path]' LIMIT 10000"
 
     def makeJson(path: Seq[String], value: V): String =
       path match {
@@ -385,7 +411,6 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
       cache.clear()
     }
   }
-
 }
 
 class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjsons: MPJsons,
