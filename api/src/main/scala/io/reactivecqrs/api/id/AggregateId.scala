@@ -12,4 +12,8 @@ case class AggregateId(asLong: Long)
 
 case class AggregateIdWithVersion(id: AggregateId, version: AggregateVersion)
 
+object SpaceId {
+  def apply(id: AggregateId): SpaceId = SpaceId(id.asLong)
+  val unknown = SpaceId(-1L)
+}
 case class SpaceId(asLong: Long)

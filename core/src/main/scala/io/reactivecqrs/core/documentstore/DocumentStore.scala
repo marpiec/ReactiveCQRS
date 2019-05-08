@@ -35,11 +35,12 @@ case class ExpectedMultipleLongValues(path: Seq[String], values: Set[Long]) exte
 import scala.reflect.runtime.universe._
 
 object DocumentStoreQuery {
-  def basic(where: Seq[ExpectedValue]) = DocumentStoreQuery(where, None, 10000)
+  def basic(where: Seq[ExpectedValue]) = DocumentStoreQuery(where, None, true, 10000)
 }
 
 case class DocumentStoreQuery(where: Seq[ExpectedValue],
                               sortBy: Option[Seq[String]],
+                              ascending: Boolean,
                               limit: Int)
 
 sealed abstract class AbstractDocumentStore[T <: AnyRef] {

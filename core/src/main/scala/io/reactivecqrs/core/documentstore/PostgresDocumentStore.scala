@@ -139,7 +139,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
       case Some(sort) =>
         SQL("SELECT id, version, document FROM " + projectionTableName +
           " WHERE" + constructWhereClauseForExpectedValues(searchParams.where) +
-          " ORDER BY " + sort +
+          " ORDER BY " + sort + (if(searchParams.ascending) " ASC" else " DESC") +
           " LIMIT " + searchParams.limit)
     }
   }
@@ -156,7 +156,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
       case Some(sort) =>
         SQL("SELECT id, " + partsQuery + " FROM " + projectionTableName +
           " WHERE" + constructWhereClauseForExpectedValues(searchParams.where) +
-          " ORDER BY " + sort +
+          " ORDER BY " + sort + (if(searchParams.ascending) " ASC" else " DESC") +
           " LIMIT " + searchParams.limit)
     }
   }
