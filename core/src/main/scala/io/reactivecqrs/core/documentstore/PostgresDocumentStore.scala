@@ -131,34 +131,32 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
 
   private def createQuery(searchParams: DocumentStoreQuery) = {
-    searchParams.sortBy match {
-      case None =>
-        SQL("SELECT id, version, document FROM " + projectionTableName +
-          " WHERE" + constructWhereClauseForExpectedValues(searchParams.where) +
-          " LIMIT " + searchParams.limit)
-      case Some(sort) =>
-        SQL("SELECT id, version, document FROM " + projectionTableName +
-          " WHERE" + constructWhereClauseForExpectedValues(searchParams.where) +
-          " ORDER BY " + sort + (if(searchParams.ascending) " ASC" else " DESC") +
-          " LIMIT " + searchParams.limit)
-    }
+
+    val sortPart = if(searchParams.sortBy.isEmpty) "" else searchParams.sortBy.map({
+      case SortAsc(path) => "document::json#>>'{"+path.mkString(",")+"}' " + " ASC"
+      case SortDesc(path) => "document::json#>>'{"+path.mkString(",")+"}' " + " DESC"
+    }).mkString(" ORDER BY ", ", ", "")
+
+    SQL("SELECT id, version, document FROM " + projectionTableName +
+      " WHERE" + constructWhereClauseForExpectedValues(searchParams.where) +
+      sortPart +
+      " LIMIT " + searchParams.limit)
   }
 
   private def createPartsQuery(parts: Seq[Seq[String]], searchParams: DocumentStoreQuery) = {
 
     val partsQuery = parts.map(part => "document::json#>>'{"+part.mkString(",")+"}'").mkString(", ")
 
-    searchParams.sortBy match {
-      case None =>
-        SQL("SELECT id, " + partsQuery + " FROM " + projectionTableName +
-          " WHERE" + constructWhereClauseForExpectedValues(searchParams.where) +
-          " LIMIT " + searchParams.limit)
-      case Some(sort) =>
-        SQL("SELECT id, " + partsQuery + " FROM " + projectionTableName +
-          " WHERE" + constructWhereClauseForExpectedValues(searchParams.where) +
-          " ORDER BY " + sort + (if(searchParams.ascending) " ASC" else " DESC") +
-          " LIMIT " + searchParams.limit)
-    }
+    val sortPart = if(searchParams.sortBy.isEmpty) "" else searchParams.sortBy.map({
+      case SortAsc(path) => "document::json#>>'{"+path.mkString(",")+"}' " + " ASC"
+      case SortDesc(path) => "document::json#>>'{"+path.mkString(",")+"}' " + " DESC"
+    }).mkString(" ORDER BY ", ", ", "")
+
+    SQL("SELECT id, " + partsQuery + " FROM " + projectionTableName +
+      " WHERE" + constructWhereClauseForExpectedValues(searchParams.where) +
+      sortPart +
+      " LIMIT " + searchParams.limit)
+
   }
 
   def findDocument(searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, Document[T]] = {
