@@ -378,6 +378,28 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
     }
   }
 
+  def updateExistingDocument(key: Long, modify: Document[T] => Document[T])(implicit session: DBSession): Document[T] = {
+    inSession { implicit session =>
+      getFromCacheOrDB(key) match {
+        case None => throw new IllegalStateException("Document for update does not exist " + key)
+        case Some(VersionedDocument(version, document)) =>
+          val modified = modify(Document(document))
+
+          val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
+            .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
+            .map(_.int(1)).single().executeUpdate().apply()
+
+          if(updated == 0) {
+            updateExistingDocument(key, modify)
+          } else {
+            cache.put(key, Some(VersionedDocument(version + 1, modified.document)))
+            modified
+          }
+      }
+    }
+  }
+
+
   // Optimistic locking update
   def updateDocument(spaceId: Long, key: Long, modify: Option[Document[T]] => Document[T])(implicit session: DBSession): Document[T] = {
 
@@ -452,6 +474,29 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
       key
     }
   }
+
+  def updateExistingDocument(key: Long, modify: Document[T] => Document[T])(implicit session: DBSession): Document[T] = {
+
+    inSession { implicit session =>
+      getFromCacheOrDB(key) match {
+        case None => throw new IllegalStateException(s"Document for key $key not found!")
+        case Some(VersionedDocument(version, document)) =>
+          val modified = modify(Document(document))
+
+          val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
+            .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
+            .map(_.int(1)).single().executeUpdate().apply()
+
+          if(updated == 0) {
+            updateExistingDocument(key, modify)
+          } else {
+            cache.put(key, Some(VersionedDocument(version + 1, modified.document)))
+            modified
+          }
+      }
+    }
+  }
+
 
   // Optimistic locking update
   def updateDocument(spaceId: Long, key: Long, modify: Option[Document[T]] => Document[T])(implicit session: DBSession): Document[T] = {

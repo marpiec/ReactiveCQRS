@@ -70,6 +70,8 @@ sealed abstract class AbstractDocumentStore[T <: AnyRef] {
 
   def overwriteDocument(key: Long, document: T)(implicit session: DBSession): Unit
 
+  def updateExistingDocument(key: Long, modify: Document[T] => Document[T])(implicit session: DBSession): Document[T]
+
   def updateDocument(spaceId: Long, key: Long, modify: Option[Document[T]] => Document[T])(implicit session: DBSession): Document[T]
 
   def getDocument(key: Long)(implicit session: DBSession = null): Option[Document[T]]

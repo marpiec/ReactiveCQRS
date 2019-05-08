@@ -116,14 +116,14 @@ class PostgresEventStoreSchemaInitializer  {
   }
 
   private def dropExistingFunctions(): Unit = DB.autoCommit { implicit session =>
-    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, INT, TIMESTAMP, VARCHAR(10240))""".execute().apply()
-    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, INT, TIMESTAMP, VARCHAR(10240))""".execute().apply()
-    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, INT, TIMESTAMP, VARCHAR(10240))""".execute().apply() // space_id added
-    sql"""DROP FUNCTION IF EXISTS add_undo_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, INT, TIMESTAMP, VARCHAR(10240), INT)""".execute().apply()
-    sql"""DROP FUNCTION IF EXISTS add_undo_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, INT, TIMESTAMP, VARCHAR(10240), INT)""".execute().apply()
-    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, INT, TIMESTAMP, VARCHAR(10240), BIGINT, INT)""".execute().apply()
-    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, INT, TIMESTAMP, VARCHAR(10240), BIGINT, INT)""".execute().apply()
-    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, INT, TIMESTAMP, VARCHAR(10240), BIGINT, INT)""".execute().apply() // space_id added
+    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240))""".execute().apply()
+    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240))""".execute().apply()
+    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240))""".execute().apply() // space_id added
+    sql"""DROP FUNCTION IF EXISTS add_undo_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), INT)""".execute().apply()
+    sql"""DROP FUNCTION IF EXISTS add_undo_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), INT)""".execute().apply()
+    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), BIGINT, INT)""".execute().apply()
+    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), BIGINT, INT)""".execute().apply()
+    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), BIGINT, INT)""".execute().apply() // space_id added
   }
 
   private def createAddEventFunction(): Unit = DB.autoCommit { implicit session =>
