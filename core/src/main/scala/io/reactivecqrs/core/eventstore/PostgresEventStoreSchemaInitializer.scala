@@ -198,12 +198,13 @@ class PostgresEventStoreSchemaInitializer  {
 
   private def createAddDuplicationEventFunction(): Unit = DB.autoCommit { implicit session =>
     SQL("""
-          |CREATE OR REPLACE FUNCTION add_duplication_event(user_id BIGINT, _space_id BIGINT, aggregate_id BIGINT, expected_version INT, aggregate_type_id SMALLINT, event_type_id SMALLINT, event_type_version SMALLINT, event_time TIMESTAMP, event VARCHAR(10240), _base_id BIGINT, _base_version INT)
+          |CREATE OR REPLACE FUNCTION add_duplication_event(user_id BIGINT, aggregate_id BIGINT, expected_version INT, aggregate_type_id SMALLINT, event_type_id SMALLINT, event_type_version SMALLINT, event_time TIMESTAMP, event VARCHAR(10240), _base_id BIGINT, _base_version INT)
           |RETURNS BIGINT AS
           |$$
           |DECLARE
           |    current_version INT;
           |    base_count INT;
+          |    _space_id BIGINT;
           |    event_id BIGINT;
           |BEGIN
           |    UPDATE aggregates SET base_version = base_version + 1 WHERE id = aggregate_id AND base_id = aggregate_id RETURNING base_version - 1 INTO current_version;
@@ -213,9 +214,9 @@ class PostgresEventStoreSchemaInitializer  {
           |        ELSE
           |          INSERT INTO aggregates (space_id, id, creation_time, type_id, base_order, base_id, base_version) (select space_id, aggregate_id, current_timestamp, aggregate_type_id, base_order, base_id, base_version
           |            from aggregates
-          |            where id = _base_id AND space_id = _space_id);
+          |            where id = _base_id);
           |          current_version := 0;
-          |          SELECT base_order INTO base_count FROM aggregates WHERE id = aggregate_id AND base_id = _base_id;
+          |          SELECT base_order, space_id INTO base_count, _space_id FROM aggregates WHERE id = aggregate_id AND base_id = _base_id;
           |          INSERT INTO aggregates (space_id, id, creation_time, type_id, base_order, base_id, base_version) VALUES (_space_id, aggregate_id, current_timestamp, aggregate_type_id, base_count + 1, aggregate_id, 1);
           |          UPDATE aggregates SET base_version = _base_version WHERE id = aggregate_id AND base_id = _base_id;
           |        END IF;
