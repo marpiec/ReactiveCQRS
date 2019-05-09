@@ -14,7 +14,7 @@ import scalikejdbc.DBSession
 import scala.collection.mutable
 import scala.concurrent.Future
 import scala.reflect.runtime.universe._
-import scala.util.{Failure, Success}
+import scala.util.{Failure, Random, Success}
 import scala.concurrent.duration.FiniteDuration
 
 sealed trait DelayedQuery {
@@ -115,20 +115,31 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       scheduleNearest()
     case ReplayQueries => replayQueries()
     case a: AggregateWithType[_] =>
+      val random = Random.nextInt()
+      val start = System.currentTimeMillis
+      log.debug("Received aggregate update " + a.aggregateType.simpleName + " " + random)
       val lastVersion = subscriptionsState.localTx { implicit session =>
+        logWhenLong(start, "A " + random)
         subscriptionsState.lastVersionForAggregateSubscription(this.getClass.getName, a.id)
       }
+      logWhenLong(start, "B " + random)
       val firstEventVersion: AggregateVersion = AggregateVersion(a.version.asInt - a.eventsCount + 1)
       if (firstEventVersion <= lastVersion.incrementBy(1) && a.version > lastVersion) {
         try {
+          logWhenLong(start, "C " + random)
           subscriptionsState.localTx { session =>
+            logWhenLong(start, "D " + random)
             aggregateListenersMap(a.aggregateType)(a.id, a.version, a.eventsCount, a.aggregateRoot)(session)
+            logWhenLong(start, "E " + random)
             subscriptionsState.newVersionForAggregatesSubscription(this.getClass.getName, a.id, lastVersion, a.version)(session)
           }
+          logWhenLong(start, "F " + random)
           sender() ! MessageAck(self, a.id, AggregateVersion.upTo(a.version, a.eventsCount))
           replayQueries()
+          logWhenLong(start, "G " + random)
           delayedAggregateWithType.get(a.id) match {
             case Some(delayed) if delayed.head.version.isJustAfter(a.version) =>
+              logWhenLong(start, "H " + random)
               if (delayed.length > 1) {
                 delayedAggregateWithType += a.id -> delayed.tail
               } else {
@@ -150,24 +161,35 @@ abstract class ProjectionActor extends Actor with ActorLogging {
         }
       }
     case ae: AggregateWithTypeAndEvents[_] =>
+      val random = Random.nextInt()
+      val start = System.currentTimeMillis
+      log.debug("Received aggregate with events update " + ae.aggregateType.simpleName + " " + random)
       val lastVersion = subscriptionsState.localTx { implicit session =>
+        logWhenLong(start, "B " + random)
         subscriptionsState.lastVersionForAggregatesWithEventsSubscription(this.getClass.getName, ae.id)
       }
+      logWhenLong(start, "C " + random)
       val alreadyProcessed = ae.events.takeWhile(e => e.version <= lastVersion)
       val newEvents = ae.events.drop(alreadyProcessed.length)
 
       if(newEvents.isEmpty && alreadyProcessed.nonEmpty) {
+        logWhenLong(start, "D " + random)
         sender() ! MessageAck(self, ae.id, alreadyProcessed.map(_.version))
       } else if(newEvents.nonEmpty && newEvents.head.version.isJustAfter(lastVersion)) {
         try {
+          logWhenLong(start, "E " + random)
           subscriptionsState.localTx { session =>
+            logWhenLong(start, "F " + random)
             aggregateWithEventListenersMap(ae.aggregateType)(ae.id, newEvents.last.version, ae.aggregateRoot, newEvents.asInstanceOf[Seq[EventInfo[Any]]])(session)
+            logWhenLong(start, "G " + random)
             subscriptionsState.newVersionForAggregatesWithEventsSubscription(this.getClass.getName, ae.id, lastVersion, newEvents.last.version)(session)
           }
           sender() ! MessageAck(self, ae.id, alreadyProcessed.map(_.version) ++ newEvents.map(_.version))
           replayQueries()
+          logWhenLong(start, "H " + random)
           delayedAggregateWithTypeAndEvent.get(ae.id) match {
             case Some(delayed) if delayed.head.events.head.version.isJustAfter(newEvents.last.version) =>
+              logWhenLong(start, "I " + random)
               if (delayed.length > 1) {
                 delayedAggregateWithTypeAndEvent += ae.id -> delayed.tail
               } else {
@@ -190,26 +212,36 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       }
 
     case e: IdentifiableEvents[_] =>
+      val random = Random.nextInt()
+      val start = System.currentTimeMillis
+      log.debug("Received events update " + e.aggregateType.simpleName + " " + random)
       val lastVersion = subscriptionsState.localTx { implicit session =>
         subscriptionsState.lastVersionForEventsSubscription(this.getClass.getName, e.aggregateId)
       }
-
+      logWhenLong(start, "A " + random)
       val alreadyProcessed = e.events.takeWhile(e => e.version <= lastVersion)
       val newEvents = e.events.drop(alreadyProcessed.length)
 
       if(newEvents.isEmpty && alreadyProcessed.nonEmpty) {
+        logWhenLong(start, "B " + random)
         sender() ! MessageAck(self, e.aggregateId, alreadyProcessed.map(_.version))
       } else if(newEvents.nonEmpty && newEvents.head.version.isJustAfter(lastVersion)) {
+        logWhenLong(start, "C " + random)
         try {
           subscriptionsState.localTx { session =>
+            logWhenLong(start, "D " + random)
             eventListenersMap(e.aggregateType)(e.aggregateId, e.events.asInstanceOf[Seq[EventInfo[Any]]])(session)
+            logWhenLong(start, "E " + random)
             subscriptionsState.newVersionForEventsSubscription(this.getClass.getName, e.aggregateId, lastVersion, e.events.last.version)(session)
             //          println("handled event " + e.event)
           }
           sender() ! MessageAck(self, e.aggregateId, e.events.map(_.version))
+          logWhenLong(start, "F " + random)
           replayQueries()
+          logWhenLong(start, "G " + random)
           delayedIdentifiableEvent.get(e.aggregateId) match {
             case Some(delayed) if delayed.head.events.head.version.isJustAfter(e.events.last.version) =>
+              logWhenLong(start, "H " + random)
               if (delayed.length > 1) {
                 delayedIdentifiableEvent += e.aggregateId -> delayed.tail
               } else {
@@ -232,6 +264,13 @@ abstract class ProjectionActor extends Actor with ActorLogging {
         throw new IllegalArgumentException("Received empty list of events!")
       }
     case ClearProjectionData => clearProjectionData(sender())
+  }
+
+  private def logWhenLong(start: Long, message: String) = {
+    val duration = System.currentTimeMillis() - start
+    if(duration > 100) {
+      log.debug(message+ " in "+duration+"ms")
+    }
   }
 
   protected def receiveQuery: Receive
