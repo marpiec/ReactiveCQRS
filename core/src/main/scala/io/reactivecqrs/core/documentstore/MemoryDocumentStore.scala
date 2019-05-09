@@ -17,6 +17,7 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef] {
     store.filter(keyValuePair => query.where.forall {
       case ExpectedNoValue(path) => ???
       case ExpectedSingleValue(path, value) => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, value)
+      case ExpectedSingleValueLike(path, pattern) => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, pattern)
       case ExpectedMultipleValues(path, vals) => vals.exists(value => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, value))
       case ExpectedMultipleIntValues(path, vals) => vals.exists(value => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, value))
       case ExpectedMultipleLongValues(path, vals) => vals.exists(value => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, value))

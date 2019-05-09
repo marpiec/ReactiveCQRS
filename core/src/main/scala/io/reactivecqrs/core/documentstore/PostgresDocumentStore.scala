@@ -140,7 +140,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     SQL("SELECT id, version, document FROM " + projectionTableName +
       " WHERE" + constructWhereClauseForExpectedValues(searchParams.where) +
       sortPart +
-      " LIMIT " + searchParams.limit)
+      " LIMIT " + searchParams.limit + " OFFSET " + searchParams.offset)
   }
 
   private def createPartsQuery(parts: Seq[Seq[String]], searchParams: DocumentStoreQuery) = {
@@ -155,7 +155,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     SQL("SELECT id, " + partsQuery + " FROM " + projectionTableName +
       " WHERE" + constructWhereClauseForExpectedValues(searchParams.where) +
       sortPart +
-      " LIMIT " + searchParams.limit)
+      " LIMIT " + searchParams.limit + " OFFSET " + searchParams.offset)
 
   }
 
@@ -242,6 +242,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
       case ExpectedMultipleIntValues(path, v) => s"(document #>> '{${path.mkString(",")}}')::int in (${List.fill(v.size)("?").mkString(",")})"
       case ExpectedMultipleLongValues(path, v) => s"(document #>> '{${path.mkString(",")}}')::bigint in (${List.fill(v.size)("?").mkString(",")})"
       case ExpectedSingleValue(path, _) => s"document #>> '{${path.mkString(",")}}' = ?"
+      case ExpectedSingleValueLike(path, _) => s"document #>> '{${path.mkString(",")}}' ilike ?"
       case ExpectedSingleIntValue(path, _) => s"(document #>> '{${path.mkString(",")}}')::int = ?"
       case ExpectedSingleLongValue(path, _) => s"(document #>> '{${path.mkString(",")}}')::bigint = ?"
       case ExpectedGreaterThanIntValue(path, _) => s"(document #>> '{${path.mkString(",")}}')::int > ?"
@@ -256,6 +257,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
       case ExpectedMultipleIntValues(_, vals) => vals
       case ExpectedMultipleLongValues(_, vals) => vals
       case ExpectedSingleValue(_, value) => Iterable(value)
+      case ExpectedSingleValueLike(_, value) => Iterable(value)
       case ExpectedSingleIntValue(_, value) => Iterable(value)
       case ExpectedSingleLongValue(_, value) => Iterable(value)
       case ExpectedGreaterThanIntValue(_, value) => Iterable(value)

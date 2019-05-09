@@ -16,6 +16,8 @@ sealed trait ExpectedValue
 
 case class ExpectedNoValue(path: Seq[String]) extends ExpectedValue
 
+case class ExpectedSingleValueLike(path: Seq[String], pattern: String) extends ExpectedValue
+
 case class ExpectedSingleValue(path: Seq[String], value: String) extends ExpectedValue
 
 case class ExpectedSingleIntValue(path: Seq[String], value: Int) extends ExpectedValue
@@ -35,7 +37,7 @@ case class ExpectedMultipleLongValues(path: Seq[String], values: Set[Long]) exte
 import scala.reflect.runtime.universe._
 
 object DocumentStoreQuery {
-  def basic(where: Seq[ExpectedValue]) = DocumentStoreQuery(where, Seq.empty, true, 10000)
+  def basic(where: Seq[ExpectedValue]) = DocumentStoreQuery(where, Seq.empty, true, 0, 10000)
 }
 
 sealed trait Sort
@@ -51,6 +53,7 @@ case class SortDesc(path: Seq[String]) extends Sort
 case class DocumentStoreQuery(where: Seq[ExpectedValue],
                               sortBy: Seq[Sort],
                               ascending: Boolean,
+                              offset: Int,
                               limit: Int)
 
 sealed abstract class AbstractDocumentStore[T <: AnyRef] {
