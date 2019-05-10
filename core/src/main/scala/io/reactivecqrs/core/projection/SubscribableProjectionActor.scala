@@ -22,7 +22,7 @@ object SubscribableProjectionActor {
 
   case class ProjectionSubscriptionsCancelled(subscriptions: List[String])
 
-  case class SubscriptionUpdated[UPDATE, METADATA](subscriptionId: String, data: UPDATE, metadata: METADATA)
+  case class SubscriptionUpdated[UPDATE](subscriptionId: String, data: UPDATE)
 
   case object ClearIdleSubscriptions
 }
@@ -58,8 +58,8 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
     // do not call preStart
   }
 
-  protected def handleSubscribe[DATA: TypeTag, UPDATE, METADATA](subscriptionId: String, listener: ActorRef,
-                                                       filter: (DATA) => Option[(UPDATE, METADATA)],
+  protected def handleSubscribe[DATA: TypeTag, UPDATE](subscriptionId: String, listener: ActorRef,
+                                                                 filter: DATA => Option[UPDATE],
                                                                  missedUpdatesFilter: DATA => Boolean = (d: DATA) => false): Unit = {
     try {
       val typeName = typeTag[DATA].toString()
@@ -73,7 +73,7 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
         val shouldArriveAfter = Instant.now().minus(updatesCacheTTL)
         updatesCache.filter(d => d.arrived.isAfter(shouldArriveAfter) && missedUpdatesFilter(d.value.asInstanceOf[DATA]))
           .map(d => filter(d.value.asInstanceOf[DATA])).filter(_.isDefined)
-          .foreach(result => listener ! SubscriptionUpdated(subscriptionId, result.get._1, result.get._2))
+          .foreach(result => listener ! SubscriptionUpdated(subscriptionId, result.get))
       }
 
       if (log.isDebugEnabled) {
@@ -102,8 +102,8 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
           false
         }
       }).map(subscriptions) foreach { subscription =>
-        val result = subscription.acceptor.asInstanceOf[DATA => Option[(_, _)]](u) // and translate data to message for subscriber
-        result.foreach(r => subscription.listener ! SubscriptionUpdated(subscription.subscriptionId, r._1, r._2))// and send message if not None
+        val result = subscription.acceptor.asInstanceOf[DATA => Option[_]](u) // and translate data to message for subscriber
+        result.foreach(r => subscription.listener ! SubscriptionUpdated(subscription.subscriptionId, r))// and send message if not None
       }
     } catch {
       case e: Exception => log.error(e, "Exception while handling subscription update") //log only because projection update is more important than subscription
