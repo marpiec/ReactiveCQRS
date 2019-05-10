@@ -58,7 +58,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
             duplicationEvent.baseAggregateVersion.asInt
           ).map(rs => rs.int(1)).single().apply().get
         case deleteEvent: PermanentDeleteEvent[_] =>
-          sql"""SELECT add_aggregate_delete_event(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
+          sql"""SELECT add_aggregate_delete_event(?, ?, ?, ?, ?, ?, ?, ?)""".bind(
             eventsEnvelope.userId.asLong,
             aggregateId.asLong,
             lastEventVersion.getOrElse(eventsEnvelope.expectedVersion.asInt),

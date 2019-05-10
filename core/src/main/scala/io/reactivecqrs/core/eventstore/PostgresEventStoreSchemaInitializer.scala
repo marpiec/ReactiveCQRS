@@ -235,26 +235,27 @@ class PostgresEventStoreSchemaInitializer  {
 
   private def createAggregateDeleteEventFunction(): Unit = DB.autoCommit { implicit session =>
     SQL("""
-          |CREATE OR REPLACE FUNCTION add_aggregate_delete_event(user_id BIGINT, space_id BIGINT, aggregate_id BIGINT, expected_version INT, aggregate_type_id SMALLINT, event_type_id SMALLINT, event_type_version SMALLINT, event_time TIMESTAMP, event VARCHAR(10240))
+          |CREATE OR REPLACE FUNCTION add_aggregate_delete_event(user_id BIGINT, _aggregate_id BIGINT, expected_version INT, aggregate_type_id SMALLINT, event_type_id SMALLINT, event_type_version SMALLINT, event_time TIMESTAMP, event VARCHAR(10240))
           |RETURNS BIGINT AS
           |$$
           |DECLARE
           |    current_version INT;
           |    event_id BIGINT;
           |BEGIN
-          |    UPDATE aggregates SET base_version = base_version + 1 WHERE id = aggregate_id AND base_id = aggregate_id RETURNING base_version - 1 INTO current_version;
+          |    SELECT base_version - 1 INTO current_version FROM aggregates WHERE id = _aggregate_id AND base_id = _aggregate_id;
+          |    DELETE FROM aggregates WHERE id = _aggregate_id;
           |    IF NOT FOUND THEN
-          |        RAISE EXCEPTION 'Aggregate for permanent deletion not found, id %, aggregate_type_id %.', aggregate_id, aggregate_type_id;
+          |        RAISE EXCEPTION 'Aggregate for permanent deletion not found, id %, aggregate_type_id %.', _aggregate_id, aggregate_type_id;
           |    END IF;
           |    IF expected_version >= 0 AND current_version != expected_version THEN
-          |  	     RAISE EXCEPTION 'Concurrent aggregate modification exception, user id %, aggregate id %, expected version %, current_version %, event_type_id %, event %', user_id, aggregate_id, expected_version, current_version, event_type_id, event;
+          |  	     RAISE EXCEPTION 'Concurrent aggregate modification exception, user id %, aggregate id %, expected version %, current_version %, event_type_id %, event %', user_id, _aggregate_id, expected_version, current_version, event_type_id, event;
           |    END IF;
           |    SELECT NEXTVAL('events_seq') INTO event_id;
-          |    DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = aggregate_id);
-          |    DELETE FROM events WHERE aggregate_id = aggregate_id;
-          |    DELETE FROM events_to_publish WHERE aggregate_id = aggregate_id;
-          |    INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event) VALUES (event_id, user_id, aggregate_id, event_time, current_version + 1, event_type_id, event_type_version, event);
-          |    INSERT INTO events_to_publish (event_id, aggregate_id, version, user_id, event_time) VALUES(event_id, aggregate_id, current_version + 1, user_id, event_time);
+          |    DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = _aggregate_id);
+          |    DELETE FROM events WHERE aggregate_id = _aggregate_id;
+          |    DELETE FROM events_to_publish WHERE aggregate_id = _aggregate_id;
+          |    INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event) VALUES (event_id, user_id, _aggregate_id, event_time, current_version + 1, event_type_id, event_type_version, event);
+          |    INSERT INTO events_to_publish (event_id, aggregate_id, version, user_id, event_time) VALUES(event_id, _aggregate_id, current_version + 1, user_id, event_time);
           |    RETURN current_version + 1;
           |END;
           |$$
