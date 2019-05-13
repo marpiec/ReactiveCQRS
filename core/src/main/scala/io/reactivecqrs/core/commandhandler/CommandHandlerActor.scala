@@ -81,7 +81,7 @@ class CommandHandlerActor[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId,
         val commandExecutorActor = context.actorOf(Props(new CommandExecutorActor[AGGREGATE_ROOT](aggregateId, commandEnvelope.asInstanceOf[InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]], repositoryActor,
           commandResponseState, nextResultAggregatorName, commandHandlers, rewriteHistoryCommandHandlers, initialState)), aggregateTypeSimpleName+"_CommandExecutor_" + aggregateId.asLong+"_"+commandEnvelope.commandId.asLong)
 
-        repositoryActor ! GetAggregateRootWithEventsExactVersion(commandExecutorActor, commandEnvelope.command.expectedVersion, commandEnvelope.command.eventsTypes)
+        repositoryActor ! GetAggregateRootWithEventsExactVersion(commandExecutorActor, commandEnvelope.command.expectedVersion, commandEnvelope.command.eventsTypes.map(_.getName))
       }
   }
 
