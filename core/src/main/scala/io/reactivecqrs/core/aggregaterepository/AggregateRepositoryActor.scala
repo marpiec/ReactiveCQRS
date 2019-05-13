@@ -66,6 +66,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   private var eventsToPublish = List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]]()
 
+  private var pendingPublish = List[EventWithIdentifier[AGGREGATE_ROOT]]()
 
   private def assureRestoredState(): Unit = {
     //TODO make it future
@@ -80,6 +81,8 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     if(eventsToPublish.nonEmpty) {
       log.info("Resending messages for " + aggregateType+" "+aggregateId+" " + eventsToPublish.map(e => e.event.getClass.getSimpleName+" "+e.version))
       eventsBus ! PublishEvents(aggregateType, eventsToPublish.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
+
+      pendingPublish = eventsToPublish.map(e => EventWithIdentifier[AGGREGATE_ROOT](e.aggregateId, e.version, e.event)) ::: pendingPublish
     }
   }
 
@@ -112,14 +115,16 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
 
   private def handleEventsPersisted(ep: EventsPersisted[_]): Unit = {
-    if (ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.exists(_.event.isInstanceOf[UndoEvent[_]]) ||
-      ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.exists(_.event.isInstanceOf[DuplicationEvent[_]])) {
+    val events = ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events
+    if (events.exists(_.event.isInstanceOf[UndoEvent[_]]) ||
+      events.exists(_.event.isInstanceOf[DuplicationEvent[_]])) {
       // In case of those events it's easier to re read past events
       assureRestoredState()
     } else {
-      ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.foreach(eventIdentifier => handleEvent(eventIdentifier.userId, eventIdentifier.timestamp, eventIdentifier.event, aggregateId, eventIdentifier.version.asInt, noopEvent = false))
+      events.foreach(eventIdentifier => handleEvent(eventIdentifier.userId, eventIdentifier.timestamp, eventIdentifier.event, aggregateId, eventIdentifier.version.asInt, noopEvent = false))
     }
-    eventsBus ! PublishEvents(aggregateType, ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
+    eventsBus ! PublishEvents(aggregateType, events.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
+    pendingPublish = events.map(e => EventWithIdentifier[AGGREGATE_ROOT](e.aggregateId, e.version, e.event)).toList ::: pendingPublish
   }
 
   private def handleOverrideAndPersistEvents(ee: OverrideAndPersistEvents[_]): Unit = {
@@ -301,8 +306,16 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     import context.dispatcher
     eventsToPublish = eventsToPublish.filterNot(e => e.aggregateId == aggregateId && versions.contains(e.version))
 
+    val (published, remaining) = pendingPublish.partition(e => e.aggregateId == aggregateId && versions.contains(e.version))
+
+    pendingPublish = remaining
+
     Future { // Fire and forget
-      eventStore.deletePublishedEventsToPublish(versions.map(v => EventIdentifier(aggregateId, v)))
+      eventStore.deletePublishedEventsToPublish(published.map(v => EventWithIdentifier(aggregateId, v.version, v.event)))
+
+      if(published.exists(_.event.isInstanceOf[PermanentDeleteEvent[_]])) {
+        self ! PoisonPill
+      }
     } onFailure {
       case e: Exception => throw new IllegalStateException(e)
     }

@@ -57,17 +57,6 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
             duplicationEvent.baseAggregateId.asLong,
             duplicationEvent.baseAggregateVersion.asInt
           ).map(rs => rs.int(1)).single().apply().get
-        case deleteEvent: PermanentDeleteEvent[_] =>
-          sql"""SELECT add_aggregate_delete_event(?, ?, ?, ?, ?, ?, ?, ?)""".bind(
-            eventsEnvelope.userId.asLong,
-            aggregateId.asLong,
-            lastEventVersion.getOrElse(eventsEnvelope.expectedVersion.asInt),
-            typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
-            eventBaseTypeId,
-            eventVersion,
-            Timestamp.from(Instant.now),
-            eventSerialized
-          ).map(rs => rs.int(1)).single().apply().get
         case firstEvent: FirstEvent[_] => {
           sql"""SELECT add_event(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
             eventsEnvelope.userId.asLong,
@@ -199,13 +188,21 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
 
 
-  override def deletePublishedEventsToPublish(eventsIds: Seq[EventIdentifier]): Unit = {
+  override def deletePublishedEventsToPublish(events: Seq[EventWithIdentifier[_]]): Unit = {
     // TODO optimize SQL query so it will be one query
     DB.autoCommit { implicit session =>
-      eventsIds.foreach {eventId =>
-        sql"""DELETE FROM events_to_publish WHERE aggregate_id = ? AND version = ?"""
-          .bind(eventId.aggregateId.asLong, eventId.version.asInt)
-          .executeUpdate().apply()
+      events.foreach {event =>
+        if(event.event.isInstanceOf[PermanentDeleteEvent[_]]) {
+          sql"""DELETE FROM aggregates WHERE id = ?""".bind(event.aggregateId.asLong).executeUpdate().apply()
+          sql"""DELETE FROM events WHERE aggregate_id = ?""".bind(event.aggregateId.asLong).executeUpdate().apply()
+          sql"""DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = ?)""".bind(event.aggregateId.asLong).executeUpdate().apply()
+          sql"""DELETE FROM events_to_publish WHERE aggregate_id = ?""".bind(event.aggregateId.asLong).executeUpdate().apply()
+          sql"""DELETE FROM subscriptions WHERE aggregate_id = ?""".bind(event.aggregateId.asLong).executeUpdate().apply()
+        } else {
+          sql"""DELETE FROM events_to_publish WHERE aggregate_id = ? AND version = ?"""
+            .bind(event.aggregateId.asLong, event.version.asInt)
+            .executeUpdate().apply()
+        }
       }
     }
   }
