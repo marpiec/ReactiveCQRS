@@ -6,9 +6,9 @@ import java.time.Instant
 import akka.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.api._
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRootCurrentVersion, IdempotentCommandInfo, PersistEvents, OverrideAndPersistEvents}
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRootCurrentVersion, IdempotentCommandInfo, OverrideAndPersistEvents, PersistEvents}
 import io.reactivecqrs.core.commandhandler.CommandExecutorActor.AggregateModified
-import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalCommandEnvelope, InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope, InternalRewriteHistoryCommandEnvelope}
+import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalCommandEnvelope, InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope, InternalRewriteHistoryCommandEnvelope, InternalRewriteHistoryConcurrentCommandEnvelope}
 import io.reactivecqrs.core.util.ActorLogging
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.AggregateWithSelectedEvents
 
@@ -42,7 +42,7 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
   // Receiving aggregate from aggregate repository
   private def receiveAggregate: Receive = logReceive {
     case Success(s) => s match {
-      case s: Aggregate[_] => handleFollowingCommand(s.asInstanceOf[Aggregate[AGGREGATE_ROOT]], None)
+      case s: Aggregate[_] => handleFollowingCommand(s.asInstanceOf[Aggregate[AGGREGATE_ROOT]], Iterable.empty)
       case s: AggregateWithSelectedEvents[_] => handleFollowingCommand(s.aggregate.asInstanceOf[Aggregate[AGGREGATE_ROOT]], s.events.asInstanceOf[Iterable[EventWithVersion[AGGREGATE_ROOT]]])
     }
 //      println("Received aggregate " + aggregateId.asLong+" of version " + s.get.asInstanceOf[Aggregate[AGGREGATE_ROOT]].version.asInt)
@@ -80,7 +80,9 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
         case InternalConcurrentCommandEnvelope(respondTo, commandId, command) =>
           context.become(receiveAggregate)
           repositoryActor ! GetAggregateRootCurrentVersion(self)
-//          println("Concurrent modification for concurrent command")
+        case InternalRewriteHistoryConcurrentCommandEnvelope(respondTo, commandId, command) =>
+          context.become(receiveAggregate)
+          repositoryActor ! GetAggregateRootCurrentVersion(self)
         case _ =>
           commandEnvelope.respondTo ! e
           context.stop(self)
@@ -105,6 +107,8 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
       handleFollowingCommand(aggregate, respondTo, command.userId, commandId, command, command.expectedVersion)
     case InternalRewriteHistoryCommandEnvelope(respondTo, commandId, command) =>
       handleRewriteHistoryCommand(aggregate, events, respondTo, command.userId, commandId, command, command.expectedVersion)
+    case InternalRewriteHistoryConcurrentCommandEnvelope(respondTo, commandId, command) =>
+      handleRewriteHistoryCommand(aggregate, events, respondTo, command.userId, commandId, command, aggregate.version)
     case e =>
       log.error(s"Unsupported envelope type [$e]")
       context.stop(self)

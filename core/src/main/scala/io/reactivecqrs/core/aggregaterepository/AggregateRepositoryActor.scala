@@ -22,6 +22,7 @@ import scala.util.{Failure, Success}
 object AggregateRepositoryActor {
   case class GetAggregateRootCurrentVersion(respondTo: ActorRef)
   case class GetAggregateRootExactVersion(respondTo: ActorRef, version: AggregateVersion)
+  case class GetAggregateRootWithEventsCurrentVersion(respondTo: ActorRef, eventTypes: Set[String])
   case class GetAggregateRootWithEventsExactVersion(respondTo: ActorRef, version: AggregateVersion, eventTypes: Set[String])
 
   case class IdempotentCommandInfo(command: Any, response: CustomCommandResponse[_])
@@ -108,6 +109,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     case ep: EventsPersisted[_] => handleEventsPersisted(ep)
     case GetAggregateRootCurrentVersion(respondTo) => receiveReturnAggregateRoot(respondTo, None)
     case GetAggregateRootExactVersion(respondTo, version) => receiveReturnAggregateRoot(respondTo, Some(version)) // for following command
+    case GetAggregateRootWithEventsCurrentVersion(respondTo, eventTypes) => receiveReturnAggregateRootWithEvents(respondTo, None, eventTypes) // for following command
     case GetAggregateRootWithEventsExactVersion(respondTo, version, eventTypes) => receiveReturnAggregateRootWithEvents(respondTo, Some(version), eventTypes) // for following command
     case PublishEventsAck(aggId, versions) => markPublishedEvents(aggregateId, versions)
     case ResendPersistedMessages => resendEventsToPublish()

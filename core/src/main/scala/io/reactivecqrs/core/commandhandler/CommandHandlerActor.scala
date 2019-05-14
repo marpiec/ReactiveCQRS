@@ -32,6 +32,9 @@ object CommandHandlerActor {
   case class InternalRewriteHistoryCommandEnvelope[AGGREGATE_ROOT, RESPONSE <: CustomCommandResponse[_]](respondTo: ActorRef, commandId: CommandId, command: RewriteHistoryCommand[AGGREGATE_ROOT, RESPONSE])
     extends InternalCommandEnvelope[AGGREGATE_ROOT, RESPONSE]
 
+  case class InternalRewriteHistoryConcurrentCommandEnvelope[AGGREGATE_ROOT, RESPONSE <: CustomCommandResponse[_]](respondTo: ActorRef, commandId: CommandId, command: RewriteHistoryConcurrentCommand[AGGREGATE_ROOT, RESPONSE])
+    extends InternalCommandEnvelope[AGGREGATE_ROOT, RESPONSE]
+
   case class NoAggregateExist()
 
 }
@@ -82,6 +85,13 @@ class CommandHandlerActor[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId,
           commandResponseState, nextResultAggregatorName, commandHandlers, rewriteHistoryCommandHandlers, initialState)), aggregateTypeSimpleName+"_CommandExecutor_" + aggregateId.asLong+"_"+commandEnvelope.commandId.asLong)
 
         repositoryActor ! GetAggregateRootWithEventsExactVersion(commandExecutorActor, commandEnvelope.command.expectedVersion, commandEnvelope.command.eventsTypes.map(_.getName))
+      }
+    case commandEnvelope: InternalRewriteHistoryConcurrentCommandEnvelope[_, _] =>
+      respondIfAlreadyHandled(commandEnvelope.respondTo, commandEnvelope.command) {
+        val commandExecutorActor = context.actorOf(Props(new CommandExecutorActor[AGGREGATE_ROOT](aggregateId, commandEnvelope.asInstanceOf[InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]], repositoryActor,
+          commandResponseState, nextResultAggregatorName, commandHandlers, rewriteHistoryCommandHandlers, initialState)), aggregateTypeSimpleName+"_CommandExecutor_" + aggregateId.asLong+"_"+commandEnvelope.commandId.asLong)
+
+        repositoryActor ! GetAggregateRootWithEventsCurrentVersion(commandExecutorActor, commandEnvelope.command.eventsTypes.map(_.getName))
       }
   }
 
