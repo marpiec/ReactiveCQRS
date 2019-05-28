@@ -28,6 +28,13 @@ abstract class RewriteHistoryCommand[AGGREGATE_ROOT, RESPONSE <: CustomCommandRe
   def eventsTypes: Set[Class[_]]
 }
 
+
+abstract class RewriteHistoryConcurrentCommand[AGGREGATE_ROOT, RESPONSE <: CustomCommandResponse[_]] {
+  val userId: UserId
+  val aggregateId: AggregateId
+  def eventsTypes: Set[Class[_]]
+}
+
 trait CommandIdempotencyId {
   def asDbKey: String
 }
