@@ -22,6 +22,7 @@ abstract class UndoEvent[AGGREGATE_ROOT: TypeTag] extends Event[AGGREGATE_ROOT] 
 abstract class DuplicationEvent[AGGREGATE_ROOT: TypeTag] extends FirstEvent[AGGREGATE_ROOT] {
   val baseAggregateId: AggregateId
   val baseAggregateVersion: AggregateVersion
+  def spaceId: SpaceId
 }
 
 
