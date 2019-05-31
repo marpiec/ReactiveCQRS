@@ -47,8 +47,8 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
         case duplicationEvent: DuplicationEvent[_] =>
           sql"""SELECT add_duplication_event(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
             eventsEnvelope.userId.asLong,
-            aggregateId.asLong,
             duplicationEvent.spaceId.asLong,
+            aggregateId.asLong,
             lastEventVersion.getOrElse(eventsEnvelope.expectedVersion.asInt),
             typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
             eventBaseTypeId,
