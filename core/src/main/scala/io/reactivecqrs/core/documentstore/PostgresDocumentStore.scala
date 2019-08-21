@@ -379,6 +379,10 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
   }
 
   def updateExistingDocument(key: Long, modify: Document[T] => Document[T])(implicit session: DBSession): Document[T] = {
+    updateExistingDocumentRecur(key, modify, 1)
+  }
+
+  private def updateExistingDocumentRecur(key: Long, modify: Document[T] => Document[T], tryNumber: Int)(implicit session: DBSession): Document[T] = {
     inSession { implicit session =>
       getFromCacheOrDB(key) match {
         case None => throw new IllegalStateException("Document for update does not exist " + key)
@@ -390,7 +394,11 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
             .map(_.int(1)).single().executeUpdate().apply()
 
           if(updated == 0) {
-            updateExistingDocument(key, modify)
+            if(tryNumber < 10) {
+              updateExistingDocumentRecur(key, modify, tryNumber + 1)
+            } else {
+              throw new IllegalStateException("Too many tries to update document in table = ["+tableNameSQL+"] id = " + key + " expected version " + version)
+            }
           } else {
             cache.put(key, Some(VersionedDocument(version + 1, modified.document)))
             modified
@@ -398,10 +406,14 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
       }
     }
   }
+  // Optimistic locking update
+  def updateDocument(spaceId: Long, key: Long, modify: Option[Document[T]] => Document[T])(implicit session: DBSession): Document[T] = {
+    updateDocumentRecur(spaceId, key, modify, 1)
+  }
 
 
   // Optimistic locking update
-  def updateDocument(spaceId: Long, key: Long, modify: Option[Document[T]] => Document[T])(implicit session: DBSession): Document[T] = {
+  private def updateDocumentRecur(spaceId: Long, key: Long, modify: Option[Document[T]] => Document[T], tryNumber: Int)(implicit session: DBSession): Document[T] = {
 
     inSession { implicit session =>
       getFromCacheOrDB(key) match {
@@ -417,7 +429,12 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
             .map(_.int(1)).single().executeUpdate().apply()
 
           if(updated == 0) {
-            updateDocument(spaceId, key, modify)
+            if(tryNumber < 10) {
+              updateDocumentRecur(spaceId, key, modify, tryNumber + 1)
+            } else {
+              throw new IllegalStateException("Too many tries to update document in table = ["+tableNameSQL+"] id = " + key + " expected version " + version)
+            }
+
           } else {
             cache.put(key, Some(VersionedDocument(version + 1, modified.document)))
             modified
