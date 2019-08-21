@@ -76,8 +76,13 @@ sealed abstract class AbstractDocumentStore[T <: AnyRef] {
 
   def findDocument4PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag, P4: TypeTag](part1: List[String], part2: List[String], part3: List[String], part4: List[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, (P1, P2, P3, P4)]
 
-  def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession = null): Map[Long, Document[T]] =
-    findDocument(DocumentStoreQuery.basic(Seq(ExpectedMultipleValues(path, values))))
+  def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession = null): Map[Long, Document[T]] = {
+    if(values.isEmpty) {
+      Map.empty
+    } else {
+      findDocument(DocumentStoreQuery.basic(Seq(ExpectedMultipleValues(path, values))))
+    }
+  }
 
   def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, Document[T]]
 
