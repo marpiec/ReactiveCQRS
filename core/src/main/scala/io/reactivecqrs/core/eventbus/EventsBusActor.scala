@@ -188,7 +188,6 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   private def handlePublishEvents(respondTo: ActorRef, aggregateType: AggregateType, aggregateId: AggregateId,
                                   events: Seq[EventInfo[Any]], aggregateRoot: Option[Any]): Unit = {
 
-
     val lastPublishedVersion = getLastPublishedVersion(aggregateId)
 
     val (alreadyPublished, eventsToPropagate) = events.span(_.version <= lastPublishedVersion)
@@ -241,10 +240,8 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       messagesSent += EventIdentifier(aggregateId, event.version) -> receiversForEvent
     })
 
-    if(backPressureProducerActor.isDefined) {
-      orderedMessages -= events.size // it is possible to receive more messages than ordered
-      receivedInProgressMessages += events.size
-    }
+    orderedMessages -= events.size // it is possible to receive more messages than ordered
+    receivedInProgressMessages += events.size
 
     orderMoreMessagesToConsume()
 
