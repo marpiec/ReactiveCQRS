@@ -21,6 +21,7 @@ import scala.util.{Failure, Success}
 
 object AggregateRepositoryActor {
   case class GetAggregateRootCurrentVersion(respondTo: ActorRef)
+  case class GetAggregateRootCurrentMinVersion(respondTo: ActorRef, version: AggregateVersion, durationMillis: Int)
   case class GetAggregateRootExactVersion(respondTo: ActorRef, version: AggregateVersion)
   case class GetAggregateRootWithEventsCurrentVersion(respondTo: ActorRef, eventTypes: Set[String])
   case class GetAggregateRootWithEventsExactVersion(respondTo: ActorRef, version: AggregateVersion, eventTypes: Set[String])
@@ -47,6 +48,7 @@ object AggregateRepositoryActor {
   case class AggregateWithSelectedEvents[AGGREGATE_ROOT](aggregate: Aggregate[AGGREGATE_ROOT], events: Iterable[EventWithVersion[AGGREGATE_ROOT]])
 }
 
+case class DelayedMinVersionQuery(respondTo: ActorRef, requestedVersion: AggregateVersion, untilTimestamp: Long)
 
 class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: AggregateId,
                                                                 eventStore: EventStoreState,
@@ -68,6 +70,8 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   private var eventsToPublish = List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]]()
 
   private var pendingPublish = List[EventWithIdentifier[AGGREGATE_ROOT]]()
+
+  private var delayedQueries = List[DelayedMinVersionQuery]()
 
   private def assureRestoredState(): Unit = {
     //TODO make it future
@@ -108,6 +112,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     case ee: OverrideAndPersistEvents[_] => handleOverrideAndPersistEvents(ee)
     case ep: EventsPersisted[_] => handleEventsPersisted(ep)
     case GetAggregateRootCurrentVersion(respondTo) => receiveReturnAggregateRoot(respondTo, None)
+    case GetAggregateRootCurrentMinVersion(respondTo, version, durationMillis) => receiveReturnAggregateRootMinVersion(respondTo, version, System.currentTimeMillis() + durationMillis)
     case GetAggregateRootExactVersion(respondTo, version) => receiveReturnAggregateRoot(respondTo, Some(version)) // for following command
     case GetAggregateRootWithEventsCurrentVersion(respondTo, eventTypes) => receiveReturnAggregateRootWithEvents(respondTo, None, eventTypes) // for following command
     case GetAggregateRootWithEventsExactVersion(respondTo, version, eventTypes) => receiveReturnAggregateRootWithEvents(respondTo, Some(version), eventTypes) // for following command
@@ -127,6 +132,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     }
     eventsBus ! PublishEvents(aggregateType, events.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
     pendingPublish = events.map(e => EventWithIdentifier[AGGREGATE_ROOT](e.aggregateId, e.version, e.event)).toList ::: pendingPublish
+    replayDelayedQueries()
   }
 
   private def handleOverrideAndPersistEvents(ee: OverrideAndPersistEvents[_]): Unit = {
@@ -177,6 +183,8 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   }
 
+
+
   private def receiveReturnAggregateRoot(respondTo: ActorRef, requestedVersion: Option[AggregateVersion]): Unit = {
     if(version == AggregateVersion.ZERO) {
       respondTo ! Failure(new NoEventsForAggregateException(aggregateId, aggregateType))
@@ -193,6 +201,27 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
       self ! PoisonPill
     }
 
+  }
+
+  private def replayDelayedQueries(): Unit = {
+    if(delayedQueries.nonEmpty) {
+      val now = System.currentTimeMillis()
+      val queries = delayedQueries
+      delayedQueries = List.empty
+      queries.foreach(q =>
+        if(q.untilTimestamp > now) {
+          receiveReturnAggregateRootMinVersion(q.respondTo, q.requestedVersion, q.untilTimestamp)
+        })
+    }
+  }
+
+  private def receiveReturnAggregateRootMinVersion(respondTo: ActorRef, requestedVersion: AggregateVersion, timeoutTimestamp: Long): Unit = {
+    if(version >= requestedVersion) {
+      respondTo ! Success(Aggregate[AGGREGATE_ROOT](aggregateId, version, Some(aggregateRoot)))
+    } else {
+      val now = System.currentTimeMillis()
+      delayedQueries = DelayedMinVersionQuery(respondTo, requestedVersion, timeoutTimestamp) :: delayedQueries.filter(_.untilTimestamp > now)
+    }
   }
 
 

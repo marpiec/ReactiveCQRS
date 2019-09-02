@@ -8,6 +8,7 @@ import scala.concurrent.Future
 import scala.reflect.{ClassTag, classTag}
 
 case class GetAggregate(id: AggregateId)
+case class GetAggregateMinVersion(id: AggregateId, version: AggregateVersion, maxMillis: Int)
 case class GetAggregateForVersion(id: AggregateId, version: AggregateVersion)
 
 case class GetEventsForAggregate(id: AggregateId)

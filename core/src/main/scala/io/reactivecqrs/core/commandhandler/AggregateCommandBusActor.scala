@@ -8,7 +8,7 @@ import akka.util.Timeout
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.GetAggregateRootCurrentVersion
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRootCurrentMinVersion, GetAggregateRootCurrentVersion}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{AggregateActors, EnsureEventsPublished}
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor._
 import io.reactivecqrs.core.eventstore.EventStoreState
@@ -101,6 +101,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     case cce: RewriteHistoryConcurrentCommand[_,_] => routeRewriteHistoryConcurrentCommand(cce.asInstanceOf[RewriteHistoryConcurrentCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]])
     case ce: Command[_,_] => routeCommand(ce.asInstanceOf[Command[AGGREGATE_ROOT, CustomCommandResponse[_]]])
     case GetAggregate(id) => routeGetAggregateRoot(id)
+    case GetAggregateMinVersion(id, version, maxMillis) => routeGetAggregateRootMinVersion(id, version, maxMillis)
     case GetAggregateForVersion(id, version) => routeGetAggregateRootForVersion(id, version)
     case GetEventsForAggregate(id) => ???
     case GetEventsForAggregateForVersion(id, version) => ???
@@ -205,6 +206,13 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     val aggregateRepository = getOrCreateAggregateRepositoryActor(id)
 
     aggregateRepository ! GetAggregateRootCurrentVersion(respondTo)
+  }
+
+  private def routeGetAggregateRootMinVersion(id: AggregateId, version: AggregateVersion, maxMillis: Int): Unit = {
+    val respondTo = sender()
+    val aggregateRepository = getOrCreateAggregateRepositoryActor(id)
+
+    aggregateRepository ! GetAggregateRootCurrentMinVersion(respondTo, version, maxMillis)
   }
 
   private def routeGetAggregateRootForVersion(id: AggregateId, version: AggregateVersion): Unit = {
