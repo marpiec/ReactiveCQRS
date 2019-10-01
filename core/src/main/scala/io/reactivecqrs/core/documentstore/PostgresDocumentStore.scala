@@ -363,6 +363,17 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     }).single().apply())
   }
 
+
+  def clearSpace(spaceId: Long)(implicit session: DBSession): Unit = {
+    inSession { implicit session =>
+      val idsRemoved = sql"DELETE from ${tableNameSQL} WHERE space_id = ? RETURNING id".
+        bind(spaceId)
+        .map(_.long(1)).list().apply()
+
+      idsRemoved.foreach(id => cache.remove(id))
+    }
+  }
+
 }
 
 class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJsons,
@@ -450,6 +461,7 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
       cache.clear()
     }
   }
+
 }
 
 class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjsons: MPJsons,
@@ -545,5 +557,6 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
       cache.clear()
     }
   }
+
 }
 

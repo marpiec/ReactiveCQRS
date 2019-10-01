@@ -176,6 +176,9 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef] {
     store.clear()
   }
 
+  def clearSpace(spaceId: Long)(implicit session: DBSession): Unit = {
+  }
+
 
 }
 

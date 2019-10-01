@@ -104,6 +104,7 @@ sealed abstract class AbstractDocumentStore[T <: AnyRef] {
 
   def clearAllData()(implicit session: DBSession = null): Unit
 
+  def clearSpace(spaceId: Long)(implicit session: DBSession): Unit
 }
 
 abstract class DocumentStore[T <: AnyRef] extends AbstractDocumentStore[T] {
