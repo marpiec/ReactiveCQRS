@@ -78,7 +78,9 @@ class EventsReplayerActor(eventStore: EventStoreState,
   private def replayAllEvents(respondTo: ActorRef, batchPerAggregate: Boolean, aggregatesTypes: Seq[String], delayBetweenAggregateTypes: Long) {
     backPressureActor ! Start
     val allEvents: Int = eventStore.countAllEvents()
-    var eventsSent: Long = 0
+    var allEventsSent: Long = 0
+    var lastLogEventsSent: Long = 0
+    var lastDumpEventsSent: Long = 0
 
     log.info("Will replay "+allEvents+" events")
 
@@ -108,11 +110,19 @@ class EventsReplayerActor(eventStore: EventStoreState,
         }
         eventsToProduceAllowed -= events.size
 
-        eventsSent += events.size
+        allEventsSent += events.size
+        lastLogEventsSent += events.size
+        lastDumpEventsSent += events.size
         val now = System.currentTimeMillis()
-        if(eventsSent < 10 || eventsSent < 100 && eventsSent % 10 == 0 || eventsSent < 1000 && eventsSent % 100 == 0 || eventsSent % 1000 == 0 || now - lastUpdate > 10000) {
-          println("Replayed " + eventsSent + "/" + allEvents + " events")
+        if(allEventsSent < 10 || allEventsSent < 100 && lastLogEventsSent >= 10 || allEventsSent < 1000 && lastLogEventsSent >= 100 || lastLogEventsSent >= 1000 || now - lastUpdate > 10000) {
+          println("Replayed " + allEventsSent + "/" + allEvents + " events")
           lastUpdate = System.currentTimeMillis()
+          lastLogEventsSent = 0
+        }
+
+        if(allEventsSent < 1000 && lastDumpEventsSent >= 100 || allEventsSent < 10000 && lastDumpEventsSent >= 1000 || lastDumpEventsSent >= 10000) {
+          subscriptionsState.dump()
+          lastDumpEventsSent = 0
         }
 
       })
@@ -126,11 +136,11 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
     Await.result(backPressureActor ? Stop, timeoutDuration) match {
       case Finished =>
-        println("Replayed "+eventsSent+"/"+allEvents+" events")
+        println("Replayed "+allEventsSent+"/"+allEvents+" events")
         print("Dumping subscriptions state...")
         subscriptionsState.dump()
         println("DONE")
-        respondTo ! EventsReplayed(eventsSent)
+        respondTo ! EventsReplayed(allEventsSent)
     }
   }
 
