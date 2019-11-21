@@ -91,6 +91,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
     aggregatesTypes.foreach(aggregateType => {
       val start = new Date().getTime
+      println("Processing events for " + aggregateType+"...")
       eventStore.readAndProcessAllEvents(combinedEventsVersionsMap, aggregateType, batchPerAggregate, (events: Seq[EventInfo[_]], aggregateId: AggregateId, aggregateType: AggregateType) => {
         if(eventsToProduceAllowed <= 0) {
           // Ask is a way to block during fetching data from db
@@ -121,12 +122,12 @@ class EventsReplayerActor(eventStore: EventStoreState,
         }
 
         if(allEventsSent < 1000 && lastDumpEventsSent >= 100 || allEventsSent < 10000 && lastDumpEventsSent >= 1000 || lastDumpEventsSent >= 10000) {
-          subscriptionsState.dump()
+          println(subscriptionsState.dump())
           lastDumpEventsSent = 0
         }
 
       })
-      println("Read events for " + aggregateType + " in "+formatMillis(new Date().getTime - start))
+      println("... done processing events for " + aggregateType + " in "+formatMillis(new Date().getTime - start))
       if(delayBetweenAggregateTypes > 0) {
         Thread.sleep(delayBetweenAggregateTypes)
       }
@@ -137,8 +138,8 @@ class EventsReplayerActor(eventStore: EventStoreState,
     Await.result(backPressureActor ? Stop, timeoutDuration) match {
       case Finished =>
         println("Replayed "+allEventsSent+"/"+allEvents+" events")
-        print("Dumping subscriptions state...")
-        subscriptionsState.dump()
+        print("Dumping rest of subscriptions state...")
+        println(subscriptionsState.dump())
         println("DONE")
         respondTo ! EventsReplayed(allEventsSent)
     }

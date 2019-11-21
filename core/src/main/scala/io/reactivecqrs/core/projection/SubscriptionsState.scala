@@ -48,7 +48,7 @@ trait SubscriptionsState {
 
   def localTx[A](block: DBSession => A): A
 
-  def dump(): Unit
+  def dump(): String
 }
 
 class MemorySubscriptionsState extends SubscriptionsState {
@@ -100,7 +100,7 @@ class MemorySubscriptionsState extends SubscriptionsState {
   }
 
 
-  override def dump(): Unit = ()
+  override def dump(): String = ""
 
 }
 
@@ -252,9 +252,10 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
       .bind(typesNamesState.typeIdByClassName(subscriberName)).executeUpdate().apply()
   }
 
-  override def dump(): Unit = DB.autoCommit { implicit session =>
+  override def dump(): String = DB.autoCommit { implicit session =>
     try {
       synchronized {
+        val start = System.currentTimeMillis()
         val toInsert: Seq[Seq[Any]] = perAggregate.flatMap(a => batchParams(a._1, a._2, typesNamesState, dumpedOnly = false)).toSeq
         val toUpdate: Seq[Seq[Any]] = perAggregate.flatMap(a => batchParams(a._1, a._2, typesNamesState, dumpedOnly = true)).toSeq
         sql"""INSERT INTO subscriptions (id, subscriber_type_id, subscription_type, aggregate_id, aggregate_version) VALUES (nextval('subscriptions_seq'), ?, ?, ?, ?)"""
@@ -262,6 +263,9 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
         sql"""UPDATE subscriptions SET aggregate_version = ? WHERE subscriber_type_id = ? AND subscription_type = ? AND aggregate_id = ? AND aggregate_version = ?"""
           .batch(toUpdate: _*).apply()
         perAggregate = Map.empty
+        dumped = Map.empty
+        val all = perAggregate.map(_._2.size)
+        "Subscriptions dump: inserted = "+toInsert.size+", updated = "+toUpdate.size+", all = "+(if(all.nonEmpty) all.sum else 0)+" in "+(System.currentTimeMillis() - start)+"millis"
       }
     } catch {
       case e: BatchUpdateException => throw e.getNextException
@@ -270,11 +274,14 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
 
   def batchParams(aggregateId: AggregateId, aggregateVersions: mutable.HashMap[String, AggregateVersion], typesNamesState: TypesNamesState, dumpedOnly: Boolean)(implicit session: DBSession): Seq[Seq[Any]] = {
     val dumpedInfo = dumped.getOrElse(aggregateId, new mutable.HashMap[String, AggregateVersion])
-    aggregateVersions.filterKeys(key => {
+    aggregateVersions.filter(entry => {
       if(dumpedOnly) {
-        dumpedInfo.contains(key)
+        dumpedInfo.get(entry._1) match {
+          case Some(version) => version < entry._2
+          case None => false
+        }
       } else {
-        !dumpedInfo.contains(key)
+        !dumpedInfo.contains(entry._1)
       }
     }).map {
       case (key, value) =>
