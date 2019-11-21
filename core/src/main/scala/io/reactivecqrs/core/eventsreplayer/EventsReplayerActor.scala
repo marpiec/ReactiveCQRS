@@ -79,7 +79,6 @@ class EventsReplayerActor(eventStore: EventStoreState,
     backPressureActor ! Start
     val allEvents: Int = eventStore.countAllEvents()
     var allEventsSent: Long = 0
-    var lastLogEventsSent: Long = 0
     var lastDumpEventsSent: Long = 0
 
     log.info("Will replay "+allEvents+" events")
@@ -91,7 +90,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
     aggregatesTypes.foreach(aggregateType => {
       val start = new Date().getTime
-      println("Processing events for " + aggregateType+"...")
+      println("Processing events for " + aggregateType)
       eventStore.readAndProcessAllEvents(combinedEventsVersionsMap, aggregateType, batchPerAggregate, (events: Seq[EventInfo[_]], aggregateId: AggregateId, aggregateType: AggregateType) => {
         if(eventsToProduceAllowed <= 0) {
           // Ask is a way to block during fetching data from db
@@ -112,13 +111,11 @@ class EventsReplayerActor(eventStore: EventStoreState,
         eventsToProduceAllowed -= events.size
 
         allEventsSent += events.size
-        lastLogEventsSent += events.size
         lastDumpEventsSent += events.size
         val now = System.currentTimeMillis()
-        if(allEventsSent < 10 || allEventsSent < 100 && lastLogEventsSent >= 10 || allEventsSent < 1000 && lastLogEventsSent >= 100 || lastLogEventsSent >= 1000 || now - lastUpdate > 10000) {
+        if(now - lastUpdate > 5000) {
           println("Replayed " + allEventsSent + "/" + allEvents + " events")
           lastUpdate = System.currentTimeMillis()
-          lastLogEventsSent = 0
         }
 
         if(allEventsSent < 1000 && lastDumpEventsSent >= 100 || allEventsSent < 10000 && lastDumpEventsSent >= 1000 || lastDumpEventsSent >= 10000) {
@@ -127,7 +124,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
         }
 
       })
-      println("... done processing events for " + aggregateType + " in "+formatMillis(new Date().getTime - start))
+      println("Done processing events for " + aggregateType + " in "+formatMillis(new Date().getTime - start))
       if(delayBetweenAggregateTypes > 0) {
         Thread.sleep(delayBetweenAggregateTypes)
       }

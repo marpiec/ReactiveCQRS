@@ -207,11 +207,9 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
       case Some(versions) => versions
       case None =>
         val versions = lastAggregateVersionFromDB(aggregateId, typesNamesState)
-        if (versions.nonEmpty) {
-          perAggregate += aggregateId -> versions
-          if(keepInMemory) {
-            dumped += aggregateId -> mutable.HashMap[String, AggregateVersion](versions.toList: _*)
-          }
+        perAggregate += aggregateId -> versions
+        if(keepInMemory) {
+          dumped += aggregateId -> mutable.HashMap[String, AggregateVersion](versions.toList: _*)
         }
         versions
     }
