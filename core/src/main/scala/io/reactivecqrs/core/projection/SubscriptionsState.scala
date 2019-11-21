@@ -119,7 +119,16 @@ object SubscriptionCacheKey {
         key
     }
   }
+  def getById(subscriberNameId: Short, subscriptionTypeId: Short): String = {
+    val key = subscriberNameId+"|"+subscriptionTypeId
 
+    pool.get(key) match {
+      case Some(k) => k
+      case None =>
+        pool.put(key, key)
+        key
+    }
+  }
 }
 
 class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory: Boolean) extends SubscriptionsState {
@@ -189,7 +198,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
     val versionsForAggregate = synchronized {
       getVersionsForAggregate(aggregateId)
     }
-    versionsForAggregate.getOrElse(SubscriptionCacheKey.get(subscriberName, subscriptionType), AggregateVersion.ZERO)
+    versionsForAggregate.getOrElse(SubscriptionCacheKey.get(typesNamesState, subscriberName, subscriptionType), AggregateVersion.ZERO)
   }
 
 
@@ -287,7 +296,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
     val m = aggregateVersionsQuery
       .bind(aggregateId.asLong)
       .map(rs => {
-        val cacheKey = SubscriptionCacheKey.get(typesNamesState.classNameById(rs.short(2)), SubscriptionType(rs.short(3)))
+        val cacheKey = SubscriptionCacheKey.getById(rs.short(2), rs.short(3))
         val version = AggregateVersion(rs.int(1))
         cacheKey -> version
       }).list().apply()
