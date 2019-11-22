@@ -102,7 +102,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
   def initSubscriptions(): Unit = {
 
-    implicit val timeout = Timeout(60.seconds)
+    implicit val timeout = Timeout(120.seconds)
 
     Await.result(subscriptionsManager.getSubscriptions.mapTo[List[SubscribeRequest]], timeout.duration).foreach {
       case SubscribeForEvents(messageId, aggregateType, subscriber, classifier) => handleSubscribeForEvents(messageId, aggregateType, subscriber, classifier)

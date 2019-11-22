@@ -52,8 +52,6 @@ class CommandHandlerActor[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId,
 
   private var resultAggregatorsCounter = 0
 
-  private val responseTimeout: FiniteDuration = 60.seconds // timeout for Response handler, we assume one minute is maximum for someone to wait for response
-
   override def receive = logReceive {
     case commandEnvelope: InternalFirstCommandEnvelope[_, _] =>
       respondIfAlreadyHandled(commandEnvelope.respondTo, commandEnvelope.command) {

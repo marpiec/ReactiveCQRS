@@ -25,7 +25,8 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
                                                                       initialState: () => AGGREGATE_ROOT,
                                                                       aggregateVersion: Option[AggregateVersion],
                                                                       eventsVersionsMap: Map[EventTypeVersion, String],
-                                                                      eventsVersionsMapReverse: Map[String, EventTypeVersion]) extends Actor with ActorLogging {
+                                                                      eventsVersionsMapReverse: Map[String, EventTypeVersion],
+                                                                      maxInactivitySeconds: Int) extends Actor with ActorLogging {
 
   private var version: AggregateVersion = AggregateVersion.ZERO
   private var aggregateRoot: AGGREGATE_ROOT = initialState()
@@ -33,7 +34,7 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
 
   import context.dispatcher
 
-  private val MAX_INACTIVITY_TIME: FiniteDuration = 30.seconds
+  private val MAX_INACTIVITY_TIME: FiniteDuration = maxInactivitySeconds.seconds
   private var autoKill = context.system.scheduler.scheduleOnce(delay = MAX_INACTIVITY_TIME, self, PoisonPill)
 
   private def assureRestoredState(): Unit = {

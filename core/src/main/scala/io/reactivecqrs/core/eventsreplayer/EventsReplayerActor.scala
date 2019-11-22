@@ -40,9 +40,9 @@ class ReplayerRepositoryActorFactory[AGGREGATE_ROOT: TypeTag:ClassTag](aggregate
 
   def aggregateRootType = typeOf[AGGREGATE_ROOT]
 
-  def create(context: ActorContext, aggregateId: AggregateId, aggregateVersion: Option[AggregateVersion], eventStore: EventStoreState, eventsBus: ActorRef, actorName: String): ActorRef = {
+  def create(context: ActorContext, aggregateId: AggregateId, aggregateVersion: Option[AggregateVersion], eventStore: EventStoreState, eventsBus: ActorRef, actorName: String, maxInactivitySeconds: Int): ActorRef = {
     context.actorOf(Props(new ReplayAggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventsBus, aggregateContext.eventHandlers,
-      () => aggregateContext.initialAggregateRoot, aggregateVersion, eventsVersionsMap, eventsVersionsMapReverse)), actorName)
+      () => aggregateContext.initialAggregateRoot, aggregateVersion, eventsVersionsMap, eventsVersionsMapReverse, maxInactivitySeconds)), actorName)
   }
 
 }
@@ -53,14 +53,24 @@ object EventsReplayerActor {
 }
 
 
+/**
+  * @param maxReplayerInactivitySeconds - defaulet30 s
+  * @param replayerTimoutSeconds - default 600 s
+  */
+
+
+case class ReplayerConfig(maxReplayerInactivitySeconds: Int = 30,
+                          replayerTimoutSeconds: Int = 600)
+
 class EventsReplayerActor(eventStore: EventStoreState,
                           val eventsBus: ActorRef,
                           subscriptionsState: SubscriptionsState,
+                          val config: ReplayerConfig,
                           actorsFactory: List[ReplayerRepositoryActorFactory[_]]) extends Actor with ActorLogging {
 
   import context.dispatcher
 
-  val timeoutDuration: FiniteDuration = 600.seconds
+  val timeoutDuration: FiniteDuration = config.replayerTimoutSeconds.seconds
   implicit val timeout = Timeout(timeoutDuration)
 
   val factories: Map[String, ReplayerRepositoryActorFactory[_]] = actorsFactory.map(f => f.aggregateRootType.toString -> f).toMap
@@ -155,9 +165,9 @@ class EventsReplayerActor(eventStore: EventStoreState,
   // Assumption - we replay events from first event so there is not need to have more than one actor for each event
   // QUESTION - cleanup?
   private def getOrCreateReplayRepositoryActor(aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregateType: AggregateType): ActorRef = {
-    context.child(aggregateType.typeName + "_AggregateRepositorySimulator_" + aggregateId.asLong).getOrElse(
+    context.child(aggregateType.typeName + "_Simulator_" + aggregateId.asLong).getOrElse(
       factories(aggregateType.typeName).create(context,aggregateId, None, eventStore, eventsBus,
-        aggregateType.typeName + "_AggregateRepositorySimulator_" + aggregateId.asLong)
+        aggregateType.typeName + "_Simulator_" + aggregateId.asLong, config.maxReplayerInactivitySeconds)
     )
   }
 }
