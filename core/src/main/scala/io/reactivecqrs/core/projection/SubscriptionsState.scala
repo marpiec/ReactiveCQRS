@@ -262,8 +262,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
           .batch(toUpdate: _*).apply()
         perAggregate = Map.empty
         dumped = Map.empty
-        val all = perAggregate.map(_._2.size)
-        "Subscriptions dump: inserted = "+toInsert.size+", updated = "+toUpdate.size+", all = "+(if(all.nonEmpty) all.sum else 0)+" in "+(System.currentTimeMillis() - start)+"millis"
+        "Subscriptions dump: inserted = "+toInsert.size+", updated = "+toUpdate.size+" in "+(System.currentTimeMillis() - start)+"millis"
       }
     } catch {
       case e: BatchUpdateException => throw e.getNextException
