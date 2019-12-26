@@ -6,7 +6,6 @@ import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
-import io.reactivecqrs.core.commandlog.PostgresCommandLogState
 import io.reactivecqrs.core.documentstore.{MemoryDocumentStore, NoopDocumentStoreCache, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus._
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
@@ -41,7 +40,6 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val mpjsons = new MPJsons
     val typesNamesState = new PostgresTypesNamesState().initSchema()
     val eventStoreState = new PostgresEventStoreState(mpjsons, typesNamesState).initSchema() // or MemoryEventStore
-    val commandLogState = new PostgresCommandLogState(mpjsons, typesNamesState).initSchema()
 
     val commandResponseState = new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema()
 
@@ -59,7 +57,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
     val shoppingCartContext = new ShoppingCartAggregateContext
     val shoppingCartCommandBus: ActorRef = system.actorOf(
-      AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandLogState, commandResponseState, eventBusActor), "ShoppingCartCommandBus")
+      AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandResponseState, eventBusActor, false), "ShoppingCartCommandBus")
 
     val sagaState = new PostgresSagaState(mpjsons, typesNamesState)
     sagaState.initSchema()
@@ -67,21 +65,21 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val multipleCartCreatorSaga: ActorRef = system.actorOf(
       Props(new MultipleCartCreatorSaga(sagaState, uidGenerator, shoppingCartCommandBus))
     )
-    val subscriptionsState = new PostgresSubscriptionsState(typesNamesState)
+    val subscriptionsState = new PostgresSubscriptionsState(typesNamesState, true)
     subscriptionsState.initSchema()
 
 
     val inMemory = false
 
     private val storeA = if(inMemory) {
-      new MemoryDocumentStore[String, AggregateVersion]
+      new MemoryDocumentStore[String]
     } else {
-      new PostgresDocumentStore[String, AggregateVersion]("storeA", mpjsons, new NoopDocumentStoreCache)
+      new PostgresDocumentStore[String]("storeA", mpjsons, new NoopDocumentStoreCache)
     }
     private val storeB = if(inMemory) {
-      new MemoryDocumentStore[String, AggregateVersion]
+      new MemoryDocumentStore[String]
     } else {
-      new PostgresDocumentStore[String, AggregateVersion]("storeB", mpjsons, new NoopDocumentStoreCache)
+      new PostgresDocumentStore[String]("storeB", mpjsons, new NoopDocumentStoreCache)
     }
 
 
@@ -189,7 +187,34 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
       Thread.sleep(20000)
 
-      }
     }
+
+    scenario("History rewrite") {
+
+      step("Create shopping cart")
+
+
+      val fixture = Fixture
+      import fixture._
+
+
+      var shoppingCartA = shoppingCartCommand(CreateShoppingCart(None, userId,"Groceries"))
+      shoppingCartA mustBe Aggregate(shoppingCartA.id, AggregateVersion(1), Some(ShoppingCart("Groceries", Vector())))
+
+      step("Add items to cart")
+
+      shoppingCartA = shoppingCartCommand(AddItem(userId, shoppingCartA.id, AggregateVersion(1), "apples"))
+      shoppingCartA = shoppingCartCommand(AddItem(userId, shoppingCartA.id, AggregateVersion(2), "oranges"))
+      shoppingCartA mustBe Aggregate(shoppingCartA.id, AggregateVersion(3), Some(ShoppingCart("Groceries", Vector(Item(1, "apples"), Item(2, "oranges")))))
+
+
+      step("Change cart name")
+
+      shoppingCartA = shoppingCartCommand(RewriteCartName(userId, shoppingCartA.id, AggregateVersion(3), "anonimized"))
+
+      shoppingCartA mustBe Aggregate(shoppingCartA.id, AggregateVersion(4), Some(ShoppingCart("anonimized", Vector(Item(1, "apples"), Item(2, "oranges")))))
+    }
+
+  }
 
 }

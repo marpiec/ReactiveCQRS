@@ -8,52 +8,51 @@ import scala.collection.parallel.mutable
 
 import scala.reflect.runtime.universe._
 
-sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
+sealed trait MemoryDocumentStoreTrait[T <: AnyRef] {
 
-  val store = mutable.ParHashMap[Long, Document[T,M]]()
+  val store = mutable.ParHashMap[Long, Document[T]]()
 
 
-  def findDocumentByPath(path: Seq[String], value: String)(implicit session: DBSession = null): Map[Long, Document[T,M]] = {
-    store.filter(keyValuePair => matches(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].document, path, value)).seq.toMap
-  }
-
-  def findDocumentByPaths(values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, Document[T,M]] = {
-    store.filter(keyValuePair => values.forall {
+  def findDocument(query: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, Document[T]] = {
+    store.filter(keyValuePair => query.where.forall {
       case ExpectedNoValue(path) => ???
-      case ExpectedSingleValue(path, value) => matches(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].document, path, value)
-      case ExpectedMultipleValues(path, vals) => vals.exists(value => matches(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].document, path, value))
+      case ExpectedSingleValue(path, value) => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, value)
+      case ExpectedSingleValueLike(path, pattern) => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, pattern)
+      case ExpectedMultipleValues(path, vals) => vals.exists(value => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, value))
+      case ExpectedMultipleIntValues(path, vals) => vals.exists(value => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, value))
+      case ExpectedMultipleLongValues(path, vals) => vals.exists(value => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, value))
+      case ExpectedSingleIntValue(path, vals) => ???
+      case ExpectedSingleLongValue(path, vals) => ???
+      case ExpectedGreaterThanIntValue(path, vals) => ???
+      case ExpectedLessThanIntValue(path, vals) => ???
     }).seq.toMap
   }
 
-  def findDocumentPartByPaths[P: TypeTag](part: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, P] = {
-    findDocumentByPaths(values:_*).map(d => d._1 -> valueAt[P](d._2.document, part))
+  def findDocumentWithTransform[TT <: AnyRef](query: DocumentStoreQuery, transform: T => TT)(implicit session: DBSession = null): Map[Long, Document[TT]] = {
+    findDocument(query).mapValues(v => v.copy(document = transform(v.document)))
   }
 
-  def findDocument2PartsByPaths[P1: TypeTag, P2: TypeTag](part1: List[String], part2: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, (P1, P2)] = {
-    findDocumentByPaths(values:_*).map(d => d._1 -> (valueAt[P1](d._2.document, part1), valueAt[P2](d._2.document, part2)))
+  def findDocumentPartByPaths[P: TypeTag](part: List[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, P] = {
+    findDocument(query).map(d => d._1 -> valueAt[P](d._2.document, part))
   }
 
-  def findDocument3PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag](part1: List[String], part2: List[String], part3: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, (P1, P2, P3)] = {
-    findDocumentByPaths(values:_*).map(d => d._1 -> (valueAt[P1](d._2.document, part1), valueAt[P2](d._2.document, part2), valueAt[P3](d._2.document, part3)))
+  def findDocument2PartsByPaths[P1: TypeTag, P2: TypeTag](part1: List[String], part2: List[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, (P1, P2)] = {
+    findDocument(query).map(d => d._1 -> (valueAt[P1](d._2.document, part1), valueAt[P2](d._2.document, part2)))
   }
 
-  def findDocument4PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag, P4: TypeTag](part1: List[String], part2: List[String], part3: List[String], part4: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, (P1, P2, P3, P4)] = {
-    findDocumentByPaths(values:_*).map(d => d._1 -> (valueAt[P1](d._2.document, part1), valueAt[P2](d._2.document, part2), valueAt[P3](d._2.document, part3), valueAt[P4](d._2.document, part4)))
+  def findDocument3PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag](part1: List[String], part2: List[String], part3: List[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, (P1, P2, P3)] = {
+    findDocument(query).map(d => d._1 -> (valueAt[P1](d._2.document, part1), valueAt[P2](d._2.document, part2), valueAt[P3](d._2.document, part3)))
   }
 
-  def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession = null): Map[Long, Document[T,M]] = {
-    store.filter(keyValuePair => matchesMultiple(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].document, path, values)).seq.toMap
+  def findDocument4PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag, P4: TypeTag](part1: List[String], part2: List[String], part3: List[String], part4: List[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, (P1, P2, P3, P4)] = {
+    findDocument(query).map(d => d._1 -> (valueAt[P1](d._2.document, part1), valueAt[P2](d._2.document, part2), valueAt[P3](d._2.document, part3), valueAt[P4](d._2.document, part4)))
   }
 
-  def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
-    store.filter(keyValuePair => arrayMatchSeq(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].document, arrayPath).exists(matches(_, objectPath, value))).seq.toMap
+  def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, Document[T]] = {
+    store.filter(keyValuePair => arrayMatchSeq(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, arrayPath).exists(matches(_, objectPath, value))).seq.toMap
   }
 
-  def findDocumentByMetadataObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
-    store.filter(keyValuePair => arrayMatchSeq(keyValuePair._2.asInstanceOf[Document[AnyRef, AnyRef]].metadata, arrayPath).exists(matches(_, objectPath, value))).seq.toMap
-  }
-
-  def findAll()(implicit session: DBSession = null): Map[Long, Document[T,M]] = {
+  def findAll()(implicit session: DBSession = null): Map[Long, Document[T]] = {
     store.seq.toMap
   }
 
@@ -147,22 +146,28 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     value
   }
 
-  def getDocument(key: Long)(implicit session: DBSession = null): Option[Document[T,M]] = store.get(key)
+  def getDocument(key: Long)(implicit session: DBSession = null): Option[Document[T]] = store.get(key)
 
   def removeDocument(key: Long)(implicit session: DBSession = null): Unit = store -= key
 
-  def getDocuments(keys: List[Long])(implicit session: DBSession = null): Map[Long, Document[T,M]] = (store filterKeys keys.toSet).seq.toMap
+  def getDocuments(keys: List[Long])(implicit session: DBSession = null): Map[Long, Document[T]] = (store filterKeys keys.toSet).seq.toMap
 
-  def overwriteDocument(key: Long, document: T, metadata: M)(implicit session: DBSession = null): Unit = {
+  def overwriteDocument(key: Long, document: T)(implicit session: DBSession = null): Unit = {
     if (store.contains(key)) {
-      store += key -> Document[T, M](document, metadata)
+      store += key -> Document[T](document)
     } else {
       throw new IllegalStateException("Attempting update on non-existing document with key " + key)
     }
   }
 
-  def updateDocument(key: Long, modify: Option[Document[T, M]] => Document[T, M])(implicit session: DBSession = null): Document[T, M] = {
-    val modified: Document[T, M] = modify(store.get(key))
+  def updateDocument(spaceId: Long, key: Long, modify: Option[Document[T]] => Document[T])(implicit session: DBSession = null): Document[T] = {
+    val modified: Document[T] = modify(store.get(key))
+    store += key -> modified
+    modified
+  }
+
+  def updateExistingDocument(key: Long, modify: Document[T] => Document[T])(implicit session: DBSession = null): Document[T] = {
+    val modified: Document[T] = modify(store(key))
     store += key -> modified
     modified
   }
@@ -171,20 +176,23 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     store.clear()
   }
 
+  def clearSpace(spaceId: Long)(implicit session: DBSession): Unit = {
+  }
+
 
 }
 
-class MemoryDocumentStore[T <: AnyRef, M <: AnyRef] extends DocumentStore[T,M] with MemoryDocumentStoreTrait[T, M] {
+class MemoryDocumentStore[T <: AnyRef] extends DocumentStore[T] with MemoryDocumentStoreTrait[T] {
 
-  def insertDocument(key: Long, document: T, metadata: M)(implicit session: DBSession = null): Unit =
+  def insertDocument(spaceId: Long, key: Long, document: T)(implicit session: DBSession = null): Unit =
     if (store.contains(key)) {
       throw new IllegalStateException("Attempting to re-insert document with key " + key)
     } else {
-      store += key -> Document[T, M](document, metadata)
+      store += key -> Document[T](document)
     }
 }
 
-class MemoryDocumentStoreAutoId[T <: AnyRef, M <: AnyRef] extends DocumentStoreAutoId[T,M] with MemoryDocumentStoreTrait[T, M] {
+class MemoryDocumentStoreAutoId[T <: AnyRef] extends DocumentStoreAutoId[T] with MemoryDocumentStoreTrait[T] {
 
   val random = new scala.util.Random(System.nanoTime)
 
@@ -196,9 +204,9 @@ class MemoryDocumentStoreAutoId[T <: AnyRef, M <: AnyRef] extends DocumentStoreA
     id
   }
 
-  def insertDocument(document: T, metadata: M)(implicit session: DBSession = null): Long = {
+  def insertDocument(spaceId: Long, document: T)(implicit session: DBSession = null): Long = {
     val key = generateNextId
-    store += key -> Document[T, M](document, metadata)
+    store += key -> Document[T](document)
     key
   }
 }

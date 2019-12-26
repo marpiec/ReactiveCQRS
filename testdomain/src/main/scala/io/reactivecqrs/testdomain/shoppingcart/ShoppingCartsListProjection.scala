@@ -23,7 +23,7 @@ object ShoppingCartsListProjection {
 class ShoppingCartsListProjectionEventsBased(val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi,
                                              val subscriptionsState: SubscriptionsState,
                                              shoppingCartCommandBus: ActorRef,
-                                             documentStore: DocumentStore[String, AggregateVersion]) extends ProjectionActor {
+                                             documentStore: DocumentStore[String]) extends ProjectionActor {
 
   protected val listeners = List(EventsListener(shoppingCartUpdate))
 
@@ -36,19 +36,23 @@ class ShoppingCartsListProjectionEventsBased(val eventBusSubscriptionsManager: E
   private def shoppingCartUpdateSingleEvent(aggregateId: AggregateId, version: AggregateVersion, event: EventInfo[ShoppingCart])(implicit session: DBSession) {
     event.event match {
       case ShoppingCartCreated(name) =>
-        documentStore.insertDocument(aggregateId.asLong, name, version)
-      case ShoppingCartDuplicated(baseId, baseVersion) =>
+        documentStore.insertDocument(0, aggregateId.asLong, name)
+      case ShoppingCartDuplicated(spaceId, baseId, baseVersion) =>
         implicit val timeout = Timeout(60 seconds)
         val future = (shoppingCartCommandBus ? GetAggregateForVersion(baseId, baseVersion)).mapTo[Try[Aggregate[ShoppingCart]]] // TODO try to do this without ask
       val baseShoppingCart: Try[Aggregate[ShoppingCart]] = Await.result(future, 60 seconds)
-        documentStore.insertDocument(aggregateId.asLong, baseShoppingCart.get.aggregateRoot.get.name, version)
+        documentStore.insertDocument(0, aggregateId.asLong, baseShoppingCart.get.aggregateRoot.get.name)
       case ItemAdded(name) =>
-        documentStore.updateDocument(aggregateId.asLong, {
-          case Some(doc) => Document(doc.document, version)
+        documentStore.updateDocument(0, aggregateId.asLong, {
+          case Some(doc) => Document(doc.document)
         })
       case ItemRemoved(id) =>
-        documentStore.updateDocument(aggregateId.asLong, {
-          case Some(doc) => Document(doc.document, version)
+        documentStore.updateDocument(0, aggregateId.asLong, {
+          case Some(doc) => Document(doc.document)
+        })
+      case CartNameRewritten(name) =>
+        documentStore.updateDocument(0, aggregateId.asLong, {
+          case Some(doc) => Document(doc.document)
         })
       case ShoppingCartDeleted() =>
         documentStore.removeDocument(aggregateId.asLong)
@@ -69,16 +73,16 @@ class ShoppingCartsListProjectionEventsBased(val eventBusSubscriptionsManager: E
 
 class ShoppingCartsListProjectionAggregatesBased(val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi,
                                                  val subscriptionsState: SubscriptionsState,
-                                                 documentStore: DocumentStore[String, AggregateVersion]) extends ProjectionActor {
+                                                 documentStore: DocumentStore[String]) extends ProjectionActor {
   protected val listeners =  List(AggregateListener(shoppingCartUpdate))
 
   private def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, eventsCount: Int, aggregateRoot: Option[ShoppingCart]) = { implicit session: DBSession =>
     aggregateRoot match {
       case Some(a) =>
         if(version.asInt == eventsCount) {
-          documentStore.insertDocument(aggregateId.asLong, a.name, version)
+          documentStore.insertDocument(0, aggregateId.asLong, a.name)
         } else {
-          documentStore.overwriteDocument(aggregateId.asLong, a.name, version)
+          documentStore.overwriteDocument(aggregateId.asLong, a.name)
         }
       case None =>
         documentStore.removeDocument(aggregateId.asLong)

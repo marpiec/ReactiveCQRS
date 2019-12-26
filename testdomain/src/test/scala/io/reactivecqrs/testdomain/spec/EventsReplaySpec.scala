@@ -4,7 +4,6 @@ import akka.actor.{ActorRef, ActorSystem, Props}
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.AggregateVersion
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
-import io.reactivecqrs.core.commandlog.PostgresCommandLogState
 import io.reactivecqrs.core.documentstore.{MemoryDocumentStore, NoopDocumentStoreCache, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus._
 import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, ReplayAllEvents}
@@ -42,13 +41,12 @@ class EventsReplaySpec extends CommonSpec {
 
 
     val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(system.actorOf(Props(new EventBusSubscriptionsManager(0))))
-    val subscriptionState = new PostgresSubscriptionsState(typesTypesState)
+    val subscriptionState = new PostgresSubscriptionsState(typesTypesState, true)
     subscriptionState.initSchema()
 
     val inMemory = false
 
     val typesNamesState = new PostgresTypesNamesState().initSchema()
-    val commandLogState = new PostgresCommandLogState(mpjsons, typesNamesState).initSchema()
 
 
     private val eventBusState = if(inMemory) {
@@ -66,17 +64,17 @@ class EventsReplaySpec extends CommonSpec {
     val uidGenerator = system.actorOf(Props(new UidGeneratorActor(aggregatesUidGenerator, commandsUidGenerator, sagasUidGenerator)), "uidGenerator")
     val shoppingCartContext = new ShoppingCartAggregateContext
     val shoppingCartCommandBus: ActorRef = system.actorOf(
-      AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandLogState, commandResponseState, eventBusActor), "ShoppingCartCommandBus")
+      AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandResponseState, eventBusActor, false), "ShoppingCartCommandBus")
 
     private val storeA = if(inMemory) {
-      new MemoryDocumentStore[String, AggregateVersion]
+      new MemoryDocumentStore[String]
     } else {
-      new PostgresDocumentStore[String, AggregateVersion]("storeA", mpjsons, new NoopDocumentStoreCache)
+      new PostgresDocumentStore[String]("storeA", mpjsons, new NoopDocumentStoreCache)
     }
     private val storeB = if(inMemory) {
-      new MemoryDocumentStore[String, AggregateVersion]
+      new MemoryDocumentStore[String]
     } else {
-      new PostgresDocumentStore[String, AggregateVersion]("storeB", mpjsons, new NoopDocumentStoreCache)
+      new PostgresDocumentStore[String]("storeB", mpjsons, new NoopDocumentStoreCache)
     }
 
     val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusSubscriptionsManager, subscriptionState, shoppingCartCommandBus, storeA)), "ShoppingCartsListProjectionEventsBased")
@@ -84,7 +82,7 @@ class EventsReplaySpec extends CommonSpec {
 
 
 
-    val replayerActor = system.actorOf(Props(new EventsReplayerActor(eventStoreState, eventBusActor, List(
+    val replayerActor = system.actorOf(Props(new EventsReplayerActor(eventStoreState, eventBusActor, subscriptionState, List(
       ReplayerRepositoryActorFactory(new ShoppingCartAggregateContext)
     ))))
 

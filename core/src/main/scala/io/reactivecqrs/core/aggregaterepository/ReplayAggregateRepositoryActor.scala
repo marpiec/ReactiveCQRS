@@ -25,7 +25,8 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
                                                                       initialState: () => AGGREGATE_ROOT,
                                                                       aggregateVersion: Option[AggregateVersion],
                                                                       eventsVersionsMap: Map[EventTypeVersion, String],
-                                                                      eventsVersionsMapReverse: Map[String, EventTypeVersion]) extends Actor with ActorLogging {
+                                                                      eventsVersionsMapReverse: Map[String, EventTypeVersion],
+                                                                      maxInactivitySeconds: Int) extends Actor with ActorLogging {
 
   private var version: AggregateVersion = AggregateVersion.ZERO
   private var aggregateRoot: AGGREGATE_ROOT = initialState()
@@ -33,7 +34,7 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
 
   import context.dispatcher
 
-  private val MAX_INACTIVITY_TIME: FiniteDuration = 30.seconds
+  private val MAX_INACTIVITY_TIME: FiniteDuration = maxInactivitySeconds.seconds
   private var autoKill = context.system.scheduler.scheduleOnce(delay = MAX_INACTIVITY_TIME, self, PoisonPill)
 
   private def assureRestoredState(): Unit = {
@@ -48,7 +49,7 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
 
   assureRestoredState()
 
-  private def handleEvent(userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT], aggId: AggregateId, noopEvent: Boolean): Unit = {
+  private def handleEvent(userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT], aggId: AggregateId, eventVersion: Int, noopEvent: Boolean): Unit = {
     if(!noopEvent) {
       try {
         aggregateRoot = eventHandlers(userId, timestamp, aggregateRoot)(event)
@@ -83,7 +84,7 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
     }
 
     events.events.foreach(event => {
-      handleEvent(event.userId, event.timestamp, event.event, events.aggregateId, noopEvent = false)
+      handleEvent(event.userId, event.timestamp, event.event, events.aggregateId, event.version.asInt, noopEvent = false)
     })
 
     val messageToSend: PublishReplayedEvent[AGGREGATE_ROOT] = PublishReplayedEvent(aggregateType, events.events, aggregateId, Option(aggregateRoot))

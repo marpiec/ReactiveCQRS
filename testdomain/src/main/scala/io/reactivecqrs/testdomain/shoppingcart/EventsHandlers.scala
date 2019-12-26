@@ -16,4 +16,8 @@ object EventsHandlers {
     shoppingCart.copy(items = shoppingCart.items.filterNot(_.id == event.id))
   }
 
+  def cartNameRewritten(shoppingCart: ShoppingCart, event: CartNameRewritten): ShoppingCart = {
+    shoppingCart.copy(name = event.name)
+  }
+
 }

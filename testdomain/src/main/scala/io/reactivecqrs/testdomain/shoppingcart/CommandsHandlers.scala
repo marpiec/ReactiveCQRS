@@ -1,10 +1,9 @@
 package io.reactivecqrs.testdomain.shoppingcart
 
-import io.reactivecqrs.api.id.{AggregateId, UserId}
+import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 import io.reactivecqrs.api._
 
 import scala.concurrent.Future
-
 import scala.concurrent.ExecutionContext.Implicits.global
 
 object CommandsHandlers {
@@ -22,7 +21,7 @@ object CommandsHandlers {
   }
 
   def duplicateShoppingCart(command: DuplicateShoppingCart) = {
-    CommandSuccess(ShoppingCartDuplicated(command.baseAggregateId, command.baseAggregateVersion))
+    CommandSuccess(ShoppingCartDuplicated(SpaceId(0), command.baseAggregateId, command.baseAggregateVersion))
   }
 
   def addItem(userId: UserId,
@@ -49,6 +48,17 @@ object CommandsHandlers {
 
   def undoShoppingCartChange(command: UndoShoppingCartChange) = {
     CommandSuccess(ShoppingCartChangesUndone(command.stepsToUndo))
+  }
+
+  def rewriteCartName(command: RewriteCartName, events: Iterable[EventWithVersion[ShoppingCart]], shoppingCart: ShoppingCart) = {
+    val rewritten: Iterable[EventWithVersion[ShoppingCart]] = events.map(ev => ev.event match {
+      case e: ShoppingCartCreated =>
+        println(e)
+        EventWithVersion(ev.version, e.copy(name = command.name))
+      case e => println(e)
+        ev
+    })
+    RewriteCommandSuccess(rewritten.toSeq, CartNameRewritten(command.name))
   }
 
 }

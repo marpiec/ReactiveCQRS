@@ -33,8 +33,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 
       lastEventVersion = Some(event match {
         case undoEvent: UndoEvent[_] =>
-          sql"""SELECT add_undo_event(?, ?, ?, ? ,? , ?, ?, ?, ?, ?)""".bind(
-            eventsEnvelope.commandId.asLong,
+          sql"""SELECT add_undo_event(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
             eventsEnvelope.userId.asLong,
             aggregateId.asLong,
             lastEventVersion.getOrElse(eventsEnvelope.expectedVersion.asInt),
@@ -45,11 +44,10 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
             eventSerialized,
             undoEvent.eventsCount
           ).map(rs => rs.int(1)).single().apply().get
-
         case duplicationEvent: DuplicationEvent[_] =>
-          sql"""SELECT add_duplication_event(?, ?, ?, ? , ?, ?, ?, ?, ?, ?, ?)""".bind(
-            eventsEnvelope.commandId.asLong,
+          sql"""SELECT add_duplication_event(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
             eventsEnvelope.userId.asLong,
+            duplicationEvent.spaceId.asLong,
             aggregateId.asLong,
             lastEventVersion.getOrElse(eventsEnvelope.expectedVersion.asInt),
             typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
@@ -60,10 +58,23 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
             duplicationEvent.baseAggregateId.asLong,
             duplicationEvent.baseAggregateVersion.asInt
           ).map(rs => rs.int(1)).single().apply().get
-        case _ =>
-          sql"""SELECT add_event(?, ?, ?, ? ,? , ? ,?, ?, ?)""".bind(
-            eventsEnvelope.commandId.asLong,
+        case firstEvent: FirstEvent[_] => {
+          sql"""SELECT add_event(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
             eventsEnvelope.userId.asLong,
+            firstEvent.spaceId.asLong,
+            aggregateId.asLong,
+            lastEventVersion.getOrElse(eventsEnvelope.expectedVersion.asInt),
+            typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
+            eventBaseTypeId,
+            eventVersion,
+            Timestamp.from(Instant.now),
+            eventSerialized
+          ).map(rs => rs.int(1)).single().apply().get
+        }
+        case _ =>
+          sql"""SELECT add_event(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
+            eventsEnvelope.userId.asLong,
+            -1L,
             aggregateId.asLong,
             lastEventVersion.getOrElse(eventsEnvelope.expectedVersion.asInt),
             typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
@@ -79,9 +90,18 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
 
 
+  override def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit = {
+    events.foreach(e => {
+      sql"""
+           |UPDATE events SET event = ? WHERE aggregate_id = ? AND version = ?
+      """.stripMargin.bind(mpjsons.serialize(e.event, e.event.getClass.getName), aggregateId.asLong, e.version.asInt).executeUpdate().apply()
+    })
+  }
+
+
   override def readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String],
                                                     aggregateId: AggregateId, version: Option[AggregateVersion])
-                                                   (eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit = {  //event, id, noop
+                                                   (eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit = {  //event, id, noop
 
     DB.readOnly { implicit session =>
 
@@ -108,9 +128,9 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
         val eventType = eventsVersionsMap.getOrElse(EventTypeVersion(eventBaseType, eventTypeVersion), eventBaseType)
         val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(5), eventType)
         val id = AggregateId(rs.long(7))
-        val eventVersion = rs.long(6)
+        val eventVersion = rs.int(6)
         if(version.isEmpty || id != aggregateId || eventVersion <= version.get.asInt) {
-          eventHandler(UserId(rs.long(1)), rs.timestamp(2).toInstant, event, id, rs.boolean(8))
+          eventHandler(UserId(rs.long(1)), rs.timestamp(2).toInstant, event, id, eventVersion, rs.boolean(8))
         } // otherwise it's to new event, TODO optimise as it reads all events from database, also those not needed here
       }
     }
@@ -169,13 +189,21 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
 
 
-  override def deletePublishedEventsToPublish(eventsIds: Seq[EventIdentifier]): Unit = {
+  override def deletePublishedEventsToPublish(events: Seq[EventWithIdentifier[_]]): Unit = {
     // TODO optimize SQL query so it will be one query
     DB.autoCommit { implicit session =>
-      eventsIds.foreach {eventId =>
-        sql"""DELETE FROM events_to_publish WHERE aggregate_id = ? AND version = ?"""
-          .bind(eventId.aggregateId.asLong, eventId.version.asInt)
-          .executeUpdate().apply()
+      events.foreach {event =>
+        if(event.event.isInstanceOf[PermanentDeleteEvent[_]]) {
+          sql"""DELETE FROM aggregates WHERE id = ?""".bind(event.aggregateId.asLong).executeUpdate().apply()
+          sql"""DELETE FROM events WHERE aggregate_id = ?""".bind(event.aggregateId.asLong).executeUpdate().apply()
+          sql"""DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = ?)""".bind(event.aggregateId.asLong).executeUpdate().apply()
+          sql"""DELETE FROM events_to_publish WHERE aggregate_id = ?""".bind(event.aggregateId.asLong).executeUpdate().apply()
+          sql"""DELETE FROM subscriptions WHERE aggregate_id = ?""".bind(event.aggregateId.asLong).executeUpdate().apply()
+        } else {
+          sql"""DELETE FROM events_to_publish WHERE aggregate_id = ? AND version = ?"""
+            .bind(event.aggregateId.asLong, event.version.asInt)
+            .executeUpdate().apply()
+        }
       }
     }
   }
@@ -241,4 +269,5 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   override def localTx[A](block: (DBSession) => A): A = DB.localTx { session =>
     block(session)
   }
+
 }

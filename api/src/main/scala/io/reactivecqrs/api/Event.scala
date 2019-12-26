@@ -1,6 +1,6 @@
 package io.reactivecqrs.api
 
-import io.reactivecqrs.api.id.AggregateId
+import io.reactivecqrs.api.id.{AggregateId, SpaceId}
 
 import scala.reflect.runtime.universe._
 
@@ -19,8 +19,15 @@ abstract class UndoEvent[AGGREGATE_ROOT: TypeTag] extends Event[AGGREGATE_ROOT] 
 }
 
 
-abstract class DuplicationEvent[AGGREGATE_ROOT: TypeTag] extends Event[AGGREGATE_ROOT] {
+abstract class DuplicationEvent[AGGREGATE_ROOT: TypeTag] extends FirstEvent[AGGREGATE_ROOT] {
   val baseAggregateId: AggregateId
   val baseAggregateVersion: AggregateVersion
+  def spaceId: SpaceId
 }
 
+
+abstract class FirstEvent[AGGREGATE_ROOT: TypeTag] extends Event[AGGREGATE_ROOT] {
+  def spaceId: SpaceId
+}
+
+abstract class PermanentDeleteEvent[AGGREGATE_ROOT: TypeTag] extends Event[AGGREGATE_ROOT]

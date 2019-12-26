@@ -2,16 +2,15 @@ package io.reactivecqrs.core.commandhandler
 
 import java.time.Instant
 
-import akka.actor.{Actor, ActorRef, Props}
+import akka.actor.{Actor, ActorContext, ActorRef, PoisonPill, Props}
 import akka.pattern.ask
 import akka.util.Timeout
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRootCurrentVersion}
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRootCurrentMinVersion, GetAggregateRootCurrentVersion}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{AggregateActors, EnsureEventsPublished}
-import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
-import io.reactivecqrs.core.commandlog.{CommandLogActor, CommandLogState}
+import io.reactivecqrs.core.commandhandler.CommandHandlerActor._
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
 import io.reactivecqrs.core.util.ActorLogging
@@ -24,24 +23,25 @@ import scala.reflect.runtime.universe._
 
 object AggregateCommandBusActor {
 
-  private case class AggregateActors(commandHandler: ActorRef, repository: ActorRef, commandLog: ActorRef)
+  private case class AggregateActors(commandHandler: ActorRef, repository: ActorRef)
 
   private case class EnsureEventsPublished(oldOnly: Boolean)
 
   def apply[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateContext: AggregateContext[AGGREGATE_ROOT],
-                                             uidGenerator: ActorRef, eventStoreState: EventStoreState, commandLogState: CommandLogState,
+                                             uidGenerator: ActorRef, eventStoreState: EventStoreState,
                                              commandResponseState: CommandResponseState,
-                                             eventBus: ActorRef, eventsReplayMode: Boolean): Props = {
+                                             eventBus: ActorRef, eventsReplayMode: Boolean, maxInactivityMillis: Long = 43200000L, keepAliveLimit: Int = 200): Props = { // 43200000 - 12 hours
     Props(new AggregateCommandBusActor[AGGREGATE_ROOT](
       uidGenerator,
       eventStoreState,
-      commandLogState,
       commandResponseState,
       aggregateContext.commandHandlers,
       aggregateContext.eventHandlers,
+      aggregateContext.rewriteHistoryCommandHandlers,
       eventBus,
       aggregateContext.eventsVersions,
       eventsReplayMode,
+      keepAliveLimit, maxInactivityMillis,
       aggregateContext.initialAggregateRoot _))
   }
 
@@ -51,13 +51,14 @@ object AggregateCommandBusActor {
 
 class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRef,
                                                        eventStoreState: EventStoreState,
-                                                       commandLogState: CommandLogState,
                                                        commandResponseState: CommandResponseState,
                                                        val commandsHandlers: AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]],
                                                        val eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
+                                                       val rewriteHistoryCommandHandlers: (Iterable[EventWithVersion[AGGREGATE_ROOT]], AGGREGATE_ROOT) => PartialFunction[Any, GenericCommandResult[Any]],
                                                        val eventBus: ActorRef,
                                                        val eventsVersions: List[EventVersion[AGGREGATE_ROOT]],
                                                        val eventsReplayMode: Boolean,
+                                                       val keepAliveLimit: Int, val maxInactivityMillis: Long,
                                                        val initialState: () => AGGREGATE_ROOT)
                                                         (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor with ActorLogging {
 
@@ -81,12 +82,19 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
   private val aggregatesActors = mutable.HashMap[Long, AggregateActors]()
 
-  if(!eventsReplayMode) {
+  // aggregate id -> aggregate activity timestamp
+  private val children = mutable.HashMap[Long, ActorRef]()
+  private val childrenActivity = mutable.HashMap[Long, Long]()
+
+  private var lastClear: Long = 0L
+
+
+  if (!eventsReplayMode) {
     context.system.scheduler.scheduleOnce(1.second, self, EnsureEventsPublished(false))(context.dispatcher)
   }
 
   override def preStart() {
-    if(!eventsReplayMode) {
+    if (!eventsReplayMode) {
       context.system.scheduler.schedule(60.seconds, 60.seconds, self, EnsureEventsPublished(true))(context.dispatcher)
     }
   }
@@ -95,11 +103,23 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     // do not call preStart
   }
 
+
+
+
+  def maintenance(id: AggregateId)(implicit context: ActorContext): Unit = {
+    val now = System.currentTimeMillis()
+    this.childrenActivity += id.asLong -> now
+    clearOldAggregateRepositories(now)
+  }
+
   override def receive: Receive = logReceive {
     case fce: FirstCommand[_,_] => routeFirstCommand(fce.asInstanceOf[FirstCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]])
     case cce: ConcurrentCommand[_,_] => routeConcurrentCommand(cce.asInstanceOf[ConcurrentCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]])
+    case cce: RewriteHistoryCommand[_,_] => routeRewriteHistoryCommand(cce.asInstanceOf[RewriteHistoryCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]])
+    case cce: RewriteHistoryConcurrentCommand[_,_] => routeRewriteHistoryConcurrentCommand(cce.asInstanceOf[RewriteHistoryConcurrentCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]])
     case ce: Command[_,_] => routeCommand(ce.asInstanceOf[Command[AGGREGATE_ROOT, CustomCommandResponse[_]]])
     case GetAggregate(id) => routeGetAggregateRoot(id)
+    case GetAggregateMinVersion(id, version, maxMillis) => routeGetAggregateRootMinVersion(id, version, maxMillis)
     case GetAggregateForVersion(id, version) => routeGetAggregateRootForVersion(id, version)
     case GetEventsForAggregate(id) => ???
     case GetEventsForAggregateForVersion(id, version) => ???
@@ -121,6 +141,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
     val aggregateActors = createAggregateActorsIfNeeded(newAggregateId)
     aggregateActors.commandHandler ! InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo, commandId, firstCommand)
+    clearOldAggregateRepositories(System.currentTimeMillis())
   }
 
   private def createAggregateActorsIfNeeded(aggregateId: AggregateId): AggregateActors = {
@@ -132,30 +153,54 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private def createAggregateActors(aggregateId: AggregateId): AggregateActors = {
     val repositoryActor = getOrCreateAggregateRepositoryActor(aggregateId)
 
-    val commandLogActor = context.actorOf(Props(new CommandLogActor[AGGREGATE_ROOT](aggregateId, commandLogState)), aggregateTypeSimpleName+"_CommandLog_" + aggregateId.asLong)
-
     val commandHandlerActor = context.actorOf(Props(new CommandHandlerActor[AGGREGATE_ROOT](
-      aggregateId, repositoryActor, commandLogActor, commandResponseState,
+      aggregateId, repositoryActor, commandResponseState,
       commandsHandlers.asInstanceOf[AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]]],
+      rewriteHistoryCommandHandlers.asInstanceOf[(Iterable[EventWithVersion[AGGREGATE_ROOT]], AGGREGATE_ROOT) => PartialFunction[Any, GenericCommandResult[Any]]],
     initialState)),
-      aggregateTypeSimpleName + "_CommandHandler_" + aggregateId.asLong)
+      aggregateTypeSimpleName + "_CH_" + aggregateId.asLong)
 
-    val actors = AggregateActors(commandHandlerActor, repositoryActor, commandLogActor)
+    val actors = AggregateActors(commandHandlerActor, repositoryActor)
     aggregatesActors += aggregateId.asLong -> actors
     actors
   }
 
+  private def clearOldAggregateRepositories(now: Long): Unit = {
+    if(now - lastClear > 300000) { // no more often than every 5 minutes
+      lastClear = now
+      val sorted = childrenActivity.toList.sortBy(_._2)
+      if (sorted.length > keepAliveLimit) {
+        val toKill = sorted.take(sorted.length - keepAliveLimit)
+        toKill.foreach(k => clearOldAggregateRepository(k._1))
+      }
+
+      val toKill = childrenActivity.filter(now - _._2 > maxInactivityMillis)
+      toKill.foreach(k => clearOldAggregateRepository(k._1))
+    }
+  }
+
+  private def clearOldAggregateRepository(aggregateId: Long): Unit = {
+    childrenActivity -= aggregateId
+    children -= aggregateId
+    context.child(aggregateTypeSimpleName + "_AR_" + aggregateId).foreach(child => {
+      child ! PoisonPill
+    })
+  }
+
   private def getOrCreateAggregateRepositoryActor(aggregateId: AggregateId): ActorRef = {
-    context.child(aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong).getOrElse(
-      context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, commandResponseState, eventBus, eventHandlers, initialState, None, eventsVersionsMap, eventsVersionsMapReverse)),
-        aggregateTypeSimpleName + "_AggregateRepository_" + aggregateId.asLong)
-    )
+    childrenActivity += aggregateId.asLong -> System.currentTimeMillis()
+    children.getOrElse(aggregateId.asLong, {
+      val ref = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, commandResponseState, eventBus, eventHandlers, initialState, None, eventsVersionsMap, eventsVersionsMapReverse)),
+        aggregateTypeSimpleName + "_AR_" + aggregateId.asLong)
+      children += aggregateId.asLong -> ref
+      ref
+    })
   }
 
   private def getOrCreateAggregateRepositoryActorForVersion(aggregateId: AggregateId, aggregateVersion: AggregateVersion): ActorRef = {
-    context.child(aggregateTypeSimpleName + "_AggregateRepositoryForVersion_" + aggregateId.asLong+"_"+aggregateVersion.asInt).getOrElse(
+    context.child(aggregateTypeSimpleName + "_ARV_" + aggregateId.asLong+"_"+aggregateVersion.asInt).getOrElse(
       context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, commandResponseState, eventBus, eventHandlers, initialState, Some(aggregateVersion), eventsVersionsMap, eventsVersionsMapReverse)),
-        aggregateTypeSimpleName + "_AggregateRepositoryForVersion_" + aggregateId.asLong+"_"+aggregateVersion.asInt)
+        aggregateTypeSimpleName + "_ARV_" + aggregateId.asLong+"_"+aggregateVersion.asInt)
     )
   }
 
@@ -169,6 +214,27 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     val aggregateActors = createAggregateActorsIfNeeded(command.aggregateId)
 
     aggregateActors.commandHandler ! InternalConcurrentCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo, commandId, command)
+    maintenance(command.aggregateId)
+  }
+
+  private def routeRewriteHistoryCommand[RESPONSE <: CustomCommandResponse[_]](command: RewriteHistoryCommand[AGGREGATE_ROOT, RESPONSE]): Unit = {
+    val commandId = takeNextCommandId
+    val respondTo = sender()
+
+    val aggregateActors = createAggregateActorsIfNeeded(command.aggregateId)
+
+    aggregateActors.commandHandler ! InternalRewriteHistoryCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo, commandId, command)
+    maintenance(command.aggregateId)
+  }
+
+  private def routeRewriteHistoryConcurrentCommand[RESPONSE <: CustomCommandResponse[_]](command: RewriteHistoryConcurrentCommand[AGGREGATE_ROOT, RESPONSE]): Unit = {
+    val commandId = takeNextCommandId
+    val respondTo = sender()
+
+    val aggregateActors = createAggregateActorsIfNeeded(command.aggregateId)
+
+    aggregateActors.commandHandler ! InternalRewriteHistoryConcurrentCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo, commandId, command)
+    maintenance(command.aggregateId)
   }
 
   private def routeCommand[RESPONSE <: CustomCommandResponse[_]](command: Command[AGGREGATE_ROOT, RESPONSE]): Unit = {
@@ -178,6 +244,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     val aggregateActors = createAggregateActorsIfNeeded(command.aggregateId)
 
     aggregateActors.commandHandler ! InternalFollowingCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo, commandId, command)
+    maintenance(command.aggregateId)
   }
 
 
@@ -187,6 +254,15 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     val aggregateRepository = getOrCreateAggregateRepositoryActor(id)
 
     aggregateRepository ! GetAggregateRootCurrentVersion(respondTo)
+    maintenance(id)
+  }
+
+  private def routeGetAggregateRootMinVersion(id: AggregateId, version: AggregateVersion, maxMillis: Int): Unit = {
+    val respondTo = sender()
+    val aggregateRepository = getOrCreateAggregateRepositoryActor(id)
+
+    aggregateRepository ! GetAggregateRootCurrentMinVersion(respondTo, version, maxMillis)
+    maintenance(id)
   }
 
   private def routeGetAggregateRootForVersion(id: AggregateId, version: AggregateVersion): Unit = {

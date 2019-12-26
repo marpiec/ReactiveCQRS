@@ -7,7 +7,6 @@ import akka.testkit.{TestActorRef, TestProbe}
 import akka.util.Timeout
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.api._
-import io.reactivecqrs.core.documentstore.NothingMetadata
 import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubscriptionsManagerApi}
 import io.reactivecqrs.core.projection.SubscribableProjectionActor.{CancelProjectionSubscriptions, ProjectionSubscriptionsCancelled, SubscribedForProjectionUpdates, SubscriptionUpdated}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
@@ -24,7 +23,7 @@ case class SubscribeForAll(subscriptionCode: String, listener: ActorRef)
 class SimpleProjection(val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi, val subscriptionsState: PostgresSubscriptionsState) extends SubscribableProjectionActor {
 
   override def receiveSubscriptionRequest: Receive = {
-    case SubscribeForAll(code, listener) => handleSubscribe(code, listener, (s: String) => Some((s, NothingMetadata())))
+    case SubscribeForAll(code, listener) => handleSubscribe(code, listener, (s: String) => Some(s))
   }
 
   override protected def receiveQuery: Receive = {
@@ -57,7 +56,7 @@ class SimpleListener(simpleListenerProbe: TestProbe) extends Actor {
       }
       simpleListenerProbe.ref ! ProjectionSubscriptionsCancelled(id :: Nil)
     }
-    case SubscriptionUpdated(id, data, metadata) => simpleListenerProbe.ref ! data // TODO validate subscription id?
+    case SubscriptionUpdated(id, data) => simpleListenerProbe.ref ! data // TODO validate subscription id?
     case actor: ActorRef => actor ! CancelProjectionSubscriptions(List(subscriptionId.get))
   }
 }
@@ -71,7 +70,7 @@ class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAnd
     val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(TestActorRef(Props(new EventBusSubscriptionsManager(0))))
 
     val typesNamesState = new PostgresTypesNamesState
-    val subscriptionsState = new PostgresSubscriptionsState(typesNamesState)
+    val subscriptionsState = new PostgresSubscriptionsState(typesNamesState, true)
     subscriptionsState.initSchema()
 
     val simpleProjectionActor = TestActorRef(Props(new SimpleProjection(eventBusSubscriptionsManager, subscriptionsState)))

@@ -40,9 +40,9 @@ class ReplayerRepositoryActorFactory[AGGREGATE_ROOT: TypeTag:ClassTag](aggregate
 
   def aggregateRootType = typeOf[AGGREGATE_ROOT]
 
-  def create(context: ActorContext, aggregateId: AggregateId, aggregateVersion: Option[AggregateVersion], eventStore: EventStoreState, eventsBus: ActorRef, actorName: String): ActorRef = {
+  def create(context: ActorContext, aggregateId: AggregateId, aggregateVersion: Option[AggregateVersion], eventStore: EventStoreState, eventsBus: ActorRef, actorName: String, maxInactivitySeconds: Int): ActorRef = {
     context.actorOf(Props(new ReplayAggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventsBus, aggregateContext.eventHandlers,
-      () => aggregateContext.initialAggregateRoot, aggregateVersion, eventsVersionsMap, eventsVersionsMapReverse)), actorName)
+      () => aggregateContext.initialAggregateRoot, aggregateVersion, eventsVersionsMap, eventsVersionsMapReverse, maxInactivitySeconds)), actorName)
   }
 
 }
@@ -53,14 +53,24 @@ object EventsReplayerActor {
 }
 
 
+/**
+  * @param maxReplayerInactivitySeconds - defaulet30 s
+  * @param replayerTimoutSeconds - default 600 s
+  */
+
+
+case class ReplayerConfig(maxReplayerInactivitySeconds: Int = 30,
+                          replayerTimoutSeconds: Int = 600)
+
 class EventsReplayerActor(eventStore: EventStoreState,
                           val eventsBus: ActorRef,
                           subscriptionsState: SubscriptionsState,
+                          val config: ReplayerConfig,
                           actorsFactory: List[ReplayerRepositoryActorFactory[_]]) extends Actor with ActorLogging {
 
   import context.dispatcher
 
-  val timeoutDuration: FiniteDuration = 600.seconds
+  val timeoutDuration: FiniteDuration = config.replayerTimoutSeconds.seconds
   implicit val timeout = Timeout(timeoutDuration)
 
   val factories: Map[String, ReplayerRepositoryActorFactory[_]] = actorsFactory.map(f => f.aggregateRootType.toString -> f).toMap
@@ -78,7 +88,8 @@ class EventsReplayerActor(eventStore: EventStoreState,
   private def replayAllEvents(respondTo: ActorRef, batchPerAggregate: Boolean, aggregatesTypes: Seq[String], delayBetweenAggregateTypes: Long) {
     backPressureActor ! Start
     val allEvents: Int = eventStore.countAllEvents()
-    var eventsSent: Long = 0
+    var allEventsSent: Long = 0
+    var lastDumpEventsSent: Long = 0
 
     log.info("Will replay "+allEvents+" events")
 
@@ -89,6 +100,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
     aggregatesTypes.foreach(aggregateType => {
       val start = new Date().getTime
+      println("Processing events for " + aggregateType)
       eventStore.readAndProcessAllEvents(combinedEventsVersionsMap, aggregateType, batchPerAggregate, (events: Seq[EventInfo[_]], aggregateId: AggregateId, aggregateType: AggregateType) => {
         if(eventsToProduceAllowed <= 0) {
           // Ask is a way to block during fetching data from db
@@ -108,15 +120,21 @@ class EventsReplayerActor(eventStore: EventStoreState,
         }
         eventsToProduceAllowed -= events.size
 
-        eventsSent += events.size
+        allEventsSent += events.size
+        lastDumpEventsSent += events.size
         val now = System.currentTimeMillis()
-        if(eventsSent < 10 || eventsSent < 100 && eventsSent % 10 == 0 || eventsSent < 1000 && eventsSent % 100 == 0 || eventsSent % 1000 == 0 || now - lastUpdate > 10000) {
-          println("Replayed " + eventsSent + "/" + allEvents + " events")
+        if(now - lastUpdate > 5000) {
+          println("Replayed " + allEventsSent + "/" + allEvents + " events")
           lastUpdate = System.currentTimeMillis()
         }
 
+        if(allEventsSent < 1000 && lastDumpEventsSent >= 100 || allEventsSent < 10000 && lastDumpEventsSent >= 1000 || lastDumpEventsSent >= 10000) {
+          println(subscriptionsState.dump())
+          lastDumpEventsSent = 0
+        }
+
       })
-      println("Read events for " + aggregateType + " in "+formatMillis(new Date().getTime - start))
+      println("Done processing events for " + aggregateType + " in "+formatMillis(new Date().getTime - start))
       if(delayBetweenAggregateTypes > 0) {
         Thread.sleep(delayBetweenAggregateTypes)
       }
@@ -126,11 +144,11 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
     Await.result(backPressureActor ? Stop, timeoutDuration) match {
       case Finished =>
-        println("Replayed "+eventsSent+"/"+allEvents+" events")
-        print("Dumping subscriptions state...")
-        subscriptionsState.dump()
+        println("Replayed "+allEventsSent+"/"+allEvents+" events")
+        print("Dumping rest of subscriptions state...")
+        println(subscriptionsState.dump())
         println("DONE")
-        respondTo ! EventsReplayed(eventsSent)
+        respondTo ! EventsReplayed(allEventsSent)
     }
   }
 
@@ -147,9 +165,9 @@ class EventsReplayerActor(eventStore: EventStoreState,
   // Assumption - we replay events from first event so there is not need to have more than one actor for each event
   // QUESTION - cleanup?
   private def getOrCreateReplayRepositoryActor(aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregateType: AggregateType): ActorRef = {
-    context.child(aggregateType.typeName + "_AggregateRepositorySimulator_" + aggregateId.asLong).getOrElse(
+    context.child(aggregateType.typeName + "_Simulator_" + aggregateId.asLong).getOrElse(
       factories(aggregateType.typeName).create(context,aggregateId, None, eventStore, eventsBus,
-        aggregateType.typeName + "_AggregateRepositorySimulator_" + aggregateId.asLong)
+        aggregateType.typeName + "_Simulator_" + aggregateId.asLong, config.maxReplayerInactivitySeconds)
     )
   }
 }

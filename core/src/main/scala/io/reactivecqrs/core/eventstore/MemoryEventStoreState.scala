@@ -15,7 +15,7 @@ object MemoryEventStoreState {
                       event: Event[_], userId: UserId, timestamp: Instant)
 }
 
-case class EventStoreEntry[AGGREGATE_ROOT](userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT])
+case class EventStoreEntry[AGGREGATE_ROOT](userId: UserId, timestamp: Instant, version: AggregateVersion, event: Event[AGGREGATE_ROOT])
 
 class MemoryEventStoreState extends EventStoreState {
 
@@ -34,11 +34,12 @@ class MemoryEventStoreState extends EventStoreState {
     }
     var versionsIncreased = 0
     val eventsWithVersions = eventsEnvelope.events.map(event => {
-      eventsForAggregate :+= EventStoreEntry(eventsEnvelope.userId, eventsEnvelope.timestamp, event)
+      val version = AggregateVersion(eventsForAggregate.size + 1 + versionsIncreased)
+      eventsForAggregate :+= EventStoreEntry(eventsEnvelope.userId, eventsEnvelope.timestamp, version, event)
       eventIdSeq += 1
-      eventsRows ::= EventRow(eventIdSeq, aggregateId, AggregateVersion(eventsForAggregate.size + versionsIncreased),
+      eventsRows ::= EventRow(eventIdSeq, aggregateId, version,
                     AggregateType(event.aggregateRootType.toString), event, eventsEnvelope.userId, eventsEnvelope.timestamp)
-      val key = (aggregateId, AggregateVersion(eventsForAggregate.size + versionsIncreased))
+      val key = (aggregateId, version)
 
       val value = (eventsEnvelope.userId, eventsEnvelope.timestamp, event, eventIdSeq)
       eventsToPublish += key -> value
@@ -51,7 +52,7 @@ class MemoryEventStoreState extends EventStoreState {
   }
 
 
-  override def readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId, upToVersion: Option[AggregateVersion])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit = {
+  override def readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId, upToVersion: Option[AggregateVersion])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit = {
     var eventsForAggregate: Vector[EventStoreEntry[AGGREGATE_ROOT]] = eventStore.getOrElse(aggregateId, Vector()).asInstanceOf[Vector[EventStoreEntry[AGGREGATE_ROOT]]]
 
     if(upToVersion.isDefined) {
@@ -74,7 +75,7 @@ class MemoryEventStoreState extends EventStoreState {
       }
     }).reverse
 
-    eventsWithNoop.foreach(eventWithNoop => eventHandler(eventWithNoop._1.userId, eventWithNoop._1.timestamp, eventWithNoop._1.event, aggregateId, eventWithNoop._2))
+    eventsWithNoop.foreach(eventWithNoop => eventHandler(eventWithNoop._1.userId, eventWithNoop._1.timestamp, eventWithNoop._1.event, aggregateId, eventWithNoop._1.version.asInt, eventWithNoop._2))
   }
 
   override def readAndProcessAllEvents(eventsVersionsMap: Map[EventTypeVersion, String], aggregateType: String, batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit = {
@@ -83,7 +84,7 @@ class MemoryEventStoreState extends EventStoreState {
     })
   }
 
-  override def deletePublishedEventsToPublish(eventsIds: Seq[EventIdentifier]): Unit = {
+  override def deletePublishedEventsToPublish(eventsIds: Seq[EventWithIdentifier[_]]): Unit = {
 
     eventsIds.foreach { eventId =>
       val keyToDelete = eventsToPublish.keys.find(key => key._1 == eventId.aggregateId && key._2 == eventId.version).get
@@ -116,6 +117,10 @@ class MemoryEventStoreState extends EventStoreState {
 
   override def readNotYetPublishedEvents(): Map[AggregateId, AggregateVersion] = {
     eventsToPublish.keys.groupBy(_._1).map(a => a._1 -> AggregateVersion(a._2.map(_._2.asInt).min))
+  }
+
+  override def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit = {
+    ???
   }
 
 }

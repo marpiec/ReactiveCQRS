@@ -7,14 +7,13 @@ import scalikejdbc.{DB, DBSession}
 import scala.reflect.runtime.universe._
 import scalikejdbc._
 
-sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
+sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
   implicit val t: TypeTag[T]
-  implicit val m: TypeTag[M]
 
   val tableName: String
   val mpjsons: MPJsons
-  val cache: DocumentStoreCache[T, M]
+  val cache: DocumentStoreCache[T]
   val indicies: Seq[Index]
 
 
@@ -26,15 +25,12 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
   protected val tableNameSQL = SQLSyntax.createUnsafely(projectionTableName)
 
-  protected def SELECT_DOCUMENT_BY_PATH(path: String) = s"SELECT id, version, document, metadata FROM $projectionTableName WHERE document #>> '{$path}' = ?"
-
-  protected def SELECT_DOCUMENT_BY_PATH_WITH_ONE_OF_THE_VALUES(path: String, values: Set[String]) =
-    s"SELECT id, version, document, metadata FROM $projectionTableName WHERE document #>> '{$path}' in (${values.map("'"+_+"'").mkString(",")})"
-
   init()
 
   protected def init(): Unit = {
     createTableIfNotExists()
+    addSpaceColumn()
+    dropMetadataColumn()
     if(indicies.size > 5) {
       throw new IllegalArgumentException("Only up to 5 indieces are supported now")
     }
@@ -45,11 +41,23 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
   protected def createTableIfNotExists(): Unit = DB.autoCommit { implicit session =>
     sql"""CREATE TABLE IF NOT EXISTS ${tableNameSQL} (
+          |space_id BIGINT NOT NULL,
           |id BIGINT NOT NULL PRIMARY KEY,
           |version INT NOT NULL,
-          |document JSONB NOT NULL, metadata JSONB NOT NULL)"""
+          |document JSONB NOT NULL)"""
       .stripMargin.execute().apply()
   }
+
+  protected def addSpaceColumn(): Unit = DB.autoCommit { implicit session =>
+    sql"""ALTER TABLE ${tableNameSQL} ADD COLUMN IF NOT EXISTS space_id BIGINT NOT NULL DEFAULT -1"""
+      .stripMargin.execute().apply()
+  }
+
+  protected def dropMetadataColumn(): Unit = DB.autoCommit { implicit session =>
+    sql"""ALTER TABLE ${tableNameSQL} DROP COLUMN IF EXISTS metadata"""
+      .stripMargin.execute().apply()
+  }
+
 
   private def dropIndex(id: Int): Unit = DB.autoCommit { implicit session =>
     SQL(s"DROP INDEX IF EXISTS ${projectionTableName}_idx_${id}").execute().apply()
@@ -71,38 +79,38 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
       .stripMargin.execute().apply()
   }
 
-  def overwriteDocument(key: Long, document: T, metadata: M)(implicit session: DBSession): Unit = {
+  def overwriteDocument(key: Long, document: T)(implicit session: DBSession): Unit = {
 
     inSession { implicit session =>
-      val updated = sql"UPDATE ${tableNameSQL} SET document = ?::JSONB, metadata = ?::JSONB, version = version + 1 WHERE id = ? RETURNING version"
-        .bind(mpjsons.serialize[T](document), mpjsons.serialize[M](metadata), key)
+      val updated = sql"UPDATE ${tableNameSQL} SET document = ?::JSONB, version = version + 1 WHERE id = ? RETURNING version"
+        .bind(mpjsons.serialize[T](document), key)
         .map(_.int(1)).list().apply()
 
       if (updated.size != 1) {
         throw new IllegalStateException("Expected 1, updated " + updated + " records")
       } else {
-        cache.put(key, Some(VersionedDocument(updated.head, document, metadata)))
+        cache.put(key, Some(VersionedDocument(updated.head, document)))
       }
     }
   }
 
 
 
-  def getDocument(key: Long)(implicit session: DBSession = null): Option[Document[T, M]] = {
+  def getDocument(key: Long)(implicit session: DBSession = null): Option[Document[T]] = {
 
     cache.get(key) match {
-      case InCache(VersionedDocument(version, document, metadata)) => Some(Document(document, metadata))
+      case InCache(VersionedDocument(version, document)) => Some(Document(document))
       case InCacheEmpty => None
       case NotInCache =>
         inSession { implicit session =>
-          val loaded = sql"SELECT version, document, metadata FROM ${tableNameSQL} WHERE id = ?"
+          val loaded = sql"SELECT version, document FROM ${tableNameSQL} WHERE id = ?"
             .bind(key).map(rs => {
-            VersionedDocument[T, M](rs.int(1), mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3)))
+            VersionedDocument[T](rs.int(1), mpjsons.deserialize[T](rs.string(2)))
           }).single().apply()
           loaded match {
             case Some(doc) =>
               cache.put(key, Some(doc))
-              Some(Document(doc.document, doc.metadata))
+              Some(Document(doc.document))
             case None =>
               cache.put(key, None)
               None
@@ -121,47 +129,79 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
   }
 
-  def findDocumentByPath(path: Seq[String], value: String)(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
-    inSession { implicit session =>
-      val loaded = SQL(SELECT_DOCUMENT_BY_PATH(path.mkString(",")))
-        .bind(value).map(rs => rs.long(1) -> VersionedDocument[T, M](rs.int(2), mpjsons.deserialize[T](rs.string(3)), mpjsons.deserialize[M](rs.string(4))))
-        .list().apply()
 
-      loaded.foreach(t => cache.put(t._1, Some(t._2)))
-      loaded.map({case (key, value) => (key, Document[T, M](value.document, value.metadata))}).toMap
-    }
+  private def createQuery(searchParams: DocumentStoreQuery) = {
+
+    val sortPart = if(searchParams.sortBy.isEmpty) "" else searchParams.sortBy.map({
+      case SortAsc(path) => "document::json#>>'{"+path.mkString(",")+"}' " + " ASC"
+      case SortDesc(path) => "document::json#>>'{"+path.mkString(",")+"}' " + " DESC"
+    }).mkString(" ORDER BY ", ", ", "")
+
+    SQL("SELECT id, version, document FROM " + projectionTableName +
+      " WHERE" + constructWhereClauseForExpectedValues(searchParams.where) +
+      sortPart +
+      " LIMIT " + searchParams.limit + " OFFSET " + searchParams.offset)
   }
 
+  private def createPartsQuery(parts: Seq[Seq[String]], searchParams: DocumentStoreQuery) = {
 
-  def findDocumentByPaths(values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, Document[T,M]] = {
-    val query = SQL("SELECT id, version, document, metadata FROM " + projectionTableName + " WHERE" + constructWhereClauseForExpectedValues(values))
+    val partsQuery = parts.map(part => "document::json#>>'{"+part.mkString(",")+"}'").mkString(", ")
+
+    val sortPart = if(searchParams.sortBy.isEmpty) "" else searchParams.sortBy.map({
+      case SortAsc(path) => "document::json#>>'{"+path.mkString(",")+"}' " + " ASC"
+      case SortDesc(path) => "document::json#>>'{"+path.mkString(",")+"}' " + " DESC"
+    }).mkString(" ORDER BY ", ", ", "")
+
+    SQL("SELECT id, " + partsQuery + " FROM " + projectionTableName +
+      " WHERE" + constructWhereClauseForExpectedValues(searchParams.where) +
+      sortPart +
+      " LIMIT " + searchParams.limit + " OFFSET " + searchParams.offset)
+
+  }
+
+  def findDocument(searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, Document[T]] = {
+    val query = createQuery(searchParams)
     inSession { implicit session =>
-
       val loaded = query
-        .bind(getAllValues(values): _*).map(rs => rs.long(1) -> VersionedDocument[T, M](rs.int(2), mpjsons.deserialize[T](rs.string(3)), mpjsons.deserialize[M](rs.string(4))))
+        .bind(getAllValues(searchParams.where): _*).map(rs => rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3))))
         .list().apply()
-
       loaded.foreach(t => cache.put(t._1, Some(t._2)))
-      loaded.map({case (key, value) => (key, Document[T, M](value.document, value.metadata))}).toMap
+      loaded.map({case (key, value) => (key, Document[T](value.document))}).toMap
     }
   }
 
-  def findDocumentPartByPaths[P: TypeTag](part: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, P] = {
-    val query = SQL("SELECT id, document::json#>>'{"+part.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + constructWhereClauseForExpectedValues(values))
+  def findDocumentWithTransform[TT <: AnyRef](searchParams: DocumentStoreQuery, transform: T => TT)(implicit session: DBSession = null): Map[Long, Document[TT]] = {
+    val query = createQuery(searchParams)
+    inSession { implicit session =>
+      val loaded = query
+        .bind(getAllValues(searchParams.where): _*).map(rs => {
+        val id = rs.long(1)
+        val version = rs.int(2)
+        val beforeTransform = mpjsons.deserialize[T](rs.string(3))
+        cache.put(id, Some(VersionedDocument[T](version, beforeTransform)))
+        id -> VersionedDocument[TT](version, transform(beforeTransform))
+      }).list().apply()
+      loaded.map({case (key, value) => (key, Document[TT](value.document))}).toMap
+    }
+  }
+
+  def findDocumentPartByPaths[P: TypeTag](part: List[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, P] = {
+    val query = createPartsQuery(Seq(part), searchParams)
+
     inSession { implicit session =>
       query
-        .bind(getAllValues(values): _*)
+        .bind(getAllValues(searchParams.where): _*)
         .map(rs => rs.long(1) -> mpjsons.deserialize[P](rs.string(2)))
         .list().apply().toMap
     }
   }
 
-  def findDocument2PartsByPaths[P1: TypeTag, P2: TypeTag](part1: List[String], part2: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, (P1, P2)] = {
-    val query = SQL("SELECT id, document::json#>>'{"+part1.mkString(",")+"}', document::json#>>'{"+part2.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + constructWhereClauseForExpectedValues(values))
-    inSession { implicit session =>
+  def findDocument2PartsByPaths[P1: TypeTag, P2: TypeTag](part1: List[String], part2: List[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, (P1, P2)] = {
+    val query = createPartsQuery(Seq(part1, part2), searchParams)
 
+    inSession { implicit session =>
       val loaded = query
-        .bind(getAllValues(values): _*)
+        .bind(getAllValues(searchParams.where): _*)
         .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3))))
         .list().apply()
 
@@ -169,12 +209,12 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     }
   }
 
-  def findDocument3PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag](part1: List[String], part2: List[String], part3: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, (P1, P2, P3)] = {
-    val query = SQL("SELECT id, document::json#>>'{"+part1.mkString(",")+"}', document::json#>>'{"+part2.mkString(",")+"}', document::json#>>'{"+part3.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + constructWhereClauseForExpectedValues(values))
-    inSession { implicit session =>
+  def findDocument3PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag](part1: List[String], part2: List[String], part3: List[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, (P1, P2, P3)] = {
+    val query = createPartsQuery(Seq(part1, part2, part3), searchParams)
 
+    inSession { implicit session =>
       val loaded = query
-        .bind(getAllValues(values): _*)
+        .bind(getAllValues(searchParams.where): _*)
         .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3)), mpjsons.deserialize[P3](rs.string(4))))
         .list().apply()
 
@@ -182,12 +222,12 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     }
   }
 
-  def findDocument4PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag, P4: TypeTag](part1: List[String], part2: List[String], part3: List[String], part4: List[String], values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, (P1, P2, P3, P4)] = {
-    val query = SQL("SELECT id, document::json#>>'{"+part1.mkString(",")+"}', document::json#>>'{"+part2.mkString(",")+"}', document::json#>>'{"+part3.mkString(",")+"}', document::json#>>'{"+part4.mkString(",")+"}' FROM " + projectionTableName + " WHERE" + constructWhereClauseForExpectedValues(values))
-    inSession { implicit session =>
+  def findDocument4PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag, P4: TypeTag](part1: List[String], part2: List[String], part3: List[String], part4: List[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, (P1, P2, P3, P4)] = {
+    val query = createPartsQuery(Seq(part1, part2, part3, part4), searchParams)
 
+    inSession { implicit session =>
       val loaded = query
-        .bind(getAllValues(values): _*)
+        .bind(getAllValues(searchParams.where): _*)
         .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3)), mpjsons.deserialize[P3](rs.string(4)), mpjsons.deserialize[P4](rs.string(5))))
         .list().apply()
 
@@ -195,52 +235,44 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     }
   }
 
-  def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
-
-    val query = SQL(s"SELECT id, version, document, metadata FROM $projectionTableName WHERE document #>> '{${path.mkString(",")}}' in (${List.fill(values.size)("?").mkString(",")})")
-
-    if(values.nonEmpty) {
-      inSession { implicit session =>
-        val loaded = query.bind(values.toSeq: _*)
-          .map(rs => rs.long(1) -> VersionedDocument[T, M](rs.int(2), mpjsons.deserialize[T](rs.string(3)), mpjsons.deserialize[M](rs.string(4))))
-          .list().apply()
-
-        loaded.foreach(t =>cache.put(t._1, Some(t._2)))
-        loaded.map({case (key, value) => (key, Document[T, M](value.document, value.metadata))}).toMap
-      }
-    } else {
-      Map.empty
-    }
-  }
-
   private def constructWhereClauseForExpectedValues(values: Seq[ExpectedValue]): String = {
     values.map{
       case ExpectedNoValue(path) => s"document #>> '{${path.mkString(",")}}' IS NULL"
       case ExpectedMultipleValues(path, v) => s"document #>> '{${path.mkString(",")}}' in (${List.fill(v.size)("?").mkString(",")})"
+      case ExpectedMultipleIntValues(path, v) => s"(document #>> '{${path.mkString(",")}}')::int in (${List.fill(v.size)("?").mkString(",")})"
+      case ExpectedMultipleLongValues(path, v) => s"(document #>> '{${path.mkString(",")}}')::bigint in (${List.fill(v.size)("?").mkString(",")})"
       case ExpectedSingleValue(path, _) => s"document #>> '{${path.mkString(",")}}' = ?"
+      case ExpectedSingleValueLike(path, _) => s"document #>> '{${path.mkString(",")}}' ilike ?"
+      case ExpectedSingleIntValue(path, _) => s"(document #>> '{${path.mkString(",")}}')::int = ?"
+      case ExpectedSingleLongValue(path, _) => s"(document #>> '{${path.mkString(",")}}')::bigint = ?"
+      case ExpectedGreaterThanIntValue(path, _) => s"(document #>> '{${path.mkString(",")}}')::int > ?"
+      case ExpectedLessThanIntValue(path, _) => s"(document #>> '{${path.mkString(",")}}')::int < ?"
     }.mkString(" ", " AND ", " ")
   }
 
-  private def getAllValues(values: Seq[ExpectedValue]): Seq[String] = {
+  private def getAllValues(values: Seq[ExpectedValue]): Seq[Any] = {
     values.flatMap{
-      case ExpectedNoValue(_) => Seq.empty
+      case ExpectedNoValue(_) => Iterable.empty
       case ExpectedMultipleValues(_, vals) => vals
-      case ExpectedSingleValue(_, value) => Seq(value)
+      case ExpectedMultipleIntValues(_, vals) => vals
+      case ExpectedMultipleLongValues(_, vals) => vals
+      case ExpectedSingleValue(_, value) => Iterable(value)
+      case ExpectedSingleValueLike(_, value) => Iterable(value)
+      case ExpectedSingleIntValue(_, value) => Iterable(value)
+      case ExpectedSingleLongValue(_, value) => Iterable(value)
+      case ExpectedGreaterThanIntValue(_, value) => Iterable(value)
+      case ExpectedLessThanIntValue(_, value) => Iterable(value)
     }
   }
 
-  def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
+  def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, Document[T]] = {
     findDocumentByObjectInArray("document", arrayPath, objectPath, value)
   }
 
-  def findDocumentByMetadataObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
-    findDocumentByObjectInArray("metadata", arrayPath, objectPath, value)
-  }
-
-  protected def findDocumentByObjectInArray[V](columnName: String, array: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession): Map[Long, Document[T, M]] = {
+  protected def findDocumentByObjectInArray[V](columnName: String, array: Seq[String], objectPath: Seq[String], value: V)(implicit session: DBSession): Map[Long, Document[T]] = {
 
     def QUERY(arrayPath: String, path: String) =
-      s"SELECT id, version, document, metadata FROM $projectionTableName WHERE $columnName #> '$arrayPath' @> '[$path]'"
+      s"SELECT id, version, document FROM $projectionTableName WHERE $columnName #> '$arrayPath' @> '[$path]' LIMIT 10000"
 
     def makeJson(path: Seq[String], value: V): String =
       path match {
@@ -253,23 +285,23 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
     inSession { implicit session =>
       val loaded = SQL(QUERY(array.mkString("{", ",", "}"), makeJson(objectPath, value)))
-        .map(rs => rs.long(1) -> VersionedDocument[T, M](rs.int(2), mpjsons.deserialize[T](rs.string(3)), mpjsons.deserialize[M](rs.string(4))))
+        .map(rs => rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3))))
         .list().apply()
 
       loaded.foreach(t => cache.put(t._1, Some(t._2)))
-      loaded.map({case (key, v) => (key, Document[T, M](v.document, v.metadata))}).toMap
+      loaded.map({case (key, v) => (key, Document[T](v.document))}).toMap
     }
   }
 
 
-  def findAll()(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
+  def findAll()(implicit session: DBSession = null): Map[Long, Document[T]] = {
     val loaded = inSession { implicit session =>
-      sql"SELECT id, version, document, metadata FROM ${tableNameSQL}"
-          .map(rs => rs.long(1) -> VersionedDocument[T,M](rs.int(2), mpjsons.deserialize[T](rs.string(3)), mpjsons.deserialize[M](rs.string(4))))
+      sql"SELECT id, version, document FROM ${tableNameSQL}"
+          .map(rs => rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3))))
         .list.apply()
     }
     loaded.foreach(t => cache.put(t._1, Some(t._2)))
-    loaded.toMap.mapValues(v => Document(v.document, v.metadata))
+    loaded.toMap.mapValues(v => Document(v.document))
   }
 
   def countAll()(implicit session: DBSession = null): Int = {
@@ -281,7 +313,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
   }
 
 
-  def getDocuments(keys: List[Long])(implicit session: DBSession = null): Map[Long, Document[T, M]] = {
+  def getDocuments(keys: List[Long])(implicit session: DBSession = null): Map[Long, Document[T]] = {
 
     val keysSet: Set[Long] = keys.toSet
     val fromCache = cache.getAll(keysSet)
@@ -295,21 +327,21 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
 
     val toLoad = keysSet -- fromCacheFoundOrEmpty
 
-    val fromCacheFoundValues = fromCacheFound.map {case (key, value) => (key, Document(value.document, value.metadata))}
+    val fromCacheFoundValues = fromCacheFound.map {case (key, value) => (key, Document(value.document))}
 
     if (toLoad.isEmpty) {
       fromCacheFoundValues
     } else {
       val loaded = inSession { implicit session =>
-        sql"SELECT id, version, document, metadata FROM ${tableNameSQL} WHERE id IN (${toLoad})"
+        sql"SELECT id, version, document FROM ${tableNameSQL} WHERE id IN (${toLoad})"
           .map(rs => {
-            rs.long(1) -> VersionedDocument[T, M](rs.int(2), mpjsons.deserialize[T](rs.string(3)), mpjsons.deserialize[M](rs.string(4)))
+            rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3)))
           }).list().apply()
       }
       toLoad.foreach(id => {
         cache.put(id, loaded.find(_._1 == id).map(_._2))
       })
-      fromCacheFoundValues ++ loaded.toMap.mapValues(v => Document(v.document, v.metadata))
+      fromCacheFoundValues ++ loaded.toMap.mapValues(v => Document(v.document))
     }
   }
 
@@ -324,48 +356,98 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef, M <: AnyRef] {
     }
   }
 
-  protected def getFromCacheOrDB(key: Long)(implicit session: DBSession): Option[VersionedDocument[T, M]] = {
-    cache.get(key).getOrElse(sql"SELECT version, document, metadata FROM ${tableNameSQL} WHERE id = ?"
+  protected def getFromCacheOrDB(key: Long)(implicit session: DBSession): Option[VersionedDocument[T]] = {
+    cache.get(key).getOrElse(sql"SELECT version, document FROM ${tableNameSQL} WHERE id = ?"
       .bind(key).map(rs => {
-      VersionedDocument[T, M](rs.int(1), mpjsons.deserialize[T](rs.string(2)), mpjsons.deserialize[M](rs.string(3)))
+      VersionedDocument[T](rs.int(1), mpjsons.deserialize[T](rs.string(2)))
     }).single().apply())
+  }
+
+
+  def clearSpace(spaceId: Long)(implicit session: DBSession): Unit = {
+    inSession { implicit session =>
+      val idsRemoved = sql"DELETE from ${tableNameSQL} WHERE space_id = ? RETURNING id".
+        bind(spaceId)
+        .map(_.long(1)).list().apply()
+
+      idsRemoved.foreach(id => cache.remove(id))
+    }
   }
 
 }
 
-class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val mpjsons: MPJsons,
-                                                      val cache: DocumentStoreCache[T, M], val indicies: Seq[Index] = Seq.empty)(implicit val t: TypeTag[T], val m: TypeTag[M])
-  extends DocumentStore[T, M] with PostgresDocumentStoreTrait[T, M] {
+class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJsons,
+                                                      val cache: DocumentStoreCache[T], val indicies: Seq[Index] = Seq.empty)(implicit val t: TypeTag[T])
+  extends DocumentStore[T] with PostgresDocumentStoreTrait[T] {
 
-  override def insertDocument(key: Long, document: T, metadata: M)(implicit session: DBSession): Unit = {
+  override def insertDocument(spaceId: Long, key: Long, document: T)(implicit session: DBSession): Unit = {
     inSession { implicit session =>
-      sql"INSERT INTO ${tableNameSQL} (id, version, document, metadata) VALUES (?, 1, ?::jsonb, ?::jsonb)"
-        .bind(key, mpjsons.serialize(document), mpjsons.serialize(metadata))
+      sql"INSERT INTO ${tableNameSQL} (space_id, id, version, document) VALUES (?, ?, 1, ?::jsonb)"
+        .bind(spaceId, key, mpjsons.serialize(document))
         .executeUpdate().apply()
-      cache.put(key, Some(VersionedDocument(1, document, metadata)))
+      cache.put(key, Some(VersionedDocument(1, document)))
     }
   }
 
+  def updateExistingDocument(key: Long, modify: Document[T] => Document[T])(implicit session: DBSession): Document[T] = {
+    updateExistingDocumentRecur(key, modify, 1)
+  }
+
+  private def updateExistingDocumentRecur(key: Long, modify: Document[T] => Document[T], tryNumber: Int)(implicit session: DBSession): Document[T] = {
+    inSession { implicit session =>
+      getFromCacheOrDB(key) match {
+        case None => throw new IllegalStateException("Document for update does not exist " + key)
+        case Some(VersionedDocument(version, document)) =>
+          val modified = modify(Document(document))
+
+          val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
+            .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
+            .map(_.int(1)).single().executeUpdate().apply()
+
+          if(updated == 0) {
+            if(tryNumber < 10) {
+              updateExistingDocumentRecur(key, modify, tryNumber + 1)
+            } else {
+              throw new IllegalStateException("Too many tries to update document in table = ["+tableNameSQL+"] id = " + key + " expected version " + version)
+            }
+          } else {
+            cache.put(key, Some(VersionedDocument(version + 1, modified.document)))
+            modified
+          }
+      }
+    }
+  }
   // Optimistic locking update
-  def updateDocument(key: Long, modify: Option[Document[T, M]] => Document[T, M])(implicit session: DBSession): Document[T, M] = {
+  def updateDocument(spaceId: Long, key: Long, modify: Option[Document[T]] => Document[T])(implicit session: DBSession): Document[T] = {
+    updateDocumentRecur(spaceId, key, modify, 1)
+  }
+
+
+  // Optimistic locking update
+  private def updateDocumentRecur(spaceId: Long, key: Long, modify: Option[Document[T]] => Document[T], tryNumber: Int)(implicit session: DBSession): Document[T] = {
 
     inSession { implicit session =>
       getFromCacheOrDB(key) match {
         case None =>
           val modified = modify(None)
-          insertDocument(key, modified.document, modified.metadata)
+          insertDocument(spaceId, key, modified.document)
           modified
-        case Some(VersionedDocument(version, document, metadata)) =>
-          val modified = modify(Some(Document(document, metadata)))
+        case Some(VersionedDocument(version, document)) =>
+          val modified = modify(Some(Document(document)))
 
-          val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB, metadata = ?::JSONB WHERE id = ? AND version = ?"
-            .bind(version + 1, mpjsons.serialize[T](modified.document), mpjsons.serialize[M](modified.metadata), key, version)
+          val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
+            .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
             .map(_.int(1)).single().executeUpdate().apply()
 
           if(updated == 0) {
-            updateDocument(key, modify)
+            if(tryNumber < 10) {
+              updateDocumentRecur(spaceId, key, modify, tryNumber + 1)
+            } else {
+              throw new IllegalStateException("Too many tries to update document in table = ["+tableNameSQL+"] id = " + key + " expected version " + version)
+            }
+
           } else {
-            cache.put(key, Some(VersionedDocument(version + 1, modified.document, modified.metadata)))
+            cache.put(key, Some(VersionedDocument(version + 1, modified.document)))
             modified
           }
       }
@@ -382,9 +464,9 @@ class PostgresDocumentStore[T <: AnyRef, M <: AnyRef](val tableName: String, val
 
 }
 
-class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: String, val mpjsons: MPJsons,
-                                                            val cache: DocumentStoreCache[T, M], val indicies: Seq[Index] = Seq.empty)(implicit val t: TypeTag[T], val m: TypeTag[M])
-  extends DocumentStoreAutoId[T, M] with PostgresDocumentStoreTrait[T, M] {
+class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjsons: MPJsons,
+                                                            val cache: DocumentStoreCache[T], val indicies: Seq[Index] = Seq.empty)(implicit val t: TypeTag[T])
+  extends DocumentStoreAutoId[T] with PostgresDocumentStoreTrait[T] {
 
   protected final lazy val sequenceName = "sequence_" + tableName
 
@@ -412,33 +494,56 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
 
   }
 
-  override def insertDocument(document: T, metadata: M)(implicit session: DBSession): Long = {
+  override def insertDocument(spaceId: Long, document: T)(implicit session: DBSession): Long = {
     inSession {implicit session =>
-      val key = sql"INSERT INTO ${tableNameSQL} (id, version, document, metadata) VALUES (nextval('${sequenceNameSQL}'), 1, ?::jsonb, ?::jsonb) RETURNING currval('${sequenceNameSQL}')"
-          .bind(mpjsons.serialize(document), mpjsons.serialize(metadata))
+      val key = sql"INSERT INTO ${tableNameSQL} (space_id, id, version, document) VALUES (?, nextval('${sequenceNameSQL}'), 1, ?::jsonb) RETURNING currval('${sequenceNameSQL}')"
+          .bind(spaceId, mpjsons.serialize(document))
           .map(_.long(1)).single().apply().get
-      cache.put(key, Some(VersionedDocument(1, document, metadata)))
+      cache.put(key, Some(VersionedDocument(1, document)))
       key
     }
   }
 
-  // Optimistic locking update
-  def updateDocument(key: Long, modify: Option[Document[T, M]] => Document[T, M])(implicit session: DBSession): Document[T, M] = {
+  def updateExistingDocument(key: Long, modify: Document[T] => Document[T])(implicit session: DBSession): Document[T] = {
 
     inSession { implicit session =>
       getFromCacheOrDB(key) match {
         case None => throw new IllegalStateException(s"Document for key $key not found!")
-        case Some(VersionedDocument(version, document, metadata)) =>
-          val modified = modify(Some(Document(document, metadata)))
+        case Some(VersionedDocument(version, document)) =>
+          val modified = modify(Document(document))
 
-          val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB, metadata = ?::JSONB WHERE id = ? AND version = ?"
-            .bind(version + 1, mpjsons.serialize[T](modified.document), mpjsons.serialize[M](modified.metadata), key, version)
+          val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
+            .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
             .map(_.int(1)).single().executeUpdate().apply()
 
           if(updated == 0) {
-            updateDocument(key, modify)
+            updateExistingDocument(key, modify)
           } else {
-            cache.put(key, Some(VersionedDocument(version + 1, modified.document, modified.metadata)))
+            cache.put(key, Some(VersionedDocument(version + 1, modified.document)))
+            modified
+          }
+      }
+    }
+  }
+
+
+  // Optimistic locking update
+  def updateDocument(spaceId: Long, key: Long, modify: Option[Document[T]] => Document[T])(implicit session: DBSession): Document[T] = {
+
+    inSession { implicit session =>
+      getFromCacheOrDB(key) match {
+        case None => throw new IllegalStateException(s"Document for key $key not found!")
+        case Some(VersionedDocument(version, document)) =>
+          val modified = modify(Some(Document(document)))
+
+          val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
+            .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
+            .map(_.int(1)).single().executeUpdate().apply()
+
+          if(updated == 0) {
+            updateDocument(spaceId, key, modify)
+          } else {
+            cache.put(key, Some(VersionedDocument(version + 1, modified.document)))
             modified
           }
       }
@@ -452,5 +557,6 @@ class PostgresDocumentStoreAutoId[T <: AnyRef, M <: AnyRef](val tableName: Strin
       cache.clear()
     }
   }
+
 }
 

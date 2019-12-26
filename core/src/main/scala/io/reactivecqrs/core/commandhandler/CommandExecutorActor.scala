@@ -3,19 +3,18 @@ package io.reactivecqrs.core.commandhandler
 import java.io.{PrintWriter, StringWriter}
 import java.time.Instant
 
-import akka.actor.{Actor, ActorContext, ActorRef, PoisonPill, Props}
+import akka.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.command.{LogCommand, LogConcurrentCommand, LogFirstCommand}
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRootCurrentVersion, IdempotentCommandInfo, PersistEvents}
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRootCurrentVersion, IdempotentCommandInfo, OverrideAndPersistEvents, PersistEvents}
 import io.reactivecqrs.core.commandhandler.CommandExecutorActor.AggregateModified
-import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalCommandEnvelope, InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope}
+import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalCommandEnvelope, InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope, InternalRewriteHistoryCommandEnvelope, InternalRewriteHistoryConcurrentCommandEnvelope}
 import io.reactivecqrs.core.util.ActorLogging
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.AggregateWithSelectedEvents
 
 import scala.concurrent.duration._
 import scala.concurrent.duration.FiniteDuration
 import scala.util.{Failure, Success}
-
 import scala.reflect._
 import scala.reflect.runtime.universe._
 
@@ -26,10 +25,10 @@ object CommandExecutorActor {
 class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: AggregateId,
                                            commandEnvelope: InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]],
                                            repositoryActor: ActorRef,
-                                           commandLogActor: ActorRef,
                                            commandResponseState: CommandResponseState,
                                            resultAggregatorName: String,
                                            commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]],
+                                           rewriteHistoryCommandHandlers: (Iterable[EventWithVersion[AGGREGATE_ROOT]], AGGREGATE_ROOT) => PartialFunction[Any, GenericCommandResult[Any]],
                                            initialState: () => AGGREGATE_ROOT) extends Actor with ActorLogging {
 
   private val responseTimeout: FiniteDuration = 60.seconds // timeout for Response handler, we assume one minute is maximum for someone to wait for response
@@ -42,9 +41,12 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
 
   // Receiving aggregate from aggregate repository
   private def receiveAggregate: Receive = logReceive {
-    case s:Success[_] =>
+    case Success(s) => s match {
+      case s: Aggregate[_] => handleFollowingCommand(s.asInstanceOf[Aggregate[AGGREGATE_ROOT]], Iterable.empty)
+      case s: AggregateWithSelectedEvents[_] => handleFollowingCommand(s.aggregate.asInstanceOf[Aggregate[AGGREGATE_ROOT]], s.events.asInstanceOf[Iterable[EventWithVersion[AGGREGATE_ROOT]]])
+    }
 //      println("Received aggregate " + aggregateId.asLong+" of version " + s.get.asInstanceOf[Aggregate[AGGREGATE_ROOT]].version.asInt)
-      handleFollowingCommand(s.get.asInstanceOf[Aggregate[AGGREGATE_ROOT]])
+
     case f:Failure[_] =>
       handleCommandHandlingExceptionAndStop(f.exception)
     case m =>
@@ -78,7 +80,9 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
         case InternalConcurrentCommandEnvelope(respondTo, commandId, command) =>
           context.become(receiveAggregate)
           repositoryActor ! GetAggregateRootCurrentVersion(self)
-//          println("Concurrent modification for concurrent command")
+        case InternalRewriteHistoryConcurrentCommandEnvelope(respondTo, commandId, command) =>
+          context.become(receiveAggregate)
+          repositoryActor ! GetAggregateRootCurrentVersion(self)
         case _ =>
           commandEnvelope.respondTo ! e
           context.stop(self)
@@ -94,13 +98,17 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
 
 
   // TODO handling concurrent command is not thread safe
-  private def handleFollowingCommand(aggregate: Aggregate[AGGREGATE_ROOT]): Unit = commandEnvelope match {
+  private def handleFollowingCommand(aggregate: Aggregate[AGGREGATE_ROOT], events: Iterable[EventWithVersion[AGGREGATE_ROOT]]): Unit = commandEnvelope match {
     case InternalFirstCommandEnvelope(respondTo, commandId, command) =>
       handleFirstCommand(respondTo, commandId, command.asInstanceOf[FirstCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]])
     case InternalConcurrentCommandEnvelope(respondTo, commandId, command) =>
       handleFollowingCommand(aggregate, respondTo, command.userId, commandId, command, aggregate.version)
     case InternalFollowingCommandEnvelope(respondTo, commandId, command) =>
       handleFollowingCommand(aggregate, respondTo, command.userId, commandId, command, command.expectedVersion)
+    case InternalRewriteHistoryCommandEnvelope(respondTo, commandId, command) =>
+      handleRewriteHistoryCommand(aggregate, events, respondTo, command.userId, commandId, command, command.expectedVersion)
+    case InternalRewriteHistoryConcurrentCommandEnvelope(respondTo, commandId, command) =>
+      handleRewriteHistoryCommand(aggregate, events, respondTo, command.userId, commandId, command, aggregate.version)
     case e =>
       log.error(s"Unsupported envelope type [$e]")
       context.stop(self)
@@ -126,6 +134,31 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
     } else {
 //      println("CommandExecutorActor AggregateConcurrentModificationError "+aggregateId.asLong+" expected " + expectedVersion.asInt+" was " + aggregate.version.asInt)
       self ! AggregateConcurrentModificationError(aggregateId, AggregateType(classTag[AGGREGATE_ROOT].toString), expectedVersion, aggregate.version)
+    }
+  }
+
+  private def handleRewriteHistoryCommand(aggregate: Aggregate[AGGREGATE_ROOT], events: Iterable[EventWithVersion[AGGREGATE_ROOT]], respondTo: ActorRef, userId: UserId, commandId: CommandId,
+                                     command: Any, expectedVersion: AggregateVersion): Unit = {
+    if(events.isEmpty) {
+      throw new IllegalStateException("Events should not be empty")
+    } else {
+      if (expectedVersion == aggregate.version) {
+        context.become(receiveCommandHandlingResult(aggregate.version, expectedVersion, userId))
+        try {
+          //        println(s"Handling command ${command.getClass.getSimpleName} for aggregate ${aggregate.id.asLong} of version ${aggregate.version.asInt}")
+          rewriteHistoryCommandHandlers(events, aggregate.aggregateRoot.get)(command) match {
+            case result: CustomCommandResult[_] => self ! result
+            case asyncResult: AsyncCommandResult[_] =>
+              asyncResult.future.onFailure { case exception => self ! exception }
+              asyncResult.future.onSuccess { case result => self ! result }
+          }
+        } catch {
+          case exception: Exception => self ! exception
+        }
+      } else {
+        //      println("CommandExecutorActor AggregateConcurrentModificationError "+aggregateId.asLong+" expected " + expectedVersion.asInt+" was " + aggregate.version.asInt)
+        self ! AggregateConcurrentModificationError(aggregateId, AggregateType(classTag[AGGREGATE_ROOT].toString), expectedVersion, aggregate.version)
+      }
     }
   }
 
@@ -156,11 +189,19 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
         }
         context.become(receiveEventsPersistResult(response))
         repositoryActor ! PersistEvents[AGGREGATE_ROOT](self, commandEnvelope.commandId, userId, expectedVersion, Instant.now, success.events, idempotentCommandInfo(commandEnvelope.command, response))
-        commandEnvelope.command match {
-          case c: FirstCommand[_, _] => commandLogActor ! LogFirstCommand(commandEnvelope.commandId, c)
-          case c: Command[_, _] => commandLogActor ! LogCommand(commandEnvelope.commandId, c)
-          case c: ConcurrentCommand[_, _] => commandLogActor ! LogConcurrentCommand(commandEnvelope.commandId, c)
+      case s: RewriteCommandSuccess[_, _] =>
+
+        val success = s.asInstanceOf[RewriteCommandSuccess[AGGREGATE_ROOT, AnyRef]]
+        val response = success.responseInfo match {
+          // if concurrent command then expected aggregate version plus events count will be sent to command originator,
+          // that might be inaccurate if other command happened meantime, but this should not be a problem for concurrent command
+          case r: Nothing => SuccessResponse(aggregateId, version.incrementBy(success.events.size))
+          case _ => CustomSuccessResponse(aggregateId, version.incrementBy(success.events.size), success.responseInfo)
         }
+        context.become(receiveEventsPersistResult(response))
+        repositoryActor ! OverrideAndPersistEvents[AGGREGATE_ROOT](success.eventsRewritten, PersistEvents[AGGREGATE_ROOT](self, commandEnvelope.commandId, userId, expectedVersion, Instant.now, success.events, idempotentCommandInfo(commandEnvelope.command, response)))
+
+
       case failure: CommandFailure[_, _] =>
         commandEnvelope.respondTo ! failure.response
     }
