@@ -79,7 +79,11 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     aggregateRoot = initialState()
     eventStore.readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap, aggregateId, singleReadForVersionOnly)(handleEvent)
 
-    eventsToPublish = eventStore.readEventsToPublishForAggregate[AGGREGATE_ROOT](eventsVersionsMap, aggregateId)
+    if(singleReadForVersionOnly.isEmpty) {
+      eventsToPublish = eventStore.readEventsToPublishForAggregate[AGGREGATE_ROOT](eventsVersionsMap, aggregateId)
+
+      context.system.scheduler.scheduleOnce(10.seconds, self, ResendPersistedMessages)(context.dispatcher)
+    }
   }
 
   private def resendEventsToPublish(): Unit = {
@@ -87,14 +91,16 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
       log.info("Resending messages for " + aggregateType+" "+aggregateId+" " + eventsToPublish.map(e => e.event.getClass.getSimpleName+" "+e.version))
       eventsBus ! PublishEvents(aggregateType, eventsToPublish.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
 
-      pendingPublish = eventsToPublish.map(e => EventWithIdentifier[AGGREGATE_ROOT](e.aggregateId, e.version, e.event)) ::: pendingPublish
+      pendingPublish = (eventsToPublish.map(e => EventWithIdentifier[AGGREGATE_ROOT](e.aggregateId, e.version, e.event)) ::: pendingPublish).distinct
+
+      context.system.scheduler.scheduleOnce(60.seconds, self, ResendPersistedMessages)(context.dispatcher)
     }
   }
 
   assureRestoredState()
 
-  override def preStart() {
-    context.system.scheduler.schedule(10.seconds, 60.seconds, self, ResendPersistedMessages)(context.dispatcher)
+  override def preStart(): Unit = {
+    // empty
   }
 
   override def postRestart(reason: Throwable) {
@@ -131,7 +137,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
       events.foreach(eventIdentifier => handleEvent(eventIdentifier.userId, eventIdentifier.timestamp, eventIdentifier.event, aggregateId, eventIdentifier.version.asInt, noopEvent = false))
     }
     eventsBus ! PublishEvents(aggregateType, events.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
-    pendingPublish = events.map(e => EventWithIdentifier[AGGREGATE_ROOT](e.aggregateId, e.version, e.event)).toList ::: pendingPublish
+    pendingPublish = (events.map(e => EventWithIdentifier[AGGREGATE_ROOT](e.aggregateId, e.version, e.event)).toList ::: pendingPublish).distinct
     replayDelayedQueries()
   }
 
