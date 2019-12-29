@@ -48,4 +48,6 @@ abstract class AggregateContext[AGGREGATE_ROOT] {
 
   val eventsVersions: List[EventVersion[AGGREGATE_ROOT]] = List.empty
 
+  val version: Int
+
 }

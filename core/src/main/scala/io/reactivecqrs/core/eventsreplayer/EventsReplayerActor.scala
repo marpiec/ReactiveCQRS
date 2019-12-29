@@ -14,7 +14,7 @@ import io.reactivecqrs.core.backpressure.BackPressureActor
 import io.reactivecqrs.core.backpressure.BackPressureActor.{Finished, ProducerAllowMore, ProducerAllowedMore, Start, Stop}
 import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, ReplayAllEvents}
 import io.reactivecqrs.core.eventstore.EventStoreState
-import io.reactivecqrs.core.projection.SubscriptionsState
+import io.reactivecqrs.core.projection.{SubscriptionsState, VersionsState}
 import io.reactivecqrs.core.util.ActorLogging
 
 import scala.concurrent.Await
@@ -45,10 +45,12 @@ class ReplayerRepositoryActorFactory[AGGREGATE_ROOT: TypeTag:ClassTag](aggregate
       () => aggregateContext.initialAggregateRoot, aggregateVersion, eventsVersionsMap, eventsVersionsMapReverse, maxInactivitySeconds)), actorName)
   }
 
+  def aggregateVersion = aggregateContext.version
+
 }
 
 object EventsReplayerActor {
-  case class ReplayAllEvents(batchPerAggregate: Boolean, aggregatesTypes: Seq[String], delayBetweenAggregateTypes: Long)
+  case class ReplayAllEvents(batchPerAggregate: Boolean, aggregatesTypes: Seq[AggregateType], delayBetweenAggregateTypes: Long)
   case class EventsReplayed(eventsCount: Long)
 }
 
@@ -65,6 +67,7 @@ case class ReplayerConfig(maxReplayerInactivitySeconds: Int = 30,
 class EventsReplayerActor(eventStore: EventStoreState,
                           val eventsBus: ActorRef,
                           subscriptionsState: SubscriptionsState,
+                          versionsState: VersionsState,
                           val config: ReplayerConfig,
                           actorsFactory: List[ReplayerRepositoryActorFactory[_]]) extends Actor with ActorLogging {
 
@@ -85,7 +88,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
     case ReplayAllEvents(batchPerAggregate, aggregatesTypes, delayBetweenAggregateTypes) => replayAllEvents(sender, batchPerAggregate, aggregatesTypes, delayBetweenAggregateTypes)
   }
 
-  private def replayAllEvents(respondTo: ActorRef, batchPerAggregate: Boolean, aggregatesTypes: Seq[String], delayBetweenAggregateTypes: Long) {
+  private def replayAllEvents(respondTo: ActorRef, batchPerAggregate: Boolean, aggregatesTypes: Seq[AggregateType], delayBetweenAggregateTypes: Long) {
     backPressureActor ! Start
     val allEvents: Int = eventStore.countAllEvents()
     var allEventsSent: Long = 0
@@ -99,44 +102,52 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
 
     aggregatesTypes.foreach(aggregateType => {
-      val start = new Date().getTime
-      println("Processing events for " + aggregateType)
-      eventStore.readAndProcessAllEvents(combinedEventsVersionsMap, aggregateType, batchPerAggregate, (events: Seq[EventInfo[_]], aggregateId: AggregateId, aggregateType: AggregateType) => {
-        if(eventsToProduceAllowed <= 0) {
-          // Ask is a way to block during fetching data from db
-//          print("Replayer: Waiting more allowed messages, now allowed " + eventsToProduceAllowed)
-          eventsToProduceAllowed += Await.result((backPressureActor ? ProducerAllowMore).mapTo[ProducerAllowedMore].map(_.count), timeoutDuration)
-//          println("Replayer: Allowed to produce " + eventsToProduceAllowed +" more")
-        }
+      val previousVersion: Int = versionsState.versionFor(aggregateType.typeName)
+      val currentVersion = factories(aggregateType.typeName).aggregateVersion
 
-        notYetPublishedAggregatesVersions.get(aggregateId) match {
-          case None =>
-            val actor = getOrCreateReplayRepositoryActor(aggregateId, events.head.version, aggregateType)
-            actor ! ReplayEvents(IdentifiableEvents(aggregateType, aggregateId, events.asInstanceOf[Seq[EventInfo[Any]]]))
-          case Some(notPublishedVersion) if events.head.version < notPublishedVersion =>
-            val actor = getOrCreateReplayRepositoryActor(aggregateId, events.head.version, aggregateType)
-            actor ! ReplayEvents(IdentifiableEvents(aggregateType, aggregateId, events.takeWhile(_.version < notPublishedVersion).asInstanceOf[Seq[EventInfo[Any]]]))
-          case Some(notPublishedVersion) => ()
-        }
-        eventsToProduceAllowed -= events.size
+      if(previousVersion != currentVersion) {
 
-        allEventsSent += events.size
-        lastDumpEventsSent += events.size
-        val now = System.currentTimeMillis()
-        if(now - lastUpdate > 5000) {
-          println("Replayed " + allEventsSent + "/" + allEvents + " events")
-          lastUpdate = System.currentTimeMillis()
-        }
+        val start = new Date().getTime
+        println("Processing events for " + aggregateType)
+        eventStore.readAndProcessAllEvents(combinedEventsVersionsMap, aggregateType.typeName, batchPerAggregate, (events: Seq[EventInfo[_]], aggregateId: AggregateId, aggregateType: AggregateType) => {
+          if (eventsToProduceAllowed <= 0) {
+            // Ask is a way to block during fetching data from db
+            //          print("Replayer: Waiting more allowed messages, now allowed " + eventsToProduceAllowed)
+            eventsToProduceAllowed += Await.result((backPressureActor ? ProducerAllowMore).mapTo[ProducerAllowedMore].map(_.count), timeoutDuration)
+            //          println("Replayer: Allowed to produce " + eventsToProduceAllowed +" more")
+          }
 
-        if(allEventsSent < 1000 && lastDumpEventsSent >= 100 || allEventsSent < 10000 && lastDumpEventsSent >= 1000 || lastDumpEventsSent >= 10000) {
-          println(subscriptionsState.dump())
-          lastDumpEventsSent = 0
-        }
+          notYetPublishedAggregatesVersions.get(aggregateId) match {
+            case None =>
+              val actor = getOrCreateReplayRepositoryActor(aggregateId, events.head.version, aggregateType)
+              actor ! ReplayEvents(IdentifiableEvents(aggregateType, aggregateId, events.asInstanceOf[Seq[EventInfo[Any]]]))
+            case Some(notPublishedVersion) if events.head.version < notPublishedVersion =>
+              val actor = getOrCreateReplayRepositoryActor(aggregateId, events.head.version, aggregateType)
+              actor ! ReplayEvents(IdentifiableEvents(aggregateType, aggregateId, events.takeWhile(_.version < notPublishedVersion).asInstanceOf[Seq[EventInfo[Any]]]))
+            case Some(notPublishedVersion) => ()
+          }
+          eventsToProduceAllowed -= events.size
 
-      })
-      println("Done processing events for " + aggregateType + " in "+formatMillis(new Date().getTime - start))
-      if(delayBetweenAggregateTypes > 0) {
-        Thread.sleep(delayBetweenAggregateTypes)
+          allEventsSent += events.size
+          lastDumpEventsSent += events.size
+          val now = System.currentTimeMillis()
+          if (now - lastUpdate > 5000) {
+            println("Replayed " + allEventsSent + "/" + allEvents + " events")
+            lastUpdate = System.currentTimeMillis()
+          }
+
+          if (allEventsSent < 1000 && lastDumpEventsSent >= 100 || allEventsSent < 10000 && lastDumpEventsSent >= 1000 || lastDumpEventsSent >= 10000) {
+            println(subscriptionsState.dump())
+            lastDumpEventsSent = 0
+          }
+
+        })
+        println("Done processing events for " + aggregateType + " in " + formatMillis(new Date().getTime - start))
+        if (delayBetweenAggregateTypes > 0) {
+          Thread.sleep(delayBetweenAggregateTypes)
+        }
+      } else {
+        println("Skipping events for " + aggregateType + ", version " + currentVersion+" already applied")
       }
     })
 

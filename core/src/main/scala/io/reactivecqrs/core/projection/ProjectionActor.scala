@@ -24,8 +24,11 @@ sealed trait DelayedQuery {
 private case class SyncDelayedQuery(until: Instant, respondTo: ActorRef, search: () => Option[Any]) extends DelayedQuery
 private case class AsyncDelayedQuery(until: Instant, respondTo: ActorRef, search: () => Future[Option[Any]]) extends DelayedQuery
 
-case object ClearProjectionData
+case class ClearProjectionData(projectionVersions: Map[String, Int])
 case object ProjectionDataCleared
+
+
+case class InitRebuildForTypes(aggregatesTypes: Iterable[AggregateType])
 
 abstract class ProjectionActor extends Actor with ActorLogging {
 
@@ -34,6 +37,8 @@ abstract class ProjectionActor extends Actor with ActorLogging {
   protected val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi
 
   protected val listeners:List[Listener[Any]]
+
+  protected val version: Int
 
   private val delayedAggregateWithType = mutable.Map[AggregateId, List[AggregateWithType[_]]]()
   private val delayedAggregateWithTypeAndEvent = mutable.Map[AggregateId, List[AggregateWithTypeAndEvents[_]]]()
@@ -110,6 +115,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
   }
 
   protected def receiveUpdate: Receive =  {
+    case q: InitRebuildForTypes => subscribe(Some(q.aggregatesTypes))
     case q: AsyncDelayedQuery =>
       delayedQueries ::= q
       scheduleNearest()
@@ -231,7 +237,9 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       } else {
         throw new IllegalArgumentException("Received empty list of events!")
       }
-    case ClearProjectionData => clearProjectionData(sender())
+    case ClearProjectionData(versions) => if(version > versions.getOrElse(this.getClass.getName, 0)) {
+      clearProjectionData(sender())
+    } // otherwise ignore
   }
 
   protected def receiveQuery: Receive
@@ -245,15 +253,19 @@ abstract class ProjectionActor extends Actor with ActorLogging {
   protected def onClearProjectionData(): Unit
 
   override def preStart() {
-    eventBusSubscriptionsManager.subscribe(aggregateListenersMap.keySet.toList.map { aggregateType =>
+    subscribe(None)
+  }
+
+  private def subscribe(aggregates: Option[Iterable[AggregateType]]) {
+    eventBusSubscriptionsManager.subscribe(aggregateListenersMap.keySet.toList.filter(t => aggregates.isEmpty || aggregates.get.exists(_ == t)).map { aggregateType =>
       SubscribeForAggregates("", aggregateType, self)
     })
 
-    eventBusSubscriptionsManager.subscribe(eventListenersMap.keySet.toList.map { aggregateType =>
+    eventBusSubscriptionsManager.subscribe(eventListenersMap.keySet.toList.filter(t => aggregates.isEmpty || aggregates.get.exists(_ == t)).map { aggregateType =>
       SubscribeForEvents("", aggregateType, self)
     })
 
-    eventBusSubscriptionsManager.subscribe(aggregateWithEventListenersMap.keySet.toList.map { aggregateType =>
+    eventBusSubscriptionsManager.subscribe(aggregateWithEventListenersMap.keySet.toList.filter(t => aggregates.isEmpty || aggregates.get.exists(_ == t)).map { aggregateType =>
       SubscribeForAggregatesWithEvents("", aggregateType, self)
     })
   }
