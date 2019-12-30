@@ -24,14 +24,18 @@ sealed trait DelayedQuery {
 private case class SyncDelayedQuery(until: Instant, respondTo: ActorRef, search: () => Option[Any]) extends DelayedQuery
 private case class AsyncDelayedQuery(until: Instant, respondTo: ActorRef, search: () => Future[Option[Any]]) extends DelayedQuery
 
-case class ClearProjectionData(projectionVersions: Map[String, Int])
+case object ClearProjectionData
 case object ProjectionDataCleared
+
+case object GetSubscribedAggregates
+case class SubscribedAggregates(projectionName: String, projectionVersion: Int, aggregates: Set[AggregateType])
 
 
 case class InitRebuildForTypes(aggregatesTypes: Iterable[AggregateType])
 
 abstract class ProjectionActor extends Actor with ActorLogging {
 
+  protected val projectionName: String
   protected val subscriptionsState: SubscriptionsState
 
   protected val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi
@@ -114,8 +118,13 @@ abstract class ProjectionActor extends Actor with ActorLogging {
     }
   }
 
+  def getSubscribedAggregates: SubscribedAggregates = {
+    SubscribedAggregates(projectionName, version, aggregateListenersMap.keySet ++ eventListenersMap.keySet ++ aggregateWithEventListenersMap.keySet)
+  }
+
   protected def receiveUpdate: Receive =  {
     case q: InitRebuildForTypes => subscribe(Some(q.aggregatesTypes))
+    case GetSubscribedAggregates => sender() ! getSubscribedAggregates
     case q: AsyncDelayedQuery =>
       delayedQueries ::= q
       scheduleNearest()
@@ -237,9 +246,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       } else {
         throw new IllegalArgumentException("Received empty list of events!")
       }
-    case ClearProjectionData(versions) => if(version > versions.getOrElse(this.getClass.getName, 0)) {
-      clearProjectionData(sender())
-    } // otherwise ignore
+    case ClearProjectionData => clearProjectionData(sender()) // otherwise ignore
   }
 
   protected def receiveQuery: Receive

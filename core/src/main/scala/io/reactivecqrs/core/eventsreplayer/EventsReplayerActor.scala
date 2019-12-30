@@ -102,7 +102,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
 
     aggregatesTypes.foreach(aggregateType => {
-      val previousVersion: Int = versionsState.versionFor(aggregateType.typeName)
+      val previousVersion: Int = versionsState.versionForAggregate(aggregateType.typeName)
       val currentVersion = factories(aggregateType.typeName).aggregateVersion
 
       if(previousVersion != currentVersion) {

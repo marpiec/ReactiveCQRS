@@ -2,14 +2,14 @@ package io.reactivecqrs.testdomain.spec
 
 import akka.actor.{ActorRef, ActorSystem, Props}
 import io.mpjsons.MPJsons
-import io.reactivecqrs.api.AggregateVersion
+import io.reactivecqrs.api.{AggregateType, AggregateVersion}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.documentstore.{MemoryDocumentStore, NoopDocumentStoreCache, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus._
 import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, ReplayAllEvents}
-import io.reactivecqrs.core.eventsreplayer.{EventsReplayerActor, ReplayerRepositoryActorFactory}
+import io.reactivecqrs.core.eventsreplayer.{EventsReplayerActor, ReplayerConfig, ReplayerRepositoryActorFactory}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
-import io.reactivecqrs.core.projection.PostgresSubscriptionsState
+import io.reactivecqrs.core.projection.{PostgresSubscriptionsState, PostgresVersionsState}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCart, ShoppingCartAggregateContext, ShoppingCartsListProjectionAggregatesBased, ShoppingCartsListProjectionEventsBased}
@@ -42,6 +42,7 @@ class EventsReplaySpec extends CommonSpec {
 
     val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(system.actorOf(Props(new EventBusSubscriptionsManager(0))))
     val subscriptionState = new PostgresSubscriptionsState(typesTypesState, true)
+    val versionsState = new PostgresVersionsState()
     subscriptionState.initSchema()
 
     val inMemory = false
@@ -82,7 +83,7 @@ class EventsReplaySpec extends CommonSpec {
 
 
 
-    val replayerActor = system.actorOf(Props(new EventsReplayerActor(eventStoreState, eventBusActor, subscriptionState, List(
+    val replayerActor = system.actorOf(Props(new EventsReplayerActor(eventStoreState, eventBusActor, subscriptionState, versionsState, ReplayerConfig(), List(
       ReplayerRepositoryActorFactory(new ShoppingCartAggregateContext)
     ))))
 
@@ -97,7 +98,7 @@ class EventsReplaySpec extends CommonSpec {
       import fixture._
 
       val start = System.currentTimeMillis()
-      val result: EventsReplayed = replayerActor.askActor[EventsReplayed](ReplayAllEvents(false, Seq(classOf[ShoppingCart].getName), 50))(50.seconds)
+      val result: EventsReplayed = replayerActor.askActor[EventsReplayed](ReplayAllEvents(false, Seq(AggregateType(classOf[ShoppingCart].getName)), 50))(50.seconds)
 
       println(result+" in "+(System.currentTimeMillis() - start)+"mills")
 

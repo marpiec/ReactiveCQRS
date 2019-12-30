@@ -67,6 +67,9 @@ class ShoppingCartsListProjectionEventsBased(val eventBusSubscriptionsManager: E
   override protected def onClearProjectionData(): Unit = {
     // do nothing
   }
+
+  override protected val projectionName: String = "ShoppingCartsListProjectionEventsBased"
+  override protected val version: Int = 1
 }
 
 
@@ -75,6 +78,8 @@ class ShoppingCartsListProjectionAggregatesBased(val eventBusSubscriptionsManage
                                                  val subscriptionsState: SubscriptionsState,
                                                  documentStore: DocumentStore[String]) extends ProjectionActor {
   protected val listeners =  List(AggregateListener(shoppingCartUpdate))
+  override protected val projectionName: String = "ShoppingCartsListProjectionAggregatesBased"
+  override protected val version: Int = 1
 
   private def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, eventsCount: Int, aggregateRoot: Option[ShoppingCart]) = { implicit session: DBSession =>
     aggregateRoot match {

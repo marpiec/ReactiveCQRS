@@ -20,7 +20,7 @@ case class EventTypeVersion(eventType: String, version: Short)
 
 case class EventVersion[AGGREGATE_ROOT](eventBaseType: String, mapping: List[EventTypeVersion])
 
-abstract class AggregateContext[AGGREGATE_ROOT] {
+abstract class AggregateContext[AGGREGATE_ROOT : ClassTag] {
 
   protected implicit def future2AsyncResult[T](future: Future[CustomCommandResult[T]]): AsyncCommandResult[T] = {
     AsyncCommandResult(future)
@@ -49,5 +49,7 @@ abstract class AggregateContext[AGGREGATE_ROOT] {
   val eventsVersions: List[EventVersion[AGGREGATE_ROOT]] = List.empty
 
   val version: Int
+
+  val aggregateType = AggregateType(classTag[AGGREGATE_ROOT].toString)
 
 }
