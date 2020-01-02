@@ -139,26 +139,22 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
 
   private def handleRewriteHistoryCommand(aggregate: Aggregate[AGGREGATE_ROOT], events: Iterable[EventWithVersion[AGGREGATE_ROOT]], respondTo: ActorRef, userId: UserId, commandId: CommandId,
                                      command: Any, expectedVersion: AggregateVersion): Unit = {
-    if(events.isEmpty) {
-      throw new IllegalStateException("Events should not be empty")
-    } else {
-      if (expectedVersion == aggregate.version) {
-        context.become(receiveCommandHandlingResult(aggregate.version, expectedVersion, userId))
-        try {
-          //        println(s"Handling command ${command.getClass.getSimpleName} for aggregate ${aggregate.id.asLong} of version ${aggregate.version.asInt}")
-          rewriteHistoryCommandHandlers(events, aggregate.aggregateRoot.get)(command) match {
-            case result: CustomCommandResult[_] => self ! result
-            case asyncResult: AsyncCommandResult[_] =>
-              asyncResult.future.onFailure { case exception => self ! exception }
-              asyncResult.future.onSuccess { case result => self ! result }
-          }
-        } catch {
-          case exception: Exception => self ! exception
+    if (expectedVersion == aggregate.version) {
+      context.become(receiveCommandHandlingResult(aggregate.version, expectedVersion, userId))
+      try {
+        //        println(s"Handling command ${command.getClass.getSimpleName} for aggregate ${aggregate.id.asLong} of version ${aggregate.version.asInt}")
+        rewriteHistoryCommandHandlers(events, aggregate.aggregateRoot.get)(command) match {
+          case result: CustomCommandResult[_] => self ! result
+          case asyncResult: AsyncCommandResult[_] =>
+            asyncResult.future.onFailure { case exception => self ! exception }
+            asyncResult.future.onSuccess { case result => self ! result }
         }
-      } else {
-        //      println("CommandExecutorActor AggregateConcurrentModificationError "+aggregateId.asLong+" expected " + expectedVersion.asInt+" was " + aggregate.version.asInt)
-        self ! AggregateConcurrentModificationError(aggregateId, AggregateType(classTag[AGGREGATE_ROOT].toString), expectedVersion, aggregate.version)
+      } catch {
+        case exception: Exception => self ! exception
       }
+    } else {
+      //      println("CommandExecutorActor AggregateConcurrentModificationError "+aggregateId.asLong+" expected " + expectedVersion.asInt+" was " + aggregate.version.asInt)
+      self ! AggregateConcurrentModificationError(aggregateId, AggregateType(classTag[AGGREGATE_ROOT].toString), expectedVersion, aggregate.version)
     }
   }
 
