@@ -83,7 +83,7 @@ class EventsReplaySpec extends CommonSpec {
 
 
 
-    val replayerActor = system.actorOf(Props(new EventsReplayerActor(eventStoreState, eventBusActor, subscriptionState, versionsState, ReplayerConfig(), List(
+    val replayerActor = system.actorOf(Props(new EventsReplayerActor(eventStoreState, eventBusActor, subscriptionState, ReplayerConfig(), List(
       ReplayerRepositoryActorFactory(new ShoppingCartAggregateContext)
     ))))
 

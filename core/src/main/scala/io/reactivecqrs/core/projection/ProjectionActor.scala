@@ -30,7 +30,6 @@ case object ProjectionDataCleared
 case object GetSubscribedAggregates
 case class SubscribedAggregates(projectionName: String, projectionVersion: Int, aggregates: Set[AggregateType])
 
-
 case class InitRebuildForTypes(aggregatesTypes: Iterable[AggregateType])
 
 abstract class ProjectionActor extends Actor with ActorLogging {
@@ -246,7 +245,7 @@ abstract class ProjectionActor extends Actor with ActorLogging {
       } else {
         throw new IllegalArgumentException("Received empty list of events!")
       }
-    case ClearProjectionData => clearProjectionData(sender()) // otherwise ignore
+    case ClearProjectionData => clearProjectionData(sender())
   }
 
   protected def receiveQuery: Receive
