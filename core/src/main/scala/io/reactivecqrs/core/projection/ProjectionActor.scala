@@ -27,13 +27,21 @@ private case class AsyncDelayedQuery(until: Instant, respondTo: ActorRef, search
 case object ClearProjectionData
 case object ProjectionDataCleared
 
+case object GetSubscribedAggregates
+case class SubscribedAggregates(projectionName: String, projectionVersion: Int, aggregates: Set[AggregateType])
+
+case class InitRebuildForTypes(aggregatesTypes: Iterable[AggregateType])
+
 abstract class ProjectionActor extends Actor with ActorLogging {
 
+  protected val projectionName: String
   protected val subscriptionsState: SubscriptionsState
 
   protected val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi
 
   protected val listeners:List[Listener[Any]]
+
+  protected val version: Int
 
   private val delayedAggregateWithType = mutable.Map[AggregateId, List[AggregateWithType[_]]]()
   private val delayedAggregateWithTypeAndEvent = mutable.Map[AggregateId, List[AggregateWithTypeAndEvents[_]]]()
@@ -109,7 +117,13 @@ abstract class ProjectionActor extends Actor with ActorLogging {
     }
   }
 
+  def getSubscribedAggregates: SubscribedAggregates = {
+    SubscribedAggregates(projectionName, version, aggregateListenersMap.keySet ++ eventListenersMap.keySet ++ aggregateWithEventListenersMap.keySet)
+  }
+
   protected def receiveUpdate: Receive =  {
+    case q: InitRebuildForTypes => subscribe(Some(q.aggregatesTypes))
+    case GetSubscribedAggregates => sender() ! getSubscribedAggregates
     case q: AsyncDelayedQuery =>
       delayedQueries ::= q
       scheduleNearest()
@@ -245,15 +259,19 @@ abstract class ProjectionActor extends Actor with ActorLogging {
   protected def onClearProjectionData(): Unit
 
   override def preStart() {
-    eventBusSubscriptionsManager.subscribe(aggregateListenersMap.keySet.toList.map { aggregateType =>
+    subscribe(None)
+  }
+
+  private def subscribe(aggregates: Option[Iterable[AggregateType]]) {
+    eventBusSubscriptionsManager.subscribe(aggregateListenersMap.keySet.toList.filter(t => aggregates.isEmpty || aggregates.get.exists(_ == t)).map { aggregateType =>
       SubscribeForAggregates("", aggregateType, self)
     })
 
-    eventBusSubscriptionsManager.subscribe(eventListenersMap.keySet.toList.map { aggregateType =>
+    eventBusSubscriptionsManager.subscribe(eventListenersMap.keySet.toList.filter(t => aggregates.isEmpty || aggregates.get.exists(_ == t)).map { aggregateType =>
       SubscribeForEvents("", aggregateType, self)
     })
 
-    eventBusSubscriptionsManager.subscribe(aggregateWithEventListenersMap.keySet.toList.map { aggregateType =>
+    eventBusSubscriptionsManager.subscribe(aggregateWithEventListenersMap.keySet.toList.filter(t => aggregates.isEmpty || aggregates.get.exists(_ == t)).map { aggregateType =>
       SubscribeForAggregatesWithEvents("", aggregateType, self)
     })
   }

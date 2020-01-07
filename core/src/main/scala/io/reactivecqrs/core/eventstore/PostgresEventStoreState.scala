@@ -240,7 +240,16 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
 
   override def countAllEvents(): Int =  DB.readOnly { implicit session =>
-    sql"""SELECT COUNT(*) FROM events""".stripMargin.map(rs => rs.int(1)).single().apply().get
+    sql"""SELECT COUNT(*) FROM events""".map(rs => rs.int(1)).single().apply().get
+  }
+
+  override def countEventsForAggregateTypes(aggregateTypes: Seq[String]): Int = DB.readOnly { implicit session =>
+    if(aggregateTypes.isEmpty) {
+      0
+    } else {
+      val typesIds = aggregateTypes.map(t => typesNamesState.typeIdByClassName(t)).distinct
+      sql"""SELECT COUNT(*) FROM events JOIN aggregates ON events.aggregate_id = aggregates.id WHERE aggregates.type_id in ($typesIds)""".map(rs => rs.int(1)).single().apply().get
+    }
   }
 
   override def readEventsToPublishForAggregate[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String],

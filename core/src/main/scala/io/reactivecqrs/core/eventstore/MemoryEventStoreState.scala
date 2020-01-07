@@ -111,6 +111,8 @@ class MemoryEventStoreState extends EventStoreState {
 
   override def countAllEvents(): Int = eventsRows.size
 
+  override def countEventsForAggregateTypes(strings: Seq[String]): Int = ???
+
   override def localTx[A](block: (DBSession) => A): A = {
     block(NoSession)
   }

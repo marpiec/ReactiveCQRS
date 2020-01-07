@@ -41,6 +41,9 @@ class SimpleProjection(val eventBusSubscriptionsManager: EventBusSubscriptionsMa
   override protected def onClearProjectionData(): Unit = {
     // do nothing
   }
+
+  override protected val projectionName: String = "SimpleProjection"
+  override protected val version: Int = 1
 }
 
 class SimpleListener(simpleListenerProbe: TestProbe) extends Actor {
