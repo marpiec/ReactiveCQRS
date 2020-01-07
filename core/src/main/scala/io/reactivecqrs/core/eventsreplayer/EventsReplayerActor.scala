@@ -12,7 +12,7 @@ import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor
 import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor.ReplayEvents
 import io.reactivecqrs.core.backpressure.BackPressureActor
 import io.reactivecqrs.core.backpressure.BackPressureActor.{Finished, ProducerAllowMore, ProducerAllowedMore, Start, Stop}
-import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, ReplayAllEvents}
+import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, GetStatus, ReplayAllEvents, ReplayerStatus}
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.projection.SubscriptionsState
 import io.reactivecqrs.core.util.ActorLogging
@@ -50,6 +50,8 @@ class ReplayerRepositoryActorFactory[AGGREGATE_ROOT: TypeTag:ClassTag](aggregate
 object EventsReplayerActor {
   case class ReplayAllEvents(batchPerAggregate: Boolean, aggregatesTypes: Seq[AggregateType], delayBetweenAggregateTypes: Long)
   case class EventsReplayed(eventsCount: Long)
+  case class GetStatus(aggregatesTypes: Seq[AggregateType])
+  case class ReplayerStatus(willReplay: Int, allEvents: Int)
 }
 
 
@@ -82,7 +84,12 @@ class EventsReplayerActor(eventStore: EventStoreState,
   val combinedEventsVersionsMap = actorsFactory.map(_.eventsVersionsMap).foldLeft(Map[EventTypeVersion, String]())((acc, m) => acc ++ m)
 
   override def receive: Receive = {
+    case GetStatus(aggregatesTypes) => sender ! getStatus(aggregatesTypes)
     case ReplayAllEvents(batchPerAggregate, aggregatesTypes, delayBetweenAggregateTypes) => replayAllEvents(sender, batchPerAggregate, aggregatesTypes, delayBetweenAggregateTypes)
+  }
+
+  private def getStatus(aggregatesTypes: Seq[AggregateType]): ReplayerStatus = {
+    ReplayerStatus(eventStore.countEventsForAggregateTypes(aggregatesTypes.map(_.typeName)), eventStore.countAllEvents())
   }
 
   private def replayAllEvents(respondTo: ActorRef, batchPerAggregate: Boolean, aggregatesTypes: Seq[AggregateType], delayBetweenAggregateTypes: Long) {
