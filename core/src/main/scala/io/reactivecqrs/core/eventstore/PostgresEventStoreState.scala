@@ -248,7 +248,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       0
     } else {
       val typesIds = aggregateTypes.map(t => typesNamesState.typeIdByClassName(t)).distinct
-      sql"""SELECT COUNT(*) FROM events JOIN aggregates ON events.aggregate_id = aggregates.id WHERE aggregates.type_id in ($typesIds)""".map(rs => rs.int(1)).single().apply().get
+      sql"""SELECT COUNT(*) FROM events JOIN aggregates ON events.aggregate_id = aggregates.id WHERE aggregates.type_id in ($typesIds) and aggregates.base_order = 1""".map(rs => rs.int(1)).single().apply().get
     }
   }
 
