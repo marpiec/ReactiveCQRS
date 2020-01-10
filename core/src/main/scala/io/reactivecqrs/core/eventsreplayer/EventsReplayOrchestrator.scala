@@ -21,7 +21,8 @@ class EventsReplayOrchestrator {
              versionsState: VersionsState,
              timeout: FiniteDuration,
              printStatusInfoOnly: Boolean,
-             forceAll: Boolean
+             forceAll: Boolean,
+             delayBetweenAggregatesMillis: Long
             )(implicit ec: ExecutionContext): Unit = {
 
 
@@ -73,7 +74,7 @@ class EventsReplayOrchestrator {
 
       println("Projections cleared")
 
-      val result: EventsReplayed = Await.result((eventsReplayerActor ? ReplayAllEvents(batchPerAggregate = true, orderedAggregatesToReplay, 0)).mapTo[EventsReplayed], timeout)
+      val result: EventsReplayed = Await.result((eventsReplayerActor ? ReplayAllEvents(batchPerAggregate = true, orderedAggregatesToReplay, delayBetweenAggregatesMillis)).mapTo[EventsReplayed], timeout)
       println(result + " in " + (System.currentTimeMillis - start) + " millis")
 
       aggregates.foreach(a => versionsState.saveVersionForAggregate(a.aggregateType, a.version))
