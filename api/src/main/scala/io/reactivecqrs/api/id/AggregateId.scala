@@ -1,29 +1,29 @@
 package io.reactivecqrs.api.id
 
+import java.util.Collections
+
 import scala.collection.JavaConversions._
 import scala.collection.mutable
-import java.util.Collections.synchronizedMap
-
 import io.reactivecqrs.api.AggregateVersion
 
 class LRUCache[K, V](maxEntries: Int) extends java.util.LinkedHashMap[K, V](1000, .75f, true) {
   override def removeEldestEntry(eldest: java.util.Map.Entry[K, V]): Boolean = size > maxEntries
 }
 object LRUCache {
-  def apply[K, V](maxEntries: Int): mutable.Map[K, V] = synchronizedMap(new LRUCache[K, V](maxEntries))
+  def apply[K, V](maxEntries: Int): mutable.Map[K, V] = Collections.synchronizedMap[K, V](new LRUCache[K, V](maxEntries))
 }
 
 object AggregateId {
-
-  private var pool = LRUCache[Long, AggregateId](1000)
-
+  private var pool: java.util.Map[Long, AggregateId] = LRUCache[Long, AggregateId](1000)
   def apply(asLong: Long): AggregateId = {
-
-    pool.getOrElse(asLong, {
+    val fromPool = pool.get(asLong)
+    if(fromPool == null) {
       val id = new AggregateId(asLong)
       pool += asLong -> id
       id
-    })
+    } else {
+      fromPool
+    }
   }
 
   def unapply(id: AggregateId): Option[Long] = Some(id.asLong)
