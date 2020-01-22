@@ -7,7 +7,6 @@ import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor._
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor._
 import io.reactivecqrs.core.util.ActorLogging
 
-import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe._
 import scala.util.Success
