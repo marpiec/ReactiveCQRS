@@ -7,7 +7,7 @@ object Common {
 
     organization := "io.reactivecqrs",
     name := s"reactivecqrs-$moduleName",
-    version := "0.11.9",
+    version := "0.11.10",
     scalaVersion := "2.11.7",
 
     /* required for Scalate to avoid version mismatch */
@@ -46,7 +46,7 @@ object Common {
 
     publishLocal := {},
 
-    publishTo := Some("snapshots" at sys.props.getOrElse("snapshotsRepo", default = "http://vps120320.ovh.net:9081/nexus/content/repositories/jtweston-releases/"))
+    publishTo := Some("snapshots" at sys.props.getOrElse("snapshotsRepo", default = "http://nexus.neula.in:9081/nexus/content/repositories/jtweston-releases/"))
 
   )
 
