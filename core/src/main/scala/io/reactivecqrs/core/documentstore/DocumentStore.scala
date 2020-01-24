@@ -6,11 +6,13 @@ case class VersionedDocument[T <: AnyRef](version: Int, document: T)
 
 case class Document[T <: AnyRef](document: T)
 
-sealed trait Index
+sealed trait Index {
+  val uniqueId: Int
+}
 
-case class MultipleIndex(path: Seq[String]) extends Index
+case class MultipleIndex(uniqueId: Int, path: Seq[String]) extends Index
 
-case class UniqueIndex(path: Seq[String]) extends Index
+case class UniqueIndex(uniqueId: Int, path: Seq[String]) extends Index
 
 sealed trait ExpectedValue
 

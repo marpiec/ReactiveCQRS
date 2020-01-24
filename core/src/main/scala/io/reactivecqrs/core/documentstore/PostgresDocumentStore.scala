@@ -31,12 +31,29 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     createTableIfNotExists()
     addSpaceColumn()
     dropMetadataColumn()
-    if(indicies.size > 5) {
-      throw new IllegalArgumentException("Only up to 5 indieces are supported now")
+
+    if(indicies.map(_.uniqueId).distinct.size < indicies.size) {
+      throw new IllegalStateException("Indices for projection " + tableName+" are not unique")
     }
-    // TODO get index info from pg_indexes and compare to currently created index;
-    1 to 5 foreach dropIndex
-    indicies.zipWithIndex.foreach{case (index, id) => createIndex(id + 1, index)}
+
+    val exisitingIndicesNames = readExistingIndices()
+
+    val indicesToDrop = exisitingIndicesNames.filterNot(ei => {
+      val existingId = existingIndexUniqueId(ei)
+      indicies.exists(i => i.uniqueId == existingId)
+    })
+
+    indicesToDrop.foreach(index => dropIndex(index))
+
+    val indicesToCreate = indicies.filterNot(i => {
+      exisitingIndicesNames.exists(ei => existingIndexUniqueId(ei) == i.uniqueId)
+    })
+
+    indicesToCreate.foreach(index => createIndex(index))
+  }
+
+  private def existingIndexUniqueId(indexName: String): Int = {
+    indexName.substring(indexName.lastIndexOf("_") + 1).toInt
   }
 
   protected def createTableIfNotExists(): Unit = DB.autoCommit { implicit session =>
@@ -59,18 +76,25 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
   }
 
 
-  private def dropIndex(id: Int): Unit = DB.autoCommit { implicit session =>
-    SQL(s"DROP INDEX IF EXISTS ${projectionTableName}_idx_${id}").execute().apply()
+  private def readExistingIndices(): Iterable[String] = {
+    DB.readOnly { implicit session =>
+      SQL(s"SELECT indexname FROM pg_indexes WHERE tablename = '${projectionTableName}' and indexname like '%_idx_%'")
+        .map(rs => rs.string(1)).list().apply()
+    }
   }
 
-  private def createIndex(id: Int, index: Index): Unit = DB.autoCommit { implicit session =>
+  private def dropIndex(indexName: String): Unit = DB.autoCommit { implicit session =>
+    SQL(s"DROP INDEX IF EXISTS ${indexName}").execute().apply()
+  }
+
+  private def createIndex(index: Index): Unit = DB.autoCommit { implicit session =>
     index match {
-      case MultipleIndex(path) =>
+      case MultipleIndex(uniqueId, path) =>
         val p = path.mkString(",")
-        SQL(s"CREATE INDEX ${projectionTableName}_idx_${id} ON ${projectionTableName} ((document #>> '{$p}'))").execute().apply()
-      case UniqueIndex(path) =>
+        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} ((document #>> '{$p}'))").execute().apply()
+      case UniqueIndex(uniqueId, path) =>
         val p = path.mkString(",")
-        SQL(s"CREATE UNIQUE INDEX ${projectionTableName}_idx_${id} ON ${projectionTableName} ((document #>> '{$p}'))").execute().apply()
+        SQL(s"CREATE UNIQUE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} ((document #>> '{$p}'))").execute().apply()
     }
   }
 
