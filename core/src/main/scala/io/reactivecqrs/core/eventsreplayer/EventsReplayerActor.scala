@@ -122,7 +122,8 @@ class EventsReplayerActor(eventStore: EventStoreState,
             allowedTotal += allowed
           } catch {
             case e: TimeoutException =>
-              println("Did not received confirmation in "+timeoutDuration.toString()+". Please consult main.log to check the cause.")
+              println("Error:")
+              println("Did not received confirmation in "+timeoutDuration.toString()+". Please consult main.log to check the cause. Stopping...")
               System.exit(-1)
           }
 
