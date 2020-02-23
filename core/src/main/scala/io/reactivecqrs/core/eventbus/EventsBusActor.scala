@@ -29,8 +29,6 @@ object EventsBusActor {
   case class SubscribeForAggregates(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier = AcceptAllAggregateIdClassifier) extends SubscribeRequest
   case class SubscribeForAggregatesWithEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier) extends SubscribeRequest
 
-  case class MessagesPersisted(aggregateType: AggregateType, messages: Seq[MessagesToRoute])
-
   case class MessagesToRoute(subscriber: ActorRef, aggregateId: AggregateId, versions: Seq[AggregateVersion], message: AnyRef)
   case class MessageAck(subscriber: ActorRef, aggregateId: AggregateId, versions: Seq[AggregateVersion])
 
@@ -124,7 +122,6 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     case PublishReplayedEvent(aggregateType, events, aggregateId, aggregate) =>
       handlePublishEvents(sender(), aggregateType, aggregateId, events, aggregate)
     case m: MessageAck => handleMessageAck(m)
-    case MessagesPersisted(aggregateType, messages) => ??? //handleMessagesPersisted(aggregateType, messages)
     case ConsumerStart =>
       backPressureProducerActor = Some(sender)
       if(receivedInProgressMessages + orderedMessages < MAX_BUFFER_SIZE) {
