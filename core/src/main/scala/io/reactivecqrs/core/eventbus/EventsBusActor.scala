@@ -54,14 +54,18 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
   private var backPressureProducerActor: Option[ActorRef] = None
   private var orderedMessages = 0
+  private var orderedMessageTimestamp = 0L
+  private var orderedMessagePostponedTimestamp = 0L
   private var receivedInProgressMessages = 0
+
+  private var lastMessageAck = 0L
 
   /** Message to subscribers that not yet confirmed receiving message */
   private val messagesSent = mutable.HashMap[EventIdentifier, Vector[(Instant, ActorRef)]]()
   private val eventSenders = mutable.HashMap[EventIdentifier, ActorRef]()
 
   private val eventsPropagatedNotPersisted = mutable.HashMap[AggregateId, List[AggregateVersion]]()
-  private val eventsAlreadyPropagated = mutable.HashMap[AggregateId, AggregateVersion]()
+  private val eventsAlreadyPropagated = mutable.HashMap[Long, Int]() // AggregateId -> version
 
   private var afterFinishRespondTo: Option[ActorRef] = None
 
@@ -76,19 +80,49 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     })(context.dispatcher)
 
     // FOR DEBUG PURPOSE
-    context.system.scheduler.schedule(10.second, 10.seconds, new Runnable {
+    context.system.scheduler.schedule(60.second, 60.seconds, new Runnable {
       override def run(): Unit = {
 
-        val now = Instant.now()
-        val oldMessages = messagesSent.flatMap(m => m._2.map(r => (m._1, r._1, r._2))).filter(e => e._2.plusMillis(120000).isBefore(now))
 
-        if(oldMessages.size != lastLogged) {
-          log.warning("Messages propagated, not confirmed: " + oldMessages.size)
-          //        oldMessages.foreach(m => {
-          //          log.warning("Message not confirmed: " + m._3.path.toStringWithoutAddress+" "+m._1)
-          //        })
+        // Old messages
+        val now = Instant.now()
+        val oldMessages = messagesSent.flatMap(m => m._2.map(r => (m._1, r._1, r._2))).count(e => e._2.plusMillis(120000).isBefore(now))
+        if(oldMessages != lastLogged) {
+          log.warning("Messages propagated, not confirmed: " + oldMessages)
         }
-        lastLogged = oldMessages.size
+        lastLogged = oldMessages
+
+
+        // Producer starving
+
+        val nowTimestamp = System.currentTimeMillis()
+
+        println("1")
+
+        if(nowTimestamp - orderedMessageTimestamp > 120000) { // did not ordered in 2 minutes
+          println("2")
+          log.warning("Did not ordered messages in " + ((nowTimestamp - orderedMessageTimestamp) / 1000) +"seconds. " +
+            "orderedMessages = "+orderedMessages+", messagesSent="+messagesSent.size+", eventsPropagatedNotPersisted="+eventsPropagatedNotPersisted.size+
+            ", lastMessageAck="+((nowTimestamp - lastMessageAck)/1000))
+
+
+          if(backPressureProducerActor.isDefined) {
+            if((nowTimestamp - lastMessageAck) < 120000) {
+              if(nowTimestamp - orderedMessagePostponedTimestamp > 120000) {
+                backPressureProducerActor.get ! ConsumerPostponed
+                orderedMessagePostponedTimestamp = nowTimestamp
+                log.info("Postponed messages order")
+              }
+            } else {
+
+              val aggregates = messagesSent.groupBy(_._1.aggregateId).map(e => e._1 -> e._2.size)
+              log.warning("No messages acked in "+((nowTimestamp - lastMessageAck) / 1000) +" seconds. Waiting for "+aggregates.map(e => e._1.asLong +"->"+e._2).mkString(", "))
+            }
+          } else {
+            log.warning("Events producer is not defined")
+          }
+        }
+
       }
     })(context.dispatcher)
   }
@@ -127,6 +161,8 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       if(receivedInProgressMessages + orderedMessages < MAX_BUFFER_SIZE) {
         sender ! ConsumerAllowedMore(MAX_BUFFER_SIZE - receivedInProgressMessages - orderedMessages)
         orderedMessages = MAX_BUFFER_SIZE
+        orderedMessageTimestamp = System.currentTimeMillis()
+        orderedMessagePostponedTimestamp = orderedMessageTimestamp
       }
     case ConsumerStop =>
       println("EventBus Stop, processing "+receivedInProgressMessages)
@@ -185,7 +221,12 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   private def handlePublishEvents(respondTo: ActorRef, aggregateType: AggregateType, aggregateId: AggregateId,
                                   events: Seq[EventInfo[Any]], aggregateRoot: Option[Any]): Unit = {
 
-    val lastPublishedVersion = getLastPublishedVersion(aggregateId)
+    if(events.isEmpty) {
+      log.error("Received empty events sequence for aggregate " + aggregateId.asLong+" of type ["+aggregateType.simpleName+"]")
+      println("Received empty events sequence for aggregate " + aggregateId.asLong+" of type ["+aggregateType.simpleName+"]")
+    }
+
+    val lastPublishedVersion = AggregateVersion(getLastPublishedVersion(aggregateId))
 
     val (alreadyPublished, eventsToPropagate) = events.span(_.version <= lastPublishedVersion)
 
@@ -231,9 +272,9 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       m.subscriber ! m.message
     })
 
+    val nowTimestamp = Instant.now()
     eventsToPropagate.foreach(event => {
-      val timestasmp = Instant.now()
-      val receiversForEvent = messagesToSend.filter(m => m.versions.contains(event.version)).map(e => (timestasmp, e.subscriber))
+      val receiversForEvent = messagesToSend.filter(m => m.versions.contains(event.version)).map(e => (nowTimestamp, e.subscriber))
       messagesSent += EventIdentifier(aggregateId, event.version) -> receiversForEvent
     })
 
@@ -249,17 +290,19 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   }
 
 
-  private def getLastPublishedVersion(aggregateId: AggregateId): AggregateVersion = {
-    eventsAlreadyPropagated.getOrElse(aggregateId, {
+  private def getLastPublishedVersion(aggregateId: AggregateId): Int = {
+    eventsAlreadyPropagated.getOrElse(aggregateId.asLong, {
       val version = inputState.lastPublishedEventForAggregate(aggregateId)
-      eventsAlreadyPropagated += aggregateId -> version
-      version
+      eventsAlreadyPropagated += aggregateId.asLong -> version.asInt
+      version.asInt
     })
   }
 
 
 
   private def handleMessageAck(ack: MessageAck): Unit = {
+
+    lastMessageAck = System.currentTimeMillis()
 
     val aggregateId = ack.aggregateId
 
@@ -294,7 +337,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       messagesSent --= eventsToConfirm
       eventSenders --= eventsToConfirm
 
-      val lastPublishedVersion = getLastPublishedVersion(aggregateId)
+      val lastPublishedVersion = AggregateVersion(getLastPublishedVersion(aggregateId))
 
       val eventsSorted = eventsIds.toList.sortBy(_.version.asInt)
 
@@ -305,7 +348,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
           newVersion = notPersisted
         })
         inputState.eventPublished(aggregateId, lastPublishedVersion, newVersion)
-        eventsAlreadyPropagated += aggregateId -> newVersion
+        eventsAlreadyPropagated += aggregateId.asLong -> newVersion.asInt
       } else {
         val newVersions: List[AggregateVersion] = eventsSorted.map(_.version)
         eventsPropagatedNotPersisted.get(aggregateId) match {
@@ -327,6 +370,8 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     if(backPressureProducerActor.isDefined && receivedInProgressMessages + orderedMessages < MAX_BUFFER_SIZE) {
       backPressureProducerActor.get ! ConsumerAllowedMore(MAX_BUFFER_SIZE - receivedInProgressMessages - orderedMessages)
       orderedMessages = MAX_BUFFER_SIZE
+      orderedMessageTimestamp = System.currentTimeMillis()
+      orderedMessagePostponedTimestamp = orderedMessageTimestamp
     }
   }
   

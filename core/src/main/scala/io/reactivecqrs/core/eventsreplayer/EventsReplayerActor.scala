@@ -110,9 +110,10 @@ class EventsReplayerActor(eventStore: EventStoreState,
       val start = new Date().getTime
       println("Processing events for " + aggregateType.simpleName)
       eventStore.readAndProcessAllEvents(combinedEventsVersionsMap, aggregateType.typeName, batchPerAggregate, (events: Seq[EventInfo[_]], aggregateId: AggregateId, aggregateType: AggregateType) => {
-        if(eventsToProduceAllowed <= 0) {
+        while(eventsToProduceAllowed <= 0) {
           // Ask is a way to block during fetching data from db
           //          print("Replayer: Waiting more allowed messages, now allowed " + eventsToProduceAllowed)
+
           eventsToProduceAllowed += Await.result((backPressureActor ? ProducerAllowMore).mapTo[ProducerAllowedMore].map(_.count), timeoutDuration)
           //          println("Replayer: Allowed to produce " + eventsToProduceAllowed +" more")
         }
@@ -121,12 +122,15 @@ class EventsReplayerActor(eventStore: EventStoreState,
           case None =>
             val actor = getOrCreateReplayRepositoryActor(aggregateId, events.head.version, aggregateType)
             actor ! ReplayEvents(IdentifiableEvents(aggregateType, aggregateId, events.asInstanceOf[Seq[EventInfo[Any]]]))
+            eventsToProduceAllowed -= events.size
           case Some(notPublishedVersion) if events.head.version < notPublishedVersion =>
             val actor = getOrCreateReplayRepositoryActor(aggregateId, events.head.version, aggregateType)
-            actor ! ReplayEvents(IdentifiableEvents(aggregateType, aggregateId, events.takeWhile(_.version < notPublishedVersion).asInstanceOf[Seq[EventInfo[Any]]]))
+            val eventsToSend = events.takeWhile(_.version < notPublishedVersion).asInstanceOf[Seq[EventInfo[Any]]]
+            actor ! ReplayEvents(IdentifiableEvents(aggregateType, aggregateId, eventsToSend))
+            eventsToProduceAllowed -= eventsToSend.size
           case Some(notPublishedVersion) => ()
         }
-        eventsToProduceAllowed -= events.size
+
 
         allEventsSent += events.size
         lastDumpEventsSent += events.size
