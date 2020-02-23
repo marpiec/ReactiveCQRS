@@ -35,7 +35,6 @@ class BackPressureActor(consumer: ActorRef) extends Actor with ActorLogging {
       consumer ! ConsumerStop
       stopSender = Some(sender())
     case ConsumerAllowedMore(count) =>
-      println("ConsumerAllowedMore " + count)
       producer match {
         case Some(p) =>
           p ! ProducerAllowedMore(count + allowed)
@@ -45,7 +44,6 @@ class BackPressureActor(consumer: ActorRef) extends Actor with ActorLogging {
           allowed += count
       }
     case ConsumerPostponed =>
-      println("ConsumerPostponed")
       producer match {
         case Some(p) =>
           p ! ProducerAllowedMore(allowed)
@@ -54,7 +52,6 @@ class BackPressureActor(consumer: ActorRef) extends Actor with ActorLogging {
         case None => ()
       }
     case ProducerAllowMore =>
-      println("ProducerAllowMore")
       if(allowed > 0) {
         sender ! ProducerAllowedMore(allowed)
         allowed = 0

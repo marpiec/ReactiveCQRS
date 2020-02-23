@@ -77,6 +77,8 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
   val factories: Map[String, ReplayerRepositoryActorFactory[_]] = actorsFactory.map(f => f.aggregateRootType -> f).toMap
 
+  var allowedTotal = 0
+  var sendTotal = 0
   var eventsToProduceAllowed = 0L
 
   var backPressureActor: ActorRef = context.actorOf(Props(new BackPressureActor(eventsBus)), "BackPressure")
@@ -114,7 +116,10 @@ class EventsReplayerActor(eventStore: EventStoreState,
           // Ask is a way to block during fetching data from db
           //          print("Replayer: Waiting more allowed messages, now allowed " + eventsToProduceAllowed)
 
-          eventsToProduceAllowed += Await.result((backPressureActor ? ProducerAllowMore).mapTo[ProducerAllowedMore].map(_.count), timeoutDuration)
+          val allowed = Await.result((backPressureActor ? ProducerAllowMore).mapTo[ProducerAllowedMore].map(_.count), timeoutDuration)
+          eventsToProduceAllowed += allowed
+          allowedTotal += allowed
+
           //          println("Replayer: Allowed to produce " + eventsToProduceAllowed +" more")
         }
 
@@ -123,10 +128,12 @@ class EventsReplayerActor(eventStore: EventStoreState,
             val actor = getOrCreateReplayRepositoryActor(aggregateId, events.head.version, aggregateType)
             actor ! ReplayEvents(IdentifiableEvents(aggregateType, aggregateId, events.asInstanceOf[Seq[EventInfo[Any]]]))
             eventsToProduceAllowed -= events.size
+            sendTotal += events.size
           case Some(notPublishedVersion) if events.head.version < notPublishedVersion =>
             val actor = getOrCreateReplayRepositoryActor(aggregateId, events.head.version, aggregateType)
             val eventsToSend = events.takeWhile(_.version < notPublishedVersion).asInstanceOf[Seq[EventInfo[Any]]]
             actor ! ReplayEvents(IdentifiableEvents(aggregateType, aggregateId, eventsToSend))
+            sendTotal += eventsToSend.size
             eventsToProduceAllowed -= eventsToSend.size
           case Some(notPublishedVersion) => ()
         }

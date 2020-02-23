@@ -53,6 +53,8 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   private var subscriptionsByIds = Map[String, Subscription]()
 
   private var backPressureProducerActor: Option[ActorRef] = None
+  private var receivedTotal = 0
+  private var orderedTotal = 0
   private var orderedMessages = 0
   private var orderedMessageTimestamp = 0L
   private var orderedMessagePostponedTimestamp = 0L
@@ -80,7 +82,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     })(context.dispatcher)
 
     // FOR DEBUG PURPOSE
-    context.system.scheduler.schedule(60.second, 60.seconds, new Runnable {
+    context.system.scheduler.schedule(120.second, 120.seconds, new Runnable {
       override def run(): Unit = {
 
 
@@ -97,18 +99,17 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
         val nowTimestamp = System.currentTimeMillis()
 
-        println("1")
 
-        if(nowTimestamp - orderedMessageTimestamp > 120000) { // did not ordered in 2 minutes
-          println("2")
-          log.warning("Did not ordered messages in " + ((nowTimestamp - orderedMessageTimestamp) / 1000) +"seconds. " +
+        if(nowTimestamp - orderedMessageTimestamp > 240000) { // did not ordered in 4 minutes
+          log.warning("Did not ordered messages in " + ((nowTimestamp - orderedMessageTimestamp) / 1000) +" seconds. " +
             "orderedMessages = "+orderedMessages+", messagesSent="+messagesSent.size+", eventsPropagatedNotPersisted="+eventsPropagatedNotPersisted.size+
             ", lastMessageAck="+((nowTimestamp - lastMessageAck)/1000))
+          log.warning("Ordered total " + orderedTotal+", received total " + receivedTotal)
 
 
           if(backPressureProducerActor.isDefined) {
-            if((nowTimestamp - lastMessageAck) < 120000) {
-              if(nowTimestamp - orderedMessagePostponedTimestamp > 120000) {
+            if((nowTimestamp - lastMessageAck) < 240000) {
+              if(nowTimestamp - orderedMessagePostponedTimestamp > 240000) {
                 backPressureProducerActor.get ! ConsumerPostponed
                 orderedMessagePostponedTimestamp = nowTimestamp
                 log.info("Postponed messages order")
@@ -160,6 +161,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       backPressureProducerActor = Some(sender)
       if(receivedInProgressMessages + orderedMessages < MAX_BUFFER_SIZE) {
         sender ! ConsumerAllowedMore(MAX_BUFFER_SIZE - receivedInProgressMessages - orderedMessages)
+        orderedTotal += MAX_BUFFER_SIZE - receivedInProgressMessages - orderedMessages
         orderedMessages = MAX_BUFFER_SIZE
         orderedMessageTimestamp = System.currentTimeMillis()
         orderedMessagePostponedTimestamp = orderedMessageTimestamp
@@ -220,6 +222,8 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
   private def handlePublishEvents(respondTo: ActorRef, aggregateType: AggregateType, aggregateId: AggregateId,
                                   events: Seq[EventInfo[Any]], aggregateRoot: Option[Any]): Unit = {
+
+    receivedTotal += events.size
 
     if(events.isEmpty) {
       log.error("Received empty events sequence for aggregate " + aggregateId.asLong+" of type ["+aggregateType.simpleName+"]")
@@ -369,7 +373,10 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   private def orderMoreMessagesToConsume(): Unit = {
     if(backPressureProducerActor.isDefined && receivedInProgressMessages + orderedMessages < MAX_BUFFER_SIZE) {
       backPressureProducerActor.get ! ConsumerAllowedMore(MAX_BUFFER_SIZE - receivedInProgressMessages - orderedMessages)
-      orderedMessages = MAX_BUFFER_SIZE
+
+      orderedTotal += MAX_BUFFER_SIZE - receivedInProgressMessages - orderedMessages
+
+      orderedMessages = MAX_BUFFER_SIZE - receivedInProgressMessages
       orderedMessageTimestamp = System.currentTimeMillis()
       orderedMessagePostponedTimestamp = orderedMessageTimestamp
     }
