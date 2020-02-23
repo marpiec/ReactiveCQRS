@@ -90,7 +90,11 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
         val now = Instant.now()
         val oldMessages = messagesSent.flatMap(m => m._2.map(r => (m._1, r._1, r._2))).count(e => e._2.plusMillis(120000).isBefore(now))
         if(oldMessages != lastLogged) {
-          log.warning("Messages propagated, not confirmed: " + oldMessages)
+          if(oldMessages > 0) {
+            log.warning("Messages propagated, not confirmed: " + oldMessages)
+          } else {
+            log.warning("All messages propagated")
+          }
         }
         lastLogged = oldMessages
 

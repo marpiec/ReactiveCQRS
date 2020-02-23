@@ -1,7 +1,7 @@
 package io.reactivecqrs.core.eventsreplayer
 
-import java.time.{Instant, LocalDateTime}
 import java.util.Date
+import java.util.concurrent.TimeoutException
 
 import akka.pattern.ask
 import akka.actor.{Actor, ActorContext, ActorRef, Props}
@@ -116,9 +116,15 @@ class EventsReplayerActor(eventStore: EventStoreState,
           // Ask is a way to block during fetching data from db
           //          print("Replayer: Waiting more allowed messages, now allowed " + eventsToProduceAllowed)
 
-          val allowed = Await.result((backPressureActor ? ProducerAllowMore).mapTo[ProducerAllowedMore].map(_.count), timeoutDuration)
-          eventsToProduceAllowed += allowed
-          allowedTotal += allowed
+          try {
+            val allowed = Await.result((backPressureActor ? ProducerAllowMore).mapTo[ProducerAllowedMore].map(_.count), timeoutDuration)
+            eventsToProduceAllowed += allowed
+            allowedTotal += allowed
+          } catch {
+            case e: TimeoutException =>
+              println("Did not received confirmation in "+timeoutDuration.toString()+". Please consult main.log to check the cause.")
+              System.exit(-1)
+          }
 
           //          println("Replayer: Allowed to produce " + eventsToProduceAllowed +" more")
         }
