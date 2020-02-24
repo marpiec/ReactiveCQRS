@@ -101,33 +101,34 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
         // Producer starving
 
-        val nowTimestamp = System.currentTimeMillis()
+        if(orderedTotal > 0) {
+          val nowTimestamp = System.currentTimeMillis()
 
 
-        if(nowTimestamp - orderedMessageTimestamp > 240000) { // did not ordered in 4 minutes
-          log.warning("Did not ordered messages in " + ((nowTimestamp - orderedMessageTimestamp) / 1000) +" seconds. " +
-            "orderedMessages = "+orderedMessages+", messagesSent="+messagesSent.size+", eventsPropagatedNotPersisted="+eventsPropagatedNotPersisted.size+
-            ", lastMessageAck="+((nowTimestamp - lastMessageAck)/1000))
-          log.warning("Ordered total " + orderedTotal+", received total " + receivedTotal)
+          if (nowTimestamp - orderedMessageTimestamp > 240000) { // did not ordered in 4 minutes
+            log.warning("Did not ordered messages in " + ((nowTimestamp - orderedMessageTimestamp) / 1000) + " seconds. " +
+              "orderedMessages = " + orderedMessages + ", messagesSent=" + messagesSent.size + ", eventsPropagatedNotPersisted=" + eventsPropagatedNotPersisted.size +
+              ", lastMessageAck=" + ((nowTimestamp - lastMessageAck) / 1000))
+            log.warning("Ordered total " + orderedTotal + ", received total " + receivedTotal)
 
 
-          if(backPressureProducerActor.isDefined) {
-            if((nowTimestamp - lastMessageAck) < 240000) {
-              if(nowTimestamp - orderedMessagePostponedTimestamp > 240000) {
-                backPressureProducerActor.get ! ConsumerPostponed
-                orderedMessagePostponedTimestamp = nowTimestamp
-                log.info("Postponed messages order")
+            if (backPressureProducerActor.isDefined) {
+              if ((nowTimestamp - lastMessageAck) < 240000) {
+                if (nowTimestamp - orderedMessagePostponedTimestamp > 240000) {
+                  backPressureProducerActor.get ! ConsumerPostponed
+                  orderedMessagePostponedTimestamp = nowTimestamp
+                  log.info("Postponed messages order")
+                }
+              } else {
+
+                val aggregates = messagesSent.groupBy(_._1.aggregateId).map(e => e._1 -> e._2.size)
+                log.warning("No messages acked in " + ((nowTimestamp - lastMessageAck) / 1000) + " seconds. Waiting for " + aggregates.map(e => e._1.asLong + "->" + e._2).mkString(", "))
               }
             } else {
-
-              val aggregates = messagesSent.groupBy(_._1.aggregateId).map(e => e._1 -> e._2.size)
-              log.warning("No messages acked in "+((nowTimestamp - lastMessageAck) / 1000) +" seconds. Waiting for "+aggregates.map(e => e._1.asLong +"->"+e._2).mkString(", "))
+              log.warning("Events producer is not defined")
             }
-          } else {
-            log.warning("Events producer is not defined")
           }
         }
-
       }
     })(context.dispatcher)
   }
