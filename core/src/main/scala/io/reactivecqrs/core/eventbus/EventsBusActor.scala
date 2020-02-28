@@ -137,6 +137,10 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     // do not call preStart
   }
 
+  private def logMessage(message: String) {
+    println(message)
+    log.info(message)
+  }
 
   def initSubscriptions(): Unit = {
 
@@ -172,7 +176,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
         orderedMessagePostponedTimestamp = orderedMessageTimestamp
       }
     case ConsumerStop =>
-      println("EventBus Stop, processing "+receivedInProgressMessages)
+      logMessage("EventBus Stop, processing "+receivedInProgressMessages)
       afterFinishRespondTo = Some(sender())
       backPressureProducerActor = None
       if(receivedInProgressMessages == 0) {
@@ -231,8 +235,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     receivedTotal += events.size
 
     if(events.isEmpty) {
-      log.error("Received empty events sequence for aggregate " + aggregateId.asLong+" of type ["+aggregateType.simpleName+"]")
-      println("Received empty events sequence for aggregate " + aggregateId.asLong+" of type ["+aggregateType.simpleName+"]")
+      logMessage("Received empty events sequence for aggregate " + aggregateId.asLong+" of type ["+aggregateType.simpleName+"]")
     }
 
     val lastPublishedVersion = AggregateVersion(getLastPublishedVersion(aggregateId))

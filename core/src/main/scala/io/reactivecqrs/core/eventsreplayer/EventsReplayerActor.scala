@@ -85,6 +85,11 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
   val combinedEventsVersionsMap = actorsFactory.map(_.eventsVersionsMap).foldLeft(Map[EventTypeVersion, String]())((acc, m) => acc ++ m)
 
+  private def logMessage(message: String) {
+    println(message)
+    log.info(message)
+  }
+
   override def receive: Receive = {
     case GetStatus(aggregatesTypes) => sender ! getStatus(aggregatesTypes)
     case ReplayAllEvents(batchPerAggregate, aggregatesTypes, delayBetweenAggregateTypes) => replayAllEvents(sender, batchPerAggregate, aggregatesTypes, delayBetweenAggregateTypes)
@@ -101,7 +106,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
     var allEventsSent: Long = 0
     var lastDumpEventsSent: Long = 0
 
-    println("Will replay "+allAggregatesEvents+" events out of " + allEvents)
+    logMessage("Will replay "+allAggregatesEvents+" events out of " + allEvents)
 
     var lastUpdate = System.currentTimeMillis()
 
@@ -110,7 +115,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
     aggregatesTypes.foreach(aggregateType => {
       val start = new Date().getTime
-      println("Processing events for " + aggregateType.simpleName)
+      logMessage("Processing events for " + aggregateType.simpleName)
       eventStore.readAndProcessAllEvents(combinedEventsVersionsMap, aggregateType.typeName, batchPerAggregate, (events: Seq[EventInfo[_]], aggregateId: AggregateId, aggregateType: AggregateType) => {
         while(eventsToProduceAllowed <= 0) {
           // Ask is a way to block during fetching data from db
@@ -122,8 +127,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
             allowedTotal += allowed
           } catch {
             case e: TimeoutException =>
-              println("Error:")
-              println("Did not received confirmation in "+timeoutDuration.toString()+". Please consult main.log to check the cause. Stopping...")
+              logMessage("Error:\nDid not received confirmation in "+timeoutDuration.toString()+". Please consult main.log to check the cause. Stopping...")
               System.exit(-1)
           }
 
@@ -150,17 +154,17 @@ class EventsReplayerActor(eventStore: EventStoreState,
         lastDumpEventsSent += events.size
         val now = System.currentTimeMillis()
         if(now - lastUpdate > 5000) {
-          println("Replayed " + allEventsSent + "/" + allAggregatesEvents + " events")
+          logMessage("Replayed " + allEventsSent + "/" + allAggregatesEvents + " events")
           lastUpdate = System.currentTimeMillis()
         }
 
         if(allEventsSent < 1000 && lastDumpEventsSent >= 100 || allEventsSent < 10000 && lastDumpEventsSent >= 1000 || lastDumpEventsSent >= 10000) {
-          println(subscriptionsState.dump())
+          logMessage(subscriptionsState.dump())
           lastDumpEventsSent = 0
         }
 
       })
-      println("Done processing events for " + aggregateType.simpleName + " in "+formatMillis(new Date().getTime - start))
+      logMessage("Done processing events for " + aggregateType.simpleName + " in "+formatMillis(new Date().getTime - start))
       if(delayBetweenAggregateTypes > 0) {
         Thread.sleep(delayBetweenAggregateTypes)
       }
@@ -170,10 +174,11 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
     Await.result(backPressureActor ? Stop, timeoutDuration) match {
       case Finished =>
-        println("Replayed "+allEventsSent+"/"+allAggregatesEvents+" events")
+        logMessage("Replayed "+allEventsSent+"/"+allAggregatesEvents+" events")
         print("Dumping rest of subscriptions state...")
-        println(subscriptionsState.dump())
-        println("DONE")
+        log.info("Dumping rest of subscriptions state...")
+        logMessage(subscriptionsState.dump())
+        logMessage("DONE")
         respondTo ! EventsReplayed(allEventsSent)
     }
   }

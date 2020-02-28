@@ -8,12 +8,19 @@ import akka.util.Timeout
 import io.reactivecqrs.api.AggregateContext
 import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, GetStatus, ReplayAllEvents, ReplayerStatus}
 import io.reactivecqrs.core.projection.{ClearProjectionData, GetSubscribedAggregates, SubscribedAggregates, VersionsState}
+import org.slf4j.LoggerFactory
 
 import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration._
 
 class EventsReplayOrchestrator {
 
+  private val log = LoggerFactory.getLogger(classOf[EventsReplayOrchestrator])
+
+  private def logMessage(message: String) {
+    println(message)
+    log.info(message)
+  }
 
   def replay(eventsReplayerActor: ActorRef,
              projections: Iterable[ActorRef],
@@ -29,13 +36,13 @@ class EventsReplayOrchestrator {
     implicit val tm: Timeout = timeout
     val start = System.currentTimeMillis
 
-    println("Rebuilding projections started at " + LocalDateTime.now())
+    logMessage("Rebuilding projections started at " + LocalDateTime.now())
 
     val projectionSubscriptions: Iterable[(ActorRef, SubscribedAggregates)] = Await.result(Future.sequence(projections.map(projection => {
      (projection ? GetSubscribedAggregates).mapTo[SubscribedAggregates].map(s =>  (projection, s))
     })), 60 seconds)
 
-    println("Got list of projections")
+    logMessage("Got list of projections")
 
     var projectionsToRebuild: Set[(ActorRef, SubscribedAggregates)] = projectionSubscriptions.toSet
     var aggregatesToReplay: Set[AggregateContext[AnyRef]] = aggregates.toSet
@@ -57,30 +64,31 @@ class EventsReplayOrchestrator {
     }
 
     if(printStatusInfoOnly) {
-      println("Status only (will not rebuild projections)")
+      logMessage("Status only (will not rebuild projections)")
     }
-    println("Will replay events from " + aggregatesToReplay.size + " of " + aggregates.size+ " aggregates " + aggregatesToReplay.map(_.aggregateType.simpleName).mkString("(", ", ", ")"))
-    println("Will rebuild " + projectionsToRebuild.size + " of " + projections.size + " projections " + projectionsToRebuild.map(p => simpleName(p._2.projectionName)).mkString("(", ", ", ")"))
+    logMessage("Will replay events from " + aggregatesToReplay.size + " of " + aggregates.size+ " aggregates " + aggregatesToReplay.map(_.aggregateType.simpleName).mkString("(", ", ", ")"))
+    logMessage("Will rebuild " + projectionsToRebuild.size + " of " + projections.size + " projections " + projectionsToRebuild.map(p => simpleName(p._2.projectionName)).mkString("(", ", ", ")"))
 
     val orderedAggregatesToReplay = aggregates.filter(a => aggregatesToReplay.contains(a)).map(_.aggregateType)
 
     if(printStatusInfoOnly) {
       val status: ReplayerStatus = Await.result((eventsReplayerActor ? GetStatus(orderedAggregatesToReplay)).mapTo[ReplayerStatus], timeout)
-      println("Will replay " + status.willReplay + " of " + status.allEvents + " events")
+      logMessage("Will replay " + status.willReplay + " of " + status.allEvents + " events")
     } else {
       Await.result(Future.sequence(projectionsToRebuild.map(projectionToRebuild => {
         (projectionToRebuild._1 ? ClearProjectionData)
       })), 60 seconds)
 
-      println("Projections cleared")
+      logMessage("Projections cleared")
 
       val result: EventsReplayed = Await.result((eventsReplayerActor ? ReplayAllEvents(batchPerAggregate = true, orderedAggregatesToReplay, delayBetweenAggregatesMillis)).mapTo[EventsReplayed], timeout)
-      println(result + " in " + (System.currentTimeMillis - start) + " millis")
+      logMessage(result + " in " + (System.currentTimeMillis - start) + " millis")
 
       aggregates.foreach(a => versionsState.saveVersionForAggregate(a.aggregateType, a.version))
       projectionSubscriptions.foreach(p => versionsState.saveVersionForProjection(p._2.projectionName, p._2.projectionVersion))
-      println("Projection and Aggregates versions updated")
+      logMessage("Projection and Aggregates versions updated")
 
+      log.info("Cooling down")
       print("Cool down...")
       waitFor(5)
     }
@@ -106,6 +114,6 @@ class EventsReplayOrchestrator {
       print(".")
       Thread.sleep(250)
     }
-    println("\nDONE")
+    logMessage("\nDONE")
   }
 }

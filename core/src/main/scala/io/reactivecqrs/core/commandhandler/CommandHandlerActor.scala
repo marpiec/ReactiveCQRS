@@ -98,7 +98,6 @@ class CommandHandlerActor[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId,
         val key = idm.idempotencyId.get.asDbKey
         commandResponseState.responseByKey(key) match {
           case Some(response) =>
-            println("Command repeated " + idm)
             respondTo ! response
           case None => block
         }
