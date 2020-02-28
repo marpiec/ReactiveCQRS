@@ -12,7 +12,7 @@ import scalikejdbc._
 
 import scala.util.Try
 
-class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState) extends EventStoreState {
+class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState, fetchSize: Int = 1000) extends EventStoreState {
 
   def initSchema(): PostgresEventStoreState = {
     (new PostgresEventStoreSchemaInitializer).initSchema()
@@ -160,7 +160,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
            ORDER BY events.id""".bind(aggregateTypeId)
       }
 
-      query.fetchSize(1000).foreach { rs =>
+      query.fetchSize(fetchSize).foreach { rs =>
           val eventBaseType = typesNamesState.classNameById(rs.short(1))
           val eventTypeVersion = rs.short(2)
           val eventType = eventsVersionsMap.getOrElse(EventTypeVersion(eventBaseType, eventTypeVersion), eventBaseType)
