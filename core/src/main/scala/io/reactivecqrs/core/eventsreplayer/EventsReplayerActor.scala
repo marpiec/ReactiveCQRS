@@ -12,6 +12,7 @@ import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor
 import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor.ReplayEvents
 import io.reactivecqrs.core.backpressure.BackPressureActor
 import io.reactivecqrs.core.backpressure.BackPressureActor.{Finished, ProducerAllowMore, ProducerAllowedMore, Start, Stop}
+import io.reactivecqrs.core.eventbus.EventsBusActor.LogDetailedStatus
 import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, GetStatus, ReplayAllEvents, ReplayerStatus}
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.projection.SubscriptionsState
@@ -128,6 +129,10 @@ class EventsReplayerActor(eventStore: EventStoreState,
           } catch {
             case e: TimeoutException =>
               logMessage("Error:\nDid not received confirmation in "+timeoutDuration.toString()+". Please consult main.log to check the cause. Stopping...")
+              logMessage("Threads status:\n" + generateThreadDump)
+              eventsBus ! LogDetailedStatus
+              Thread.sleep(5)
+              logMessage("Status: allowedTotal=" + allowedTotal+", sendTotal="+sendTotal+", eventsToProduceAllowed="+eventsToProduceAllowed+", allEventsSent="+allEventsSent+", lastDumpEventsSent="+lastDumpEventsSent)
               System.exit(-1)
           }
 
@@ -200,5 +205,26 @@ class EventsReplayerActor(eventStore: EventStoreState,
       factories(aggregateType.typeName).create(context,aggregateId, None, eventStore, eventsBus,
         aggregateType.typeName + "_Simulator_" + aggregateId.asLong, config.maxReplayerInactivitySeconds)
     )
+  }
+
+  // based on https://crunchify.com/how-to-generate-java-thread-dump-programmatically/
+  def generateThreadDump: StringBuilder = {
+    val dump = new StringBuilder
+    val threadMXBean = java.lang.management.ManagementFactory.getThreadMXBean
+    val threadInfos = threadMXBean.getThreadInfo(threadMXBean.getAllThreadIds, 100)
+    for (threadInfo <- threadInfos) {
+      dump.append('"')
+      dump.append(threadInfo.getThreadName)
+      dump.append("\" ")
+      val state = threadInfo.getThreadState
+      dump.append("\n   java.lang.Thread.State: ")
+      dump.append(state)
+      val stackTraceElements = threadInfo.getStackTrace
+      for (stackTraceElement <- stackTraceElements) {
+        dump.append("\n        at ")
+        dump.append(stackTraceElement)
+      }
+      dump.append("\n\n")
+    }
   }
 }

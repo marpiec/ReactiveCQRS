@@ -32,6 +32,8 @@ object EventsBusActor {
   case class MessagesToRoute(subscriber: ActorRef, aggregateId: AggregateId, versions: Seq[AggregateVersion], message: AnyRef)
   case class MessageAck(subscriber: ActorRef, aggregateId: AggregateId, versions: Seq[AggregateVersion])
 
+  object LogDetailedStatus
+
 }
 
 abstract class Subscription {
@@ -133,6 +135,20 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     })(context.dispatcher)
   }
 
+  private def logDetailedStatus(): Unit = {
+
+    log.warning("EventBus status: " +
+      "backPressureProducerActor="+backPressureProducerActor.isDefined+", " +
+      "receivedTotal="+receivedTotal+", " +
+      "orderedTotal="+orderedTotal+", " +
+      "orderedMessages="+orderedMessages+", " +
+      "orderedMessageTimestamp="+(System.currentTimeMillis() - orderedMessageTimestamp)+", " +
+      "orderedMessagePostponedTimestamp="+(System.currentTimeMillis() - orderedMessagePostponedTimestamp)+", " +
+      "receivedInProgressMessages="+receivedInProgressMessages+", " +
+      "lastMessageAck="+lastMessageAck+", " +
+      "messagesSent="+messagesSent)
+  }
+
   override def postRestart(reason: Throwable) {
     // do not call preStart
   }
@@ -182,6 +198,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       if(receivedInProgressMessages == 0) {
         afterFinishRespondTo.get ! ConsumerFinished
       }
+    case LogDetailedStatus => logDetailedStatus()
   }
 
 
