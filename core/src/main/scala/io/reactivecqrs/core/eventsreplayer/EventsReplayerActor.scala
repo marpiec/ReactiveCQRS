@@ -226,5 +226,6 @@ class EventsReplayerActor(eventStore: EventStoreState,
       }
       dump.append("\n\n")
     }
+    dump
   }
 }
