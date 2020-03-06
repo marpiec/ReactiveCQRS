@@ -7,7 +7,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor.ReplayEvents
 import io.reactivecqrs.core.util.ActorLogging
-import io.reactivecqrs.core.eventbus.EventsBusActor.PublishReplayedEvent
+import io.reactivecqrs.core.eventbus.EventsBusActor.PublishReplayedEvents
 import io.reactivecqrs.core.eventstore.EventStoreState
 
 import scala.reflect.{ClassTag, classTag}
@@ -68,11 +68,11 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
   override def receive: Receive = {
     case ReplayEvents(events) =>
       autoKill.cancel()
-      replayEvent(events.asInstanceOf[IdentifiableEvents[AGGREGATE_ROOT]])
+      replayEvents(events.asInstanceOf[IdentifiableEvents[AGGREGATE_ROOT]])
       autoKill = context.system.scheduler.scheduleOnce(delay = MAX_INACTIVITY_TIME, self, PoisonPill)
   }
 
-  private def replayEvent(events: IdentifiableEvents[AGGREGATE_ROOT]): Unit = {
+  private def replayEvents(events: IdentifiableEvents[AGGREGATE_ROOT]): Unit = {
 
     events.events.head.event match {
       case duplicationEvent: DuplicationEvent[_] =>
@@ -87,7 +87,7 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
       handleEvent(event.userId, event.timestamp, event.event, events.aggregateId, event.version.asInt, noopEvent = false)
     })
 
-    val messageToSend: PublishReplayedEvent[AGGREGATE_ROOT] = PublishReplayedEvent(aggregateType, events.events, aggregateId, Option(aggregateRoot))
+    val messageToSend: PublishReplayedEvents[AGGREGATE_ROOT] = PublishReplayedEvents(aggregateType, events.events, aggregateId, Option(aggregateRoot))
     eventsBus ! messageToSend
   }
 

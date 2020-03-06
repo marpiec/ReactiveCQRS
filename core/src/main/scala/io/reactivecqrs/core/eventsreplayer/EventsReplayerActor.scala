@@ -124,6 +124,10 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
           try {
             val allowed = Await.result((backPressureActor ? ProducerAllowMore).mapTo[ProducerAllowedMore].map(_.count), timeoutDuration)
+            if(allowed == 0) {
+              logMessage("EventsReplayer postponed")
+              logMessage("Status: allowedTotal=" + allowedTotal+", sendTotal="+sendTotal+", eventsToProduceAllowed="+eventsToProduceAllowed+", allEventsSent="+allEventsSent+", lastDumpEventsSent="+lastDumpEventsSent)
+            }
             eventsToProduceAllowed += allowed
             allowedTotal += allowed
           } catch {

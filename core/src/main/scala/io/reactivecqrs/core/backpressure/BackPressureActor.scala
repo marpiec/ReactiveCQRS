@@ -24,6 +24,7 @@ class BackPressureActor(consumer: ActorRef) extends Actor with ActorLogging {
   import BackPressureActor._
 
   var allowed: Int = 0
+  var postponed: Boolean = false
   var producer: Option[ActorRef] = None
   var stopSender: Option[ActorRef] = None
 
@@ -37,6 +38,7 @@ class BackPressureActor(consumer: ActorRef) extends Actor with ActorLogging {
     case ConsumerAllowedMore(count) =>
       producer match {
         case Some(p) =>
+          postponed = false
           p ! ProducerAllowedMore(count + allowed)
           producer = None
           allowed = 0
@@ -46,13 +48,15 @@ class BackPressureActor(consumer: ActorRef) extends Actor with ActorLogging {
     case ConsumerPostponed =>
       producer match {
         case Some(p) =>
+          postponed = false
           p ! ProducerAllowedMore(allowed)
           producer = None
           allowed = 0
-        case None => ()
+        case None => postponed = true
       }
     case ProducerAllowMore =>
-      if(allowed > 0) {
+      if(allowed > 0 || postponed) {
+        postponed = false
         sender ! ProducerAllowedMore(allowed)
         allowed = 0
       } else {

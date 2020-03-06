@@ -21,7 +21,7 @@ object EventsBusActor {
                                             aggregateId: AggregateId, aggregate: Option[AGGREGATE_ROOT])
   case class PublishEventsAck(aggregateId: AggregateId, versions: Seq[AggregateVersion])
 
-  case class PublishReplayedEvent[AGGREGATE_ROOT](aggregateType: AggregateType, events: Seq[EventInfo[AGGREGATE_ROOT]],
+  case class PublishReplayedEvents[AGGREGATE_ROOT](aggregateType: AggregateType, events: Seq[EventInfo[AGGREGATE_ROOT]],
                                                    aggregateId: AggregateId, aggregate: Option[AGGREGATE_ROOT])
 
   trait SubscribeRequest
@@ -63,6 +63,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   private var receivedInProgressMessages = 0
 
   private var lastMessageAck = 0L
+  private var lastMessageSent = 0L
 
   /** Message to subscribers that not yet confirmed receiving message */
   private val messagesSent = mutable.HashMap[EventIdentifier, Vector[(Instant, ActorRef)]]()
@@ -110,9 +111,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
           if (nowTimestamp - orderedMessageTimestamp > 240000) { // did not ordered in 4 minutes
             log.warning("Did not ordered messages in " + ((nowTimestamp - orderedMessageTimestamp) / 1000) + " seconds. " +
               "orderedMessages = " + orderedMessages + ", messagesSent=" + messagesSent.size + ", eventsPropagatedNotPersisted=" + eventsPropagatedNotPersisted.size +
-              ", lastMessageAck=" + ((nowTimestamp - lastMessageAck) / 1000))
-            log.warning("Ordered total " + orderedTotal + ", received total " + receivedTotal)
-
+              ", lastMessageAck=" + ((nowTimestamp - lastMessageAck) / 1000)+", lastMessageSent="+(nowTimestamp - lastMessageSent)+", orderedTotal=" + orderedTotal + ", receivedTotal=" + receivedTotal)
 
             if (backPressureProducerActor.isDefined) {
               if ((nowTimestamp - lastMessageAck) < 240000) {
@@ -179,7 +178,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   def receiveAfterInit: Receive = logReceive {
     case PublishEvents(aggregateType, events, aggregateId, aggregate) =>
       handlePublishEvents(sender(), aggregateType, aggregateId, events, aggregate)
-    case PublishReplayedEvent(aggregateType, events, aggregateId, aggregate) =>
+    case PublishReplayedEvents(aggregateType, events, aggregateId, aggregate) =>
       handlePublishEvents(sender(), aggregateType, aggregateId, events, aggregate)
     case m: MessageAck => handleMessageAck(m)
     case ConsumerStart =>
@@ -300,6 +299,10 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     messagesToSend.foreach(m => {
       m.subscriber ! m.message
     })
+
+    if(messagesToSend.nonEmpty) {
+      lastMessageSent = System.currentTimeMillis()
+    }
 
     val nowTimestamp = Instant.now()
     eventsToPropagate.foreach(event => {
