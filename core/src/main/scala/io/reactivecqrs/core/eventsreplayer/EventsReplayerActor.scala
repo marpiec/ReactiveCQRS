@@ -128,11 +128,12 @@ class EventsReplayerActor(eventStore: EventStoreState,
             allowedTotal += allowed
           } catch {
             case e: TimeoutException =>
-              logMessage("Error:\nDid not received confirmation in "+timeoutDuration.toString()+". Please consult main.log to check the cause. Stopping...")
+              logMessage((new Date()) + " Error:\nDid not received confirmation in "+timeoutDuration.toString()+".")
+              logMessage("Status: allowedTotal=" + allowedTotal+", sendTotal="+sendTotal+", eventsToProduceAllowed="+eventsToProduceAllowed+", allEventsSent="+allEventsSent+", lastDumpEventsSent="+lastDumpEventsSent)
               logMessage("Threads status:\n" + generateThreadDump)
               eventsBus ! LogDetailedStatus
-              Thread.sleep(5)
-              logMessage("Status: allowedTotal=" + allowedTotal+", sendTotal="+sendTotal+", eventsToProduceAllowed="+eventsToProduceAllowed+", allEventsSent="+allEventsSent+", lastDumpEventsSent="+lastDumpEventsSent)
+              Thread.sleep(30)
+              println("Please consult main.log to check the cause. Stopping...")
               System.exit(-1)
           }
 
@@ -210,21 +211,27 @@ class EventsReplayerActor(eventStore: EventStoreState,
   // based on https://crunchify.com/how-to-generate-java-thread-dump-programmatically/
   def generateThreadDump: StringBuilder = {
     val dump = new StringBuilder
-    val threadMXBean = java.lang.management.ManagementFactory.getThreadMXBean
-    val threadInfos = threadMXBean.getThreadInfo(threadMXBean.getAllThreadIds, 100)
-    for (threadInfo <- threadInfos) {
-      dump.append('"')
-      dump.append(threadInfo.getThreadName)
-      dump.append("\" ")
-      val state = threadInfo.getThreadState
-      dump.append("\n   java.lang.Thread.State: ")
-      dump.append(state)
-      val stackTraceElements = threadInfo.getStackTrace
-      for (stackTraceElement <- stackTraceElements) {
-        dump.append("\n        at ")
-        dump.append(stackTraceElement)
-      }
-      dump.append("\n\n")
+    try {
+      val threadMXBean = java.lang.management.ManagementFactory.getThreadMXBean
+      val threadInfos = threadMXBean.getThreadInfo(threadMXBean.getAllThreadIds, 100)
+      threadInfos.filter(threadInfo => threadInfo != null).foreach(threadInfo => {
+        dump.append('"')
+        dump.append(threadInfo.getThreadName)
+        dump.append("\" ")
+        val state = threadInfo.getThreadState
+        dump.append("\n   java.lang.Thread.State: ")
+        dump.append(state)
+        val stackTraceElements = threadInfo.getStackTrace
+        for (stackTraceElement <- stackTraceElements) {
+          dump.append("\n        at ")
+          dump.append(stackTraceElement)
+        }
+        dump.append("\n\n")
+      })
+    } catch {
+      case e: Exception =>
+        dump.append("\nException while generating dump " + e.getClass.getName+" "+e.getMessage)
+        e.printStackTrace()
     }
     dump
   }
