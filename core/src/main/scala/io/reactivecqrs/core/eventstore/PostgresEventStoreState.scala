@@ -114,7 +114,8 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
              LEFT JOIN noop_events ON events.id = noop_events.id AND noop_events.from_version <= aggregates.base_version
              WHERE aggregates.id = ? ORDER BY aggregates.base_order, version""".stripMargin.bind(aggregateId.asLong, aggregateId.asLong, v.asInt, aggregateId.asLong, aggregateId.asLong, v.asInt, aggregateId.asLong)
         case None =>
-          sql"""SELECT user_id, event_time, event_type_id, event_type_version, event, events.version, events.aggregate_id, noop_events.id IS NOT NULL AND noop_events.from_version <= aggregates.base_version as noop
+          sql"""SELECT user_id, event_time, event_type_id, event_type_version, event, events.version, events.aggregate_id,
+                noop_events.id IS NOT NULL AND noop_events.from_version <= aggregates.base_version as noop
              FROM events
              JOIN aggregates ON events.aggregate_id = aggregates.base_id AND events.version <= aggregates.base_version
              LEFT JOIN noop_events ON events.id = noop_events.id AND noop_events.from_version <= aggregates.base_version
@@ -137,53 +138,57 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
 
 
-  override def readAndProcessAllEvents(eventsVersionsMap: Map[EventTypeVersion, String], aggregateType: String,
+  override def readAndProcessAllEvents(eventsVersionsMap: Map[EventTypeVersion, String], aggregateTypeName: String,
                                        batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit = {
 
-    val aggregateTypeId = typesNamesState.typeIdByClassName(aggregateType)
+    val aggregateTypeId = typesNamesState.typeIdByClassName(aggregateTypeName)
+    val aggregateType = AggregateType(aggregateTypeName)
 
     var buffer = List[EventInfo[Any]]()
     var lastAggregateId = AggregateId(-1)
-    var lastAggregateType = AggregateType("")
-    DB.readOnly { implicit session =>
-      val query = if(batchPerAggregate) {
-        sql"""SELECT event_type_id, event_type_version, event, events.version, events.aggregate_id, aggregates.type_id, user_id, event_time
-           FROM events
-           JOIN aggregates ON events.aggregate_id = aggregates.id AND events.aggregate_id = aggregates.base_id
-           WHERE aggregates.type_id = ?
-           ORDER BY aggregates.creation_time, aggregates.id, events.id""".bind(aggregateTypeId)
+    DB.readOnlyWithConnection { connection =>
+
+      connection.setAutoCommit(false)
+
+      val statement = if(batchPerAggregate) {
+        connection.prepareStatement("""SELECT event_type_id, event_type_version, event, events.version, events.aggregate_id, user_id, event_time
+            FROM events
+            WHERE aggregate_id IN (SELECT id FROM aggregates WHERE type_id = ? AND id = aggregate_id AND base_id = aggregate_id)
+            ORDER BY events.aggregate_id, events.id""".stripMargin, java.sql.ResultSet.TYPE_FORWARD_ONLY, java.sql.ResultSet.CONCUR_READ_ONLY)
       } else {
-        sql"""SELECT event_type_id, event_type_version, event, events.version, events.aggregate_id, aggregates.type_id, user_id, event_time
+        connection.prepareStatement("""SELECT event_type_id, event_type_version, event, events.version, events.aggregate_id, user_id, event_time
            FROM events
-           JOIN aggregates ON events.aggregate_id = aggregates.id AND events.aggregate_id = aggregates.base_id
-           WHERE aggregates.type_id = ?
-           ORDER BY events.id""".bind(aggregateTypeId)
+           WHERE aggregate_id IN (SELECT id FROM aggregates WHERE type_id = ? AND id = aggregate_id AND base_id = aggregate_id)
+           ORDER BY events.id""")
       }
 
-      query.fetchSize(fetchSize).foreach { rs =>
-          val eventBaseType = typesNamesState.classNameById(rs.short(1))
-          val eventTypeVersion = rs.short(2)
-          val eventType = eventsVersionsMap.getOrElse(EventTypeVersion(eventBaseType, eventTypeVersion), eventBaseType)
+      statement.setFetchSize(fetchSize)
+      statement.setInt(1, aggregateTypeId)
+      val rs = statement.executeQuery()
 
-          val event = mpjsons.deserialize[Event[_]](rs.string(3), eventType)
-          val aggregateId = AggregateId(rs.long(5))
-          val version = AggregateVersion(rs.int(4))
-          val eventInfo: EventInfo[Any] = EventInfo[Any](version, event.asInstanceOf[Event[Any]], UserId(rs.long(7)), rs.timestamp(8).toInstant)
-          val aggregateType =  AggregateType(typesNamesState.classNameById(rs.short(6)))
+      while(rs.next()) {
+        val eventBaseType = typesNamesState.classNameById(rs.getShort(1))
+        val eventTypeVersion = rs.getShort(2)
+        val eventType = eventsVersionsMap.getOrElse(EventTypeVersion(eventBaseType, eventTypeVersion), eventBaseType)
 
-          if(!batchPerAggregate || lastAggregateId != aggregateId) {
-            if(buffer.nonEmpty) {
-              eventHandler(buffer.reverse, lastAggregateId, lastAggregateType)
-            }
-            buffer = List(eventInfo)
-            lastAggregateId = aggregateId
-            lastAggregateType = aggregateType
-          } else {
-            buffer ::= eventInfo
+        val event = mpjsons.deserialize[Event[_]](rs.getString(3), eventType)
+        val aggregateId = AggregateId(rs.getLong(5))
+        val version = AggregateVersion(rs.getInt(4))
+        val eventInfo: EventInfo[Any] = EventInfo[Any](version, event.asInstanceOf[Event[Any]], UserId(rs.getLong(6)), rs.getTimestamp(7).toInstant)
+
+        if(!batchPerAggregate || lastAggregateId != aggregateId) {
+          if(buffer.nonEmpty) {
+            eventHandler(buffer.reverse, lastAggregateId, aggregateType)
           }
+          buffer = List(eventInfo)
+          lastAggregateId = aggregateId
+        } else {
+          buffer ::= eventInfo
         }
+      }
+
       if(buffer.nonEmpty) {
-        eventHandler(buffer.reverse, lastAggregateId, lastAggregateType)
+        eventHandler(buffer.reverse, lastAggregateId, aggregateType)
       }
     }
   }
@@ -240,7 +245,17 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
 
   override def countAllEvents(): Int =  DB.readOnly { implicit session =>
-    sql"""SELECT COUNT(*) FROM events""".map(rs => rs.int(1)).single().apply().get
+
+    // much faster, although might be not exact
+    val count = sql"""SELECT reltuples::bigint AS count FROM pg_class WHERE oid = 'public.events'::regclass"""
+      .map(rs => rs.int(1)).single().apply().get
+
+    if(count == 0) {
+      sql"""SELECT COUNT(*) FROM events""".map(rs => rs.int(1)).single().apply().get
+    } else {
+      count
+    }
+
   }
 
   override def countEventsForAggregateTypes(aggregateTypes: Seq[String]): Int = DB.readOnly { implicit session =>

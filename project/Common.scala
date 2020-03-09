@@ -7,7 +7,7 @@ object Common {
 
     organization := "io.reactivecqrs",
     name := s"reactivecqrs-$moduleName",
-    version := "0.11.18",
+    version := "0.11.19",
     scalaVersion := "2.11.7",
 
     /* required for Scalate to avoid version mismatch */
@@ -68,7 +68,8 @@ object Common {
     )
 
     val scalikejdbc = Seq(
-      "org.scalikejdbc" %% "scalikejdbc" % "2.5.2"
+      "org.scalikejdbc" %% "scalikejdbc" % "3.4.0",
+      "org.scalikejdbc" %% "scalikejdbc-streams" % "3.4.0"
     )
 
     val postgresql = Seq(

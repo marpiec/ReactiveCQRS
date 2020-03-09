@@ -10,7 +10,12 @@ class PostgresEventStoreSchemaInitializer  {
     createEventsTable()
     dropColumnCommandId()
     try {
-      createEventsIndex()
+      createEventsAggregateIdIndex()
+    } catch {
+      case e: PSQLException => () //ignore until CREATE INDEX IF NOT EXISTS is available in PostgreSQL
+    }
+    try {
+      createEventsIdAndAggregateIndex()
     } catch {
       case e: PSQLException => () //ignore until CREATE INDEX IF NOT EXISTS is available in PostgreSQL
     }
@@ -19,7 +24,12 @@ class PostgresEventStoreSchemaInitializer  {
     createAggregatesTable()
     addAggregateSpaceColumn()
     try {
-      createAggregatesIndex()
+      createAggregatesTypeIndex()
+    } catch {
+      case e: PSQLException => () //ignore until CREATE INDEX IF NOT EXISTS is available in PostgreSQL
+    }
+    try {
+      createAggregatesBaseIdIndex()
     } catch {
       case e: PSQLException => () //ignore until CREATE INDEX IF NOT EXISTS is available in PostgreSQL
     }
@@ -55,18 +65,29 @@ class PostgresEventStoreSchemaInitializer  {
     """.execute().apply()
   }
 
-  private def createEventsIndex(): Unit = DB.autoCommit { implicit session =>
+  private def createEventsIdAndAggregateIndex(): Unit = DB.autoCommit { implicit session =>
+    sql"""
+      CREATE INDEX events_id_aggregates_idx ON events (aggregate_id, id);
+    """.execute().apply()
+  }
+
+  private def createEventsAggregateIdIndex(): Unit = DB.autoCommit { implicit session =>
     sql"""
         CREATE INDEX events_aggregates_idx ON events (aggregate_id);
       """.execute().apply()
   }
 
-  private def createAggregatesIndex(): Unit = DB.autoCommit { implicit session =>
+  private def createAggregatesTypeIndex(): Unit = DB.autoCommit { implicit session =>
     sql"""
         CREATE INDEX aggregates_type_idx ON aggregates (type_id);
       """.execute().apply()
   }
 
+  private def createAggregatesBaseIdIndex(): Unit = DB.autoCommit { implicit session =>
+    sql"""
+        CREATE INDEX aggregates_base_id_idx ON aggregates (base_id);
+      """.execute().apply()
+  }
 
 
 

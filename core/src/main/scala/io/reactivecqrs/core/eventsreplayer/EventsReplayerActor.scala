@@ -107,17 +107,25 @@ class EventsReplayerActor(eventStore: EventStoreState,
     var allEventsSent: Long = 0
     var lastDumpEventsSent: Long = 0
 
-    logMessage("Will replay "+allAggregatesEvents+" events out of " + allEvents)
+    logMessage("Will replay "+allAggregatesEvents+" events out of " + allEvents + "(approximately)")
 
     var lastUpdate = System.currentTimeMillis()
 
     val notYetPublishedAggregatesVersions = eventStore.readNotYetPublishedEvents()
 
+    var first = true
 
     aggregatesTypes.foreach(aggregateType => {
       val start = new Date().getTime
       logMessage("Processing events for " + aggregateType.simpleName)
+      first = true
       eventStore.readAndProcessAllEvents(combinedEventsVersionsMap, aggregateType.typeName, batchPerAggregate, (events: Seq[EventInfo[_]], aggregateId: AggregateId, aggregateType: AggregateType) => {
+
+        if(first) {
+          logMessage("Processing first event for " + aggregateType.simpleName)
+          first = false
+        }
+
         while(eventsToProduceAllowed <= 0) {
           // Ask is a way to block during fetching data from db
           //          print("Replayer: Waiting more allowed messages, now allowed " + eventsToProduceAllowed)
