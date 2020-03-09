@@ -177,14 +177,21 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
     result match {
       case s: CommandSuccess[_, _] =>
         val success = s.asInstanceOf[CommandSuccess[AGGREGATE_ROOT, AnyRef]]
+
         val response = success.responseInfo match {
           // if concurrent command then expected aggregate version plus events count will be sent to command originator,
           // that might be inaccurate if other command happened meantime, but this should not be a problem for concurrent command
           case r: Nothing => SuccessResponse(aggregateId, version.incrementBy(success.events.size))
           case _ => CustomSuccessResponse(aggregateId, version.incrementBy(success.events.size), success.responseInfo)
         }
-        context.become(receiveEventsPersistResult(response))
-        repositoryActor ! PersistEvents[AGGREGATE_ROOT](self, commandEnvelope.commandId, userId, expectedVersion, Instant.now, success.events, idempotentCommandInfo(commandEnvelope.command, response))
+
+        if(success.events.isEmpty) {
+          commandEnvelope.respondTo ! response
+          context.stop(self)
+        } else {
+          context.become(receiveEventsPersistResult(response))
+          repositoryActor ! PersistEvents[AGGREGATE_ROOT](self, commandEnvelope.commandId, userId, expectedVersion, Instant.now, success.events, idempotentCommandInfo(commandEnvelope.command, response))
+        }
       case s: RewriteCommandSuccess[_, _] =>
 
         val success = s.asInstanceOf[RewriteCommandSuccess[AGGREGATE_ROOT, AnyRef]]
@@ -194,9 +201,13 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
           case r: Nothing => SuccessResponse(aggregateId, version.incrementBy(success.events.size))
           case _ => CustomSuccessResponse(aggregateId, version.incrementBy(success.events.size), success.responseInfo)
         }
-        context.become(receiveEventsPersistResult(response))
-        repositoryActor ! OverrideAndPersistEvents[AGGREGATE_ROOT](success.eventsRewritten, PersistEvents[AGGREGATE_ROOT](self, commandEnvelope.commandId, userId, expectedVersion, Instant.now, success.events, idempotentCommandInfo(commandEnvelope.command, response)))
-
+        if(success.events.isEmpty) {
+          commandEnvelope.respondTo ! response
+          context.stop(self)
+        } else {
+          context.become(receiveEventsPersistResult(response))
+          repositoryActor ! OverrideAndPersistEvents[AGGREGATE_ROOT](success.eventsRewritten, PersistEvents[AGGREGATE_ROOT](self, commandEnvelope.commandId, userId, expectedVersion, Instant.now, success.events, idempotentCommandInfo(commandEnvelope.command, response)))
+        }
 
       case failure: CommandFailure[_, _] =>
         commandEnvelope.respondTo ! failure.response
