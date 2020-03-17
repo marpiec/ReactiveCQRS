@@ -1,6 +1,6 @@
 package io.reactivecqrs.core.util
 
-class RandomUtil {
+object RandomUtil {
 
   private val alphanumerics = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
   private val alphanumericsLength = alphanumerics.length

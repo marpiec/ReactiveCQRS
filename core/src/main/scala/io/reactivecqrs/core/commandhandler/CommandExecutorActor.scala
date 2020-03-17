@@ -1,6 +1,5 @@
 package io.reactivecqrs.core.commandhandler
 
-import java.io.{PrintWriter, StringWriter}
 import java.time.Instant
 
 import akka.actor.{Actor, ActorRef, PoisonPill}
@@ -11,6 +10,8 @@ import io.reactivecqrs.core.commandhandler.CommandExecutorActor.AggregateModifie
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalCommandEnvelope, InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope, InternalRewriteHistoryCommandEnvelope, InternalRewriteHistoryConcurrentCommandEnvelope}
 import io.reactivecqrs.core.util.ActorLogging
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.AggregateWithSelectedEvents
+
+import io.reactivecqrs.core.util.RandomUtil
 
 import scala.concurrent.duration._
 import scala.concurrent.duration.FiniteDuration
@@ -88,7 +89,6 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
           context.stop(self)
       }
     case e: EventHandlingError =>
-      log.error("EventHandlingError " + e.eventName +"\n" + e.stackTrace)
       commandEnvelope.respondTo ! e
       context.stop(self)
     case m =>
@@ -227,16 +227,12 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
     exception match {
       case e: AggregateInIncorrectVersionException => commandEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateId, e.aggregateType, e.requestedVersion, e.currentVersion)
       case _ =>
-        commandEnvelope.respondTo ! CommandHandlingError(commandEnvelope.command.getClass.getSimpleName, stackTraceToString(exception), commandEnvelope.commandId)
-        log.error(exception, "Error handling command")
+        val errorId = RandomUtil.generateRandomString(16)
+        commandEnvelope.respondTo ! CommandHandlingError(commandEnvelope.command.getClass.getSimpleName, errorId, commandEnvelope.commandId)
+        log.error(exception, "Error handling command, errorId: ["+errorId+"]")
     }
     context.stop(self)
   }
 
-  private def stackTraceToString(e: Throwable) = {
-    val sw = new StringWriter()
-    e.printStackTrace(new PrintWriter(sw))
-    sw.toString
-  }
 
 }

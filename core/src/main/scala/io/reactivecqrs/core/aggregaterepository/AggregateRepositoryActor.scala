@@ -1,6 +1,5 @@
 package io.reactivecqrs.core.aggregaterepository
 
-import java.io.{PrintWriter, StringWriter}
 import java.time.Instant
 
 import io.reactivecqrs.core.eventstore.EventStoreState
@@ -10,6 +9,7 @@ import akka.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
 import io.reactivecqrs.core.commandhandler.{CommandExecutorActor, CommandResponseState}
+import io.reactivecqrs.core.util.RandomUtil
 import org.postgresql.util.PSQLException
 import scalikejdbc.DBSession
 
@@ -107,12 +107,6 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     // do not call preStart
   }
 
-  private def stackTraceToString(e: Throwable) = {
-    val sw = new StringWriter()
-    e.printStackTrace(new PrintWriter(sw))
-    sw.toString
-  }
-
   override def receive = logReceive {
     case ee: PersistEvents[_] => handlePersistEvents(ee)
     case ee: OverrideAndPersistEvents[_] => handleOverrideAndPersistEvents(ee)
@@ -145,8 +139,9 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     tryToApplyEvents(ee.persist) match {
       case s: Right[_, _] => overrideAndPersistEvents(ee.asInstanceOf[OverrideAndPersistEvents[AGGREGATE_ROOT]])
       case Left((exception, event)) =>
-        ee.persist.respondTo ! EventHandlingError(event.getClass.getSimpleName, stackTraceToString(exception), ee.persist.commandId)
-        log.error(exception, "Error handling event")
+        val errorId = RandomUtil.generateRandomString(16)
+        ee.persist.respondTo ! EventHandlingError(event.getClass.getSimpleName, errorId, ee.persist.commandId)
+        log.error(exception, "Error handling event, errorId: [" + errorId+"]")
     }
   }
 
@@ -154,8 +149,9 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     tryToApplyEvents(ee) match {
       case s: Right[_, _] => persistEvents(ee.asInstanceOf[PersistEvents[AGGREGATE_ROOT]])
       case Left((exception, event)) =>
-        ee.respondTo ! EventHandlingError(event.getClass.getSimpleName, stackTraceToString(exception), ee.commandId)
-        log.error(exception, "Error handling event")
+        val errorId = RandomUtil.generateRandomString(16)
+        ee.respondTo ! EventHandlingError(event.getClass.getSimpleName, errorId, ee.commandId)
+        log.error(exception, "Error handling event, errorId: [" + errorId+"]")
     }
   }
 
@@ -276,7 +272,10 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     eventsWithVersionsTry match {
       case Failure(exception) => exception match {
         case e: PSQLException if e.getLocalizedMessage.contains("Concurrent aggregate modification exception") => eventsEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateId, aggregateType, eventsEnvelope.expectedVersion, version)
-        case e => eventsEnvelope.respondTo ! EventHandlingError(eventsEnvelope.events.head.getClass.getSimpleName, stackTraceToString(e), eventsEnvelope.commandId)
+        case e =>
+          val errorId = RandomUtil.generateRandomString(16)
+          eventsEnvelope.respondTo ! EventHandlingError(eventsEnvelope.events.head.getClass.getSimpleName, errorId, eventsEnvelope.commandId)
+          log.error(exception, "Error handling event, errorId: [" + errorId+"]")
       }
       case Success(eventsWithVersions) =>
         var mappedEvents = 0

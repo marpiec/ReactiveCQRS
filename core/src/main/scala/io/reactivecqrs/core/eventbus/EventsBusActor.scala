@@ -49,8 +49,6 @@ case class AggregateWithEventSubscription(subscriptionId: String, aggregateType:
 /** TODO get rid of state, memory only */
 class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: EventBusSubscriptionsManagerApi, val MAX_BUFFER_SIZE: Int = 1000) extends Actor with ActorLogging {
 
-  private val randomUtil = new RandomUtil
-
   private var subscriptions: Map[AggregateType, Vector[Subscription]] = Map()
   private var subscriptionsByIds = Map[String, Subscription]()
 
@@ -413,7 +411,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   private def generateNextSubscriptionId:String = {
     var subscriptionId: String = null
     do {
-      subscriptionId = randomUtil.generateRandomString(32)
+      subscriptionId = RandomUtil.generateRandomString(32)
     } while(subscriptionsByIds.contains(subscriptionId))
     subscriptionId
   }

@@ -20,5 +20,5 @@ case class AggregateConcurrentModificationError(aggregateId: AggregateId,
                                                 aggregateType: AggregateType,
                                                 expected: AggregateVersion,
                                                 was: AggregateVersion) extends CustomCommandResponse[Nothing]
-case class CommandHandlingError(commandName: String, stackTrace: String, commandId: CommandId) extends CustomCommandResponse[Nothing]
-case class EventHandlingError(eventName: String, stackTrace: String, commandId: CommandId) extends CustomCommandResponse[Nothing]
+case class CommandHandlingError(commandName: String, errorId: String, commandId: CommandId) extends CustomCommandResponse[Nothing]
+case class EventHandlingError(eventName: String, errorId: String, commandId: CommandId) extends CustomCommandResponse[Nothing]
