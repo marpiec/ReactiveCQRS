@@ -248,10 +248,6 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
     receivedTotal += events.size
 
-    if(events.isEmpty) {
-      logMessage("Received empty events sequence for aggregate " + aggregateId.asLong+" of type ["+aggregateType.simpleName+"]")
-    }
-
     val lastPublishedVersion = AggregateVersion(getLastPublishedVersion(aggregateId))
 
     val (alreadyPublished, eventsToPropagate) = events.span(_.version <= lastPublishedVersion)
