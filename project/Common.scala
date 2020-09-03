@@ -7,7 +7,7 @@ object Common {
 
     organization := "io.reactivecqrs",
     name := s"reactivecqrs-$moduleName",
-    version := "0.11.24",
+    version := "0.11.25",
     scalaVersion := "2.11.12",
 
     /* required for Scalate to avoid version mismatch */
@@ -77,7 +77,7 @@ object Common {
     )
 
     val logback = Seq(
-      "ch.qos.logback" % "logback-classic" % "1.1.11" % Test
+      "ch.qos.logback" % "logback-classic" % "1.2.3" % Test
     )
   }
 }
