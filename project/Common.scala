@@ -7,7 +7,7 @@ object Common {
 
     organization := "io.reactivecqrs",
     name := s"reactivecqrs-$moduleName",
-    version := "0.11.23",
+    version := "0.11.24",
     scalaVersion := "2.11.12",
 
     /* required for Scalate to avoid version mismatch */
@@ -73,7 +73,7 @@ object Common {
     )
 
     val postgresql = Seq(
-      "org.postgresql" % "postgresql" % "9.4-1206-jdbc41"
+      "org.postgresql" % "postgresql" % "42.2.16"
     )
 
     val logback = Seq(
