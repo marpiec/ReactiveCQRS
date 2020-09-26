@@ -54,7 +54,6 @@ case class SortDesc(path: Seq[String]) extends Sort
 
 case class DocumentStoreQuery(where: Seq[ExpectedValue],
                               sortBy: Seq[Sort],
-                              ascending: Boolean,
                               offset: Int,
                               limit: Int)
 
