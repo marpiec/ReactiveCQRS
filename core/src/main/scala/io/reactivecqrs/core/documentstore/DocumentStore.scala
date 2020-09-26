@@ -22,6 +22,10 @@ case class ExpectedSingleValueLike(path: Seq[String], pattern: String) extends E
 
 case class ExpectedSingleValue(path: Seq[String], value: String) extends ExpectedValue
 
+case class ExpectedSingleValueInArray(path: Seq[String], value: String) extends ExpectedValue
+
+case class ExpectedMultipleValuesInArray(path: Seq[String], values: Iterable[String]) extends ExpectedValue
+
 case class ExpectedSingleIntValue(path: Seq[String], value: Int) extends ExpectedValue
 
 case class ExpectedSingleLongValue(path: Seq[String], value: Long) extends ExpectedValue
@@ -30,16 +34,16 @@ case class ExpectedGreaterThanIntValue(path: Seq[String], value: Int) extends Ex
 
 case class ExpectedLessThanIntValue(path: Seq[String], value: Int) extends ExpectedValue
 
-case class ExpectedMultipleValues(path: Seq[String], values: Set[String]) extends ExpectedValue
+case class ExpectedMultipleValues(path: Seq[String], values: Iterable[String]) extends ExpectedValue
 
-case class ExpectedMultipleIntValues(path: Seq[String], values: Set[Int]) extends ExpectedValue
+case class ExpectedMultipleIntValues(path: Seq[String], values: Iterable[Int]) extends ExpectedValue
 
-case class ExpectedMultipleLongValues(path: Seq[String], values: Set[Long]) extends ExpectedValue
+case class ExpectedMultipleLongValues(path: Seq[String], values: Iterable[Long]) extends ExpectedValue
 
 import scala.reflect.runtime.universe._
 
 object DocumentStoreQuery {
-  def basic(where: Seq[ExpectedValue]) = DocumentStoreQuery(where, Seq.empty, true, 0, 10000)
+  def basic(where: Seq[ExpectedValue]) = DocumentStoreQuery(where, Seq.empty, 0, 10000)
 }
 
 sealed trait Sort

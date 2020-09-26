@@ -267,10 +267,13 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
       case ExpectedMultipleLongValues(path, v) => s"(document #>> '{${path.mkString(",")}}')::bigint in (${List.fill(v.size)("?").mkString(",")})"
       case ExpectedSingleValue(path, _) => s"document #>> '{${path.mkString(",")}}' = ?"
       case ExpectedSingleValueLike(path, _) => s"document #>> '{${path.mkString(",")}}' ilike ?"
+      case ExpectedSingleValueInArray(path, v) => s"(document #> '{${path.mkString(",")}}') ?? ?"
+      case ExpectedMultipleValuesInArray(path, v) => s"(document #> '{${path.mkString(",")}}') ??| ARRAY[${List.fill(v.size)("?").mkString(",")}]"
       case ExpectedSingleIntValue(path, _) => s"(document #>> '{${path.mkString(",")}}')::int = ?"
       case ExpectedSingleLongValue(path, _) => s"(document #>> '{${path.mkString(",")}}')::bigint = ?"
       case ExpectedGreaterThanIntValue(path, _) => s"(document #>> '{${path.mkString(",")}}')::int > ?"
       case ExpectedLessThanIntValue(path, _) => s"(document #>> '{${path.mkString(",")}}')::int < ?"
+
     }.mkString(" ", " AND ", " ")
   }
 
@@ -281,6 +284,8 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
       case ExpectedMultipleIntValues(_, vals) => vals
       case ExpectedMultipleLongValues(_, vals) => vals
       case ExpectedSingleValue(_, value) => Iterable(value)
+      case ExpectedSingleValueInArray(_, value) => Iterable(value)
+      case ExpectedMultipleValuesInArray(_, vals) => vals
       case ExpectedSingleValueLike(_, value) => Iterable(value)
       case ExpectedSingleIntValue(_, value) => Iterable(value)
       case ExpectedSingleLongValue(_, value) => Iterable(value)
