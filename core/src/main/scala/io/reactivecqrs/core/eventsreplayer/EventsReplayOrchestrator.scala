@@ -30,7 +30,7 @@ class EventsReplayOrchestrator {
              printStatusInfoOnly: Boolean,
              forceAll: Boolean,
              delayBetweenAggregatesMillis: Long
-            )(implicit ec: ExecutionContext): Unit = {
+            )(implicit ec: ExecutionContext): Boolean = {
 
 
     implicit val tm: Timeout = timeout
@@ -74,7 +74,8 @@ class EventsReplayOrchestrator {
     if(printStatusInfoOnly) {
       val status: ReplayerStatus = Await.result((eventsReplayerActor ? GetStatus(orderedAggregatesToReplay)).mapTo[ReplayerStatus], timeout)
       logMessage("Will replay " + status.willReplay + " of " + status.allEvents + " events")
-    } else {
+      false
+    } else if(aggregatesToReplay.nonEmpty || projectionsToRebuild.nonEmpty) {
       Await.result(Future.sequence(projectionsToRebuild.map(projectionToRebuild => {
         (projectionToRebuild._1 ? ClearProjectionData)
       })), 60 seconds)
@@ -91,6 +92,10 @@ class EventsReplayOrchestrator {
       log.info("Cooling down")
       print("Cool down...")
       waitFor(5)
+      true
+    } else {
+      println("Nothing to do.")
+      false
     }
   }
 
