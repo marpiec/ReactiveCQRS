@@ -94,7 +94,7 @@ class EventsReplayOrchestrator {
       waitFor(5)
       true
     } else {
-      println("Nothing to do.")
+      logMessage("Nothing to do.")
       false
     }
   }
