@@ -5,7 +5,7 @@ import akka.actor.{Actor, ActorRef}
 import akka.util.Timeout
 import io.reactivecqrs.api.SagaStep
 import io.reactivecqrs.api.id.{SagaId, UserId}
-import io.reactivecqrs.core.saga.SagaActor.SagaPersisted
+import io.reactivecqrs.core.saga.SagaActor.{LoadPendingSagas, SagaPersisted}
 import io.reactivecqrs.core.uid.{NewSagasIdsPool, UidGeneratorActor}
 import io.reactivecqrs.core.util.ActorLogging
 
@@ -18,6 +18,7 @@ object SagaActor {
 
   case class SagaPersisted(sagaId: SagaId, respondTo: String, order: SagaInternalOrder, phase: SagaPhase, step: Int)
 
+  case object LoadPendingSagas
 }
 
 // Actor per saga -  to recieve messages from command bus?
@@ -42,15 +43,18 @@ abstract class SagaActor extends Actor with ActorLogging {
   def handleRevert(sagaStep: SagaStep): ReceiveRevert
 
   private def loadPendingSagas(): Unit = {
-    state.loadAllSagas((sagaName: String, sagaId: SagaId, userId: UserId, respondTo: String, phase: SagaPhase, step: Int, order: SagaInternalOrder) => {
-      println("Continuing saga " + sagaName+" "+sagaId+" "+step)
+    state.loadAllSagas(name, (sagaId: SagaId, userId: UserId, respondTo: String, phase: SagaPhase, step: Int, order: SagaInternalOrder) => {
+      println("Continuing saga " + name+" "+sagaId+" "+step)
       self ! SagaPersisted(sagaId, respondTo, order, phase, step)
     })
   }
 
-  loadPendingSagas()
+  override def preStart(): Unit = {
+    self ! LoadPendingSagas
+  }
 
   override def receive: Receive = {
+    case LoadPendingSagas => loadPendingSagas()
     case m: SagaOrder => persistInitialSagaStatusAndSendConfirm(self, takeNextSagaId, sender.path.toString, m)
     case m: SagaPersisted if m.phase == CONTINUES => internalHandleOrderContinue(self, m.sagaId, m.step, m.respondTo, m.order)
     case m: SagaPersisted if m.phase == REVERTING => internalHandleRevert(self, m.sagaId, m.step, m.respondTo, m.order)

@@ -34,12 +34,13 @@ class PostgresSagaState(mpjsons: MPJsons, typesNamesState: TypesNamesState) exte
     }
   }
 
-  def loadAllSagas(handler: (String, SagaId, UserId, String, SagaPhase, Int, SagaInternalOrder) => Unit): Unit = {
+  def loadAllSagas(name: String, handler: (SagaId, UserId, String, SagaPhase, Int, SagaInternalOrder) => Unit): Unit = {
     DB.readOnly { implicit session =>
-      sql"""SELECT name, saga_id, user_id, respond_to, phase, step, saga_order, order_type_id FROM sagas"""
+      sql"""SELECT saga_id, user_id, respond_to, phase, step, saga_order, order_type_id FROM sagas WHERE name = ?"""
+        .bind(name)
         .foreach { rs =>
-          handler(rs.string(1), SagaId(rs.long(2)), UserId(rs.long(3)), rs.string(4), SagaPhase.byName(rs.string(5)),
-            rs.int(6), mpjsons.deserialize[SagaInternalOrder](rs.string(7), typesNamesState.classNameById(rs.short(8))))
+          handler(SagaId(rs.long(1)), UserId(rs.long(2)), rs.string(3), SagaPhase.byName(rs.string(4)),
+            rs.int(5), mpjsons.deserialize[SagaInternalOrder](rs.string(6), typesNamesState.classNameById(rs.short(7))))
         }
     }
   }

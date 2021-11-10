@@ -11,7 +11,7 @@ abstract class SagaState {
 
   def deleteSaga(name: String, sagaId: SagaId): Unit
 
-  def loadAllSagas(handler: (String, SagaId, UserId, String, SagaPhase, Int, SagaInternalOrder) => Unit): Unit
+  def loadAllSagas(name: String, handler: (SagaId, UserId, String, SagaPhase, Int, SagaInternalOrder) => Unit): Unit
 }
 
 
