@@ -151,15 +151,19 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       connection.setAutoCommit(false)
 
       val statement = if(batchPerAggregate) {
-        connection.prepareStatement("""SELECT event_type_id, event_type_version, event, events.version, events.aggregate_id, user_id, event_time
-            FROM events
-            WHERE aggregate_id IN (SELECT id FROM aggregates WHERE type_id = ? AND id = aggregate_id AND base_id = aggregate_id)
-            ORDER BY events.aggregate_id, events.id""".stripMargin, java.sql.ResultSet.TYPE_FORWARD_ONLY, java.sql.ResultSet.CONCUR_READ_ONLY)
+        connection.prepareStatement("""SELECT event_type_id, event_type_version, event, events.version, events.aggregate_id, user_id, event_time,
+       noop_events.id IS NOT NULL AND noop_events.from_version <= aggregates.base_version as noop
+FROM events
+         JOIN aggregates ON aggregates.type_id = ? AND events.aggregate_id = aggregates.base_id AND events.aggregate_id = aggregates.id
+         LEFT JOIN noop_events ON events.id = noop_events.id AND noop_events.from_version <= aggregates.base_version
+ORDER BY events.aggregate_id, events.id""".stripMargin, java.sql.ResultSet.TYPE_FORWARD_ONLY, java.sql.ResultSet.CONCUR_READ_ONLY)
       } else {
-        connection.prepareStatement("""SELECT event_type_id, event_type_version, event, events.version, events.aggregate_id, user_id, event_time
-           FROM events
-           WHERE aggregate_id IN (SELECT id FROM aggregates WHERE type_id = ? AND id = aggregate_id AND base_id = aggregate_id)
-           ORDER BY events.id""")
+        connection.prepareStatement("""SELECT event_type_id, event_type_version, event, events.version, events.aggregate_id, user_id, event_time,
+       noop_events.id IS NOT NULL AND noop_events.from_version <= aggregates.base_version as noop
+FROM events
+         JOIN aggregates ON aggregates.type_id = ? AND events.aggregate_id = aggregates.base_id AND events.aggregate_id = aggregates.id
+         LEFT JOIN noop_events ON events.id = noop_events.id AND noop_events.from_version <= aggregates.base_version
+ORDER BY events.id""")
       }
 
       statement.setFetchSize(fetchSize)
@@ -167,23 +171,25 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       val rs = statement.executeQuery()
 
       while(rs.next()) {
-        val eventBaseType = typesNamesState.classNameById(rs.getShort(1))
-        val eventTypeVersion = rs.getShort(2)
-        val eventType = eventsVersionsMap.getOrElse(EventTypeVersion(eventBaseType, eventTypeVersion), eventBaseType)
+        if(!rs.getBoolean(8)) { // ignore noop
+          val eventBaseType = typesNamesState.classNameById(rs.getShort(1))
+          val eventTypeVersion = rs.getShort(2)
+          val eventType = eventsVersionsMap.getOrElse(EventTypeVersion(eventBaseType, eventTypeVersion), eventBaseType)
 
-        val event = mpjsons.deserialize[Event[_]](rs.getString(3), eventType)
-        val aggregateId = AggregateId(rs.getLong(5))
-        val version = AggregateVersion(rs.getInt(4))
-        val eventInfo: EventInfo[Any] = EventInfo[Any](version, event.asInstanceOf[Event[Any]], UserId(rs.getLong(6)), rs.getTimestamp(7).toInstant)
+          val event = mpjsons.deserialize[Event[_]](rs.getString(3), eventType)
+          val aggregateId = AggregateId(rs.getLong(5))
+          val version = AggregateVersion(rs.getInt(4))
+          val eventInfo: EventInfo[Any] = EventInfo[Any](version, event.asInstanceOf[Event[Any]], UserId(rs.getLong(6)), rs.getTimestamp(7).toInstant)
 
-        if(!batchPerAggregate || lastAggregateId != aggregateId) {
-          if(buffer.nonEmpty) {
-            eventHandler(buffer.reverse, lastAggregateId, aggregateType)
+          if (!batchPerAggregate || lastAggregateId != aggregateId) {
+            if (buffer.nonEmpty) {
+              eventHandler(buffer.reverse, lastAggregateId, aggregateType)
+            }
+            buffer = List(eventInfo)
+            lastAggregateId = aggregateId
+          } else {
+            buffer ::= eventInfo
           }
-          buffer = List(eventInfo)
-          lastAggregateId = aggregateId
-        } else {
-          buffer ::= eventInfo
         }
       }
 
