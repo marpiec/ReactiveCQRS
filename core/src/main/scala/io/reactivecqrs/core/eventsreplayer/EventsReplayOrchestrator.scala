@@ -83,7 +83,7 @@ class EventsReplayOrchestrator {
       logMessage("Projections cleared")
 
       val result: EventsReplayed = Await.result((eventsReplayerActor ? ReplayAllEvents(batchPerAggregate = true, orderedAggregatesToReplay, delayBetweenAggregatesMillis)).mapTo[EventsReplayed], timeout)
-      logMessage(result + " in " + (System.currentTimeMillis - start) + " millis")
+      logMessage(result + " in " + formatDuration(System.currentTimeMillis - start))
 
       aggregates.foreach(a => versionsState.saveVersionForAggregate(a.aggregateType, a.version))
       projectionSubscriptions.foreach(p => versionsState.saveVersionForProjection(p._2.projectionName, p._2.projectionVersion))
@@ -97,6 +97,32 @@ class EventsReplayOrchestrator {
       logMessage("Nothing to do.")
       false
     }
+  }
+
+  private def formatDuration(millis: Long): String = {
+    val ms = millis % 1000
+    val s = (millis / 1000) % 60
+    val m = (millis / (60 * 1000)) % 60
+    val h = millis / (60 * 60 * 1000)
+
+    val sb = new StringBuilder
+    if(h > 0) {
+      sb.append(" ").append(h).append("h")
+    }
+
+    if(m > 0) {
+      sb.append(" ").append(m).append("m")
+    }
+
+    if(s > 0) {
+      sb.append(" ").append(s).append("s")
+    }
+
+    if(h == 0 && m == 0 && s < 10) {
+      sb.append(" ").append(ms).append("ms")
+    }
+
+    sb.toString().trim()
   }
 
   private def simpleName(componentName: String): String = {
