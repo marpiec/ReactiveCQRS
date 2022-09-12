@@ -1,14 +1,13 @@
 package io.reactivecqrs.core.commandhandler
 
 import java.time.Instant
-
 import akka.actor.{Actor, ActorContext, ActorRef, PoisonPill, Props}
 import akka.pattern.ask
 import akka.util.Timeout
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRootCurrentMinVersion, GetAggregateRootCurrentVersion}
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRootCurrentMinVersion, GetAggregateRootCurrentVersion, GetEventsCurrentVersion}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.EnsureEventsPublished
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor._
 import io.reactivecqrs.core.eventstore.EventStoreState
@@ -117,8 +116,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     case GetAggregate(id) => routeGetAggregateRoot(id)
     case GetAggregateMinVersion(id, version, maxMillis) => routeGetAggregateRootMinVersion(id, version, maxMillis)
     case GetAggregateForVersion(id, version) => routeGetAggregateRootForVersion(id, version)
-    case GetEventsForAggregate(id) => ???
-    case GetEventsForAggregateForVersion(id, version) => ???
+    case GetEventsForAggregate(id) => routeGetEvents(id)
+    case GetEventsForAggregateForVersion(id, version) => routeGetEventsForVersion(id, version)
     case EnsureEventsPublished(oldOnly) => ensureEventsPublished(oldOnly)
     case m => throw new IllegalArgumentException("Cannot handle this kind of message: " + m + " class: " + m.getClass+". Maybe it should extend Command trait.")
   }
@@ -251,6 +250,14 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     maintenance(id)
   }
 
+  private def routeGetEvents(id: AggregateId): Unit = {
+    val respondTo = sender()
+    val aggregateRepository = getOrCreateAggregateRepositoryActor(id)
+
+    aggregateRepository ! GetEventsCurrentVersion(respondTo)
+    maintenance(id)
+  }
+
   private def routeGetAggregateRootMinVersion(id: AggregateId, version: AggregateVersion, maxMillis: Int): Unit = {
     val respondTo = sender()
     val aggregateRepository = getOrCreateAggregateRepositoryActor(id)
@@ -264,6 +271,14 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     val temporaryAggregateRepositoryForVersion = createAggregateRepositoryActorForVersion(id, version)
 
     temporaryAggregateRepositoryForVersion ! GetAggregateRootCurrentVersion(respondTo)
+  }
+
+
+  private def routeGetEventsForVersion(id: AggregateId, version: AggregateVersion): Unit = {
+    val respondTo = sender()
+    val temporaryAggregateRepositoryForVersion = createAggregateRepositoryActorForVersion(id, version)
+
+    temporaryAggregateRepositoryForVersion ! GetEventsCurrentVersion(respondTo)
   }
 
   private def takeNextAggregateId: AggregateId = {

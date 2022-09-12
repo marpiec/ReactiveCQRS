@@ -20,6 +20,7 @@ import scala.reflect.runtime.universe._
 import scala.util.{Failure, Success}
 
 object AggregateRepositoryActor {
+  case class GetEventsCurrentVersion(respondTo: ActorRef)
   case class GetAggregateRootCurrentVersion(respondTo: ActorRef)
   case class GetAggregateRootCurrentMinVersion(respondTo: ActorRef, version: AggregateVersion, durationMillis: Int)
   case class GetAggregateRootExactVersion(respondTo: ActorRef, version: AggregateVersion)
@@ -112,6 +113,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     case ee: OverrideAndPersistEvents[_] => handleOverrideAndPersistEvents(ee)
     case ep: EventsPersisted[_] => handleEventsPersisted(ep)
     case GetAggregateRootCurrentVersion(respondTo) => receiveReturnAggregateRoot(respondTo, None)
+    case GetEventsCurrentVersion(respondTo) => receiveReturnEvents(respondTo, None)
     case GetAggregateRootCurrentMinVersion(respondTo, version, durationMillis) => receiveReturnAggregateRootMinVersion(respondTo, version, System.currentTimeMillis() + durationMillis)
     case GetAggregateRootExactVersion(respondTo, version) => receiveReturnAggregateRoot(respondTo, Some(version)) // for following command
     case GetAggregateRootWithEventsCurrentVersion(respondTo, eventTypes) => receiveReturnAggregateRootWithEvents(respondTo, None, eventTypes) // for following command
@@ -203,6 +205,25 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
       self ! PoisonPill
     }
 
+  }
+
+  private def receiveReturnEvents(respondTo: ActorRef, requestedVersion: Option[AggregateVersion]): Unit = {
+    if(version == AggregateVersion.ZERO) {
+      respondTo ! Failure(new NoEventsForAggregateException(aggregateId, aggregateType))
+    } else {
+
+      //      println("RepositoryActor "+this.toString+" Someone requested aggregate " + aggregateId.asLong + " of version " + requestedVersion.map(_.asInt.toString).getOrElse("None") + " and now I have version " + version.asInt)
+      requestedVersion match {
+        case Some(v) if v != version => respondTo ! Failure(new AggregateInIncorrectVersionException(aggregateId, aggregateType, version, v))
+        case _ => {
+          var events: List[EventInfo[AGGREGATE_ROOT]] = List.empty
+          eventStore.readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap, aggregateId, singleReadForVersionOnly)((userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT], aggId: AggregateId, eventVersion: Int, noopEvent: Boolean) => {
+            events ::= EventInfo(AggregateVersion(eventVersion), event, userId, timestamp)
+          })
+          respondTo ! Success(events.reverse)
+        }
+      }
+    }
   }
 
   private def replayDelayedQueries(): Unit = {
