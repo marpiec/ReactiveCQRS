@@ -196,7 +196,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 //      println("RepositoryActor "+this.toString+" Someone requested aggregate " + aggregateId.asLong + " of version " + requestedVersion.map(_.asInt.toString).getOrElse("None") + " and now I have version " + version.asInt)
       requestedVersion match {
         case Some(v) if v != version => respondTo ! Failure(new AggregateInIncorrectVersionException(aggregateId, aggregateType, version, v))
-        case _ => respondTo ! Success(Aggregate[AGGREGATE_ROOT](aggregateId, version, Some(aggregateRoot)))
+        case _ => respondTo ! Success(Aggregate[AGGREGATE_ROOT](aggregateId, version, Option(aggregateRoot)))
       }
 
     }
@@ -240,7 +240,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   private def receiveReturnAggregateRootMinVersion(respondTo: ActorRef, requestedVersion: AggregateVersion, timeoutTimestamp: Long): Unit = {
     if(version >= requestedVersion) {
-      respondTo ! Success(Aggregate[AGGREGATE_ROOT](aggregateId, version, Some(aggregateRoot)))
+      respondTo ! Success(Aggregate[AGGREGATE_ROOT](aggregateId, version, Option(aggregateRoot)))
     } else {
       val now = System.currentTimeMillis()
       delayedQueries = DelayedMinVersionQuery(respondTo, requestedVersion, timeoutTimestamp) :: delayedQueries.filter(_.untilTimestamp > now)
@@ -263,7 +263,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
               events ::= EventWithVersion(AggregateVersion(eventVersion), event)
             }
           })
-          respondTo ! Success(AggregateWithSelectedEvents[AGGREGATE_ROOT](Aggregate[AGGREGATE_ROOT](aggregateId, version, Some(aggregateRoot)), events.reverse))
+          respondTo ! Success(AggregateWithSelectedEvents[AGGREGATE_ROOT](Aggregate[AGGREGATE_ROOT](aggregateId, version, Option(aggregateRoot)), events.reverse))
         }
       }
 
