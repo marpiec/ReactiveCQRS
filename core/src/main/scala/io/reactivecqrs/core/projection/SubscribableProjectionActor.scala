@@ -80,7 +80,7 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
         log.debug("New subscription for " + listener.path.toStringWithoutAddress + " on " + typeName + ", id: " + subscriptionId + ", subscriptions count: " + subscriptions.size)
       }
     } catch {
-      case e: Exception => log.error("Exception while handling subscription", e) //log only because projection update is more important than subscription
+      case e: Exception => log.error(e, "Exception while handling subscription") //log only because projection update is more important than subscription
     }
   }
 

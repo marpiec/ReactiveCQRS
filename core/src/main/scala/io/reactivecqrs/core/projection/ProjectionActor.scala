@@ -8,7 +8,7 @@ import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManagerApi, EventsBusActor}
 import EventsBusActor._
-import io.reactivecqrs.core.util.ActorLogging
+import io.reactivecqrs.core.util.MyActorLogging
 import scalikejdbc.DBSession
 
 import scala.collection.mutable
@@ -32,7 +32,7 @@ case class SubscribedAggregates(projectionName: String, projectionVersion: Int, 
 
 case class InitRebuildForTypes(aggregatesTypes: Iterable[AggregateType])
 
-abstract class ProjectionActor extends Actor with ActorLogging {
+abstract class ProjectionActor extends Actor with MyActorLogging {
 
   protected val projectionName: String
   protected val subscriptionsState: SubscriptionsState

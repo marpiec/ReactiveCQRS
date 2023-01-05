@@ -8,7 +8,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.backpressure.BackPressureActor._
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventsAck, _}
-import io.reactivecqrs.core.util.{ActorLogging, RandomUtil}
+import io.reactivecqrs.core.util.{MyActorLogging, RandomUtil}
 
 import scala.collection.mutable
 import scala.concurrent.Await
@@ -47,10 +47,15 @@ case class AggregateWithEventSubscription(subscriptionId: String, aggregateType:
 
 
 /** TODO get rid of state, memory only */
-class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: EventBusSubscriptionsManagerApi, val MAX_BUFFER_SIZE: Int = 1000) extends Actor with ActorLogging {
+class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: EventBusSubscriptionsManagerApi, val MAX_BUFFER_SIZE: Int = 1000) extends Actor with MyActorLogging {
 
   private var subscriptions: Map[AggregateType, Vector[Subscription]] = Map()
   private var subscriptionsByIds = Map[String, Subscription]()
+
+  private var eventsAlreadyPublishedTotal = 0
+  private var eventsPublishedTotal = 0
+  private var messagesSentTotal = 0
+  private var messageAckTotal = 0
 
   private var backPressureProducerActor: Option[ActorRef] = None
   private var receivedTotal = 0
@@ -127,6 +132,12 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
               log.warning("Events producer is not defined")
             }
           }
+
+          backPressureProducerActor.foreach(a => {
+            println("orderMoreMessagesToConsume !")
+            orderMoreMessagesToConsume()
+          })
+
         }
       }
     })(context.dispatcher)
@@ -255,6 +266,9 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     if (alreadyPublished.nonEmpty) {
       respondTo ! PublishEventsAck(aggregateId, alreadyPublished.map(_.version))
     }
+    eventsAlreadyPublishedTotal += alreadyPublished.size
+    eventsPublishedTotal += eventsToPropagate.size
+
 
     val messagesToSend = if (eventsToPropagate.nonEmpty) {
       subscriptions.getOrElse(aggregateType, Vector.empty).flatMap {
@@ -292,6 +306,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
     messagesToSend.foreach(m => {
       m.subscriber ! m.message
+      messagesSentTotal += m.versions.size
     })
 
     if(messagesToSend.nonEmpty) {
@@ -328,6 +343,8 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
   private def handleMessageAck(ack: MessageAck): Unit = {
 
+    messageAckTotal += ack.versions.size
+
     lastMessageAck = System.currentTimeMillis()
 
     val aggregateId = ack.aggregateId
@@ -356,9 +373,9 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       receivedInProgressMessages -= finishedEvents.size
 
       // TODO optimize by grouping versions ber sender
-      finishedEvents.keys.foreach(e =>
+      finishedEvents.keys.foreach(e => {
         eventSenders(e) ! PublishEventsAck(aggregateId, Seq(e.version))
-      )
+      })
 
       messagesSent --= eventsToConfirm
       eventSenders --= eventsToConfirm
@@ -383,6 +400,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
         }
       }
     }
+
 
     if(receivedInProgressMessages == 0 && afterFinishRespondTo.isDefined) {
       afterFinishRespondTo.get ! ConsumerFinished

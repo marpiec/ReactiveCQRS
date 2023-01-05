@@ -16,7 +16,7 @@ import io.reactivecqrs.core.eventbus.EventsBusActor.LogDetailedStatus
 import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, GetStatus, ReplayAllEvents, ReplayerStatus}
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.projection.SubscriptionsState
-import io.reactivecqrs.core.util.ActorLogging
+import io.reactivecqrs.core.util.MyActorLogging
 
 import scala.concurrent.Await
 import scala.reflect.runtime.universe._
@@ -43,7 +43,7 @@ class ReplayerRepositoryActorFactory[AGGREGATE_ROOT: TypeTag:ClassTag](aggregate
 
   def create(context: ActorContext, aggregateId: AggregateId, aggregateVersion: Option[AggregateVersion], eventStore: EventStoreState, eventsBus: ActorRef, actorName: String, maxInactivitySeconds: Int): ActorRef = {
     context.actorOf(Props(new ReplayAggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventsBus, aggregateContext.eventHandlers,
-      () => aggregateContext.initialAggregateRoot, aggregateVersion, eventsVersionsMap, eventsVersionsMapReverse, maxInactivitySeconds)), actorName)
+      () => aggregateContext.initialAggregateRoot, aggregateVersion, eventsVersionsMap, maxInactivitySeconds)), actorName)
   }
 
 }
@@ -69,7 +69,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
                           val eventsBus: ActorRef,
                           subscriptionsState: SubscriptionsState,
                           val config: ReplayerConfig,
-                          actorsFactory: List[ReplayerRepositoryActorFactory[_]]) extends Actor with ActorLogging {
+                          actorsFactory: List[ReplayerRepositoryActorFactory[_]]) extends Actor with MyActorLogging {
 
   import context.dispatcher
 

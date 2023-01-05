@@ -8,7 +8,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRootCurrentVersion, IdempotentCommandInfo, OverrideAndPersistEvents, PersistEvents}
 import io.reactivecqrs.core.commandhandler.CommandExecutorActor.AggregateModified
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalCommandEnvelope, InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope, InternalRewriteHistoryCommandEnvelope, InternalRewriteHistoryConcurrentCommandEnvelope}
-import io.reactivecqrs.core.util.ActorLogging
+import io.reactivecqrs.core.util.MyActorLogging
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.AggregateWithSelectedEvents
 
 import io.reactivecqrs.core.util.RandomUtil
@@ -30,7 +30,7 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
                                            resultAggregatorName: String,
                                            commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]],
                                            rewriteHistoryCommandHandlers: (Iterable[EventWithVersion[AGGREGATE_ROOT]], AGGREGATE_ROOT) => PartialFunction[Any, GenericCommandResult[Any]],
-                                           initialState: () => AGGREGATE_ROOT) extends Actor with ActorLogging {
+                                           initialState: () => AGGREGATE_ROOT) extends Actor with MyActorLogging {
 
   private val responseTimeout: FiniteDuration = 60.seconds // timeout for Response handler, we assume one minute is maximum for someone to wait for response
 

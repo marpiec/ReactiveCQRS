@@ -6,7 +6,7 @@ import akka.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor.ReplayEvents
-import io.reactivecqrs.core.util.ActorLogging
+import io.reactivecqrs.core.util.MyActorLogging
 import io.reactivecqrs.core.eventbus.EventsBusActor.PublishReplayedEvents
 import io.reactivecqrs.core.eventstore.EventStoreState
 
@@ -25,8 +25,7 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
                                                                       initialState: () => AGGREGATE_ROOT,
                                                                       aggregateVersion: Option[AggregateVersion],
                                                                       eventsVersionsMap: Map[EventTypeVersion, String],
-                                                                      eventsVersionsMapReverse: Map[String, EventTypeVersion],
-                                                                      maxInactivitySeconds: Int) extends Actor with ActorLogging {
+                                                                      maxInactivitySeconds: Int) extends Actor with MyActorLogging {
 
   private var version: AggregateVersion = AggregateVersion.ZERO
   private var aggregateRoot: AGGREGATE_ROOT = initialState()
@@ -83,9 +82,21 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
       case _ => ()
     }
 
-    events.events.foreach(event => {
-      handleEvent(event.userId, event.timestamp, event.event, events.aggregateId, event.version.asInt, noopEvent = false)
-    })
+
+    val start = System.currentTimeMillis()
+
+    try {
+      events.events.foreach(event => {
+        handleEvent(event.userId, event.timestamp, event.event, events.aggregateId, event.version.asInt, noopEvent = false)
+      })
+    } catch {
+      case e: Exception =>
+        log.error(e, "Error while replaying events for aggregate " + aggregateId.asLong+" of type "+aggregateType.simpleName)
+    }
+
+    if(System.currentTimeMillis() - start > 1000) {
+      log.warning("Replaying "+events.events.size+" events for aggregate " + aggregateId.asLong + " of type "+aggregateType.simpleName+" took "+(System.currentTimeMillis() - start)+" ms")
+    }
 
     val messageToSend: PublishReplayedEvents[AGGREGATE_ROOT] = PublishReplayedEvents(aggregateType, events.events, aggregateId, Option(aggregateRoot))
     eventsBus ! messageToSend

@@ -5,7 +5,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor._
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor._
-import io.reactivecqrs.core.util.ActorLogging
+import io.reactivecqrs.core.util.MyActorLogging
 
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe._
@@ -45,7 +45,7 @@ class CommandHandlerActor[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId,
                                           commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]],
                                           rewriteHistoryCommandHandlers: (Iterable[EventWithVersion[AGGREGATE_ROOT]], AGGREGATE_ROOT) => PartialFunction[Any, GenericCommandResult[Any]],
                                           initialState: () => AGGREGATE_ROOT)
-                                         (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor with ActorLogging {
+                                         (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor with MyActorLogging {
 
   private val aggregateTypeSimpleName = aggregateRootClassTag.runtimeClass.getSimpleName
 

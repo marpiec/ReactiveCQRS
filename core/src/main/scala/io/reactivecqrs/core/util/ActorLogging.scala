@@ -7,7 +7,7 @@ class ActorException(message: String, cause: Throwable) extends Exception(messag
   override def fillInStackTrace(): Throwable = this
 }
 
-trait ActorLogging {this: Actor =>
+trait MyActorLogging {this: Actor =>
 
   val log = Logging(context.system, this)
 
@@ -21,5 +21,5 @@ trait ActorLogging {this: Actor =>
       }
     }
   })
-
 }
+

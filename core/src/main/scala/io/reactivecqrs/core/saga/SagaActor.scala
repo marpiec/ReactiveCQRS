@@ -7,7 +7,7 @@ import io.reactivecqrs.api.SagaStep
 import io.reactivecqrs.api.id.{SagaId, UserId}
 import io.reactivecqrs.core.saga.SagaActor.{LoadPendingSagas, SagaPersisted}
 import io.reactivecqrs.core.uid.{NewSagasIdsPool, UidGeneratorActor}
-import io.reactivecqrs.core.util.ActorLogging
+import io.reactivecqrs.core.util.MyActorLogging
 
 import scala.concurrent.{Await, Future}
 import scala.util.{Failure, Success}
@@ -23,7 +23,7 @@ object SagaActor {
 
 // Actor per saga -  to recieve messages from command bus?
 // TODO manual reply of saga? as saga might not know that previous command succeded? or command idempotency?
-abstract class SagaActor extends Actor with ActorLogging {
+abstract class SagaActor extends Actor with MyActorLogging {
 
   implicit val timeout = Timeout(60.seconds)
 

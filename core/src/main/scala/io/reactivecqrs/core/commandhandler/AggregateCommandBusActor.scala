@@ -12,7 +12,7 @@ import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.EnsureEvents
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor._
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
-import io.reactivecqrs.core.util.ActorLogging
+import io.reactivecqrs.core.util.MyActorLogging
 
 import scala.collection.mutable
 import scala.concurrent.duration._
@@ -57,7 +57,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
                                                        val eventsReplayMode: Boolean,
                                                        val keepAliveLimit: Int, val maxInactivityMillis: Long,
                                                        val initialState: () => AGGREGATE_ROOT)
-                                                        (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor with ActorLogging {
+                                                        (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor with MyActorLogging {
 
   val eventsVersionsMap: Map[EventTypeVersion, String] = {
     eventsVersions.flatMap(evs => evs.mapping.map(e => EventTypeVersion(evs.eventBaseType, e.version) -> e.eventType)).toMap

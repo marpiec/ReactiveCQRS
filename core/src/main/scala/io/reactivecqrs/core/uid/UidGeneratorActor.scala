@@ -2,7 +2,7 @@ package io.reactivecqrs.core.uid
 
 import akka.actor.{Actor, ActorRef}
 import akka.event.LoggingReceive
-import io.reactivecqrs.core.util.ActorLogging
+import io.reactivecqrs.core.util.MyActorLogging
 
 import scala.concurrent.Future
 
@@ -20,7 +20,7 @@ object UidGeneratorActor {
 
 class UidGeneratorActor(aggregatesUidGenerator: UidGenerator,
                         commandsUidGenerator: UidGenerator,
-                        sagasUidGenerator: UidGenerator) extends Actor with ActorLogging {
+                        sagasUidGenerator: UidGenerator) extends Actor with MyActorLogging {
   import UidGeneratorActor._
 
 

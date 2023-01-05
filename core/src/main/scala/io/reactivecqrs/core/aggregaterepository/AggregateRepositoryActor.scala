@@ -3,7 +3,7 @@ package io.reactivecqrs.core.aggregaterepository
 import java.time.Instant
 
 import io.reactivecqrs.core.eventstore.EventStoreState
-import io.reactivecqrs.core.util.ActorLogging
+import io.reactivecqrs.core.util.MyActorLogging
 import io.reactivecqrs.api._
 import akka.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
@@ -59,7 +59,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
                                                                 initialState: () => AGGREGATE_ROOT,
                                                                 singleReadForVersionOnly: Option[AggregateVersion],
                                                                 eventsVersionsMap: Map[EventTypeVersion, String],
-                                                                eventsVersionsMapReverse: Map[String, EventTypeVersion]) extends Actor with ActorLogging {
+                                                                eventsVersionsMapReverse: Map[String, EventTypeVersion]) extends Actor with MyActorLogging {
 
   import AggregateRepositoryActor._
 
