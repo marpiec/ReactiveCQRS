@@ -134,7 +134,6 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
           }
 
           backPressureProducerActor.foreach(a => {
-            println("orderMoreMessagesToConsume !")
             orderMoreMessagesToConsume()
           })
 
