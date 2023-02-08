@@ -7,8 +7,8 @@ object Common {
 
     organization := "io.reactivecqrs",
     name := s"reactivecqrs-$moduleName",
-    version := "0.11.37",
-    scalaVersion := "2.11.12",
+    version := "0.11.38",
+    scalaVersion := "2.13.11",
 
     /* required for Scalate to avoid version mismatch */
     dependencyOverrides := Set(
@@ -28,6 +28,7 @@ object Common {
       "-encoding", "UTF-8"),
 
     resolvers in ThisBuild ++= Seq(
+      Resolver.mavenLocal,
       "eclipse repo" at "https://repo.eclipse.org/content/groups/releases/",
       "Sonatype repo" at "https://oss.sonatype.org/content/repositories/releases/",
       "marpiec BinTray" at "https://bintray.com/artifact/download/marpiec/maven/"),
@@ -52,13 +53,14 @@ object Common {
 
   object dependencies {
 
-    val akkaVersion = "2.5.26"
+    val akkaVersion = "2.5.32"
 
     val common = Seq(
-      "io.mpjsons" %% "mpjsons" % "0.6.32",
-      "com.typesafe" % "config" % "1.2.1",
-      "org.slf4j" % "slf4j-api" % "1.7.25",
-      "org.scalatest" %% "scalatest" % "2.2.4" % Test
+      "io.mpjsons" %% "mpjsons" % "0.6.38",
+      "com.typesafe" % "config" % "1.4.2",
+      "org.slf4j" % "slf4j-api" % "1.7.36",
+      "org.scala-lang.modules" %% "scala-parallel-collections" % "1.0.4",
+      "org.scalatest" %% "scalatest" % "3.2.15" % Test
     )
 
     val akka = Seq(
@@ -73,11 +75,11 @@ object Common {
     )
 
     val postgresql = Seq(
-      "org.postgresql" % "postgresql" % "42.2.16"
+      "org.postgresql" % "postgresql" % "42.6.0"
     )
 
     val logback = Seq(
-      "ch.qos.logback" % "logback-classic" % "1.2.3" % Test
+      "ch.qos.logback" % "logback-classic" % "1.4.11" % Test
     )
   }
 }

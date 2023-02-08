@@ -367,12 +367,12 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
     if(finishedEvents.nonEmpty) {
 
-      val eventsToConfirm: Iterable[EventIdentifier] = finishedEvents.keys
+      val eventsToConfirm: Iterable[EventIdentifier] = finishedEvents.toMap.keys
 
       receivedInProgressMessages -= finishedEvents.size
 
       // TODO optimize by grouping versions ber sender
-      finishedEvents.keys.foreach(e => {
+      finishedEvents.toMap.keys.foreach(e => {
         eventSenders(e) ! PublishEventsAck(aggregateId, Seq(e.version))
       })
 

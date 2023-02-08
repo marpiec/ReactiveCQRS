@@ -378,8 +378,9 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
       if(published.exists(_.event.isInstanceOf[PermanentDeleteEvent[_]])) {
         self ! PoisonPill
       }
-    } onFailure {
-      case e: Exception => throw new IllegalStateException(e)
+    } onComplete {
+      case Success(value) => ()
+      case Failure(e) => throw new IllegalStateException(e)
     }
   }
 

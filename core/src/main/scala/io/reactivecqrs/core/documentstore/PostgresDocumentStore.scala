@@ -334,7 +334,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
         .list.apply()
     }
     loaded.foreach(t => cache.put(t._1, Some(t._2)))
-    loaded.toMap.mapValues(v => Document(v.document))
+    loaded.map(v => (v._1, Document(v._2.document))).toMap
   }
 
   def countAll()(implicit session: DBSession = null): Int = {
@@ -374,7 +374,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
       toLoad.foreach(id => {
         cache.put(id, loaded.find(_._1 == id).map(_._2))
       })
-      fromCacheFoundValues ++ loaded.toMap.mapValues(v => Document(v.document))
+      fromCacheFoundValues ++ loaded.map(v => (v._1, Document(v._2.document))).toMap
     }
   }
 

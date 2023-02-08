@@ -65,8 +65,9 @@ abstract class SagaActor extends Actor with MyActorLogging {
     Future {
       state.createSaga(name, sagaId, respondTo, order)
       me ! SagaPersisted(sagaId, respondTo, order, CONTINUES, 0)
-    } onFailure {
-      case e: Exception => throw new IllegalStateException(e)
+    } onComplete {
+      case Success(value) => ()
+      case Failure(e) => throw new IllegalStateException(e)
     }
   }
 
@@ -74,8 +75,9 @@ abstract class SagaActor extends Actor with MyActorLogging {
     Future {
       state.updateSaga(name, sagaId, order, phase, step)
       me ! SagaPersisted(sagaId, respondTo, order, phase, step)
-    } onFailure {
-      case e: Exception => throw new IllegalStateException(e)
+    } onComplete {
+      case Success(value) => ()
+      case Failure(e) => throw new IllegalStateException(e)
     }
   }
 
@@ -101,8 +103,9 @@ abstract class SagaActor extends Actor with MyActorLogging {
           context.system.actorSelection(respondTo) ! SagaFailureResponse(List(ex.getMessage))
           persistSagaStatusAndSendConfirm(me, sagaId, respondTo, order, REVERTING, step + 1)
       }
-    } onFailure {
-      case e: Exception => throw new IllegalStateException(e)
+    } onComplete {
+      case Success(value) => ()
+      case Failure(e) => throw new IllegalStateException(e)
     }
   }
 
@@ -124,8 +127,9 @@ abstract class SagaActor extends Actor with MyActorLogging {
           log.error(ex, s"Saga revert failed, sagaId = $sagaId, order = $order")
           deleteSagaStatus(sagaId)
       }
-    } onFailure {
-      case e: Exception => throw new IllegalStateException(e)
+    } onComplete {
+      case Success(value) => ()
+      case Failure(e) => throw new IllegalStateException(e)
     }
   }
 

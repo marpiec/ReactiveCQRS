@@ -1,10 +1,10 @@
 package io.reactivecqrs.core.uid
 
 import akka.actor.{Actor, ActorRef}
-import akka.event.LoggingReceive
 import io.reactivecqrs.core.util.MyActorLogging
 
 import scala.concurrent.Future
+import scala.util.{Failure, Success}
 
 case class NewAggregatesIdsPool(from: Long, size: Long)
 case class NewCommandsIdsPool(from: Long, size: Long)
@@ -35,8 +35,9 @@ class UidGeneratorActor(aggregatesUidGenerator: UidGenerator,
     Future {
       val pool: IdsPool = aggregatesUidGenerator.nextIdsPool
       respondTo ! NewAggregatesIdsPool(pool.from, pool.size)
-    } onFailure {
-      case e: Exception => throw new IllegalStateException(e)
+    } onComplete {
+      case Success(value) => ()
+      case Failure(e) => throw new IllegalStateException(e)
     }
   }
 
@@ -45,8 +46,9 @@ class UidGeneratorActor(aggregatesUidGenerator: UidGenerator,
     Future {
       val pool: IdsPool = commandsUidGenerator.nextIdsPool
       respondTo ! NewCommandsIdsPool(pool.from, pool.size)
-    } onFailure {
-      case e: Exception => throw new IllegalStateException(e)
+    } onComplete {
+      case Success(value) => ()
+      case Failure(e) => throw new IllegalStateException(e)
     }
   }
 
@@ -55,8 +57,9 @@ class UidGeneratorActor(aggregatesUidGenerator: UidGenerator,
     Future {
       val pool: IdsPool = sagasUidGenerator.nextIdsPool
       respondTo ! NewSagasIdsPool(pool.from, pool.size)
-    } onFailure {
-      case e: Exception => throw new IllegalStateException(e)
+    } onComplete {
+      case Success(value) => ()
+      case Failure(e) => throw new IllegalStateException(e)
     }
   }
 }
