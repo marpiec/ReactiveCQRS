@@ -1,7 +1,6 @@
 package io.reactivecqrs.core.commandhandler
 
 import java.time.Instant
-
 import akka.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.api._
@@ -10,9 +9,9 @@ import io.reactivecqrs.core.commandhandler.CommandExecutorActor.AggregateModifie
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalCommandEnvelope, InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope, InternalRewriteHistoryCommandEnvelope, InternalRewriteHistoryConcurrentCommandEnvelope}
 import io.reactivecqrs.core.util.MyActorLogging
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.AggregateWithSelectedEvents
-
 import io.reactivecqrs.core.util.RandomUtil
 
+import java.lang.Exception
 import scala.concurrent.duration._
 import scala.concurrent.duration.FiniteDuration
 import scala.util.{Failure, Success}
@@ -125,8 +124,10 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
         commandHandlers(aggregate.aggregateRoot.get)(command) match {
           case result: CustomCommandResult[_] => self ! result
           case asyncResult: AsyncCommandResult[_] =>
-            asyncResult.future.onFailure {case exception => self ! exception}
-            asyncResult.future.onSuccess {case result => self ! result }
+            asyncResult.future.onComplete {
+              case Success(result) => self ! result
+              case Failure(exception) => self ! exception
+            }
         }
       } catch {
         case exception: Exception => self ! exception
@@ -146,8 +147,10 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
         rewriteHistoryCommandHandlers(events, aggregate.aggregateRoot.get)(command) match {
           case result: CustomCommandResult[_] => self ! result
           case asyncResult: AsyncCommandResult[_] =>
-            asyncResult.future.onFailure { case exception => self ! exception }
-            asyncResult.future.onSuccess { case result => self ! result }
+            asyncResult.future.onComplete {
+              case Success(result) => self ! result
+              case Failure(exception) => self ! exception
+            }
         }
       } catch {
         case exception: Exception => self ! exception
@@ -164,8 +167,10 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
       commandHandlers(initialState())(command.asInstanceOf[FirstCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]]) match {
         case result: CustomCommandResult[_] => self ! result
         case asyncResult: AsyncCommandResult[_] =>
-          asyncResult.future.onFailure { case exception => self ! exception}
-          asyncResult.future.onSuccess { case result => self ! result}
+          asyncResult.future.onComplete {
+            case Success(result) => self ! result
+            case Failure(exception) => self ! exception
+          }
       }
     } catch {
       case exception: Exception => self ! exception

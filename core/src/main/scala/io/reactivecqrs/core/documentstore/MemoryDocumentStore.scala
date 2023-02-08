@@ -29,7 +29,7 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef] {
   }
 
   def findDocumentWithTransform[TT <: AnyRef](query: DocumentStoreQuery, transform: T => TT)(implicit session: DBSession = null): Map[Long, Document[TT]] = {
-    findDocument(query).mapValues(v => v.copy(document = transform(v.document)))
+    findDocument(query).view.mapValues(v => v.copy(document = transform(v.document))).toMap
   }
 
   def findDocumentPartByPaths[P: TypeTag](part: List[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, P] = {
