@@ -47,14 +47,29 @@ object DocumentStoreQuery {
 }
 
 sealed trait Sort
-object SortAsc {
-  def apply(name: String): Sort = SortAsc(Seq(name))
+
+object SortAscInt {
+  def apply(name: String): Sort = SortAscInt(Seq(name))
 }
-case class SortAsc(path: Seq[String]) extends Sort
-object SortDesc {
-  def apply(name: String): Sort = SortDesc(Seq(name))
+case class SortAscInt(path: Seq[String]) extends Sort
+
+
+object SortAscText {
+  def apply(name: String): Sort = SortAscText(Seq(name))
 }
-case class SortDesc(path: Seq[String]) extends Sort
+case class SortAscText(path: Seq[String]) extends Sort
+
+object SortDescInt {
+  def apply(name: String): Sort = SortDescInt(Seq(name))
+}
+case class SortDescInt(path: Seq[String]) extends Sort
+
+object SortDescText {
+  def apply(name: String): Sort = SortDescText(Seq(name))
+}
+case class SortDescText(path: Seq[String]) extends Sort
+
+
 
 case class DocumentStoreQuery(where: Seq[ExpectedValue],
                               sortBy: Seq[Sort],
