@@ -157,8 +157,8 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
   private def createQuery(searchParams: DocumentStoreQuery) = {
 
     val sortPart = if(searchParams.sortBy.isEmpty) "" else searchParams.sortBy.map({
-      case SortAscInt(path) => "(document::json#>>'{"+path.mkString(",")+"})::bigint' " + " ASC"
-      case SortDescInt(path) => "(document::json#>>'{"+path.mkString(",")+"})::bigint' " + " DESC"
+      case SortAscInt(path) => "(document::json#>>'{"+path.mkString(",")+"}')::bigint " + " ASC"
+      case SortDescInt(path) => "(document::json#>>'{"+path.mkString(",")+"}')::bigint " + " DESC"
       case SortAscText(path) => "document::json#>>'{" + path.mkString(",") + "}' " + " ASC"
       case SortDescText(path) => "document::json#>>'{" + path.mkString(",") + "}' " + " DESC"
     }).mkString(" ORDER BY ", ", ", "")
