@@ -158,12 +158,17 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   }
 
   private def tryToApplyEvents(ee: PersistEvents[_]) = {
-    ee.asInstanceOf[PersistEvents[AGGREGATE_ROOT]].events.foldLeft(Right(aggregateRoot).asInstanceOf[Either[(Exception, Event[AGGREGATE_ROOT]), AGGREGATE_ROOT]])((aggEither, event) => {
-      aggEither match {
-        case Right(agg) => tryToHandleEvent(ee.userId, ee.timestamp, event, noopEvent = false, agg)
-        case f: Left[_, _] => f
-      }
-    })
+    if(ee.events.exists(_.isInstanceOf[DuplicationEvent[_]])) {
+      // e don't have previous aggregate state so we can't try events
+      Right(aggregateRoot)
+    } else {
+      ee.asInstanceOf[PersistEvents[AGGREGATE_ROOT]].events.foldLeft(Right(aggregateRoot).asInstanceOf[Either[(Exception, Event[AGGREGATE_ROOT]), AGGREGATE_ROOT]])((aggEither, event) => {
+        aggEither match {
+          case Right(agg) => tryToHandleEvent(ee.userId, ee.timestamp, event, noopEvent = false, agg)
+          case f: Left[_, _] => f
+        }
+      })
+    }
   }
 
   private def overrideAndPersistEvents(eventsEnvelope: OverrideAndPersistEvents[AGGREGATE_ROOT]): Unit = {
