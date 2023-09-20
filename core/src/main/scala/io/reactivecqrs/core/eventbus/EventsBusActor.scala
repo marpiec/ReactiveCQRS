@@ -350,7 +350,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
     val eventsIds = ack.versions.map(v => EventIdentifier(aggregateId, v)).toSet
 
-    val receiversToConfirm = messagesSent.filterKeys(e => eventsIds.contains(e))
+    val receiversToConfirm = messagesSent.view.filterKeys(e => eventsIds.contains(e)).toMap
 
     val withoutConfirmedPerEvent = receiversToConfirm.map {
       case (eventId, receivers) => eventId -> receivers.filterNot(_._2 == ack.subscriber)
@@ -367,7 +367,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
     if(finishedEvents.nonEmpty) {
 
-      val eventsToConfirm: Iterable[EventIdentifier] = finishedEvents.toMap.keys
+      val eventsToConfirm: Iterable[EventIdentifier] = finishedEvents.keys
 
       receivedInProgressMessages -= finishedEvents.size
 

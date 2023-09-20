@@ -40,7 +40,7 @@ class EventsReplayOrchestrator {
 
     val projectionSubscriptions: Iterable[(ActorRef, SubscribedAggregates)] = Await.result(Future.sequence(projections.map(projection => {
      (projection ? GetSubscribedAggregates).mapTo[SubscribedAggregates].map(s =>  (projection, s))
-    })), 60 seconds)
+    })), 60.seconds)
 
     logMessage("Got list of projections")
 
@@ -78,7 +78,7 @@ class EventsReplayOrchestrator {
     } else if(aggregatesToReplay.nonEmpty || projectionsToRebuild.nonEmpty) {
       Await.result(Future.sequence(projectionsToRebuild.map(projectionToRebuild => {
         (projectionToRebuild._1 ? ClearProjectionData)
-      })), 60 seconds)
+      })), 60.seconds)
 
       logMessage("Projections cleared")
 
