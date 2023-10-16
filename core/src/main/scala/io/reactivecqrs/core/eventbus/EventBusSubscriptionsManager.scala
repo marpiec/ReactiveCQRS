@@ -46,6 +46,7 @@ class EventBusSubscriptionsManager(minimumExpectedSubscriptions: Int) extends Ac
           subscriptionsOpen = false
           eventBus ! subscriptionsRequests
           eventBusWaiting = None
+          log.info("Subscribed all: " + subscriptionsRequests.length+"/"+minimumExpectedSubscriptions)
         }
       })
       if(eventBusWaiting.isDefined) {
