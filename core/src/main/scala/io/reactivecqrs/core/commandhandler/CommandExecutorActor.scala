@@ -121,7 +121,7 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
       context.become(receiveCommandHandlingResult(aggregate.version, expectedVersion, userId))
       try {
 //        println(s"Handling command ${command.getClass.getSimpleName} for aggregate ${aggregate.id.asLong} of version ${aggregate.version.asInt}")
-        commandHandlers(aggregate.aggregateRoot.get)(command) match {
+        commandHandlers(aggregate.aggregateRoot.getOrElse(throw new IllegalStateException("Aggregate is already deleted")))(command) match {
           case result: CustomCommandResult[_] => self ! result
           case asyncResult: AsyncCommandResult[_] =>
             asyncResult.future.onComplete {
@@ -144,7 +144,7 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
       context.become(receiveCommandHandlingResult(aggregate.version, expectedVersion, userId))
       try {
         //        println(s"Handling command ${command.getClass.getSimpleName} for aggregate ${aggregate.id.asLong} of version ${aggregate.version.asInt}")
-        rewriteHistoryCommandHandlers(events, aggregate.aggregateRoot.get)(command) match {
+        rewriteHistoryCommandHandlers(events, aggregate.aggregateRoot.getOrElse(throw new IllegalStateException("Aggregate is already deleted"))(command) match {
           case result: CustomCommandResult[_] => self ! result
           case asyncResult: AsyncCommandResult[_] =>
             asyncResult.future.onComplete {
