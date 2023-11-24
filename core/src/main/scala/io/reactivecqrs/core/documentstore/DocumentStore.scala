@@ -2,6 +2,8 @@ package io.reactivecqrs.core.documentstore
 
 import scalikejdbc.DBSession
 
+import scala.collection.immutable.ListMap
+
 case class VersionedDocument[T <: AnyRef](version: Int, document: T)
 
 case class Document[T <: AnyRef](document: T)
@@ -79,28 +81,28 @@ case class DocumentStoreQuery(where: Seq[ExpectedValue],
 sealed abstract class AbstractDocumentStore[T <: AnyRef] {
 
   def findDocumentByPath(path: Seq[String], value: String)(implicit session: DBSession = null): Map[Long, Document[T]] =
-    findDocument(DocumentStoreQuery.basic(Seq(ExpectedSingleValue(path, value))))
+    findDocument(DocumentStoreQuery.basic(Seq(ExpectedSingleValue(path, value)))).toMap
 
   def findDocumentByPaths(values: ExpectedValue*): Map[Long, Document[T]] =
-    findDocument(DocumentStoreQuery.basic(values))
+    findDocument(DocumentStoreQuery.basic(values)).toMap
 
-  def findDocument(query: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, Document[T]]
+  def findDocument(query: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, Document[T])]
 
-  def findDocumentWithTransform[TT <: AnyRef](query: DocumentStoreQuery, transform: T => TT)(implicit session: DBSession = null): Map[Long, Document[TT]]
+  def findDocumentWithTransform[TT <: AnyRef](query: DocumentStoreQuery, transform: T => TT)(implicit session: DBSession = null): Seq[(Long, Document[TT])]
 
-  def findDocumentPartByPaths[P: TypeTag](part: Seq[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, P]
+  def findDocumentPartByPaths[P: TypeTag](part: Seq[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, P)]
 
-  def findDocument2PartsByPaths[P1: TypeTag, P2: TypeTag](part1: Seq[String], part2: Seq[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, (P1, P2)]
+  def findDocument2PartsByPaths[P1: TypeTag, P2: TypeTag](part1: Seq[String], part2: Seq[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, (P1, P2))]
 
-  def findDocument3PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag](part1: Seq[String], part2: Seq[String], part3: Seq[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, (P1, P2, P3)]
+  def findDocument3PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag](part1: Seq[String], part2: Seq[String], part3: Seq[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, (P1, P2, P3))]
 
-  def findDocument4PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag, P4: TypeTag](part1: Seq[String], part2: Seq[String], part3: Seq[String], part4: Seq[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, (P1, P2, P3, P4)]
+  def findDocument4PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag, P4: TypeTag](part1: Seq[String], part2: Seq[String], part3: Seq[String], part4: Seq[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, (P1, P2, P3, P4))]
 
   def findDocumentsByPathWithOneOfTheValues(path: Seq[String], values: Set[String])(implicit session: DBSession = null): Map[Long, Document[T]] = {
     if(values.isEmpty) {
       Map.empty
     } else {
-      findDocument(DocumentStoreQuery.basic(Seq(ExpectedMultipleValues(path, values))))
+      findDocument(DocumentStoreQuery.basic(Seq(ExpectedMultipleValues(path, values)))).toMap
     }
   }
 

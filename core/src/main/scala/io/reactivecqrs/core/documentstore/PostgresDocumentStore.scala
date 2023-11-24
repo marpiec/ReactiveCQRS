@@ -187,18 +187,18 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
   }
 
-  def findDocument(searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, Document[T]] = {
+  def findDocument(searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, Document[T])] = {
     val query = createQuery(searchParams)
     inSession { implicit session =>
       val loaded = query
         .bind(getAllValues(searchParams.where): _*).map(rs => rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3))))
         .list().apply()
       loaded.foreach(t => cache.put(t._1, Some(t._2)))
-      loaded.map({case (key, value) => (key, Document[T](value.document))}).toMap
+      loaded.map({case (key, value) => (key, Document[T](value.document))})
     }
   }
 
-  def findDocumentWithTransform[TT <: AnyRef](searchParams: DocumentStoreQuery, transform: T => TT)(implicit session: DBSession = null): Map[Long, Document[TT]] = {
+  def findDocumentWithTransform[TT <: AnyRef](searchParams: DocumentStoreQuery, transform: T => TT)(implicit session: DBSession = null): Seq[(Long, Document[TT])] = {
     val query = createQuery(searchParams)
     inSession { implicit session =>
       val loaded = query
@@ -209,22 +209,22 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
         cache.put(id, Some(VersionedDocument[T](version, beforeTransform)))
         id -> VersionedDocument[TT](version, transform(beforeTransform))
       }).list().apply()
-      loaded.map({case (key, value) => (key, Document[TT](value.document))}).toMap
+      loaded.map({case (key, value) => (key, Document[TT](value.document))})
     }
   }
 
-  def findDocumentPartByPaths[P: TypeTag](part: Seq[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, P] = {
+  def findDocumentPartByPaths[P: TypeTag](part: Seq[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, P)] = {
     val query = createPartsQuery(Seq(part), searchParams)
 
     inSession { implicit session =>
       query
         .bind(getAllValues(searchParams.where): _*)
         .map(rs => rs.long(1) -> mpjsons.deserialize[P](rs.string(2)))
-        .list().apply().toMap
+        .list().apply()
     }
   }
 
-  def findDocument2PartsByPaths[P1: TypeTag, P2: TypeTag](part1: Seq[String], part2: Seq[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, (P1, P2)] = {
+  def findDocument2PartsByPaths[P1: TypeTag, P2: TypeTag](part1: Seq[String], part2: Seq[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, (P1, P2))] = {
     val query = createPartsQuery(Seq(part1, part2), searchParams)
 
     inSession { implicit session =>
@@ -233,11 +233,11 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
         .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3))))
         .list().apply()
 
-      loaded.toMap
+      loaded
     }
   }
 
-  def findDocument3PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag](part1: Seq[String], part2: Seq[String], part3: Seq[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, (P1, P2, P3)] = {
+  def findDocument3PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag](part1: Seq[String], part2: Seq[String], part3: Seq[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, (P1, P2, P3))] = {
     val query = createPartsQuery(Seq(part1, part2, part3), searchParams)
 
     inSession { implicit session =>
@@ -246,11 +246,11 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
         .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3)), mpjsons.deserialize[P3](rs.string(4))))
         .list().apply()
 
-      loaded.toMap
+      loaded
     }
   }
 
-  def findDocument4PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag, P4: TypeTag](part1: Seq[String], part2: Seq[String], part3: Seq[String], part4: Seq[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, (P1, P2, P3, P4)] = {
+  def findDocument4PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag, P4: TypeTag](part1: Seq[String], part2: Seq[String], part3: Seq[String], part4: Seq[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, (P1, P2, P3, P4))] = {
     val query = createPartsQuery(Seq(part1, part2, part3, part4), searchParams)
 
     inSession { implicit session =>
@@ -259,7 +259,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
         .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3)), mpjsons.deserialize[P3](rs.string(4)), mpjsons.deserialize[P4](rs.string(5))))
         .list().apply()
 
-      loaded.toMap
+      loaded
     }
   }
 

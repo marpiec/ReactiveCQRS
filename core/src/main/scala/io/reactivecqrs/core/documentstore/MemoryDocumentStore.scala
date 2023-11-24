@@ -13,7 +13,7 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef] {
   val store = mutable.ParHashMap[Long, Document[T]]()
 
 
-  def findDocument(query: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, Document[T]] = {
+  def findDocument(query: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, Document[T])] = {
     store.filter(keyValuePair => query.where.forall {
       case ExpectedNoValue(path) => ???
       case ExpectedSingleValue(path, value) => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, value)
@@ -25,26 +25,26 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef] {
       case ExpectedSingleLongValue(path, vals) => ???
       case ExpectedGreaterThanIntValue(path, vals) => ???
       case ExpectedLessThanIntValue(path, vals) => ???
-    }).seq.toMap
+    }).seq.toSeq
   }
 
-  def findDocumentWithTransform[TT <: AnyRef](query: DocumentStoreQuery, transform: T => TT)(implicit session: DBSession = null): Map[Long, Document[TT]] = {
-    findDocument(query).view.mapValues(v => v.copy(document = transform(v.document))).toMap
+  def findDocumentWithTransform[TT <: AnyRef](query: DocumentStoreQuery, transform: T => TT)(implicit session: DBSession = null): Seq[(Long, Document[TT])] = {
+    findDocument(query).map(v => (v._1, v._2.copy(document = transform(v._2.document))))
   }
 
-  def findDocumentPartByPaths[P: TypeTag](part: Seq[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, P] = {
+  def findDocumentPartByPaths[P: TypeTag](part: Seq[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, P)] = {
     findDocument(query).map(d => d._1 -> valueAt[P](d._2.document, part))
   }
 
-  def findDocument2PartsByPaths[P1: TypeTag, P2: TypeTag](part1: Seq[String], part2: Seq[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, (P1, P2)] = {
+  def findDocument2PartsByPaths[P1: TypeTag, P2: TypeTag](part1: Seq[String], part2: Seq[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, (P1, P2))] = {
     findDocument(query).map(d => d._1 -> (valueAt[P1](d._2.document, part1), valueAt[P2](d._2.document, part2)))
   }
 
-  def findDocument3PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag](part1: Seq[String], part2: Seq[String], part3: Seq[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, (P1, P2, P3)] = {
+  def findDocument3PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag](part1: Seq[String], part2: Seq[String], part3: Seq[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, (P1, P2, P3))] = {
     findDocument(query).map(d => d._1 -> (valueAt[P1](d._2.document, part1), valueAt[P2](d._2.document, part2), valueAt[P3](d._2.document, part3)))
   }
 
-  def findDocument4PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag, P4: TypeTag](part1: Seq[String], part2: Seq[String], part3: Seq[String], part4: Seq[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Map[Long, (P1, P2, P3, P4)] = {
+  def findDocument4PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag, P4: TypeTag](part1: Seq[String], part2: Seq[String], part3: Seq[String], part4: Seq[String], query: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, (P1, P2, P3, P4))] = {
     findDocument(query).map(d => d._1 -> (valueAt[P1](d._2.document, part1), valueAt[P2](d._2.document, part2), valueAt[P3](d._2.document, part3), valueAt[P4](d._2.document, part4)))
   }
 
