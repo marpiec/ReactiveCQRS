@@ -83,6 +83,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
   private var lastClear: Long = 0L
 
+  private var spawnedCount = 0 // used to force acotr name uniqueness if poisonpill not worked (or not yet worked)
+
 
   if (!eventsReplayMode) {
     context.system.scheduler.scheduleOnce(1.second, self, EnsureEventsPublished(false))(context.dispatcher)
@@ -186,15 +188,18 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     childrenActivity += aggregateId.asLong -> System.currentTimeMillis()
     aggregateRepositoryActors.getOrElse(aggregateId.asLong, {
       val ref = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, commandResponseState, eventBus, eventHandlers, initialState, None, eventsVersionsMap, eventsVersionsMapReverse)),
-        aggregateTypeSimpleName + "_AR_" + aggregateId.asLong)
+        aggregateTypeSimpleName + "_AR_" + aggregateId.asLong+"_"+spawnedCount)
+      spawnedCount += 1
       aggregateRepositoryActors += aggregateId.asLong -> ref
       ref
     })
   }
 
   private def createAggregateRepositoryActorForVersion(aggregateId: AggregateId, aggregateVersion: AggregateVersion): ActorRef = {
-    context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, commandResponseState, eventBus, eventHandlers, initialState, Some(aggregateVersion), eventsVersionsMap, eventsVersionsMapReverse)),
-      aggregateTypeSimpleName + "_ARV_" + aggregateId.asLong+"_"+aggregateVersion.asInt)
+    val actor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, commandResponseState, eventBus, eventHandlers, initialState, Some(aggregateVersion), eventsVersionsMap, eventsVersionsMapReverse)),
+      aggregateTypeSimpleName + "_ARV_" + aggregateId.asLong+"_"+aggregateVersion.asInt+"_"+spawnedCount)
+    spawnedCount += 1
+    actor
   }
 
 
