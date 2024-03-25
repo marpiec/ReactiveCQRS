@@ -433,9 +433,16 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
         case Some(VersionedDocument(version, document)) =>
           val modified = modify(Document(document))
 
-          val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
-            .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
-            .map(_.int(1)).single().executeUpdate().apply()
+          val updated = if(modified.document == document) {
+            sql"UPDATE ${tableNameSQL} SET version = ? WHERE id = ? AND version = ?"
+              .bind(version + 1, key, version)
+              .map(_.int(1)).single().executeUpdate().apply()
+          } else {
+             sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
+              .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
+              .map(_.int(1)).single().executeUpdate().apply()
+
+          }
 
           if(updated == 0) {
             if(tryNumber < 10) {
@@ -468,9 +475,15 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
         case Some(VersionedDocument(version, document)) =>
           val modified = modify(Some(Document(document)))
 
-          val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
-            .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
-            .map(_.int(1)).single().executeUpdate().apply()
+          val updated = if(modified.document == document) {
+            sql"UPDATE ${tableNameSQL} SET version = ? WHERE id = ? AND version = ?"
+              .bind(version + 1, key, version)
+              .map(_.int(1)).single().executeUpdate().apply()
+          } else {
+            val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
+              .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
+              .map(_.int(1)).single().executeUpdate().apply()
+          }
 
           if(updated == 0) {
             if(tryNumber < 10) {
@@ -545,9 +558,15 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
         case Some(VersionedDocument(version, document)) =>
           val modified = modify(Document(document))
 
-          val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
-            .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
-            .map(_.int(1)).single().executeUpdate().apply()
+          val updated = if(modified.document == document) {
+            sql"UPDATE ${tableNameSQL} SET version = ? WHERE id = ? AND version = ?"
+              .bind(version + 1, key, version)
+              .map(_.int(1)).single().executeUpdate().apply()
+          } else {
+            sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
+              .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
+              .map(_.int(1)).single().executeUpdate().apply()
+          }
 
           if(updated == 0) {
             updateExistingDocument(key, modify)
@@ -569,9 +588,15 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
         case Some(VersionedDocument(version, document)) =>
           val modified = modify(Some(Document(document)))
 
-          val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
-            .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
-            .map(_.int(1)).single().executeUpdate().apply()
+          val updated = if(modified.document == document) {
+            sql"UPDATE ${tableNameSQL} SET version = ? WHERE id = ? AND version = ?"
+              .bind(version + 1, key, version)
+              .map(_.int(1)).single().executeUpdate().apply()
+          } else {
+            sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
+              .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
+              .map(_.int(1)).single().executeUpdate().apply()
+          }
 
           if(updated == 0) {
             updateDocument(spaceId, key, modify)
