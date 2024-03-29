@@ -106,9 +106,17 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
   def overwriteDocument(key: Long, document: T)(implicit session: DBSession): Unit = {
 
     inSession { implicit session =>
-      val updated = sql"UPDATE ${tableNameSQL} SET document = ?::JSONB, version = version + 1 WHERE id = ? RETURNING version"
-        .bind(mpjsons.serialize[T](document), key)
-        .map(_.int(1)).list().apply()
+
+      val updated = getFromCacheOrDB(key) match {
+        case Some(VersionedDocument(version, cachedDocument)) if cachedDocument == document =>
+          sql"UPDATE ${tableNameSQL} SET version = version + 1 WHERE id = ? RETURNING version"
+            .bind(key)
+            .map(_.int(1)).list().apply()
+        case _ =>
+          sql"UPDATE ${tableNameSQL} SET document = ?::JSONB, version = version + 1 WHERE id = ? RETURNING version"
+            .bind(mpjsons.serialize[T](document), key)
+            .map(_.int(1)).list().apply()
+      }
 
       if (updated.size != 1) {
         throw new IllegalStateException("Expected 1, updated " + updated + " records")
@@ -117,7 +125,6 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
       }
     }
   }
-
 
 
   def getDocument(key: Long)(implicit session: DBSession = null): Option[Document[T]] = {
