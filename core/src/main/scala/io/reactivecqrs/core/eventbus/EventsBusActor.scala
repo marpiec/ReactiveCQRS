@@ -280,7 +280,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
           }
         case s: AggregateSubscription =>
           if (s.classifier.accept(aggregateId)) {
-            Some(MessagesToRoute(s.subscriber, aggregateId, eventsToPropagate.map(_.version), AggregateWithType(aggregateType, aggregateId, eventsToPropagate.last.version, eventsToPropagate.size, aggregateRoot)))
+            Some(MessagesToRoute(s.subscriber, aggregateId, eventsToPropagate.map(_.version), AggregateWithType(aggregateType, aggregateId, eventsToPropagate.last.version, eventsToPropagate.map(_.version), aggregateRoot)))
           } else {
             None
           }

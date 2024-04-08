@@ -17,10 +17,9 @@ case class Aggregate[AGGREGATE_ROOT: TypeTag](id: AggregateId, version: Aggregat
 
 
 
-
 case class EventInfo[AGGREGATE_ROOT](version: AggregateVersion, event: Event[AGGREGATE_ROOT], userId: UserId, timestamp: Instant)
 
-case class AggregateWithType[AGGREGATE_ROOT](aggregateType: AggregateType, id: AggregateId, version: AggregateVersion, eventsCount: Int, aggregateRoot: Option[AGGREGATE_ROOT])
+case class AggregateWithType[AGGREGATE_ROOT](aggregateType: AggregateType, id: AggregateId, version: AggregateVersion, events: Seq[AggregateVersion], aggregateRoot: Option[AGGREGATE_ROOT])
 
 case class AggregateWithTypeAndEvents[AGGREGATE_ROOT](aggregateType: AggregateType, id: AggregateId, aggregateRoot: Option[AGGREGATE_ROOT], events: Seq[EventInfo[AGGREGATE_ROOT]])
 

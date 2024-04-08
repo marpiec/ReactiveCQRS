@@ -38,4 +38,7 @@ class AggregateVersion(val asInt: Int) extends Serializable {
   override def hashCode(): Int = asInt
 
   override def toString: String = "Version("+asInt+")"
+
+  def isOne = asInt == 1
+  def isZero = asInt == 0
 }

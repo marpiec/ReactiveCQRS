@@ -3,7 +3,7 @@ package io.reactivecqrs.testdomain.shoppingcart
 import akka.pattern.ask
 import akka.actor.ActorRef
 import io.reactivecqrs.api.{CustomCommandResponse, FailureResponse, SagaStep, SuccessResponse}
-import io.reactivecqrs.api.id.{AggregateIdWithVersion, SagaId, UserId}
+import io.reactivecqrs.api.id.{AggregateIdWithVersion, UserId}
 import io.reactivecqrs.core.saga._
 import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.{CartsCreated, CartsCreationFailure, CreateMultipleCarts, CreateRemainingCarts}
 

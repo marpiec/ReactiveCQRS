@@ -65,13 +65,13 @@ abstract class ProjectionActor extends Actor with MyActorLogging {
 
 
   // ListenerParam and listener are separately so covariant type is allowed
-  protected class AggregateListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Int, Option[AGGREGATE_ROOT]) => (DBSession) => Unit) extends Listener[AGGREGATE_ROOT] {
-    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Int, Option[Any]) => (DBSession) => Unit]
+  protected class AggregateListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Boolean, Option[AGGREGATE_ROOT]) => (DBSession) => Unit) extends Listener[AGGREGATE_ROOT] {
+    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Boolean, Option[Any]) => (DBSession) => Unit]
     def aggregateRootType = typeOf[AGGREGATE_ROOT]
   }
 
   protected object AggregateListener {
-    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Int, Option[AGGREGATE_ROOT]) => (DBSession) => Unit): AggregateListener[AGGREGATE_ROOT] =
+    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Boolean, Option[AGGREGATE_ROOT]) => (DBSession) => Unit): AggregateListener[AGGREGATE_ROOT] =
       new AggregateListener[AGGREGATE_ROOT](listener)
   }
 
@@ -97,13 +97,13 @@ abstract class ProjectionActor extends Actor with MyActorLogging {
       .map(l => (AggregateType(l.aggregateRootType.toString), l.asInstanceOf[EventsListener[Any]].listener)).toMap
   }
 
-  private lazy val aggregateListenersMap ={
+  private lazy val aggregateListenersMap: Map[AggregateType, (AggregateId, AggregateVersion, Boolean, Option[Any]) => DBSession => Unit] ={
     validateListeners()
     listeners.filter(_.isInstanceOf[AggregateListener[Any]])
       .map(l => (AggregateType(l.aggregateRootType.toString), l.asInstanceOf[AggregateListener[Any]].listener)).toMap
   }
 
-  private lazy val aggregateWithEventListenersMap ={
+  private lazy val aggregateWithEventListenersMap: Map[AggregateType, (AggregateId, AggregateVersion, Option[Any], Seq[EventInfo[Any]]) => DBSession => Unit] ={
     validateListeners()
     listeners.filter(_.isInstanceOf[AggregateWithEventsListener[Any]])
       .map(l => (AggregateType(l.aggregateRootType.toString), l.asInstanceOf[AggregateWithEventsListener[Any]].listener)).toMap
@@ -132,17 +132,21 @@ abstract class ProjectionActor extends Actor with MyActorLogging {
       val lastVersion = subscriptionsState.localTx { implicit session =>
         subscriptionsState.lastVersionForAggregateSubscription(this.getClass.getName, a.id)
       }
-      val firstEventVersion: AggregateVersion = AggregateVersion(a.version.asInt - a.eventsCount + 1)
-      if (firstEventVersion <= lastVersion.incrementBy(1) && a.version > lastVersion) {
+      val alreadyProcessed = a.events.takeWhile(e => e <= lastVersion)
+      val newEvents = a.events.drop(alreadyProcessed.length)
+
+      if(newEvents.isEmpty && alreadyProcessed.nonEmpty) {
+        sender() ! MessageAck(self, a.id, alreadyProcessed)
+      } else if(newEvents.nonEmpty && newEvents.head.isJustAfter(lastVersion)) {
         try {
           subscriptionsState.localTx { session =>
-            aggregateListenersMap(a.aggregateType)(a.id, a.version, a.eventsCount, a.aggregateRoot)(session)
-            subscriptionsState.newVersionForAggregatesSubscription(this.getClass.getName, a.id, lastVersion, a.version)(session)
+            aggregateListenersMap(a.aggregateType)(a.id, a.version, newEvents.head.isOne, a.aggregateRoot)(session)
+            subscriptionsState.newVersionForAggregatesSubscription(this.getClass.getName, a.id, lastVersion, newEvents.last)(session)
           }
-          sender() ! MessageAck(self, a.id, AggregateVersion.upTo(a.version, a.eventsCount))
+          sender() ! MessageAck(self, a.id, alreadyProcessed ++ newEvents)
           replayQueries()
           delayedAggregateWithType.get(a.id) match {
-            case Some(delayed) if delayed.head.version.isJustAfter(a.version) =>
+            case Some(delayed) if delayed.head.events.head.isJustAfter(a.version) =>
               if (delayed.length > 1) {
                 delayedAggregateWithType += a.id -> delayed.tail
               } else {
@@ -152,16 +156,16 @@ abstract class ProjectionActor extends Actor with MyActorLogging {
             case _ => ()
           }
         } catch {
-          case e: Exception => log.error(e, "Error handling update " + a.version.asInt)
+          case e: Exception => log.error(e, "Error handling update " + newEvents.head.asInt +"-"+a.events.last.asInt)
         }
-      } else if (a.version <= lastVersion) {
-        sender() ! MessageAck(self, a.id, AggregateVersion.upTo(a.version, a.eventsCount))
-      } else {
-        log.debug("Delaying aggregate update handling for aggregate "+a.aggregateType.simpleName+":"+a.id.asLong+", got update for version " + Range(a.version.asInt - a.eventsCount + 1, a.version.asInt + 1).mkString(", ")+" but only processed version " + lastVersion.asInt)
+      } else if(newEvents.nonEmpty) {
+        log.debug("Delaying aggregate update handling for aggregate "+a.aggregateType.simpleName+":"+a.id.asLong+", got update for version " + a.events.map(_.asInt).mkString(", ")+" but only processed version " + lastVersion.asInt)
         delayedAggregateWithType.get(a.id) match {
           case None => delayedAggregateWithType += a.id -> List(a)
-          case Some(delayed) => delayedAggregateWithType += a.id -> (a :: delayed).sortBy(_.version.asInt)
+          case Some(delayed) => delayedAggregateWithType += a.id -> (a :: delayed).sortBy(_.events.head.asInt)
         }
+      } else {
+        throw new IllegalArgumentException("Received empty list of events!")
       }
     case ae: AggregateWithTypeAndEvents[_] =>
       val lastVersion = subscriptionsState.localTx { implicit session =>

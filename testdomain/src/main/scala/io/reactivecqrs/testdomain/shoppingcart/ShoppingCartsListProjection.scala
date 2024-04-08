@@ -81,10 +81,10 @@ class ShoppingCartsListProjectionAggregatesBased(val eventBusSubscriptionsManage
   override protected val projectionName: String = "ShoppingCartsListProjectionAggregatesBased"
   override protected val version: Int = 1
 
-  private def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, eventsCount: Int, aggregateRoot: Option[ShoppingCart]) = { implicit session: DBSession =>
+  private def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, created: Boolean, aggregateRoot: Option[ShoppingCart]) = { implicit session: DBSession =>
     aggregateRoot match {
       case Some(a) =>
-        if(version.asInt == eventsCount) {
+        if(created) {
           documentStore.insertDocument(0, aggregateId.asLong, a.name)
         } else {
           documentStore.overwriteDocument(aggregateId.asLong, a.name)
