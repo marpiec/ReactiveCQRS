@@ -89,13 +89,48 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
   private def createIndex(index: Index): Unit = DB.autoCommit { implicit session =>
     index match {
-      case MultipleIndex(uniqueId, path) =>
+      case MultipleCombinedIndex(uniqueId, paths) =>
+        val pathsQuery = pathsToQuery(paths)
+        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (${pathsQuery})").execute().apply()
+      case UniqueCombinedIndex(uniqueId, paths) =>
+        val pathsQuery = pathsToQuery(paths)
+        SQL(s"CREATE UNIQUE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (${pathsQuery})").execute().apply()
+      case MultipleTextIndex(uniqueId, path) =>
         val p = path.mkString(",")
         SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} ((document #>> '{$p}'))").execute().apply()
-      case UniqueIndex(uniqueId, path) =>
+      case UniqueTextIndex(uniqueId, path) =>
         val p = path.mkString(",")
         SQL(s"CREATE UNIQUE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} ((document #>> '{$p}'))").execute().apply()
+      case MultipleLongIndex(uniqueId, path) =>
+        val p = path.mkString(",")
+        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (((document #> '{$p}')::bigint))").execute().apply()
+      case UniqueLongIndex(uniqueId, path) =>
+        val p = path.mkString(",")
+        SQL(s"CREATE UNIQUE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (((document #> '{$p}')::bigint))").execute().apply()
+      case MultipleIntIndex(uniqueId, path) =>
+        val p = path.mkString(",")
+        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (((document #> '{$p}')::int))").execute().apply()
+      case UniqueIntIndex(uniqueId, path) =>
+        val p = path.mkString(",")
+        SQL(s"CREATE UNIQUE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (((document #> '{$p}')::int))").execute().apply()
+      case MultipleTextArrayIndex(uniqueId, path) =>
+        val p = path.mkString(",")
+        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} USING GIN ((document #> '{$p}'))").execute().apply()
     }
+  }
+
+  private def pathsToQuery(paths: Seq[IndexPath]): String = {
+    paths.map {
+      case path: TextIndexPath =>
+        val p = path.path.mkString(",")
+        s"(document #>> '{$p}')"
+      case path: LongIndexPath =>
+        val p = path.path.mkString(",")
+        s"((document #> '{$p}')::bigint)"
+      case path: IntIndexPath =>
+        val p = path.path.mkString(",")
+        s"((document #> '{$p}')::int)"
+    }.mkString(",")
   }
 
   def dropTable(): Unit = DB.autoCommit { implicit session =>
@@ -164,8 +199,8 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
   private def createQuery(searchParams: DocumentStoreQuery) = {
 
     val sortPart = if(searchParams.sortBy.isEmpty) "" else searchParams.sortBy.map({
-      case SortAscInt(path) => "(document::json#>>'{"+path.mkString(",")+"}')::bigint " + " ASC"
-      case SortDescInt(path) => "(document::json#>>'{"+path.mkString(",")+"}')::bigint " + " DESC"
+      case SortAscInt(path) => "(document::json#>'{"+path.mkString(",")+"}')::bigint " + " ASC"
+      case SortDescInt(path) => "(document::json#>'{"+path.mkString(",")+"}')::bigint " + " DESC"
       case SortAscText(path) => "document::json#>>'{" + path.mkString(",") + "}' " + " ASC"
       case SortDescText(path) => "document::json#>>'{" + path.mkString(",") + "}' " + " DESC"
     }).mkString(" ORDER BY ", ", ", "")
@@ -181,8 +216,8 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     val partsQuery = parts.map(part => "document::json#>>'{"+part.mkString(",")+"}'").mkString(", ")
 
     val sortPart = if(searchParams.sortBy.isEmpty) "" else searchParams.sortBy.map({
-      case SortAscInt(path) => "(document::json#>>'{" + path.mkString(",") + "})::bigint' " + " ASC"
-      case SortDescInt(path) => "(document::json#>>'{" + path.mkString(",") + "})::bigint' " + " DESC"
+      case SortAscInt(path) => "(document::json#>'{" + path.mkString(",") + "})::bigint' " + " ASC"
+      case SortDescInt(path) => "(document::json#>'{" + path.mkString(",") + "})::bigint' " + " DESC"
       case SortAscText(path) => "document::json#>>'{" + path.mkString(",") + "}' " + " ASC"
       case SortDescText(path) => "document::json#>>'{" + path.mkString(",") + "}' " + " DESC"
     }).mkString(" ORDER BY ", ", ", "")
@@ -273,17 +308,18 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
   private def constructWhereClauseForExpectedValues(values: Seq[ExpectedValue]): String = {
     values.map{
       case ExpectedNoValue(path) => s"document #>> '{${path.mkString(",")}}' IS NULL"
-      case ExpectedMultipleValues(path, v) => s"document #>> '{${path.mkString(",")}}' in (${List.fill(v.size)("?").mkString(",")})"
-      case ExpectedMultipleIntValues(path, v) => s"(document #>> '{${path.mkString(",")}}')::int in (${List.fill(v.size)("?").mkString(",")})"
-      case ExpectedMultipleLongValues(path, v) => s"(document #>> '{${path.mkString(",")}}')::bigint in (${List.fill(v.size)("?").mkString(",")})"
-      case ExpectedSingleValue(path, _) => s"document #>> '{${path.mkString(",")}}' = ?"
-      case ExpectedSingleValueLike(path, _) => s"document #>> '{${path.mkString(",")}}' ilike ?"
-      case ExpectedSingleValueInArray(path, v) => s"(document #> '{${path.mkString(",")}}') ?? ?"
-      case ExpectedMultipleValuesInArray(path, v) => s"(document #> '{${path.mkString(",")}}') ??| ARRAY[${List.fill(v.size)("?").mkString(",")}]"
-      case ExpectedSingleIntValue(path, _) => s"(document #>> '{${path.mkString(",")}}')::int = ?"
-      case ExpectedSingleLongValue(path, _) => s"(document #>> '{${path.mkString(",")}}')::bigint = ?"
-      case ExpectedGreaterThanIntValue(path, _) => s"(document #>> '{${path.mkString(",")}}')::int > ?"
-      case ExpectedLessThanIntValue(path, _) => s"(document #>> '{${path.mkString(",")}}')::int < ?"
+      case ExpectedMultipleTextValues(path, v) => s"document #>> '{${path.mkString(",")}}' in (${List.fill(v.size)("?").mkString(",")})"
+      case ExpectedMultipleIntValues(path, v) => s"(document #> '{${path.mkString(",")}}')::int in (${List.fill(v.size)("?").mkString(",")})"
+      case ExpectedMultipleLongValues(path, v) => s"(document #> '{${path.mkString(",")}}')::bigint in (${List.fill(v.size)("?").mkString(",")})"
+      case ExpectedSingleTextValue(path, _) => s"document #>> '{${path.mkString(",")}}' = ?"
+      case ExpectedSingleTextValueLike(path, _) => s"document #>> '{${path.mkString(",")}}' ilike ?"
+      case ExpectedSingleTextValueInArray(path, v) => s"(document #> '{${path.mkString(",")}}') ?? ?"
+      case ExpectedMultipleTextValuesInArray(path, v) => s"(document #> '{${path.mkString(",")}}') ??| ARRAY[${List.fill(v.size)("?").mkString(",")}]"
+      case ExpectedSingleIntValue(path, _) => s"(document #> '{${path.mkString(",")}}')::int = ?"
+      case ExpectedSingleLongValue(path, _) => s"(document #> '{${path.mkString(",")}}')::bigint = ?"
+      case ExpectedSingleBooleanValue(path, _) => s"(document #> '{${path.mkString(",")}}')::boolean = ?"
+      case ExpectedGreaterThanIntValue(path, _) => s"(document #> '{${path.mkString(",")}}')::int > ?"
+      case ExpectedLessThanIntValue(path, _) => s"(document #> '{${path.mkString(",")}}')::int < ?"
 
     }.mkString(" ", " AND ", " ")
   }
@@ -291,15 +327,16 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
   private def getAllValues(values: Seq[ExpectedValue]): Seq[Any] = {
     values.flatMap{
       case ExpectedNoValue(_) => Iterable.empty
-      case ExpectedMultipleValues(_, vals) => vals
+      case ExpectedMultipleTextValues(_, vals) => vals
       case ExpectedMultipleIntValues(_, vals) => vals
       case ExpectedMultipleLongValues(_, vals) => vals
-      case ExpectedSingleValue(_, value) => Iterable(value)
-      case ExpectedSingleValueInArray(_, value) => Iterable(value)
-      case ExpectedMultipleValuesInArray(_, vals) => vals
-      case ExpectedSingleValueLike(_, value) => Iterable(value)
+      case ExpectedSingleTextValue(_, value) => Iterable(value)
+      case ExpectedSingleTextValueInArray(_, value) => Iterable(value)
+      case ExpectedMultipleTextValuesInArray(_, vals) => vals
+      case ExpectedSingleTextValueLike(_, value) => Iterable(value)
       case ExpectedSingleIntValue(_, value) => Iterable(value)
       case ExpectedSingleLongValue(_, value) => Iterable(value)
+      case ExpectedSingleBooleanValue(_, value) => Iterable(value)
       case ExpectedGreaterThanIntValue(_, value) => Iterable(value)
       case ExpectedLessThanIntValue(_, value) => Iterable(value)
     }

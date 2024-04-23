@@ -16,13 +16,14 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef] {
   def findDocument(query: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, Document[T])] = {
     store.filter(keyValuePair => query.where.forall {
       case ExpectedNoValue(path) => ???
-      case ExpectedSingleValue(path, value) => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, value)
-      case ExpectedSingleValueLike(path, pattern) => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, pattern)
-      case ExpectedMultipleValues(path, vals) => vals.exists(value => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, value))
+      case ExpectedSingleTextValue(path, value) => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, value)
+      case ExpectedSingleTextValueLike(path, pattern) => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, pattern)
+      case ExpectedMultipleTextValues(path, vals) => vals.exists(value => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, value))
       case ExpectedMultipleIntValues(path, vals) => vals.exists(value => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, value))
       case ExpectedMultipleLongValues(path, vals) => vals.exists(value => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, value))
       case ExpectedSingleIntValue(path, vals) => ???
       case ExpectedSingleLongValue(path, vals) => ???
+      case ExpectedSingleBooleanValue(path, vals) => ???
       case ExpectedGreaterThanIntValue(path, vals) => ???
       case ExpectedLessThanIntValue(path, vals) => ???
     }).seq.toSeq

@@ -12,31 +12,52 @@ sealed trait Index {
   val uniqueId: Int
 }
 
-case class MultipleIndex(uniqueId: Int, path: Seq[String]) extends Index
+sealed trait IndexPath
+case class TextIndexPath(path: Seq[String]) extends IndexPath
+case class LongIndexPath(path: Seq[String]) extends IndexPath
+case class IntIndexPath(path: Seq[String]) extends IndexPath
 
-case class UniqueIndex(uniqueId: Int, path: Seq[String]) extends Index
+case class UniqueCombinedIndex(uniqueId: Int, paths: Seq[IndexPath]) extends Index
+
+case class MultipleCombinedIndex(uniqueId: Int, paths: Seq[IndexPath]) extends Index
+
+case class MultipleTextIndex(uniqueId: Int, path: Seq[String]) extends Index
+
+case class UniqueTextIndex(uniqueId: Int, path: Seq[String]) extends Index
+
+case class MultipleLongIndex(uniqueId: Int, path: Seq[String]) extends Index
+
+case class UniqueLongIndex(uniqueId: Int, path: Seq[String]) extends Index
+
+case class MultipleIntIndex(uniqueId: Int, path: Seq[String]) extends Index
+
+case class UniqueIntIndex(uniqueId: Int, path: Seq[String]) extends Index
+
+case class MultipleTextArrayIndex(uniqueId: Int, path: Seq[String]) extends Index
 
 sealed trait ExpectedValue
 
 case class ExpectedNoValue(path: Seq[String]) extends ExpectedValue
 
-case class ExpectedSingleValueLike(path: Seq[String], pattern: String) extends ExpectedValue
+case class ExpectedSingleTextValueLike(path: Seq[String], pattern: String) extends ExpectedValue
 
-case class ExpectedSingleValue(path: Seq[String], value: String) extends ExpectedValue
+case class ExpectedSingleTextValue(path: Seq[String], value: String) extends ExpectedValue
 
-case class ExpectedSingleValueInArray(path: Seq[String], value: String) extends ExpectedValue
+case class ExpectedSingleTextValueInArray(path: Seq[String], value: String) extends ExpectedValue
 
-case class ExpectedMultipleValuesInArray(path: Seq[String], values: Iterable[String]) extends ExpectedValue
+case class ExpectedMultipleTextValuesInArray(path: Seq[String], values: Iterable[String]) extends ExpectedValue
 
 case class ExpectedSingleIntValue(path: Seq[String], value: Int) extends ExpectedValue
 
 case class ExpectedSingleLongValue(path: Seq[String], value: Long) extends ExpectedValue
 
+case class ExpectedSingleBooleanValue(path: Seq[String], value: Boolean) extends ExpectedValue
+
 case class ExpectedGreaterThanIntValue(path: Seq[String], value: Int) extends ExpectedValue
 
 case class ExpectedLessThanIntValue(path: Seq[String], value: Int) extends ExpectedValue
 
-case class ExpectedMultipleValues(path: Seq[String], values: Iterable[String]) extends ExpectedValue
+case class ExpectedMultipleTextValues(path: Seq[String], values: Iterable[String]) extends ExpectedValue
 
 case class ExpectedMultipleIntValues(path: Seq[String], values: Iterable[Int]) extends ExpectedValue
 
@@ -81,7 +102,10 @@ case class DocumentStoreQuery(where: Seq[ExpectedValue],
 sealed abstract class AbstractDocumentStore[T <: AnyRef] {
 
   def findDocumentByPath(path: Seq[String], value: String)(implicit session: DBSession = null): Map[Long, Document[T]] =
-    findDocument(DocumentStoreQuery.basic(Seq(ExpectedSingleValue(path, value)))).toMap
+    findDocument(DocumentStoreQuery.basic(Seq(ExpectedSingleTextValue(path, value)))).toMap
+
+  def findDocumentByPath(value: ExpectedValue): Map[Long, Document[T]] =
+    findDocument(DocumentStoreQuery.basic(Seq(value))).toMap
 
   def findDocumentByPaths(values: ExpectedValue*): Map[Long, Document[T]] =
     findDocument(DocumentStoreQuery.basic(values)).toMap
@@ -102,7 +126,7 @@ sealed abstract class AbstractDocumentStore[T <: AnyRef] {
     if(values.isEmpty) {
       Map.empty
     } else {
-      findDocument(DocumentStoreQuery.basic(Seq(ExpectedMultipleValues(path, values)))).toMap
+      findDocument(DocumentStoreQuery.basic(Seq(ExpectedMultipleTextValues(path, values)))).toMap
     }
   }
 
