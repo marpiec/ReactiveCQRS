@@ -196,7 +196,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   private def receiveReturnAggregateRoot(respondTo: ActorRef, requestedVersion: Option[AggregateVersion]): Unit = {
     if(version == AggregateVersion.ZERO) {
-      respondTo ! Failure(new NoEventsForAggregateException(aggregateId, aggregateType))
+      respondTo ! Success(Aggregate[AGGREGATE_ROOT](aggregateId, version, None))
     } else {
 //      println("RepositoryActor "+this.toString+" Someone requested aggregate " + aggregateId.asLong + " of version " + requestedVersion.map(_.asInt.toString).getOrElse("None") + " and now I have version " + version.asInt)
       requestedVersion match {
@@ -214,7 +214,8 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   private def receiveReturnEvents(respondTo: ActorRef, requestedVersion: Option[AggregateVersion]): Unit = {
     if(version == AggregateVersion.ZERO) {
-      respondTo ! Failure(new NoEventsForAggregateException(aggregateId, aggregateType))
+      val events: List[EventInfo[AGGREGATE_ROOT]] = List.empty
+      respondTo ! Success(events)
     } else {
 
       //      println("RepositoryActor "+this.toString+" Someone requested aggregate " + aggregateId.asLong + " of version " + requestedVersion.map(_.asInt.toString).getOrElse("None") + " and now I have version " + version.asInt)
@@ -255,7 +256,8 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   private def receiveReturnAggregateRootWithEvents(respondTo: ActorRef, requestedVersion: Option[AggregateVersion], eventTypes: Set[String]): Unit = {
     if(version == AggregateVersion.ZERO) {
-      respondTo ! Failure(new NoEventsForAggregateException(aggregateId, aggregateType))
+      val events: List[EventWithVersion[AGGREGATE_ROOT]] = List.empty
+      respondTo ! Success(AggregateWithSelectedEvents[AGGREGATE_ROOT](Aggregate[AGGREGATE_ROOT](aggregateId, version, None), events))
     } else {
 
       //      println("RepositoryActor "+this.toString+" Someone requested aggregate " + aggregateId.asLong + " of version " + requestedVersion.map(_.asInt.toString).getOrElse("None") + " and now I have version " + version.asInt)

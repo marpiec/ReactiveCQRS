@@ -191,6 +191,8 @@ class MemoryDocumentStore[T <: AnyRef] extends DocumentStore[T] with MemoryDocum
     } else {
       store += key -> Document[T](document)
     }
+
+  override def insertDocuments(spaceId: Long, documents: Seq[DocumentToInsert[T]])(implicit session: DBSession): Unit = ???
 }
 
 class MemoryDocumentStoreAutoId[T <: AnyRef] extends DocumentStoreAutoId[T] with MemoryDocumentStoreTrait[T] {
@@ -210,4 +212,6 @@ class MemoryDocumentStoreAutoId[T <: AnyRef] extends DocumentStoreAutoId[T] with
     store += key -> Document[T](document)
     key
   }
+
+  override def insertDocuments(spaceId: Long, documents: Seq[T])(implicit session: DBSession): Unit = ???
 }

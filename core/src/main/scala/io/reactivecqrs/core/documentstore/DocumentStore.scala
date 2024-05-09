@@ -153,10 +153,14 @@ sealed abstract class AbstractDocumentStore[T <: AnyRef] {
   def clearSpace(spaceId: Long)(implicit session: DBSession): Unit
 }
 
+case class DocumentToInsert[T <: AnyRef](key: Long, document: T)
+
 abstract class DocumentStore[T <: AnyRef] extends AbstractDocumentStore[T] {
   def insertDocument(spaceId: Long, key: Long, document: T)(implicit session: DBSession): Unit
+  def insertDocuments(spaceId: Long, documents: Seq[DocumentToInsert[T]])(implicit session: DBSession): Unit
 }
 
 abstract class DocumentStoreAutoId[T <: AnyRef] extends AbstractDocumentStore[T] {
   def insertDocument(spaceId: Long, document: T)(implicit session: DBSession): Long
+  def insertDocuments(spaceId: Long, documents: Seq[T])(implicit session: DBSession): Unit
 }
