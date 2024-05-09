@@ -7,7 +7,7 @@ object Common {
 
     organization := "io.reactivecqrs",
     name := s"reactivecqrs-$moduleName",
-    version := "0.11.48",
+    version := "0.12.0",
     scalaVersion := "2.13.14",
 
     /* required for Scalate to avoid version mismatch */
@@ -56,8 +56,8 @@ object Common {
     val pekkoVersion = "1.0.2"
 
     val common = Seq(
-      "io.mpjsons" %% "mpjsons" % "0.6.38",
-      "com.typesafe" % "config" % "1.4.2",
+      "io.mpjsons" %% "mpjsons" % "0.6.45",
+      "com.typesafe" % "config" % "1.4.3",
       "org.slf4j" % "slf4j-api" % "1.7.36",
       "org.scala-lang.modules" %% "scala-parallel-collections" % "1.0.4",
       "org.scalatest" %% "scalatest" % "3.2.15" % Test
