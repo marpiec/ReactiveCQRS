@@ -2,7 +2,7 @@ package io.reactivecqrs.core.projection
 
 import java.time.{Duration, Instant}
 
-import akka.actor.ActorRef
+import org.apache.pekko.actor.ActorRef
 import io.reactivecqrs.core.util.RandomUtil
 import io.reactivecqrs.core.projection.SubscribableProjectionActor._
 

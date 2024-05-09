@@ -1,7 +1,7 @@
 package io.reactivecqrs.core.util
 
-import akka.actor.{Actor, ActorContext}
-import akka.event.{Logging, LoggingReceive}
+import org.apache.pekko.actor.{Actor, ActorContext}
+import org.apache.pekko.event.{Logging, LoggingReceive}
 
 class ActorException(message: String, cause: Throwable) extends Exception(message, cause) {
   override def fillInStackTrace(): Throwable = this

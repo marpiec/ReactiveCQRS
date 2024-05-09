@@ -1,8 +1,8 @@
 package io.reactivecqrs.testutils
 
-import akka.pattern.ask
-import akka.actor.ActorRef
-import akka.util.Timeout
+import org.apache.pekko.pattern.ask
+import org.apache.pekko.actor.ActorRef
+import org.apache.pekko.util.Timeout
 import org.scalatest.Assertions
 
 import scala.concurrent.Await

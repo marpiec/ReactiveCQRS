@@ -2,4 +2,4 @@ Common.settings("testutils")
 
 import Common.dependencies._
 
-libraryDependencies ++= akka ++ logback ++ scalikejdbc
+libraryDependencies ++= pekko ++ logback ++ scalikejdbc

@@ -1,9 +1,9 @@
 package io.reactivecqrs.core.eventbus
 
-import akka.pattern.ask
-import akka.actor.{Actor, ActorRef}
-import akka.event.slf4j.Logger
-import akka.util.Timeout
+import org.apache.pekko.pattern.ask
+import org.apache.pekko.actor.{Actor, ActorRef}
+import org.apache.pekko.event.slf4j.Logger
+import org.apache.pekko.util.Timeout
 import io.reactivecqrs.core.eventbus.EventBusSubscriptionsManager.{GetSubscriptions, Subscribe}
 import io.reactivecqrs.core.eventbus.EventsBusActor.SubscribeRequest
 import org.slf4j.LoggerFactory

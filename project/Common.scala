@@ -8,7 +8,7 @@ object Common {
     organization := "io.reactivecqrs",
     name := s"reactivecqrs-$moduleName",
     version := "0.11.48",
-    scalaVersion := "2.13.11",
+    scalaVersion := "2.13.14",
 
     /* required for Scalate to avoid version mismatch */
     dependencyOverrides := Set(
@@ -53,7 +53,7 @@ object Common {
 
   object dependencies {
 
-    val akkaVersion = "2.5.32"
+    val pekkoVersion = "1.0.2"
 
     val common = Seq(
       "io.mpjsons" %% "mpjsons" % "0.6.38",
@@ -63,10 +63,10 @@ object Common {
       "org.scalatest" %% "scalatest" % "3.2.15" % Test
     )
 
-    val akka = Seq(
-      "com.typesafe.akka" %% "akka-actor" % akkaVersion,
-      "com.typesafe.akka" %% "akka-slf4j" % akkaVersion,
-      "com.typesafe.akka" %% "akka-testkit" % akkaVersion % Test
+    val pekko = Seq(
+      "org.apache.pekko" %% "pekko-actor" % pekkoVersion,
+      "org.apache.pekko" %% "pekko-slf4j" % pekkoVersion,
+      "org.apache.pekko" %% "pekko-testkit" % pekkoVersion % Test
     )
 
     val scalikejdbc = Seq(

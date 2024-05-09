@@ -2,7 +2,7 @@ package io.reactivecqrs.core.aggregaterepository
 
 import java.time.Instant
 
-import akka.actor.{Actor, ActorRef, PoisonPill}
+import org.apache.pekko.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor.ReplayEvents

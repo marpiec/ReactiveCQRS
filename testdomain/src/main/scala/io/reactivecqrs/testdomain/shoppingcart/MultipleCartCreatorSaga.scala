@@ -1,7 +1,7 @@
 package io.reactivecqrs.testdomain.shoppingcart
 
-import akka.pattern.ask
-import akka.actor.ActorRef
+import org.apache.pekko.pattern.ask
+import org.apache.pekko.actor.ActorRef
 import io.reactivecqrs.api.{CustomCommandResponse, FailureResponse, SagaStep, SuccessResponse}
 import io.reactivecqrs.api.id.{AggregateIdWithVersion, UserId}
 import io.reactivecqrs.core.saga._

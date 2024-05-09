@@ -3,7 +3,7 @@ package io.reactivecqrs.core.projection
 import java.time.{Duration, Instant}
 import java.util.concurrent.TimeUnit
 
-import akka.actor.{Actor, ActorRef, Cancellable, Status}
+import org.apache.pekko.actor.{Actor, ActorRef, Cancellable, Status}
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManagerApi, EventsBusActor}

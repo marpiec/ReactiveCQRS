@@ -2,8 +2,8 @@ package io.reactivecqrs.core.eventbus
 
 import java.time.Instant
 
-import akka.actor.{Actor, ActorRef}
-import akka.util.Timeout
+import org.apache.pekko.actor.{Actor, ActorRef}
+import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.backpressure.BackPressureActor._

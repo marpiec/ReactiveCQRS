@@ -2,9 +2,9 @@ package io.reactivecqrs.core.projection
 
 import java.time.Instant
 
-import akka.actor._
-import akka.testkit.{TestActorRef, TestProbe}
-import akka.util.Timeout
+import org.apache.pekko.actor._
+import org.apache.pekko.testkit.{TestActorRef, TestProbe}
+import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubscriptionsManagerApi}

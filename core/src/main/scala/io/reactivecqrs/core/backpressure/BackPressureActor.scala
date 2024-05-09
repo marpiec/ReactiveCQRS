@@ -1,6 +1,6 @@
 package io.reactivecqrs.core.backpressure
 
-import akka.actor.{Actor, ActorRef}
+import org.apache.pekko.actor.{Actor, ActorRef}
 import io.reactivecqrs.core.util.MyActorLogging
 
 object BackPressureActor {

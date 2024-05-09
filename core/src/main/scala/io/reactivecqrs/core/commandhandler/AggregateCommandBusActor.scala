@@ -1,9 +1,9 @@
 package io.reactivecqrs.core.commandhandler
 
 import java.time.Instant
-import akka.actor.{Actor, ActorContext, ActorRef, PoisonPill, Props}
-import akka.pattern.ask
-import akka.util.Timeout
+import org.apache.pekko.actor.{Actor, ActorContext, ActorRef, PoisonPill, Props}
+import org.apache.pekko.pattern.ask
+import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor

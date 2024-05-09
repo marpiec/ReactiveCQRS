@@ -1,6 +1,6 @@
 package io.reactivecqrs.testdomain.spec
 
-import akka.actor.{ActorRef, ActorSystem, Props}
+import org.apache.pekko.actor.{ActorRef, ActorSystem, Props}
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.{AggregateType, AggregateVersion}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}

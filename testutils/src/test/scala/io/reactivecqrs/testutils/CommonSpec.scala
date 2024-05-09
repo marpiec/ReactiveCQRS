@@ -1,17 +1,17 @@
 package io.reactivecqrs.testutils
 
-import akka.actor.ActorSystem
-import akka.testkit.TestKit
+import org.apache.pekko.actor.ActorSystem
+import org.apache.pekko.testkit.TestKit
 import com.typesafe.config.ConfigFactory
 import org.scalatest.{FeatureSpecLike, GivenWhenThen, MustMatchers}
 import scalikejdbc.{GlobalSettings, LoggingSQLAndTimeSettings}
 
 abstract class CommonSpec extends TestKit(ActorSystem("testsystem", ConfigFactory.parseString("""
-          akka.loglevel = "WARNING"
-          akka.actor.debug.receive = off
-          akka.actor.debug.receive = off
-          akka.actor.debug.fsm = off
-          akka.actor.debug.lifecycle = off"""))) with FeatureSpecLike with GivenWhenThen with ActorAskSupport with MustMatchers {
+          pekko.loglevel = "WARNING"
+          pekko.actor.debug.receive = off
+          pekko.actor.debug.receive = off
+          pekko.actor.debug.fsm = off
+          pekko.actor.debug.lifecycle = off"""))) with FeatureSpecLike with GivenWhenThen with ActorAskSupport with MustMatchers {
 
   GlobalSettings.loggingSQLAndTime = LoggingSQLAndTimeSettings(
     enabled = false,

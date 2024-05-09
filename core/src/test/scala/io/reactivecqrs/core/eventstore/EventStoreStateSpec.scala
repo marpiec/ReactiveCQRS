@@ -2,7 +2,7 @@ package io.reactivecqrs.core.eventstore
 
 import java.time.Instant
 
-import akka.actor.ActorRef
+import org.apache.pekko.actor.ActorRef
 import io.reactivecqrs.api.{AggregateVersion, DuplicationEvent, Event, UndoEvent}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, SpaceId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents

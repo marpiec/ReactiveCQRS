@@ -1,8 +1,8 @@
 package io.reactivecqrs.core.saga
 
-import akka.pattern.ask
-import akka.actor.{Actor, ActorRef}
-import akka.util.Timeout
+import org.apache.pekko.pattern.ask
+import org.apache.pekko.actor.{Actor, ActorRef}
+import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api.SagaStep
 import io.reactivecqrs.api.id.{SagaId, UserId}
 import io.reactivecqrs.core.saga.SagaActor.{LoadPendingSagas, SagaPersisted}

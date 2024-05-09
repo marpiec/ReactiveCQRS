@@ -5,7 +5,7 @@ import java.time.Instant
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.util.MyActorLogging
 import io.reactivecqrs.api._
-import akka.actor.{Actor, ActorRef, PoisonPill}
+import org.apache.pekko.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
 import io.reactivecqrs.core.commandhandler.{CommandExecutorActor, CommandResponseState}

@@ -3,9 +3,9 @@ package io.reactivecqrs.core.eventsreplayer
 import java.util.Date
 import java.util.concurrent.TimeoutException
 
-import akka.pattern.ask
-import akka.actor.{Actor, ActorContext, ActorRef, Props}
-import akka.util.Timeout
+import org.apache.pekko.pattern.ask
+import org.apache.pekko.actor.{Actor, ActorContext, ActorRef, Props}
+import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor

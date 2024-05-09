@@ -1,7 +1,7 @@
 package io.reactivecqrs.testdomain.spec
 
-import akka.actor.{ActorRef, ActorSystem, Props}
-import akka.serialization.SerializationExtension
+import org.apache.pekko.actor.{ActorRef, ActorSystem, Props}
+import org.apache.pekko.serialization.SerializationExtension
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
