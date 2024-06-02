@@ -155,13 +155,13 @@ class EventsReplayerActor(eventStore: EventStoreState,
         notYetPublishedAggregatesVersions.get(aggregateId) match {
           case None =>
             val actor = getOrCreateReplayRepositoryActor(aggregateId, events.head.version, aggregateType)
-            actor ! ReplayEvents(IdentifiableEvents(aggregateType, aggregateId, events.asInstanceOf[Seq[EventInfo[Any]]]))
+            actor ! ReplayEvents(IdentifiableEvents(aggregateType, aggregateId, events.asInstanceOf[Seq[EventInfo[Any]]], replayed = true))
             eventsToProduceAllowed -= events.size
             sendTotal += events.size
           case Some(notPublishedVersion) if events.head.version < notPublishedVersion =>
             val actor = getOrCreateReplayRepositoryActor(aggregateId, events.head.version, aggregateType)
             val eventsToSend = events.takeWhile(_.version < notPublishedVersion).asInstanceOf[Seq[EventInfo[Any]]]
-            actor ! ReplayEvents(IdentifiableEvents(aggregateType, aggregateId, eventsToSend))
+            actor ! ReplayEvents(IdentifiableEvents(aggregateType, aggregateId, eventsToSend, replayed = true))
             sendTotal += eventsToSend.size
             eventsToProduceAllowed -= eventsToSend.size
           case Some(notPublishedVersion) => ()

@@ -185,9 +185,9 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
   def receiveAfterInit: Receive = logReceive {
     case PublishEvents(aggregateType, events, aggregateId, aggregate) =>
-      handlePublishEvents(sender(), aggregateType, aggregateId, events, aggregate)
+      handlePublishEvents(sender(), aggregateType, aggregateId, events, aggregate, replayed = false)
     case PublishReplayedEvents(aggregateType, events, aggregateId, aggregate) =>
-      handlePublishEvents(sender(), aggregateType, aggregateId, events, aggregate)
+      handlePublishEvents(sender(), aggregateType, aggregateId, events, aggregate, replayed = true)
     case m: MessageAck => handleMessageAck(m)
     case ConsumerStart =>
       backPressureProducerActor = Some(sender)
@@ -254,7 +254,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   // ***************** PUBLISHING
 
   private def handlePublishEvents(respondTo: ActorRef, aggregateType: AggregateType, aggregateId: AggregateId,
-                                  events: Seq[EventInfo[Any]], aggregateRoot: Option[Any]): Unit = {
+                                  events: Seq[EventInfo[Any]], aggregateRoot: Option[Any], replayed: Boolean): Unit = {
 
     receivedTotal += events.size
 
@@ -274,13 +274,13 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
         case s: EventSubscription =>
           val eventsForSubscriber = eventsToPropagate.filter(event => s.classifier.accept(aggregateId, EventType(event.event.getClass.getName)))
           if (eventsForSubscriber.nonEmpty) {
-            Some(MessagesToRoute(s.subscriber, aggregateId, eventsForSubscriber.map(_.version), IdentifiableEvents(aggregateType, aggregateId, eventsForSubscriber)))
+            Some(MessagesToRoute(s.subscriber, aggregateId, eventsForSubscriber.map(_.version), IdentifiableEvents(aggregateType, aggregateId, eventsForSubscriber, replayed)))
           } else {
             None
           }
         case s: AggregateSubscription =>
           if (s.classifier.accept(aggregateId)) {
-            Some(MessagesToRoute(s.subscriber, aggregateId, eventsToPropagate.map(_.version), AggregateWithType(aggregateType, aggregateId, eventsToPropagate.last.version, eventsToPropagate.map(_.version), aggregateRoot)))
+            Some(MessagesToRoute(s.subscriber, aggregateId, eventsToPropagate.map(_.version), AggregateWithType(aggregateType, aggregateId, eventsToPropagate.last.version, eventsToPropagate.map(_.version), aggregateRoot, replayed)))
           } else {
             None
           }
@@ -288,7 +288,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
           val eventsForSubscriber = eventsToPropagate.filter(event => s.classifier.accept(aggregateId, EventType(event.event.getClass.getName)))
           if (eventsForSubscriber.nonEmpty) {
             Some(MessagesToRoute(s.subscriber, aggregateId, eventsForSubscriber.map(_.version),
-              AggregateWithTypeAndEvents(aggregateType, aggregateId, aggregateRoot, eventsForSubscriber)))
+              AggregateWithTypeAndEvents(aggregateType, aggregateId, aggregateRoot, eventsForSubscriber, replayed)))
           } else {
             None
           }
@@ -341,6 +341,8 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
 
   private def handleMessageAck(ack: MessageAck): Unit = {
+
+//    println("MessageAck received " + ack.subscriber+" "+ack.versions.head.asInt+"->"+ack.versions.last.asInt)
 
     messageAckTotal += ack.versions.size
 
