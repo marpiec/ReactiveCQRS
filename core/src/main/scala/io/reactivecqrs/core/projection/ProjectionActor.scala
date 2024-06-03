@@ -36,7 +36,7 @@ case class TriggerDelayedUpdateAggregateWithTypeAndEvents(id: AggregateId, respo
 case class TriggerDelayedUpdateIdentifiableEvents(id: AggregateId, respondTo: ActorRef)
 
 
-abstract class ProjectionActor(updateDelayMillis: Long = 0) extends Actor with MyActorLogging {
+abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0) extends Actor with MyActorLogging {
 
   protected val projectionName: String
   protected val subscriptionsState: SubscriptionsState
@@ -47,10 +47,12 @@ abstract class ProjectionActor(updateDelayMillis: Long = 0) extends Actor with M
 
   protected val version: Int
 
+  // Used when updates came not in order
   private val delayedAggregateWithType = mutable.Map[AggregateId, List[AggregateWithType[_]]]()
   private val delayedAggregateWithTypeAndEvent = mutable.Map[AggregateId, List[AggregateWithTypeAndEvents[_]]]()
   private val delayedIdentifiableEvent = mutable.Map[AggregateId, List[IdentifiableEvents[_]]]()
 
+  // Used for grouping updates
   private val lastAggregateWithTypeUpdateQueueReversed = mutable.Map[AggregateId, List[AggregateWithType[_]]]()
   private val lastAggregateWithTypeAndEventsUpdateQueueReversed = mutable.Map[AggregateId, List[AggregateWithTypeAndEvents[_]]]()
   private val lastIdentifiableEventsQueueReversed = mutable.Map[AggregateId, List[IdentifiableEvents[_]]]()
@@ -128,7 +130,7 @@ abstract class ProjectionActor(updateDelayMillis: Long = 0) extends Actor with M
     SubscribedAggregates(projectionName, version, aggregateListenersMap.keySet ++ eventListenersMap.keySet ++ aggregateWithEventListenersMap.keySet)
   }
 
-  private val delayDuration = scala.concurrent.duration.Duration(updateDelayMillis, TimeUnit.MILLISECONDS)
+  private val delayDuration = scala.concurrent.duration.Duration(groupUpdatesDelayMillis, TimeUnit.MILLISECONDS)
 
   protected def receiveUpdate: Receive =  {
     case q: InitRebuildForTypes => subscribe(Some(q.aggregatesTypes))
@@ -139,21 +141,16 @@ abstract class ProjectionActor(updateDelayMillis: Long = 0) extends Actor with M
     case ReplayQueries => replayQueries()
 
     case TriggerDelayedUpdateAggregateWithType(id, respondTo) =>
-      val events = lastAggregateWithTypeUpdateQueueReversed.getOrElse(id, List.empty).reverse
-//      println("triggering aggregate update for aggregate " + id +" "+events.head.events.head.asInt+"->"+events.last.events.last.asInt)
       handleAggregateWithTypeUpdate(respondTo, mergeAggregateWithTypeUpdate(lastAggregateWithTypeUpdateQueueReversed.getOrElse(id, List.empty).reverse.asInstanceOf[List[AggregateWithType[Any]]]))
       lastAggregateWithTypeUpdateQueueReversed -= id
     case TriggerDelayedUpdateAggregateWithTypeAndEvents(id, respondTo) =>
-      val events = lastAggregateWithTypeAndEventsUpdateQueueReversed.getOrElse(id, List.empty).reverse.last.events
-//      println("triggering aggregate update for aggregate with events " + id +" "+events.head.version.asInt+"->"+events.last.version.asInt)
       handleAggreagetWithTypeAndEventsUpdate(respondTo, mergeAggregateWithTypeAndEventsUpdate(lastAggregateWithTypeAndEventsUpdateQueueReversed.getOrElse(id, List.empty).reverse.asInstanceOf[List[AggregateWithTypeAndEvents[Any]]]))
       lastAggregateWithTypeAndEventsUpdateQueueReversed -= id
     case TriggerDelayedUpdateIdentifiableEvents(id, respondTo) =>
       handleIdentifiableEventsUpdate(respondTo, mergeIdentifiableEventsUpdate(lastIdentifiableEventsQueueReversed.getOrElse(id, List.empty).reverse.asInstanceOf[List[IdentifiableEvents[Any]]]))
       lastIdentifiableEventsQueueReversed -= id
 
-    case a: AggregateWithType[_] if updateDelayMillis > 0 && !a.replayed =>
-//      println("delaying aggregate update handling for aggregate " + a.aggregateType.simpleName + ":" + a.id.asLong+" "+a.events.last.asInt)
+    case a: AggregateWithType[_] if groupUpdatesDelayMillis > 0 && !a.replayed =>
       lastAggregateWithTypeUpdateQueueReversed.get(a.id) match {
         case None =>
           context.system.scheduler.scheduleOnce(delayDuration, self, TriggerDelayedUpdateAggregateWithType(a.id, sender))(context.dispatcher)
@@ -161,22 +158,21 @@ abstract class ProjectionActor(updateDelayMillis: Long = 0) extends Actor with M
         case Some(waiting) =>
           lastAggregateWithTypeUpdateQueueReversed += a.id -> (a :: waiting)
       }
-    case a: AggregateWithTypeAndEvents[_] if updateDelayMillis > 0 && !a.replayed =>
-//      println("delaying aggregate with events update handling for aggregate " + a.aggregateType.simpleName + ":" + a.id.asLong+" "+a.events.last.version.asInt)
-      lastAggregateWithTypeAndEventsUpdateQueueReversed.get(a.id) match {
+    case ae: AggregateWithTypeAndEvents[_] if groupUpdatesDelayMillis > 0 && !ae.replayed =>
+      lastAggregateWithTypeAndEventsUpdateQueueReversed.get(ae.id) match {
         case None =>
-          context.system.scheduler.scheduleOnce(delayDuration, self, TriggerDelayedUpdateAggregateWithTypeAndEvents(a.id, sender))(context.dispatcher)
-          lastAggregateWithTypeAndEventsUpdateQueueReversed += a.id -> List(a)
+          context.system.scheduler.scheduleOnce(delayDuration, self, TriggerDelayedUpdateAggregateWithTypeAndEvents(ae.id, sender))(context.dispatcher)
+          lastAggregateWithTypeAndEventsUpdateQueueReversed += ae.id -> List(ae)
         case Some(waiting) =>
-          lastAggregateWithTypeAndEventsUpdateQueueReversed += a.id -> (a :: waiting)
+          lastAggregateWithTypeAndEventsUpdateQueueReversed += ae.id -> (ae :: waiting)
       }
-    case a: IdentifiableEvents[_] if updateDelayMillis > 0 && !a.replayed =>
-      lastIdentifiableEventsQueueReversed.get(a.aggregateId) match {
+    case e: IdentifiableEvents[_] if groupUpdatesDelayMillis > 0 && !e.replayed =>
+      lastIdentifiableEventsQueueReversed.get(e.aggregateId) match {
         case None =>
-          context.system.scheduler.scheduleOnce(delayDuration, self, TriggerDelayedUpdateIdentifiableEvents(a.aggregateId, sender))(context.dispatcher)
-          lastIdentifiableEventsQueueReversed += a.aggregateId -> List(a)
+          context.system.scheduler.scheduleOnce(delayDuration, self, TriggerDelayedUpdateIdentifiableEvents(e.aggregateId, sender))(context.dispatcher)
+          lastIdentifiableEventsQueueReversed += e.aggregateId -> List(e)
         case Some(waiting) =>
-          lastIdentifiableEventsQueueReversed += a.aggregateId -> (a :: waiting)
+          lastIdentifiableEventsQueueReversed += e.aggregateId -> (e :: waiting)
       }
     case a: AggregateWithType[_] => handleAggregateWithTypeUpdate(sender, a)
     case ae: AggregateWithTypeAndEvents[_] => handleAggreagetWithTypeAndEventsUpdate(sender, ae)
@@ -208,16 +204,13 @@ abstract class ProjectionActor(updateDelayMillis: Long = 0) extends Actor with M
     val newEvents = e.events.drop(alreadyProcessed.length)
 
     if (newEvents.isEmpty && alreadyProcessed.nonEmpty) {
-      println("MessageAck (Events) " + getClass.getSimpleName+" -> " + alreadyProcessed.head.version.asInt+"->"+alreadyProcessed.last.version.asInt)
       respondTo ! MessageAck(self, e.aggregateId, alreadyProcessed.map(_.version))
     } else if (newEvents.nonEmpty && newEvents.head.version.isJustAfter(lastVersion)) {
       try {
         subscriptionsState.localTx { session =>
           eventListenersMap(e.aggregateType)(e.aggregateId, e.events.asInstanceOf[Seq[EventInfo[Any]]])(session)
           subscriptionsState.newVersionForEventsSubscription(this.getClass.getName, e.aggregateId, lastVersion, e.events.last.version)(session)
-          //          println("handled event " + e.event)
         }
-        println("MessageAck (Events) 1 " + getClass.getSimpleName+" -> " + (alreadyProcessed ++ newEvents).head.version.asInt+"->"+(alreadyProcessed ++ newEvents).last.version.asInt)
         respondTo ! MessageAck(self, e.aggregateId, e.events.map(_.version))
 
         delayedIdentifiableEvent.get(e.aggregateId) match {
@@ -227,7 +220,6 @@ abstract class ProjectionActor(updateDelayMillis: Long = 0) extends Actor with M
             } else {
               delayedIdentifiableEvent -= e.aggregateId
             }
-            //            println("replaying delayed event " + e.event)
             receiveUpdate(delayed.head)
             replayQueries()
           case _ => ()
@@ -236,7 +228,6 @@ abstract class ProjectionActor(updateDelayMillis: Long = 0) extends Actor with M
         case ex: Exception => log.error(ex, "Error handling update " + e.events.head.version.asInt + "-" + e.events.last.version.asInt)
       }
     } else if (newEvents.nonEmpty) {
-      println("Delaying events update handling for aggregate " + e.aggregateType.simpleName + ":" + e.aggregateId.asLong + ", got update for version " + e.events.map(_.version.asInt).mkString(", ") + " but only processed version " + lastVersion.asInt)
       log.debug("Delaying events update handling for aggregate " + e.aggregateType.simpleName + ":" + e.aggregateId.asLong + ", got update for version " + e.events.map(_.version.asInt).mkString(", ") + " but only processed version " + lastVersion.asInt)
       delayedIdentifiableEvent.get(e.aggregateId) match {
         case None => delayedIdentifiableEvent += e.aggregateId -> List(e)
@@ -255,7 +246,6 @@ abstract class ProjectionActor(updateDelayMillis: Long = 0) extends Actor with M
     val newEvents = ae.events.drop(alreadyProcessed.length)
 
     if (newEvents.isEmpty && alreadyProcessed.nonEmpty) {
-      println("MessageAck (Aggregate with events) " + getClass.getSimpleName+" -> " + alreadyProcessed.head.version.asInt+"->"+alreadyProcessed.last.version.asInt)
       respondTo ! MessageAck(self, ae.id, alreadyProcessed.map(_.version))
     } else if (newEvents.nonEmpty && newEvents.head.version.isJustAfter(lastVersion)) {
       try {
@@ -263,7 +253,6 @@ abstract class ProjectionActor(updateDelayMillis: Long = 0) extends Actor with M
           aggregateWithEventListenersMap(ae.aggregateType)(ae.id, newEvents.last.version, ae.aggregateRoot, newEvents.asInstanceOf[Seq[EventInfo[Any]]])(session)
           subscriptionsState.newVersionForAggregatesWithEventsSubscription(this.getClass.getName, ae.id, lastVersion, newEvents.last.version)(session)
         }
-        println("MessageAck (Aggregate with events) 1 " + getClass.getSimpleName+" -> " + (alreadyProcessed ++ newEvents).head.version.asInt+"->"+(alreadyProcessed ++ newEvents).last.version.asInt)
         respondTo ! MessageAck(self, ae.id, alreadyProcessed.map(_.version) ++ newEvents.map(_.version))
         delayedAggregateWithTypeAndEvent.get(ae.id) match {
           case Some(delayed) if delayed.head.events.head.version.isJustAfter(newEvents.last.version) =>
@@ -280,7 +269,6 @@ abstract class ProjectionActor(updateDelayMillis: Long = 0) extends Actor with M
         case e: Exception => log.error(e, "Error handling update " + newEvents.head.version.asInt + "-" + ae.events.last.version.asInt)
       }
     } else if (newEvents.nonEmpty) {
-      println("Delaying aggregate with events update handling for aggregate " + ae.aggregateType.simpleName + ":" + ae.id.asLong + ", got update for version " + ae.events.map(_.version.asInt).mkString(", ") + " but only processed version " + lastVersion.asInt)
       log.debug("Delaying aggregate with events update handling for aggregate " + ae.aggregateType.simpleName + ":" + ae.id.asLong + ", got update for version " + ae.events.map(_.version.asInt).mkString(", ") + " but only processed version " + lastVersion.asInt)
       delayedAggregateWithTypeAndEvent.get(ae.id) match {
         case None => delayedAggregateWithTypeAndEvent += ae.id -> List(ae)
@@ -299,7 +287,6 @@ abstract class ProjectionActor(updateDelayMillis: Long = 0) extends Actor with M
     val newEvents = a.events.drop(alreadyProcessed.length)
 
     if (newEvents.isEmpty && alreadyProcessed.nonEmpty) {
-      println("MessageAck (Aggregate) " + getClass.getSimpleName+" -> " + alreadyProcessed.head.asInt+"->"+alreadyProcessed.last.asInt)
       respondTo ! MessageAck(self, a.id, alreadyProcessed)
     } else if (newEvents.nonEmpty && newEvents.head.isJustAfter(lastVersion)) {
       try {
@@ -307,7 +294,6 @@ abstract class ProjectionActor(updateDelayMillis: Long = 0) extends Actor with M
           aggregateListenersMap(a.aggregateType)(a.id, a.version, newEvents.head.isOne, a.aggregateRoot)(session)
           subscriptionsState.newVersionForAggregatesSubscription(this.getClass.getName, a.id, lastVersion, newEvents.last)(session)
         }
-        println("MessageAck (Aggregate) 1 " + getClass.getSimpleName+" -> " + (alreadyProcessed ++ newEvents).head.asInt+"->"+(alreadyProcessed ++ newEvents).last.asInt)
         respondTo ! MessageAck(self, a.id, alreadyProcessed ++ newEvents)
 
         delayedAggregateWithType.get(a.id) match {
@@ -326,7 +312,6 @@ abstract class ProjectionActor(updateDelayMillis: Long = 0) extends Actor with M
         case e: Exception => log.error(e, "Error handling update " + newEvents.head.asInt + "-" + a.events.last.asInt)
       }
     } else if (newEvents.nonEmpty) {
-      println("Delaying aggregate update handling for aggregate " + a.aggregateType.simpleName + ":" + a.id.asLong + ", got update for version " + a.events.map(_.asInt).mkString(", ") + " but only processed version " + lastVersion.asInt)
       log.debug("Delaying aggregate update handling for aggregate " + a.aggregateType.simpleName + ":" + a.id.asLong + ", got update for version " + a.events.map(_.asInt).mkString(", ") + " but only processed version " + lastVersion.asInt)
       delayedAggregateWithType.get(a.id) match {
         case None => delayedAggregateWithType += a.id -> List(a)

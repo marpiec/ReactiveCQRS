@@ -1,6 +1,6 @@
 package io.reactivecqrs.core.projection
 
-abstract class AggregateListenerActor(updateDelayMillis: Long = 0)  extends ProjectionActor(updateDelayMillis) {
+abstract class AggregateListenerActor(groupUpdatesDelayMillis: Long = 0)  extends ProjectionActor(groupUpdatesDelayMillis) {
 
   protected def receiveQuery: Receive = {
     case m => ()

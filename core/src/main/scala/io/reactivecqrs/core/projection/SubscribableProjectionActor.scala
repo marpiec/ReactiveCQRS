@@ -31,7 +31,7 @@ case class UpdateCacheEntry(arrived: Instant, value: Any)
 
 case class SubscriptionInfo(subscriptionId: String, listener: ActorRef, acceptor: _ => Option[_], typeName: String, renewal: Instant)
 
-abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.ZERO, updateDelayMillis: Long = 0) extends ProjectionActor(updateDelayMillis) {
+abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.ZERO, groupUpdatesDelayMillis: Long = 0) extends ProjectionActor(groupUpdatesDelayMillis) {
 
   protected def receiveSubscriptionRequest: Receive
 
