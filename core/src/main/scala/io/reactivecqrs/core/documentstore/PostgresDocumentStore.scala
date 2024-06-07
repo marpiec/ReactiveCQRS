@@ -199,8 +199,10 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
   private def createQuery(searchParams: DocumentStoreQuery) = {
 
     val sortPart = if(searchParams.sortBy.isEmpty) "" else searchParams.sortBy.map({
-      case SortAscInt(path) => "(document#>'{"+path.mkString(",")+"}')::bigint " + " ASC"
-      case SortDescInt(path) => "(document#>'{"+path.mkString(",")+"}')::bigint " + " DESC"
+      case SortAscInt(path) => "(document#>'{"+path.mkString(",")+"}')::int " + " ASC"
+      case SortDescInt(path) => "(document#>'{"+path.mkString(",")+"}')::int " + " DESC"
+      case SortAscLong(path) => "(document#>'{"+path.mkString(",")+"}')::bigint " + " ASC"
+      case SortDescLong(path) => "(document#>'{"+path.mkString(",")+"}')::bigint " + " DESC"
       case SortAscText(path) => "document#>>'{" + path.mkString(",") + "}' " + " ASC"
       case SortDescText(path) => "document#>>'{" + path.mkString(",") + "}' " + " DESC"
     }).mkString(" ORDER BY ", ", ", "")
@@ -216,8 +218,10 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     val partsQuery = parts.map(part => "document#>>'{"+part.mkString(",")+"}'").mkString(", ")
 
     val sortPart = if(searchParams.sortBy.isEmpty) "" else searchParams.sortBy.map({
-      case SortAscInt(path) => "(document#>'{" + path.mkString(",") + "})::bigint' " + " ASC"
-      case SortDescInt(path) => "(document#>'{" + path.mkString(",") + "})::bigint' " + " DESC"
+      case SortAscInt(path) => "(document#>'{" + path.mkString(",") + "})::int' " + " ASC"
+      case SortDescInt(path) => "(document#>'{" + path.mkString(",") + "})::int' " + " DESC"
+      case SortAscLong(path) => "(document#>'{" + path.mkString(",") + "})::bigint' " + " ASC"
+      case SortDescLong(path) => "(document#>'{" + path.mkString(",") + "})::bigint' " + " DESC"
       case SortAscText(path) => "document#>>'{" + path.mkString(",") + "}' " + " ASC"
       case SortDescText(path) => "document#>>'{" + path.mkString(",") + "}' " + " DESC"
     }).mkString(" ORDER BY ", ", ", "")

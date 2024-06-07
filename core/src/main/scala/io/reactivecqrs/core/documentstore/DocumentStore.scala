@@ -87,6 +87,12 @@ object SortDescInt {
 }
 case class SortDescInt(path: Seq[String]) extends Sort
 
+object SortDescLong {
+  def apply(name: String): Sort = SortDescLong(Seq(name))
+}
+case class SortDescLong(path: Seq[String]) extends Sort
+
+
 object SortDescText {
   def apply(name: String): Sort = SortDescText(Seq(name))
 }
