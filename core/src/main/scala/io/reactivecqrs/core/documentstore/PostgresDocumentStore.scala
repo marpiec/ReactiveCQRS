@@ -199,10 +199,10 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
   private def createQuery(searchParams: DocumentStoreQuery) = {
 
     val sortPart = if(searchParams.sortBy.isEmpty) "" else searchParams.sortBy.map({
-      case SortAscInt(path) => "(document::json#>'{"+path.mkString(",")+"}')::bigint " + " ASC"
-      case SortDescInt(path) => "(document::json#>'{"+path.mkString(",")+"}')::bigint " + " DESC"
-      case SortAscText(path) => "document::json#>>'{" + path.mkString(",") + "}' " + " ASC"
-      case SortDescText(path) => "document::json#>>'{" + path.mkString(",") + "}' " + " DESC"
+      case SortAscInt(path) => "(document#>'{"+path.mkString(",")+"}')::bigint " + " ASC"
+      case SortDescInt(path) => "(document#>'{"+path.mkString(",")+"}')::bigint " + " DESC"
+      case SortAscText(path) => "document#>>'{" + path.mkString(",") + "}' " + " ASC"
+      case SortDescText(path) => "document#>>'{" + path.mkString(",") + "}' " + " DESC"
     }).mkString(" ORDER BY ", ", ", "")
 
     SQL("SELECT id, version, document FROM " + projectionTableName +
@@ -213,13 +213,13 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
   private def createPartsQuery(parts: Seq[Seq[String]], searchParams: DocumentStoreQuery) = {
 
-    val partsQuery = parts.map(part => "document::json#>>'{"+part.mkString(",")+"}'").mkString(", ")
+    val partsQuery = parts.map(part => "document#>>'{"+part.mkString(",")+"}'").mkString(", ")
 
     val sortPart = if(searchParams.sortBy.isEmpty) "" else searchParams.sortBy.map({
-      case SortAscInt(path) => "(document::json#>'{" + path.mkString(",") + "})::bigint' " + " ASC"
-      case SortDescInt(path) => "(document::json#>'{" + path.mkString(",") + "})::bigint' " + " DESC"
-      case SortAscText(path) => "document::json#>>'{" + path.mkString(",") + "}' " + " ASC"
-      case SortDescText(path) => "document::json#>>'{" + path.mkString(",") + "}' " + " DESC"
+      case SortAscInt(path) => "(document#>'{" + path.mkString(",") + "})::bigint' " + " ASC"
+      case SortDescInt(path) => "(document#>'{" + path.mkString(",") + "})::bigint' " + " DESC"
+      case SortAscText(path) => "document#>>'{" + path.mkString(",") + "}' " + " ASC"
+      case SortDescText(path) => "document#>>'{" + path.mkString(",") + "}' " + " DESC"
     }).mkString(" ORDER BY ", ", ", "")
 
     SQL("SELECT id, " + partsQuery + " FROM " + projectionTableName +
