@@ -24,16 +24,28 @@ object EventsBusActor {
   case class PublishReplayedEvents[AGGREGATE_ROOT](aggregateType: AggregateType, events: Seq[EventInfo[AGGREGATE_ROOT]],
                                                    aggregateId: AggregateId, aggregate: Option[AGGREGATE_ROOT])
 
-  trait SubscribeRequest
-  case class SubscribeForEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier) extends SubscribeRequest
-  case class SubscribeForAggregates(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier = AcceptAllAggregateIdClassifier) extends SubscribeRequest
-  case class SubscribeForAggregatesWithEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier) extends SubscribeRequest
+  trait SubscribeRequest {
+
+    def summary: String
+
+  }
+
+  case class SubscribeForEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier) extends SubscribeRequest {
+    override def summary = "For events of " + aggregateType.typeName+" -> "+ subscriber.path
+  }
+  case class SubscribeForAggregates(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier = AcceptAllAggregateIdClassifier) extends SubscribeRequest {
+    override def summary = "For aggregates of " + aggregateType.typeName+" -> "+ subscriber.path
+  }
+  case class SubscribeForAggregatesWithEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier) extends SubscribeRequest {
+    override def summary = "For aggregates and events of " + aggregateType.typeName+" -> "+ subscriber.path
+  }
 
   case class MessagesToRoute(subscriber: ActorRef, aggregateId: AggregateId, versions: Seq[AggregateVersion], message: AnyRef)
   case class MessageAck(subscriber: ActorRef, aggregateId: AggregateId, versions: Seq[AggregateVersion])
 
   object LogDetailedStatus
 
+  object InitEventBus
 }
 
 abstract class Subscription {
@@ -156,7 +168,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       "messagesSent="+messagesSent)
   }
 
-  override def postRestart(reason: Throwable) {
+  override def postRestart(reason: Throwable): Unit = {
     // do not call preStart
   }
 
@@ -167,7 +179,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
   def initSubscriptions(): Unit = {
 
-    implicit val timeout = Timeout(120.seconds)
+    implicit val timeout = Timeout(180.seconds)
 
     Await.result(subscriptionsManager.getSubscriptions.mapTo[List[SubscribeRequest]], timeout.duration).foreach {
       case SubscribeForEvents(messageId, aggregateType, subscriber, classifier) => handleSubscribeForEvents(messageId, aggregateType, subscriber, classifier)
@@ -175,6 +187,8 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       case SubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, classifier) => handleSubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, classifier)
     }
   }
+
+  context.system.scheduler.scheduleOnce(10 seconds, self, InitEventBus)(context.dispatcher)
 
   override def receive: Receive = {
     case anything =>
@@ -184,6 +198,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   }
 
   def receiveAfterInit: Receive = logReceive {
+    case InitEventBus => () // just to perform init
     case PublishEvents(aggregateType, events, aggregateId, aggregate) =>
       handlePublishEvents(sender(), aggregateType, aggregateId, events, aggregate, replayed = false)
     case PublishReplayedEvents(aggregateType, events, aggregateId, aggregate) =>

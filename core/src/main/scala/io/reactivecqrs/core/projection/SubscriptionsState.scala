@@ -5,7 +5,6 @@ import java.sql.BatchUpdateException
 import io.reactivecqrs.api.AggregateVersion
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.types.TypesNamesState
-import org.postgresql.util.PSQLException
 import scalikejdbc._
 
 import scala.util.{Failure, Success, Try}
@@ -135,27 +134,15 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
 
   def initSchema(): PostgresSubscriptionsState = {
     createSubscriptionsTable()
-    try {
-      createSubscriptionsSequence()
-    } catch {
-      case e: PSQLException => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
-    }
-    try {
-      createSubscriberTypeAggregateIdIndex()
-    } catch {
-      case e: PSQLException => () //ignore until CREATE UNIQUE INDEX IF NOT EXISTS is available in PostgreSQL
-    }
-    try {
-      createAggregateIdIndex()
-    } catch {
-      case e: PSQLException => () //ignore until CREATE UNIQUE INDEX IF NOT EXISTS is available in PostgreSQL
-    }
+    createSubscriptionsSequence()
+    createSubscriberTypeAggregateIdIndex()
+    createAggregateIdIndex()
     this
   }
 
 
-  var dumped = Map[AggregateId, mutable.HashMap[String, AggregateVersion]]() //which subscriptions info has already been dumped
-  var perAggregate = Map[AggregateId, mutable.HashMap[String, AggregateVersion]]() // String is subscriber | subscriptionType
+  private var dumped = Map[AggregateId, mutable.HashMap[String, AggregateVersion]]() //which subscriptions info has already been dumped
+  private var perAggregate = Map[AggregateId, mutable.HashMap[String, AggregateVersion]]() // String is subscriber | subscriptionType
 
   private def createSubscriptionsTable() = DB.autoCommit { implicit session =>
     sql"""
@@ -170,16 +157,16 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
   }
 
   private def createSubscriptionsSequence() = DB.autoCommit { implicit session =>
-    sql"""CREATE SEQUENCE subscriptions_seq""".execute().apply()
+    sql"""CREATE SEQUENCE IF NOT EXISTS subscriptions_seq""".execute().apply()
   }
 
   private def createSubscriberTypeAggregateIdIndex() = DB.autoCommit { implicit session =>
-    sql"""CREATE UNIQUE INDEX subscriptions_sub_type_agg_id_idx ON subscriptions (subscriber_type_id, subscription_type, aggregate_id)""".execute().apply()
+    sql"""CREATE UNIQUE INDEX IF NOT EXISTS subscriptions_sub_type_agg_id_idx ON subscriptions (subscriber_type_id, subscription_type, aggregate_id)""".execute().apply()
   }
 
 
   private def createAggregateIdIndex() = DB.autoCommit { implicit session =>
-    sql"""CREATE INDEX subscriptions_agg_id_idx ON subscriptions (aggregate_id)""".execute().apply()
+    sql"""CREATE INDEX IF NOT EXISTS subscriptions_agg_id_idx ON subscriptions (aggregate_id)""".execute().apply()
   }
 
   override def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId)(implicit session: DBSession): AggregateVersion = {
@@ -296,7 +283,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
 
   private val aggregateVersionsQuery = sql"""SELECT aggregate_version, subscriber_type_id, subscription_type FROM subscriptions WHERE aggregate_id = ?"""
 
-  def lastAggregateVersionFromDB(aggregateId: AggregateId, typesNamesState: TypesNamesState)(implicit session: DBSession): mutable.HashMap[String, AggregateVersion] = synchronized {
+  private def lastAggregateVersionFromDB(aggregateId: AggregateId, typesNamesState: TypesNamesState)(implicit session: DBSession): mutable.HashMap[String, AggregateVersion] = synchronized {
     val m = aggregateVersionsQuery
       .bind(aggregateId.asLong)
       .map(rs => {
@@ -308,8 +295,8 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
   }
 
 
-  val insertQuery = sql"""INSERT INTO subscriptions (id, subscriber_type_id, subscription_type, aggregate_id, aggregate_version) VALUES (nextval('subscriptions_seq'), ?, ?, ?, ?)"""
-  val updateQuery = sql"""UPDATE subscriptions SET aggregate_version = ? WHERE subscriber_type_id = ? AND subscription_type = ? AND aggregate_id = ? AND aggregate_version = ?"""
+  private val insertQuery = sql"""INSERT INTO subscriptions (id, subscriber_type_id, subscription_type, aggregate_id, aggregate_version) VALUES (nextval('subscriptions_seq'), ?, ?, ?, ?)"""
+  private val updateQuery = sql"""UPDATE subscriptions SET aggregate_version = ? WHERE subscriber_type_id = ? AND subscription_type = ? AND aggregate_id = ? AND aggregate_version = ?"""
 
   def newEventIdInDB(aggregateId: AggregateId, subscriberName: String, subscriptionType: SubscriptionType, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion, typesNamesState: TypesNamesState)(implicit session: DBSession): Unit = synchronized {
     if(lastAggregateVersion == AggregateVersion.ZERO) {

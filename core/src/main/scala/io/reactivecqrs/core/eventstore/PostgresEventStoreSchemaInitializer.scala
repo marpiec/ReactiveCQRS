@@ -1,6 +1,5 @@
 package io.reactivecqrs.core.eventstore
 
-import org.postgresql.util.PSQLException
 import scalikejdbc._
 
 
@@ -9,35 +8,15 @@ class PostgresEventStoreSchemaInitializer  {
   def initSchema(): Unit = {
     createEventsTable()
     dropColumnCommandId()
-    try {
-      createEventsAggregateIdIndex()
-    } catch {
-      case e: PSQLException => () //ignore until CREATE INDEX IF NOT EXISTS is available in PostgreSQL
-    }
-    try {
-      createEventsIdAndAggregateIndex()
-    } catch {
-      case e: PSQLException => () //ignore until CREATE INDEX IF NOT EXISTS is available in PostgreSQL
-    }
+    createEventsAggregateIdIndex()
+    createEventsIdAndAggregateIndex()
     createNoopEventTable()
     createEventsBroadcastTable()
     createAggregatesTable()
     addAggregateSpaceColumn()
-    try {
-      createAggregatesTypeIndex()
-    } catch {
-      case e: PSQLException => () //ignore until CREATE INDEX IF NOT EXISTS is available in PostgreSQL
-    }
-    try {
-      createAggregatesBaseIdIndex()
-    } catch {
-      case e: PSQLException => () //ignore until CREATE INDEX IF NOT EXISTS is available in PostgreSQL
-    }
-    try {
-      createEventsSequence()
-    } catch {
-      case e: PSQLException => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
-    }
+    createAggregatesTypeIndex()
+    createAggregatesBaseIdIndex()
+    createEventsSequence()
     dropExistingFunctions()
     createAddEventFunction()
     createAddUndoEventFunction()
@@ -67,25 +46,25 @@ class PostgresEventStoreSchemaInitializer  {
 
   private def createEventsIdAndAggregateIndex(): Unit = DB.autoCommit { implicit session =>
     sql"""
-      CREATE INDEX events_id_aggregates_idx ON events (aggregate_id, id);
+      CREATE INDEX IF NOT EXISTS events_id_aggregates_idx ON events (aggregate_id, id);
     """.execute().apply()
   }
 
   private def createEventsAggregateIdIndex(): Unit = DB.autoCommit { implicit session =>
     sql"""
-        CREATE INDEX events_aggregates_idx ON events (aggregate_id);
+        CREATE INDEX IF NOT EXISTS events_aggregates_idx ON events (aggregate_id);
       """.execute().apply()
   }
 
   private def createAggregatesTypeIndex(): Unit = DB.autoCommit { implicit session =>
     sql"""
-        CREATE INDEX aggregates_type_idx ON aggregates (type_id);
+        CREATE INDEX IF NOT EXISTS aggregates_type_idx ON aggregates (type_id);
       """.execute().apply()
   }
 
   private def createAggregatesBaseIdIndex(): Unit = DB.autoCommit { implicit session =>
     sql"""
-        CREATE INDEX aggregates_base_id_idx ON aggregates (base_id);
+        CREATE INDEX IF NOT EXISTS aggregates_base_id_idx ON aggregates (base_id);
       """.execute().apply()
   }
 
@@ -132,7 +111,7 @@ class PostgresEventStoreSchemaInitializer  {
   }
 
   private def createEventsSequence(): Unit = DB.autoCommit { implicit session =>
-    sql"""CREATE SEQUENCE events_seq""".execute().apply()
+    sql"""CREATE SEQUENCE IF NOT EXISTS events_seq""".execute().apply()
   }
 
   private def dropExistingFunctions(): Unit = DB.autoCommit { implicit session =>

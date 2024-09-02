@@ -1,6 +1,5 @@
 package io.reactivecqrs.core.eventbus
 
-import org.postgresql.util.PSQLException
 import scalikejdbc._
 
 
@@ -8,16 +7,8 @@ class EventBusSchemaInitializer {
 
    def initSchema(): Unit = {
      createEventsToRouteTable()
-     try {
-      createEventsToRouteSequence()
-     } catch {
-       case e: PSQLException => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
-     }
-     try {
+     createEventsToRouteSequence()
       createEventsToRouteIndex()
-     } catch {
-       case e: PSQLException => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
-     }
    }
 
 
@@ -37,12 +28,12 @@ class EventBusSchemaInitializer {
 
 
   private def createEventsToRouteIndex() = DB.autoCommit { implicit session =>
-    sql"""CREATE UNIQUE INDEX events_to_route_idx ON events_to_route (aggregate_id, version, subscriber)""".execute().apply()
+    sql"""CREATE UNIQUE INDEX IF NOT EXISTS events_to_route_idx ON events_to_route (aggregate_id, version, subscriber)""".execute().apply()
   }
 
 
   private def createEventsToRouteSequence() = DB.autoCommit { implicit session =>
-    sql"""CREATE SEQUENCE events_to_route_seq""".execute().apply()
+    sql"""CREATE SEQUENCE IF NOT EXISTS events_to_route_seq""".execute().apply()
   }
 
 }

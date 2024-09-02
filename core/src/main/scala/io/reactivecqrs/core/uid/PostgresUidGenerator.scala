@@ -27,16 +27,8 @@ class PostgresUidGenerator(sequenceName: String) extends UidGenerator{
 
 
   private def readSequenceStep: Long = {
-    try {
-      DB.readOnly { implicit session =>
-        SQL(s"SELECT increment_by FROM $sequenceName").map(rs => rs.long(1)).single().apply().get
-      }
-    } catch {
-      case e: PSQLException =>
-        // try PostgreSQL 10 fallback
-        DB.readOnly { implicit session =>
-          SQL(s"SELECT increment_by FROM pg_sequences WHERE sequencename = '$sequenceName'").map(rs => rs.long(1)).single().apply().get
-        }
+    DB.readOnly { implicit session =>
+      SQL(s"SELECT increment_by FROM pg_sequences WHERE sequencename = '$sequenceName'").map(rs => rs.long(1)).single().apply().get
     }
   }
 

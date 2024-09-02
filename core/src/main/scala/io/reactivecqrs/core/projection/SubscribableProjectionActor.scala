@@ -54,7 +54,7 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
     context.system.scheduler.schedule(1.minute, 1.minute, self, ClearIdleSubscriptions)(context.dispatcher)
   }
 
-  override def postRestart(reason: Throwable) {
+  override def postRestart(reason: Throwable): Unit = {
     // do not call preStart
   }
 

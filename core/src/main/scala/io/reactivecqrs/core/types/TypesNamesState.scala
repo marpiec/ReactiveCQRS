@@ -1,6 +1,5 @@
 package io.reactivecqrs.core.types
 
-import org.postgresql.util.PSQLException
 import scalikejdbc._
 
 import scala.collection.mutable
@@ -38,16 +37,8 @@ class PostgresTypesNamesState extends TypesNamesState {
 
   def initSchema(): PostgresTypesNamesState = {
     createTypesNamesTable()
-    try {
-      createTypesNamesSequence()
-    } catch {
-      case e: PSQLException => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
-    }
-    try {
-      createNamesIndex()
-    } catch {
-      case e: PSQLException => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
-    }
+    createTypesNamesSequence()
+    createNamesIndex()
     this
   }
 
@@ -60,11 +51,11 @@ class PostgresTypesNamesState extends TypesNamesState {
   }
 
   private def createTypesNamesSequence() = DB.autoCommit { implicit session =>
-    sql"""CREATE SEQUENCE types_names_seq""".execute().apply()
+    sql"""CREATE SEQUENCE IF NOT EXISTS types_names_seq""".execute().apply()
   }
 
   private def createNamesIndex() = DB.autoCommit { implicit session =>
-    sql"""CREATE UNIQUE INDEX types_names_names_idx ON types_names (name)""".execute().apply()
+    sql"""CREATE UNIQUE INDEX IF NOT EXISTS types_names_names_idx ON types_names (name)""".execute().apply()
   }
 
   override def typeIdByClassName(className: String): Short = {

@@ -87,7 +87,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
 
   if (!eventsReplayMode) {
-    context.system.scheduler.scheduleOnce(1.second, self, EnsureEventsPublished(false))(context.dispatcher)
+    context.system.scheduler.scheduleOnce(30.second, self, EnsureEventsPublished(false))(context.dispatcher)
   }
 
   override def preStart() {
@@ -96,7 +96,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     }
   }
 
-  override def postRestart(reason: Throwable) {
+  override def postRestart(reason: Throwable): Unit = {
     // do not call preStart
   }
 

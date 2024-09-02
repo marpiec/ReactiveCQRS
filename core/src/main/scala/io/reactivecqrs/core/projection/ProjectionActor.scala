@@ -62,37 +62,37 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0) extends Actor 
   }
 
   // ListenerParam and listener are separately so covariant type is allowed
-  protected class EventsListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, Seq[EventInfo[AGGREGATE_ROOT]]) => (DBSession) => Unit) extends Listener[AGGREGATE_ROOT] {
-    def listener = listenerParam.asInstanceOf[(AggregateId, Seq[EventInfo[Any]]) => (DBSession) => Unit]
+  protected class EventsListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => Unit) extends Listener[AGGREGATE_ROOT] {
+    def listener = listenerParam.asInstanceOf[(AggregateId, Seq[EventInfo[Any]]) => DBSession => Unit]
     def aggregateRootType = typeOf[AGGREGATE_ROOT]
   }
 
   protected object EventsListener {
-    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, Seq[EventInfo[AGGREGATE_ROOT]]) => (DBSession) => Unit): EventsListener[AGGREGATE_ROOT] =
+    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => Unit): EventsListener[AGGREGATE_ROOT] =
       new EventsListener[AGGREGATE_ROOT](listener)
   }
 
 
   // ListenerParam and listener are separately so covariant type is allowed
-  protected class AggregateListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Boolean, Option[AGGREGATE_ROOT]) => (DBSession) => Unit) extends Listener[AGGREGATE_ROOT] {
-    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Boolean, Option[Any]) => (DBSession) => Unit]
+  protected class AggregateListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Boolean, Option[AGGREGATE_ROOT]) => DBSession => Unit) extends Listener[AGGREGATE_ROOT] {
+    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Boolean, Option[Any]) => DBSession => Unit]
     def aggregateRootType = typeOf[AGGREGATE_ROOT]
   }
 
   protected object AggregateListener {
-    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Boolean, Option[AGGREGATE_ROOT]) => (DBSession) => Unit): AggregateListener[AGGREGATE_ROOT] =
+    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Boolean, Option[AGGREGATE_ROOT]) => DBSession => Unit): AggregateListener[AGGREGATE_ROOT] =
       new AggregateListener[AGGREGATE_ROOT](listener)
   }
 
 
   // ListenerParam and listener are separately so covariant type is allowed
-  protected class AggregateWithEventsListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT], Seq[EventInfo[AGGREGATE_ROOT]]) => (DBSession) => Unit) extends Listener[AGGREGATE_ROOT] {
-    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Option[Any], Seq[EventInfo[Any]]) => (DBSession) => Unit]
+  protected class AggregateWithEventsListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT], Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => Unit) extends Listener[AGGREGATE_ROOT] {
+    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Option[Any], Seq[EventInfo[Any]]) => DBSession => Unit]
     def aggregateRootType = typeOf[AGGREGATE_ROOT]
   }
 
   protected object AggregateWithEventsListener {
-    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT], Seq[EventInfo[AGGREGATE_ROOT]]) => (DBSession) => Unit): AggregateWithEventsListener[AGGREGATE_ROOT] =
+    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT], Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => Unit): AggregateWithEventsListener[AGGREGATE_ROOT] =
       new AggregateWithEventsListener[AGGREGATE_ROOT](listener)
   }
 
@@ -332,11 +332,11 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0) extends Actor 
 
   protected def onClearProjectionData(): Unit
 
-  override def preStart() {
+  override def preStart(): Unit = {
     subscribe(None)
   }
 
-  private def subscribe(aggregates: Option[Iterable[AggregateType]]) {
+  private def subscribe(aggregates: Option[Iterable[AggregateType]]): Unit = {
     eventBusSubscriptionsManager.subscribe(aggregateListenersMap.keySet.toList.filter(t => aggregates.isEmpty || aggregates.get.exists(_ == t)).map { aggregateType =>
       SubscribeForAggregates("", aggregateType, self)
     })
@@ -350,7 +350,7 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0) extends Actor 
     })
   }
 
-  override def postRestart(reason: Throwable) {
+  override def postRestart(reason: Throwable): Unit = {
     // do not call preStart
   }
 

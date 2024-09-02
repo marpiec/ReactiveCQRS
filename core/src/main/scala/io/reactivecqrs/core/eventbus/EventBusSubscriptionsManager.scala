@@ -46,12 +46,8 @@ class EventBusSubscriptionsManager(minimumExpectedSubscriptions: Int) extends Ac
           subscriptionsOpen = false
           eventBus ! subscriptionsRequests
           eventBusWaiting = None
-          log.info("Subscribed all: " + subscriptionsRequests.length+"/"+minimumExpectedSubscriptions)
         }
       })
-      if(eventBusWaiting.isDefined) {
-        log.info("Subscribed: " + subscriptionsRequests.length+"/"+minimumExpectedSubscriptions)
-      }
     case GetSubscriptions =>
       if(subscriptionsRequests.size < minimumExpectedSubscriptions) {
         eventBusWaiting = Some(sender())
@@ -67,6 +63,7 @@ class EventBusSubscriptionsManager(minimumExpectedSubscriptions: Int) extends Ac
     if(nonRepeated.nonEmpty) {
       if (subscriptionsOpen) {
         subscriptionsRequests :::= subscribe
+        log.info("Subscribed: " + subscriptionsRequests.length+"/"+minimumExpectedSubscriptions+" "+nonRepeated.map(s => s.summary).mkString(", "))
       } else {
         throw new IllegalStateException("Subscriptions for Event Bus already closed! Got " + subscriptionsRequests.size + " of " + minimumExpectedSubscriptions + " " + subscribe)
       }

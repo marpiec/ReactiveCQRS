@@ -3,7 +3,6 @@ package io.reactivecqrs.core.commandhandler
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.CustomCommandResponse
 import io.reactivecqrs.core.types.TypesNamesState
-import org.postgresql.util.PSQLException
 import scalikejdbc._
 
 
@@ -14,7 +13,7 @@ trait CommandResponseState {
 
 class MemoryCommandResponseState extends CommandResponseState {
 
-  var cache = Map[String, CustomCommandResponse[_]]()
+  private var cache = Map[String, CustomCommandResponse[_]]()
 
   override def storeResponse(key: String, response: CustomCommandResponse[_])(implicit session: DBSession): Unit = {
     cache += key -> response
@@ -29,16 +28,8 @@ class PostgresCommandResponseState(mpjsons: MPJsons, typesNamesState: TypesNames
 
   def initSchema(): PostgresCommandResponseState = {
     createCommandResponseTable()
-    try {
-      createCommandResponseSequence()
-    } catch {
-      case e: PSQLException => () //ignore until CREATE SEQUENCE IF NOT EXISTS is available in PostgreSQL
-    }
-    try {
-      createKeyIndex()
-    } catch {
-      case e: PSQLException => () //ignore until CREATE UNIQUE INDEX IF NOT EXISTS is available in PostgreSQL
-    }
+    createCommandResponseSequence()
+    createKeyIndex()
     this
   }
 
@@ -54,11 +45,11 @@ class PostgresCommandResponseState(mpjsons: MPJsons, typesNamesState: TypesNames
   }
 
   private def createCommandResponseSequence() = DB.autoCommit { implicit session =>
-    sql"""CREATE SEQUENCE commands_responses_seq""".execute().apply()
+    sql"""CREATE SEQUENCE IF NOT EXISTS commands_responses_seq""".execute().apply()
   }
 
   private def createKeyIndex() = DB.autoCommit { implicit session =>
-    sql"""CREATE UNIQUE INDEX commands_responses_key_idx ON commands_responses (aggregate_id, key)""".execute().apply()
+    sql"""CREATE UNIQUE INDEX IF NOT EXISTS commands_responses_key_idx ON commands_responses (aggregate_id, key)""".execute().apply()
   }
 
   override def storeResponse(key: String, response: CustomCommandResponse[_])(implicit session: DBSession): Unit = {

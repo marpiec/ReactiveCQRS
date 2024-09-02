@@ -84,9 +84,9 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
   var backPressureActor: ActorRef = context.actorOf(Props(new BackPressureActor(eventsBus)), "BackPressure")
 
-  val combinedEventsVersionsMap = actorsFactory.map(_.eventsVersionsMap).foldLeft(Map[EventTypeVersion, String]())((acc, m) => acc ++ m)
+  val combinedEventsVersionsMap: Map[EventTypeVersion, String] = actorsFactory.map(_.eventsVersionsMap).foldLeft(Map[EventTypeVersion, String]())((acc, m) => acc ++ m)
 
-  private def logMessage(message: String) {
+  private def logMessage(message: String): Unit = {
     println(message)
     log.info(message)
   }
@@ -100,7 +100,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
     ReplayerStatus(eventStore.countEventsForAggregateTypes(aggregatesTypes.map(_.typeName)), eventStore.countAllEvents())
   }
 
-  private def replayAllEvents(respondTo: ActorRef, batchPerAggregate: Boolean, aggregatesTypes: Seq[AggregateType], delayBetweenAggregateTypes: Long) {
+  private def replayAllEvents(respondTo: ActorRef, batchPerAggregate: Boolean, aggregatesTypes: Seq[AggregateType], delayBetweenAggregateTypes: Long): Unit = {
     backPressureActor ! Start
     val allEvents: Int = eventStore.countAllEvents()
     val allAggregatesEvents = eventStore.countEventsForAggregateTypes(aggregatesTypes.map(_.typeName))
@@ -140,7 +140,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
             allowedTotal += allowed
           } catch {
             case e: TimeoutException =>
-              logMessage((new Date()) + " Error:\nDid not received confirmation in "+timeoutDuration.toString()+".")
+              logMessage(new Date() + " Error:\nDid not received confirmation in "+timeoutDuration.toString()+".")
               logMessage("Status: allowedTotal=" + allowedTotal+", sendTotal="+sendTotal+", eventsToProduceAllowed="+eventsToProduceAllowed+", allEventsSent="+allEventsSent+", lastDumpEventsSent="+lastDumpEventsSent)
               logMessage("Threads status:\n" + generateThreadDump)
               eventsBus ! LogDetailedStatus

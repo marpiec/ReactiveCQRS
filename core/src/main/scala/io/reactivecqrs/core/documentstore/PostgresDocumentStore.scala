@@ -580,7 +580,7 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
     super.createTableIfNotExists()
     try {
       DB.autoCommit { implicit session =>
-        sql"CREATE SEQUENCE ${sequenceNameSQL} START 1"
+        sql"CREATE SEQUENCE IF NOT EXISTS ${sequenceNameSQL} START 1"
           .executeUpdate().apply()
       }
     } catch {
