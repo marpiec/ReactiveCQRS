@@ -45,6 +45,7 @@ class EventBusSubscriptionsManager(minimumExpectedSubscriptions: Int) extends Ac
         if(subscriptionsRequests.size >= minimumExpectedSubscriptions) {
           subscriptionsOpen = false
           eventBus ! subscriptionsRequests
+          log.info("All " + subscriptionsRequests.length+ " subscriptions registered")
           eventBusWaiting = None
         }
       })
@@ -54,7 +55,7 @@ class EventBusSubscriptionsManager(minimumExpectedSubscriptions: Int) extends Ac
       } else {
         subscriptionsOpen = false
         sender ! subscriptionsRequests
-        log.info("Subscriptions count: " + subscriptionsRequests.length+"/"+minimumExpectedSubscriptions)
+        log.info("All " + subscriptionsRequests.length+ " subscriptions registered")
       }
   }
 
@@ -63,7 +64,7 @@ class EventBusSubscriptionsManager(minimumExpectedSubscriptions: Int) extends Ac
     if(nonRepeated.nonEmpty) {
       if (subscriptionsOpen) {
         subscriptionsRequests :::= subscribe
-        log.info("Subscribed: " + subscriptionsRequests.length+"/"+minimumExpectedSubscriptions+" "+nonRepeated.map(s => s.summary).mkString(", "))
+        log.info("Subscribed " + subscriptionsRequests.length+"/"+minimumExpectedSubscriptions+" "+nonRepeated.map(s => s.summary).mkString(", "))
       } else {
         throw new IllegalStateException("Subscriptions for Event Bus already closed! Got " + subscriptionsRequests.size + " of " + minimumExpectedSubscriptions + " " + subscribe)
       }

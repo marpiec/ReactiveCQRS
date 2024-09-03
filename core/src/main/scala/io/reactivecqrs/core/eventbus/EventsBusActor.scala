@@ -31,13 +31,13 @@ object EventsBusActor {
   }
 
   case class SubscribeForEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier) extends SubscribeRequest {
-    override def summary = "For events of " + aggregateType.typeName+" -> "+ subscriber.path
+    override def summary = "for events of " + aggregateType.simpleName+" -> "+ subscriber.path.name
   }
   case class SubscribeForAggregates(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier = AcceptAllAggregateIdClassifier) extends SubscribeRequest {
-    override def summary = "For aggregates of " + aggregateType.typeName+" -> "+ subscriber.path
+    override def summary = "for aggregates of " + aggregateType.simpleName+" -> "+ subscriber.path.name
   }
   case class SubscribeForAggregatesWithEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier) extends SubscribeRequest {
-    override def summary = "For aggregates and events of " + aggregateType.typeName+" -> "+ subscriber.path
+    override def summary = "for aggregates and events of " + aggregateType.simpleName+" -> "+ subscriber.path.name
   }
 
   case class MessagesToRoute(subscriber: ActorRef, aggregateId: AggregateId, versions: Seq[AggregateVersion], message: AnyRef)
