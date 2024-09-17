@@ -41,9 +41,9 @@ class ReplayerRepositoryActorFactory[AGGREGATE_ROOT: TypeTag:ClassTag](aggregate
 
   def aggregateRootType = aggregateContext.aggregateType.typeName
 
-  def create(context: ActorContext, aggregateId: AggregateId, aggregateVersion: Option[AggregateVersion], eventStore: EventStoreState, eventsBus: ActorRef, actorName: String, maxInactivitySeconds: Int): ActorRef = {
+  def create(context: ActorContext, aggregateId: AggregateId, eventStore: EventStoreState, eventsBus: ActorRef, actorName: String, maxInactivitySeconds: Int): ActorRef = {
     context.actorOf(Props(new ReplayAggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventsBus, aggregateContext.eventHandlers,
-      () => aggregateContext.initialAggregateRoot, aggregateVersion, eventsVersionsMap, maxInactivitySeconds)), actorName)
+      () => aggregateContext.initialAggregateRoot, eventsVersionsMap, maxInactivitySeconds)), actorName)
   }
 
 }
@@ -215,7 +215,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
   // QUESTION - cleanup?
   private def getOrCreateReplayRepositoryActor(aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregateType: AggregateType): ActorRef = {
     context.child(aggregateType.typeName + "_Simulator_" + aggregateId.asLong).getOrElse(
-      factories(aggregateType.typeName).create(context,aggregateId, None, eventStore, eventsBus,
+      factories(aggregateType.typeName).create(context, aggregateId, eventStore, eventsBus,
         aggregateType.typeName + "_Simulator_" + aggregateId.asLong, config.maxReplayerInactivitySeconds)
     )
   }

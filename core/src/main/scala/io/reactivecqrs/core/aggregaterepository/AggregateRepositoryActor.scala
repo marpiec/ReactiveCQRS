@@ -57,7 +57,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
                                                                 eventsBus: ActorRef,
                                                                 eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
                                                                 initialState: () => AGGREGATE_ROOT,
-                                                                singleReadForVersionOnly: Option[AggregateVersion],
+                                                                singleReadForVersionOnly: Option[Either[AggregateVersion, Instant]],
                                                                 eventsVersionsMap: Map[EventTypeVersion, String],
                                                                 eventsVersionsMapReverse: Map[String, EventTypeVersion]) extends Actor with MyActorLogging {
 

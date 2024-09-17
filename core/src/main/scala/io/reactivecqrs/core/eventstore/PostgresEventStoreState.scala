@@ -14,6 +14,8 @@ import scala.util.Try
 
 class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState, fetchSize: Int = 1000) extends EventStoreState {
 
+  val doubleNone: (Option[AggregateVersion], Option[Instant]) = (None, None)
+
   def initSchema(): PostgresEventStoreState = {
     (new PostgresEventStoreSchemaInitializer).initSchema()
     this
@@ -100,8 +102,17 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 
 
   override def readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String],
-                                                    aggregateId: AggregateId, version: Option[AggregateVersion])
+                                                    aggregateId: AggregateId, versionOrInstant: Option[Either[AggregateVersion, Instant]])
                                                    (eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit = {  //event, id, noop
+
+
+    val (version: Option[AggregateVersion], instant: Option[Instant]) = versionOrInstant match {
+      case Some(vi) => vi match {
+        case Left(version) => (Some(version), None)
+        case Right(instant) => (None, Some(instant))
+      }
+      case None => doubleNone
+    }
 
     DB.readOnly { implicit session =>
 
@@ -122,17 +133,31 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
              WHERE aggregates.id = ? ORDER BY aggregates.base_order, version""".stripMargin.bind(aggregateId.asLong)
       }
 
-      query.foreach { rs =>
 
-        val eventBaseType = typesNamesState.classNameById(rs.short(3))
-        val eventTypeVersion = rs.short(4)
-        val eventType = eventsVersionsMap.getOrElse(EventTypeVersion(eventBaseType, eventTypeVersion), eventBaseType)
-        val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(5), eventType)
-        val id = AggregateId(rs.long(7))
-        val eventVersion = rs.int(6)
-        if(version.isEmpty || id != aggregateId || eventVersion <= version.get.asInt) {
+      if(instant.isDefined || version.isDefined) {
+        query.foreach { rs =>
+          val eventBaseType = typesNamesState.classNameById(rs.short(3))
+          val eventTypeVersion = rs.short(4)
+          val eventType = eventsVersionsMap.getOrElse(EventTypeVersion(eventBaseType, eventTypeVersion), eventBaseType)
+          val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(5), eventType)
+          val id = AggregateId(rs.long(7))
+          val eventVersion = rs.int(6)
+          val eventInstant = rs.timestamp(2).toInstant
+          if ((version.isEmpty || id != aggregateId || eventVersion <= version.get.asInt) && (instant.isEmpty || !eventInstant.isAfter(instant.get))) {
+            eventHandler(UserId(rs.long(1)), eventInstant, event, id, eventVersion, rs.boolean(8))
+          } // otherwise it's to new event, TODO optimise as it reads all events from database, also those not needed here
+        }
+      } else {
+
+        query.foreach { rs =>
+          val eventBaseType = typesNamesState.classNameById(rs.short(3))
+          val eventTypeVersion = rs.short(4)
+          val eventType = eventsVersionsMap.getOrElse(EventTypeVersion(eventBaseType, eventTypeVersion), eventBaseType)
+          val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(5), eventType)
+          val id = AggregateId(rs.long(7))
+          val eventVersion = rs.int(6)
           eventHandler(UserId(rs.long(1)), rs.timestamp(2).toInstant, event, id, eventVersion, rs.boolean(8))
-        } // otherwise it's to new event, TODO optimise as it reads all events from database, also those not needed here
+        }
       }
     }
   }

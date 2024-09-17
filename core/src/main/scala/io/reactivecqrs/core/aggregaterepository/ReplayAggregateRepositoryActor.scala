@@ -23,7 +23,6 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
                                                                       eventsBus: ActorRef,
                                                                       eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
                                                                       initialState: () => AGGREGATE_ROOT,
-                                                                      aggregateVersion: Option[AggregateVersion],
                                                                       eventsVersionsMap: Map[EventTypeVersion, String],
                                                                       maxInactivitySeconds: Int) extends Actor with MyActorLogging {
 
@@ -39,11 +38,6 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
   private def assureRestoredState(): Unit = {
     version = AggregateVersion.ZERO
     aggregateRoot = initialState()
-
-    if(aggregateVersion.isDefined) {
-      eventStore.readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap, aggregateId, aggregateVersion)(handleEvent)
-    }
-
   }
 
   assureRestoredState()
@@ -78,7 +72,7 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
         // We need state from original aggregate
         version = AggregateVersion.ZERO
         aggregateRoot = initialState()
-        eventStore.readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap, duplicationEvent.baseAggregateId, Some(duplicationEvent.baseAggregateVersion))(handleEvent)
+        eventStore.readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap, duplicationEvent.baseAggregateId, Some(Left(duplicationEvent.baseAggregateVersion)))(handleEvent)
       case _ => ()
     }
 

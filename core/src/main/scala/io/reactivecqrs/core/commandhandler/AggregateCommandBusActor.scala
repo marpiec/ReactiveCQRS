@@ -118,6 +118,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     case GetAggregate(id) => routeGetAggregateRoot(id)
     case GetAggregateMinVersion(id, version, maxMillis) => routeGetAggregateRootMinVersion(id, version, maxMillis)
     case GetAggregateForVersion(id, version) => routeGetAggregateRootForVersion(id, version)
+    case GetAggregateAtInstant(id, instant) => routeGetAggregateRootAtInstant(id, instant)
     case GetEventsForAggregate(id) => routeGetEvents(id)
     case GetEventsForAggregateForVersion(id, version) => routeGetEventsForVersion(id, version)
     case EnsureEventsPublished(oldOnly) => ensureEventsPublished(oldOnly)
@@ -196,8 +197,15 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   }
 
   private def createAggregateRepositoryActorForVersion(aggregateId: AggregateId, aggregateVersion: AggregateVersion): ActorRef = {
-    val actor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, commandResponseState, eventBus, eventHandlers, initialState, Some(aggregateVersion), eventsVersionsMap, eventsVersionsMapReverse)),
+    val actor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, commandResponseState, eventBus, eventHandlers, initialState, Some(Left(aggregateVersion)), eventsVersionsMap, eventsVersionsMapReverse)),
       aggregateTypeSimpleName + "_ARV_" + aggregateId.asLong+"_"+aggregateVersion.asInt+"_"+spawnedCount)
+    spawnedCount += 1
+    actor
+  }
+
+  private def createAggregateRepositoryActorForInstant(aggregateId: AggregateId, instant: Instant): ActorRef = {
+    val actor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, commandResponseState, eventBus, eventHandlers, initialState, Some(Right(instant)), eventsVersionsMap, eventsVersionsMapReverse)),
+      aggregateTypeSimpleName + "_ART_" + aggregateId.asLong+"_"+instant.getEpochSecond+"_"+spawnedCount)
     spawnedCount += 1
     actor
   }
@@ -276,6 +284,14 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     val temporaryAggregateRepositoryForVersion = createAggregateRepositoryActorForVersion(id, version)
 
     temporaryAggregateRepositoryForVersion ! GetAggregateRootCurrentVersion(respondTo)
+  }
+
+
+  private def routeGetAggregateRootAtInstant(id: AggregateId, instant: Instant): Unit = {
+    val respondTo = sender()
+    val temporaryAggregateRepositoryForInstant = createAggregateRepositoryActorForInstant(id, instant)
+
+    temporaryAggregateRepositoryForInstant ! GetAggregateRootCurrentVersion(respondTo)
   }
 
 

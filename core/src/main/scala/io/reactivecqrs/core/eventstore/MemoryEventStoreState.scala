@@ -52,11 +52,14 @@ class MemoryEventStoreState extends EventStoreState {
   }
 
 
-  override def readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId, upToVersion: Option[AggregateVersion])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit = {
+  override def readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId, upToVersion: Option[Either[AggregateVersion, Instant]])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit = {
     var eventsForAggregate: Vector[EventStoreEntry[AGGREGATE_ROOT]] = eventStore.getOrElse(aggregateId, Vector()).asInstanceOf[Vector[EventStoreEntry[AGGREGATE_ROOT]]]
 
     if(upToVersion.isDefined) {
-      eventsForAggregate = eventsForAggregate.take(upToVersion.get.asInt)
+      upToVersion.get match {
+        case Left(version) => eventsForAggregate = eventsForAggregate.take(version.asInt)
+        case Right(instant) => throw new IllegalStateException("Memory event store by instant not yet supported")
+      }
     }
 
     var undoEventsCount = 0
