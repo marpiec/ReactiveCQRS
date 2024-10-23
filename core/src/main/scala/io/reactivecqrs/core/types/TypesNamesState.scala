@@ -87,14 +87,14 @@ class PostgresTypesNamesState extends TypesNamesState {
       case Some(className) => className
       case None => DB.localTx { implicit session =>
         sql"""SELECT name FROM types_names WHERE id = ?"""
-          .bind(id).map(_.string(1)).single().apply().get
+          .bind(id).map(_.string(1)).single().apply().getOrElse(throw new IllegalStateException("No entry for type id " + id+" in types_names found"))
       }
     }
   }
 
   private def insertName(className: String)(implicit session: DBSession): Short = {
     sql"""INSERT INTO types_names (id, name) VALUES (nextval('types_names_seq'), ?) RETURNING currval('types_names_seq')"""
-      .bind(className).map(_.short(1)).single().apply().get
+      .bind(className).map(_.short(1)).single().apply().getOrElse(throw new IllegalStateException("No entry for type id " + id+" in types_names found"))
   }
 
   private def init(): Unit = {
