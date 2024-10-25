@@ -221,9 +221,9 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0) extends Actor 
               delayedIdentifiableEvent -= e.aggregateId
             }
             receiveUpdate(delayed.head)
-            replayQueries()
           case _ => ()
         }
+        replayQueries()
       } catch {
         case ex: Exception => log.error(ex, "Error handling update " + e.events.head.version.asInt + "-" + e.events.last.version.asInt)
       }
@@ -262,9 +262,9 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0) extends Actor 
               delayedAggregateWithTypeAndEvent -= ae.id
             }
             receiveUpdate(delayed.head)
-            replayQueries()
           case _ => ()
         }
+        replayQueries()
       } catch {
         case e: Exception => log.error(e, "Error handling update " + newEvents.head.version.asInt + "-" + ae.events.last.version.asInt)
       }
@@ -305,9 +305,9 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0) extends Actor 
               delayedAggregateWithType -= a.id
             }
             receiveUpdate(delayed.head)
-            replayQueries()
           case _ => ()
         }
+        replayQueries()
       } catch {
         case e: Exception => log.error(e, "Error handling update " + newEvents.head.asInt + "-" + a.events.last.asInt)
       }
