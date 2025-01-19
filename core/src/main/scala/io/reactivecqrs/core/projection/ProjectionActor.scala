@@ -36,7 +36,7 @@ case class TriggerDelayedUpdateAggregateWithTypeAndEvents(id: AggregateId, respo
 case class TriggerDelayedUpdateIdentifiableEvents(id: AggregateId, respondTo: ActorRef)
 
 
-abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0) extends Actor with MyActorLogging {
+abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVersion: Int = 1) extends Actor with MyActorLogging {
 
   protected val projectionName: String
   protected val subscriptionsState: SubscriptionsState
@@ -150,7 +150,7 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0) extends Actor 
       handleIdentifiableEventsUpdate(respondTo, mergeIdentifiableEventsUpdate(lastIdentifiableEventsQueueReversed.getOrElse(id, List.empty).reverse.asInstanceOf[List[IdentifiableEvents[Any]]]))
       lastIdentifiableEventsQueueReversed -= id
 
-    case a: AggregateWithType[_] if groupUpdatesDelayMillis > 0 && !a.replayed =>
+    case a: AggregateWithType[_] if groupUpdatesDelayMillis > 0 && !a.replayed && a.events.head.asInt >= minimumDelayVersion => // do not delay first event
       lastAggregateWithTypeUpdateQueueReversed.get(a.id) match {
         case None =>
           context.system.scheduler.scheduleOnce(delayDuration, self, TriggerDelayedUpdateAggregateWithType(a.id, sender))(context.dispatcher)
@@ -158,7 +158,7 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0) extends Actor 
         case Some(waiting) =>
           lastAggregateWithTypeUpdateQueueReversed += a.id -> (a :: waiting)
       }
-    case ae: AggregateWithTypeAndEvents[_] if groupUpdatesDelayMillis > 0 && !ae.replayed =>
+    case ae: AggregateWithTypeAndEvents[_] if groupUpdatesDelayMillis > 0 && !ae.replayed && ae.events.head.version.asInt >= minimumDelayVersion => // do not delay first event
       lastAggregateWithTypeAndEventsUpdateQueueReversed.get(ae.id) match {
         case None =>
           context.system.scheduler.scheduleOnce(delayDuration, self, TriggerDelayedUpdateAggregateWithTypeAndEvents(ae.id, sender))(context.dispatcher)
@@ -166,7 +166,7 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0) extends Actor 
         case Some(waiting) =>
           lastAggregateWithTypeAndEventsUpdateQueueReversed += ae.id -> (ae :: waiting)
       }
-    case e: IdentifiableEvents[_] if groupUpdatesDelayMillis > 0 && !e.replayed =>
+    case e: IdentifiableEvents[_] if groupUpdatesDelayMillis > 0 && !e.replayed && e.events.head.version.asInt >= minimumDelayVersion => // do not delay first event
       lastIdentifiableEventsQueueReversed.get(e.aggregateId) match {
         case None =>
           context.system.scheduler.scheduleOnce(delayDuration, self, TriggerDelayedUpdateIdentifiableEvents(e.aggregateId, sender))(context.dispatcher)
