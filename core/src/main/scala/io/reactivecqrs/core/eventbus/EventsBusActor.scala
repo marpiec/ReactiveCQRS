@@ -203,7 +203,8 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       handlePublishEvents(sender(), aggregateType, aggregateId, events, aggregate, replayed = false)
     case PublishReplayedEvents(aggregateType, events, aggregateId, aggregate) =>
       handlePublishEvents(sender(), aggregateType, aggregateId, events, aggregate, replayed = true)
-    case m: MessageAck => handleMessageAck(m)
+    case m: MessageAck =>
+      handleMessageAck(m)
     case ConsumerStart =>
       backPressureProducerActor = Some(sender)
       if(receivedInProgressMessages + orderedMessages < MAX_BUFFER_SIZE) {
@@ -271,7 +272,12 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   private def handlePublishEvents(respondTo: ActorRef, aggregateType: AggregateType, aggregateId: AggregateId,
                                   events: Seq[EventInfo[Any]], aggregateRoot: Option[Any], replayed: Boolean): Unit = {
 
+
+
     receivedTotal += events.size
+
+
+    // TODO filter out events received again if sender resent them
 
     val lastPublishedVersion = AggregateVersion(getLastPublishedVersion(aggregateId))
 
@@ -333,6 +339,8 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       messagesSent += EventIdentifier(aggregateId, event.version) -> receiversForEvent
     })
 
+
+
     orderedMessages -= events.size // it is possible to receive more messages than ordered
     receivedInProgressMessages += events.size
 
@@ -357,7 +365,9 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
   private def handleMessageAck(ack: MessageAck): Unit = {
 
-//    println("MessageAck received " + ack.subscriber+" "+ack.versions.head.asInt+"->"+ack.versions.last.asInt)
+
+
+    //    println("MessageAck received " + ack.subscriber+" "+ack.versions.head.asInt+"->"+ack.versions.last.asInt)
 
     messageAckTotal += ack.versions.size
 
@@ -372,7 +382,6 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     val withoutConfirmedPerEvent = receiversToConfirm.map {
       case (eventId, receivers) => eventId -> receivers.filterNot(_._2 == ack.subscriber)
     }
-
 
     val (finishedEvents, remainingEvents) = withoutConfirmedPerEvent.partition {
       case (eventId, receivers) => receivers.isEmpty

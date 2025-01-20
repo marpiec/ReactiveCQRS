@@ -94,7 +94,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
       pendingPublish = (eventsToPublish.map(e => EventWithIdentifier[AGGREGATE_ROOT](e.aggregateId, e.version, e.event)) ::: pendingPublish).distinct
 
-      context.system.scheduler.scheduleOnce(60.seconds, self, ResendPersistedMessages)(context.dispatcher)
+      context.system.scheduler.scheduleOnce(600.seconds, self, ResendPersistedMessages)(context.dispatcher)
     }
   }
 
