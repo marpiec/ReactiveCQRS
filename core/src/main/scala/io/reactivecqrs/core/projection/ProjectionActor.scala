@@ -141,12 +141,13 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVe
     case ReplayQueries => replayQueries()
 
     case TriggerDelayedUpdateAggregateWithType(id, respondTo) =>
+      //TODO modify other mergers as mergeAggregateWithTypeAndEventsUpdate
       handleAggregateWithTypeUpdate(respondTo, mergeAggregateWithTypeUpdate(lastAggregateWithTypeUpdateQueueReversed.getOrElse(id, List.empty).reverse.asInstanceOf[List[AggregateWithType[Any]]]))
       lastAggregateWithTypeUpdateQueueReversed -= id
     case TriggerDelayedUpdateAggregateWithTypeAndEvents(id, respondTo) =>
-      handleAggreagetWithTypeAndEventsUpdate(respondTo, mergeAggregateWithTypeAndEventsUpdate(lastAggregateWithTypeAndEventsUpdateQueueReversed.getOrElse(id, List.empty).reverse.asInstanceOf[List[AggregateWithTypeAndEvents[Any]]]))
-      lastAggregateWithTypeAndEventsUpdateQueueReversed -= id
+      handleAggreagetWithTypeAndEventsUpdate(respondTo, mergeAggregateWithTypeAndEventsUpdate(id, respondTo))
     case TriggerDelayedUpdateIdentifiableEvents(id, respondTo) =>
+      //TODO modify other mergers as mergeAggregateWithTypeAndEventsUpdate
       handleIdentifiableEventsUpdate(respondTo, mergeIdentifiableEventsUpdate(lastIdentifiableEventsQueueReversed.getOrElse(id, List.empty).reverse.asInstanceOf[List[IdentifiableEvents[Any]]]))
       lastIdentifiableEventsQueueReversed -= id
 
@@ -186,8 +187,34 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVe
     list.tail.foldLeft(list.head)((a1, a2) => AggregateWithType[A](a1.aggregateType, a1.id, a2.version, a1.events ++ a2.events, a2.aggregateRoot, a2.replayed))
   }
 
-  private def mergeAggregateWithTypeAndEventsUpdate[A](reverse: List[AggregateWithTypeAndEvents[A]]): AggregateWithTypeAndEvents[A] = {
-    reverse.tail.foldLeft(reverse.head)((a1, a2) => AggregateWithTypeAndEvents(a1.aggregateType, a1.id, a2.aggregateRoot, a1.events ++ a2.events, a2.replayed))
+  private def mergeAggregateWithTypeAndEventsUpdate[A](aggregateId: AggregateId, respondTo: ActorRef): AggregateWithTypeAndEvents[A] = {
+
+    val reversed = lastAggregateWithTypeAndEventsUpdateQueueReversed.getOrElse(aggregateId, List.empty)
+
+    val ordered = reversed.sortBy(_.events.head.version.asInt).asInstanceOf[List[AggregateWithTypeAndEvents[A]]]
+
+    log.debug("Merging AggregateWithTypeAndEventsUpdate (aggregateId: " + aggregateId.asLong+") in projection "+ projectionName+": " + ordered.map(_.events.map(_.version.asInt).mkString(",")).mkString(" -> "))
+
+    var events: AggregateWithTypeAndEvents[A] = ordered.headOption.getOrElse(throw new IllegalArgumentException("Empty list of events"))
+    var skipped: List[AggregateWithTypeAndEvents[A]] = List.empty
+
+    ordered.tail.foreach { e =>
+      if (e.events.head.version.isJustAfter(events.events.last.version)) {
+        events = AggregateWithTypeAndEvents(events.aggregateType, events.id, e.aggregateRoot, events.events ++ e.events, e.replayed)
+      } else {
+        skipped = e :: skipped
+        log.error("Events are not in order in projection "+ projectionName+" for aggregate "+aggregateId.asLong+": " + events.events.map(_.version.asInt).mkString(",") + " -> " + e.events.map(_.version.asInt).mkString(","))
+      }
+    }
+
+    if(skipped.isEmpty) {
+      lastAggregateWithTypeAndEventsUpdateQueueReversed -= aggregateId
+    } else {
+      lastAggregateWithTypeAndEventsUpdateQueueReversed += aggregateId -> skipped
+      self ! TriggerDelayedUpdateAggregateWithTypeAndEvents(aggregateId, respondTo)
+    }
+
+    events
   }
 
   private def mergeIdentifiableEventsUpdate[A](reverse: List[IdentifiableEvents[A]]): IdentifiableEvents[A] = {
