@@ -89,7 +89,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   private def resendEventsToPublish(): Unit = {
     if(eventsToPublish.nonEmpty) {
-      log.info("Resending messages for " + aggregateType.typeName+" "+aggregateId+" " + eventsToPublish.map(e => e.event.getClass.getSimpleName+" "+e.version))
+      log.info("Resending messages for " + aggregateType.typeName+" "+aggregateId+": " + eventsToPublish.head.version.asInt + (if(eventsToPublish.length > 1) " -> " +eventsToPublish.last.version.asInt else ""))
       eventsBus ! PublishEvents(aggregateType, eventsToPublish.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
 
       pendingPublish = (eventsToPublish.map(e => EventWithIdentifier[AGGREGATE_ROOT](e.aggregateId, e.version, e.event)) ::: pendingPublish).distinct
