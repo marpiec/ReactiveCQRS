@@ -376,10 +376,6 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
     Future { // Fire and forget
       eventStore.deletePublishedEventsToPublish(published.map(v => EventWithIdentifier(aggregateId, v.version, v.event)))
-
-      if(published.exists(_.event.isInstanceOf[PermanentDeleteEvent[_]])) {
-        self ! PoisonPill
-      }
     } onComplete {
       case Success(value) => ()
       case Failure(e) => throw new IllegalStateException(e)
