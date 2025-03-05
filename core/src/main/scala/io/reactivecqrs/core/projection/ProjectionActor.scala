@@ -22,6 +22,7 @@ sealed trait DelayedQuery {
 }
 private case class SyncDelayedQuery(until: Instant, respondTo: ActorRef, search: () => Option[Any]) extends DelayedQuery
 private case class AsyncDelayedQuery(until: Instant, respondTo: ActorRef, search: () => Future[Option[Any]]) extends DelayedQuery
+private case class AsyncDelayedQueryCustom[T](until: Instant, respondTo: ActorRef, search: () => Future[T], found: T => Boolean) extends DelayedQuery
 
 case object ClearProjectionData
 case object ProjectionDataCleared
@@ -136,6 +137,9 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVe
     case q: InitRebuildForTypes => subscribe(Some(q.aggregatesTypes))
     case GetSubscribedAggregates => sender() ! getSubscribedAggregates
     case q: AsyncDelayedQuery =>
+      delayedQueries ::= q
+      scheduleNearest()
+    case q: AsyncDelayedQueryCustom[Any] =>
       delayedQueries ::= q
       scheduleNearest()
     case ReplayQueries => replayQueries()
@@ -441,6 +445,7 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVe
         query match {
           case q: SyncDelayedQuery => delayIfNotAvailable(q.respondTo, q.search, q.until)
           case q: AsyncDelayedQuery => delayIfNotAvailableAsync(q.respondTo, q.search, q.until)
+          case q: AsyncDelayedQueryCustom[_] => delayIfNotAvailableAsyncCustom(q.respondTo, q.search, q.found, q.until)
         }
       } else {
         query.respondTo ! None
@@ -479,6 +484,14 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVe
     search().onComplete {
       case Success(result@Some(_)) => respondTo ! result
       case Success(None) => self ! AsyncDelayedQuery(until, respondTo, search)
+      case Failure(ex) => respondTo ! Status.Failure(ex)
+    }(context.system.dispatcher)
+  }
+
+  protected def delayIfNotAvailableAsyncCustom[T](respondTo: ActorRef, search: () => Future[T], found: T => Boolean, until: Instant): Unit = {
+    search().onComplete {
+      case Success(result) if found(result) => respondTo ! result
+      case Success(result) => self ! AsyncDelayedQueryCustom[T](until, respondTo, search, found)
       case Failure(ex) => respondTo ! Status.Failure(ex)
     }(context.system.dispatcher)
   }
