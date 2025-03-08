@@ -457,11 +457,15 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVe
 
 
   protected def delayIfNotAvailable[T](respondTo: ActorRef, search: () => Option[T], forMaximumMillis: Int): Unit = {
-    delayIfNotAvailable(respondTo, search, Instant.now().plusMillis(forMaximumMillis))
+    delayIfNotAvailable[T](respondTo, search, Instant.now().plusMillis(forMaximumMillis))
   }
 
   protected def delayIfNotAvailableAsync[T](respondTo: ActorRef, search: () => Future[Option[T]], forMaximumMillis: Int): Unit = {
-    delayIfNotAvailableAsync(respondTo, search, Instant.now().plusMillis(forMaximumMillis))
+    delayIfNotAvailableAsync[T](respondTo, search, Instant.now().plusMillis(forMaximumMillis))
+  }
+
+  protected def delayIfNotAvailableAsyncCustom[T](respondTo: ActorRef, search: () => Future[T], found: T => Boolean, forMaximumMillis: Int): Unit = {
+    delayIfNotAvailableAsyncCustom[T](respondTo, search, found, Instant.now().plusMillis(forMaximumMillis))
   }
 
   protected def delayIfNotAvailable[T](respondTo: ActorRef, search: () => Option[T], until: Instant): Unit = {
@@ -487,6 +491,9 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVe
       case Failure(ex) => respondTo ! Status.Failure(ex)
     }(context.system.dispatcher)
   }
+
+
+
 
   protected def delayIfNotAvailableAsyncCustom[T](respondTo: ActorRef, search: () => Future[T], found: T => Boolean, until: Instant): Unit = {
     search().onComplete {
