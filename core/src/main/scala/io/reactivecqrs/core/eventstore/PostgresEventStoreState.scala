@@ -12,7 +12,8 @@ import scalikejdbc._
 
 import scala.util.Try
 
-class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState, fetchSize: Int = 1000) extends EventStoreState {
+class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState, fetchSize: Int = 1000,
+                              eventSizeLimit: Int = 100000, aggregateVersionLimit: Int = 10000) extends EventStoreState {
 
   val doubleNone: (Option[AggregateVersion], Option[Instant]) = (None, None)
 
@@ -29,65 +30,74 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 
       val eventSerialized = mpjsons.serialize(event, event.getClass.getName)
 
-      val eventType = event.getClass.getName
-      val EventTypeVersion(eventBaseType, eventVersion) = eventsVersionsMapReverse.getOrElse(eventType, EventTypeVersion(eventType, 0))
-      val eventBaseTypeId = typesNamesState.typeIdByClassName(eventBaseType)
+      val aggregateVersion = lastEventVersion.getOrElse(eventsEnvelope.expectedVersion.asInt)
 
-      lastEventVersion = Some(event match {
-        case undoEvent: UndoEvent[_] =>
-          sql"""SELECT add_undo_event(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
-            eventsEnvelope.userId.asLong,
-            aggregateId.asLong,
-            lastEventVersion.getOrElse(eventsEnvelope.expectedVersion.asInt),
-            typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
-            eventBaseTypeId,
-            eventVersion,
-            Timestamp.from(Instant.now),
-            eventSerialized,
-            undoEvent.eventsCount
-          ).map(rs => rs.int(1)).single().apply().get
-        case duplicationEvent: DuplicationEvent[_] =>
-          sql"""SELECT add_duplication_event(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
-            eventsEnvelope.userId.asLong,
-            duplicationEvent.spaceId.asLong,
-            aggregateId.asLong,
-            lastEventVersion.getOrElse(eventsEnvelope.expectedVersion.asInt),
-            typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
-            eventBaseTypeId,
-            eventVersion,
-            Timestamp.from(Instant.now),
-            eventSerialized,
-            duplicationEvent.baseAggregateId.asLong,
-            duplicationEvent.baseAggregateVersion.asInt
-          ).map(rs => rs.int(1)).single().apply().get
-        case firstEvent: FirstEvent[_] => {
-          sql"""SELECT add_event(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
-            eventsEnvelope.userId.asLong,
-            firstEvent.spaceId.asLong,
-            aggregateId.asLong,
-            lastEventVersion.getOrElse(eventsEnvelope.expectedVersion.asInt),
-            typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
-            eventBaseTypeId,
-            eventVersion,
-            Timestamp.from(Instant.now),
-            eventSerialized
-          ).map(rs => rs.int(1)).single().apply().get
-        }
-        case _ =>
-          sql"""SELECT add_event(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
-            eventsEnvelope.userId.asLong,
-            -1L,
-            aggregateId.asLong,
-            lastEventVersion.getOrElse(eventsEnvelope.expectedVersion.asInt),
-            typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
-            eventBaseTypeId,
-            eventVersion,
-            Timestamp.from(Instant.now),
-            eventSerialized
-          ).map(rs => rs.int(1)).single().apply().get
-      })
+      if(eventSerialized.length > eventSizeLimit) {
+        throw new EventTooLargeException(aggregateId, event.aggregateRootType.typeSymbol.fullName, AggregateVersion(aggregateVersion), event.getClass.getName, eventSerialized.length, eventSizeLimit)
+      } else if(aggregateVersion > aggregateVersionLimit) {
+        throw new TooManyEventsException(aggregateId, event.aggregateRootType.typeSymbol.fullName, aggregateVersionLimit)
+      } else {
 
-      (event, AggregateVersion(lastEventVersion.get))
+        val eventType = event.getClass.getName
+        val EventTypeVersion(eventBaseType, eventVersion) = eventsVersionsMapReverse.getOrElse(eventType, EventTypeVersion(eventType, 0))
+        val eventBaseTypeId = typesNamesState.typeIdByClassName(eventBaseType)
+
+        lastEventVersion = Some(event match {
+          case undoEvent: UndoEvent[_] =>
+            sql"""SELECT add_undo_event(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
+              eventsEnvelope.userId.asLong,
+              aggregateId.asLong,
+              eventVersion,
+              typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
+              eventBaseTypeId,
+              eventVersion,
+              Timestamp.from(Instant.now),
+              eventSerialized,
+              undoEvent.eventsCount
+            ).map(rs => rs.int(1)).single().apply().get
+          case duplicationEvent: DuplicationEvent[_] =>
+            sql"""SELECT add_duplication_event(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
+              eventsEnvelope.userId.asLong,
+              duplicationEvent.spaceId.asLong,
+              aggregateId.asLong,
+              aggregateVersion,
+              typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
+              eventBaseTypeId,
+              eventVersion,
+              Timestamp.from(Instant.now),
+              eventSerialized,
+              duplicationEvent.baseAggregateId.asLong,
+              duplicationEvent.baseAggregateVersion.asInt
+            ).map(rs => rs.int(1)).single().apply().get
+          case firstEvent: FirstEvent[_] => {
+            sql"""SELECT add_event(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
+              eventsEnvelope.userId.asLong,
+              firstEvent.spaceId.asLong,
+              aggregateId.asLong,
+              aggregateVersion,
+              typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
+              eventBaseTypeId,
+              eventVersion,
+              Timestamp.from(Instant.now),
+              eventSerialized
+            ).map(rs => rs.int(1)).single().apply().get
+          }
+          case _ =>
+            sql"""SELECT add_event(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
+              eventsEnvelope.userId.asLong,
+              -1L,
+              aggregateId.asLong,
+              aggregateVersion,
+              typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
+              eventBaseTypeId,
+              eventVersion,
+              Timestamp.from(Instant.now),
+              eventSerialized
+            ).map(rs => rs.int(1)).single().apply().get
+        })
+
+        (event, AggregateVersion(lastEventVersion.get))
+      }
     })
   }
 
