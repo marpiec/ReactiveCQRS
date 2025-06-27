@@ -178,7 +178,7 @@ class PostgresEventStoreSchemaInitializer  {
           |        END IF;
           |    END IF;
           |    IF expected_version >= 0 AND current_version != expected_version THEN
-          |	       RAISE EXCEPTION 'Concurrent aggregate modification exception, user id %, aggregate id %, expected version %, current_version %, event_type_id %, event %', user_id, aggregate_id, expected_version, current_version, event_type_id, event;
+          |	       RAISE EXCEPTION 'Concurrent aggregate modification exception, user id %, aggregate id %, expected version %, current_version %, event_type_id %, event %', user_id, _aggregate_id, expected_version, current_version, event_type_id, event;
           |    END IF;
           |    SELECT NEXTVAL('events_seq') INTO event_id;
           |    INSERT INTO noop_events (id, from_version) (select events.id, current_version + 1
