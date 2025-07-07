@@ -70,8 +70,8 @@ object Common {
     )
 
     val scalikejdbc = Seq(
-      "org.scalikejdbc" %% "scalikejdbc" % "3.4.2",
-      "org.scalikejdbc" %% "scalikejdbc-streams" % "3.4.2"
+      "org.scalikejdbc" %% "scalikejdbc" % "4.3.4",
+      "org.scalikejdbc" %% "scalikejdbc-streams" % "4.3.4"
     )
 
     val postgresql = Seq(
