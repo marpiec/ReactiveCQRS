@@ -12,7 +12,7 @@ import scala.reflect.runtime.universe._
 
 object SubscribableProjectionActor {
 
-  val subscriptionTTL = 600000 // 10 minutes
+  val defaultSubscriptionTTL = 600000 // 10 minutes
 
   case class SubscribedForProjectionUpdates(subscriptionId: String)
 
@@ -31,7 +31,7 @@ case class UpdateCacheEntry(arrived: Instant, value: Any)
 
 case class SubscriptionInfo(subscriptionId: String, listener: ActorRef, acceptor: _ => Option[_], typeName: String, renewal: Instant)
 
-abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.ZERO, groupUpdatesDelayMillis: Long = 0) extends ProjectionActor(groupUpdatesDelayMillis) {
+abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.ZERO, groupUpdatesDelayMillis: Long = 0, subscriptionTTL: Int = SubscribableProjectionActor.defaultSubscriptionTTL) extends ProjectionActor(groupUpdatesDelayMillis) {
 
   protected def receiveSubscriptionRequest: Receive
 
