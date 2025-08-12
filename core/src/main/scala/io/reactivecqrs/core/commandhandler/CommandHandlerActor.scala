@@ -2,7 +2,7 @@ package io.reactivecqrs.core.commandhandler
 
 import org.apache.pekko.actor.{Actor, ActorRef, Props}
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
+import io.reactivecqrs.api.id.{AggregateId, CommandId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor._
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor._
 import io.reactivecqrs.core.util.MyActorLogging

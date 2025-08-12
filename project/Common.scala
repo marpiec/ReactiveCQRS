@@ -56,7 +56,7 @@ object Common {
     val pekkoVersion = "1.1.4"
 
     val common = Seq(
-      "io.mpjsons" %% "mpjsons" % "0.6.49",
+      "io.mpjsons" %% "mpjsons" % "0.6.50",
       "com.typesafe" % "config" % "1.4.3",
       "org.slf4j" % "slf4j-api" % "2.0.17",
       "org.scala-lang.modules" %% "scala-parallel-collections" % "1.0.4",
@@ -70,8 +70,8 @@ object Common {
     )
 
     val scalikejdbc = Seq(
-      "org.scalikejdbc" %% "scalikejdbc" % "4.3.4",
-      "org.scalikejdbc" %% "scalikejdbc-streams" % "4.3.4"
+      "org.scalikejdbc" %% "scalikejdbc" % "3.4.2",
+      "org.scalikejdbc" %% "scalikejdbc-streams" % "3.4.2"
     )
 
     val postgresql = Seq(

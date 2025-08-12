@@ -39,7 +39,7 @@ object AggregateCommandBusActor {
       aggregateContext.eventsVersions,
       eventsReplayMode,
       keepAliveLimit, maxInactivityMillis,
-      aggregateContext.initialAggregateRoot _))
+      () => aggregateContext.initialAggregateRoot))
   }
 
 
