@@ -37,7 +37,10 @@ case class TriggerDelayedUpdateAggregateWithTypeAndEvents(id: AggregateId, respo
 case class TriggerDelayedUpdateIdentifiableEvents(id: AggregateId, respondTo: ActorRef)
 
 
-abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVersion: Int = 1) extends Actor with MyActorLogging {
+/**
+ * eventsToProcessImmediately - only works for listeners receiving events
+ **/
+abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVersion: Int = 1, eventsToProcessImmediately: Set[Class[_]] = Set.empty) extends Actor with MyActorLogging {
 
   protected val projectionName: String
   protected val subscriptionsState: SubscriptionsState
@@ -146,7 +149,6 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVe
 
     case TriggerDelayedUpdateAggregateWithType(id, respondTo) =>
       handleAggregateWithTypeUpdate(respondTo, mergeAggregateWithTypeUpdate(id, respondTo))
-      lastAggregateWithTypeUpdateQueueReversed -= id
     case TriggerDelayedUpdateAggregateWithTypeAndEvents(id, respondTo) =>
       handleAggreagetWithTypeAndEventsUpdate(respondTo, mergeAggregateWithTypeAndEventsUpdate(id, respondTo))
     case TriggerDelayedUpdateIdentifiableEvents(id, respondTo) =>
@@ -154,30 +156,51 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVe
     case a: AggregateWithType[_] if groupUpdatesDelayMillis > 0 && !a.replayed && a.events.head.asInt >= minimumDelayVersion => // do not delay first event
       lastAggregateWithTypeUpdateQueueReversed.get(a.id) match {
         case None =>
-          context.system.scheduler.scheduleOnce(delayDuration, self, TriggerDelayedUpdateAggregateWithType(a.id, sender))(context.dispatcher)
           lastAggregateWithTypeUpdateQueueReversed += a.id -> List(a)
+          context.system.scheduler.scheduleOnce(delayDuration, self, TriggerDelayedUpdateAggregateWithType(a.id, sender))(context.dispatcher)
         case Some(waiting) =>
           lastAggregateWithTypeUpdateQueueReversed += a.id -> (a :: waiting)
       }
-    case ae: AggregateWithTypeAndEvents[_] if groupUpdatesDelayMillis > 0 && !ae.replayed && ae.events.head.version.asInt >= minimumDelayVersion => // do not delay first event
+    case ae: AggregateWithTypeAndEvents[_] if groupUpdatesDelayMillis > 0 && !ae.replayed && ae.events.head.version.asInt >= minimumDelayVersion && !ae.events.exists(e => eventsToProcessImmediately.contains(e.event.getClass)) => // do not delay first event nor events of specific type
       lastAggregateWithTypeAndEventsUpdateQueueReversed.get(ae.id) match {
         case None =>
-          context.system.scheduler.scheduleOnce(delayDuration, self, TriggerDelayedUpdateAggregateWithTypeAndEvents(ae.id, sender))(context.dispatcher)
           lastAggregateWithTypeAndEventsUpdateQueueReversed += ae.id -> List(ae)
+          context.system.scheduler.scheduleOnce(delayDuration, self, TriggerDelayedUpdateAggregateWithTypeAndEvents(ae.id, sender))(context.dispatcher)
         case Some(waiting) =>
           lastAggregateWithTypeAndEventsUpdateQueueReversed += ae.id -> (ae :: waiting)
       }
-    case e: IdentifiableEvents[_] if groupUpdatesDelayMillis > 0 && !e.replayed && e.events.head.version.asInt >= minimumDelayVersion => // do not delay first event
+    case e: IdentifiableEvents[_] if groupUpdatesDelayMillis > 0 && !e.replayed && e.events.head.version.asInt >= minimumDelayVersion && !e.events.exists(ee => eventsToProcessImmediately.contains(ee.event.getClass))=> // do not delay first event nor events of specific type
       lastIdentifiableEventsQueueReversed.get(e.aggregateId) match {
         case None =>
-          context.system.scheduler.scheduleOnce(delayDuration, self, TriggerDelayedUpdateIdentifiableEvents(e.aggregateId, sender))(context.dispatcher)
           lastIdentifiableEventsQueueReversed += e.aggregateId -> List(e)
+          context.system.scheduler.scheduleOnce(delayDuration, self, TriggerDelayedUpdateIdentifiableEvents(e.aggregateId, sender))(context.dispatcher)
         case Some(waiting) =>
           lastIdentifiableEventsQueueReversed += e.aggregateId -> (e :: waiting)
       }
-    case a: AggregateWithType[_] => handleAggregateWithTypeUpdate(sender, a)
-    case ae: AggregateWithTypeAndEvents[_] => handleAggreagetWithTypeAndEventsUpdate(sender, ae)
-    case e: IdentifiableEvents[_] => handleIdentifiableEventsUpdate(sender, e)
+    case a: AggregateWithType[_] =>
+      lastAggregateWithTypeUpdateQueueReversed.get(a.id) match {
+        case None => handleAggregateWithTypeUpdate(sender, a)
+        case Some(waiting) =>
+          lastAggregateWithTypeUpdateQueueReversed += a.id -> (a :: waiting)
+          handleAggregateWithTypeUpdate(sender, mergeAggregateWithTypeUpdate(a.id, sender))
+      }
+    case ae: AggregateWithTypeAndEvents[_] =>
+      lastAggregateWithTypeAndEventsUpdateQueueReversed.get(ae.id) match {
+        case None => handleAggreagetWithTypeAndEventsUpdate(sender, ae)
+        case Some(waiting) =>
+          lastAggregateWithTypeAndEventsUpdateQueueReversed += ae.id -> (ae :: waiting)
+          handleAggreagetWithTypeAndEventsUpdate(sender, mergeAggregateWithTypeAndEventsUpdate(ae.id, sender))
+      }
+
+    case e: IdentifiableEvents[_] =>
+      lastIdentifiableEventsQueueReversed.get(e.aggregateId) match {
+        case None => handleIdentifiableEventsUpdate(sender, e)
+        case Some(waiting) =>
+          lastIdentifiableEventsQueueReversed += e.aggregateId -> (e :: waiting)
+          handleIdentifiableEventsUpdate(sender, mergeIdentifiableEventsUpdate(e.aggregateId, sender))
+      }
+
+
     case ClearProjectionData => clearProjectionData(sender())
   }
 
