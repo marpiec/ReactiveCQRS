@@ -37,10 +37,43 @@ case class TriggerDelayedUpdateAggregateWithTypeAndEvents(id: AggregateId, respo
 case class TriggerDelayedUpdateIdentifiableEvents(id: AggregateId, respondTo: ActorRef)
 
 
-/**
- * eventsToProcessImmediately - only works for listeners receiving events
- **/
-abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVersion: Int = 1, eventsToProcessImmediately: Set[Class[_]] = Set.empty) extends Actor with MyActorLogging {
+object ProjectionActorOptions {
+  val DEFAULT = ProjectionActorOptions(0, 1, Set.empty, true)
+}
+case class ProjectionActorOptions (groupUpdatesDelayMillis: Long,
+                                   minimumDelayVersion: Int,
+                                   eventsToProcessImmediately: Set[Class[_]],
+                                   dbTransaction: Boolean) {
+
+  def withGroupUpdatesDelayMillis(millis: Long): ProjectionActorOptions = {
+    copy(groupUpdatesDelayMillis = millis)
+  }
+
+  def withMinimumDelayVersion(version: Int): ProjectionActorOptions = {
+    copy(minimumDelayVersion = version)
+  }
+
+  /**
+   * eventsToProcessImmediately - only works for listeners receiving events, will not work for aggregate only listeners, due to lack of information
+   **/
+  def withEventsToProcessImmediately(classes: Class[_]*): ProjectionActorOptions = {
+    copy(eventsToProcessImmediately = classes.toSet)
+  }
+
+  def withDbTransaction(transaction: Boolean): ProjectionActorOptions = {
+    copy(dbTransaction = transaction)
+  }
+
+}
+
+object ListenerOptions {
+  val DEFAULT = ListenerOptions(false)
+  val DISABLED_TRANSACTION = ListenerOptions(true)
+}
+case class ListenerOptions(noTransaction: Boolean = false)
+
+
+abstract class ProjectionActor(options: ProjectionActorOptions) extends Actor with MyActorLogging {
 
   protected val projectionName: String
   protected val subscriptionsState: SubscriptionsState
@@ -66,60 +99,75 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVe
   }
 
   // ListenerParam and listener are separately so covariant type is allowed
-  protected class EventsListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => Unit) extends Listener[AGGREGATE_ROOT] {
-    def listener = listenerParam.asInstanceOf[(AggregateId, Seq[EventInfo[Any]]) => DBSession => Unit]
+  protected class EventsListener[+AGGREGATE_ROOT: TypeTag](callback: (AggregateId, Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => Unit, val options: ListenerOptions) extends Listener[AGGREGATE_ROOT] {
+    def listener = callback.asInstanceOf[(AggregateId, Seq[EventInfo[Any]]) => DBSession => Unit]
     def aggregateRootType = typeOf[AGGREGATE_ROOT]
   }
 
   protected object EventsListener {
     def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => Unit): EventsListener[AGGREGATE_ROOT] =
-      new EventsListener[AGGREGATE_ROOT](listener)
+      new EventsListener[AGGREGATE_ROOT](listener, ListenerOptions.DEFAULT)
+
+    def noDBSession[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, Seq[EventInfo[AGGREGATE_ROOT]]) => Unit): EventsListener[AGGREGATE_ROOT] =
+      new EventsListener[AGGREGATE_ROOT](
+        (id: AggregateId, events: Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => listener(id, events),
+        ListenerOptions.DISABLED_TRANSACTION)
   }
 
 
   // ListenerParam and listener are separately so covariant type is allowed
-  protected class AggregateListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Boolean, Option[AGGREGATE_ROOT]) => DBSession => Unit) extends Listener[AGGREGATE_ROOT] {
-    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Boolean, Option[Any]) => DBSession => Unit]
+  protected class AggregateListener[+AGGREGATE_ROOT: TypeTag](callback: (AggregateId, AggregateVersion, Boolean, Option[AGGREGATE_ROOT]) => DBSession => Unit, val options: ListenerOptions) extends Listener[AGGREGATE_ROOT] {
+    def listener = callback.asInstanceOf[(AggregateId, AggregateVersion, Boolean, Option[Any]) => DBSession => Unit]
     def aggregateRootType = typeOf[AGGREGATE_ROOT]
   }
 
   protected object AggregateListener {
     def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Boolean, Option[AGGREGATE_ROOT]) => DBSession => Unit): AggregateListener[AGGREGATE_ROOT] =
-      new AggregateListener[AGGREGATE_ROOT](listener)
+      new AggregateListener[AGGREGATE_ROOT](listener, ListenerOptions.DEFAULT)
+
+    def noDBSession[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Boolean, Option[AGGREGATE_ROOT]) => Unit): AggregateListener[AGGREGATE_ROOT] =
+      new AggregateListener[AGGREGATE_ROOT](
+        (id: AggregateId, version: AggregateVersion, created: Boolean, root: Option[AGGREGATE_ROOT]) => DBSession => listener(id, version, created, root),
+        ListenerOptions.DISABLED_TRANSACTION)
   }
 
 
   // ListenerParam and listener are separately so covariant type is allowed
-  protected class AggregateWithEventsListener[+AGGREGATE_ROOT: TypeTag](listenerParam: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT], Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => Unit) extends Listener[AGGREGATE_ROOT] {
-    def listener = listenerParam.asInstanceOf[(AggregateId, AggregateVersion, Option[Any], Seq[EventInfo[Any]]) => DBSession => Unit]
+  protected class AggregateWithEventsListener[+AGGREGATE_ROOT: TypeTag](callback: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT], Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => Unit, val options: ListenerOptions) extends Listener[AGGREGATE_ROOT] {
+    def listener = callback.asInstanceOf[(AggregateId, AggregateVersion, Option[Any], Seq[EventInfo[Any]]) => DBSession => Unit]
     def aggregateRootType = typeOf[AGGREGATE_ROOT]
   }
 
   protected object AggregateWithEventsListener {
     def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT], Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => Unit): AggregateWithEventsListener[AGGREGATE_ROOT] =
-      new AggregateWithEventsListener[AGGREGATE_ROOT](listener)
+      new AggregateWithEventsListener[AGGREGATE_ROOT](listener, ListenerOptions.DEFAULT)
+
+    def noDBSession[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT], Seq[EventInfo[AGGREGATE_ROOT]]) => Unit): AggregateWithEventsListener[AGGREGATE_ROOT] =
+      new AggregateWithEventsListener[AGGREGATE_ROOT](
+        (id: AggregateId, version: AggregateVersion, root: Option[AGGREGATE_ROOT], events: Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => listener(id, version, root, events),
+        ListenerOptions.DISABLED_TRANSACTION)
   }
 
   object ReplayQueries
 
 
 
-  private lazy val eventListenersMap = {
+  private lazy val eventListenersMap: Map[AggregateType, EventsListener[Any]] = {
     validateListeners()
     listeners.filter(_.isInstanceOf[EventsListener[Any]])
-      .map(l => (AggregateType(l.aggregateRootType.toString), l.asInstanceOf[EventsListener[Any]].listener)).toMap
+      .map(l => (AggregateType(l.aggregateRootType.toString), l.asInstanceOf[EventsListener[Any]])).toMap
   }
 
-  private lazy val aggregateListenersMap: Map[AggregateType, (AggregateId, AggregateVersion, Boolean, Option[Any]) => DBSession => Unit] ={
+  private lazy val aggregateListenersMap: Map[AggregateType, AggregateListener[Any]] ={
     validateListeners()
     listeners.filter(_.isInstanceOf[AggregateListener[Any]])
-      .map(l => (AggregateType(l.aggregateRootType.toString), l.asInstanceOf[AggregateListener[Any]].listener)).toMap
+      .map(l => (AggregateType(l.aggregateRootType.toString), l.asInstanceOf[AggregateListener[Any]])).toMap
   }
 
-  private lazy val aggregateWithEventListenersMap: Map[AggregateType, (AggregateId, AggregateVersion, Option[Any], Seq[EventInfo[Any]]) => DBSession => Unit] ={
+  private lazy val aggregateWithEventListenersMap: Map[AggregateType, AggregateWithEventsListener[Any]] ={
     validateListeners()
     listeners.filter(_.isInstanceOf[AggregateWithEventsListener[Any]])
-      .map(l => (AggregateType(l.aggregateRootType.toString), l.asInstanceOf[AggregateWithEventsListener[Any]].listener)).toMap
+      .map(l => (AggregateType(l.aggregateRootType.toString), l.asInstanceOf[AggregateWithEventsListener[Any]])).toMap
   }
 
   override def receive: Receive = logReceive {receiveUpdate orElse receiveQuery}
@@ -134,7 +182,7 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVe
     SubscribedAggregates(projectionName, version, aggregateListenersMap.keySet ++ eventListenersMap.keySet ++ aggregateWithEventListenersMap.keySet)
   }
 
-  private val delayDuration = scala.concurrent.duration.Duration(groupUpdatesDelayMillis, TimeUnit.MILLISECONDS)
+  private val delayDuration = scala.concurrent.duration.Duration(options.groupUpdatesDelayMillis, TimeUnit.MILLISECONDS)
 
   protected def receiveUpdate: Receive =  {
     case q: InitRebuildForTypes => subscribe(Some(q.aggregatesTypes))
@@ -153,7 +201,7 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVe
       handleAggreagetWithTypeAndEventsUpdate(respondTo, mergeAggregateWithTypeAndEventsUpdate(id, respondTo))
     case TriggerDelayedUpdateIdentifiableEvents(id, respondTo) =>
       handleIdentifiableEventsUpdate(respondTo, mergeIdentifiableEventsUpdate(id, respondTo))
-    case a: AggregateWithType[_] if groupUpdatesDelayMillis > 0 && !a.replayed && a.events.head.asInt >= minimumDelayVersion => // do not delay first event
+    case a: AggregateWithType[_] if options.groupUpdatesDelayMillis > 0 && !a.replayed && a.events.head.asInt >= options.minimumDelayVersion => // do not delay first event
       lastAggregateWithTypeUpdateQueueReversed.get(a.id) match {
         case None =>
           lastAggregateWithTypeUpdateQueueReversed += a.id -> List(a)
@@ -161,7 +209,7 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVe
         case Some(waiting) =>
           lastAggregateWithTypeUpdateQueueReversed += a.id -> (a :: waiting)
       }
-    case ae: AggregateWithTypeAndEvents[_] if groupUpdatesDelayMillis > 0 && !ae.replayed && ae.events.head.version.asInt >= minimumDelayVersion && !ae.events.exists(e => eventsToProcessImmediately.contains(e.event.getClass)) => // do not delay first event nor events of specific type
+    case ae: AggregateWithTypeAndEvents[_] if options.groupUpdatesDelayMillis > 0 && !ae.replayed && ae.events.head.version.asInt >= options.minimumDelayVersion && !ae.events.exists(e => options.eventsToProcessImmediately.contains(e.event.getClass)) => // do not delay first event nor events of specific type
       lastAggregateWithTypeAndEventsUpdateQueueReversed.get(ae.id) match {
         case None =>
           lastAggregateWithTypeAndEventsUpdateQueueReversed += ae.id -> List(ae)
@@ -169,7 +217,7 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVe
         case Some(waiting) =>
           lastAggregateWithTypeAndEventsUpdateQueueReversed += ae.id -> (ae :: waiting)
       }
-    case e: IdentifiableEvents[_] if groupUpdatesDelayMillis > 0 && !e.replayed && e.events.head.version.asInt >= minimumDelayVersion && !e.events.exists(ee => eventsToProcessImmediately.contains(ee.event.getClass))=> // do not delay first event nor events of specific type
+    case e: IdentifiableEvents[_] if options.groupUpdatesDelayMillis > 0 && !e.replayed && e.events.head.version.asInt >= options.minimumDelayVersion && !e.events.exists(ee => options.eventsToProcessImmediately.contains(ee.event.getClass))=> // do not delay first event nor events of specific type
       lastIdentifiableEventsQueueReversed.get(e.aggregateId) match {
         case None =>
           lastIdentifiableEventsQueueReversed += e.aggregateId -> List(e)
@@ -305,10 +353,20 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVe
       respondTo ! MessageAck(self, e.aggregateId, alreadyProcessed.map(_.version))
     } else if (newEvents.nonEmpty && newEvents.head.version.isJustAfter(lastVersion)) {
       try {
-        subscriptionsState.localTx { session =>
-          eventListenersMap(e.aggregateType)(e.aggregateId, e.events.asInstanceOf[Seq[EventInfo[Any]]])(session)
-          subscriptionsState.newVersionForEventsSubscription(this.getClass.getName, e.aggregateId, lastVersion, e.events.last.version)(session)
+
+        eventListenersMap(e.aggregateType) match {
+          case listener if listener.options.noTransaction => // Process outside transaction, so DB wont be affected too much, should be used when projectionis not storage based
+            listener.listener(e.aggregateId, e.events.asInstanceOf[Seq[EventInfo[Any]]])
+            subscriptionsState.localTx { session =>
+              subscriptionsState.newVersionForEventsSubscription(this.getClass.getName, e.aggregateId, lastVersion, e.events.last.version)(session)
+            }
+          case listener =>
+            subscriptionsState.localTx { session =>
+              listener.listener(e.aggregateId, e.events.asInstanceOf[Seq[EventInfo[Any]]])(session)
+              subscriptionsState.newVersionForEventsSubscription(this.getClass.getName, e.aggregateId, lastVersion, e.events.last.version)(session)
+            }
         }
+
         respondTo ! MessageAck(self, e.aggregateId, e.events.map(_.version))
 
         delayedIdentifiableEvent.get(e.aggregateId) match {
@@ -347,10 +405,20 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVe
       respondTo ! MessageAck(self, ae.id, alreadyProcessed.map(_.version))
     } else if (newEvents.nonEmpty && newEvents.head.version.isJustAfter(lastVersion)) {
       try {
-        subscriptionsState.localTx { session =>
-          aggregateWithEventListenersMap(ae.aggregateType)(ae.id, newEvents.last.version, ae.aggregateRoot, newEvents.asInstanceOf[Seq[EventInfo[Any]]])(session)
-          subscriptionsState.newVersionForAggregatesWithEventsSubscription(this.getClass.getName, ae.id, lastVersion, newEvents.last.version)(session)
+
+        aggregateWithEventListenersMap(ae.aggregateType) match {
+          case listener if listener.options.noTransaction => // Process outside transaction, so DB wont be affected too much, should be used when projectionis not storage based
+            listener.listener(ae.id, newEvents.last.version, ae.aggregateRoot, newEvents.asInstanceOf[Seq[EventInfo[Any]]])
+            subscriptionsState.localTx { session =>
+              subscriptionsState.newVersionForEventsSubscription(this.getClass.getName, ae.id, lastVersion, newEvents.last.version)(session)
+            }
+          case listener =>
+            subscriptionsState.localTx { session =>
+              listener.listener(ae.id, newEvents.last.version, ae.aggregateRoot, newEvents.asInstanceOf[Seq[EventInfo[Any]]])(session)
+              subscriptionsState.newVersionForAggregatesWithEventsSubscription(this.getClass.getName, ae.id, lastVersion, newEvents.last.version)(session)
+            }
         }
+
         respondTo ! MessageAck(self, ae.id, alreadyProcessed.map(_.version) ++ newEvents.map(_.version))
         delayedAggregateWithTypeAndEvent.get(ae.id) match {
           case Some(delayed) if delayed.head.events.head.version.isJustAfter(newEvents.last.version) =>
@@ -388,10 +456,20 @@ abstract class ProjectionActor(groupUpdatesDelayMillis: Long = 0, minimumDelayVe
       respondTo ! MessageAck(self, a.id, alreadyProcessed)
     } else if (newEvents.nonEmpty && newEvents.head.isJustAfter(lastVersion)) {
       try {
-        subscriptionsState.localTx { session =>
-          aggregateListenersMap(a.aggregateType)(a.id, a.version, newEvents.head.isOne, a.aggregateRoot)(session)
-          subscriptionsState.newVersionForAggregatesSubscription(this.getClass.getName, a.id, lastVersion, newEvents.last)(session)
+
+        aggregateListenersMap(a.aggregateType) match {
+          case listener if listener.options.noTransaction => // Process outside transaction, so DB wont be affected too much, should be used when projectionis not storage based
+            listener.listener(a.id, a.version, newEvents.head.isOne, a.aggregateRoot)
+            subscriptionsState.localTx { session =>
+              subscriptionsState.newVersionForAggregatesSubscription(this.getClass.getName, a.id, lastVersion, newEvents.last)(session)
+            }
+          case listener =>
+            subscriptionsState.localTx { session =>
+              listener.listener(a.id, a.version, newEvents.head.isOne, a.aggregateRoot)(session)
+              subscriptionsState.newVersionForAggregatesSubscription(this.getClass.getName, a.id, lastVersion, newEvents.last)(session)
+            }
         }
+
         respondTo ! MessageAck(self, a.id, alreadyProcessed ++ newEvents)
 
         delayedAggregateWithType.get(a.id) match {
