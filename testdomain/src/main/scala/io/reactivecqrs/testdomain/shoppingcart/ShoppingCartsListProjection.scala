@@ -33,7 +33,7 @@ class ShoppingCartsListProjectionEventsBased(val eventBusSubscriptionsManager: E
     })
   }
 
-  private def shoppingCartUpdateSingleEvent(aggregateId: AggregateId, version: AggregateVersion, event: EventInfo[ShoppingCart])(implicit session: DBSession) {
+  private def shoppingCartUpdateSingleEvent(aggregateId: AggregateId, version: AggregateVersion, event: EventInfo[ShoppingCart])(implicit session: DBSession): Unit = {
     event.event match {
       case ShoppingCartCreated(name) =>
         documentStore.insertDocument(0, aggregateId.asLong, name)

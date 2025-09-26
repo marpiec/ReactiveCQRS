@@ -7,7 +7,7 @@ import org.apache.pekko.pattern.ask
 import org.apache.pekko.actor.{Actor, ActorContext, ActorRef, Props}
 import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.{AggregateId, UserId}
+import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor
 import io.reactivecqrs.core.aggregaterepository.ReplayAggregateRepositoryActor.ReplayEvents
 import io.reactivecqrs.core.backpressure.BackPressureActor
@@ -74,7 +74,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
   import context.dispatcher
 
   val timeoutDuration: FiniteDuration = config.replayerTimoutSeconds.seconds
-  implicit val timeout = Timeout(timeoutDuration)
+  implicit val timeout: Timeout = Timeout(timeoutDuration)
 
   val factories: Map[String, ReplayerRepositoryActorFactory[_]] = actorsFactory.map(f => f.aggregateRootType -> f).toMap
 
@@ -92,8 +92,8 @@ class EventsReplayerActor(eventStore: EventStoreState,
   }
 
   override def receive: Receive = {
-    case GetStatus(aggregatesTypes) => sender ! getStatus(aggregatesTypes)
-    case ReplayAllEvents(batchPerAggregate, aggregatesTypes, delayBetweenAggregateTypes) => replayAllEvents(sender, batchPerAggregate, aggregatesTypes, delayBetweenAggregateTypes)
+    case GetStatus(aggregatesTypes) => sender() ! getStatus(aggregatesTypes)
+    case ReplayAllEvents(batchPerAggregate, aggregatesTypes, delayBetweenAggregateTypes) => replayAllEvents(sender(), batchPerAggregate, aggregatesTypes, delayBetweenAggregateTypes)
   }
 
   private def getStatus(aggregatesTypes: Seq[AggregateType]): ReplayerStatus = {

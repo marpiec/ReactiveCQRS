@@ -54,7 +54,7 @@ class EventBusSubscriptionsManager(minimumExpectedSubscriptions: Int) extends Ac
         eventBusWaiting = Some(sender())
       } else {
         subscriptionsOpen = false
-        sender ! subscriptionsRequests
+        sender() ! subscriptionsRequests
         log.info("All " + subscriptionsRequests.length+ " subscriptions registered")
       }
   }

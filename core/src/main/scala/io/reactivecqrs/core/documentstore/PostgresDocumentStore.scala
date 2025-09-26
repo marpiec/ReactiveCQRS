@@ -189,7 +189,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
     inSession { implicit session =>
       sql"DELETE FROM ${tableNameSQL} WHERE id = ?"
-        .bind(key).executeUpdate().apply()
+        .bind(key).update().apply()
       cache.put(key, None)
     }
 
@@ -379,7 +379,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     val loaded = inSession { implicit session =>
       sql"SELECT id, version, document FROM ${tableNameSQL}"
           .map(rs => rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3))))
-        .list.apply()
+        .list().apply()
     }
     loaded.foreach(t => cache.put(t._1, Some(t._2)))
     loaded.map(v => (v._1, Document(v._2.document))).toMap
@@ -465,7 +465,7 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
     inSession { implicit session =>
       sql"INSERT INTO ${tableNameSQL} (space_id, id, version, document) VALUES (?, ?, 1, ?::jsonb)"
         .bind(spaceId, key, mpjsons.serialize(document))
-        .executeUpdate().apply()
+        .update().apply()
       cache.put(key, Some(VersionedDocument(1, document)))
     }
   }
@@ -493,11 +493,11 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
           val updated = if(modified.document == document) {
             sql"UPDATE ${tableNameSQL} SET version = ? WHERE id = ? AND version = ?"
               .bind(version + 1, key, version)
-              .map(_.int(1)).single().executeUpdate().apply()
+              .map(_.int(1)).single().update().apply()
           } else {
              sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
               .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
-              .map(_.int(1)).single().executeUpdate().apply()
+              .map(_.int(1)).single().update().apply()
 
           }
 
@@ -535,11 +535,11 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
           val updated = if(modified.document == document) {
             sql"UPDATE ${tableNameSQL} SET version = ? WHERE id = ? AND version = ?"
               .bind(version + 1, key, version)
-              .map(_.int(1)).single().executeUpdate().apply()
+              .map(_.int(1)).single().update().apply()
           } else {
             val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
               .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
-              .map(_.int(1)).single().executeUpdate().apply()
+              .map(_.int(1)).single().update().apply()
           }
 
           if(updated == 0) {
@@ -560,7 +560,7 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
 
   def clearAllData()(implicit session: DBSession): Unit = {
     inSession { implicit session =>
-      sql"TRUNCATE TABLE ${tableNameSQL}".executeUpdate().apply()
+      sql"TRUNCATE TABLE ${tableNameSQL}".update().apply()
       cache.clear()
     }
   }
@@ -581,7 +581,7 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
     try {
       DB.autoCommit { implicit session =>
         sql"CREATE SEQUENCE IF NOT EXISTS ${sequenceNameSQL} START 1"
-          .executeUpdate().apply()
+          .update().apply()
       }
     } catch {
       case e: PSQLException if e.getServerErrorMessage.getSQLState == "42P07" => () // IF NOT EXIST workaround, 42P07 - PostgreSQL duplicate_table
@@ -626,11 +626,11 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
           val updated = if(modified.document == document) {
             sql"UPDATE ${tableNameSQL} SET version = ? WHERE id = ? AND version = ?"
               .bind(version + 1, key, version)
-              .map(_.int(1)).single().executeUpdate().apply()
+              .map(_.int(1)).single().update().apply()
           } else {
             sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
               .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
-              .map(_.int(1)).single().executeUpdate().apply()
+              .map(_.int(1)).single().update().apply()
           }
 
           if(updated == 0) {
@@ -656,11 +656,11 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
           val updated = if(modified.document == document) {
             sql"UPDATE ${tableNameSQL} SET version = ? WHERE id = ? AND version = ?"
               .bind(version + 1, key, version)
-              .map(_.int(1)).single().executeUpdate().apply()
+              .map(_.int(1)).single().update().apply()
           } else {
             sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
               .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
-              .map(_.int(1)).single().executeUpdate().apply()
+              .map(_.int(1)).single().update().apply()
           }
 
           if(updated == 0) {
@@ -675,8 +675,8 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
 
   def clearAllData()(implicit session: DBSession): Unit = {
     inSession { implicit session =>
-      sql"TRUNCATE TABLE ${tableNameSQL}".executeUpdate().apply()
-      sql"ALTER SEQUENCE ${sequenceNameSQL} RESTART WITH 1".executeUpdate().apply()
+      sql"TRUNCATE TABLE ${tableNameSQL}".update().apply()
+      sql"ALTER SEQUENCE ${sequenceNameSQL} RESTART WITH 1".update().apply()
       cache.clear()
     }
   }

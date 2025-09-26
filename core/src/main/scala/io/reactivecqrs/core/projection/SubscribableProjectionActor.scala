@@ -3,7 +3,6 @@ package io.reactivecqrs.core.projection
 import java.time.{Duration, Instant}
 
 import org.apache.pekko.actor.ActorRef
-import io.reactivecqrs.core.util.RandomUtil
 import io.reactivecqrs.core.projection.SubscribableProjectionActor._
 
 import scala.collection.mutable
@@ -31,14 +30,14 @@ case class UpdateCacheEntry(arrived: Instant, value: Any)
 
 case class SubscriptionInfo(subscriptionId: String, listener: ActorRef, acceptor: _ => Option[_], typeName: String, renewal: Instant)
 
-abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.ZERO, groupUpdatesDelayMillis: Long = 0, subscriptionTTL: Int = SubscribableProjectionActor.defaultSubscriptionTTL, minimumDelayVersion: Int = 1, eventsToProcessImmediately: Set[Class[_]] = Set.empty) extends ProjectionActor(groupUpdatesDelayMillis, minimumDelayVersion, eventsToProcessImmediately) {
+abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.ZERO, subscriptionTTL: Int = SubscribableProjectionActor.defaultSubscriptionTTL, options: ProjectionActorOptions = ProjectionActorOptions.DEFAULT) extends ProjectionActor(options) {
 
   protected def receiveSubscriptionRequest: Receive
 
   protected def receiveSubscription: Receive = receiveSubscriptionRequest orElse {
     case CancelProjectionSubscriptions(subscriptionsToCancel) =>
       subscriptionsToCancel.foreach(handleUnsubscribe)
-      sender ! ProjectionSubscriptionsCancelled(subscriptionsToCancel)
+      sender() ! ProjectionSubscriptionsCancelled(subscriptionsToCancel)
     case RenewSubscription(subscriptionId) => renewSubscription(subscriptionId)
     case ClearIdleSubscriptions => clearIdleSubscriptions()
   }
@@ -49,7 +48,7 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
   private val subscriptionsPerType = mutable.HashMap[String, List[String]]()
   private val updatesCache: mutable.Queue[UpdateCacheEntry] = mutable.Queue.empty
 
-  override def preStart() {
+  override def preStart(): Unit = {
     super.preStart()
     context.system.scheduler.schedule(1.minute, 1.minute, self, ClearIdleSubscriptions)(context.dispatcher)
   }

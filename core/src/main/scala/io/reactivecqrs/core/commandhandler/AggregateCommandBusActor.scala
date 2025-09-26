@@ -67,8 +67,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     eventsVersions.flatMap(evs => evs.mapping.map(e => e.eventType -> EventTypeVersion(evs.eventBaseType, e.version))).toMap
   }
 
-  val aggregateTypeName = aggregateRootClassTag.runtimeClass.getName
-  val aggregateTypeSimpleName = aggregateRootClassTag.runtimeClass.getSimpleName
+  val aggregateTypeName: String = aggregateRootClassTag.runtimeClass.getName
+  val aggregateTypeSimpleName: String = aggregateRootClassTag.runtimeClass.getSimpleName
 
 
   private var nextAggregateId = 0L
@@ -90,7 +90,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     context.system.scheduler.scheduleOnce(30.second, self, EnsureEventsPublished(false))(context.dispatcher)
   }
 
-  override def preStart() {
+  override def preStart(): Unit = {
     if (!eventsReplayMode) {
       context.system.scheduler.schedule(60.seconds, 60.seconds, self, EnsureEventsPublished(true))(context.dispatcher)
     }
@@ -305,7 +305,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private def takeNextAggregateId: AggregateId = {
     if(remainingAggregateIds == 0) {
       // TODO get rid of ask pattern
-      implicit val timeout = Timeout(60 seconds)
+      implicit val timeout: Timeout = Timeout(60 seconds)
       val pool: Future[NewAggregatesIdsPool] = (uidGenerator ? UidGeneratorActor.GetNewAggregatesIdsPool).mapTo[NewAggregatesIdsPool]
       val newAggregatesIdsPool: NewAggregatesIdsPool = Await.result(pool, 60 seconds)
       remainingAggregateIds = newAggregatesIdsPool.size
@@ -322,7 +322,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private def takeNextCommandId: CommandId = {
     if(remainingCommandsIds == 0) {
       // TODO get rid of ask pattern
-      implicit val timeout = Timeout(60 seconds)
+      implicit val timeout: Timeout = Timeout(60 seconds)
       val pool: Future[NewCommandsIdsPool] = (uidGenerator ? UidGeneratorActor.GetNewCommandsIdsPool).mapTo[NewCommandsIdsPool]
       val newCommandsIdsPool: NewCommandsIdsPool = Await.result(pool, 60 seconds)
       remainingCommandsIds = newCommandsIdsPool.size

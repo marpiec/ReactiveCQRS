@@ -87,7 +87,7 @@ class MemoryEventStoreState extends EventStoreState {
     })
   }
 
-  override def deletePublishedEventsToPublish(eventsIds: Seq[EventWithIdentifier[_]]): Unit = {
+  override def deletePublishedEventsToPublish(aggregateId: AggregateId, eventsIds: Seq[EventWithIdentifier[_]]): Unit = {
 
     eventsIds.foreach { eventId =>
       val keyToDelete = eventsToPublish.keys.find(key => key._1 == eventId.aggregateId && key._2 == eventId.version).get

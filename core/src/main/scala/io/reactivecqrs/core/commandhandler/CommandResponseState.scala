@@ -54,13 +54,13 @@ class PostgresCommandResponseState(mpjsons: MPJsons, typesNamesState: TypesNames
 
   override def storeResponse(key: String, response: CustomCommandResponse[_])(implicit session: DBSession): Unit = {
     sql"""INSERT INTO commands_responses (id, key, handling_timestamp, response, response_type_id) VALUES (nextval('commands_responses_seq'), ?, current_timestamp, ?, ?)"""
-      .bind(key, mpjsons.serialize(response, response.getClass.getName), typesNamesState.typeIdByClass(response.getClass)).executeUpdate().apply()
+      .bind(key, mpjsons.serialize(response, response.getClass.getName), typesNamesState.typeIdByClass(response.getClass)).update().apply()
   }
 
   override def responseByKey(key: String): Option[CustomCommandResponse[_]] = {
     DB.readOnly { implicit session =>
       sql"""SELECT response, response_type_id FROM commands_responses WHERE key = ?"""
-        .bind(key).map(rs => mpjsons.deserialize[CustomCommandResponse[_]](rs.string(1), typesNamesState.classNameById(rs.short(2)))).single.apply()
+        .bind(key).map(rs => mpjsons.deserialize[CustomCommandResponse[_]](rs.string(1), typesNamesState.classNameById(rs.short(2)))).single().apply()
     }
   }
 }

@@ -25,7 +25,7 @@ object SagaActor {
 // TODO manual reply of saga? as saga might not know that previous command succeded? or command idempotency?
 abstract class SagaActor extends Actor with MyActorLogging {
 
-  implicit val timeout = Timeout(60.seconds)
+  implicit val timeout: Timeout = Timeout(60.seconds)
 
   import context.dispatcher
 
@@ -55,7 +55,7 @@ abstract class SagaActor extends Actor with MyActorLogging {
 
   override def receive: Receive = {
     case LoadPendingSagas => loadPendingSagas()
-    case m: SagaOrder => persistInitialSagaStatusAndSendConfirm(self, takeNextSagaId, sender.path.toString, m)
+    case m: SagaOrder => persistInitialSagaStatusAndSendConfirm(self, takeNextSagaId, sender().path.toString, m)
     case m: SagaPersisted if m.phase == CONTINUES => internalHandleOrderContinue(self, m.sagaId, m.step, m.respondTo, m.order)
     case m: SagaPersisted if m.phase == REVERTING => internalHandleRevert(self, m.sagaId, m.step, m.respondTo, m.order)
     case m => log.warning("Received incorrect message of type: [" + m.getClass.getName +"] "+m)

@@ -375,7 +375,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     pendingPublish = remaining
 
     Future { // Fire and forget
-      eventStore.deletePublishedEventsToPublish(published.map(v => EventWithIdentifier(aggregateId, v.version, v.event)))
+      eventStore.deletePublishedEventsToPublish(aggregateId, published.map(v => EventWithIdentifier(aggregateId, v.version, v.event)))
     } onComplete {
       case Success(value) => ()
       case Failure(e) => throw new IllegalStateException(e)

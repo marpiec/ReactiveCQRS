@@ -57,7 +57,7 @@ class BackPressureActor(consumer: ActorRef) extends Actor with MyActorLogging {
     case ProducerAllowMore =>
       if(allowed > 0 || postponed) {
         postponed = false
-        sender ! ProducerAllowedMore(allowed)
+        sender() ! ProducerAllowedMore(allowed)
         allowed = 0
       } else {
         producer = Some(sender())

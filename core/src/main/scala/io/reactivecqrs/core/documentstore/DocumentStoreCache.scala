@@ -1,7 +1,5 @@
 package io.reactivecqrs.core.documentstore
 
-import scala.collection.mutable
-
 sealed trait CacheEntry[+T] {
   /**
     * @return Some for InCache, None for InCacheEmpty, Some(default) for NotInCache

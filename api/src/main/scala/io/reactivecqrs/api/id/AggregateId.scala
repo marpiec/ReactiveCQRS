@@ -13,7 +13,7 @@ object LRUCache {
 }
 
 object AggregateId {
-  private var pool: java.util.Map[Long, AggregateId] = LRUCache[Long, AggregateId](1000).asJava
+  private val pool: java.util.Map[Long, AggregateId] = LRUCache[Long, AggregateId](1000).asJava
   def apply(asLong: Long): AggregateId = {
     val fromPool = pool.get(asLong)
     if(fromPool == null) {

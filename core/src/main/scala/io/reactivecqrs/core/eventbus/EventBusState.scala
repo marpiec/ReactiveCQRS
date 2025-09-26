@@ -17,7 +17,7 @@ abstract class EventBusState {
 
 class MemoryEventBusState extends EventBusState {
 
-  private var state = new mutable.HashMap[AggregateId, AggregateVersion]()
+  private val state = new mutable.HashMap[AggregateId, AggregateVersion]()
 
   override def lastPublishedEventForAggregate(aggregateId: AggregateId): AggregateVersion = {
     state.getOrElse(aggregateId, {
@@ -89,7 +89,7 @@ class PostgresEventBusState extends EventBusState {
 
   private def addAggregateEntry(aggregateId: AggregateId)(implicit session: DBSession): AggregateVersion = {
     sql"""INSERT INTO event_bus (id, aggregate_id, aggregate_version) VALUES (nextval('event_bus_seq'), ?, 0)"""
-      .bind(aggregateId.asLong).executeUpdate().apply()
+      .bind(aggregateId.asLong).update().apply()
     AggregateVersion.ZERO
   }
 
@@ -113,7 +113,7 @@ class PostgresEventBusState extends EventBusState {
 
 //    DB.localTx { implicit session =>
 //      val rowsUpdated = sql"""UPDATE event_bus SET aggregate_version = ? WHERE aggregate_id = ? AND aggregate_version = ?"""
-//        .bind(aggregateVersion.asInt, aggregateId.asLong, lastAggregateVersion.asInt).map(rs => rs.int(1)).single().executeUpdate().apply()
+//        .bind(aggregateVersion.asInt, aggregateId.asLong, lastAggregateVersion.asInt).map(rs => rs.int(1)).single().update().apply()
 //      if (rowsUpdated == 1) {
 //        Success(())
 //      } else {
@@ -126,7 +126,7 @@ class PostgresEventBusState extends EventBusState {
   override def flushUpdates(): Try[Unit] = synchronized {
     if(aggregatesToUpdate.nonEmpty) {
       try {
-        DB.localTx { implicit session =>
+        DB.autoCommit { implicit session =>
           val params: Seq[Seq[Any]] = aggregatesToUpdate.toSeq.map {
             case (key, CacheValue(last, current))=> Seq(current.asInt, key.asLong, last.asInt)
           }

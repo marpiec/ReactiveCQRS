@@ -16,21 +16,21 @@ class PostgresSagaState(mpjsons: MPJsons, typesNamesState: TypesNamesState) exte
       sql"""INSERT INTO sagas (name, saga_id, user_id, respond_to, creation_time, update_time, phase, step, saga_order, order_type_id)
             |VALUES (?, ?, ?, ?, current_timestamp, current_timestamp, ?, ?, ?, ?)""".stripMargin
         .bind(name, sagaId.asLong, order.userId.asLong, respondTo, CONTINUES.name, 0,
-          mpjsons.serialize(order, order.getClass.getName), typesNamesState.typeIdByClass(order.getClass)).executeUpdate().apply()
+          mpjsons.serialize(order, order.getClass.getName), typesNamesState.typeIdByClass(order.getClass)).update().apply()
     }
   }
 
   override def updateSaga(name: String, sagaId: SagaId, order: SagaInternalOrder, phase: SagaPhase, step: Int): Unit = {
     DB.autoCommit { implicit session =>
       sql"""UPDATE sagas SET update_time = current_timestamp, saga_order = ?, order_type_id = ?, phase = ?, step = ? WHERE name = ? AND saga_id = ?"""
-        .bind(mpjsons.serialize(order, order.getClass.getName), typesNamesState.typeIdByClass(order.getClass), phase.name, step, name, sagaId.asLong).executeUpdate().apply()
+        .bind(mpjsons.serialize(order, order.getClass.getName), typesNamesState.typeIdByClass(order.getClass), phase.name, step, name, sagaId.asLong).update().apply()
     }
   }
 
   override def deleteSaga(name: String, sagaId: SagaId): Unit = {
     DB.autoCommit { implicit session =>
       sql"""DELETE FROM sagas WHERE name = ? AND saga_id = ?"""
-        .bind(name, sagaId.asLong).executeUpdate().apply()
+        .bind(name, sagaId.asLong).update().apply()
     }
   }
 

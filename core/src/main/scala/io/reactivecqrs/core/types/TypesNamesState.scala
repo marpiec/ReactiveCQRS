@@ -85,7 +85,7 @@ class PostgresTypesNamesState extends TypesNamesState {
     init()
     cacheReverse.get(id) match {
       case Some(className) => className
-      case None => DB.localTx { implicit session =>
+      case None => DB.readOnly { implicit session =>
         sql"""SELECT name FROM types_names WHERE id = ?"""
           .bind(id).map(_.string(1)).single().apply().getOrElse(throw new IllegalStateException("No entry for type id " + id+" in types_names found"))
       }

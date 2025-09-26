@@ -2,8 +2,6 @@ package io.reactivecqrs.core.documentstore
 
 import scalikejdbc.DBSession
 
-import scala.collection.immutable.ListMap
-
 case class VersionedDocument[T <: AnyRef](version: Int, document: T)
 
 case class Document[T <: AnyRef](document: T)

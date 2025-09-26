@@ -106,7 +106,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     events.foreach(e => {
       sql"""
            |UPDATE events SET event = ? WHERE aggregate_id = ? AND version = ?
-      """.stripMargin.bind(mpjsons.serialize(e.event, e.event.getClass.getName), aggregateId.asLong, e.version.asInt).executeUpdate().apply()
+      """.stripMargin.bind(mpjsons.serialize(e.event, e.event.getClass.getName), aggregateId.asLong, e.version.asInt).update().apply()
     })
   }
 
@@ -234,22 +234,33 @@ ORDER BY events.id""")
     }
   }
 
+  private val DELETE_EVENT_QUERY = sql"""DELETE FROM events_to_publish WHERE aggregate_id = ? AND version = ?"""
 
-  override def deletePublishedEventsToPublish(events: Seq[EventWithIdentifier[_]]): Unit = {
-    // TODO optimize SQL query so it will be one query
-    DB.autoCommit { implicit session =>
-      events.foreach {event =>
-        if(event.event.isInstanceOf[PermanentDeleteEvent[_]]) {
-          sql"""DELETE FROM aggregates WHERE id = ?""".bind(event.aggregateId.asLong).executeUpdate().apply()
-          sql"""DELETE FROM events WHERE aggregate_id = ?""".bind(event.aggregateId.asLong).executeUpdate().apply()
-          sql"""DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = ?)""".bind(event.aggregateId.asLong).executeUpdate().apply()
-          sql"""DELETE FROM events_to_publish WHERE aggregate_id = ?""".bind(event.aggregateId.asLong).executeUpdate().apply()
-          sql"""DELETE FROM subscriptions WHERE aggregate_id = ?""".bind(event.aggregateId.asLong).executeUpdate().apply()
-        } else {
-          sql"""DELETE FROM events_to_publish WHERE aggregate_id = ? AND version = ?"""
+  override def deletePublishedEventsToPublish(aggregateId: AggregateId, events: Seq[EventWithIdentifier[_]]): Unit = {
+
+    if(events.exists(e => e.event.isInstanceOf[PermanentDeleteEvent[_]])) {
+      DB.localTx { implicit session =>
+        sql"""DELETE FROM aggregates WHERE id = ?""".bind(aggregateId.asLong).update().apply()
+        sql"""DELETE FROM events WHERE aggregate_id = ?""".bind(aggregateId.asLong).update().apply()
+        sql"""DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = ?)""".bind(aggregateId.asLong).update().apply()
+        sql"""DELETE FROM events_to_publish WHERE aggregate_id = ?""".bind(aggregateId.asLong).update().apply()
+        sql"""DELETE FROM subscriptions WHERE aggregate_id = ?""".bind(aggregateId.asLong).update().apply()
+      }
+    } else if(events.length == 1) {
+      val event = events.head
+      DB.autoCommit { implicit session =>
+        DELETE_EVENT_QUERY
             .bind(event.aggregateId.asLong, event.version.asInt)
-            .executeUpdate().apply()
-        }
+            .update().apply()
+      }
+    } else {
+      val versions = events.map(_.version.asInt)
+      val params = versions.map(_ => "?").mkString(",")
+      DB.autoCommit { implicit session =>
+        SQL(s"""DELETE FROM events_to_publish WHERE aggregate_id = ? AND version IN ($params)""")
+          .bind(aggregateId.asLong +: versions: _*)
+          .update()
+          .apply()
       }
     }
   }

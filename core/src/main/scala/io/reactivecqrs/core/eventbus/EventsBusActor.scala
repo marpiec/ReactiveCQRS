@@ -91,7 +91,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
   private var lastLogged = 0
 
-  override def preStart() {
+  override def preStart(): Unit = {
 
     context.system.scheduler.schedule(5.seconds, 5.seconds, new Runnable {
       override def run(): Unit = {
@@ -172,7 +172,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     // do not call preStart
   }
 
-  private def logMessage(message: String) {
+  private def logMessage(message: String): Unit = {
     println(message)
     log.info(message)
   }
@@ -206,9 +206,9 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     case m: MessageAck =>
       handleMessageAck(m)
     case ConsumerStart =>
-      backPressureProducerActor = Some(sender)
+      backPressureProducerActor = Some(sender())
       if(receivedInProgressMessages + orderedMessages < MAX_BUFFER_SIZE) {
-        sender ! ConsumerAllowedMore(MAX_BUFFER_SIZE - receivedInProgressMessages - orderedMessages)
+        sender() ! ConsumerAllowedMore(MAX_BUFFER_SIZE - receivedInProgressMessages - orderedMessages)
         orderedTotal += MAX_BUFFER_SIZE - receivedInProgressMessages - orderedMessages
         orderedMessages = MAX_BUFFER_SIZE
         orderedMessageTimestamp = System.currentTimeMillis()
@@ -367,7 +367,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
 
 
-    //    println("MessageAck received " + ack.subscriber+" "+ack.versions.head.asInt+"->"+ack.versions.last.asInt)
+//    println("MessageAck received " + ack.subscriber+" "+ack.aggregateId.asLong+": "+ack.versions.map(_.asInt).mkString(", ")+" "+self.path)
 
     messageAckTotal += ack.versions.size
 
@@ -397,10 +397,12 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
       receivedInProgressMessages -= finishedEvents.size
 
-      // TODO optimize by grouping versions ber sender
-      finishedEvents.toMap.keys.foreach(e => {
-        eventSenders(e) ! PublishEventsAck(aggregateId, Seq(e.version))
-      })
+      finishedEvents.groupBy(e => (eventSenders(e._1), e._1.aggregateId)).foreach {
+        case ((sender, aggregateId), events) =>
+          sender ! PublishEventsAck(aggregateId, events.map(_._1.version).toSeq.sortBy(_.asInt))
+      }
+
+
 
       messagesSent --= eventsToConfirm
       eventSenders --= eventsToConfirm

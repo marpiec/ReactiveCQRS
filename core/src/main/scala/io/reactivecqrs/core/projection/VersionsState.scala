@@ -53,11 +53,11 @@ class PostgresVersionsState() extends VersionsState {
     if(versionFor(componentName, componentType) > 0) {
       sql"""UPDATE components_versions SET component_version = ? WHERE component_name = ? AND component_type = ?""".stripMargin
         .bind(version, componentName, componentType)
-        .executeUpdate().apply()
+        .update().apply()
     } else {
       sql"""INSERT INTO components_versions (component_name, component_type, component_version) VALUES (?, ?, ?)""".stripMargin
         .bind(componentName, componentType, version)
-        .executeUpdate().apply()
+        .update().apply()
     }
 
   }

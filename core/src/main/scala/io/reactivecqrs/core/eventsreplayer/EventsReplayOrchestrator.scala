@@ -17,7 +17,7 @@ class EventsReplayOrchestrator {
 
   private val log = LoggerFactory.getLogger(classOf[EventsReplayOrchestrator])
 
-  private def logMessage(message: String) {
+  private def logMessage(message: String): Unit = {
     println(message)
     log.info(message)
   }
