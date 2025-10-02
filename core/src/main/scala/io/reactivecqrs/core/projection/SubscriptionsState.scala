@@ -108,28 +108,11 @@ class MemorySubscriptionsState extends SubscriptionsState {
 
 
 object SubscriptionCacheKey {
-
-  private val pool: mutable.HashMap[String, String] = new mutable.HashMap[String, String]()
-
   def get(typesNamesState: TypesNamesState, subscriberName: String, subscriptionType: SubscriptionType): String = {
-    val key = typesNamesState.typeIdByClassName(subscriberName)+"|"+subscriptionType.id
-
-    pool.get(key) match {
-      case Some(k) => k
-      case None =>
-        pool.put(key, key)
-        key
-    }
+    typesNamesState.typeIdByClassName(subscriberName)+"|"+subscriptionType.id
   }
   def getById(subscriberNameId: Short, subscriptionTypeId: Short): String = {
-    val key = subscriberNameId+"|"+subscriptionTypeId
-
-    pool.get(key) match {
-      case Some(k) => k
-      case None =>
-        pool.put(key, key)
-        key
-    }
+    subscriberNameId+"|"+subscriptionTypeId
   }
 }
 
@@ -217,7 +200,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
     newEventId(subscriberName, SubscriptionType.AGGREGATES_WITH_EVENTS, aggregateId, lastAggregateVersion, aggregateVersion)
   }
 
-  private def newEventId(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit = synchronized {
+  private def newEventId(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit = {
     val key = SubscriptionCacheKey.get(typesNamesState, subscriberName, subscriptionType)
     var saveInDB = false
     synchronized {
@@ -326,7 +309,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
     if(lastAggregateVersion == AggregateVersion.ZERO) {
       insertQuery.bind(typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, aggregateVersion.asInt).update().apply()
     } else {
-      val rowsUpdated = updateQuery.bind(aggregateVersion.asInt, typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, lastAggregateVersion.asInt).map(rs => rs.int(1)).single().update().apply()
+      val rowsUpdated = updateQuery.bind(aggregateVersion.asInt, typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, lastAggregateVersion.asInt).update().apply()
       if (rowsUpdated != 1) {
         throw new OptimisticLockingFailed // TODO handle this
       }

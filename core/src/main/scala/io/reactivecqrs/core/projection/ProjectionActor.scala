@@ -99,7 +99,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
 
   private val executionContext: Option[ExecutionContext] = options.parallelUpdateProcessing match {
-    case 0 => None
+    case threads if threads <= 1 => None
     case threads => Some(ExecutionContext.fromExecutor(Executors.newFixedThreadPool(threads)))
   }
 
@@ -327,6 +327,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     ordered.tail.foreach { e =>
       if (e.events.head.version.isJustAfter(events.events.last.version)) {
         events = AggregateWithTypeAndEvents(events.aggregateType, events.id, e.aggregateRoot, events.events ++ e.events, e.replayed)
+        log.debug("Handling delayed aggregate with events update for aggregate " + e.aggregateType.simpleName + ":" + e.id.asLong + ", events: " + events.events.map(_.version.asInt).mkString(","))
       } else {
         skipped = e :: skipped
         log.warning("Events are not in order (Aggregate with Events) in projection "+ projectionName+" for aggregate "+aggregateId.asLong+": " + events.events.map(_.version.asInt).mkString(",") + " -> " + e.events.map(_.version.asInt).mkString(","))
@@ -337,6 +338,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       delayedAggregateWithEventsUpdate -= aggregateId
     } else {
       delayedAggregateWithEventsUpdate += aggregateId -> skipped
+      triggerScheduledForAggregate += aggregateId -> true
       mySelf ! TriggerDelayedUpdateAggregateWithEvents(aggregateId, respondTo)
     }
 
@@ -389,6 +391,10 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
           processedAggregates.put(e.aggregateId.asLong, true)
           Future {
             processEventsUpdate(mySelf, respondTo, e, lastVersion)
+          }(context).onComplete {
+            case Success(_) => ()
+            case Failure(ex) =>
+              log.debug(s"Error on async events update processing for aggregate ${e.aggregateId.asLong}: ${ex.getMessage}", ex)
           }(context)
         case None =>
           processEventsUpdate(mySelf, respondTo, e, lastVersion)
@@ -443,6 +449,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
     if (newEvents.isEmpty && alreadyProcessed.nonEmpty) {
       respondTo ! MessageAck(mySelf, ae.id, alreadyProcessed.map(_.version))
+      log.debug("Sending ACK message for already processed events for aggregate " + ae.id+": "+alreadyProcessed.map(_.version.asInt).mkString(","))
     } else if (newEvents.nonEmpty && newEvents.head.version.isJustAfter(lastVersion)) {
 
       executionContext match {
@@ -450,6 +457,10 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
           processedAggregates.put(ae.id.asLong, true)
           Future {
             processAggregateWithEventsUpdate(mySelf, respondTo, ae, newEvents, alreadyProcessed, lastVersion)
+          }(context).onComplete {
+            case Success(_) => ()
+            case Failure(ex) =>
+              log.debug(s"Error on async aggregate with events update processing for aggregate ${ae.id.asLong}: ${ex.getMessage}", ex)
           }(context)
         case None =>
           processAggregateWithEventsUpdate(mySelf, respondTo, ae, newEvents, alreadyProcessed, lastVersion)
@@ -457,7 +468,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
 
     } else if (newEvents.nonEmpty) { // not just after previous update
-//      log.debug("Delaying aggregate with events update handling for aggregate " + ae.aggregateType.simpleName + ":" + ae.id.asLong + ", got update for version " + ae.events.map(_.version.asInt).mkString(", ") + " but only processed version " + lastVersion.asInt)
+      log.debug("Delaying aggregate with events update handling for aggregate " + ae.aggregateType.simpleName + ":" + ae.id.asLong + ", got update for version " + ae.events.map(_.version.asInt).mkString(", ") + " but only processed version " + lastVersion.asInt)
       delayedAggregateWithEventsUpdate += ae.id -> (ae :: delayedAggregateWithEventsUpdate.getOrElse(ae.id, List.empty))
     } else {
       throw new IllegalArgumentException("Received empty list of events!")
@@ -513,6 +524,10 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
           processedAggregates.put(a.id.asLong, true)
           Future {
             processAggregateUpdate(mySelf, respondTo, a, newEvents, alreadyProcessed, lastVersion)
+          }(context).onComplete {
+            case Success(_) => ()
+            case Failure(ex) =>
+              log.debug(s"Error on async aggregate ${a.id.asLong} update processing: ${ex.getMessage}", ex)
           }(context)
         case None =>
           processAggregateUpdate(mySelf, respondTo, a, newEvents, alreadyProcessed, lastVersion)
