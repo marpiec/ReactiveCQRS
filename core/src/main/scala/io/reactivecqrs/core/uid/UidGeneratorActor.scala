@@ -37,7 +37,7 @@ class UidGeneratorActor(aggregatesUidGenerator: UidGenerator,
       respondTo ! NewAggregatesIdsPool(pool.from, pool.size)
     } onComplete {
       case Failure(e) => println("Error while getting new aggregates ids pool", e)
-      case _ => _
+      case _ => ()
     }
   }
 
@@ -48,7 +48,7 @@ class UidGeneratorActor(aggregatesUidGenerator: UidGenerator,
       respondTo ! NewCommandsIdsPool(pool.from, pool.size)
     } onComplete {
       case Failure(e) => println("Error while getting new commands ids pool", e)
-      case _ => _
+      case _ => ()
     }
   }
 
@@ -59,7 +59,7 @@ class UidGeneratorActor(aggregatesUidGenerator: UidGenerator,
       respondTo ! NewSagasIdsPool(pool.from, pool.size)
     } onComplete {
       case Failure(e) => println("Error while getting new sagas ids pool", e)
-      case _ => _
+      case _ => ()
     }
   }
 }
