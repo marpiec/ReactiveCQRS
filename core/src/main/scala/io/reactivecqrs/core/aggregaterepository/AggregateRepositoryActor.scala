@@ -377,8 +377,8 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     Future { // Fire and forget
       eventStore.deletePublishedEventsToPublish(aggregateId, published.map(v => EventWithIdentifier(aggregateId, v.version, v.event)))
     } onComplete {
-      case Success(value) => ()
-      case Failure(e) => throw new IllegalStateException(e)
+      case Failure(e) => log.error("Error while deleting events to publish", e)
+      case _ => ()
     }
   }
 

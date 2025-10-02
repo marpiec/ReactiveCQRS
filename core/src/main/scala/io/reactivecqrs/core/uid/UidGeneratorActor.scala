@@ -36,8 +36,8 @@ class UidGeneratorActor(aggregatesUidGenerator: UidGenerator,
       val pool: IdsPool = aggregatesUidGenerator.nextIdsPool
       respondTo ! NewAggregatesIdsPool(pool.from, pool.size)
     } onComplete {
-      case Success(value) => ()
-      case Failure(e) => throw new IllegalStateException(e)
+      case Failure(e) => println("Error while getting new aggregates ids pool", e)
+      case _ => _
     }
   }
 
@@ -47,8 +47,8 @@ class UidGeneratorActor(aggregatesUidGenerator: UidGenerator,
       val pool: IdsPool = commandsUidGenerator.nextIdsPool
       respondTo ! NewCommandsIdsPool(pool.from, pool.size)
     } onComplete {
-      case Success(value) => ()
-      case Failure(e) => throw new IllegalStateException(e)
+      case Failure(e) => println("Error while getting new commands ids pool", e)
+      case _ => _
     }
   }
 
@@ -58,8 +58,8 @@ class UidGeneratorActor(aggregatesUidGenerator: UidGenerator,
       val pool: IdsPool = sagasUidGenerator.nextIdsPool
       respondTo ! NewSagasIdsPool(pool.from, pool.size)
     } onComplete {
-      case Success(value) => ()
-      case Failure(e) => throw new IllegalStateException(e)
+      case Failure(e) => println("Error while getting new sagas ids pool", e)
+      case _ => _
     }
   }
 }

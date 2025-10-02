@@ -392,9 +392,9 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
           Future {
             processEventsUpdate(mySelf, respondTo, e, lastVersion)
           }(context).onComplete {
-            case Success(_) => ()
             case Failure(ex) =>
               log.debug(s"Error on async events update processing for aggregate ${e.aggregateId.asLong}: ${ex.getMessage}", ex)
+            case _ => ()
           }(context)
         case None =>
           processEventsUpdate(mySelf, respondTo, e, lastVersion)
@@ -458,9 +458,8 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
           Future {
             processAggregateWithEventsUpdate(mySelf, respondTo, ae, newEvents, alreadyProcessed, lastVersion)
           }(context).onComplete {
-            case Success(_) => ()
-            case Failure(ex) =>
-              log.debug(s"Error on async aggregate with events update processing for aggregate ${ae.id.asLong}: ${ex.getMessage}", ex)
+            case Failure(ex) => log.debug(s"Error on async aggregate with events update processing for aggregate ${ae.id.asLong}: ${ex.getMessage}", ex)
+            case _ => ()
           }(context)
         case None =>
           processAggregateWithEventsUpdate(mySelf, respondTo, ae, newEvents, alreadyProcessed, lastVersion)
@@ -525,9 +524,8 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
           Future {
             processAggregateUpdate(mySelf, respondTo, a, newEvents, alreadyProcessed, lastVersion)
           }(context).onComplete {
-            case Success(_) => ()
-            case Failure(ex) =>
-              log.debug(s"Error on async aggregate ${a.id.asLong} update processing: ${ex.getMessage}", ex)
+            case Failure(ex) => log.debug(s"Error on async aggregate ${a.id.asLong} update processing: ${ex.getMessage}", ex)
+            case _ => ()
           }(context)
         case None =>
           processAggregateUpdate(mySelf, respondTo, a, newEvents, alreadyProcessed, lastVersion)
