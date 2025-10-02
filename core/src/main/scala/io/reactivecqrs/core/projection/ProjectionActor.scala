@@ -327,7 +327,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     ordered.tail.foreach { e =>
       if (e.events.head.version.isJustAfter(events.events.last.version)) {
         events = AggregateWithTypeAndEvents(events.aggregateType, events.id, e.aggregateRoot, events.events ++ e.events, e.replayed)
-        log.debug("Handling delayed aggregate with events update for aggregate " + e.aggregateType.simpleName + ":" + e.id.asLong + ", events: " + events.events.map(_.version.asInt).mkString(","))
+//        log.debug("Handling delayed aggregate with events update for aggregate " + e.aggregateType.simpleName + ":" + e.id.asLong + ", events: " + events.events.map(_.version.asInt).mkString(","))
       } else {
         skipped = e :: skipped
         log.warning("Events are not in order (Aggregate with Events) in projection "+ projectionName+" for aggregate "+aggregateId.asLong+": " + events.events.map(_.version.asInt).mkString(",") + " -> " + e.events.map(_.version.asInt).mkString(","))
