@@ -1,7 +1,6 @@
 package io.reactivecqrs.core.eventbus
 
 import java.time.Instant
-
 import org.apache.pekko.actor.{Actor, ActorRef}
 import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api._
@@ -9,6 +8,7 @@ import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.backpressure.BackPressureActor._
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventsAck, _}
 import io.reactivecqrs.core.util.{MyActorLogging, RandomUtil}
+import org.slf4j.Logger
 
 import scala.collection.mutable
 import scala.concurrent.Await
@@ -59,7 +59,8 @@ case class AggregateWithEventSubscription(subscriptionId: String, aggregateType:
 
 
 /** TODO get rid of state, memory only */
-class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: EventBusSubscriptionsManagerApi, val MAX_BUFFER_SIZE: Int = 1000) extends Actor with MyActorLogging {
+class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: EventBusSubscriptionsManagerApi, val MAX_BUFFER_SIZE: Int = 1000,
+                     eventsLogger: Option[Logger] = None) extends Actor with MyActorLogging {
 
   private var subscriptions: Map[AggregateType, Vector[Subscription]] = Map()
   private var subscriptionsByIds = Map[String, Subscription]()
@@ -120,7 +121,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
         // Producer starving
 
         if(orderedTotal > 0) {
-          val nowTimestamp = System.currentTimeMillis()
+          val nowTimestamp = System.nanoTime() / 1_000_000
 
 
           if (nowTimestamp - orderedMessageTimestamp > 240000) { // did not ordered in 4 minutes
@@ -161,8 +162,8 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       "receivedTotal="+receivedTotal+", " +
       "orderedTotal="+orderedTotal+", " +
       "orderedMessages="+orderedMessages+", " +
-      "orderedMessageTimestamp="+(System.currentTimeMillis() - orderedMessageTimestamp)+", " +
-      "orderedMessagePostponedTimestamp="+(System.currentTimeMillis() - orderedMessagePostponedTimestamp)+", " +
+      "orderedMessageTimestamp="+(System.nanoTime() / 1_000_000 - orderedMessageTimestamp)+", " +
+      "orderedMessagePostponedTimestamp="+(System.nanoTime() / 1_000_000 - orderedMessagePostponedTimestamp)+", " +
       "receivedInProgressMessages="+receivedInProgressMessages+", " +
       "lastMessageAck="+lastMessageAck+", " +
       "messagesSent="+messagesSent)
@@ -211,7 +212,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
         sender() ! ConsumerAllowedMore(MAX_BUFFER_SIZE - receivedInProgressMessages - orderedMessages)
         orderedTotal += MAX_BUFFER_SIZE - receivedInProgressMessages - orderedMessages
         orderedMessages = MAX_BUFFER_SIZE
-        orderedMessageTimestamp = System.currentTimeMillis()
+        orderedMessageTimestamp = System.nanoTime() / 1_000_000
         orderedMessagePostponedTimestamp = orderedMessageTimestamp
       }
     case ConsumerStop =>
@@ -324,13 +325,15 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       eventSenders += EventIdentifier(aggregateId, event.version) -> respondTo
     })
 
+    eventsLogger.foreach(_.debug("EventBus propagating events: " + messagesToSend.map(m => m.aggregateId.asLong+": "+ m.versions.map(_.asInt).mkString(", ") + " to " + m.subscriber.path).mkString("|")))
+
     messagesToSend.foreach(m => {
-      m.subscriber ! m.message
+       m.subscriber ! m.message
       messagesSentTotal += m.versions.size
     })
 
     if(messagesToSend.nonEmpty) {
-      lastMessageSent = System.currentTimeMillis()
+      lastMessageSent = System.nanoTime() / 1_000_000
     }
 
     val nowTimestamp = Instant.now()
@@ -363,26 +366,29 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
 
 
-  private def handleMessageAck(ack: MessageAck): Unit = {
+   private def handleMessageAck(ack: MessageAck): Unit = {
 
-
+     eventsLogger.foreach(_.debug("EventBus MessageAck received "+ack.aggregateId.asLong+": "+ack.versions.map(_.asInt).mkString(", ")+" from "+ ack.subscriber.path+" as "+self.path))
 
 //    println("MessageAck received " + ack.subscriber+" "+ack.aggregateId.asLong+": "+ack.versions.map(_.asInt).mkString(", ")+" "+self.path)
 
     messageAckTotal += ack.versions.size
 
-    lastMessageAck = System.currentTimeMillis()
+    lastMessageAck = System.nanoTime() / 1_000_000
 
     val aggregateId = ack.aggregateId
 
+    // Convert to EventIdentifiers
     val eventsIds = ack.versions.map(v => EventIdentifier(aggregateId, v)).toSet
 
-    val receiversToConfirm = messagesSent.view.filterKeys(e => eventsIds.contains(e)).toMap
+    // Find sent messages for given events
+    val receiversToConfirm = messagesSent.view.filterKeys(e => eventsIds.contains(e))
 
     val withoutConfirmedPerEvent = receiversToConfirm.map {
       case (eventId, receivers) => eventId -> receivers.filterNot(_._2 == ack.subscriber)
     }
 
+    // Which events received confirmation from all receivers and which not
     val (finishedEvents, remainingEvents) = withoutConfirmedPerEvent.partition {
       case (eventId, receivers) => receivers.isEmpty
     }
@@ -393,7 +399,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
     if(finishedEvents.nonEmpty) {
 
-      val eventsToConfirm: Iterable[EventIdentifier] = finishedEvents.keys
+      val eventsToConfirm: Iterable[EventIdentifier] = finishedEvents.toMap.keys
 
       receivedInProgressMessages -= finishedEvents.size
 
@@ -444,7 +450,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       orderedTotal += MAX_BUFFER_SIZE - receivedInProgressMessages - orderedMessages
 
       orderedMessages = MAX_BUFFER_SIZE - receivedInProgressMessages
-      orderedMessageTimestamp = System.currentTimeMillis()
+      orderedMessageTimestamp = System.nanoTime() / 1_000_000
       orderedMessagePostponedTimestamp = orderedMessageTimestamp
     }
   }

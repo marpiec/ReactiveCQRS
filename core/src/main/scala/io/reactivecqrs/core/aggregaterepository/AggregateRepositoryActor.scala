@@ -49,7 +49,7 @@ object AggregateRepositoryActor {
   case class AggregateWithSelectedEvents[AGGREGATE_ROOT](aggregate: Aggregate[AGGREGATE_ROOT], events: Iterable[EventWithVersion[AGGREGATE_ROOT]])
 }
 
-case class DelayedMinVersionQuery(respondTo: ActorRef, requestedVersion: AggregateVersion, untilTimestamp: Long)
+case class DelayedMinVersionQuery(respondTo: ActorRef, requestedVersion: AggregateVersion, untilNanoTimestamp: Long)
 
 class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: AggregateId,
                                                                 eventStore: EventStoreState,
@@ -94,7 +94,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
       pendingPublish = (eventsToPublish.map(e => EventWithIdentifier[AGGREGATE_ROOT](e.aggregateId, e.version, e.event)) ::: pendingPublish).distinct
 
-      context.system.scheduler.scheduleOnce(600.seconds, self, ResendPersistedMessages)(context.dispatcher)
+      context.system.scheduler.scheduleOnce(180.seconds, self, ResendPersistedMessages)(context.dispatcher)
     }
   }
 
@@ -114,7 +114,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     case ep: EventsPersisted[_] => handleEventsPersisted(ep)
     case GetAggregateRootCurrentVersion(respondTo) => receiveReturnAggregateRoot(respondTo, None)
     case GetEventsCurrentVersion(respondTo) => receiveReturnEvents(respondTo, None)
-    case GetAggregateRootCurrentMinVersion(respondTo, version, durationMillis) => receiveReturnAggregateRootMinVersion(respondTo, version, System.currentTimeMillis() + durationMillis)
+    case GetAggregateRootCurrentMinVersion(respondTo, version, durationMillis) => receiveReturnAggregateRootMinVersion(respondTo, version, System.nanoTime() + durationMillis * 1_000_000L)
     case GetAggregateRootExactVersion(respondTo, version) => receiveReturnAggregateRoot(respondTo, Some(version)) // for following command
     case GetAggregateRootWithEventsCurrentVersion(respondTo, eventTypes) => receiveReturnAggregateRootWithEvents(respondTo, None, eventTypes) // for following command
     case GetAggregateRootWithEventsExactVersion(respondTo, version, eventTypes) => receiveReturnAggregateRootWithEvents(respondTo, Some(version), eventTypes) // for following command
@@ -234,22 +234,22 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   private def replayDelayedQueries(): Unit = {
     if(delayedQueries.nonEmpty) {
-      val now = System.currentTimeMillis()
+      val now = System.nanoTime()
       val queries = delayedQueries
       delayedQueries = List.empty
       queries.foreach(q =>
-        if(q.untilTimestamp > now) {
-          receiveReturnAggregateRootMinVersion(q.respondTo, q.requestedVersion, q.untilTimestamp)
+        if(q.untilNanoTimestamp > now) {
+          receiveReturnAggregateRootMinVersion(q.respondTo, q.requestedVersion, q.untilNanoTimestamp)
         })
     }
   }
 
-  private def receiveReturnAggregateRootMinVersion(respondTo: ActorRef, requestedVersion: AggregateVersion, timeoutTimestamp: Long): Unit = {
+  private def receiveReturnAggregateRootMinVersion(respondTo: ActorRef, requestedVersion: AggregateVersion, timeoutNanoTimestamp: Long): Unit = {
     if(version >= requestedVersion) {
       respondTo ! Success(Aggregate[AGGREGATE_ROOT](aggregateId, version, Option(aggregateRoot)))
     } else {
-      val now = System.currentTimeMillis()
-      delayedQueries = DelayedMinVersionQuery(respondTo, requestedVersion, timeoutTimestamp) :: delayedQueries.filter(_.untilTimestamp > now)
+      val now = System.nanoTime()
+      delayedQueries = DelayedMinVersionQuery(respondTo, requestedVersion, timeoutNanoTimestamp) :: delayedQueries.filter(_.untilNanoTimestamp > now)
     }
   }
 

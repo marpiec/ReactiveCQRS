@@ -109,7 +109,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
     logMessage("Will replay "+allAggregatesEvents+" events out of " + allEvents + "(approximately)")
 
-    var lastUpdate = System.currentTimeMillis()
+    var lastUpdate = System.nanoTime() / 1_000_000
 
     val notYetPublishedAggregatesVersions = eventStore.readNotYetPublishedEvents()
 
@@ -170,10 +170,10 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
         allEventsSent += events.size
         lastDumpEventsSent += events.size
-        val now = System.currentTimeMillis()
+        val now = System.nanoTime() / 1_000_000
         if(now - lastUpdate > 5000) {
           logMessage("Replayed " + allEventsSent + "/" + allAggregatesEvents + " events")
-          lastUpdate = System.currentTimeMillis()
+          lastUpdate = System.nanoTime() / 1_000_000
         }
 
         if(allEventsSent < 1000 && lastDumpEventsSent >= 100 || allEventsSent < 10000 && lastDumpEventsSent >= 1000 || lastDumpEventsSent >= 10000) {

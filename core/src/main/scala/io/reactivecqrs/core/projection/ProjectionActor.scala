@@ -8,6 +8,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManagerApi, EventsBusActor}
 import EventsBusActor._
 import io.reactivecqrs.core.util.MyActorLogging
+import org.slf4j.{Logger, LoggerFactory}
 import scalikejdbc.DBSession
 
 import scala.collection.mutable
@@ -38,12 +39,13 @@ case class TriggerDelayedUpdateEvents(id: AggregateId, respondTo: ActorRef)
 
 
 object ProjectionActorOptions {
-  val DEFAULT = ProjectionActorOptions(0, 1, Set.empty, 0)
+  val DEFAULT = ProjectionActorOptions(0, 1, Set.empty, 0, None)
 }
 case class ProjectionActorOptions (groupUpdatesDelayMillis: Long,
                                    minimumDelayVersion: Int,
                                    eventsToProcessImmediately: Set[Class[_]],
-                                   parallelUpdateProcessing: Int) {
+                                   parallelUpdateProcessing: Int,
+                                   eventsLogger: Option[Logger]) {
 
   def withGroupUpdatesDelayMillis(millis: Long): ProjectionActorOptions = {
     copy(groupUpdatesDelayMillis = millis)
@@ -51,6 +53,10 @@ case class ProjectionActorOptions (groupUpdatesDelayMillis: Long,
 
   def withMinimumDelayVersion(version: Int): ProjectionActorOptions = {
     copy(minimumDelayVersion = version)
+  }
+
+  def withEventsLogger(logger: Logger): ProjectionActorOptions = {
+    copy(eventsLogger = Some(logger))
   }
 
   /**
@@ -77,6 +83,8 @@ case class ListenerOptions(noTransaction: Boolean = false)
 
 
 abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActorOptions.DEFAULT) extends Actor with MyActorLogging {
+
+  private val className = this.getClass.getSimpleName
 
   protected val projectionName: String
   protected val subscriptionsState: SubscriptionsState
@@ -382,12 +390,15 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     val alreadyProcessed = e.events.takeWhile(e => e.version <= lastVersion)
     val newEvents = e.events.drop(alreadyProcessed.length)
 
+    options.eventsLogger.foreach(_.debug(s"${className} events for aggregate ${e.aggregateId.asLong} recived, events: ${e.events.map(_.version.asInt).mkString(",")}"))
+
     if (newEvents.isEmpty && alreadyProcessed.nonEmpty) {
       respondTo ! MessageAck(mySelf, e.aggregateId, alreadyProcessed.map(_.version))
     } else if (newEvents.nonEmpty && newEvents.head.version.isJustAfter(lastVersion)) {
 
       executionContext match {
         case Some(context) =>
+          options.eventsLogger.foreach(_.debug(s"${className} processing events update for aggregate ${e.aggregateId.asLong} in async mode"))
           processedAggregates.put(e.aggregateId.asLong, true)
           Future {
             processEventsUpdate(mySelf, respondTo, e, lastVersion)
@@ -426,6 +437,8 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
       respondTo ! MessageAck(mySelf, aggregateId, e.events.map(_.version))
 
+      options.eventsLogger.foreach(_.debug(s"${className} aggregate ${e.aggregateId.asLong} events ACK sent: ${e.events.map(_.version.asInt).mkString(",")} to ${respondTo.path}") )
+
     } catch {
       case ex: Exception => log.error(ex, "Error handling update " + e.events.head.version.asInt + "-" + e.events.last.version.asInt)
     } finally {
@@ -447,10 +460,13 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     val alreadyProcessed: Seq[EventInfo[_]] = ae.events.takeWhile(e => e.version <= lastVersion)
     val newEvents: Seq[EventInfo[_]] = ae.events.drop(alreadyProcessed.length)
 
+    options.eventsLogger.foreach(_.debug(s"${className} events with aggregate ${ae.id.asLong} received, events: ${ae.events.map(_.version.asInt).mkString(",")}"))
+
     if (newEvents.isEmpty && alreadyProcessed.nonEmpty) {
       respondTo ! MessageAck(mySelf, ae.id, alreadyProcessed.map(_.version))
       log.debug("Sending ACK message for already processed events for aggregate " + ae.id+": "+alreadyProcessed.map(_.version.asInt).mkString(","))
     } else if (newEvents.nonEmpty && newEvents.head.version.isJustAfter(lastVersion)) {
+
 
       executionContext match {
         case Some(context) =>
@@ -493,6 +509,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
       respondTo ! MessageAck(mySelf, aggregateId, alreadyProcessed.map(_.version) ++ newEvents.map(_.version))
 
+      options.eventsLogger.foreach(_.debug(s"${className} aggregate ${ae.id.asLong} events ACK sent: ${ae.events.map(_.version.asInt).mkString(",")} to ${respondTo.path}") )
     } catch {
       case e: Exception => log.error(e, "Error handling update " + newEvents.head.version.asInt + "-" + ae.events.last.version.asInt)
     } finally {
@@ -513,6 +530,8 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     val lastVersion = subscriptionsState.lastVersionForAggregateSubscription(this.getClass.getName, a.id)
     val alreadyProcessed: Seq[AggregateVersion] = a.events.takeWhile(e => e <= lastVersion)
     val newEvents: Seq[AggregateVersion] = a.events.drop(alreadyProcessed.length)
+
+    options.eventsLogger.foreach(_.debug(s"${className} aggrgeate ${a.id.asLong} recived, events: ${a.events.map(_.asInt).mkString(",")}"))
 
     if (newEvents.isEmpty && alreadyProcessed.nonEmpty) {
       respondTo ! MessageAck(mySelf, a.id, alreadyProcessed)
@@ -557,6 +576,8 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       }
 
       respondTo ! MessageAck(mySelf, aggregateId, alreadyProcessed ++ newEvents)
+
+      options.eventsLogger.foreach(_.debug(s"${className} aggregate ${a.id.asLong} events ACK sent: ${a.events.map(_.asInt).mkString(",")} to ${respondTo.path}") )
 
     } catch {
       case e: Exception => log.error(e, "Error handling update " + newEvents.head.asInt + "-" + a.events.last.asInt)

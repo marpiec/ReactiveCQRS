@@ -34,7 +34,7 @@ class EventsReplayOrchestrator {
 
 
     implicit val tm: Timeout = timeout
-    val start = System.currentTimeMillis
+    val start = System.nanoTime() / 1_000_000
 
     logMessage("Rebuilding projections started at " + LocalDateTime.now())
 
@@ -83,7 +83,7 @@ class EventsReplayOrchestrator {
       logMessage("Projections cleared")
 
       val result: EventsReplayed = Await.result((eventsReplayerActor ? ReplayAllEvents(batchPerAggregate = true, orderedAggregatesToReplay, delayBetweenAggregatesMillis)).mapTo[EventsReplayed], timeout)
-      logMessage(result + " in " + formatDuration(System.currentTimeMillis - start))
+      logMessage(result + " in " + formatDuration(System.nanoTime() / 1_000_000 - start))
 
       aggregates.foreach(a => versionsState.saveVersionForAggregate(a.aggregateType, a.version))
       projectionSubscriptions.foreach(p => versionsState.saveVersionForProjection(p._2.projectionName, p._2.projectionVersion))

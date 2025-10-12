@@ -77,7 +77,7 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
     }
 
 
-    val start = System.currentTimeMillis()
+    val start = System.nanoTime()
 
     try {
       events.events.foreach(event => {
@@ -88,8 +88,8 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
         log.error(e, "Error while replaying events for aggregate " + aggregateId.asLong+" of type "+aggregateType.simpleName)
     }
 
-    if(System.currentTimeMillis() - start > 1000) {
-      log.warning("Replaying "+events.events.size+" events for aggregate " + aggregateId.asLong + " of type "+aggregateType.simpleName+" took "+(System.currentTimeMillis() - start)+" ms")
+    if(System.nanoTime() - start > 1000_000_000) {
+      log.warning("Replaying "+events.events.size+" events for aggregate " + aggregateId.asLong + " of type "+aggregateType.simpleName+" took "+((System.nanoTime() - start) / 1_000_000)+" ms")
     }
 
     val messageToSend: PublishReplayedEvents[AGGREGATE_ROOT] = PublishReplayedEvents(aggregateType, events.events, aggregateId, Option(aggregateRoot))

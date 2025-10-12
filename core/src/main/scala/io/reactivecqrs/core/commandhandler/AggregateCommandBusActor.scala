@@ -13,6 +13,7 @@ import io.reactivecqrs.core.commandhandler.CommandHandlerActor._
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
 import io.reactivecqrs.core.util.MyActorLogging
+import org.slf4j.Logger
 
 import scala.collection.mutable
 import scala.concurrent.duration._
@@ -38,7 +39,7 @@ object AggregateCommandBusActor {
       eventBus,
       aggregateContext.eventsVersions,
       eventsReplayMode,
-      keepAliveLimit, maxInactivityMillis,
+      keepAliveLimit, maxInactivityMillis, None,
       () => aggregateContext.initialAggregateRoot))
   }
 
@@ -56,6 +57,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
                                                        val eventsVersions: List[EventVersion[AGGREGATE_ROOT]],
                                                        val eventsReplayMode: Boolean,
                                                        val keepAliveLimit: Int, val maxInactivityMillis: Long,
+                                                       val eventsLogger: Option[Logger],
                                                        val initialState: () => AGGREGATE_ROOT)
                                                         (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor with MyActorLogging {
 
@@ -104,7 +106,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
 
   def maintenance(id: AggregateId)(implicit context: ActorContext): Unit = {
-    val now = System.currentTimeMillis()
+    val now = System.nanoTime() / 1_000_000
     this.childrenActivity += id.asLong -> now
     clearOldAggregateRepositories(now)
   }
@@ -139,7 +141,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
     val commandHandler = createCommandHandlerActorIfNeeded(newAggregateId)
     commandHandler ! InternalFirstCommandEnvelope[AGGREGATE_ROOT, RESPONSE](respondTo, commandId, firstCommand)
-    clearOldAggregateRepositories(System.currentTimeMillis())
+    clearOldAggregateRepositories(System.nanoTime() / 1_000_000)
   }
 
   private def createCommandHandlerActorIfNeeded(aggregateId: AggregateId): ActorRef = {
@@ -178,6 +180,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private def clearOldAggregateRepository(aggregateId: Long): Unit = {
     childrenActivity -= aggregateId
 
+    eventsLogger.foreach(_.debug("Terminating aggregate " + aggregateId+" because of inactivity"))
+
     commandHandlerActors.get(aggregateId).foreach(a => a ! PoisonPill)
     aggregateRepositoryActors.get(aggregateId).foreach(a => a ! PoisonPill)
     commandHandlerActors -= aggregateId
@@ -186,7 +190,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
 
   private def getOrCreateAggregateRepositoryActor(aggregateId: AggregateId): ActorRef = {
-    childrenActivity += aggregateId.asLong -> System.currentTimeMillis()
+    childrenActivity += aggregateId.asLong -> System.nanoTime() / 1_000_000
     aggregateRepositoryActors.getOrElse(aggregateId.asLong, {
       val ref = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, commandResponseState, eventBus, eventHandlers, initialState, None, eventsVersionsMap, eventsVersionsMapReverse)),
         aggregateTypeSimpleName + "_AR_" + aggregateId.asLong+"_"+spawnedCount)

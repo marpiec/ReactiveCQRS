@@ -97,10 +97,10 @@ class EventsReplaySpec extends CommonSpec {
       val fixture = Fixture
       import fixture._
 
-      val start = System.currentTimeMillis()
+      val start = System.nanoTime() / 1_000_000
       val result: EventsReplayed = replayerActor.askActor[EventsReplayed](ReplayAllEvents(false, Seq(AggregateType(classOf[ShoppingCart].getName)), 50))(50.seconds)
 
-      println(result+" in "+(System.currentTimeMillis() - start)+"mills")
+      println(result+" in "+(System.nanoTime() / 1_000_000 - start)+"mills")
 
       Thread.sleep(20000)
 

@@ -1,17 +1,18 @@
-import sbt.Keys._
-import sbt._
+import sbt.*
+import sbt.Keys.*
 
 object Common {
 
   def settings(moduleName: String) = Seq[Setting[_]](
 
+    version := "0.12.30",
+
     organization := "io.reactivecqrs",
     name := s"reactivecqrs-$moduleName",
-    version := "0.12.29",
     scalaVersion := "2.13.16",
 
-    /* required for Scalate to avoid version mismatch */
-    dependencyOverrides := Set(
+    // required for Scalate to avoid version mismatch
+    dependencyOverrides := Seq(
       "org.scala-lang" % "scala-library" % scalaVersion.value,
       "org.scala-lang" % "scala-reflect" % scalaVersion.value,
       "org.scala-lang" % "scala-compiler" % scalaVersion.value
@@ -25,35 +26,39 @@ object Common {
       "-Ywarn-dead-code",
       "-language:_",
       "-target:jvm-1.8",
-      "-encoding", "UTF-8"),
+      "-encoding", "UTF-8"
+    ),
 
-    resolvers in ThisBuild ++= Seq(
+    ThisBuild / resolvers ++= Seq(
       Resolver.mavenLocal,
       "eclipse repo" at "https://repo.eclipse.org/content/groups/releases/",
       "Sonatype repo" at "https://oss.sonatype.org/content/repositories/releases/",
-      "marpiec BinTray" at "https://bintray.com/artifact/download/marpiec/maven/"),
+      "marpiec BinTray" at "https://bintray.com/artifact/download/marpiec/maven/"
+    ),
 
     libraryDependencies ++= dependencies.common,
 
     licenses += ("MIT", url("http://opensource.org/licenses/MIT")),
 
-    updateOptions := updateOptions.value.withCachedResolution(cachedResoluton = true),
+    updateOptions := updateOptions.value.withCachedResolution(true),
 
     publishMavenStyle := true,
-
-    publishArtifact in Test := false,
+    Test / publishArtifact := false,
 
     pomIncludeRepository := { _ => false },
 
-    publishLocal := {},
-
-    publishTo := Some("snapshots" at sys.props.getOrElse("snapshotsRepo", default = "http://nexus.neula.in:9081/nexus/content/repositories/jtweston-releases/"))
+    publishTo := Some(
+      "snapshots" at sys.props.getOrElse(
+        "snapshotsRepo",
+        "https://nexus.neula.in/repository/neula-releases"
+      )
+    )
 
   )
 
   object dependencies {
 
-    val pekkoVersion = "1.1.4"
+    val pekkoVersion = "1.2.1"
 
     val common = Seq(
       "io.mpjsons" %% "mpjsons" % "0.6.50",

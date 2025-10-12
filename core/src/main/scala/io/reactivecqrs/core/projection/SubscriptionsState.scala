@@ -4,6 +4,7 @@ import java.sql.BatchUpdateException
 import io.reactivecqrs.api.AggregateVersion
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.types.TypesNamesState
+import org.slf4j.Logger
 import scalikejdbc._
 
 import scala.util.{Failure, Success, Try}
@@ -116,7 +117,7 @@ object SubscriptionCacheKey {
   }
 }
 
-class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory: Boolean) extends SubscriptionsState {
+class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory: Boolean, eventsLogger: Option[Logger]) extends SubscriptionsState {
 
   def initSchema(): PostgresSubscriptionsState = {
     createSubscriptionsTable()
@@ -213,6 +214,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
     }
     if(saveInDB) {
       if(!keepInMemory) {
+        eventsLogger.foreach(_.debug("Updating subscription state for  " + aggregateId.asLong+": " + lastAggregateVersion.asInt+" -> "+aggregateVersion.asInt+" for subscriber "+subscriberName))
         newEventIdInDB(aggregateId, subscriberName, subscriptionType, lastAggregateVersion, aggregateVersion, typesNamesState)
       }
     } else {
@@ -242,19 +244,22 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
       .bind(typesNamesState.typeIdByClassName(subscriberName)).update().apply()
   }
 
+  private val INSERT_INTO_SUBSCRIPTIONS = sql"""INSERT INTO subscriptions (id, subscriber_type_id, subscription_type, aggregate_id, aggregate_version) VALUES (nextval('subscriptions_seq'), ?, ?, ?, ?)"""
+  private val UPDATE_SUBSCRIPTIONS = sql"""UPDATE subscriptions SET aggregate_version = ? WHERE subscriber_type_id = ? AND subscription_type = ? AND aggregate_id = ? AND aggregate_version = ?"""
+
   override def dump(): String = DB.autoCommit { implicit session =>
     try {
       synchronized {
-        val start = System.currentTimeMillis()
+        val start = System.nanoTime() / 1_000_000
         val toInsert: Seq[Seq[Any]] = perAggregate.flatMap(a => batchParams(a._1, a._2, typesNamesState, dumpedOnly = false)).toSeq
         val toUpdate: Seq[Seq[Any]] = perAggregate.flatMap(a => batchParams(a._1, a._2, typesNamesState, dumpedOnly = true)).toSeq
-        sql"""INSERT INTO subscriptions (id, subscriber_type_id, subscription_type, aggregate_id, aggregate_version) VALUES (nextval('subscriptions_seq'), ?, ?, ?, ?)"""
+        INSERT_INTO_SUBSCRIPTIONS
           .batch(toInsert: _*).apply()
-        sql"""UPDATE subscriptions SET aggregate_version = ? WHERE subscriber_type_id = ? AND subscription_type = ? AND aggregate_id = ? AND aggregate_version = ?"""
+        UPDATE_SUBSCRIPTIONS
           .batch(toUpdate: _*).apply()
         perAggregate = Map.empty
         dumped = Map.empty
-        "Subscriptions dump: inserted = "+toInsert.size+", updated = "+toUpdate.size+" in "+(System.currentTimeMillis() - start)+" ms"
+        "Subscriptions dump: inserted = "+toInsert.size+", updated = "+toUpdate.size+" in "+(System.nanoTime() / 1_000_000  - start)+" ms"
       }
     } catch {
       case e: BatchUpdateException => throw e.getNextException
@@ -302,14 +307,11 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
   }
 
 
-  private val insertQuery = sql"""INSERT INTO subscriptions (id, subscriber_type_id, subscription_type, aggregate_id, aggregate_version) VALUES (nextval('subscriptions_seq'), ?, ?, ?, ?)"""
-  private val updateQuery = sql"""UPDATE subscriptions SET aggregate_version = ? WHERE subscriber_type_id = ? AND subscription_type = ? AND aggregate_id = ? AND aggregate_version = ?"""
-
   def newEventIdInDB(aggregateId: AggregateId, subscriberName: String, subscriptionType: SubscriptionType, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion, typesNamesState: TypesNamesState)(implicit session: DBSession): Unit = synchronized {
     if(lastAggregateVersion == AggregateVersion.ZERO) {
-      insertQuery.bind(typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, aggregateVersion.asInt).update().apply()
+      INSERT_INTO_SUBSCRIPTIONS.bind(typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, aggregateVersion.asInt).update().apply()
     } else {
-      val rowsUpdated = updateQuery.bind(aggregateVersion.asInt, typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, lastAggregateVersion.asInt).update().apply()
+      val rowsUpdated = UPDATE_SUBSCRIPTIONS.bind(aggregateVersion.asInt, typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, lastAggregateVersion.asInt).update().apply()
       if (rowsUpdated != 1) {
         throw new OptimisticLockingFailed // TODO handle this
       }
