@@ -81,6 +81,9 @@ object ListenerOptions {
 }
 case class ListenerOptions(noTransaction: Boolean = false)
 
+case class MessageAggregateProcessed(aggregateId: AggregateId, respondTo: ActorRef)
+case class MessageAggregateWithEventsProcessed(aggregateId: AggregateId, respondTo: ActorRef)
+case class MessageEventsProcessed(aggregateId: AggregateId, respondTo: ActorRef)
 
 abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActorOptions.DEFAULT) extends Actor with MyActorLogging {
 
@@ -289,6 +292,9 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
           handleIdentifiableEventsUpdate(self, sender(), mergeIdentifiableEventsUpdate(self, e.aggregateId, sender()))
       }
 
+    case e: MessageAggregateProcessed => handleMessageAggregateProcessed(self, e.respondTo, e.aggregateId)
+    case e: MessageAggregateWithEventsProcessed => handleMessageAggregateWithEventsProcessed(self, e.respondTo, e.aggregateId)
+    case e: MessageEventsProcessed => handleMessageEventsProcessed(self, e.respondTo, e.aggregateId)
 
     case ClearProjectionData => clearProjectionData(sender())
   }
@@ -401,14 +407,14 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
           options.eventsLogger.foreach(_.debug(s"${className} processing events update for aggregate ${e.aggregateId.asLong} in async mode"))
           processedAggregates.put(e.aggregateId.asLong, true)
           Future {
-            processEventsUpdate(mySelf, respondTo, e, lastVersion)
+            processEventsUpdate(mySelf, respondTo, e, lastVersion, async = true)
           }(context).onComplete {
             case Failure(ex) =>
               log.debug(s"Error on async events update processing for aggregate ${e.aggregateId.asLong}: ${ex.getMessage}", ex)
             case _ => ()
           }(context)
         case None =>
-          processEventsUpdate(mySelf, respondTo, e, lastVersion)
+          processEventsUpdate(mySelf, respondTo, e, lastVersion, async = false)
       }
 
     } else if (newEvents.nonEmpty) { // not just after previous update
@@ -419,7 +425,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     }
   }
 
-  private def processEventsUpdate(mySelf: ActorRef, respondTo: ActorRef, e: IdentifiableEvents[_], lastVersion: AggregateVersion): Unit = {
+  private def processEventsUpdate(mySelf: ActorRef, respondTo: ActorRef, e: IdentifiableEvents[_], lastVersion: AggregateVersion, async: Boolean): Unit = {
     val aggregateId = e.aggregateId
     try {
       eventListenersMap(e.aggregateType) match {
@@ -442,14 +448,24 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     } catch {
       case ex: Exception => log.error(ex, "Error handling update " + e.events.head.version.asInt + "-" + e.events.last.version.asInt)
     } finally {
-      processedAggregates.remove(aggregateId.asLong)
+
+      if(async) {
+        mySelf ! MessageEventsProcessed(aggregateId, respondTo)
+      } else {
+        handleMessageEventsProcessed(mySelf, respondTo, aggregateId)
+      }
     }
 
-    if(delayedQueries.nonEmpty) {
+  }
+
+  private def handleMessageEventsProcessed(mySelf: ActorRef, respondTo: ActorRef, aggregateId: AggregateId): Unit = {
+    processedAggregates.remove(aggregateId.asLong)
+
+    if (delayedQueries.nonEmpty) {
       mySelf ! ReplayQueries
     }
 
-    if(delayedEventsUpdate.contains(aggregateId) && !triggerScheduledForAggregate.contains(aggregateId)) {
+    if (delayedEventsUpdate.contains(aggregateId) && !triggerScheduledForAggregate.contains(aggregateId)) {
       mySelf ! TriggerDelayedUpdateEvents(aggregateId, respondTo)
       triggerScheduledForAggregate += aggregateId -> true
     }
@@ -471,14 +487,24 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       executionContext match {
         case Some(context) =>
           processedAggregates.put(ae.id.asLong, true)
+          options.eventsLogger.foreach(_.debug(s"${className} will process asynchronously events for aggregate ${ae.id}: ${ae.events.map(_.version.asInt).mkString(",")}"))
           Future {
-            processAggregateWithEventsUpdate(mySelf, respondTo, ae, newEvents, alreadyProcessed, lastVersion)
+            try {
+              processAggregateWithEventsUpdate(mySelf, respondTo, ae, newEvents, alreadyProcessed, lastVersion, async = true)
+            } catch {
+              case ex: Exception =>
+                log.error(ex, "Error handling update " + newEvents.head.version.asInt + "-" + ae.events.last.version.asInt)
+                options.eventsLogger.foreach(_.error(s"${className} processing events aggregate exception within future ${ae.id}: ${ae.events.map(_.version.asInt).mkString(",")}: ${ex.getClass.getSimpleName} ${ex.getMessage}"))
+                throw ex
+            }
           }(context).onComplete {
-            case Failure(ex) => log.debug(s"Error on async aggregate with events update processing for aggregate ${ae.id.asLong}: ${ex.getMessage}", ex)
+            case Failure(ex) =>
+              options.eventsLogger.foreach(_.error(s"${className} processing events aggregate failure ${ae.id}: ${ae.events.map(_.version.asInt).mkString(",")}: ${ex.getClass.getSimpleName} ${ex.getMessage}"))
+              log.debug(s"Error on async aggregate with events update processing for aggregate ${ae.id.asLong}: ${ex.getMessage}", ex)
             case _ => ()
           }(context)
         case None =>
-          processAggregateWithEventsUpdate(mySelf, respondTo, ae, newEvents, alreadyProcessed, lastVersion)
+          processAggregateWithEventsUpdate(mySelf, respondTo, ae, newEvents, alreadyProcessed, lastVersion, async = false)
       }
 
 
@@ -490,17 +516,20 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     }
   }
 
-  private def processAggregateWithEventsUpdate(mySelf: ActorRef, respondTo: ActorRef, ae: AggregateWithTypeAndEvents[_], newEvents: Seq[EventInfo[_]], alreadyProcessed: Seq[EventInfo[_]], lastVersion: AggregateVersion): Unit = {
+  private def processAggregateWithEventsUpdate(mySelf: ActorRef, respondTo: ActorRef, ae: AggregateWithTypeAndEvents[_], newEvents: Seq[EventInfo[_]], alreadyProcessed: Seq[EventInfo[_]], lastVersion: AggregateVersion, async: Boolean): Unit = {
     val aggregateId = ae.id
+    options.eventsLogger.foreach(_.debug(s"${className} processing events aggregate ${ae.id}: ${ae.events.map(_.version.asInt).mkString(",")}"))
     try {
 
       aggregateWithEventListenersMap(ae.aggregateType) match {
         case listener if listener.options.noTransaction => // Process outside transaction, so DB wont be affected too much, should be used when projectionis not storage based
+          options.eventsLogger.foreach(_.debug(s"${className} processing events outside transaction for aggregate ${ae.id}: ${ae.events.map(_.version.asInt).mkString(",")}"))
           listener.listener(aggregateId, newEvents.last.version, ae.aggregateRoot, newEvents.asInstanceOf[Seq[EventInfo[Any]]])(null) // null to be passed as dbsession mock
           subscriptionsState.autoCommit { session =>
             subscriptionsState.newVersionForAggregatesWithEventsSubscription(this.getClass.getName, aggregateId, lastVersion, newEvents.last.version)(session)
           }
         case listener =>
+          options.eventsLogger.foreach(_.debug(s"${className} processing events for aggregate in transaction ${ae.id}: ${ae.events.map(_.version.asInt).mkString(",")}"))
           subscriptionsState.localTx { session =>
             listener.listener(aggregateId, newEvents.last.version, ae.aggregateRoot, newEvents.asInstanceOf[Seq[EventInfo[Any]]])(session)
             subscriptionsState.newVersionForAggregatesWithEventsSubscription(this.getClass.getName, aggregateId, lastVersion, newEvents.last.version)(session)
@@ -511,20 +540,34 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
       options.eventsLogger.foreach(_.debug(s"${className} aggregate ${ae.id.asLong} events ACK sent: ${ae.events.map(_.version.asInt).mkString(",")} to ${respondTo.path}") )
     } catch {
-      case e: Exception => log.error(e, "Error handling update " + newEvents.head.version.asInt + "-" + ae.events.last.version.asInt)
+      case e: Exception =>
+        options.eventsLogger.foreach(_.error(s"${className} processing events for aggregate error ${ae.id}: ${ae.events.map(_.version.asInt).mkString(",")}: ${e.getClass.getSimpleName} ${e.getMessage}"))
+        log.error(e, "Error handling update " + newEvents.head.version.asInt + "-" + ae.events.last.version.asInt)
     } finally {
-      processedAggregates.remove(aggregateId.asLong)
+
+      if(async) {
+        mySelf ! MessageAggregateWithEventsProcessed(aggregateId, respondTo)
+      } else {
+        handleMessageAggregateWithEventsProcessed(mySelf, respondTo, aggregateId)
+      }
     }
 
+
+  }
+
+  private def handleMessageAggregateWithEventsProcessed(mySelf: ActorRef, respondTo: ActorRef, aggregateId: AggregateId): Unit = {
+    processedAggregates.remove(aggregateId.asLong)
     if(delayedQueries.nonEmpty) {
       mySelf ! ReplayQueries
     }
 
+    options.eventsLogger.foreach(_.error(s"${className} maybe triggering update of delayed events for ${aggregateId.asLong}, delayed: ${delayedAggregateWithEventsUpdate.contains(aggregateId)}, scheduled: ${triggerScheduledForAggregate.contains(aggregateId)}"))
     if(delayedAggregateWithEventsUpdate.contains(aggregateId) && !triggerScheduledForAggregate.contains(aggregateId)) {
       mySelf ! TriggerDelayedUpdateAggregateWithEvents(aggregateId, respondTo)
       triggerScheduledForAggregate += aggregateId -> true
     }
   }
+
 
   private def handleAggregateWithTypeUpdate(mySelf: ActorRef, respondTo: ActorRef,a: AggregateWithType[_]): Unit = {
     val lastVersion = subscriptionsState.lastVersionForAggregateSubscription(this.getClass.getName, a.id)
@@ -541,13 +584,13 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         case Some(context) =>
           processedAggregates.put(a.id.asLong, true)
           Future {
-            processAggregateUpdate(mySelf, respondTo, a, newEvents, alreadyProcessed, lastVersion)
+            processAggregateUpdate(mySelf, respondTo, a, newEvents, alreadyProcessed, lastVersion, async = true)
           }(context).onComplete {
             case Failure(ex) => log.debug(s"Error on async aggregate ${a.id.asLong} update processing: ${ex.getMessage}", ex)
             case _ => ()
           }(context)
         case None =>
-          processAggregateUpdate(mySelf, respondTo, a, newEvents, alreadyProcessed, lastVersion)
+          processAggregateUpdate(mySelf, respondTo, a, newEvents, alreadyProcessed, lastVersion, async = false)
       }
 
     } else if (newEvents.nonEmpty) { // not just after previous update
@@ -558,7 +601,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     }
   }
 
-  private def processAggregateUpdate(mySelf: ActorRef, respondTo: ActorRef, a: AggregateWithType[_], newEvents: Seq[AggregateVersion], alreadyProcessed: Seq[AggregateVersion], lastVersion: AggregateVersion): Unit = {
+  private def processAggregateUpdate(mySelf: ActorRef, respondTo: ActorRef, a: AggregateWithType[_], newEvents: Seq[AggregateVersion], alreadyProcessed: Seq[AggregateVersion], lastVersion: AggregateVersion, async: Boolean): Unit = {
     val aggregateId = a.id
     try {
 
@@ -582,9 +625,19 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     } catch {
       case e: Exception => log.error(e, "Error handling update " + newEvents.head.asInt + "-" + a.events.last.asInt)
     } finally {
-      processedAggregates.remove(aggregateId.asLong)
+
+      if(async) {
+        mySelf ! MessageAggregateProcessed(aggregateId, respondTo)
+      } else {
+        handleMessageAggregateProcessed(mySelf, respondTo, aggregateId)
+      }
     }
 
+
+  }
+
+  private def handleMessageAggregateProcessed(mySelf: ActorRef, respondTo: ActorRef, aggregateId: AggregateId): Unit = {
+    processedAggregates.remove(aggregateId.asLong)
     if(delayedQueries.nonEmpty) {
       mySelf ! ReplayQueries
     }
