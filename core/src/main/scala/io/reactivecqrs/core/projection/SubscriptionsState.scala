@@ -10,7 +10,7 @@ import scalikejdbc._
 import scala.util.{Failure, Success, Try}
 import scala.collection.mutable
 
-class OptimisticLockingFailed extends Exception
+class OptimisticLockingFailed(message: String) extends Exception(message)
 
 class SubscriptionType(val id: Short)
 
@@ -98,7 +98,7 @@ class MemorySubscriptionsState extends SubscriptionsState {
       state += key -> aggregateVersion
       Success(())
     } else {
-      Failure(new OptimisticLockingFailed)
+      Failure(new OptimisticLockingFailed(getClass.getSimpleName+": optimistic locking failed for subscriber "+subscriberName+" and aggregate "+aggregateId.asLong+" expected version "+lastAggregateVersion.asInt+" but was "+state.get(key).map(_.asInt).getOrElse("-")))
     }
   }
 
@@ -214,11 +214,11 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
     }
     if(saveInDB) {
       if(!keepInMemory) {
-        eventsLogger.foreach(_.debug("Updating subscription state for  " + aggregateId.asLong+": " + lastAggregateVersion.asInt+" -> "+aggregateVersion.asInt+" for subscriber "+subscriberName))
+        eventsLogger.foreach(_.debug("Updating subscription state for " + aggregateId.asLong+": " + lastAggregateVersion.asInt+" -> "+aggregateVersion.asInt+" for subscriber "+subscriberName))
         newEventIdInDB(aggregateId, subscriberName, subscriptionType, lastAggregateVersion, aggregateVersion, typesNamesState)
       }
     } else {
-      throw new OptimisticLockingFailed // TODO handle this
+      throw new OptimisticLockingFailed(getClass.getSimpleName+": Subscription state update failed last version mismatch for subscriber "+subscriberName+" and aggregate "+aggregateId.asLong+" expected version "+lastAggregateVersion.asInt+" but was "+getVersionsForAggregate(aggregateId).getOrElse(key, AggregateVersion.ZERO).asInt)
     }
   }
 
@@ -313,7 +313,19 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
     } else {
       val rowsUpdated = UPDATE_SUBSCRIPTIONS.bind(aggregateVersion.asInt, typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, lastAggregateVersion.asInt).update().apply()
       if (rowsUpdated != 1) {
-        throw new OptimisticLockingFailed // TODO handle this
+
+        var subscriptionState = "Aggregate " + aggregateId.asLong+" subscription state: "
+
+        try {
+          subscriptionState += aggregateVersionsQuery.bind(aggregateId.asLong)
+          .map(rs => {
+            "version: "+rs.short(2)+", subscriber: "+ rs.short(3)+", subscription: "+ rs.int(1)
+          }).list().apply().mkString("; ")
+        } catch {
+          case e: Exception => subscriptionState += " (error reading current state: "+e.getMessage+")"
+        }
+
+        throw new OptimisticLockingFailed(getClass.getSimpleName +": optimistic locking failed for subscriber "+subscriberName+" and aggregate "+aggregateId.asLong+" expected version "+lastAggregateVersion.asInt+" but was not updated (rowsUpdated="+rowsUpdated+"). " + subscriptionState)
       }
     }
   }

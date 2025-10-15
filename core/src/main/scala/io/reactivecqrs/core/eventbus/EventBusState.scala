@@ -31,7 +31,8 @@ class MemoryEventBusState extends EventBusState {
       state += aggregateId -> aggregateVersion
       Success(())
     } else {
-      Failure(new OptimisticLockingFailed)
+      Failure(new OptimisticLockingFailed(getClass.getSimpleName+ ": aggregate in unexpected version: " +
+        s"aggregateId: $aggregateId, expected version: $lastAggregateVersion, actual version: ${state.get(aggregateId).map(_.asInt).getOrElse("-")}"))
     }
   }
 
