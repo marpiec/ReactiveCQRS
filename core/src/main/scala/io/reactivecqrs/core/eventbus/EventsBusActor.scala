@@ -403,9 +403,23 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
       receivedInProgressMessages -= finishedEvents.size
 
-      finishedEvents.groupBy(e => (eventSenders(e._1), e._1.aggregateId)).foreach {
+      val groupedFinishedEvents = finishedEvents.groupBy(e => (eventSenders(e._1), e._1.aggregateId))
+      groupedFinishedEvents.foreach {
         case ((sender, aggregateId), events) =>
+          eventsLogger.foreach(_.debug("EventBus confirming events propagated: " + aggregateId.asLong + ": " + events.map(_._1.version.asInt).mkString(",") + " to " + sender.path))
           sender ! PublishEventsAck(aggregateId, events.map(_._1.version).toSeq.sortBy(_.asInt))
+      }
+
+      if(eventsLogger.isDefined) {
+        val groupedRemainingEvents = remainingEvents.groupBy(e => (eventSenders(e._1), e._1.aggregateId))
+
+        groupedFinishedEvents.foreach {
+          case ((sender, aggregateId), events) => groupedRemainingEvents.get((sender, aggregateId)) match {
+            case Some(remainingEventsForSender) =>
+              eventsLogger.get.debug("EventBus still waiting for events: " + aggregateId.asLong + ": " + remainingEventsForSender.map(_._1.version.asInt).mkString(",") + " from " + sender.path)
+            case None => // all confirmed
+          }
+        }
       }
 
 
