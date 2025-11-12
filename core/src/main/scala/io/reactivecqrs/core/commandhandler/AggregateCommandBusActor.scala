@@ -61,6 +61,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
                                                        val initialState: () => AGGREGATE_ROOT)
                                                         (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor with MyActorLogging {
 
+  val minimumInactivityMillis: Long = 120000L // 2 minutes
+
   val eventsVersionsMap: Map[EventTypeVersion, String] = {
     eventsVersions.flatMap(evs => evs.mapping.map(e => EventTypeVersion(evs.eventBaseType, e.version) -> e.eventType)).toMap
   }
@@ -166,10 +168,14 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private def clearOldAggregateRepositories(now: Long): Unit = {
     if(now - lastClear > 300000) { // no more often than every 5 minutes
       lastClear = now
-      val sorted = childrenActivity.toList.sortBy(_._2)
-      if (sorted.length > keepAliveLimit) {
+      if (childrenActivity.size > keepAliveLimit) {
+        val sorted = childrenActivity.toVector.sortBy(_._2)
         val toKill = sorted.take(sorted.length - keepAliveLimit)
-        toKill.foreach(k => clearOldAggregateRepository(k._1))
+        toKill.foreach(k => {
+          if(now - k._2 > minimumInactivityMillis) { // give at least 2 minutes before killing in case of actor prolonged activity
+            clearOldAggregateRepository(k._1)
+          }
+        })
       }
 
       val toKill = childrenActivity.filter(now - _._2 > maxInactivityMillis)
