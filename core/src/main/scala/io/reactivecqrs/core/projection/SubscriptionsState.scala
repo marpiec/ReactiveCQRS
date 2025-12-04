@@ -98,7 +98,7 @@ class MemorySubscriptionsState extends SubscriptionsState {
       state += key -> aggregateVersion
       Success(())
     } else {
-      Failure(new OptimisticLockingFailed(getClass.getSimpleName+": optimistic locking failed for subscriber "+subscriberName+" and aggregate "+aggregateId.asLong+" expected version "+lastAggregateVersion.asInt+" but was "+state.get(key).map(_.asInt).getOrElse("-")))
+      Failure(new OptimisticLockingFailed(getClass.getSimpleName+": optimistic locking failed for subscriber "+subscriberName+", subscription type "+subscriptionType.id+" and aggregate "+aggregateId.asLong+" expected version "+lastAggregateVersion.asInt+" but was "+state.get(key).map(_.asInt).getOrElse("-")))
     }
   }
 
@@ -319,13 +319,13 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
         try {
           subscriptionState += aggregateVersionsQuery.bind(aggregateId.asLong)
           .map(rs => {
-            "version: "+rs.short(2)+", subscriber: "+ rs.short(3)+", subscription: "+ rs.int(1)
+            "version: "+rs.short(1)+", subscriber: "+ rs.short(2)+", subscription: "+ rs.int(3)
           }).list().apply().mkString("; ")
         } catch {
           case e: Exception => subscriptionState += " (error reading current state: "+e.getMessage+")"
         }
 
-        throw new OptimisticLockingFailed(getClass.getSimpleName +": optimistic locking failed for subscriber "+subscriberName+" and aggregate "+aggregateId.asLong+" expected version "+lastAggregateVersion.asInt+" but was not updated (rowsUpdated="+rowsUpdated+"). " + subscriptionState)
+        throw new OptimisticLockingFailed(getClass.getSimpleName +": optimistic locking failed for subscriber "+subscriberName+" ("+typesNamesState.typeIdByClassName(subscriberName)+"), subscription type "+subscriptionType.id+" and aggregate "+aggregateId.asLong+" expected version "+lastAggregateVersion.asInt+" but was not updated (rowsUpdated="+rowsUpdated+"). " + subscriptionState)
       }
     }
   }
