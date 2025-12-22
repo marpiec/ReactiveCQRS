@@ -57,6 +57,10 @@ case class AggregateSubscription(subscriptionId: String, aggregateType: Aggregat
 case class AggregateWithEventSubscription(subscriptionId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier) extends Subscription
 
 
+// Glossary:
+// PUBLISHED - event was sent to all subscribers, but not necessarily confirmed
+// PROPAGATED - all subscribers confirmed receiving event
+
 
 /** TODO get rid of state, memory only */
 class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: EventBusSubscriptionsManagerApi, val MAX_BUFFER_SIZE: Int = 1000,
@@ -88,7 +92,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   private val eventSenders = mutable.HashMap[EventIdentifier, ActorRef]()
 
   private val eventsPropagatedNotPersisted = mutable.HashMap[AggregateId, List[AggregateVersion]]()
-  private val eventsAlreadyPropagated = mutable.HashMap[Long, Int]() // AggregateId -> version
+  private val publishedEvents = mutable.HashMap[Long, Int]() // AggregateId -> version
 
   private var afterFinishRespondTo: Option[ActorRef] = None
 
@@ -285,7 +289,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
     // TODO filter out events received again if sender resent them
 
-    val lastPublishedVersion = AggregateVersion(getLastPublishedVersion(aggregateId))
+    val lastPublishedVersion = getLastPublishedVersion(aggregateId)
 
     val (alreadyPublished, eventsToPropagate) = events.span(_.version <= lastPublishedVersion)
 
@@ -365,12 +369,12 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   }
 
 
-  private def getLastPublishedVersion(aggregateId: AggregateId): Int = {
-    eventsAlreadyPropagated.getOrElse(aggregateId.asLong, {
+  private def getLastPublishedVersion(aggregateId: AggregateId): AggregateVersion = {
+    AggregateVersion(publishedEvents.getOrElse(aggregateId.asLong, {
       val version = inputState.lastPublishedEventForAggregate(aggregateId)
-      eventsAlreadyPropagated += aggregateId.asLong -> version.asInt
+      publishedEvents += aggregateId.asLong -> version.asInt
       version.asInt
-    })
+    }))
   }
 
 
@@ -393,20 +397,20 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     // Find sent messages for given events
     val receiversToConfirm = messagesSent.view.filterKeys(e => eventsIds.contains(e))
 
-    val withoutConfirmedPerEvent = receiversToConfirm.map {
-      // Remove sender that confirmed receiving
+    val withoutConfirmationSender = receiversToConfirm.map {
+      // Remove sender that confirmed receiving from the list
       case (eventId, receivers) => eventId -> receivers.filterNot(_._2 == ack.subscriber)
     }
 
     // Which events received confirmation from all receivers and which not
-    val (finishedEvents, remainingEvents: View[(EventIdentifier, Vector[(Instant, ActorRef)])]) = withoutConfirmedPerEvent.partition {
+    val (finishedEvents, remainingEvents: View[(EventIdentifier, Vector[(Instant, ActorRef)])]) = withoutConfirmationSender.partition {
       case (eventId, receivers) => receivers.isEmpty
     }
 
      eventsLogger.foreach(_.debug("EventBus MessageAck processing "+aggregateId.asLong+": "+
        " @messagesSent: " +messagesSent.filter(_._1.aggregateId == aggregateId).map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")+
        ", @receiversToConfirm: " +receiversToConfirm.map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")+
-       ", @withoutConfirmedPerEvent: "+withoutConfirmedPerEvent.map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")+
+       ", @withoutConfirmedPerEvent: "+withoutConfirmationSender.map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")+
        ", @finishedEvents: "+finishedEvents.map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")+
        ", @remainingEvents: "+remainingEvents.map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")))
 
@@ -416,20 +420,21 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
     if(finishedEvents.nonEmpty) {
 
-      val eventsToConfirm: Iterable[EventIdentifier] = finishedEvents.toMap.keys
+      val publishedEventsToConfirm: Iterable[EventIdentifier] = finishedEvents.toMap.keys
 
       receivedInProgressMessages -= finishedEvents.size
       if(eventsLogger.isDefined) {
-        receivedInProgressMessagesSet --= eventsToConfirm
+        receivedInProgressMessagesSet --= publishedEventsToConfirm
       }
 
-      eventsLogger.foreach(_.debug("EventBus finished processing "+eventsToConfirm.size+" events: " + aggregateId.asLong + ": " + eventsToConfirm.map(_.version.asInt).mkString(", ")))
+      eventsLogger.foreach(_.debug("EventBus finished processing "+publishedEventsToConfirm.size+" events: " + aggregateId.asLong + ": " + publishedEventsToConfirm.map(_.version.asInt).mkString(", ")))
 
       val groupedFinishedEvents = finishedEvents.groupBy(e => (eventSenders(e._1), e._1.aggregateId))
       groupedFinishedEvents.foreach {
         case ((sender, aggregateId), events) =>
           eventsLogger.foreach(_.debug("EventBus confirming events propagated: " + aggregateId.asLong + ": " + events.map(_._1.version.asInt).mkString(",") + " to " + sender.path))
           sender ! PublishEventsAck(aggregateId, events.map(_._1.version).toSeq.sortBy(_.asInt))
+//          eventsAlreadyPropagatedAndConfirmed += aggregateId.asLong -> events.map(_._1.version.asInt).max
       }
 
       if(eventsLogger.isDefined) {
@@ -446,17 +451,17 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
 
 
-      messagesSent --= eventsToConfirm
+      messagesSent --= publishedEventsToConfirm
 
-      eventsLogger.foreach(_.debug("Cleaned messgesSend "+aggregateId.asLong+": "+
+      eventsLogger.foreach(_.debug("Cleaned messagesSend "+aggregateId.asLong+": "+
         " @messagesSent: " +messagesSent.filter(_._1.aggregateId == aggregateId).map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")))
 
 
-      eventSenders --= eventsToConfirm
+      eventSenders --= publishedEventsToConfirm
 
-      val lastPublishedVersion = AggregateVersion(getLastPublishedVersion(aggregateId))
+      val lastPublishedVersion = getLastPublishedVersion(aggregateId)
 
-      val eventsSorted = eventsIds.toList.sortBy(_.version.asInt)
+      val eventsSorted = publishedEventsToConfirm.toList.sortBy(_.version.asInt)
 
       if(eventsSorted.head.version.isJustAfter(lastPublishedVersion)) {
         val notPersistedYet = eventsPropagatedNotPersisted.getOrElse(aggregateId, List.empty)
@@ -465,7 +470,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
           newVersion = notPersisted
         })
         inputState.eventPublished(aggregateId, lastPublishedVersion, newVersion)
-        eventsAlreadyPropagated += aggregateId.asLong -> newVersion.asInt
+        publishedEvents += aggregateId.asLong -> newVersion.asInt
       } else {
         val newVersions: List[AggregateVersion] = eventsSorted.map(_.version)
         eventsPropagatedNotPersisted.get(aggregateId) match {
