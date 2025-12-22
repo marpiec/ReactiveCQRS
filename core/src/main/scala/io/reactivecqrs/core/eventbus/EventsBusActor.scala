@@ -289,9 +289,6 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
     val (alreadyPublished, eventsToPropagate) = events.span(_.version <= lastPublishedVersion)
 
-    if (alreadyPublished.nonEmpty) {
-      respondTo ! PublishEventsAck(aggregateId, alreadyPublished.map(_.version))
-    }
     eventsAlreadyPublishedTotal += alreadyPublished.size
     eventsPublishedTotal += eventsToPropagate.size
 
@@ -397,6 +394,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     val receiversToConfirm = messagesSent.view.filterKeys(e => eventsIds.contains(e))
 
     val withoutConfirmedPerEvent = receiversToConfirm.map {
+      // Remove sender that confirmed receiving
       case (eventId, receivers) => eventId -> receivers.filterNot(_._2 == ack.subscriber)
     }
 
