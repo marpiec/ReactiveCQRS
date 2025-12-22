@@ -85,6 +85,9 @@ case class MessageAggregateProcessed(aggregateId: AggregateId, respondTo: ActorR
 case class MessageAggregateWithEventsProcessed(aggregateId: AggregateId, respondTo: ActorRef)
 case class MessageEventsProcessed(aggregateId: AggregateId, respondTo: ActorRef)
 
+// ProcessingState for sequential processing of updates per aggregate
+private case class ProcessingState(queue: mutable.Queue[() => Future[Unit]], var running: Boolean)
+
 abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActorOptions.DEFAULT) extends Actor with MyActorLogging {
 
   private val className = this.getClass.getSimpleName
@@ -113,6 +116,8 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     case threads if threads <= 1 => None
     case threads => Some(ExecutionContext.fromExecutor(Executors.newFixedThreadPool(threads)))
   }
+
+  private val states = new ConcurrentHashMap[AggregateId, ProcessingState]()
 
   protected trait Listener[+AGGREGATE_ROOT]  {
     def aggregateRootType: Type
@@ -406,13 +411,15 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         case Some(context) =>
           options.eventsLogger.foreach(_.debug(s"${className} processing events update for aggregate ${e.aggregateId.asLong} in async mode"))
           processedAggregates.put(e.aggregateId.asLong, true)
-          Future {
-            processEventsUpdate(mySelf, respondTo, e, lastVersion, async = true)
-          }(context).onComplete {
-            case Failure(ex) =>
-              log.debug(s"Error on async events update processing for aggregate ${e.aggregateId.asLong}: ${ex.getMessage}", ex)
-            case _ => ()
-          }(context)
+          runTaskAsyncPerAggregate(e.aggregateId)(context) {
+            try {
+              processEventsUpdate(mySelf, respondTo, e, lastVersion, async = true)
+            } catch {
+              case ex: Exception =>
+                log.debug(s"Error on async events update processing for aggregate ${e.aggregateId.asLong}: ${ex.getMessage}", ex)
+                throw ex
+            }
+          }
         case None =>
           processEventsUpdate(mySelf, respondTo, e, lastVersion, async = false)
       }
@@ -488,7 +495,9 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         case Some(context) =>
           processedAggregates.put(ae.id.asLong, true)
           options.eventsLogger.foreach(_.debug(s"${className} will process asynchronously events for aggregate ${ae.id}: ${ae.events.map(_.version.asInt).mkString(",")}"))
-          Future {
+
+
+          runTaskAsyncPerAggregate(ae.id)(context) {
             try {
               processAggregateWithEventsUpdate(mySelf, respondTo, ae, newEvents, alreadyProcessed, lastVersion, async = true)
             } catch {
@@ -497,12 +506,9 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
                 options.eventsLogger.foreach(_.error(s"${className} processing events aggregate exception within future ${ae.id}: ${ae.events.map(_.version.asInt).mkString(",")}: ${ex.getClass.getSimpleName} ${ex.getMessage}"))
                 throw ex
             }
-          }(context).onComplete {
-            case Failure(ex) =>
-              options.eventsLogger.foreach(_.error(s"${className} processing events aggregate failure ${ae.id}: ${ae.events.map(_.version.asInt).mkString(",")}: ${ex.getClass.getSimpleName} ${ex.getMessage}"))
-              log.debug(s"Error on async aggregate with events update processing for aggregate ${ae.id.asLong}: ${ex.getMessage}", ex)
-            case _ => ()
-          }(context)
+          }
+
+
         case None =>
           processAggregateWithEventsUpdate(mySelf, respondTo, ae, newEvents, alreadyProcessed, lastVersion, async = false)
       }
@@ -513,6 +519,42 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       delayedAggregateWithEventsUpdate += ae.id -> (ae :: delayedAggregateWithEventsUpdate.getOrElse(ae.id, List.empty))
     } else {
       throw new IllegalArgumentException("Received empty list of events!")
+    }
+  }
+
+  def runTaskAsyncPerAggregate(id: AggregateId)(context: ExecutionContext)(task: => Unit): Unit = {
+    // This fragment ensures that updates for the same aggregate are processed sequentially, even in async mode. It does that by maintaining a queue of tasks per aggregate.
+    val state = states.computeIfAbsent(id, _ => ProcessingState(mutable.Queue.empty, running = false))
+
+    val asyncTask: () => Future[Unit] = () => Future {
+        task
+    }(context)
+
+
+    state.synchronized {
+      state.queue.enqueue(asyncTask)
+      if (!state.running) {
+        state.running = true
+        runNextAsyncTask(id, state)(context)
+      }
+    }
+  }
+
+
+  private def runNextAsyncTask(id: AggregateId, state: ProcessingState)(implicit context: ExecutionContext): Unit = {
+    val next = state.synchronized {
+      if (state.queue.nonEmpty) {
+        Some(state.queue.dequeue())
+      } else {
+        state.running = false
+        None
+      }
+    }
+
+    next.foreach { task =>
+      task().onComplete { _ =>
+        runNextAsyncTask(id, state)
+      }
     }
   }
 
@@ -583,12 +625,15 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       executionContext match {
         case Some(context) =>
           processedAggregates.put(a.id.asLong, true)
-          Future {
-            processAggregateUpdate(mySelf, respondTo, a, newEvents, alreadyProcessed, lastVersion, async = true)
-          }(context).onComplete {
-            case Failure(ex) => log.debug(s"Error on async aggregate ${a.id.asLong} update processing: ${ex.getMessage}", ex)
-            case _ => ()
-          }(context)
+          runTaskAsyncPerAggregate(a.id)(context) {
+            try {
+              processAggregateUpdate(mySelf, respondTo, a, newEvents, alreadyProcessed, lastVersion, async = true)
+            } catch {
+              case ex: Exception =>
+                log.debug(s"Error on async aggregate ${a.id.asLong} update processing: ${ex.getMessage}", ex)
+                throw ex
+            }
+          }
         case None =>
           processAggregateUpdate(mySelf, respondTo, a, newEvents, alreadyProcessed, lastVersion, async = false)
       }
