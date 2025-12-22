@@ -36,7 +36,9 @@ case class IdentifiableEvent[AGGREGATE_ROOT](aggregateType: AggregateType, aggre
 
 case class EventWithIdentifier[AGGREGATE_ROOT](aggregateId: AggregateId, version: AggregateVersion, event: Event[AGGREGATE_ROOT])
 
-case class EventIdentifier(aggregateId: AggregateId, version: AggregateVersion)
+case class EventIdentifier(aggregateId: AggregateId, version: AggregateVersion) {
+  override def toString: String = s"${aggregateId.asLong}#${version.asInt}"
+}
 
 case class EventsIdentifiers(aggregateId: AggregateId, versions: Seq[AggregateVersion])
 

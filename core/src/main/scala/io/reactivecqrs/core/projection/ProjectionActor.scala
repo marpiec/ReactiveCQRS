@@ -335,16 +335,16 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
     val ordered = reversed.sortBy(_.events.head.version.asInt)
 
-    var events: AggregateWithTypeAndEvents[A] = ordered.headOption.getOrElse(throw new IllegalArgumentException("Empty list of events"))
+    var accumulator: AggregateWithTypeAndEvents[A] = ordered.headOption.getOrElse(throw new IllegalArgumentException("Empty list of events"))
     var skipped: List[AggregateWithTypeAndEvents[A]] = List.empty
 
     ordered.tail.foreach { e =>
-      if (e.events.head.version.isJustAfter(events.events.last.version)) {
-        events = AggregateWithTypeAndEvents(events.aggregateType, events.id, e.aggregateRoot, events.events ++ e.events, e.replayed)
+      if (e.events.head.version.isJustAfter(accumulator.events.last.version)) {
+        accumulator = AggregateWithTypeAndEvents(accumulator.aggregateType, accumulator.id, e.aggregateRoot, accumulator.events ++ e.events, e.replayed)
 //        log.debug("Handling delayed aggregate with events update for aggregate " + e.aggregateType.simpleName + ":" + e.id.asLong + ", events: " + events.events.map(_.version.asInt).mkString(","))
       } else {
         skipped = e :: skipped
-        log.warning("Events are not in order (Aggregate with Events) in projection "+ projectionName+" for aggregate "+aggregateId.asLong+": " + events.events.map(_.version.asInt).mkString(",") + " -> " + e.events.map(_.version.asInt).mkString(","))
+        log.warning("Events are not in order (Aggregate with Events) in projection "+ projectionName+" for aggregate "+aggregateId.asLong+": " + accumulator.events.map(_.version.asInt).mkString(",") + " -> " + e.events.map(_.version.asInt).mkString(","))
       }
     }
 
@@ -356,7 +356,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       mySelf ! TriggerDelayedUpdateAggregateWithEvents(aggregateId, respondTo)
     }
 
-    events
+    accumulator
   }
 
   private def mergeIdentifiableEventsUpdate[A](mySelf: ActorRef, aggregateId: AggregateId, respondTo: ActorRef): IdentifiableEvents[A] = {

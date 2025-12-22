@@ -10,7 +10,7 @@ import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventsAck, _}
 import io.reactivecqrs.core.util.{MyActorLogging, RandomUtil}
 import org.slf4j.Logger
 
-import scala.collection.mutable
+import scala.collection.{View, mutable}
 import scala.concurrent.Await
 import scala.concurrent.duration._
 
@@ -77,6 +77,8 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   private var orderedMessageTimestamp = 0L
   private var orderedMessagePostponedTimestamp = 0L
   private var receivedInProgressMessages = 0
+
+  private var receivedInProgressMessagesSet: Set[EventIdentifier] = Set()
 
   private var lastMessageAck = 0L
   private var lastMessageSent = 0L
@@ -217,6 +219,9 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       }
     case ConsumerStop =>
       logMessage("EventBus Stop, processing "+receivedInProgressMessages)
+      if(receivedInProgressMessages > 0) {
+        eventsLogger.foreach(_.debug("EventBus Stop, processing "+receivedInProgressMessagesSet))
+      }
       afterFinishRespondTo = Some(sender())
       backPressureProducerActor = None
       if(receivedInProgressMessages == 0) {
@@ -342,10 +347,17 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       messagesSent += EventIdentifier(aggregateId, event.version) -> receiversForEvent
     })
 
+    eventsLogger.foreach(_.debug("Publish events - Propagating events "+aggregateId.asLong+": "+
+      " @eventsToPropagate: " +eventsToPropagate.map(_.version.asInt).mkString(", ")+
+      " @messagesSent: " +messagesSent.filter(_._1.aggregateId == aggregateId).map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")))
+
 
 
     orderedMessages -= events.size // it is possible to receive more messages than ordered
     receivedInProgressMessages += events.size
+    if(eventsLogger.isDefined) {
+      receivedInProgressMessagesSet ++= events.map(e => EventIdentifier(aggregateId, e.version)).toSet
+    }
 
     orderMoreMessagesToConsume()
 
@@ -389,12 +401,19 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
     }
 
     // Which events received confirmation from all receivers and which not
-    val (finishedEvents, remainingEvents) = withoutConfirmedPerEvent.partition {
+    val (finishedEvents, remainingEvents: View[(EventIdentifier, Vector[(Instant, ActorRef)])]) = withoutConfirmedPerEvent.partition {
       case (eventId, receivers) => receivers.isEmpty
     }
 
+     eventsLogger.foreach(_.debug("EventBus MessageAck processing "+aggregateId.asLong+": "+
+       " @messagesSent: " +messagesSent.filter(_._1.aggregateId == aggregateId).map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")+
+       ", @receiversToConfirm: " +receiversToConfirm.map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")+
+       ", @withoutConfirmedPerEvent: "+withoutConfirmedPerEvent.map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")+
+       ", @finishedEvents: "+finishedEvents.map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")+
+       ", @remainingEvents: "+remainingEvents.map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")))
+
     if(remainingEvents.nonEmpty) {
-      messagesSent ++= remainingEvents
+      messagesSent ++= remainingEvents.toList // toList to force evaluation
     }
 
     if(finishedEvents.nonEmpty) {
@@ -402,6 +421,11 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
       val eventsToConfirm: Iterable[EventIdentifier] = finishedEvents.toMap.keys
 
       receivedInProgressMessages -= finishedEvents.size
+      if(eventsLogger.isDefined) {
+        receivedInProgressMessagesSet --= eventsToConfirm
+      }
+
+      eventsLogger.foreach(_.debug("EventBus finished processing "+eventsToConfirm.size+" events: " + aggregateId.asLong + ": " + eventsToConfirm.map(_.version.asInt).mkString(", ")))
 
       val groupedFinishedEvents = finishedEvents.groupBy(e => (eventSenders(e._1), e._1.aggregateId))
       groupedFinishedEvents.foreach {
@@ -425,6 +449,11 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
 
       messagesSent --= eventsToConfirm
+
+      eventsLogger.foreach(_.debug("Cleaned messgesSend "+aggregateId.asLong+": "+
+        " @messagesSent: " +messagesSent.filter(_._1.aggregateId == aggregateId).map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")))
+
+
       eventSenders --= eventsToConfirm
 
       val lastPublishedVersion = AggregateVersion(getLastPublishedVersion(aggregateId))

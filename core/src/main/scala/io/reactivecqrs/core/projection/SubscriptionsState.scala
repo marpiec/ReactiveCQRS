@@ -291,11 +291,11 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
   }
 
 
-  private val aggregateVersionsQuery = sql"""SELECT aggregate_version, subscriber_type_id, subscription_type FROM subscriptions WHERE aggregate_id = ?"""
+  private val AGGREGATE_VERSIONS_QUERY = sql"""SELECT aggregate_version, subscriber_type_id, subscription_type FROM subscriptions WHERE aggregate_id = ?"""
 
   private def lastAggregateVersionFromDB(aggregateId: AggregateId, typesNamesState: TypesNamesState): mutable.HashMap[String, AggregateVersion] = synchronized {
     DB.readOnly { implicit session =>
-      val m = aggregateVersionsQuery
+      val m = AGGREGATE_VERSIONS_QUERY
         .bind(aggregateId.asLong)
         .map(rs => {
           val cacheKey = SubscriptionCacheKey.getById(rs.short(2), rs.short(3))
@@ -317,7 +317,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
         var subscriptionState = "Aggregate " + aggregateId.asLong+" subscription state: "
 
         try {
-          subscriptionState += aggregateVersionsQuery.bind(aggregateId.asLong)
+          subscriptionState += AGGREGATE_VERSIONS_QUERY.bind(aggregateId.asLong)
           .map(rs => {
             "version: "+rs.short(1)+", subscriber: "+ rs.short(2)+", subscription: "+ rs.int(3)
           }).list().apply().mkString("; ")
