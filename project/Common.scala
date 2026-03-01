@@ -5,11 +5,11 @@ object Common {
 
   def settings(moduleName: String) = Seq[Setting[_]](
 
-    version := "0.12.38",
+    version := "0.12.39",
 
     organization := "io.reactivecqrs",
     name := s"reactivecqrs-$moduleName",
-    scalaVersion := "2.13.16",
+    scalaVersion := "2.13.18",
 
     // required for Scalate to avoid version mismatch
     dependencyOverrides := Seq(
@@ -58,14 +58,14 @@ object Common {
 
   object dependencies {
 
-    val pekkoVersion = "1.2.1"
+    val pekkoVersion = "1.4.0"
 
     val common = Seq(
       "io.mpjsons" %% "mpjsons" % "0.6.50",
       "com.typesafe" % "config" % "1.4.3",
       "org.slf4j" % "slf4j-api" % "2.0.17",
-      "org.scala-lang.modules" %% "scala-parallel-collections" % "1.0.4",
-      "org.scalatest" %% "scalatest" % "3.2.15" % Test
+      "org.scala-lang.modules" %% "scala-parallel-collections" % "1.2.0",
+      "org.scalatest" %% "scalatest" % "3.2.19" % Test
     )
 
     val pekko = Seq(
@@ -75,16 +75,16 @@ object Common {
     )
 
     val scalikejdbc = Seq(
-      "org.scalikejdbc" %% "scalikejdbc" % "3.4.2",
-      "org.scalikejdbc" %% "scalikejdbc-streams" % "3.4.2"
+      "org.scalikejdbc" %% "scalikejdbc" % "3.5.0",
+      "org.scalikejdbc" %% "scalikejdbc-streams" % "3.5.0"
     )
 
     val postgresql = Seq(
-      "org.postgresql" % "postgresql" % "42.7.7"
+      "org.postgresql" % "postgresql" % "42.7.10"
     )
 
     val logback = Seq(
-      "ch.qos.logback" % "logback-classic" % "1.5.18" % Test
+      "ch.qos.logback" % "logback-classic" % "1.5.32" % Test
     )
   }
 }
