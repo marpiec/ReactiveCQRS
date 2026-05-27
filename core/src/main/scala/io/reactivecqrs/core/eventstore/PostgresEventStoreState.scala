@@ -47,7 +47,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
             sql"""SELECT add_undo_event(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
               eventsEnvelope.userId.asLong,
               aggregateId.asLong,
-              eventVersion,
+              aggregateVersion,
               typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
               eventBaseTypeId,
               eventVersion,
