@@ -13,7 +13,8 @@ import scalikejdbc._
 import scala.util.Try
 
 class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState, fetchSize: Int = 1000,
-                              eventSizeLimit: Int = 100000, aggregateVersionLimit: Int = 10000) extends EventStoreState {
+                              eventSizeLimit: Int = 100000, aggregateVersionLimit: Int = 10000,
+                              eventSizeLimitPerClassName: Map[String, Int] = Map.empty) extends EventStoreState {
 
   val doubleNone: (Option[AggregateVersion], Option[Instant]) = (None, None)
 
@@ -32,8 +33,10 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 
       val aggregateVersion = lastEventVersion.getOrElse(eventsEnvelope.expectedVersion.asInt)
 
-      if(eventSerialized.length > eventSizeLimit) {
-        throw new EventTooLargeException(aggregateId, event.aggregateRootType.typeSymbol.fullName, AggregateVersion(aggregateVersion), event.getClass.getName, eventSerialized.length, eventSizeLimit)
+      val effectiveEventSizeLimit = eventSizeLimitPerClassName.getOrElse(event.getClass.getName, eventSizeLimit)
+
+      if(eventSerialized.length > effectiveEventSizeLimit) {
+        throw new EventTooLargeException(aggregateId, event.aggregateRootType.typeSymbol.fullName, AggregateVersion(aggregateVersion), event.getClass.getName, eventSerialized.length, effectiveEventSizeLimit)
       } else if(aggregateVersion > aggregateVersionLimit) {
         throw new TooManyEventsException(aggregateId, event.aggregateRootType.typeSymbol.fullName, aggregateVersionLimit)
       } else {
