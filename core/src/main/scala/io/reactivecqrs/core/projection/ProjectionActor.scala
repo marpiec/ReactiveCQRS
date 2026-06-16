@@ -425,7 +425,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       }
 
     } else if (newEvents.nonEmpty) { // not just after previous update
-//      log.debug("Delaying events update handling for aggregate " + e.aggregateType.simpleName + ":" + e.aggregateId.asLong + ", got update for version " + e.events.map(_.version.asInt).mkString(", ") + " but only processed version " + lastVersion.asInt)
+//      log.debug("Delaying events update handling for aggregate " + e.aggregateType.simpleName + ":" + e.aggregateId.asLong + ", got update for version " + toRangeString(e.events.map(_.version.asInt)) + " but only processed version " + lastVersion.asInt)
       delayedEventsUpdate += e.aggregateId -> (e :: delayedEventsUpdate.getOrElse(e.aggregateId, List.empty))
     } else {
       throw new IllegalArgumentException("Received empty list of events!")
@@ -657,7 +657,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       }
 
     } else if (newEvents.nonEmpty) { // not just after previous update
-//      log.debug("Delaying aggregate update handling for aggregate " + a.aggregateType.simpleName + ":" + a.id.asLong + ", got update for version " + a.events.map(_.asInt).mkString(", ") + " but only processed version " + lastVersion.asInt)
+//      log.debug("Delaying aggregate update handling for aggregate " + a.aggregateType.simpleName + ":" + a.id.asLong + ", got update for version " + toRangeString(a.events.map(_.asInt)) + " but only processed version " + lastVersion.asInt)
       delayedAggregateUpdates += a.id -> (a :: delayedAggregateUpdates.getOrElse(a.id, List.empty))
     } else {
       throw new IllegalArgumentException("Received empty list of events!")
