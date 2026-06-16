@@ -515,11 +515,29 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
 
     } else if (newEvents.nonEmpty) { // not just after previous update
-      log.debug("Delaying aggregate with events update handling for aggregate " + ae.aggregateType.simpleName + ":" + ae.id.asLong + ", got update for version " + ae.events.map(_.version.asInt).mkString(", ") + " but only processed version " + lastVersion.asInt)
+//      log.debug("Delaying aggregate with events update handling for aggregate " + ae.aggregateType.simpleName + ":" + ae.id.asLong + ", got update for version " + toRangeString(ae.events.map(_.version.asInt)) + " but only processed version " + lastVersion.asInt)
       delayedAggregateWithEventsUpdate += ae.id -> (ae :: delayedAggregateWithEventsUpdate.getOrElse(ae.id, List.empty))
     } else {
       throw new IllegalArgumentException("Received empty list of events!")
     }
+  }
+
+  private def toRangeString(nums: Seq[Int]): String = {
+    if (nums.isEmpty) return ""
+
+    nums.sorted
+      .foldLeft(List[(Int, Int)]()) {
+        case (Nil, n) => List((n, n))
+        case (ranges :+ ((start, end)), n) =>
+          if (n == end + 1) ranges :+ (start, n)
+          else ranges :+ (start, end) :+ (n, n)
+      }
+      .map {
+        case (start, end) if start == end => start.toString
+        case (start, end) if end == start + 1 => s"$start,$end"
+        case (start, end) => s"$start-$end"
+      }
+      .mkString(",")
   }
 
   def runTaskAsyncPerAggregate(id: AggregateId)(context: ExecutionContext)(task: => Unit): Unit = {
