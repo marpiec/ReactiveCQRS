@@ -487,7 +487,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
     if (newEvents.isEmpty && alreadyProcessed.nonEmpty) {
       respondTo ! MessageAck(mySelf, ae.id, alreadyProcessed.map(_.version))
-      log.debug("Sending ACK message for already processed events for aggregate " + ae.id+": "+alreadyProcessed.map(_.version.asInt).mkString(","))
+//      log.debug("Sending ACK message for already processed events for aggregate " + ae.id+": "+alreadyProcessed.map(_.version.asInt).mkString(","))
     } else if (newEvents.nonEmpty && newEvents.head.version.isJustAfter(lastVersion)) {
 
 
