@@ -244,8 +244,10 @@ ORDER BY events.id""")
     if(events.exists(e => e.event.isInstanceOf[PermanentDeleteEvent[_]])) {
       DB.localTx { implicit session =>
         sql"""DELETE FROM aggregates WHERE id = ?""".bind(aggregateId.asLong).update().apply()
-        sql"""DELETE FROM events WHERE aggregate_id = ?""".bind(aggregateId.asLong).update().apply()
+        // noop_events must be deleted BEFORE events: it is resolved via a subquery over events,
+        // so deleting events first would make the subquery match nothing and leak noop_events rows.
         sql"""DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = ?)""".bind(aggregateId.asLong).update().apply()
+        sql"""DELETE FROM events WHERE aggregate_id = ?""".bind(aggregateId.asLong).update().apply()
         sql"""DELETE FROM events_to_publish WHERE aggregate_id = ?""".bind(aggregateId.asLong).update().apply()
         sql"""DELETE FROM subscriptions WHERE aggregate_id = ?""".bind(aggregateId.asLong).update().apply()
       }

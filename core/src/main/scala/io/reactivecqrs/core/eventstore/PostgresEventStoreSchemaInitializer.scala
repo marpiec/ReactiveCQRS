@@ -12,6 +12,7 @@ class PostgresEventStoreSchemaInitializer  {
     createEventsIdAndAggregateIndex()
     createNoopEventTable()
     createEventsBroadcastTable()
+    createEventsBroadcastAggregateIndex()
     createAggregatesTable()
     addAggregateSpaceColumn()
     createAggregatesTypeIndex()
@@ -88,6 +89,14 @@ class PostgresEventStoreSchemaInitializer  {
           event_time TIMESTAMP NOT NULL)
       """.execute().apply()
 
+  }
+
+  // events_to_publish is the outbox: queried/joined/deleted by aggregate_id (often ordered by version)
+  // on every AggregateRepositoryActor init and outbox resend. Without this index those are full table scans.
+  private def createEventsBroadcastAggregateIndex(): Unit = DB.autoCommit { implicit session =>
+    sql"""
+        CREATE INDEX IF NOT EXISTS events_to_publish_aggregate_idx ON events_to_publish (aggregate_id, version);
+      """.execute().apply()
   }
 
   private def createAggregatesTable(): Unit = DB.autoCommit { implicit session =>

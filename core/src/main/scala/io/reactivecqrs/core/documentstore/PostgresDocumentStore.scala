@@ -419,8 +419,9 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
             rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3)))
           }).list().apply()
       }
+      val loadedById = loaded.toMap
       toLoad.foreach(id => {
-        cache.put(id, loaded.find(_._1 == id).map(_._2))
+        cache.put(id, loadedById.get(id))
       })
       fromCacheFoundValues ++ loaded.map(v => (v._1, Document(v._2.document))).toMap
     }
