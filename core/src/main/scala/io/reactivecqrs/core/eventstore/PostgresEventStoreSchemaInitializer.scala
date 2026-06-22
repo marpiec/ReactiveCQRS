@@ -20,6 +20,7 @@ class PostgresEventStoreSchemaInitializer  {
     createEventsSequence()
     dropExistingFunctions()
     createAddEventFunction()
+    createAddEventsFunction()
     createAddUndoEventFunction()
     createAddDuplicationEventFunction()
   }
@@ -127,6 +128,7 @@ class PostgresEventStoreSchemaInitializer  {
     sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240))""".execute().apply()
     sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240))""".execute().apply()
     sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240))""".execute().apply() // space_id added
+    sql"""DROP FUNCTION IF EXISTS add_events(BIGINT, BIGINT[], BIGINT, INT, SMALLINT, SMALLINT[], SMALLINT[], TIMESTAMP, VARCHAR(102400)[])""".execute().apply()
     sql"""DROP FUNCTION IF EXISTS add_undo_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), INT)""".execute().apply()
     sql"""DROP FUNCTION IF EXISTS add_undo_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), INT)""".execute().apply()
     sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), BIGINT, INT)""".execute().apply()
@@ -163,6 +165,28 @@ class PostgresEventStoreSchemaInitializer  {
           |    INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event) VALUES (event_id, user_id, aggregate_id, event_time, current_version + 1, event_type_id, event_type_version, event);
           |    INSERT INTO events_to_publish (event_id, aggregate_id, version, user_id, event_time) VALUES(event_id, aggregate_id, current_version + 1, user_id, event_time);
           |    RETURN current_version + 1;
+          |END;
+          |$$
+          |LANGUAGE 'plpgsql' VOLATILE
+        """.stripMargin).execute().apply()
+  }
+
+  // Batches multiple plain/first events for a single aggregate into one round trip.
+  // Delegates each element to add_event in order; the per-call expected_version is
+  // _expected_version + (i - 1), which matches the sequential base_version increments
+  // add_event performs, so the optimistic-lock check is preserved exactly.
+  private def createAddEventsFunction(): Unit = DB.autoCommit { implicit session =>
+    SQL("""
+          |CREATE OR REPLACE FUNCTION add_events(_user_id BIGINT, _space_ids BIGINT[], _aggregate_id BIGINT, _expected_version INT, _aggregate_type_id SMALLINT, _event_type_ids SMALLINT[], _event_type_versions SMALLINT[], _event_time TIMESTAMP, _events VARCHAR(102400)[])
+          |RETURNS SETOF BIGINT AS
+          |$$
+          |DECLARE
+          |    i INT;
+          |BEGIN
+          |    FOR i IN 1 .. array_length(_events, 1) LOOP
+          |        RETURN NEXT add_event(_user_id, _space_ids[i], _aggregate_id, _expected_version + i - 1, _aggregate_type_id, _event_type_ids[i], _event_type_versions[i], _event_time, _events[i]);
+          |    END LOOP;
+          |    RETURN;
           |END;
           |$$
           |LANGUAGE 'plpgsql' VOLATILE

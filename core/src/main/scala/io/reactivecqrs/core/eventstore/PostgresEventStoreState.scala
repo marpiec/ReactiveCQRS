@@ -25,6 +25,21 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 
   override def persistEvents[AGGREGATE_ROOT](eventsVersionsMapReverse: Map[String, EventTypeVersion],
                                              aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = Try {
+    // Undo/duplication events have their own stored procedures and per-event semantics, so they
+    // always go through the one-by-one path. Plain and first events (even mixed) can be batched
+    // into a single add_events round trip.
+    val batchable = eventsEnvelope.events.size > 1 &&
+      !eventsEnvelope.events.exists(e => e.isInstanceOf[UndoEvent[_]] || e.isInstanceOf[DuplicationEvent[_]])
+
+    if (batchable) {
+      persistEventsBatched(eventsVersionsMapReverse, aggregateId, eventsEnvelope)
+    } else {
+      persistEventsOneByOne(eventsVersionsMapReverse, aggregateId, eventsEnvelope)
+    }
+  }
+
+  private def persistEventsOneByOne[AGGREGATE_ROOT](eventsVersionsMapReverse: Map[String, EventTypeVersion],
+                                                    aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
     var lastEventVersion: Option[Int] = None
 
     eventsEnvelope.events.map(event => {
@@ -102,6 +117,63 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
         (event, AggregateVersion(lastEventVersion.get))
       }
     })
+  }
+
+  private def persistEventsBatched[AGGREGATE_ROOT](eventsVersionsMapReverse: Map[String, EventTypeVersion],
+                                                   aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
+
+    val events = eventsEnvelope.events.toIndexedSeq
+    val baseVersion = eventsEnvelope.expectedVersion.asInt
+    val aggregateTypeId = typesNamesState.typeIdByClassName(events.head.aggregateRootType.typeSymbol.fullName)
+
+    val n = events.size
+    val spaceIds = new Array[AnyRef](n)
+    val eventTypeIds = new Array[AnyRef](n)
+    val eventTypeVersions = new Array[AnyRef](n)
+    val serializedEvents = new Array[AnyRef](n)
+
+    events.iterator.zipWithIndex.foreach { case (event, i) =>
+      val eventSerialized = mpjsons.serialize(event, event.getClass.getName)
+      val aggregateVersion = baseVersion + i
+      val effectiveEventSizeLimit = eventSizeLimitPerClassName.getOrElse(event.getClass.getName, eventSizeLimit)
+
+      if (eventSerialized.length > effectiveEventSizeLimit) {
+        throw new EventTooLargeException(aggregateId, event.aggregateRootType.typeSymbol.fullName, AggregateVersion(aggregateVersion), event.getClass.getName, eventSerialized.length, effectiveEventSizeLimit)
+      } else if (aggregateVersion > aggregateVersionLimit) {
+        throw new TooManyEventsException(aggregateId, event.aggregateRootType.typeSymbol.fullName, aggregateVersionLimit)
+      }
+
+      val eventType = event.getClass.getName
+      val EventTypeVersion(eventBaseType, eventVersion) = eventsVersionsMapReverse.getOrElse(eventType, EventTypeVersion(eventType, 0))
+
+      spaceIds(i) = Long.box(event match {
+        case firstEvent: FirstEvent[_] => firstEvent.spaceId.asLong
+        case _ => -1L
+      })
+      eventTypeIds(i) = Short.box(typesNamesState.typeIdByClassName(eventBaseType))
+      eventTypeVersions(i) = Short.box(eventVersion)
+      serializedEvents(i) = eventSerialized
+    }
+
+    val connection = session.connection
+    def arrayParam(elementType: String, elements: Array[AnyRef]): ParameterBinder = {
+      val sqlArray = connection.createArrayOf(elementType, elements)
+      ParameterBinder(value = sqlArray, binder = (stmt, idx) => stmt.setArray(idx, sqlArray))
+    }
+
+    val versions = sql"""SELECT add_events(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
+      eventsEnvelope.userId.asLong,
+      arrayParam("bigint", spaceIds),
+      aggregateId.asLong,
+      baseVersion,
+      aggregateTypeId,
+      arrayParam("smallint", eventTypeIds),
+      arrayParam("smallint", eventTypeVersions),
+      Timestamp.from(Instant.now),
+      arrayParam("varchar", serializedEvents)
+    ).map(rs => rs.int(1)).list().apply()
+
+    events.zip(versions.map(AggregateVersion(_)))
   }
 
 
