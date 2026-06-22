@@ -10,7 +10,7 @@ import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventsAck, _}
 import io.reactivecqrs.core.util.{MyActorLogging, RandomUtil}
 import org.slf4j.Logger
 
-import scala.collection.{View, mutable}
+import scala.collection.mutable
 import scala.concurrent.Await
 import scala.concurrent.duration._
 
@@ -63,7 +63,7 @@ case class AggregateWithEventSubscription(subscriptionId: String, aggregateType:
 
 
 /** TODO get rid of state, memory only */
-class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: EventBusSubscriptionsManagerApi, val MAX_BUFFER_SIZE: Int = 1000,
+class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: EventBusSubscriptionsManagerApi, val MAX_BUFFER_SIZE: Int = 10000,
                      eventsLogger: Option[Logger] = None) extends Actor with MyActorLogging {
 
   private var subscriptions: Map[AggregateType, Vector[Subscription]] = Map()
@@ -383,85 +383,54 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
      eventsLogger.foreach(_.debug("EventBus MessageAck received "+ack.aggregateId.asLong+": "+ack.versions.map(_.asInt).mkString(", ")+" from "+ ack.subscriber.path+" as "+self.path))
 
-//    println("MessageAck received " + ack.subscriber+" "+ack.aggregateId.asLong+": "+ack.versions.map(_.asInt).mkString(", ")+" "+self.path)
-
     messageAckTotal += ack.versions.size
 
     lastMessageAck = System.nanoTime() / 1_000_000
 
     val aggregateId = ack.aggregateId
 
-    // Convert to EventIdentifiers
-    val eventsIds = ack.versions.map(v => EventIdentifier(aggregateId, v)).toSet
-
-    // Find sent messages for given events
-    val receiversToConfirm = messagesSent.view.filterKeys(e => eventsIds.contains(e))
-
-    val withoutConfirmationSender = receiversToConfirm.map {
-      // Remove sender that confirmed receiving from the list
-      case (eventId, receivers) => eventId -> receivers.filterNot(_._2 == ack.subscriber)
-    }
-
-    // Which events received confirmation from all receivers and which not
-    val (finishedEvents, remainingEvents: View[(EventIdentifier, Vector[(Instant, ActorRef)])]) = withoutConfirmationSender.partition {
-      case (eventId, receivers) => receivers.isEmpty
-    }
-
-     eventsLogger.foreach(_.debug("EventBus MessageAck processing "+aggregateId.asLong+": "+
-       " @messagesSent: " +messagesSent.filter(_._1.aggregateId == aggregateId).map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")+
-       ", @receiversToConfirm: " +receiversToConfirm.map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")+
-       ", @withoutConfirmedPerEvent: "+withoutConfirmationSender.map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")+
-       ", @finishedEvents: "+finishedEvents.map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")+
-       ", @remainingEvents: "+remainingEvents.map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")))
-
-    if(remainingEvents.nonEmpty) {
-      messagesSent ++= remainingEvents.toList // toList to force evaluation
+    // Look up each acked event directly (O(events in ack)) instead of scanning the whole in-flight
+    // messagesSent map. The previous filterKeys/partition approach forced a full traversal of every
+    // in-flight message on every ack, making the bus O(buffer^2) over a burst and making it unsafe to
+    // grow MAX_BUFFER_SIZE. For each acked event we drop the confirming subscriber; an event whose
+    // receiver set becomes empty is finished and removed from messagesSent.
+    var finishedEvents: List[EventIdentifier] = Nil
+    ack.versions.foreach { version =>
+      val eventId = EventIdentifier(aggregateId, version)
+      messagesSent.get(eventId) match {
+        case None => () // unknown event or already fully confirmed - nothing to do
+        case Some(receivers) =>
+          val remaining = receivers.filterNot(_._2 == ack.subscriber)
+          if (remaining.isEmpty) {
+            messagesSent -= eventId
+            finishedEvents ::= eventId
+          } else {
+            messagesSent += eventId -> remaining
+          }
+      }
     }
 
     if(finishedEvents.nonEmpty) {
 
-      val publishedEventsToConfirm: Iterable[EventIdentifier] = finishedEvents.toMap.keys
-
       receivedInProgressMessages -= finishedEvents.size
       if(eventsLogger.isDefined) {
-        receivedInProgressMessagesSet --= publishedEventsToConfirm
+        receivedInProgressMessagesSet --= finishedEvents
       }
 
-      eventsLogger.foreach(_.debug("EventBus finished processing "+publishedEventsToConfirm.size+" events: " + aggregateId.asLong + ": " + publishedEventsToConfirm.map(_.version.asInt).mkString(", ")))
+      eventsLogger.foreach(_.debug("EventBus finished processing "+finishedEvents.size+" events: " + aggregateId.asLong + ": " + finishedEvents.map(_.version.asInt).mkString(", ")))
 
-      val groupedFinishedEvents = finishedEvents.groupBy(e => (eventSenders(e._1), e._1.aggregateId))
-      groupedFinishedEvents.foreach {
-        case ((sender, aggregateId), events) =>
-          eventsLogger.foreach(_.debug("EventBus confirming events propagated: " + aggregateId.asLong + ": " + events.map(_._1.version.asInt).mkString(",") + " to " + sender.path))
-          sender ! PublishEventsAck(aggregateId, events.map(_._1.version).toSeq.sortBy(_.asInt))
-//          eventsAlreadyPropagatedAndConfirmed += aggregateId.asLong -> events.map(_._1.version.asInt).max
+      // Confirm back to the original publishers (grouped by publisher; all events here share aggregateId).
+      finishedEvents.groupBy(eventId => (eventSenders(eventId), eventId.aggregateId)).foreach {
+        case ((sender, aggId), events) =>
+          eventsLogger.foreach(_.debug("EventBus confirming events propagated: " + aggId.asLong + ": " + events.map(_.version.asInt).mkString(",") + " to " + sender.path))
+          sender ! PublishEventsAck(aggId, events.map(_.version).sortBy(_.asInt))
       }
 
-      if(eventsLogger.isDefined) {
-        val groupedRemainingEvents = remainingEvents.groupBy(e => (eventSenders(e._1), e._1.aggregateId))
-
-        groupedFinishedEvents.foreach {
-          case ((sender, aggregateId), events) => groupedRemainingEvents.get((sender, aggregateId)) match {
-            case Some(remainingEventsForSender) =>
-              eventsLogger.get.debug("EventBus still waiting for events: " + aggregateId.asLong + ": " + remainingEventsForSender.map(_._1.version.asInt).mkString(",") + " from " + sender.path)
-            case None => // all confirmed
-          }
-        }
-      }
-
-
-
-      messagesSent --= publishedEventsToConfirm
-
-      eventsLogger.foreach(_.debug("Cleaned messagesSend "+aggregateId.asLong+": "+
-        " @messagesSent: " +messagesSent.filter(_._1.aggregateId == aggregateId).map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")))
-
-
-      eventSenders --= publishedEventsToConfirm
+      eventSenders --= finishedEvents
 
       val lastPublishedVersion = getLastPublishedVersion(aggregateId)
 
-      val eventsSorted = publishedEventsToConfirm.toList.sortBy(_.version.asInt)
+      val eventsSorted = finishedEvents.sortBy(_.version.asInt)
 
       if(eventsSorted.head.version.isJustAfter(lastPublishedVersion)) {
         val notPersistedYet = eventsPropagatedNotPersisted.getOrElse(aggregateId, List.empty)

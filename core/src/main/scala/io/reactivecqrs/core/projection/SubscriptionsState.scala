@@ -117,7 +117,7 @@ object SubscriptionCacheKey {
   }
 }
 
-class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory: Boolean, eventsLogger: Option[Logger]) extends SubscriptionsState {
+class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory: Boolean, eventsLogger: Option[Logger] = None) extends SubscriptionsState {
 
   def initSchema(): PostgresSubscriptionsState = {
     createSubscriptionsTable()
@@ -169,23 +169,35 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
   }
 
   private def lastAggregateVersion(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId): AggregateVersion = {
-    val versionsForAggregate = synchronized {
-      getVersionsForAggregate(aggregateId)
+    val key = SubscriptionCacheKey.get(typesNamesState, subscriberName, subscriptionType)
+    val versionsForAggregate = getVersionsForAggregate(aggregateId)
+    // Read the shared mutable map under the monitor (it may be mutated concurrently by newEventId).
+    synchronized {
+      versionsForAggregate.getOrElse(key, AggregateVersion.ZERO)
     }
-    versionsForAggregate.getOrElse(SubscriptionCacheKey.get(typesNamesState, subscriberName, subscriptionType), AggregateVersion.ZERO)
   }
 
 
-  private def getVersionsForAggregate(aggregateId: AggregateId) = {
-    perAggregate.get(aggregateId) match {
+  // Double-checked population: the DB read happens OUTSIDE the monitor so cache-miss reads for different
+  // aggregates run concurrently (e.g. across projection worker threads) instead of serializing on one lock.
+  // Only the cache install is guarded, and if another thread installed the aggregate first we return that
+  // shared instance so all callers mutate the same map.
+  private def getVersionsForAggregate(aggregateId: AggregateId): mutable.HashMap[String, AggregateVersion] = {
+    synchronized(perAggregate.get(aggregateId)) match {
       case Some(versions) => versions
       case None =>
-        val versions = lastAggregateVersionFromDB(aggregateId, typesNamesState)
-        perAggregate += aggregateId -> versions
-        if(keepInMemory) {
-          dumped += aggregateId -> mutable.HashMap[String, AggregateVersion](versions.toList: _*)
+        val loaded = lastAggregateVersionFromDB(aggregateId, typesNamesState)
+        synchronized {
+          perAggregate.get(aggregateId) match {
+            case Some(existing) => existing
+            case None =>
+              perAggregate += aggregateId -> loaded
+              if (keepInMemory) {
+                dumped += aggregateId -> mutable.HashMap[String, AggregateVersion](loaded.toList: _*)
+              }
+              loaded
+          }
         }
-        versions
     }
   }
 
@@ -203,14 +215,15 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
 
   private def newEventId(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit = {
     val key = SubscriptionCacheKey.get(typesNamesState, subscriberName, subscriptionType)
+    // Fetch (and possibly DB-load) the aggregate's versions outside the monitor; only the compare-and-set
+    // on the shared map needs the lock.
+    val versions = getVersionsForAggregate(aggregateId)
     var saveInDB = false
     synchronized {
-      val versions = getVersionsForAggregate(aggregateId)
       if(lastAggregateVersion == versions.getOrElse(key, AggregateVersion.ZERO)) {
         saveInDB = true
         versions += key -> aggregateVersion
       }
-      versions
     }
     if(saveInDB) {
       if(!keepInMemory) {
@@ -293,7 +306,9 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
 
   private val AGGREGATE_VERSIONS_QUERY = sql"""SELECT aggregate_version, subscriber_type_id, subscription_type FROM subscriptions WHERE aggregate_id = ?"""
 
-  private def lastAggregateVersionFromDB(aggregateId: AggregateId, typesNamesState: TypesNamesState): mutable.HashMap[String, AggregateVersion] = synchronized {
+  // No monitor here: this only issues a read-only query and builds a fresh local map (no shared state),
+  // so concurrent callers (different aggregates) can read in parallel. Caller installs the result under lock.
+  private def lastAggregateVersionFromDB(aggregateId: AggregateId, typesNamesState: TypesNamesState): mutable.HashMap[String, AggregateVersion] = {
     DB.readOnly { implicit session =>
       val m = AGGREGATE_VERSIONS_QUERY
         .bind(aggregateId.asLong)
@@ -307,7 +322,9 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
   }
 
 
-  def newEventIdInDB(aggregateId: AggregateId, subscriberName: String, subscriptionType: SubscriptionType, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion, typesNamesState: TypesNamesState)(implicit session: DBSession): Unit = synchronized {
+  // No monitor here: operates only on the supplied DB session and the self-synchronized typesNamesState,
+  // so subscription writes from different projection worker threads no longer serialize on this lock.
+  def newEventIdInDB(aggregateId: AggregateId, subscriberName: String, subscriptionType: SubscriptionType, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion, typesNamesState: TypesNamesState)(implicit session: DBSession): Unit = {
     if(lastAggregateVersion == AggregateVersion.ZERO) {
       INSERT_INTO_SUBSCRIPTIONS.bind(typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, aggregateVersion.asInt).update().apply()
     } else {
