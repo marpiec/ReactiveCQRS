@@ -131,6 +131,14 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
   private var dumped = Map[AggregateId, mutable.HashMap[String, AggregateVersion]]() //which subscriptions info has already been dumped
   private var perAggregate = Map[AggregateId, mutable.HashMap[String, AggregateVersion]]() // String is subscriber | subscriptionType
 
+  // Single-flight load locks: striped so that concurrent cache-miss loads for the SAME aggregate
+  // serialize on one monitor (only one DB query is issued), while different aggregates almost always
+  // map to different stripes and still load in parallel.
+  private val LOAD_STRIPES = 64
+  private val loadLocks: Array[AnyRef] = Array.fill(LOAD_STRIPES)(new Object)
+  private def loadLockFor(aggregateId: AggregateId): AnyRef =
+    loadLocks(((aggregateId.asLong % LOAD_STRIPES) + LOAD_STRIPES).toInt % LOAD_STRIPES)
+
   private def createSubscriptionsTable() = DB.autoCommit { implicit session =>
     sql"""
          CREATE TABLE IF NOT EXISTS subscriptions (
@@ -178,24 +186,37 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
   }
 
 
-  // Double-checked population: the DB read happens OUTSIDE the monitor so cache-miss reads for different
-  // aggregates run concurrently (e.g. across projection worker threads) instead of serializing on one lock.
-  // Only the cache install is guarded, and if another thread installed the aggregate first we return that
-  // shared instance so all callers mutate the same map.
+  // Double-checked population guarded by a per-aggregate single-flight stripe: the DB read happens OUTSIDE
+  // the instance monitor so cache-miss reads for different aggregates run concurrently (e.g. across
+  // projection worker threads) instead of serializing on one lock. The stripe lock coalesces concurrent
+  // misses for the SAME aggregate so only one DB query is issued (avoids the cache-stampede that caused
+  // repeated identical AGGREGATE_VERSIONS_QUERY calls). Only the cache install is guarded by the instance
+  // monitor, and if another thread installed the aggregate first we return that shared instance so all
+  // callers mutate the same map.
   private def getVersionsForAggregate(aggregateId: AggregateId): mutable.HashMap[String, AggregateVersion] = {
     synchronized(perAggregate.get(aggregateId)) match {
       case Some(versions) => versions
       case None =>
-        val loaded = lastAggregateVersionFromDB(aggregateId, typesNamesState)
-        synchronized {
-          perAggregate.get(aggregateId) match {
-            case Some(existing) => existing
+        // Single-flight per aggregate: only one thread loads from DB for a given aggregate; concurrent
+        // callers for the SAME aggregate wait on this stripe and then hit the freshly-installed cache
+        // entry below (no duplicate query). Different aggregates use (almost always) different stripes,
+        // so they still load in parallel.
+        loadLockFor(aggregateId).synchronized {
+          synchronized(perAggregate.get(aggregateId)) match {
+            case Some(versions) => versions
             case None =>
-              perAggregate += aggregateId -> loaded
-              if (keepInMemory) {
-                dumped += aggregateId -> mutable.HashMap[String, AggregateVersion](loaded.toList: _*)
+              val loaded = lastAggregateVersionFromDB(aggregateId, typesNamesState)
+              synchronized {
+                perAggregate.get(aggregateId) match {
+                  case Some(existing) => existing
+                  case None =>
+                    perAggregate += aggregateId -> loaded
+                    if (keepInMemory) {
+                      dumped += aggregateId -> mutable.HashMap[String, AggregateVersion](loaded.toList: _*)
+                    }
+                    loaded
+                }
               }
-              loaded
           }
         }
     }
