@@ -36,7 +36,7 @@
         <scala.major>2.13</scala.major>
         <scala.maven.plugin.version>4.9.10</scala.maven.plugin.version>
 
-        <mpjsons.version>0.6.51</mpjsons.version>
+        <mpjsons.version>0.7.0</mpjsons.version>
         <pekko.version>1.4.0</pekko.version>
         <typesafe_config.version>1.4.9</typesafe_config.version>
         <slf4j.version>2.0.17</slf4j.version>
