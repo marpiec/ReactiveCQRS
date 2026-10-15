@@ -1,7 +1,8 @@
 package io.reactivecqrs.core.documentstore
 
-import org.scalatest.{BeforeAndAfter, FeatureSpecLike, GivenWhenThen}
-import org.scalatest.MustMatchers._
+import org.scalatest.{BeforeAndAfter, GivenWhenThen}
+import org.scalatest.featurespec.AnyFeatureSpecLike
+import org.scalatest.matchers.must.Matchers._
 import scalikejdbc.{DBSession, NoSession}
 
 case class SimpleType(field: Int)
@@ -12,7 +13,7 @@ case class OptionType(option: Option[SimpleType])
 
 case class OptionIntType(option: Option[Int])
 
-class MemoryDocumentStoreSpec extends FeatureSpecLike with GivenWhenThen with BeforeAndAfter {
+class MemoryDocumentStoreSpec extends AnyFeatureSpecLike with GivenWhenThen with BeforeAndAfter {
 
   feature("can find documents by path with one array") {
     scenario("value exists") {

@@ -3,7 +3,9 @@ package io.reactivecqrs.testutils
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.testkit.TestKit
 import com.typesafe.config.ConfigFactory
-import org.scalatest.{FeatureSpecLike, GivenWhenThen, MustMatchers}
+import org.scalatest.GivenWhenThen
+import org.scalatest.featurespec.AnyFeatureSpecLike
+import org.scalatest.matchers.must.Matchers
 import scalikejdbc.{GlobalSettings, LoggingSQLAndTimeSettings}
 
 abstract class CommonSpec extends TestKit(ActorSystem("testsystem", ConfigFactory.parseString("""
@@ -11,7 +13,7 @@ abstract class CommonSpec extends TestKit(ActorSystem("testsystem", ConfigFactor
           pekko.actor.debug.receive = off
           pekko.actor.debug.receive = off
           pekko.actor.debug.fsm = off
-          pekko.actor.debug.lifecycle = off"""))) with FeatureSpecLike with GivenWhenThen with ActorAskSupport with MustMatchers {
+          pekko.actor.debug.lifecycle = off"""))) with AnyFeatureSpecLike with GivenWhenThen with ActorAskSupport with Matchers {
 
   GlobalSettings.loggingSQLAndTime = LoggingSQLAndTimeSettings(
     enabled = false,

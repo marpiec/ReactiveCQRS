@@ -10,7 +10,8 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubscriptionsManagerApi}
 import io.reactivecqrs.core.projection.SubscribableProjectionActor.{CancelProjectionSubscriptions, ProjectionSubscriptionsCancelled, SubscribedForProjectionUpdates, SubscriptionUpdated}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
-import org.scalatest.{BeforeAndAfter, FeatureSpecLike, GivenWhenThen}
+import org.scalatest.{BeforeAndAfter, GivenWhenThen}
+import org.scalatest.featurespec.AnyFeatureSpecLike
 import scalikejdbc.DBSession
 
 import scala.concurrent.duration._
@@ -64,7 +65,7 @@ class SimpleListener(simpleListenerProbe: TestProbe) extends Actor {
   }
 }
 
-class SubscribableSpec extends FeatureSpecLike with GivenWhenThen with BeforeAndAfter {
+class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with BeforeAndAfter {
   implicit val actorSystem = ActorSystem()
   implicit val timeout = Timeout(10 second)
 

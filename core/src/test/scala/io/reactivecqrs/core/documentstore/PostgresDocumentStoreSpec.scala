@@ -2,9 +2,11 @@ package io.reactivecqrs.core.documentstore
 
 import io.mpjsons.MPJsons
 import org.scalatest._
+import org.scalatest.featurespec.AnyFeatureSpec
+import org.scalatest.matchers.must.Matchers
 import scalikejdbc.DB
 
-class PostgresDocumentStoreSpec extends FeatureSpec with GivenWhenThen with BeforeAndAfter with MustMatchers {
+class PostgresDocumentStoreSpec extends AnyFeatureSpec with GivenWhenThen with BeforeAndAfter with Matchers {
 
   val mpjsons = new MPJsons
 

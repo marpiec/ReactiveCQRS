@@ -39,6 +39,10 @@
             <groupId>org.scalikejdbc</groupId>
             <artifactId>scalikejdbc-streams_2.13</artifactId>
         </dependency>
+        <dependency>
+            <groupId>org.scalatest</groupId>
+            <artifactId>scalatest_${scala.major}</artifactId>
+        </dependency>
     </dependencies>
 
     <build>
