@@ -11,6 +11,10 @@ import scala.util.Try
 /** The events of one command, stored after `expectedVersion` with one user and one timestamp (D10). */
 case class NewEvents[AGGREGATE_ROOT](userId: UserId, expectedVersion: AggregateVersion, timestamp: Instant, events: Seq[Event[AGGREGATE_ROOT]])
 
+/** A performance snapshot (D30): the aggregate's state at `version`, usable only with the context and schema versions
+  * it was made with. */
+case class Snapshot[AGGREGATE_ROOT](version: AggregateVersion, contextVersion: Int, schemaVersion: Int, state: AGGREGATE_ROOT)
+
 /** An aggregate with rows waiting in the outbox: its oldest waiting version, and when that event was written. */
 case class WaitingInOutbox(aggregateType: AggregateType, aggregateId: AggregateId, oldestVersion: AggregateVersion, since: Instant)
 
@@ -20,6 +24,18 @@ abstract class EventStoreState {
   def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]]
   def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit
   def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, version: Option[Either[AggregateVersion, Instant]])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit
+  /** The aggregate's own events after version `after`, up to `upTo` (or its newest), in order, each with whether it
+    * was undone as of that version: the tail after a snapshot. A duplicate's base events all come before its own. */
+  def readAndProcessOwnEvents[AGGREGATE_ROOT](aggregateId: AggregateId, after: AggregateVersion, upTo: Option[AggregateVersion])
+                                             (eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], Int, Boolean) => Unit): Unit
+
+  /** The aggregate's snapshot (D30), if it has one; `Failure` when the stored state cannot be read as `stateClassName`.
+    * An undo, a history rewrite and a permanent delete remove the snapshots they make wrong, in their own transaction. */
+  def readSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, stateClassName: String): Option[Try[Snapshot[AGGREGATE_ROOT]]]
+
+  /** Stores the aggregate's snapshot in a transaction of its own, in place of the one it had. */
+  def writeSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, snapshot: Snapshot[AGGREGATE_ROOT], stateClassName: String): Unit
+
   def readAndProcessAllEvents(aggregateType: String,
                               batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit
 

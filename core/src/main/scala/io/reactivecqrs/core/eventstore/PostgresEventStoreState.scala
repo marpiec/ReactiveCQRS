@@ -18,8 +18,6 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
                               eventSizeLimitPerClassName: Map[String, Int] = Map.empty,
                               outboxDeleteDelay: FiniteDuration = 20.millis) extends EventStoreState {
 
-  val doubleNone: (Option[AggregateVersion], Option[Instant]) = (None, None)
-
   def initSchema(): PostgresEventStoreState = {
     (new PostgresEventStoreSchemaInitializer).initSchema()
     this
@@ -69,6 +67,8 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 
         lastEventVersion = Some(event match {
           case undoEvent: UndoEvent[_] =>
+            // An undo changes the state behind a snapshot: the snapshot goes, in this transaction (D30).
+            sql"""DELETE FROM snapshots WHERE aggregate_id = ${aggregateId.asLong}""".update()
             sql"""SELECT add_undo_event(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
               eventsEnvelope.userId.asLong,
               aggregateId.asLong,
@@ -180,6 +180,8 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 
 
   override def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit = {
+    // The snapshots of the aggregate and of its duplicates may hold the old values (D30).
+    sql"""DELETE FROM snapshots WHERE aggregate_id IN (SELECT id FROM aggregates WHERE base_id = ${aggregateId.asLong})""".update()
     events.foreach(e => {
       sql"""
            |UPDATE events SET event = ? WHERE aggregate_id = ? AND version = ?
@@ -188,20 +190,18 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
 
 
+  // Restores stream the rows (autocommit off and a fetch size, F22), so a long history is not loaded whole first. A read
+  // at an instant reads up to the aggregate's version at that instant (F39): its own events up to it, undone as they
+  // were then, and its base's events as for any version.
   override def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, versionOrInstant: Option[Either[AggregateVersion, Instant]])
-                                                   (eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit = {  //event, id, noop
-
-
-    val (version: Option[AggregateVersion], instant: Option[Instant]) = versionOrInstant match {
-      case Some(vi) => vi match {
-        case Left(version) => (Some(version), None)
-        case Right(instant) => (None, Some(instant))
+                                                   (eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit = {
+    DB.localTx { implicit session =>
+      val version: Option[AggregateVersion] = versionOrInstant.map {
+        case Left(version) => version
+        case Right(instant) =>
+          AggregateVersion(sql"""SELECT coalesce(max(version), 0) FROM events WHERE aggregate_id = ${aggregateId.asLong} AND event_time <= ${Timestamp.from(instant)}"""
+            .map(_.int(1)).single().getOrElse(0))
       }
-      case None => doubleNone
-    }
-
-    DB.readOnly { implicit session =>
-
       val query = version match {
         case Some(v) =>
           sql"""SELECT user_id, event_time, event_type_id, event_type_version, event, events.version, events.aggregate_id,
@@ -218,32 +218,57 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
              LEFT JOIN noop_events ON events.id = noop_events.id AND noop_events.from_version <= aggregates.base_version
              WHERE aggregates.id = ? ORDER BY aggregates.base_order, version""".stripMargin.bind(aggregateId.asLong)
       }
-
-
-      if(instant.isDefined || version.isDefined) {
-        query.foreach { rs =>
-          val eventType = eventClass(rs.short(3), rs.short(4), rs.long(7), rs.int(6))
-          val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(5), eventType)
-          val id = AggregateId(rs.long(7))
-          val eventVersion = rs.int(6)
-          val eventInstant = rs.timestamp(2).toInstant
-          if ((version.isEmpty || id != aggregateId || eventVersion <= version.get.asInt) && (instant.isEmpty || !eventInstant.isAfter(instant.get))) {
-            eventHandler(UserId(rs.long(1)), eventInstant, event, id, eventVersion, rs.boolean(8))
-          } // otherwise it's to new event, TODO optimise as it reads all events from database, also those not needed here
-        }
-      } else {
-
-        query.foreach { rs =>
-          val eventType = eventClass(rs.short(3), rs.short(4), rs.long(7), rs.int(6))
-          val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(5), eventType)
-          val id = AggregateId(rs.long(7))
-          val eventVersion = rs.int(6)
-          eventHandler(UserId(rs.long(1)), rs.timestamp(2).toInstant, event, id, eventVersion, rs.boolean(8))
-        }
+      query.fetchSize(fetchSize).foreach { rs =>
+        val eventType = eventClass(rs.short(3), rs.short(4), rs.long(7), rs.int(6))
+        val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(5), eventType)
+        eventHandler(UserId(rs.long(1)), rs.timestamp(2).toInstant, event, AggregateId(rs.long(7)), rs.int(6), rs.boolean(8))
       }
     }
   }
 
+  override def readAndProcessOwnEvents[AGGREGATE_ROOT](aggregateId: AggregateId, after: AggregateVersion, upTo: Option[AggregateVersion])
+                                                      (eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], Int, Boolean) => Unit): Unit = {
+    val last = upTo.map(_.asInt).getOrElse(Int.MaxValue)
+    DB.localTx { implicit session =>
+      sql"""SELECT user_id, event_time, event_type_id, event_type_version, event, events.version,
+           |   noop_events.id IS NOT NULL AND noop_events.from_version <= $last as noop
+           | FROM events
+           | LEFT JOIN noop_events ON events.id = noop_events.id
+           | WHERE events.aggregate_id = ${aggregateId.asLong} AND events.version > ${after.asInt} AND events.version <= $last
+           | ORDER BY events.version""".stripMargin.fetchSize(fetchSize).foreach { rs =>
+        val eventType = eventClass(rs.short(3), rs.short(4), aggregateId.asLong, rs.int(6))
+        eventHandler(UserId(rs.long(1)), rs.timestamp(2).toInstant, mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(5), eventType), rs.int(6), rs.boolean(7))
+      }
+    }
+  }
+
+  override def readSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, stateClassName: String): Option[Try[Snapshot[AGGREGATE_ROOT]]] = DB.readOnly { implicit session =>
+    sql"""SELECT version, context_version, schema_version, state FROM snapshots WHERE aggregate_id = ${aggregateId.asLong}"""
+      .map(rs => Try(Snapshot[AGGREGATE_ROOT](AggregateVersion(rs.int(1)), rs.int(2), rs.int(3), mpjsons.deserialize[AGGREGATE_ROOT](rs.string(4), stateClassName))))
+      .single()
+  }
+
+  override def writeSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, snapshot: Snapshot[AGGREGATE_ROOT], stateClassName: String): Unit = {
+    val state = mpjsons.serialize(snapshot.state, stateClassName)
+    DB.autoCommit { implicit session =>
+      sql"""INSERT INTO snapshots (aggregate_id, version, context_version, schema_version, state, created)
+           | VALUES (${aggregateId.asLong}, ${snapshot.version.asInt}, ${snapshot.contextVersion}, ${snapshot.schemaVersion}, $state, current_timestamp)
+           | ON CONFLICT (aggregate_id) DO UPDATE SET version = EXCLUDED.version, context_version = EXCLUDED.context_version,
+           |   schema_version = EXCLUDED.schema_version, state = EXCLUDED.state, created = EXCLUDED.created""".stripMargin.update()
+    }
+  }
+
+  /** Builds the index of F38, `events(aggregate_id, version)`, without blocking writes to `events` (D69): run it once in
+    * the background after the upgrade; it does nothing when the index exists. An index an interrupted build left
+    * invalid is dropped and built again. */
+  def buildIndexesConcurrently(): Unit = DB.autoCommit { implicit session =>
+    val invalid = sql"""SELECT NOT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                       | JOIN pg_namespace n ON n.oid = c.relnamespace
+                       | WHERE c.relname = 'events_aggregate_version_idx' AND n.nspname = current_schema()""".stripMargin
+      .map(_.boolean(1)).single().getOrElse(false)
+    if (invalid) sql"""DROP INDEX CONCURRENTLY IF EXISTS events_aggregate_version_idx""".execute()
+    sql"""CREATE INDEX CONCURRENTLY IF NOT EXISTS events_aggregate_version_idx ON events (aggregate_id, version)""".execute()
+  }
 
   override def readAndProcessAllEvents(aggregateTypeName: String,
                                        batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit = {
@@ -329,6 +354,7 @@ ORDER BY events.id""")
       sql"""DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = $id)""".update()
       sql"""DELETE FROM events WHERE aggregate_id = $id""".update()
       sql"""DELETE FROM events_to_publish WHERE aggregate_id = $id""".update()
+      sql"""DELETE FROM snapshots WHERE aggregate_id = $id""".update()
       if (exists("subscriptions")) {
         sql"""DELETE FROM subscriptions WHERE aggregate_id = $id""".update()
       }

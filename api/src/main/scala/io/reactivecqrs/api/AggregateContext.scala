@@ -22,6 +22,17 @@ case object ReserveAggregateId
 
 case class SimulateEvent[AGGREGATE_ROOT](id: AggregateId, version: AggregateVersion, event: Event[AGGREGATE_ROOT])
 
+/**
+  * Performance snapshots of an aggregate's state (D30): the aggregate's owner stores its state every `every` events,
+  * and when it stops if `onPassivation`, so a restore reads the snapshot and only the events after it. Snapshots
+  * never change the history or the versions, and are thrown away when they could be wrong: after an undo or a history
+  * rewrite, and when `schemaVersion` or the context's `version` changes. Change `schemaVersion` when the state class
+  * changes shape.
+  */
+case class SnapshotPolicy(every: Int = 200, onPassivation: Boolean = true, schemaVersion: Int = 1) {
+  require(every > 0, "every must be positive")
+}
+
 /** An aggregate type's behaviour. Events are stored under their class name; an event class that must change shape is
   * kept, deprecated, and a new class (`...V2`) takes its place (D29: there is no event versioning). */
 abstract class AggregateContext[AGGREGATE_ROOT : ClassTag] {
@@ -50,6 +61,9 @@ abstract class AggregateContext[AGGREGATE_ROOT : ClassTag] {
 
   /** How long a command may take until the caller gets a `CommandHandlingError` (R5). */
   val commandTimeout: FiniteDuration = 60.seconds
+
+  /** Opt-in performance snapshots (D30, R10); none by default. */
+  val snapshots: Option[SnapshotPolicy] = None
 
   val aggregateType = AggregateType(classTag[AGGREGATE_ROOT].toString)
 

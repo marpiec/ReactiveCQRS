@@ -24,7 +24,7 @@ class MemoryEventStoreState extends EventStoreState {
   private var eventStore: Map[AggregateId, Vector[EventStoreEntry[_]]] = Map.empty
   private var eventsToPublish: Map[(AggregateId, AggregateVersion), (UserId, Instant, Event[_], Long)] = Map.empty
   private var eventIdSeq: Long = 0
-
+  private var snapshots: Map[AggregateId, Snapshot[_]] = Map.empty
 
   override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = Try { synchronized {
 
@@ -47,6 +47,7 @@ class MemoryEventStoreState extends EventStoreState {
     })
 
     eventStore += aggregateId -> eventsForAggregate
+    if (eventsEnvelope.events.exists(_.isInstanceOf[UndoEvent[_]])) snapshots -= aggregateId // as in PostgreSQL (D30)
     eventsWithVersions
   }}
 
@@ -61,21 +62,7 @@ class MemoryEventStoreState extends EventStoreState {
       }
     }
 
-    var undoEventsCount = 0
-    val eventsWithNoop = eventsForAggregate.reverse.map(event => {
-      if(undoEventsCount == 0) {
-        event.event match {
-          case e:UndoEvent[_] =>
-            undoEventsCount += e.eventsCount
-            (event, true)
-          case _ =>
-            (event, false)
-        }
-      } else {
-        undoEventsCount -= 1
-        (event, true)
-      }
-    }).reverse
+    val eventsWithNoop = withNoopFlags(eventsForAggregate)
 
     // A duplicated aggregate starts with its base's history up to the duplicated version, as the
     // aggregates chain does in PostgreSQL; base events are reported with the base's id.
@@ -86,6 +73,51 @@ class MemoryEventStoreState extends EventStoreState {
     }
 
     eventsWithNoop.foreach(eventWithNoop => eventHandler(eventWithNoop._1.userId, eventWithNoop._1.timestamp, eventWithNoop._1.event, aggregateId, eventWithNoop._1.version.asInt, eventWithNoop._2))
+  }
+
+  // An undo event marks itself and the events it undoes as noop, counting back from it.
+  private def withNoopFlags[AGGREGATE_ROOT](entries: Vector[EventStoreEntry[AGGREGATE_ROOT]]): Vector[(EventStoreEntry[AGGREGATE_ROOT], Boolean)] = {
+    var undoEventsCount = 0
+    entries.reverse.map { entry =>
+      if (undoEventsCount == 0) {
+        entry.event match {
+          case e: UndoEvent[_] =>
+            undoEventsCount += e.eventsCount
+            (entry, true)
+          case _ => (entry, false)
+        }
+      } else {
+        undoEventsCount -= 1
+        (entry, true)
+      }
+    }.reverse
+  }
+
+  override def readAndProcessOwnEvents[AGGREGATE_ROOT](aggregateId: AggregateId, after: AggregateVersion, upTo: Option[AggregateVersion])
+                                                      (eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], Int, Boolean) => Unit): Unit = {
+    val entries = synchronized(eventStore.getOrElse(aggregateId, Vector())).asInstanceOf[Vector[EventStoreEntry[AGGREGATE_ROOT]]]
+    withNoopFlags(upTo.fold(entries)(version => entries.take(version.asInt)))
+      .filter { case (entry, _) => entry.version > after }
+      .foreach { case (entry, noop) => eventHandler(entry.userId, entry.timestamp, entry.event, entry.version.asInt, noop) }
+  }
+
+  override def readSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, stateClassName: String): Option[Try[Snapshot[AGGREGATE_ROOT]]] =
+    synchronized(snapshots.get(aggregateId)).map(snapshot => Try(snapshot.asInstanceOf[Snapshot[AGGREGATE_ROOT]]))
+
+  override def writeSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, snapshot: Snapshot[AGGREGATE_ROOT], stateClassName: String): Unit =
+    synchronized { snapshots += aggregateId -> snapshot }
+
+  // The aggregates whose duplication chain includes `aggregateId`, at any depth, as the aggregates rows hold it in PostgreSQL.
+  private def duplicatesOf(aggregateId: AggregateId): Set[AggregateId] = {
+    val direct = eventStore.collect {
+      case (id, entries) if entries.headOption.exists(entry => isDuplicateOf(entry.event, aggregateId)) => id
+    }.toSet
+    direct ++ direct.flatMap(duplicatesOf)
+  }
+
+  private def isDuplicateOf(event: Event[_], base: AggregateId): Boolean = event match {
+    case duplication: DuplicationEvent[_] => duplication.baseAggregateId == base
+    case _ => false
   }
 
   override def readAndProcessAllEvents(aggregateType: String, batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit = {
@@ -101,6 +133,7 @@ class MemoryEventStoreState extends EventStoreState {
 
   // Subscription failures live in the subscriptions state, which this store does not see: it always deletes.
   override def deleteAggregatePermanently(aggregateId: AggregateId): Boolean = synchronized {
+    snapshots -= aggregateId
     eventsRows = eventsRows.filterNot(_.aggregateId == aggregateId)
     eventStore -= aggregateId
     eventsToPublish = eventsToPublish.filterNot { case ((eventAggregateId, _), _) => eventAggregateId == aggregateId }
@@ -144,6 +177,7 @@ class MemoryEventStoreState extends EventStoreState {
 
   // The SQL version updates the stored event in place; restore and re-publication then read the new one.
   override def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit = synchronized {
+    snapshots --= duplicatesOf(aggregateId) + aggregateId // as in PostgreSQL (D30)
     events.foreach { rewritten =>
       eventStore += aggregateId -> eventStore.getOrElse(aggregateId, Vector()).map(entry =>
         if (entry.version == rewritten.version) entry.asInstanceOf[EventStoreEntry[AGGREGATE_ROOT]].copy(event = rewritten.event) else entry)

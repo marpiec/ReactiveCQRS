@@ -1,6 +1,9 @@
 package io.reactivecqrs.core.eventstore
 
+import java.time.Instant
+
 import io.mpjsons.MPJsons
+import io.reactivecqrs.api.{AggregateVersion, Event}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.testutils.TestDatabase
 import scalikejdbc._
@@ -16,6 +19,38 @@ object PostgresEventStoreStateSpec {
 }
 
 class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStoreStateSpec.storeState) {
+
+  // F39: a read at an instant reads the aggregate as it was then, undone events included as they were then.
+  Scenario("a read at an instant gives the events up to it, an event undone later not yet undone") {
+    val f = new TestFixture(eventStoreState)
+    def storeAt(time: String, expected: Int, event: Event[SomeAggregate]): Unit = eventStoreState.localTx { session =>
+      eventStoreState.persistEvents(f.aggregateId, NewEvents(f.userId, AggregateVersion(expected), Instant.parse(time), Seq(event)))(session)
+    }.get
+    storeAt("2026-01-01T10:00:00Z", 0, EventA("one"))
+    storeAt("2026-01-01T11:00:00Z", 1, EventC(true))
+    storeAt("2026-01-01T12:00:00Z", 2, Undo(1)) // undoes EventC
+
+    def at(time: String): Seq[(Int, Boolean)] = {
+      var read = Vector[(Int, Boolean)]()
+      eventStoreState.readAndProcessEvents[SomeAggregate](f.aggregateId, Some(Right(Instant.parse(time))))((_, _, _, _, version, noop) => read :+= (version, noop))
+      read
+    }
+    at("2026-01-01T11:30:00Z") mustBe Seq((1, false), (2, false))
+    at("2026-01-01T12:30:00Z") mustBe Seq((1, false), (2, true), (3, true))
+    at("2026-01-01T09:00:00Z") mustBe empty
+  }
+
+  // F38, D69: the restore index is built online, once; running it again does nothing.
+  Scenario("the index of events by aggregate and version is built without blocking writes, and only once") {
+    val store = eventStoreState.asInstanceOf[PostgresEventStoreState]
+    store.buildIndexesConcurrently()
+    store.buildIndexesConcurrently()
+    DB.readOnly { implicit session =>
+      sql"""SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+           | JOIN pg_namespace n ON n.oid = c.relnamespace
+           | WHERE c.relname = 'events_aggregate_version_idx' AND n.nspname = current_schema()""".stripMargin.map(_.boolean(1)).list()
+    } mustBe List(true)
+  }
 
   // D29: event versioning is gone. Rows of version 0 read as before; a row written with a type version names a class
   // that cannot be known any more, so reading it fails with a message naming the row.

@@ -1144,3 +1144,27 @@ Open test-infrastructure items:
   (`AddItems`, a command with two events); `OutboxPollerSpec` stops the owner with
   `PassivateAggregate`; the other specs pass unchanged.
 - `sbt test`: core 126, testdomain 56, all pass.
+
+**16/10/2026: restore and snapshots (D30; F22, F38, F39, F44)**
+- Snapshots, opt-in per context: `snapshots = Some(SnapshotPolicy(every = 200, onPassivation =
+  true, schemaVersion = 1))`. Table `snapshots` (one row per aggregate: its latest state as the
+  root's JSON, with the context and schema versions). The owner writes one after a commit that
+  reaches the next multiple of `every`, and at its stop; the restorer uses it when the versions
+  fit and it lies at or before the version asked for, then reads the aggregate's own events
+  after it; a missing, unfitting or unreadable snapshot means a full replay, never a failure
+  (R10). An undo, a rewrite (also the duplicates' snapshots) and a permanent delete delete the
+  snapshots they make wrong, in their transaction. Refined from D30's table: one row per
+  aggregate (the latest; full replay is the fallback) and a `context_version` column.
+- F22: restores stream the rows (autocommit off, fetch size). F39: a read at an instant finds
+  the version at that instant in SQL and reads as for that version; this also fixes its undo
+  flags, which were today's. F38: `buildIndexesConcurrently()` builds `events(aggregate_id,
+  version)` online, for the host to run once after the upgrade (H8).
+- The command bus takes the whole `AggregateContext`; `OwnerSettings` is built from it.
+- Tests: `SnapshotSpec` (a seeded property test of random histories with undo and duplication
+  comparing restores with and without snapshots at every version, red under a tail off-by-one
+  and under an undo that keeps the snapshot; R10 with 100 000 events: one snapshot and at most
+  `every` events read; fallbacks for another schema or context version and an unreadable
+  snapshot; invalidation by undo and by rewrite, the duplicate's too); `EventStoreStateSpec`
+  (both stores: the tail read, snapshot invalidation); `PostgresEventStoreStateSpec` (instant
+  reads, the online index).
+- `sbt test`: core 132, testdomain 63, all pass.

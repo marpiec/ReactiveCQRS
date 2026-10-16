@@ -227,6 +227,7 @@ abstract class AggregateContext[R : ClassTag] {           // AggregateContext.sc
       : (Iterable[EventWithVersion[R]], R) => PartialFunction[Any, GenericCommandResult[Any]]
   val version: Int                                        // bump to force projection rebuild
   val commandTimeout: FiniteDuration = 60.seconds         // since 1.0 (R5): answer CommandHandlingError after it
+  val snapshots: Option[SnapshotPolicy] = None             // since 1.0 (D30): performance snapshots, opt-in
   val aggregateType = AggregateType(classTag[R].toString) // FQCN; the routing key everywhere
 }
 ```
@@ -305,9 +306,10 @@ run works in a new schema (`TestDatabase`).
 
 | Table | Columns / keys | Role |
 |---|---|---|
-| `events` (`:29-41`) | `id` (from `events_seq`) PK, `user_id`, `aggregate_id`, `event_time TIMESTAMP`, `version`, `event_type_id`, `event_type_version`, `event TEXT`; indexes `(aggregate_id)`, `(aggregate_id, id)` | append-only event log |
+| `events` (`:29-41`) | `id` (from `events_seq`) PK, `user_id`, `aggregate_id`, `event_time TIMESTAMP`, `version`, `event_type_id`, `event_type_version`, `event TEXT`; indexes `(aggregate_id)`, `(aggregate_id, id)`, and `(aggregate_id, version)` built online by `buildIndexesConcurrently()` (F38) | append-only event log |
 | `aggregates` (`:103-115`) | PK `(id, base_id)`, `space_id`, `creation_time`, `type_id`, `base_order`, `base_id`, `base_version`; indexes `(type_id)`, `(base_id)` | one row per (aggregate, ancestor) in its duplication chain; the own row (`base_id = id`) holds the **current version** used for locking |
 | `noop_events` (`:75-81`) | `id` (= `events.id`) PK, `from_version` | events cancelled by an undo, effective from that version |
+| `snapshots` (since M3) | `aggregate_id` PK, `version`, `context_version`, `schema_version`, `state TEXT`, `created` | the latest performance snapshot of an aggregate (D30, §4.3); disposable |
 | `events_to_publish` (`:83-101`) | `event_id` PK, `aggregate_id`, `version`, `user_id`, `event_time`; index `(aggregate_id, version)` | **outbox**: events not yet confirmed by every subscriber |
 | `types_names` (`TypesNamesState.scala`) | `id SMALLINT`, unique `name` | class-name ↔ id dictionary (aggregates, events, subscribers, responses) |
 | `commands_responses` (`CommandResponseState.scala`) | `id`, `key` (unique), `handling_timestamp` (indexed, for retention), `response`, `response_type_id`, and since 1.0 `info`, `info_type_id` (the info of a `CustomSuccessResponse`, F64) | idempotent responses (D12) |
@@ -347,19 +349,29 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   (`events.aggregate_id = aggregates.base_id AND events.version <= aggregates.base_version`),
   left-join `noop_events` to get the noop flag, order by `base_order, version`. Ancestor
   events rebuild the state but don't increment the version (`aggId == aggregateId` check).
-- **There are no snapshots.** Every restore replays the whole chain on the owner's thread:
-  on the owner's first message and on every reload (§3). Measured: about 230k events/s,
-  with peak heap growing with the history (450 MB at 500k events, `docs/perf/baseline-M2.md`).
 - **The restore module** (`AggregateRestorer`): the state at the newest version, at a version
-  or at an instant, and the events behind it; it hides the chains and the noop events. The
-  owner restores through it, and the command bus answers **historical reads**
-  (`GetAggregateForVersion`, `GetAggregateAtInstant`, `GetEventsForAggregateForVersion`) with
-  it in a `Future`, without an actor (since M3; before, each read started a temporary
-  repository actor). Version reads filter the aggregate's own events in SQL
-  (`readAndProcessEvents`); instant reads fetch **all** events and filter in Scala after
-  deserialization (F39). Restore reads use `DB.readOnly` with autocommit on and no
-  `fetchSize`, so the PostgreSQL driver loads the whole result set into memory before the
-  first row is handled (F22).
+  or at an instant, and the events behind it; it hides the chains, the noop events and the
+  snapshots. The owner restores through it, on its thread, on its first message and on every
+  reload (§3); the command bus answers **historical reads** (`GetAggregateForVersion`,
+  `GetAggregateAtInstant`, `GetEventsForAggregateForVersion`) with it in a `Future`, without
+  an actor (since M3; before, each read started a temporary repository actor). Restore reads
+  stream the rows (autocommit off and a fetch size, fixed F22). A read at an instant first
+  finds the aggregate's version at that instant in SQL, then reads up to that version, with
+  events undone later still counted as applied then (fixed F39; before, all events were read
+  and filtered in Scala, with today's undo flags). Measured before snapshots: about 230k
+  events/s, peak heap growing with the history (450 MB at 500k events, `baseline-M2.md`).
+- **Snapshots** (D30, opt-in per context: `snapshots = Some(SnapshotPolicy(every, onPassivation,
+  schemaVersion))`). Table `snapshots(aggregate_id PK, version, context_version, schema_version,
+  state, created)`: the aggregate's latest state as its root's mpjsons JSON. The owner writes it
+  right after a commit that reaches the next multiple of `every`, and when it stops if
+  `onPassivation`, in a short transaction of its own on its thread; a failed write is only
+  logged. A restore uses it when its context and schema versions match and it lies at or
+  before the version asked for, then reads the aggregate's own events after it
+  (`readAndProcessOwnEvents`; a duplicate's base events all come before its own); otherwise,
+  and for reads at an instant, it reads every event, never failing because of the snapshot
+  (R10). An undo deletes the aggregate's snapshot, a rewrite those of the aggregate and of its
+  duplicates, a permanent delete its own, each in its transaction; the owner runs all of them,
+  so a snapshot write cannot race them.
 - `GetAggregateMinVersion(id, v, maxMillis)` waits in the owner until the version is reached
   and is answered then; when `maxMillis` passes first, it is answered with
   `Failure(AggregateInIncorrectVersionException)` (fixed F81).
@@ -800,7 +812,6 @@ still open, at the end of M2:
   duplicates (High if it happens; checked on a production copy; M3).
 - **F58:** a rebuild leaves out undone events, and the gaps stall it unless the owner can be
   asked for them (High; M4 replaces the replayer).
-- **F44, F22:** no snapshots, and a restore holds the whole history in memory (M3).
 - **F23, F27:** the command bus blocks while it fetches an id pool; JDBC work runs on the
   default dispatcher (M3).
 - **F82:** the replayer stops the JVM when a replay stalls (M4).
@@ -813,7 +824,7 @@ still open, at the end of M2:
 |---|---|---|
 | New command kind / routing rule | `Command.scala`, `AggregateCommandBusActor.receive`, `AggregateOwner` (`expectedVersion`, `runsAgainOnConflict`, `rewrittenClasses`, `userIdOf`) | the retry rule in `AggregateOwner.conflict` (a rewrite must read its events again, F73); a timed-out command must never be persisted |
 | New special event type | `Event.scala`, `PostgresEventStoreState.persistEventsOneByOne` + a stored procedure, `AggregateOwner.persist`/`nextRoot` (`readAfterCommit`), `readAndProcessEvents` | batch eligibility (`:31-32`); restore semantics; replay path |
-| Snapshots | `AggregateRestorer`, `EventStoreState` (new read from version N), a new snapshot table | duplication chains (ancestor events), noop events whose `from_version` lies after the snapshot |
+| Snapshots | `AggregateRestorer` (use), `AggregateOwner.snapshotIfDue`/`stopNow` (write), `EventStoreState.readSnapshot`/`writeSnapshot`/`readAndProcessOwnEvents`, the deletes in `add_undo_event`'s caller, `overwriteEvents` and `deleteAggregatePermanently` | every change that alters the state behind a snapshot must delete it in its own transaction; a snapshot is read only when its context and schema versions match; never fail a restore because of a snapshot |
 | Non-blocking persistence | `AggregateOwner.persist` → a dedicated dispatcher, re-entering via message | keep one in-flight persist per aggregate; apply the events before the next message is handled (F69: persist synchronously or stash); the in-memory version check |
 | Re-delivery timing | `delivery/RedeliveryPolicy` (pure), `OutboxPollerActor`, `EventStoreState.readWaitingInOutbox` | one owner of retries (D8); the attempts at 3 and 6 minutes come after a subscriber's own retries (about 2 minutes, D20a); the per-poll limit |
 | Outbox deletes | `AggregateCommandBusActor.delivered`, `EventStoreState.deletePublished` / `deleteAggregatePermanently`, `OutboxDeletes` | only acked (or failed) versions; the acknowledgement goes to the command bus, never only to the owner, which may be reaped (F91); a permanent delete waits while a subscription of the aggregate is failed |

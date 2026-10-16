@@ -154,9 +154,9 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
   a failing generator is answered with `CommandHandlingError`, F75).
 - **`AggregateOwner`** (`core/.../aggregate/`) — the source of truth for one aggregate
   instance (replaced the command handler, the per-command executors and the repository
-  actor in M3). **No snapshotting yet**: on first access it replays the *entire* event
-  stream (`AggregateRestorer.restore` → `eventStore.readAndProcessEvents`) to rebuild the
-  root and version in memory, then keeps them updated. `aggregateVersionLimit` defaults to
+  actor in M3). On first access it restores the root and version through `AggregateRestorer`:
+  from the snapshot and the events after it when the context opts in (D30), otherwise by
+  replaying the *entire* event stream; then it keeps them updated. `aggregateVersionLimit` defaults to
   10 000 events per aggregate. Design: `docs/design/M3-aggregates.md`.
 - **`EventsBusActor`** — in-memory routing and delivery tracking (deadline, stall
   logging, `GetDeliveryStatus`); routes re-publish requests to the type's command bus;
@@ -195,6 +195,8 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
   Indices: `aggregates(type_id)`, `aggregates(base_id)`.
 - **`noop_events`** — `id (→events.id) PK, from_version`. Marks events that became
   no-ops (e.g. due to undo) from a given version.
+- **`snapshots`** (M3, D30) — `aggregate_id PK, version, context_version, schema_version,
+  state, created`: the latest performance snapshot of an aggregate; disposable.
 - **`events_to_publish`** — `event_id PK, aggregate_id, version, user_id,
   event_time`. The outbox: owners publish what they committed, delivered rows are
   deleted in batches (F26), the outbox poller re-publishes waiting ones. Indexed on
@@ -246,8 +248,9 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
 - **Serialization**: events are stored as JSON text via mpjsons keyed by
   `event_type_id` (the class name); `event_type_version` is always 0 (D29). Changing an
   event class shape breaks replay: add a new class (`...V2`) and keep the old one.
-- **No aggregate snapshots**: aggregates are rebuilt by replaying all their events.
-  Long-lived/high-version aggregates are a latency and memory concern by design.
+- **Snapshots are opt-in** (D30, `AggregateContext.snapshots`): without them an aggregate is
+  rebuilt by replaying all its events. A change that alters the state behind a snapshot
+  (undo, rewrite, squash, permanent delete) must delete it in its own transaction.
 - **Logging**: use `MyActorLogging` / slf4j. There are stray `println`s in
   production paths (saga / uid generator) — prefer the logger when touching them.
 - **`asInstanceOf`** is used liberally to recover generic event types after

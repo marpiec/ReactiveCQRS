@@ -36,19 +36,8 @@ object AggregateCommandBusActor {
                                              commandResponseState: CommandResponseState,
                                              eventBus: ActorRef, eventsReplayMode: Boolean, maxInactivityMillis: Long = 43200000L, keepAliveLimit: Int = 200,
                                              failedRestoreRetryAfter: FiniteDuration = 5.seconds): Props = { // 43200000 - 12 hours
-    Props(new AggregateCommandBusActor[AGGREGATE_ROOT](
-      uidGenerator,
-      eventStoreState,
-      commandResponseState,
-      aggregateContext.commandHandlers,
-      aggregateContext.eventHandlers,
-      aggregateContext.rewriteHistoryCommandHandlers,
-      eventBus,
-      eventsReplayMode,
-      keepAliveLimit, maxInactivityMillis, None,
-      () => aggregateContext.initialAggregateRoot,
-      aggregateContext.commandTimeout,
-      failedRestoreRetryAfter))
+    Props(new AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext, uidGenerator, eventStoreState, commandResponseState, eventBus,
+      eventsReplayMode, keepAliveLimit, maxInactivityMillis, None, failedRestoreRetryAfter))
   }
 
 }
@@ -59,20 +48,16 @@ object AggregateCommandBusActor {
   * stops owners that were idle for long, or deleted: it keeps the messages that arrive for an owner while it stops and
   * gives them to a new one (Cluster Sharding's passivation, so M5 can put a shard in its place).
   */
-class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRef,
+class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](aggregateContext: AggregateContext[AGGREGATE_ROOT],
+                                                       val uidGenerator: ActorRef,
                                                        eventStoreState: EventStoreState,
                                                        commandResponseState: CommandResponseState,
-                                                       val commandsHandlers: AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]],
-                                                       val eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
-                                                       val rewriteHistoryCommandHandlers: (Iterable[EventWithVersion[AGGREGATE_ROOT]], AGGREGATE_ROOT) => PartialFunction[Any, GenericCommandResult[Any]],
                                                        val eventBus: ActorRef,
                                                        val eventsReplayMode: Boolean,
                                                        val keepAliveLimit: Int, val maxInactivityMillis: Long,
                                                        val eventsLogger: Option[Logger],
-                                                       val initialState: () => AGGREGATE_ROOT,
-                                                       val commandTimeout: FiniteDuration,
                                                        val failedRestoreRetryAfter: FiniteDuration)
-                                                        (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor with MyActorLogging {
+                                                        (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT]) extends Actor with MyActorLogging {
 
   val minimumInactivityMillis: Long = 120000L // 2 minutes
 
@@ -98,8 +83,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
   private val idempotency = new Idempotency(commandResponseState)
 
-  private val settings = new OwnerSettings[AGGREGATE_ROOT](aggregateType, eventStoreState, idempotency, eventBus, self,
-    commandsHandlers, rewriteHistoryCommandHandlers, eventHandlers, initialState, commandTimeout, failedRestoreRetryAfter)
+  private val settings = new OwnerSettings[AGGREGATE_ROOT](aggregateContext, eventStoreState, idempotency, eventBus, self, failedRestoreRetryAfter)
 
   // AR7: an owner that fails is stopped, never restarted: a restart would lose its pending callers. It is forgotten
   // when it terminates, and the next request creates a new one.

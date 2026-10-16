@@ -18,6 +18,7 @@ class PostgresEventStoreSchemaInitializer  {
     createAggregatesTypeIndex()
     createAggregatesBaseIdIndex()
     createEventsSequence()
+    createSnapshotsTable()
     dropExistingFunctions()
     createAddEventFunction()
     createAddEventsFunction()
@@ -122,6 +123,19 @@ class PostgresEventStoreSchemaInitializer  {
 
   private def createEventsSequence(): Unit = DB.autoCommit { implicit session =>
     sql"""CREATE SEQUENCE IF NOT EXISTS events_seq""".execute()
+  }
+
+  // D30: the latest performance snapshot of an aggregate, as its root's JSON; disposable, never part of the history.
+  private def createSnapshotsTable(): Unit = DB.autoCommit { implicit session =>
+    sql"""
+      CREATE TABLE IF NOT EXISTS snapshots (
+        aggregate_id BIGINT NOT NULL PRIMARY KEY,
+        version INT NOT NULL,
+        context_version INT NOT NULL,
+        schema_version INT NOT NULL,
+        state TEXT NOT NULL,
+        created TIMESTAMP NOT NULL)
+      """.execute()
   }
 
   private def dropExistingFunctions(): Unit = DB.autoCommit { implicit session =>

@@ -43,9 +43,8 @@ class RepublishSpec extends CommonSpec {
   }
 
   private def ownerOf(cartId: AggregateId, eventBus: TestProbe, maxRepublishEvents: Int = 1000): ActorRef = system.actorOf(Props(new AggregateOwner[ShoppingCart](cartId,
-    new OwnerSettings[ShoppingCart](context.aggregateType, eventStore, new Idempotency(new MemoryCommandResponseState), eventBus.ref, ActorRef.noSender,
-      context.commandHandlers, context.rewriteHistoryCommandHandlers, context.eventHandlers, () => context.initialAggregateRoot,
-      context.commandTimeout, 5.seconds, maxRepublishEvents))))
+    new OwnerSettings[ShoppingCart](context, eventStore, new Idempotency(new MemoryCommandResponseState), eventBus.ref, ActorRef.noSender,
+      5.seconds, maxRepublishEvents))))
 
   private def published(eventBus: TestProbe): PublishEvents[ShoppingCart] =
     eventBus.expectMsgType[PublishEvents[ShoppingCart]](5.seconds)

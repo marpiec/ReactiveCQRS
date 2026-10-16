@@ -16,6 +16,7 @@ import org.postgresql.util.PSQLException
 import scala.collection.mutable
 import scala.concurrent.Future
 import scala.concurrent.duration._
+import scala.reflect.{ClassTag, classTag}
 import scala.reflect.runtime.universe._
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
@@ -44,22 +45,26 @@ object AggregateOwner {
   val defaultConcurrentRetries: Backoff = Backoff(10.millis, 500.millis, maxAttempts = 10, jitter = true)
 }
 
-/** What every owner of one aggregate type shares; the command bus builds it once. Acknowledgements of publications
-  * go to `publicationAcks`, the command bus, which outlives the owners (F91). */
-class OwnerSettings[AGGREGATE_ROOT](val aggregateType: AggregateType,
-                                    val eventStore: EventStoreState,
-                                    val idempotency: Idempotency,
-                                    val eventsBus: ActorRef,
-                                    val publicationAcks: ActorRef,
-                                    val commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]],
-                                    val rewriteHistoryCommandHandlers: (Iterable[EventWithVersion[AGGREGATE_ROOT]], AGGREGATE_ROOT) => PartialFunction[Any, GenericCommandResult[Any]],
-                                    val eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
-                                    val initialState: () => AGGREGATE_ROOT,
-                                    val commandTimeout: FiniteDuration,
-                                    val failedRestoreRetryAfter: FiniteDuration,
-                                    val maxRepublishEvents: Int = 1000,
-                                    val concurrentRetries: Backoff = AggregateOwner.defaultConcurrentRetries) {
-  val restorer = new AggregateRestorer[AGGREGATE_ROOT](eventStore, eventHandlers, initialState)
+/** What every owner of one aggregate type shares; the command bus builds it once from the type's context. Acknowledgements
+  * of publications go to `publicationAcks`, the command bus, which outlives the owners (F91). */
+class OwnerSettings[AGGREGATE_ROOT: ClassTag](context: AggregateContext[AGGREGATE_ROOT],
+                                              val eventStore: EventStoreState,
+                                              val idempotency: Idempotency,
+                                              val eventsBus: ActorRef,
+                                              val publicationAcks: ActorRef,
+                                              val failedRestoreRetryAfter: FiniteDuration,
+                                              val maxRepublishEvents: Int = 1000,
+                                              val concurrentRetries: Backoff = AggregateOwner.defaultConcurrentRetries) {
+  val aggregateType: AggregateType = context.aggregateType
+  val commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]] = context.commandHandlers
+  val rewriteHistoryCommandHandlers: (Iterable[EventWithVersion[AGGREGATE_ROOT]], AGGREGATE_ROOT) => PartialFunction[Any, GenericCommandResult[Any]] =
+    context.rewriteHistoryCommandHandlers
+  val eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT] = context.eventHandlers
+  val initialState: () => AGGREGATE_ROOT = () => context.initialAggregateRoot
+  val commandTimeout: FiniteDuration = context.commandTimeout
+  val snapshots: Option[SnapshotPolicy] = context.snapshots
+  val restorer = new AggregateRestorer[AGGREGATE_ROOT](eventStore, eventHandlers, initialState, snapshots, context.version,
+    classTag[AGGREGATE_ROOT].runtimeClass.getName)
 }
 
 /**
@@ -81,6 +86,8 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
 
   private var version: AggregateVersion = AggregateVersion.ZERO
   private var root: AGGREGATE_ROOT = initialState()
+  // The version of the aggregate's stored snapshot, as far as this owner knows (D30).
+  private var snapshotVersion: AggregateVersion = AggregateVersion.ZERO
 
   /** A command of this owner, from its arrival until it is answered: its handler is running or it waits to run again. */
   private case class Pending(envelope: CommandEnvelope, timeout: Cancellable, attempt: Int, baseVersion: AggregateVersion, running: Boolean)
@@ -125,6 +132,7 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
       case Success(restored) =>
         version = restored.version
         root = restored.root
+        snapshotVersion = restored.fromSnapshot.getOrElse(AggregateVersion.ZERO)
         None
       case Failure(e) =>
         log.error(e, "Restoring aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " failed, retry after " + failedRestoreRetryAfter)
@@ -145,7 +153,7 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
     case GetStateMinVersion(respondTo, _, _) => respondTo ! Failure(failure)
     case MinVersionDeadline => answerExpiredMinVersionQueries()
     case AskToStop => context.parent ! OwnerPassivate
-    case StopOwner => stopNow()
+    case StopOwner => stopNow(withSnapshot = false)
     case _ => () // nothing to publish without a state
   }
 
@@ -291,11 +299,15 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
             val published = stored.map { case (event, eventVersion) => EventInfo(eventVersion, event, userId, timestamp) }
             if (readAfterCommit) {
               // If the state cannot be read, nothing is published now: the outbox poller has it re-published later.
-              if (restore().isEmpty) publish(published)
+              if (restore().isEmpty) {
+                publish(published)
+                snapshotIfDue(command.baseVersion)
+              }
             } else {
               root = newRoot
               version = stored.last._2
               publish(published)
+              snapshotIfDue(command.baseVersion)
             }
             finish(envelope.commandId, response)
           case Failure(_: IdempotencyKeyTakenException) =>
@@ -405,12 +417,24 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
 
   private def stopIfDone(): Unit = if (stopping && pending.isEmpty) stopNow()
 
-  private def stopNow(): Unit = {
+  private def stopNow(withSnapshot: Boolean = true): Unit = {
+    if (withSnapshot && snapshots.exists(_.onPassivation) && version > snapshotVersion) writeSnapshot()
     pending.values.foreach(command => finishWithError(command.envelope, new IllegalStateException("The aggregate's owner stopped")))
     minVersionQueries.foreach(q => q.respondTo ! Failure(new AggregateInIncorrectVersionException(aggregateId, aggregateType, version, q.version)))
     minVersionQueries = Vector.empty
     context.stop(self)
   }
+
+  // ************** Snapshots (D30)
+
+  // Every `every` events, written right after the commit that reaches the next multiple, on this owner's thread: the
+  // owner also runs every undo and rewrite of its aggregate, so a write cannot race the deletes they make.
+  private def snapshotIfDue(previous: AggregateVersion): Unit = snapshots.foreach { policy =>
+    if (version.asInt / policy.every > previous.asInt / policy.every) writeSnapshot()
+  }
+
+  private def writeSnapshot(): Unit =
+    if (version > AggregateVersion.ZERO && root != null && restorer.writeSnapshot(aggregateId, version, root)) snapshotVersion = version
 
   // ************** Queries for a version not reached yet (F81)
 

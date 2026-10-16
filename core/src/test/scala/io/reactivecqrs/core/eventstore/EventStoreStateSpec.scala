@@ -3,7 +3,7 @@ package io.reactivecqrs.core.eventstore
 import java.time.Instant
 
 import org.apache.pekko.actor.ActorRef
-import io.reactivecqrs.api.{AggregateVersion, DuplicationEvent, Event, FirstEvent, UndoEvent}
+import io.reactivecqrs.api.{AggregateVersion, DuplicationEvent, Event, EventWithVersion, FirstEvent, UndoEvent}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, SpaceId, UserId}
 import io.reactivecqrs.core.eventstore.NewEvents
 import io.reactivecqrs.testutils.CommonSpec
@@ -249,6 +249,46 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     range.map(_.version.asInt) mustBe Seq(2, 3, 4)
     range.map(_.event) mustBe Seq(EventB(2), EventC(true), Undo(1))
     range.map(_.userId).distinct mustBe Seq(f.userId)
+  }
+
+  // D30: the tail after a snapshot.
+  Scenario("The aggregate's own events after a version are read with whether they were undone at the version read") {
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one")))
+    f.storeEvents(Seq(EventB(2)))
+    f.storeEvents(Seq(EventC(true)))
+    f.storeEvents(Seq(Undo(1))) // undoes EventC
+    f.storeEvents(Seq(EventB(5)))
+
+    def tail(upTo: Option[Int]): Seq[(Int, Boolean)] = {
+      var read = Vector[(Int, Boolean)]()
+      eventStoreState.readAndProcessOwnEvents[SomeAggregate](f.aggregateId, AggregateVersion(2), upTo.map(AggregateVersion(_)))((_, _, _, version, noop) => read :+= (version, noop))
+      read
+    }
+    tail(None) mustBe Seq((3, true), (4, true), (5, false))
+    tail(Some(3)) mustBe Seq((3, false))
+  }
+
+  // D30: snapshots are disposable; the changes that would make them wrong delete them.
+  Scenario("A snapshot is read back as written, and an undo or a rewrite deletes it, also a duplicate's") {
+    val f = new TestFixture(eventStoreState)
+    val stateClass = classOf[SomeAggregate].getName
+    f.storeEvents(Seq(EventA("one"), EventB(2), EventC(true)))
+    val snapshot = Snapshot(AggregateVersion(3), 7, 2, SomeAggregate())
+
+    eventStoreState.writeSnapshot(f.aggregateId, snapshot, stateClass)
+    eventStoreState.readSnapshot[SomeAggregate](f.aggregateId, stateClass).map(_.get) mustBe Some(snapshot)
+
+    f.storeEvents(Seq(Undo(1)))
+    eventStoreState.readSnapshot[SomeAggregate](f.aggregateId, stateClass) mustBe None
+
+    val copyId = AggregateId(System.nanoTime() + 1)
+    f.storeEvents(Seq(Copy(SpaceId(1), f.aggregateId, AggregateVersion(4))), copyId, AggregateVersion(0))
+    eventStoreState.writeSnapshot(f.aggregateId, snapshot.copy(version = AggregateVersion(4)), stateClass)
+    eventStoreState.writeSnapshot(copyId, snapshot.copy(version = AggregateVersion(1)), stateClass)
+    eventStoreState.localTx(session => eventStoreState.overwriteEvents(f.aggregateId, Seq(EventWithVersion(AggregateVersion(1), EventA("rewritten"))))(session))
+    eventStoreState.readSnapshot[SomeAggregate](f.aggregateId, stateClass) mustBe None
+    eventStoreState.readSnapshot[SomeAggregate](copyId, stateClass) mustBe None
   }
 
   Scenario("The oldest version waiting in the outbox is found") {
