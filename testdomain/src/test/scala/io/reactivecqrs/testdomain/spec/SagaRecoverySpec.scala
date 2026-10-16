@@ -13,6 +13,7 @@ import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{IdsPool, PostgresUidGenerator, UidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.{CartsCreated, CreateMultipleCarts}
 import io.reactivecqrs.testdomain.shoppingcart._
+import io.reactivecqrs.core.util.Backoff
 import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.testkit.TestProbe
@@ -71,8 +72,7 @@ class SagaRecoverySpec extends CommonSpec {
   /** A cart-creating saga under its own name, so it never resumes sagas left by other specs. */
   private def newSaga(sagaName: String, state: SagaState, uids: ActorRef = uidGenerator): ActorRef = system.actorOf(Props(new MultipleCartCreatorSaga(state, uids, commandBus) {
     override val name: String = sagaName
-    override protected val maxPersistAttempts: Int = 3
-    override protected def persistRetryDelay(attempt: Int): FiniteDuration = 20.millis
+    override protected val persistRetries: Backoff = Backoff(20.millis, 20.millis, maxAttempts = 3)
   }))
 
   private def unique(text: String): String = text + " " + UUID.randomUUID()

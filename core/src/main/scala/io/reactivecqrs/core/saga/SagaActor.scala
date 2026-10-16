@@ -7,7 +7,7 @@ import io.reactivecqrs.api.SagaStep
 import io.reactivecqrs.api.id.{SagaId, UserId}
 import io.reactivecqrs.core.saga.SagaActor._
 import io.reactivecqrs.core.uid.{NewSagasIdsPool, UidGeneratorActor}
-import io.reactivecqrs.core.util.MyActorLogging
+import io.reactivecqrs.core.util.{Backoff, MyActorLogging}
 
 import scala.concurrent.{Await, Future}
 import scala.util.{Failure, Success, Try}
@@ -38,7 +38,7 @@ object SagaActor {
 /**
   * Runs process managers. Each step's result and each write of the saga's progress come back to the actor as a
   * message, so all decisions are taken on the actor's thread (F17). A failed write is retried with back-off; after
-  * `maxPersistAttempts` the saga stays at its last stored step and resumes from there after a restart (F35), which
+  * `persistRetries` runs out the saga stays at its last stored step and resumes from there after a restart (F35), which
   * repeats that step, so the commands a step sends must be idempotent (use the `SagaStep` key, H3).
   *
   * `handleOrder` and `handleRevert` run on the actor's thread and must only start the work, returning a Future.
@@ -53,11 +53,9 @@ abstract class SagaActor extends Actor with MyActorLogging {
   val state: SagaState
   val name: String
 
-  /** How many times a write of saga progress is tried before the saga is left for the next restart. */
-  protected val maxPersistAttempts: Int = 10
-
-  /** Exponential back-off between write attempts: 100 ms, doubling, at most 30 s. */
-  protected def persistRetryDelay(attempt: Int): FiniteDuration = math.min(30000L, 100L << math.min(attempt - 1, 9)).millis
+  /** Retries of a failed write of saga progress: from 100 ms, doubling, at most 30 s, 10 attempts; then the saga is
+    * left for the next restart. */
+  protected val persistRetries: Backoff = Backoff(100.millis, 30.seconds, maxAttempts = 10)
 
   private var nextSagaId = 0L
   private var remainingSagasIds = 0L
@@ -84,7 +82,7 @@ abstract class SagaActor extends Actor with MyActorLogging {
         }
       case Failure(e) =>
         log.error(e, "Loading pending sagas " + name + " failed, attempt " + attempt + ", retrying")
-        context.system.scheduler.scheduleOnce(persistRetryDelay(attempt), self, LoadPendingSagasAttempt(attempt + 1))
+        context.system.scheduler.scheduleOnce(persistRetries.delay(attempt + 1), self, LoadPendingSagasAttempt(attempt + 1))
     }
   }
 
@@ -192,9 +190,9 @@ abstract class SagaActor extends Actor with MyActorLogging {
         case _: DeleteSaga => log.warning("Saga " + name + " " + saga.sagaId.asLong + " was already removed")
         case _ => log.error("Saga " + name + " " + saga.sagaId.asLong + " is no longer stored (removed elsewhere?), stopping it at step " + saga.step)
       }
-      case Failure(e) if attempt < maxPersistAttempts =>
-        log.warning("Storing saga " + name + " " + saga.sagaId.asLong + " failed (attempt " + attempt + " of " + maxPersistAttempts + "): " + e.getMessage)
-        context.system.scheduler.scheduleOnce(persistRetryDelay(attempt), self, RetryWrite(pending, attempt + 1))
+      case Failure(e) if !persistRetries.exhausted(attempt) =>
+        log.warning("Storing saga " + name + " " + saga.sagaId.asLong + " failed (attempt " + attempt + " of " + persistRetries.maxAttempts + "): " + e.getMessage)
+        context.system.scheduler.scheduleOnce(persistRetries.delay(attempt + 1), self, RetryWrite(pending, attempt + 1))
       case Failure(e) => pending match {
         case _: CreateSaga =>
           log.error(e, "Saga " + name + " could not be stored, its order is refused")
