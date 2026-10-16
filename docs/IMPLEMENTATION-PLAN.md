@@ -319,8 +319,8 @@ R7–R10, R12, R13), storage reduction by squash, and the low-risk performance f
 **Refined at the M2 review** (KNOWN-ISSUES §7, review 4):
 - Item 0 (owner): the delivery duties M2 gave the owner move into `AggregateOwner` unchanged:
   publish after commit; `RepublishOutbox` and `RepublishRange` from the store in parts of 1 000
-  events with the current state, the outbox continued on each ack; `delivered()` with the
-  PermanentDelete marker and its wait for failed subscriptions. `RepublishSpec`,
+  events with the current state, the outbox continued on each ack the command bus passes on
+  (the command bus deletes the delivered rows and carries out permanent deletes, F91). `RepublishSpec`,
   `PermanentDeleteSpec`, `OutboxPollerSpec` and `DeliveryEndToEndSpec` pass unchanged. AR7 for
   the command bus covers re-publish routing too. AR8 (classifiers and the gate) is decided here.
 - Item 6 (squash): D51's preconditions (no outbox rows, no failed subscriptions) keep live
@@ -683,17 +683,17 @@ Measured at M1 (baseline) and re-measured at the end of every milestone with the
 module; results committed under `docs/perf/`. A regression beyond the measurement noise
 blocks the milestone until explained.
 
-| Metric | How | M1 baseline (measured, `docs/perf/baseline-M1.md`) | Expected direction |
-|---|---|---|---|
-| Command latency p50/p95/p99, many aggregates | bench | 2.4 / 5.0 / 7.2 ms with two projections; 1.6 / 2.3 / 2.8 ms without | unchanged; lower with the blocking dispatcher under load |
-| Command latency, one contended aggregate | bench | p50 0.6 ms, p99 190–320 ms, max 0.7–1.1 s (retries) | much lower tail in serial mode (M3) |
-| Database statements per command | statement counter | 2 + 2 per subscriber (2.0 without, 6.0 with two projections) | fewer with batched outbox deletes (M2) and projection batching (M4) |
-| Persist throughput | bench | 5.5k commands/s with two projections, 9k without; 21–22k events/s through the store in batches | higher with set-based `add_events` (M3) |
-| Restore time and peak heap | bench | 1k: 14 ms; 10k: 46 ms; 100k: 0.4 s / 132 MB; 500k: 2.3 s / 452 MB | with snapshots: one snapshot + at most `every` events (Neula target: snapshot + 200 events); streaming restore (F22) flattens the heap |
-| Projection throughput (one projection) | bench | about 1.7k events/s, 1.3 s behind after a 3 200-command load | higher with batching across aggregates (M4) |
-| Rebuild throughput and peak memory | bench | 0.12 replayer: about 3.1k events/s, peak heap about 200 MB for 108k events | much higher with the shadow rebuild (M4) |
-| Memory after a soak run | bench | heap after GC 15 → 36 → 19 MB (before, after 215k commands, after 20 s idle) | flat; delivery bookkeeping zero at idle |
-| Startup time to ready | bench | first command answered in about 0.5 s, first projected event 0.5–0.65 s | unchanged; no fixed waits for re-sends (the 10 s / 30 s timers go with D8) |
+| Metric | How | M1 baseline (measured, `docs/perf/baseline-M1.md`) | M2 (measured, `docs/perf/baseline-M2.md`) | Expected direction |
+|---|---|---|---|---|
+| Command latency p50/p95/p99, many aggregates | bench | 2.4 / 5.0 / 7.2 ms with two projections; 1.6 / 2.3 / 2.8 ms without | 2.2 / 4.5 / 6.2 ms with two projections; 1.2 / 2.7 / 7.7 ms without | unchanged; lower with the blocking dispatcher under load |
+| Command latency, one contended aggregate | bench | p50 0.6 ms, p99 190–320 ms, max 0.7–1.1 s (retries) | p50 0.7 ms, p99 197 ms, max 0.65 s | much lower tail in serial mode (M3) |
+| Database statements per command | statement counter | 2 + 2 per subscriber (2.0 without, 6.0 with two projections) | 1 + 2 per subscriber (1.0 without, 5.0 with two projections): outbox deletes are batched | fewer with projection batching (M4) |
+| Persist throughput | bench | 5.5k commands/s with two projections, 9k without; 21–22k events/s through the store in batches | 6.0k commands/s with two projections, 9.7k without; 22k events/s through the store; 11k commands/s over 100 000 aggregates (delivery soak) | higher with set-based `add_events` (M3) |
+| Restore time and peak heap | bench | 1k: 14 ms; 10k: 46 ms; 100k: 0.4 s / 132 MB; 500k: 2.3 s / 452 MB | 1k: 12 ms; 10k: 47 ms; 100k: 0.36 s / 125 MB; 500k: 2.2 s / 450 MB (no snapshots yet) | with snapshots: one snapshot + at most `every` events (Neula target: snapshot + 200 events); streaming restore (F22) flattens the heap |
+| Projection throughput (one projection) | bench | about 1.7k events/s, 1.3 s behind after a 3 200-command load | about 1.8k events/s, 1.3 s behind after a 3 200-command load; about 1.7k events/s each over the 1 000 000-event delivery soak (all projected 10 minutes after the start) | higher with batching across aggregates (M4); back-pressure on the live path (F93) |
+| Rebuild throughput and peak memory | bench | 0.12 replayer: about 3.1k events/s, peak heap about 200 MB for 108k events | unchanged replayer: about 3.2k events/s, peak heap about 200 MB | much higher with the shadow rebuild (M4) |
+| Memory after a soak run | bench | heap after GC 15 → 36 → 19 MB (before, after 215k commands, after 20 s idle) | 14 → 288 → 18 MB (before, right after 348k commands with the projections' backlog, caught up and 20 s idle); delivery soak: 41 MB idle after 1 000 000 events, 21 MB after each of 5 restarts; bus bookkeeping and outbox empty | flat |
+| Startup time to ready | bench | first command answered in about 0.5 s, first projected event 0.5–0.65 s | first command 0.53 s, first projected event 0.56 s; no fixed waits | unchanged |
 
 Neula's own targets (verified by Neula's load tests, not by the library): task completion
 p95 below 150 ms excluding scripts and jobs; restore from at most one snapshot plus 200
@@ -1044,3 +1044,58 @@ Open test-infrastructure items:
   cache updates the versions cached at commit time; `SubscribableProjectionActor.sendUpdate`
   reaches its maps through a message (listeners run on pool threads in parallel mode).
 - `sbt test`: core 124, testdomain 50, all pass.
+
+**16/10/2026: M2 review (review 4), simplification and close**
+- Architecture description, plan and decisions checked against the code (KNOWN-ISSUES §7,
+  review 4, which also weighs the changes the later milestones and Neula's requests bring).
+  No decision is reversed; the refinements are in the "Refined at the M2 review" blocks of M3,
+  M4, M5 and M7.
+- F91's real cause, found with the final baseline: acknowledgements went to owners that the
+  command bus had reaped while the projections caught up. Owners now publish on behalf of an
+  actor passed to them (`publicationAcks`, the command bus), which deletes the delivered rows
+  and carries out permanent deletes; a live owner gets the acknowledgement passed on only to
+  continue a re-publication in parts. Test red first (`OutboxPollerSpec`).
+- Simplification pass over the M2 code, without behaviour change except F95: the bus takes a
+  new delivery's subscriptions directly (it compared every event of a re-published part with
+  every other, quadratic in the part's 1 000 events); `RepublishOutbox` and `RepublishRange`
+  share the `RepublishRequest` type, so the command bus, and M5's routing to shards, handle one
+  kind of message; `SubscriptionsState`'s six per-kind version methods became `lastVersion` and
+  `newVersion` with a `SubscriptionType` (the projection's per-kind matches go, and M4's
+  batching across aggregates adds one method, not three; H7 notes the one Neula test that
+  calls the old ones); the three listener maps share one helper; F95 (a subscribable
+  projection's timer was never cancelled, its cache trimmed only by new updates) is fixed;
+  deprecation warnings and an unused parameter are gone.
+- `docs/perf/baseline-M2.md` (measured, commit 8858190; §7 has the M2 column). Against M1:
+  one database statement fewer per command (outbox deletes batched); 6.0k commands/s with two
+  projections and 9.7k without (M1 5.5k and 9k); restore, rebuild and startup unchanged. The
+  delivery soak (1 000 000 events over 100 000 aggregates, a tenth of one listener failing for
+  30 s) ran at 11k commands/s; every event was projected 10 minutes after the start, the bus
+  waited for nothing, the outbox was empty (546 704 rows before the F91 fix), no failure was
+  recorded (the listener recovered within its retries), and the heap after GC was 41 MB idle
+  and 21 MB after each of 5 restarts. The memory soak's load varies widely between runs on the
+  same machine (348 000 to 917 000 commands in 60 s over four runs: two full runs, and two runs
+  of the soak alone, one of them on the simplified code), depending on how far the projections
+  fall behind early (F93); its heap after catching up and 20 s idle was 18–19 MB every time
+  (M1: 19 MB).
+- The plan's M2 verification, item by item: the sequence-gate property test
+  (`SequenceGateSpec`, 10 000 generated histories per run); a lost message re-delivered
+  (`OutboxPollerSpec`, F2, 3 minutes); a subscriber that keeps failing (`ProjectionDeliverySpec`:
+  recorded after its retries, other aggregates keep flowing, listed by `GetProjectionStatus`,
+  `RetryFailedSubscription` resumes from the failed version, retried at a restart); silence
+  (`RedeliveryPolicySpec`, `OutboxPollerSpec`: re-publications at 3 and 6 minutes, "undelivered"
+  at 10; the bus's deadline, `EventsBusActorSpec`; its stall lines and summary are seen in the
+  bench logs, not asserted by a test); every outbox row delivered again after a
+  restart, on PostgreSQL (`OutboxPollerSpec`: events committed before a restart reach the
+  subscribers at the first poll); a gap filled from the store (`ProjectionDeliverySpec`,
+  `DeliveryEndToEndSpec`); a duplicate acknowledged without being applied again
+  (`ProjectionDeliverySpec`, `SequenceGateSpec`, F5); the soak (above); startup without fixed
+  waits (above).
+- Neula acceptance in M2: R1 (a listener failing for one aggregate does not block others; the
+  failure is in the status and can be retried or skipped; its metric comes with M5's metrics
+  interface, R19), R3 (a lost publication is re-published at 3 minutes while the aggregate stays
+  active), R4 (memory flat over 5 restarts, delivery soak) pass as library tests and bench runs.
+- Exit criteria: every M2 library issue is fixed; F93 (back-pressure on the live path) and F94
+  moved to M4. Neula's part is open: the subscriber list instead of the hard-coded count (H2)
+  and the new wiring (H7). Like M1's production checks, it gates Neula's move to 1.0 (M7
+  runbook), not M3, so M2 is tagged `v1.0.0-M2` with it open.
+- `sbt test`: core 125, testdomain 51, all pass.
