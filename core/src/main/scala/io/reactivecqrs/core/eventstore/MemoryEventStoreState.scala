@@ -100,10 +100,12 @@ class MemoryEventStoreState extends EventStoreState {
     eventsToPublish --= versions.map(version => (aggregateId, version))
   }
 
-  override def deleteAggregatePermanently(aggregateId: AggregateId): Unit = synchronized {
+  // Subscription failures live in the subscriptions state, which this store does not see: it always deletes.
+  override def deleteAggregatePermanently(aggregateId: AggregateId): Boolean = synchronized {
     eventsRows = eventsRows.filterNot(_.aggregateId == aggregateId)
     eventStore -= aggregateId
     eventsToPublish = eventsToPublish.filterNot { case ((eventAggregateId, _), _) => eventAggregateId == aggregateId }
+    true
   }
 
   override def readWaitingInOutbox(): Seq[WaitingInOutbox] = synchronized {

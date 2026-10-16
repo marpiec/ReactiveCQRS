@@ -1,5 +1,7 @@
 package io.reactivecqrs.core.projection
 
+import java.time.Instant
+
 import io.reactivecqrs.api.AggregateVersion
 import io.reactivecqrs.api.id.AggregateId
 import org.scalatest.GivenWhenThen
@@ -26,6 +28,25 @@ class MemorySubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen wit
       Then("the first starts again from zero and the second keeps its version")
       state.lastVersionForEventsSubscription("ProjectionA", aggregateId) mustBe AggregateVersion.ZERO
       state.lastVersionForEventsSubscription("ProjectionB", aggregateId) mustBe AggregateVersion(3)
+    }
+  }
+
+  Feature("Failures (D20a)") {
+    Scenario("are recorded per subscription, replaced by a later one, and cleared") {
+      val state = new MemorySubscriptionsState
+      val since = Instant.parse("2026-10-16T10:00:00Z")
+      state.recordFailure("Projection", SubscriptionFailure(SubscriptionType.EVENTS, aggregateId, AggregateVersion(4), "first", since))
+      state.recordFailure("Projection", SubscriptionFailure(SubscriptionType.EVENTS, aggregateId, AggregateVersion(5), "second", since))
+      state.recordFailure("Other", SubscriptionFailure(SubscriptionType.EVENTS, aggregateId, AggregateVersion(1), "other", since))
+
+      state.failures("Projection") mustBe Seq(SubscriptionFailure(SubscriptionType.EVENTS, aggregateId, AggregateVersion(5), "second", since))
+
+      state.clearFailure("Projection", SubscriptionType.EVENTS, aggregateId)(NoSession)
+      state.failures("Projection") mustBe empty
+      state.failures("Other").map(_.error) mustBe Seq("other")
+
+      state.clearSubscriptionsInfo("Other")
+      state.failures("Other") mustBe empty
     }
   }
 

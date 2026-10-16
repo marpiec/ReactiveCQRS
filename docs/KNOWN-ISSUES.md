@@ -80,7 +80,7 @@ behaviour.
 | D3 | Delivery is one module with a small interface. Publisher side: "versions a..b of aggregate X are committed". Subscriber side: deliver, the subscriber acks a version range or reports a failure. Contract: at-least-once, ordered per aggregate, the subscriber deduplicates by version. |
 | D7 | The bus-side cursor (`EventBusState`, `event_bus`, `publishedEvents`, `eventsPropagatedNotPersisted`) is deleted; the bus routes and tracks acks only. |
 | D8 | One owner of retries: a single timer sends the aggregate's owner a re-publish message (creating the owner if needed); the owner re-reads its own `events_to_publish` rows and publishes them with its current state. The in-memory `eventsToPublish` and `pendingPublish` lists go away. Refined in the M2 design: the poller counts the re-delivery attempts (3 and 6 minutes) and the deadline per aggregate; the owner re-publishes from its oldest outbox version to its current version. |
-| D20a | A failing subscriber retries the aggregate itself with back-off (about 2 minutes), then records the failure in its subscription row (failed version, error, since) and replies `Failed`. The publisher then stops re-delivering that event to it; the outbox row is deleted once every subscriber has acked or failed. Other aggregates keep flowing; the failure shows in status and metrics. Recovery: `RetryFailedSubscription`, and automatically when the projection starts (rate-limited); the subscriber then reads the missing events from the event store. An operator may also skip one version explicitly. Re-deliveries for an aggregate under internal retry are ignored. |
+| D20a | A failing subscriber retries the aggregate itself with back-off (about 2 minutes), then records the failure in its subscription row (failed version, error, since) and replies `Failed`. The publisher then stops re-delivering that event to it; the outbox row is deleted once every subscriber has acked or failed. Other aggregates keep flowing; the failure shows in status and metrics. Recovery: `RetryFailedSubscription`, and automatically when the projection starts (rate-limited); the subscriber then reads the missing events from the event store. An operator may also skip one version explicitly. Re-deliveries for an aggregate under internal retry are ignored. Refined in M2: failures are kept in a table of their own, `subscription_failures` (subscriber, subscription type, aggregate, failed version, error, since), instead of new columns of `subscriptions`; same content, apart from the version rows that the cache and the replay dump manage. |
 | D20b | Silence (no ack, no failure) gets limited re-delivery: at about 3 and 6 minutes, deadline 10 minutes (configurable; the first re-delivery comes after the subscriber's own retry budget). At the deadline: log and alert "undelivered to X", mark it in delivery status. The deadline counts from the first attempt in the running process; at startup every outbox row, including ones past their deadline, gets a fresh set of attempts. Stalled deliveries are logged: one line when an event first stalls, plus a periodic summary. Bus bookkeeping for an event ends on ack, failure or deadline (includes former D19); the bus watches its subscribers and logs an error if one stops. |
 | D20c | A detected gap is filled from the event store: a subscriber at v5 that receives v7 gets v6 again. No unbounded buffering. Refined in the M2 design (`docs/design/M2-delivery.md`): for every listener kind the subscriber asks the owner, which re-publishes the range from the store to that subscriber only, so subscribers need no event-store access. |
 | D4 | One pure, in-process **sequence gate** decides for every subscriber message: ack only, apply versions a..b, or fetch the gap. The three listener kinds are thin adapters over it. |
@@ -235,7 +235,7 @@ implementation plan.
 - **Invariants:** I4.
 
 #### F6 — Clearing a projection's subscriptions leaves the caches behind
-- **Medium**, likely · Fix in **M2** (cache handling), obsolete after **M4** · `SubscriptionsState`
+- **Medium**, likely · **Fixed in M2** (16/10/2026: clearing removes the subscriber's cached versions and failures too; `PostgresSubscriptionsStateSpec`, red first), obsolete after **M4** · `SubscriptionsState`
 - **Symptom:** rebuilding a live projection skips aggregates still cached; in-memory mode updates rows that no longer exist.
 - **Root cause:** `clearSubscriptionsInfo` deletes rows only (`SubscriptionsState.scala:291-294`); caches at `:131-132`.
 - **Fix:** clear caches with the rows; shadow rebuild (D57) removes the clear step.
@@ -269,7 +269,7 @@ implementation plan.
 - **Fix:** keyed delayed queries; coalesce replays (D34).
 
 #### F29 — Subscription cache never evicted in live (database) mode
-- **Medium**, likely · Fix in **M2** · `SubscriptionsState`
+- **Medium**, likely · **Fixed in M2** (16/10/2026: an LRU cache of at most `maxCachedAggregates`, 10 000 by default; the in-memory replay mode keeps everything until `dump()`) · `SubscriptionsState`
 - **Symptom:** memory grows with every aggregate a projection ever touched (about 0.5–1 KB each, estimate).
 - **Root cause:** `perAggregate` is evicted only by `dump()`, which live mode never calls (`SubscriptionsState.scala:131-132, 196-223`).
 - **Fix:** bounded cache; the database is the source of truth (D34).
@@ -304,7 +304,7 @@ implementation plan.
 - **Low** (unused by Neula), likely · **Fixed in M2** (16/10/2026, deleted, D7) · `EventBusState.scala:127-140`
 
 #### F77 — A failed compare-and-set leaves the subscription cache stale
-- **Medium**, likely · Fix in **M2** (subscription cache, work item 8) · `PostgresSubscriptionsState.newEventIdInDB`
+- **Medium**, likely · **Fixed in M2** (16/10/2026: a failed database write evicts the aggregate's cached versions; `PostgresSubscriptionsStateSpec`, red first) · `PostgresSubscriptionsState.newEventIdInDB`
 - **Symptom:** when the stored subscription version moved without this instance's cache (another node, a clear in the database, a repair), every later update of that aggregate for that projection fails the same way: the projection is stuck on it until the process restarts.
 - **Root cause:** the failed `UPDATE … WHERE aggregate_version = ?` throws, the transaction rolls back, and the cached version is kept; the next attempt starts from it again.
 - **Found:** plan review at the M1 close (review 3, §7).
@@ -501,7 +501,7 @@ implementation plan.
 - **Root cause:** the delete removes the base's events and rows only; duplicates read the base's events through their chain rows (D50 solves the same problem for squash).
 - **Found:** plan review at the M1 close.
 - **Check:** Neula, on a production copy: `SELECT count(*) FROM aggregates a WHERE a.base_id <> a.id AND NOT EXISTS (SELECT 1 FROM aggregates b WHERE b.id = a.base_id AND b.base_id = b.id)` (duplicates whose base is gone).
-- **Fix:** detach every duplicate before deleting its base, as D50 does before a squash. With D20a the delete also needs a precondition like D51 (no failed subscriptions), because it removes the `subscriptions` rows that would hold the failure.
+- **Fix:** detach every duplicate before deleting its base, as D50 does before a squash. With D20a the delete also needs a precondition like D51 (no failed subscriptions), because it removes the `subscriptions` rows that would hold the failure. The precondition is in since M2 (16/10/2026): the delete waits while the aggregate has a row in `subscription_failures` (`PermanentDeleteSpec`).
 
 ### Performance and runtime
 
@@ -727,7 +727,7 @@ From §7 of Neula's change requests.
 | Milestone | Issues |
 |---|---|
 | M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔, F73 ✔, F74 ✔, F75 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53, F76 (Neula, on a production copy, with `StoredDataCheck` and the F76 query); Neula H3, H4, H5 |
-| M2 | AR6, AR7 (event bus and projections); F1 ✔, F2 ✔, F4 ✔, F5, F6, F11 ✔, F15, F26 ✔, F28, F29, F33 (part), F37 ✔, F41 ✔, F42 ✔, F45, F47 ✔, F72 ✔, F77, F79 ✔, F80; Neula H2 |
+| M2 | AR6, AR7 (event bus and projections); F1 ✔, F2 ✔, F4 ✔, F5, F6 ✔, F11 ✔, F15, F26 ✔, F28, F29 ✔, F33 (part), F37 ✔, F41 ✔, F42 ✔, F45, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80; Neula H2 |
 | M3 | AR1, AR4, AR7 (owner and command bus); F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33 (rest), F38, F39, F44, F50, F65, F76, F78, F81 |
 | M4 | F3, F43, F49 (backfill), F54, F55, F56, F57, F58, F59, F60, F61, F62, F82; Neula H1, H6 |
 | M5 | AR5; F46, F48, F63, F78 (between nodes) |

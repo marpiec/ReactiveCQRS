@@ -202,7 +202,11 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
 - **`subscriptions`** (`SubscriptionsState.scala`) — per (subscriber type,
   subscription type, aggregate) last-processed version. Optimistic locking by
   version compare. Index on `aggregate_id`; unique on
-  `(subscriber_type_id, subscription_type, aggregate_id)`.
+  `(subscriber_type_id, subscription_type, aggregate_id)`. Live mode caches the versions
+  of at most 10 000 aggregates (LRU); the database decides.
+- **`subscription_failures`** (since 1.0, D20a) — per subscription, the aggregate it gave
+  up on: failed version, error, since. A permanent delete waits while the aggregate has
+  a row here.
 - **`sagas`** (`PostgresSagaSchemaInitializer.scala:12`) — saga progress. The table
   *is* auto-created (`CREATE TABLE IF NOT EXISTS sagas`), with a unique index on
   `(name, saga_id)` (since 1.0, F34).

@@ -402,11 +402,17 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   }
 
   // The bus acked these versions: every subscriber took or failed them, so their outbox rows go. A failed delete only
-  // leaves rows that the outbox poller re-publishes later.
+  // leaves rows that the outbox poller re-publishes later. A permanent delete waits while a subscription of the
+  // aggregate is failed: its event stays in the outbox and is tried again on the next re-publication's ack.
   private def delivered(versions: Seq[AggregateVersion]): Unit = {
     Try {
-      if (permanentDeleteAt.exists(versions.contains)) eventStore.deleteAggregatePermanently(aggregateId)
-      else eventStore.deletePublished(aggregateId, versions)
+      permanentDeleteAt.filter(versions.contains) match {
+        case Some(at) if !eventStore.deleteAggregatePermanently(aggregateId) =>
+          log.warning("Aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " is not deleted yet: a subscription of it is failed")
+          eventStore.deletePublished(aggregateId, versions.filterNot(_ == at))
+        case Some(_) => ()
+        case None => eventStore.deletePublished(aggregateId, versions)
+      }
     }.failed.foreach(e => log.error(e, "Removing delivered events of aggregate " + aggregateId.asLong + " from the outbox failed"))
   }
 

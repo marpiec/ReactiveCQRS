@@ -26,8 +26,9 @@ abstract class EventStoreState {
   def deletePublished(aggregateId: AggregateId, versions: Seq[AggregateVersion]): Unit
 
   /** Carries out a `PermanentDeleteEvent` once it is delivered: removes the aggregate, its events, its outbox rows and
-    * its subscriptions in one transaction. */
-  def deleteAggregatePermanently(aggregateId: AggregateId): Unit
+    * its subscriptions in one transaction. Returns false, deleting nothing, while a subscription of the aggregate is
+    * failed (D20a): the delete would remove the record of that failure. */
+  def deleteAggregatePermanently(aggregateId: AggregateId): Boolean
 
   /** Every aggregate with rows waiting in the outbox, for the outbox poller (D8). */
   def readWaitingInOutbox(): Seq[WaitingInOutbox]

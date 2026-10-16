@@ -322,18 +322,24 @@ ORDER BY events.id""")
   override def deletePublished(aggregateId: AggregateId, versions: Seq[AggregateVersion]): Unit =
     outboxDeletes.add(aggregateId.asLong, versions.map(_.asInt))
 
-  override def deleteAggregatePermanently(aggregateId: AggregateId): Unit = DB.localTx { implicit session =>
+  override def deleteAggregatePermanently(aggregateId: AggregateId): Boolean = DB.localTx { implicit session =>
     val id = aggregateId.asLong
-    sql"""DELETE FROM aggregates WHERE id = $id""".update()
-    // noop_events must be deleted BEFORE events: it is resolved via a subquery over events,
-    // so deleting events first would make the subquery match nothing and leak noop_events rows.
-    sql"""DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = $id)""".update()
-    sql"""DELETE FROM events WHERE aggregate_id = $id""".update()
-    sql"""DELETE FROM events_to_publish WHERE aggregate_id = $id""".update()
-    // A system without projections has no subscriptions table.
-    if (sql"""SELECT to_regclass('subscriptions') IS NOT NULL""".map(_.boolean(1)).single().getOrElse(false)) {
-      sql"""DELETE FROM subscriptions WHERE aggregate_id = $id""".update()
+    // A system without projections has no subscriptions tables.
+    def exists(table: String): Boolean = SQL(s"SELECT to_regclass('$table') IS NOT NULL").map(_.boolean(1)).single().getOrElse(false)
+    val failed = exists("subscription_failures") &&
+      sql"""SELECT EXISTS (SELECT 1 FROM subscription_failures WHERE aggregate_id = $id)""".map(_.boolean(1)).single().getOrElse(false)
+    if (!failed) {
+      sql"""DELETE FROM aggregates WHERE id = $id""".update()
+      // noop_events must be deleted BEFORE events: it is resolved via a subquery over events,
+      // so deleting events first would make the subquery match nothing and leak noop_events rows.
+      sql"""DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = $id)""".update()
+      sql"""DELETE FROM events WHERE aggregate_id = $id""".update()
+      sql"""DELETE FROM events_to_publish WHERE aggregate_id = $id""".update()
+      if (exists("subscriptions")) {
+        sql"""DELETE FROM subscriptions WHERE aggregate_id = $id""".update()
+      }
     }
+    !failed
   }
 
   override def readNotYetPublishedEvents(): Map[AggregateId, AggregateVersion] = {

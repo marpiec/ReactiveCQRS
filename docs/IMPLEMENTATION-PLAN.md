@@ -929,3 +929,20 @@ Open test-infrastructure items:
   until "undelivered"), `PermanentDeleteSpec` (2), event store outbox scenarios.
 - Still to come with the subscription failure state (next steps): a permanent delete must wait
   while a subscription of the aggregate is failed (F76 note, D20a).
+
+**16/10/2026: subscription state (D20a storage; F6, F29, F77)**
+- Failures (D20a) are stored in a new table, `subscription_failures` (subscriber, subscription
+  type, aggregate, failed version, error, since), with `recordFailure`, `failures` and
+  `clearFailure` on `SubscriptionsState`; a later failure of the same subscription replaces the
+  earlier one. Refined from "new columns of `subscriptions`": same content, apart from the
+  version rows that the cache and the replay dump manage (D20a in KNOWN-ISSUES). New table only,
+  so stored data is untouched.
+- Live mode caches the versions of at most 10 000 aggregates, least recently used out (F29); the
+  replay mode keeps everything until `dump()`, as before. Clearing a subscriber also clears its
+  cached versions and failures (F6). A failed database compare-and-set evicts the aggregate's
+  cached versions, so the next attempt starts from the stored one (F77). F6 and F77 were red
+  first against the old code.
+- A permanent delete waits while a subscription of the aggregate is failed: the store returns
+  false, the owner keeps that event's outbox row, and the next re-publication's ack tries again
+  (`PermanentDeleteSpec`, 3 scenarios).
+- Next: the projection actor uses this (failure policy, status, retry, skip).

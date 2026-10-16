@@ -8,10 +8,11 @@ import io.reactivecqrs.api.id.{AggregateId, CommandId, SpaceId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.delivery.OutboxPollerActor.Poll
-import io.reactivecqrs.core.delivery.{OutboxPollerActor, OutboxPollerOptions}
+import io.reactivecqrs.core.delivery.{OutboxPollerActor, OutboxPollerOptions, RepublishOutbox}
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
+import io.reactivecqrs.core.projection.{PostgresSubscriptionsState, SubscriptionFailure, SubscriptionType}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
@@ -53,6 +54,7 @@ class PermanentDeleteSpec extends CommonSpec {
   private val mpjsons = new MPJsons
   private val typesNamesState = new PostgresTypesNamesState().initSchema()
   private val eventStore = new PostgresEventStoreState(mpjsons, typesNamesState).initSchema()
+  private val subscriptions = new PostgresSubscriptionsState(typesNamesState, keepInMemory = false).initSchema()
   private val uidGenerator = system.actorOf(Props(new UidGeneratorActor(
     new PostgresUidGenerator("aggregates_uids_seq"), new PostgresUidGenerator("commands_uids_seq"), new PostgresUidGenerator("sagas_uids_seq"))))
 
@@ -98,6 +100,37 @@ class PermanentDeleteSpec extends CommonSpec {
       storedVersions(memoId) mustBe Seq(1, 2)
 
       f.ack(memoId, 2)
+      deletedForGood(memoId)
+    }
+
+    Scenario("waits while a subscription of the aggregate is failed, and happens on a later delivery once it is cleared (D20a)") {
+      Given("a memo that a projection failed on")
+      val f = new Fixture
+      val memoId = AggregateId(System.nanoTime())
+      val written: CustomCommandResponse[_] = f.commandBus ?? WriteMemo(userId, memoId, "note")
+      written mustBe SuccessResponse(memoId, AggregateVersion(1))
+      f.delivered(memoId) mustBe Seq(1)
+      f.ack(memoId, 1)
+      val failure = SubscriptionFailure(SubscriptionType.EVENTS, memoId, AggregateVersion(1), "listener failed", Instant.now)
+      subscriptions.recordFailure("PermanentDeleteSpecProjection", failure)
+
+      When("it is erased and the erase is acknowledged")
+      val erased: CustomCommandResponse[_] = f.commandBus ?? EraseMemo(userId, memoId, AggregateVersion(1))
+      erased mustBe SuccessResponse(memoId, AggregateVersion(2))
+      f.delivered(memoId) mustBe Seq(2)
+      f.ack(memoId, 2)
+
+      Then("the memo and the erase event's outbox row stay")
+      awaitAssert(eventStore.oldestVersionToPublish(memoId) mustBe Some(AggregateVersion(2)), 5.seconds, 50.millis)
+      storedVersions(memoId) mustBe Seq(1, 2)
+
+      When("the failure is cleared and the erase is delivered again")
+      subscriptions.localTx { implicit session => subscriptions.clearFailure("PermanentDeleteSpecProjection", SubscriptionType.EVENTS, memoId) }
+      f.commandBus ! RepublishOutbox(memoId)
+      f.delivered(memoId) mustBe Seq(2)
+      f.ack(memoId, 2)
+
+      Then("the memo is deleted for good")
       deletedForGood(memoId)
     }
 
