@@ -48,7 +48,7 @@ class EventsBusActorSpec extends CommonSpec {
     subscriber.expectMsgType[IdentifiableEvents[Any]](3.seconds).events.map(_.version.asInt)
 
   private def ack(bus: ActorRef, subscriber: TestProbe, id: AggregateId, versions: Int*): Unit =
-    bus ! MessageAck(subscriber.ref, id, versions.map(AggregateVersion(_)))
+    bus ! MessageAck(subscriber.ref, id, versions.map(AggregateVersion(_)), EventsDelivery)
 
   private def acked(owner: TestProbe): Seq[Int] = owner.expectMsgType[PublishEventsAck](3.seconds).versions.map(_.asInt)
 
@@ -105,7 +105,7 @@ class EventsBusActorSpec extends CommonSpec {
       delivered(a); delivered(b)
 
       ack(bus, a, id, 1)
-      bus ! MessageFailed(b.ref, id, Seq(AggregateVersion(1)), "listener failed")
+      bus ! MessageFailed(b.ref, id, Seq(AggregateVersion(1)), "listener failed", EventsDelivery)
 
       acked(owner) mustBe Seq(1)
     }
@@ -117,6 +117,24 @@ class EventsBusActorSpec extends CommonSpec {
       publish(bus, owner, newId(), 1, 2, 3)
 
       acked(owner) mustBe Seq(1, 2, 3)
+    }
+
+    Scenario("waits for each kind a subscriber takes: one kind's ack is not the other's") {
+      val (a, owner) = (TestProbe(), TestProbe())
+      val bus = newBus()
+      bus ! RegisterSubscribers(Seq(a.ref))
+      a.expectMsg(GetSubscriptionRequests)
+      a.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, a.ref), SubscribeForAggregates(cartType, a.ref))))
+      val id = newId()
+
+      publish(bus, owner, id, 1)
+      a.expectMsgType[IdentifiableEvents[Any]](3.seconds)
+      a.expectMsgType[AggregateWithType[Any]](3.seconds)
+
+      bus ! MessageAck(a.ref, id, Seq(AggregateVersion(1)), AggregatesDelivery)
+      owner.expectNoMessage(300.millis)
+      bus ! MessageAck(a.ref, id, Seq(AggregateVersion(1)), EventsDelivery)
+      acked(owner) mustBe Seq(1)
     }
 
     Scenario("never happens for a re-publication to one subscriber") {
@@ -163,10 +181,10 @@ class EventsBusActorSpec extends CommonSpec {
 
       val status = statusOf(bus)
       status.waiting mustBe 0
-      status.undelivered.map(u => (u.aggregateId, u.version.asInt, u.subscriber)) must contain((id, 7, a.ref.path.name))
+      status.undelivered.map(u => (u.aggregateId, u.version.asInt, u.subscriber, u.kind)) must contain((id, 7, a.ref.path.name, EventsDelivery))
     }
 
-    Scenario("a subscriber that stops ends its deliveries without an ack, and the others keep flowing") {
+    Scenario("a subscriber that stops ends its deliveries without an ack; the others keep flowing, and later events stay in the outbox for it") {
       val (a, b, owner) = (TestProbe(), TestProbe(), TestProbe())
       val bus = busWith(a, b)
       val id = newId()
@@ -177,11 +195,13 @@ class EventsBusActorSpec extends CommonSpec {
       system.stop(a.ref)
       awaitAssert(statusOf(bus).waiting mustBe 0, 3.seconds, 50.millis)
       owner.expectNoMessage(300.millis) // version 1 stays in the outbox for the stopped subscriber
+      statusOf(bus).stopped mustBe Seq(a.ref.path.name)
 
       publish(bus, owner, id, 2)
       delivered(b) mustBe Seq(2)
       ack(bus, b, id, 2)
-      acked(owner) mustBe Seq(2)
+      owner.expectNoMessage(300.millis) // version 2 too: after a restart the subscriber gets both
+      statusOf(bus).waiting mustBe 0
     }
   }
 
@@ -228,6 +248,7 @@ class EventsBusActorSpec extends CommonSpec {
   }
 
   Feature("Re-publish requests (D8, D20c)") {
+
 
     Scenario("go to the command bus registered for the aggregate type") {
       val (a, commandBus) = (TestProbe(), TestProbe())

@@ -57,7 +57,7 @@ class OutboxPollerSpec extends CommonSpec {
     def noDeliveryOf(cartId: AggregateId, within: FiniteDuration): Unit =
       subscriber.receiveWhile(within) { case e: IdentifiableEvents[_] => e.aggregateId } must not contain cartId
 
-    def ack(cartId: AggregateId, versions: Int*): Unit = bus ! MessageAck(subscriber.ref, cartId, versions.map(AggregateVersion(_)))
+    def ack(cartId: AggregateId, versions: Int*): Unit = bus ! MessageAck(subscriber.ref, cartId, versions.map(AggregateVersion(_)), EventsDelivery)
 
     def pollAfter(time: FiniteDuration): Unit = {
       clock.advance(time)

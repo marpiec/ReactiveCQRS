@@ -974,3 +974,33 @@ Open test-infrastructure items:
   construction (it passed all delivered events, buffered gaps without asking, and only logged
   listener failures). `SubscribableSpec` now creates the types table itself: run alone, it
   failed because only an earlier spec had created it.
+
+**16/10/2026: M2 verification and the review's fixes (F83–F92; F93, F94 open)**
+- End to end through the real bus and owner (`DeliveryEndToEndSpec`): a projection that
+  starts behind asks for the missing versions, applies each version once and in order, and
+  sees the stored timestamps (R6). The bench gained a delivery soak (failing listeners that
+  recover, bookkeeping, outbox, heap over load and restarts) run with subscriptions in the
+  database, as live nodes keep them.
+- The first full-size soak (1 000 000 events over 100 000 counters) ran out of a 2 GB heap: a
+  projection starting behind 30 000-event counters (left in the outbox by the previous
+  scenario, correctly) got each whole history in one message, and its 10-second re-requests
+  multiplied them (F83). Fixed with re-publication in parts of 1 000 events and doubling
+  re-requests; the bench scenarios now wait for an empty outbox before stopping.
+- The second full-size soak finished: every event projected 10 minutes after the start
+  (commands at about 12 000/s, projections at about 1 700 events/s), bookkeeping empty, heap
+  after GC 45 MB and flat over 5 restarts. It showed outbox deletes falling behind (555 666
+  rows left, F91), log floods (about 960 000 stall lines, F92) and the missing back-pressure
+  on the live path (F93, open, M4).
+- A read-only audit of the M2 code found F84 (one kind's ack ended another kind's delivery),
+  F85 (an unstorable failure still answered as failed), F86 (covered deliveries acked before
+  their batch), F87 (a stopped subscriber silently missed later events), F88 (a retry lost
+  with its single request), F89 (parallel mode: a second batch during a running one), F90
+  (endless gap waits) and F94 (open, M4). All fixed except F94; each test was red first or
+  red under a mutation restoring the old behaviour (five mutations, each caught by exactly
+  its scenario). The audit's idea to skip the poller's re-publication while a delivery waits
+  was tried and dropped: it saves little load and loses the recovery of a delivery lost
+  while waiting.
+- Smaller: the memory test doubles keep replay order and lock their state; the subscription
+  cache updates the versions cached at commit time; `SubscribableProjectionActor.sendUpdate`
+  reaches its maps through a message (listeners run on pool threads in parallel mode).
+- `sbt test`: core 124, testdomain 50, all pass.

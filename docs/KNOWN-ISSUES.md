@@ -324,6 +324,63 @@ implementation plan.
 - **Found:** plan review at the M1 close.
 - **Fix:** answer the failure without rethrowing; one shared, closed-on-stop pool or the blocking dispatcher (F27).
 
+Found at the M2 close (review 4: the delivery soak of the bench, a read-only audit, our own reading). All
+but F93 are fixed in M2; the tests named were red first, or red under a mutation that restores the old behaviour.
+
+#### F83 — A long re-publication went out in one message, and a busy projection asked for it again every 10 s
+- **High**, confirmed (the soak ran out of a 2 GB heap) · **Fixed in M2** · `AggregateRepositoryActor.republish`, `ProjectionActor.requestMissingVersions`
+- **Symptom:** a projection that starts behind an aggregate with 30 000 events asks for the whole history; the owner sends it in one message, and while the projection works through its mailbox the 10-second re-request sends it again and again, until the heap runs out.
+- **Fix:** re-publications go in parts of at most 1 000 events (`maxRepublishEvents`): the owner sends the next outbox part when the previous one is acknowledged, a projection asks for the next part of a gap itself. Gap requests repeat after 10 s, doubling up to 5 minutes. Tests: `RepublishSpec` (parts), `ProjectionDeliverySpec` (back-off).
+
+#### F84 — The bus tracked a subscriber, not each of its subscriptions
+- **High** if a projection has two listener kinds for one aggregate type, confirmed · **Fixed in M2** · `EventsBusActor`
+- **Symptom:** one kind's acknowledgement ended the delivery for the other kind too: the owner deleted the outbox row while the other kind still retried, and a permanent delete could run before the slower kind applied it.
+- **Fix:** a delivery waits for each (subscriber, kind); `MessageAck` and `MessageFailed` carry the `DeliveryKind`. Test: `EventsBusActorSpec` "waits for each kind a subscriber takes".
+
+#### F85 — A failure that could not be stored was still answered as failed
+- **High**, confirmed · **Fixed in M2** · `ProjectionActor.giveUp`
+- **Symptom:** during a database outage longer than the retries, `recordFailure` failed too, but the deliveries were answered `MessageFailed`: the outbox rows were deleted and, after a restart, neither the rows nor the failure existed; the aggregate stayed stale until its next event.
+- **Fix:** nothing is answered until the failure is stored; the batch is tried again every 30 s meanwhile. Test: `ProjectionDeliverySpec` "a failure that cannot be stored is not answered".
+
+#### F86 — Deliveries covered by a batch were acknowledged before the batch was applied
+- **Medium**, confirmed · **Fixed in M2** · `ProjectionActor.drainFrom`
+- **Symptom:** a delivery whose versions all lay in the batch being assembled was acknowledged at once; if the batch then failed and the process stopped, its outbox row was gone (a gap fill has no rows of its own).
+- **Fix:** such deliveries join the batch and are acknowledged when it is applied; only deliveries at or below the stored version are acknowledged at once. Test: `ProjectionDeliverySpec` "a delivery covered by a batch that then fails".
+
+#### F87 — A stopped subscriber silently missed later events
+- **Medium**, confirmed · **Fixed in M2** · `EventsBusActor.subscriberStopped`
+- **Symptom:** the bus dropped a stopped subscriber's subscriptions, so later events were acknowledged without it and their rows deleted; after a restart it never received them for idle aggregates.
+- **Fix:** a stopped subscriber keeps its subscriptions, marked stopped: deliveries it would take end without an owner ack, so the rows stay until the next start; `DeliveryStatus.stopped` lists it. Test: `EventsBusActorSpec` "a subscriber that stops ... later events stay in the outbox for it".
+
+#### F88 — Retrying a failure discarded it before the re-published versions arrived
+- **Medium**, confirmed · **Fixed in M2** · `ProjectionActor.retry`
+- **Symptom:** the failure record was cleared and one untracked request sent; when that request was lost (no command bus registered yet at start, an owner in failed restore) the aggregate stayed stale with no record.
+- **Fix:** a retry is a tracked request, repeated like a gap until a batch reaches the failed version; then the record is cleared. `RetryAllFailedSubscriptions` retries every failure, 20 per second. A skip still asks once for the versions after it: there may be none. Test: `ProjectionDeliverySpec` "RetryFailedSubscription asks for the failed version again, until it comes".
+
+#### F89 — In parallel mode a gap check could start a second batch while one was running
+- **Low**, likely · **Fixed in M2** · `ProjectionActor` (`Drain`, `Applied`)
+- **Fix:** a scheduled drain during a running batch is left to the batch's end, and a batch's result is tied to its queue. Test: `ProjectionDeliverySpec` "in parallel mode a gap check while a batch runs".
+
+#### F90 — A gap that could not be filled was asked for forever
+- **Low**, confirmed · **Fixed in M2** · `ProjectionActor.requestMissingVersions`
+- **Symptom:** a deleted aggregate, a missing publisher or a failing owner left the projection asking every 10 s, its queue never idle, the owner never reaped.
+- **Fix:** after `gapGiveUpAfter` (10 minutes) the gap is recorded as a failure at its first version, visible and repairable. Test: `ProjectionDeliverySpec` "a gap that is never filled".
+
+#### F91 — Outbox deletes fell behind under load
+- **Medium**, confirmed (measured) · **Fixed in M2** (re-measured in `baseline-M2`) · `PostgresEventStoreState` (`OutboxDeletes`)
+- **Symptom:** after 1 000 000 events at about 12 000 commands/s, 555 666 delivered rows were still in the outbox a minute after the projections caught up; the queue of pending deletes grows in memory meanwhile.
+- **Fix:** the rows go to PostgreSQL as two arrays (`unnest`), up to 5 000 per statement.
+
+#### F92 — Logs flooded under overload
+- **Medium**, confirmed (measured) · **Fixed in M2** · `EventsBusActor.checkDeadlines`, `OutboxPollerActor`, `ProjectionActor`
+- **Symptom:** the soak wrote about 960 000 "delivery waits" lines (one per delivery) and one "undelivered" line per aggregate; a failing listener warned at every retry.
+- **Fix:** at most 10 lines per tick or poll, with a count and the periodic summary for the rest; a failing batch warns once.
+
+#### F93 — No back-pressure on the live path
+- **Medium**, confirmed (measured) · Fix in **M4** (projection throughput, D61) and a flow-control design after it · `EventsBusActor`, `ProjectionActor`
+- **Symptom:** when commands come faster than a projection applies them, its mailbox and the bus's deliveries grow with the lag. Measured: 1 000 000 events at about 12 000 commands/s against projections at about 1 700 events/s ended 10 minutes behind; it fit in a 2 GB heap (peak not measured).
+- **Fix idea:** a window per subscription in the bus; past it, events are left in the outbox and fetched from the store when the subscriber catches up (`RepublishRange`), so memory holds keys, not payloads.
+
 ### Commands and aggregates
 
 #### F7 — Event timestamps differ between live delivery and the store
@@ -674,6 +731,12 @@ implementation plan.
 - **Found:** plan review at the M1 close.
 - **Fix:** report the failure to the requester and stop the replay only.
 
+#### F94 — Failure records of a removed projection block permanent deletes
+- **Low**, likely · Fix in **M4** (the projection registry, D57, removes a retired projection's rows) · `PostgresEventStoreState.deleteAggregatePermanently`
+- **Symptom:** `subscription_failures` rows of a projection that was removed or renamed are never retried or cleared, and a permanent delete waits while the aggregate has any.
+- **Found:** M2 close (review 4).
+- **Until then:** an operator deletes the rows of the retired projection by its `subscriber_type_id`.
+
 ### Code structure
 
 #### F14 — In-memory test doubles are wrong or incomplete
@@ -703,6 +766,7 @@ The library cannot fix these; they are listed so the 1.0 migration does not miss
 | H4 | Medium, suspected | `== null` checks on `Option` fields of events behave differently under mpjsons 0.7 (F53). | M1 gate |
 | H5 | Medium, likely | `PostgresCommandResponseState` is built without `initSchema()` (`Context.scala:483`), so D24's index fix would not run; since the F9 fix every idempotent command then fails (the response insert needs the unique index). | M1 |
 | H6 | Medium, suspected | Event listeners of ScreenRelease and ProcessRelease (the two aggregates with undo) must handle undo, since rebuild will deliver it (D60). | M4 |
+| H7 | Medium, likely | The host wiring changes with M2: create one `OutboxPollerActor`; send the bus `RegisterSubscribers` with every projection and listener (with H2); drop `EventBusSubscriptionsManagerApi` and `PostgresEventBusState`; call `PostgresSubscriptionsState.initSchema()`, which creates `subscription_failures`. Show `GetProjectionStatus` failures and offer `RetryFailedSubscription` and `SkipFailedVersion` in the admin tools (R1, R14). | M2 (Neula) |
 
 ---
 
@@ -727,9 +791,9 @@ From §7 of Neula's change requests.
 | Milestone | Issues |
 |---|---|
 | M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔, F73 ✔, F74 ✔, F75 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53, F76 (Neula, on a production copy, with `StoredDataCheck` and the F76 query); Neula H3, H4, H5 |
-| M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔; Neula H2 |
+| M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔; Neula H2, H7 |
 | M3 | AR1, AR4, AR7 (owner and command bus); F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33 (rest), F38, F39, F44, F50, F65, F76, F78, F81 |
-| M4 | F3, F43, F49 (backfill), F54, F55, F56, F57, F58, F59, F60, F61, F62, F82; Neula H1, H6 |
+| M4 | F3, F43, F49 (backfill), F54, F55, F56, F57, F58, F59, F60, F61, F62, F82, F93, F94; Neula H1, H6 |
 | M5 | AR5; F46, F48, F63, F78 (between nodes) |
 | M6 | F8 (complete) |
 

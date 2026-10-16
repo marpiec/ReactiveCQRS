@@ -313,10 +313,12 @@ ORDER BY events.id""")
   }
 
   // F26: one statement deletes the delivered rows of many acknowledgements.
-  private val outboxDeletes = new OutboxDeletes(outboxDeleteDelay, maxRows = 500)(rows => DB.autoCommit { implicit session =>
-    SQL("DELETE FROM events_to_publish WHERE (aggregate_id, version) IN (" + rows.map(_ => "(?, ?)").mkString(", ") + ")")
-      .bind(rows.flatMap { case (aggregateId, version) => Seq(aggregateId, version) }: _*)
-      .update()
+  // The rows travel as two arrays, so one statement deletes thousands of them.
+  private val outboxDeletes = new OutboxDeletes(outboxDeleteDelay, maxRows = 5000)(rows => DB.autoCommit { implicit session =>
+    val aggregateIds = session.connection.createArrayOf("bigint", rows.map { case (aggregateId, _) => java.lang.Long.valueOf(aggregateId): AnyRef }.toArray)
+    val versions = session.connection.createArrayOf("integer", rows.map { case (_, version) => java.lang.Integer.valueOf(version): AnyRef }.toArray)
+    sql"""DELETE FROM events_to_publish USING unnest($aggregateIds::bigint[], $versions::integer[]) AS delivered(aggregate_id, version)
+         | WHERE events_to_publish.aggregate_id = delivered.aggregate_id AND events_to_publish.version = delivered.version""".stripMargin.update()
   })
 
   override def deletePublished(aggregateId: AggregateId, versions: Seq[AggregateVersion]): Unit =

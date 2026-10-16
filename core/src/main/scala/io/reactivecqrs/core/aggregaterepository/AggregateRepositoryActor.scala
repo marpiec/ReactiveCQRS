@@ -55,7 +55,8 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
                                                                 singleReadForVersionOnly: Option[Either[AggregateVersion, Instant]],
                                                                 eventsVersionsMap: Map[EventTypeVersion, String],
                                                                 eventsVersionsMapReverse: Map[String, EventTypeVersion],
-                                                                failedRestoreRetryAfter: FiniteDuration) extends Actor with MyActorLogging {
+                                                                failedRestoreRetryAfter: FiniteDuration,
+                                                                maxRepublishEvents: Int = 1000) extends Actor with MyActorLogging {
 
   import AggregateRepositoryActor._
 
@@ -68,6 +69,9 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   private var permanentDeleteAt: Option[AggregateVersion] = None
 
   private var delayedQueries = List[DelayedMinVersionQuery]()
+
+  // The last version of the outbox part being re-published (RepublishOutbox): the next part follows its ack.
+  private var outboxRepublishedUpTo: Option[AggregateVersion] = None
 
   // Restoring only reads the state; what waits in the outbox is re-published when the outbox poller asks (D8, F72).
   private def assureRestoredState(): Unit = {
@@ -154,7 +158,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     case GetAggregateRootWithEventsExactVersion(respondTo, version, eventTypes) => // for following command
       whenUpToDate(version, respondTo)(receiveReturnAggregateRootWithEvents(respondTo, Some(version), eventTypes))
     case PublishEventsAck(_, versions) => delivered(versions)
-    case RepublishOutbox(_) => eventStore.oldestVersionToPublish(aggregateId).foreach(from => republish(from, None))
+    case RepublishOutbox(_) => eventStore.oldestVersionToPublish(aggregateId).foreach(from => outboxRepublishedUpTo = republish(from, None))
     case RepublishRange(_, from, subscriber) => republish(from, Some(subscriber))
   }
 
@@ -172,15 +176,20 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     }
   }
 
-  // Re-publishes `from` up to the current version with the current state, so a subscriber that receives state gets a
-  // consistent range; subscribers drop what they applied before (D8, D20c).
-  private def republish(from: AggregateVersion, onlyTo: Option[ActorRef]): Unit = {
+  // Re-publishes `from` up to the current version with the current state, so a subscriber that receives state ends with
+  // a consistent range; subscribers drop what they applied before (D8, D20c). A long range goes in parts of at most
+  // `maxRepublishEvents`, so a subscriber far behind never gets the whole history in one message: one to many
+  // subscribers continues when the bus acks the part, a subscriber filling its gap asks for the next part. The parts
+  // before the last carry the current state too. Returns the last version sent.
+  private def republish(from: AggregateVersion, onlyTo: Option[ActorRef]): Option[AggregateVersion] = {
     if (from <= version) {
-      val events = eventStore.readEventsRange[AGGREGATE_ROOT](eventsVersionsMap, aggregateId, from, version)
+      val to = AggregateVersion(math.min(version.asInt.toLong, from.asInt.toLong + maxRepublishEvents - 1).toInt)
+      val events = eventStore.readEventsRange[AGGREGATE_ROOT](eventsVersionsMap, aggregateId, from, to)
       if (events.nonEmpty) {
         eventsBus ! PublishEvents(aggregateType, events, aggregateId, Option(aggregateRoot), onlyTo)
-      }
-    }
+        Some(events.last.version)
+      } else None
+    } else None
   }
 
   private def publish(events: Seq[IdentifiableEvent[AGGREGATE_ROOT]]): Unit = {
@@ -414,6 +423,9 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
         case None => eventStore.deletePublished(aggregateId, versions)
       }
     }.failed.foreach(e => log.error(e, "Removing delivered events of aggregate " + aggregateId.asLong + " from the outbox failed"))
+    outboxRepublishedUpTo.filter(versions.contains).foreach { end =>
+      outboxRepublishedUpTo = if (end < version) republish(end.increment, None) else None
+    }
   }
 
 

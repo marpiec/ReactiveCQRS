@@ -22,7 +22,7 @@ case object FailingQuery
 
 /** Records what its listeners applied; fails for an aggregate as many times as `failures` says. */
 class RecordingProjection(val subscriptionsState: SubscriptionsState, options: ProjectionActorOptions,
-                          failures: ConcurrentHashMap[AggregateId, AtomicInteger], slow: Boolean = false) extends ProjectionActor(options) {
+                          failures: ConcurrentHashMap[AggregateId, AtomicInteger], slowMillis: Int = 0) extends ProjectionActor(options) {
 
   @volatile private var applied = Vector[(String, AggregateId, Seq[Int])]()
 
@@ -31,7 +31,7 @@ class RecordingProjection(val subscriptionsState: SubscriptionsState, options: P
 
   protected val listeners = List(
     EventsListener.noDBSession[GateNote] { (id, events) =>
-      if (slow) Thread.sleep(50)
+      if (slowMillis > 0) Thread.sleep(slowMillis)
       failIfAsked(id)
       synchronized(applied :+= (("events", id, events.map(_.version.asInt))))
     },
@@ -49,6 +49,13 @@ class RecordingProjection(val subscriptionsState: SubscriptionsState, options: P
   override protected val version: Int = 1
 }
 
+/** A store whose failure records fail until `storable`, as during a database outage. */
+class UnstorableFailures extends MemorySubscriptionsState {
+  @volatile var storable = false
+  override def recordFailure(subscriberName: String, failure: SubscriptionFailure): Unit =
+    if (storable) super.recordFailure(subscriberName, failure) else throw new IllegalStateException("database unavailable")
+}
+
 // D4, D20a, D20c, F5, F28, F45, F80: a projection applies each version once and in order, asks for missing versions,
 // and turns a listener that keeps failing into a recorded failure without stopping other aggregates.
 class ProjectionDeliverySpec extends CommonSpec {
@@ -57,10 +64,10 @@ class ProjectionDeliverySpec extends CommonSpec {
   private val quickRetries = Backoff(20.millis, 50.millis, maxAttempts = 3)
 
   private class Fixture(options: ProjectionActorOptions = ProjectionActorOptions.DEFAULT.withRetries(quickRetries),
-                        val state: SubscriptionsState = new MemorySubscriptionsState, slow: Boolean = false, register: Boolean = true) {
+                        val state: SubscriptionsState = new MemorySubscriptionsState, slowMillis: Int = 0, register: Boolean = true) {
     val failures = new ConcurrentHashMap[AggregateId, AtomicInteger]()
     val bus = TestProbe()
-    val projection: ActorRef = system.actorOf(Props(new RecordingProjection(state, options, failures, slow)))
+    val projection: ActorRef = system.actorOf(Props(new RecordingProjection(state, options, failures, slowMillis)))
     if (register) {
       bus.send(projection, GetSubscriptionRequests)
       bus.expectMsgType[SubscriptionRequests](3.seconds)
@@ -76,10 +83,10 @@ class ProjectionDeliverySpec extends CommonSpec {
       bus.send(projection, AggregateWithType[GateNote](noteType, id, AggregateVersion(versions.last), versions.map(AggregateVersion(_)), Some(GateNote(text)), replayed = false))
 
     def acked(id: AggregateId): Seq[Int] =
-      bus.fishForSpecificMessage(3.seconds) { case MessageAck(_, `id`, versions) => versions.map(_.asInt) }
+      bus.fishForSpecificMessage(3.seconds) { case MessageAck(_, `id`, versions, _) => versions.map(_.asInt) }
 
     def failedFor(id: AggregateId): String =
-      bus.fishForSpecificMessage(3.seconds) { case MessageFailed(_, `id`, _, error) => error }
+      bus.fishForSpecificMessage(3.seconds) { case MessageFailed(_, `id`, _, error, _) => error }
 
     def requestedFrom(id: AggregateId): Int =
       bus.fishForSpecificMessage(3.seconds) { case RequestRepublish(_, `noteType`, `id`, from) => from.asInt }
@@ -88,6 +95,13 @@ class ProjectionDeliverySpec extends CommonSpec {
       projection.askActor[Vector[(String, AggregateId, Seq[Int])]](GetApplied)(3.seconds).collect { case (`kind`, id, versions) => (id, versions) }
 
     def status(): ProjectionStatus = projection.askActor[ProjectionStatus](GetProjectionStatus)(3.seconds)
+
+    /** Every answer about the aggregate that arrives within `within`: acknowledgements and failures, in order. */
+    def answers(id: AggregateId, within: FiniteDuration): Seq[String] = bus.receiveWhile(within) {
+      case MessageAck(_, `id`, versions, _) => "ack " + versions.map(_.asInt).mkString(",")
+      case MessageFailed(_, `id`, versions, _, _) => "failed " + versions.map(_.asInt).mkString(",")
+      case _ => "other"
+    }.filterNot(_ == "other")
   }
 
   private def newId(): AggregateId = AggregateId(System.nanoTime())
@@ -139,14 +153,17 @@ class ProjectionDeliverySpec extends CommonSpec {
       f.status().waitingForGap mustBe empty
     }
 
-    Scenario("a request that gets no answer is sent again") {
+    Scenario("a request that gets no answer is sent again, less and less often") {
       val f = new Fixture(ProjectionActorOptions.DEFAULT.copy(gapRequestRepeat = 200.millis))
       val id = newId()
 
       f.events(id, 3)
+      f.requestedFrom(id) mustBe 1
 
-      f.requestedFrom(id) mustBe 1
-      f.requestedFrom(id) mustBe 1
+      // Again after 200 ms, then 400 ms: a busy projection must not ask for the same versions every 200 ms.
+      val again = f.bus.receiveWhile(1100.millis) { case RequestRepublish(_, _, `id`, from) => from.asInt }
+      again.size must (be >= 2 and be <= 3)
+      again.toSet mustBe Set(1)
     }
   }
 
@@ -181,8 +198,8 @@ class ProjectionDeliverySpec extends CommonSpec {
       f.acked(healthy) mustBe Seq(1)
     }
 
-    Scenario("RetryFailedSubscription clears the failure and asks for the failed version again") {
-      val f = new Fixture
+    Scenario("RetryFailedSubscription asks for the failed version again, until it comes, and clears the failure once it is applied") {
+      val f = new Fixture(ProjectionActorOptions.DEFAULT.withRetries(quickRetries).copy(gapRequestRepeat = 200.millis))
       val id = newId()
       f.events(id, 1)
       f.acked(id) mustBe Seq(1)
@@ -193,10 +210,66 @@ class ProjectionDeliverySpec extends CommonSpec {
       f.projection.askActor[FailedSubscriptionsHandled](RetryFailedSubscription(id))(3.seconds) mustBe FailedSubscriptionsHandled(id, 1)
 
       f.requestedFrom(id) mustBe 2
-      f.status().failures mustBe empty
+      f.requestedFrom(id) mustBe 2 // asked again: the first request may not have reached the owner
+      f.state.failures(classOf[RecordingProjection].getName).map(_.aggregateId) mustBe Seq(id)
+
       f.events(id, 2, 3)
       f.acked(id) mustBe Seq(2, 3)
       f.applied("events") mustBe Seq(id -> Seq(1), id -> Seq(2, 3))
+      f.state.failures(classOf[RecordingProjection].getName) mustBe empty
+      f.status().failures mustBe empty
+    }
+
+    Scenario("RetryAllFailedSubscriptions retries every failed aggregate") {
+      val f = new Fixture
+      val (a, b) = (newId(), newId())
+      f.failTimes(a, 3)
+      f.failTimes(b, 3)
+      f.events(a, 1)
+      f.failedFor(a)
+      f.events(b, 1)
+      f.failedFor(b)
+
+      f.projection.askActor[FailedSubscriptionsRetried](RetryAllFailedSubscriptions)(3.seconds) mustBe FailedSubscriptionsRetried(2)
+
+      f.requestedFrom(a) mustBe 1
+      f.requestedFrom(b) mustBe 1
+    }
+
+    Scenario("a delivery covered by a batch that then fails is not acknowledged before the batch is applied") {
+      val f = new Fixture
+      val id = newId()
+      f.failTimes(id, 100)
+
+      f.events(id, 1, 2)
+      f.events(id, 2) // a re-delivery, covered by the first one
+
+      f.answers(id, 1.second) mustBe Seq("failed 1,2", "failed 2")
+    }
+
+    Scenario("a failure that cannot be stored is not answered; the batch is tried again until the failure is stored") {
+      val state = new UnstorableFailures
+      val f = new Fixture(state = state)
+      val id = newId()
+      f.failTimes(id, 1000)
+
+      f.events(id, 1)
+      f.answers(id, 500.millis) mustBe empty
+
+      state.storable = true
+      f.failedFor(id) must include("listener failed")
+      state.failures(classOf[RecordingProjection].getName).map(_.aggregateId) mustBe Seq(id)
+    }
+
+    Scenario("a gap that is never filled ends as a recorded failure") {
+      val f = new Fixture(ProjectionActorOptions.DEFAULT.withRetries(quickRetries).copy(gapRequestRepeat = 100.millis, gapGiveUpAfter = 500.millis))
+      val id = newId()
+
+      f.events(id, 3)
+
+      f.failedFor(id) must include("missing")
+      f.status().failures.map(fl => (fl.aggregateId, fl.version.asInt)) mustBe Seq((id, 1))
+      f.status().waitingForGap mustBe empty
     }
 
     Scenario("SkipFailedVersion marks the failed version as applied and asks for the versions after it") {
@@ -221,7 +294,10 @@ class ProjectionDeliverySpec extends CommonSpec {
 
       val f = new Fixture(state = state)
 
-      f.requestedFrom(id) mustBe 4
+      // From the version after the stored one: this test's state starts at zero; a real one stands at 3, before the failure.
+      f.requestedFrom(id) mustBe 1
+      f.events(id, 1, 2, 3, 4) // the re-publication
+      f.acked(id) mustBe Seq(1, 2, 3, 4)
       state.failures(classOf[RecordingProjection].getName) mustBe empty
     }
   }
@@ -240,8 +316,24 @@ class ProjectionDeliverySpec extends CommonSpec {
       f.applied("events") mustBe Seq(id -> Seq(1, 2, 3))
     }
 
+    Scenario("in parallel mode a gap check while a batch runs does not apply that batch's versions a second time") {
+      val options = ProjectionActorOptions.DEFAULT.withParallelUpdateProcessing(2).withGroupUpdatesDelayMillis(100).copy(gapRequestRepeat = 50.millis)
+      val f = new Fixture(options, slowMillis = 400)
+      val id = newId()
+      f.events(id, 1)
+      f.acked(id)
+
+      f.events(id, 2)
+      f.events(id, 4)
+      Thread.sleep(200) // one drain started the slow batch of 2 and asked for 3
+      f.events(id, 2) // a re-delivery while that batch runs
+
+      Thread.sleep(1000)
+      f.applied("events").filter(_._1 == id).flatMap(_._2) mustBe Seq(1, 2)
+    }
+
     Scenario("in parallel mode each aggregate keeps its order, and a retry waits for its back-off") {
-      val f = new Fixture(ProjectionActorOptions.DEFAULT.withParallelUpdateProcessing(4).withRetries(quickRetries), slow = true)
+      val f = new Fixture(ProjectionActorOptions.DEFAULT.withParallelUpdateProcessing(4).withRetries(quickRetries), slowMillis = 50)
       val (a, b) = (newId(), newId())
       f.failTimes(b, 1)
 

@@ -28,15 +28,31 @@ object EventsBusActor {
   case class PublishReplayedEvents[AGGREGATE_ROOT](aggregateType: AggregateType, events: Seq[EventInfo[AGGREGATE_ROOT]],
                                                    aggregateId: AggregateId, aggregate: Option[AGGREGATE_ROOT])
 
-  /** What one subscriber takes of one aggregate type: its events (`IdentifiableEvents`), its state with the versions
-    * (`AggregateWithType`), or both (`AggregateWithTypeAndEvents`). */
+  /** What a subscription delivers. A subscriber answers per kind: each kind keeps a version of its own, so one kind's
+    * acknowledgement says nothing about another kind of the same subscriber. */
+  sealed trait DeliveryKind
+  /** `IdentifiableEvents` */
+  case object EventsDelivery extends DeliveryKind
+  /** `AggregateWithType` */
+  case object AggregatesDelivery extends DeliveryKind
+  /** `AggregateWithTypeAndEvents` */
+  case object AggregatesWithEventsDelivery extends DeliveryKind
+
+  /** What one subscriber takes of one aggregate type, of one kind. */
   sealed trait SubscribeRequest {
     def aggregateType: AggregateType
     def subscriber: ActorRef
+    def kind: DeliveryKind
   }
-  case class SubscribeForEvents(aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier) extends SubscribeRequest
-  case class SubscribeForAggregates(aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier = AcceptAllAggregateIdClassifier) extends SubscribeRequest
-  case class SubscribeForAggregatesWithEvents(aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier) extends SubscribeRequest
+  case class SubscribeForEvents(aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier) extends SubscribeRequest {
+    def kind: DeliveryKind = EventsDelivery
+  }
+  case class SubscribeForAggregates(aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier = AcceptAllAggregateIdClassifier) extends SubscribeRequest {
+    def kind: DeliveryKind = AggregatesDelivery
+  }
+  case class SubscribeForAggregatesWithEvents(aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier) extends SubscribeRequest {
+    def kind: DeliveryKind = AggregatesWithEventsDelivery
+  }
 
   // Start-up (D15): the host registers its subscribers; the bus asks each for its subscriptions and publishes nothing
   // until all have answered. Command buses register as the publishers of their aggregate type.
@@ -45,18 +61,20 @@ object EventsBusActor {
   case class SubscriptionRequests(requests: Seq[SubscribeRequest])
   case class RegisterPublisher(aggregateType: AggregateType, publisher: ActorRef)
 
-  // From subscribers: a delivery applied (or already applied), a delivery the subscriber gave up on (D20a), or a
-  // request to re-publish from a version, for a gap or a retry (D20c).
-  case class MessageAck(subscriber: ActorRef, aggregateId: AggregateId, versions: Seq[AggregateVersion])
-  case class MessageFailed(subscriber: ActorRef, aggregateId: AggregateId, versions: Seq[AggregateVersion], error: String)
+  // From subscribers: a delivery of one kind applied (or applied before), a delivery the subscriber gave up on (D20a),
+  // or a request to re-publish from a version, for a gap or a retry (D20c).
+  case class MessageAck(subscriber: ActorRef, aggregateId: AggregateId, versions: Seq[AggregateVersion], kind: DeliveryKind)
+  case class MessageFailed(subscriber: ActorRef, aggregateId: AggregateId, versions: Seq[AggregateVersion], error: String, kind: DeliveryKind)
   case class RequestRepublish(subscriber: ActorRef, aggregateType: AggregateType, aggregateId: AggregateId, from: AggregateVersion)
 
   /** From the outbox poller (D8): ask the aggregate's owner to re-publish what waits in its outbox. */
   case class Republish(aggregateType: AggregateType, aggregateId: AggregateId)
 
   case object GetDeliveryStatus
-  case class DeliveryStatus(waiting: Int, undelivered: Seq[Undelivered])
-  case class Undelivered(aggregateType: AggregateType, aggregateId: AggregateId, version: AggregateVersion, subscriber: String, at: Instant)
+  /** `waiting`: deliveries in flight; `undelivered`: the latest ones that ended at the deadline; `stopped`: subscribers
+    * that stopped, whose events stay in the outbox until the next start. */
+  case class DeliveryStatus(waiting: Int, undelivered: Seq[Undelivered], stopped: Seq[String])
+  case class Undelivered(aggregateType: AggregateType, aggregateId: AggregateId, version: AggregateVersion, subscriber: String, kind: DeliveryKind, at: Instant)
 
   object LogDetailedStatus
 
@@ -65,18 +83,20 @@ object EventsBusActor {
 
 /**
   * Timing of the bus. A delivery that is neither acknowledged nor failed by `deadline` ends as undelivered (its outbox
-  * row stays, so a restart delivers it again, D20b); one that waits `stallAfter` is logged once, and stalled deliveries
-  * are summed up every `summaryInterval`. `maxReplayBuffer` bounds the replayed events in flight (back-pressure).
+  * row stays, so a restart delivers it again, D20b); one that waits `stallAfter` is logged once (at most
+  * `stallLinesPerTick` lines per tick), and stalled deliveries are summed up every `summaryInterval`.
+  * `maxReplayBuffer` bounds the replayed events in flight (back-pressure).
   */
 case class DeliveryOptions(deadline: FiniteDuration = 10.minutes,
                            stallAfter: FiniteDuration = 1.minute,
                            summaryInterval: FiniteDuration = 5.minutes,
                            tickInterval: FiniteDuration = 5.seconds,
-                           maxReplayBuffer: Int = 10000)
+                           maxReplayBuffer: Int = 10000,
+                           stallLinesPerTick: Int = 10)
 
 /**
   * Routes events from their owners to the subscribers of their aggregate type and keeps one delivery per event until
-  * every subscriber has acknowledged or failed it (then the owner gets `PublishEventsAck`), the deadline passes, or the
+  * every subscription has acknowledged or failed it (then the owner gets `PublishEventsAck`), the deadline passes, or the
   * subscriber stops. It keeps no cursor (D7): subscribers drop duplicates by version, and re-deliveries come from
   * the owners, asked by the outbox poller (D8) or by a subscriber with a gap (D20c). See docs/design/M2-delivery.md.
   */
@@ -84,15 +104,19 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
 
   private case class EventKey(aggregateId: AggregateId, version: AggregateVersion)
 
-  /** One event's delivery to its subscribers. `publisher` is set for full publications only: a re-publication to one
+  /** One subscription that a delivery waits for. */
+  private case class Target(subscriber: ActorRef, kind: DeliveryKind)
+
+  /** One event's delivery to its subscriptions. `publisher` is set for full publications only: a re-publication to one
     * subscriber never acknowledges the owner, so it cannot delete outbox rows others still wait for. `incomplete`
-    * marks a delivery that some subscriber did not take (deadline, stop): its outbox row must stay. */
-  private case class Delivery(aggregateType: AggregateType, publisher: Option[ActorRef], firstSent: Long, awaiting: Set[ActorRef],
+    * marks a delivery that some subscription did not take (deadline, a stopped subscriber): its outbox row must stay. */
+  private case class Delivery(aggregateType: AggregateType, publisher: Option[ActorRef], firstSent: Long, awaiting: Set[Target],
                               replayed: Boolean, incomplete: Boolean, stallLogged: Boolean)
 
   private val deliveries = mutable.HashMap[EventKey, Delivery]()
   private var subscriptions = Map[AggregateType, Vector[SubscribeRequest]]()
   private var publishers = Map[AggregateType, ActorRef]()
+  private var stopped = Set[ActorRef]()
 
   private var awaitingRegistration = Set[ActorRef]()
   private var registrationRequested = false
@@ -176,8 +200,8 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       publish(sender(), aggregateType, aggregateId, events, aggregate, replayed = false, onlyTo)
     case PublishReplayedEvents(aggregateType, events, aggregateId, aggregate) =>
       publish(sender(), aggregateType, aggregateId, events, aggregate, replayed = true, None)
-    case MessageAck(subscriber, aggregateId, versions) => finish(subscriber, aggregateId, versions, failed = None)
-    case MessageFailed(subscriber, aggregateId, versions, error) => finish(subscriber, aggregateId, versions, failed = Some(error))
+    case MessageAck(subscriber, aggregateId, versions, kind) => finish(Target(subscriber, kind), aggregateId, versions, failed = None)
+    case MessageFailed(subscriber, aggregateId, versions, error, kind) => finish(Target(subscriber, kind), aggregateId, versions, failed = Some(error))
     case RequestRepublish(subscriber, aggregateType, aggregateId, from) =>
       routeToPublisher(aggregateType, RepublishRange(aggregateId, from, subscriber))
     case Republish(aggregateType, aggregateId) => routeToPublisher(aggregateType, RepublishOutbox(aggregateId))
@@ -209,24 +233,28 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
                       events: Seq[EventInfo[Any]], aggregateRoot: Option[Any], replayed: Boolean, onlyTo: Option[ActorRef]): Unit = {
     val now = System.nanoTime()
     val targets = subscriptions.getOrElse(aggregateType, Vector.empty).filter(s => onlyTo.forall(_ == s.subscriber))
+    val (live, ofStopped) = targets.partition(s => !stopped.contains(s.subscriber))
 
-    // A new event goes to every subscriber that accepts it; an event that still waits goes again only to the
-    // subscribers it waits for. A re-publication to one subscriber sends it everything it asked for.
+    // A new event goes to every subscription that accepts it; an event that still waits goes again only to the
+    // subscriptions it waits for. A re-publication to one subscriber sends it everything it asked for.
     def wanted(s: SubscribeRequest, event: EventInfo[Any]): Boolean =
-      accepts(s, aggregateId, event) && (onlyTo.isDefined || deliveries.get(EventKey(aggregateId, event.version)).forall(_.awaiting.contains(s.subscriber)))
+      accepts(s, aggregateId, event) && (onlyTo.isDefined ||
+        deliveries.get(EventKey(aggregateId, event.version)).forall(_.awaiting.contains(Target(s.subscriber, s.kind))))
 
-    val sends = targets.flatMap { s =>
-      val forSubscriber = events.filter(e => wanted(s, e))
-      if (forSubscriber.isEmpty) None else Some(s -> forSubscriber)
+    val sends = live.flatMap { s =>
+      val forSubscription = events.filter(e => wanted(s, e))
+      if (forSubscription.isEmpty) None else Some(s -> forSubscription)
     }
 
     var finished = Vector[(Delivery, EventKey)]()
     events.foreach { event =>
       val key = EventKey(aggregateId, event.version)
       if (!deliveries.contains(key)) {
-        val awaiting = sends.collect { case (s, forSubscriber) if forSubscriber.exists(_.version == event.version) => s.subscriber }.toSet
+        val awaiting = sends.collect { case (s, forSubscription) if forSubscription.exists(_.version == event.version) => Target(s.subscriber, s.kind) }.toSet
+        // A stopped subscriber takes nothing, so its events stay in the outbox until it is back after a restart.
+        val missedByStopped = ofStopped.exists(s => accepts(s, aggregateId, event))
         val delivery = Delivery(aggregateType, if (onlyTo.isEmpty && !replayed) Some(publisher) else None, now, awaiting, replayed,
-          incomplete = false, stallLogged = false)
+          incomplete = missedByStopped, stallLogged = false)
         if (replayed) replayedInFlight += 1
         if (awaiting.isEmpty) finished :+= (delivery -> key) else deliveries += key -> delivery
       }
@@ -235,7 +263,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       orderedMessages -= events.size
     }
 
-    sends.foreach { case (s, forSubscriber) => s.subscriber ! messageFor(s, aggregateType, aggregateId, forSubscriber, aggregateRoot, replayed) }
+    sends.foreach { case (s, forSubscription) => s.subscriber ! messageFor(s, aggregateType, aggregateId, forSubscription, aggregateRoot, replayed) }
     eventsLogger.foreach(_.debug("EventBus publishing " + aggregateId.asLong + ": " + events.map(_.version.asInt).mkString(",") +
       " to " + sends.map(_._1.subscriber.path.name).mkString(", ")))
 
@@ -256,14 +284,14 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     case _: SubscribeForAggregatesWithEvents => AggregateWithTypeAndEvents(aggregateType, aggregateId, aggregateRoot, events, replayed)
   }
 
-  private def finish(subscriber: ActorRef, aggregateId: AggregateId, versions: Seq[AggregateVersion], failed: Option[String]): Unit = {
-    failed.foreach(error => log.warning("Subscriber " + subscriber.path.name + " failed on aggregate " + aggregateId.asLong +
+  private def finish(target: Target, aggregateId: AggregateId, versions: Seq[AggregateVersion], failed: Option[String]): Unit = {
+    failed.foreach(error => log.warning("Subscriber " + target.subscriber.path.name + " failed on aggregate " + aggregateId.asLong +
       " versions " + versions.map(_.asInt).mkString(",") + ": " + error))
     var finished = Vector[(Delivery, EventKey)]()
     versions.foreach { version =>
       val key = EventKey(aggregateId, version)
       deliveries.get(key).foreach { delivery =>
-        val awaiting = delivery.awaiting - subscriber
+        val awaiting = delivery.awaiting - target
         if (awaiting.isEmpty) {
           deliveries -= key
           finished :+= (delivery -> key)
@@ -289,12 +317,14 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     }
   }
 
-  // A subscriber that stops takes no more deliveries: its waiting ones end without an ack, so their outbox rows stay
-  // for the next start, and its subscriptions are dropped so other subscribers keep flowing (D20b).
+  // A subscriber that stops takes no more deliveries: its waiting ones end without an ack, and so do later ones of
+  // its aggregate types, so their outbox rows stay for the next start while the other subscribers keep flowing (D20b).
   private def subscriberStopped(subscriber: ActorRef): Unit = {
-    log.error("Subscriber " + subscriber.path + " stopped; its waiting deliveries stay in the outbox and its subscriptions are dropped")
-    subscriptions = subscriptions.map { case (aggregateType, subs) => aggregateType -> subs.filterNot(_.subscriber == subscriber) }
-    endDeliveriesTo(Set(subscriber), _ => true)
+    if (!stopped.contains(subscriber)) {
+      log.error("Subscriber " + subscriber.path + " stopped; its events stay in the outbox until the next start")
+      stopped += subscriber
+      endDeliveries(_.subscriber == subscriber, _ => true)
+    }
   }
 
   private def checkDeadlines(): Unit = {
@@ -302,40 +332,47 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     val deadline = options.deadline.toNanos
     val expired = deliveries.collect { case (key, delivery) if now - delivery.firstSent >= deadline => key }.toSet
     if (expired.nonEmpty) {
-      deliveries.filter { case (key, _) => expired.contains(key) }.foreach { case (key, delivery) =>
-        delivery.awaiting.foreach { subscriber =>
-          log.error("Undelivered after " + options.deadline + ": " + delivery.aggregateType.simpleName + " " + key.aggregateId.asLong +
-            " version " + key.version.asInt + " to " + subscriber.path.name + "; it stays in the outbox until the next start")
-          undelivered.enqueue(Undelivered(delivery.aggregateType, key.aggregateId, key.version, subscriber.path.name, Instant.now))
-          while (undelivered.size > undeliveredKept) undelivered.dequeue()
-        }
+      val ended = deliveries.toSeq.filter { case (key, _) => expired.contains(key) }
+        .flatMap { case (key, delivery) => delivery.awaiting.toSeq.map(target => (key, delivery, target)) }
+      ended.take(options.stallLinesPerTick).foreach { case (key, delivery, target) =>
+        log.error("Undelivered after " + options.deadline + ": " + delivery.aggregateType.simpleName + " " + key.aggregateId.asLong +
+          " version " + key.version.asInt + " to " + target.subscriber.path.name + " (" + target.kind + "); it stays in the outbox until the next start")
       }
-      endDeliveriesTo(deliveries.values.flatMap(_.awaiting).toSet, key => expired.contains(key))
+      if (ended.size > options.stallLinesPerTick) {
+        log.error((ended.size - options.stallLinesPerTick) + " more deliveries ended undelivered after " + options.deadline)
+      }
+      ended.foreach { case (key, delivery, target) =>
+        undelivered.enqueue(Undelivered(delivery.aggregateType, key.aggregateId, key.version, target.subscriber.path.name, target.kind, Instant.now))
+      }
+      while (undelivered.size > undeliveredKept) undelivered.dequeue()
+      endDeliveries(_ => true, key => expired.contains(key))
     }
 
+    // One line per stalled delivery, at most a few per tick: under overload the summary says the rest.
     val stallAfter = options.stallAfter.toNanos
-    deliveries.toSeq.foreach { case (key, delivery) =>
-      if (!delivery.stallLogged && now - delivery.firstSent >= stallAfter) {
-        log.warning("Delivery waits for " + options.stallAfter + ": " + delivery.aggregateType.simpleName + " " + key.aggregateId.asLong +
-          " version " + key.version.asInt + " to " + delivery.awaiting.map(_.path.name).mkString(", "))
+    deliveries.toSeq.filter { case (_, delivery) => !delivery.stallLogged && now - delivery.firstSent >= stallAfter }
+      .zipWithIndex.foreach { case ((key, delivery), index) =>
+        if (index < options.stallLinesPerTick) {
+          log.warning("Delivery waits for " + options.stallAfter + ": " + delivery.aggregateType.simpleName + " " + key.aggregateId.asLong +
+            " version " + key.version.asInt + " to " + delivery.awaiting.map(t => t.subscriber.path.name + " (" + t.kind + ")").mkString(", "))
+        }
         deliveries += key -> delivery.copy(stallLogged = true)
       }
-    }
     if (now - lastSummary >= options.summaryInterval.toNanos) {
       lastSummary = now
       val stalled = deliveries.values.filter(d => now - d.firstSent >= stallAfter).toSeq
       if (stalled.nonEmpty) {
         log.warning(stalled.size + " deliveries wait longer than " + options.stallAfter + ", by subscriber: " +
-          stalled.flatMap(_.awaiting).groupBy(_.path.name).map { case (name, waits) => name + " " + waits.size }.mkString(", "))
+          stalled.flatMap(_.awaiting).groupBy(_.subscriber.path.name).map { case (name, waits) => name + " " + waits.size }.mkString(", "))
       }
     }
   }
 
-  private def endDeliveriesTo(subscribers: Set[ActorRef], selected: EventKey => Boolean): Unit = {
+  private def endDeliveries(target: Target => Boolean, selected: EventKey => Boolean): Unit = {
     var finished = Vector[(Delivery, EventKey)]()
     deliveries.toSeq.foreach { case (key, delivery) =>
-      if (selected(key) && delivery.awaiting.exists(subscribers.contains)) {
-        val awaiting = delivery.awaiting -- subscribers
+      if (selected(key) && delivery.awaiting.exists(target)) {
+        val awaiting = delivery.awaiting.filterNot(target)
         val ended = delivery.copy(awaiting = awaiting, incomplete = true)
         if (awaiting.isEmpty) {
           deliveries -= key
@@ -349,7 +386,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     orderMoreMessagesToConsume()
   }
 
-  private def status: DeliveryStatus = DeliveryStatus(deliveries.size, undelivered.toList)
+  private def status: DeliveryStatus = DeliveryStatus(deliveries.size, undelivered.toList, stopped.toSeq.map(_.path.name).sorted)
 
   private def orderMoreMessagesToConsume(): Unit = {
     if (backPressureProducerActor.isDefined && replayedInFlight + orderedMessages < options.maxReplayBuffer) {

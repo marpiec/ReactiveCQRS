@@ -73,7 +73,7 @@ class PermanentDeleteSpec extends CommonSpec {
     def delivered(memoId: AggregateId): Seq[Int] =
       subscriber.fishForSpecificMessage(10.seconds) { case e: IdentifiableEvents[_] if e.aggregateId == memoId => e.events.map(_.version.asInt) }
 
-    def ack(memoId: AggregateId, versions: Int*): Unit = bus ! MessageAck(subscriber.ref, memoId, versions.map(AggregateVersion(_)))
+    def ack(memoId: AggregateId, versions: Int*): Unit = bus ! MessageAck(subscriber.ref, memoId, versions.map(AggregateVersion(_)), EventsDelivery)
   }
 
   private def storedVersions(memoId: AggregateId): Seq[Int] =

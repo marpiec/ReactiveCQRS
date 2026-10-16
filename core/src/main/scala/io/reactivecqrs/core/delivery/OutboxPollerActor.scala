@@ -36,6 +36,7 @@ class OutboxPollerActor(eventStore: EventStoreState, eventBus: ActorRef, options
   import context.dispatcher
 
   private val startedAt = clock.instant()
+  private val maxLinesPerPoll = 10
   private var memory = Map[AggregateId, RedeliveryPolicy.Tracked]()
 
   private val polls = context.system.scheduler.scheduleWithFixedDelay(options.firstPollAfter, options.pollInterval, self, Poll)
@@ -52,8 +53,12 @@ class OutboxPollerActor(eventStore: EventStoreState, eventBus: ActorRef, options
     case Success(waiting) =>
       val decision = RedeliveryPolicy.decide(waiting, memory, startedAt, clock.instant(), options.redelivery)
       decision.republish.foreach(w => eventBus ! Republish(w.aggregateType, w.aggregateId))
-      decision.gaveUp.foreach(w => log.error("Undelivered: " + w.aggregateType.simpleName + " " + w.aggregateId.asLong + " from version " +
-        w.oldestVersion.asInt + " still waits in the outbox after " + options.redelivery.giveUpAfter + "; it is re-published again at the next start"))
+      // A few lines per poll; under overload the count says the rest (GetOutboxStatus lists them all).
+      decision.gaveUp.take(maxLinesPerPoll).foreach(w => log.error("Undelivered: " + w.aggregateType.simpleName + " " + w.aggregateId.asLong +
+        " from version " + w.oldestVersion.asInt + " still waits in the outbox after " + options.redelivery.giveUpAfter + "; it is re-published again at the next start"))
+      if (decision.gaveUp.size > maxLinesPerPoll) {
+        log.error((decision.gaveUp.size - maxLinesPerPoll) + " more aggregates are undelivered after " + options.redelivery.giveUpAfter)
+      }
       memory = decision.memory
     case Failure(e) =>
       log.error(e, "Reading the outbox failed; the next poll tries again in " + options.pollInterval)

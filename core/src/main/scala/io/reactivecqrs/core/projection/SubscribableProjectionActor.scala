@@ -24,6 +24,8 @@ object SubscribableProjectionActor {
   case class SubscriptionUpdated[UPDATE](subscriptionId: String, data: UPDATE)
 
   case object ClearIdleSubscriptions
+
+  private case class SendUpdate(update: Any, typeName: String)
 }
 
 case class UpdateCacheEntry(arrived: Instant, value: Any)
@@ -40,6 +42,7 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
       sender() ! ProjectionSubscriptionsCancelled(subscriptionsToCancel)
     case RenewSubscription(subscriptionId) => renewSubscription(subscriptionId)
     case ClearIdleSubscriptions => clearIdleSubscriptions()
+    case SendUpdate(u, typeName) => deliverUpdate(u, typeName)
   }
 
   override protected def receiveUpdate = super.receiveUpdate orElse receiveSubscription
@@ -83,7 +86,11 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
     }
   }
 
-  protected def sendUpdate[DATA: TypeTag](u: DATA) = {
+  // Listeners call this, and in parallel mode they run on pool threads: the update reaches the subscriptions through a
+  // message, so the subscription maps are only touched on the actor's thread.
+  protected def sendUpdate[DATA: TypeTag](u: DATA): Unit = self ! SendUpdate(u, typeTag[DATA].toString())
+
+  private def deliverUpdate(u: Any, typeName: String): Unit = {
     try {
       if(updatesCacheTTL != Duration.ZERO) {
         updatesCache += UpdateCacheEntry(Instant.now(), u)
@@ -93,7 +100,7 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
 
       // Find subscriptions for given type
       //TODO what to do if subscriptions.get returns none?
-      subscriptionsPerType.getOrElse(typeTag[DATA].toString(), List.empty).filter(s => {
+      subscriptionsPerType.getOrElse(typeName, List.empty).filter(s => {
         if(subscriptions.contains(s)) {
           true
         } else {
@@ -101,7 +108,7 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
           false
         }
       }).map(subscriptions) foreach { subscription =>
-        val result = subscription.acceptor.asInstanceOf[DATA => Option[_]](u) // and translate data to message for subscriber
+        val result = subscription.acceptor.asInstanceOf[Any => Option[_]](u) // and translate data to message for subscriber
         result.foreach(r => subscription.listener ! SubscriptionUpdated(subscription.subscriptionId, r))// and send message if not None
       }
     } catch {

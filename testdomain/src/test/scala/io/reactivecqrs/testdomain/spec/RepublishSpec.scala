@@ -9,7 +9,7 @@ import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.core.commandhandler.{Idempotency, MemoryCommandResponseState}
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
-import io.reactivecqrs.core.eventbus.EventsBusActor.PublishEvents
+import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.testdomain.shoppingcart._
@@ -42,9 +42,9 @@ class RepublishSpec extends CommonSpec {
     cartId
   }
 
-  private def ownerOf(cartId: AggregateId, eventBus: TestProbe): ActorRef = system.actorOf(Props(new AggregateRepositoryActor[ShoppingCart](
+  private def ownerOf(cartId: AggregateId, eventBus: TestProbe, maxRepublishEvents: Int = 1000): ActorRef = system.actorOf(Props(new AggregateRepositoryActor[ShoppingCart](
     cartId, eventStore, new Idempotency(new MemoryCommandResponseState), eventBus.ref, context.eventHandlers, () => context.initialAggregateRoot,
-    None, Map.empty, Map.empty, 5.seconds)))
+    None, Map.empty, Map.empty, 5.seconds, maxRepublishEvents)))
 
   private def published(eventBus: TestProbe): PublishEvents[ShoppingCart] =
     eventBus.expectMsgType[PublishEvents[ShoppingCart]](5.seconds)
@@ -63,6 +63,19 @@ class RepublishSpec extends CommonSpec {
       publication.events.map(_.event) mustBe Seq(ItemAdded("apple"), ItemAdded("pear"))
       publication.aggregate.get.items.map(_.name) mustBe Vector("apple", "pear")
       publication.onlyTo mustBe None
+    }
+
+    Scenario("sends a long range in parts, the next one when the previous one is acknowledged") {
+      val cartId = storedCart()
+      val eventBus = TestProbe()
+      val owner = ownerOf(cartId, eventBus, maxRepublishEvents = 2)
+
+      owner ! RepublishOutbox(cartId)
+      published(eventBus).events.map(_.version.asInt) mustBe Seq(1, 2)
+      eventBus.expectNoMessage(300.millis)
+
+      owner ! PublishEventsAck(cartId, Seq(AggregateVersion(1), AggregateVersion(2)))
+      published(eventBus).events.map(_.version.asInt) mustBe Seq(3)
     }
 
     Scenario("sends nothing when nothing waits") {
@@ -88,6 +101,17 @@ class RepublishSpec extends CommonSpec {
       val publication = published(eventBus)
       publication.events.map(_.version.asInt) mustBe Seq(2, 3)
       publication.onlyTo mustBe Some(subscriber.ref)
+    }
+
+    Scenario("sends a long range in parts: the subscriber asks for the next one") {
+      val cartId = storedCart()
+      val eventBus = TestProbe()
+      val subscriber = TestProbe()
+
+      ownerOf(cartId, eventBus, maxRepublishEvents = 2) ! RepublishRange(cartId, AggregateVersion(1), subscriber.ref)
+
+      published(eventBus).events.map(_.version.asInt) mustBe Seq(1, 2)
+      eventBus.expectNoMessage(300.millis)
     }
 
     Scenario("sends nothing for a version the aggregate has not reached") {

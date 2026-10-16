@@ -93,25 +93,29 @@ class MemorySubscriptionsState extends SubscriptionsState {
 
   private val failuresState = new mutable.LinkedHashMap[(String, SubscriptionType, AggregateId), SubscriptionFailure]()
 
-  override def clearSubscriptionsInfo(subscriberName: String): Unit = {
+  override def clearSubscriptionsInfo(subscriberName: String): Unit = synchronized {
     state --= state.keys.filter(_.subscriberName == subscriberName)
     failuresState --= failuresState.keys.filter(_._1 == subscriberName)
   }
 
-  override def recordFailure(subscriberName: String, failure: SubscriptionFailure): Unit =
+  override def recordFailure(subscriberName: String, failure: SubscriptionFailure): Unit = synchronized {
     failuresState += (subscriberName, failure.subscriptionType, failure.aggregateId) -> failure
+  }
 
-  override def failures(subscriberName: String): Seq[SubscriptionFailure] =
+  override def failures(subscriberName: String): Seq[SubscriptionFailure] = synchronized {
     failuresState.collect { case ((subscriber, _, _), failure) if subscriber == subscriberName => failure }.toSeq
+  }
 
-  override def clearFailure(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId)(implicit session: DBSession): Unit =
+  override def clearFailure(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId)(implicit session: DBSession): Unit = synchronized {
     failuresState -= ((subscriberName, subscriptionType, aggregateId))
+  }
 
   override def readOnly[A](block: DBSession => A): A = block(NoSession)
   override def localTx[A](block: DBSession => A): A = block(NoSession)
   override def autoCommit[A](block: DBSession => A): A = block(NoSession)
 
-  private def eventsCount(subscriberName: String, aggregateId: AggregateId, subscriptionType: SubscriptionType): AggregateVersion = {
+  // Locked: projections in parallel mode call it from their pool threads.
+  private def eventsCount(subscriberName: String, aggregateId: AggregateId, subscriptionType: SubscriptionType): AggregateVersion = synchronized {
     val key = SubscriptionsKey(subscriberName, subscriptionType, aggregateId)
     state.getOrElse(key, {
        state += key -> AggregateVersion.ZERO
@@ -121,7 +125,7 @@ class MemorySubscriptionsState extends SubscriptionsState {
 
   // Same contract as PostgresSubscriptionsState: an unknown subscription is at version zero, and a
   // stale expected version throws, so callers roll back the listener's work.
-  private def newEventId(subscriberName: String, aggregateId: AggregateId, subscriptionType: SubscriptionType, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit = {
+  private def newEventId(subscriberName: String, aggregateId: AggregateId, subscriptionType: SubscriptionType, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit = synchronized {
     val key = SubscriptionsKey(subscriberName, subscriptionType, aggregateId)
     val current = state.getOrElse(key, AggregateVersion.ZERO)
     if (current == lastAggregateVersion) {
@@ -357,9 +361,11 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
           synchronized(perAggregate.remove(aggregateId))
           throw e
       }
+      // Into the aggregate's cached versions as they are now: if they were dropped meanwhile, the next read loads the
+      // committed version anyway.
       AfterCommit(session) {
         synchronized {
-          versions += key -> aggregateVersion
+          Option(perAggregate.get(aggregateId)).foreach(_ += key -> aggregateVersion)
         }
       }
     }

@@ -431,8 +431,9 @@ Lifecycle of one event:
 3. When every subscriber has acknowledged or failed it, the bus sends the owner
    `PublishEventsAck(aggregateId, versions)`.
 4. The owner hands the versions to `EventStoreState.deletePublished`; the PostgreSQL store
-   deletes the rows of many acknowledgements in one statement, on one background thread, at
-   most 20 ms late (`OutboxDeletes`, F26). A failed delete is logged and only means a later,
+   deletes the rows of many acknowledgements in one statement (two arrays through `unnest`, up
+   to 5 000 rows), on one background thread shared by every store, at most 20 ms late
+   (`OutboxDeletes`, F26, F91). A failed delete is logged and only means a later,
    harmless re-publication. A `PermanentDeleteEvent`'s acknowledgement deletes the whole
    aggregate instead (§4.5).
 
@@ -452,7 +453,11 @@ to the bus, which passes `RepublishOutbox(id)` to the type's command bus (regist
 `RegisterPublisher`), which passes it to the owner (creating it if needed; re-publications
 count as activity for reaping). The owner re-publishes from its oldest outbox version to its
 current version, with its current state, so a state-receiving subscriber always gets a
-consistent range. `GetOutboxStatus` reports the waiting and the given-up aggregates.
+consistent range. A range longer than 1 000 events goes in parts (F83): the owner sends the
+next part of its outbox when the bus acknowledges the previous one, and a subscriber filling a
+gap asks for each next part itself; parts before the last carry the current state too.
+`GetOutboxStatus` reports the waiting and the given-up aggregates; the log names at most 10 of
+them per poll.
 
 ### 5.2 `EventsBusActor`
 
@@ -473,16 +478,21 @@ subscriber that stops before answering is dropped. Subscriptions are fixed after
 accept-all classifiers.
 
 **Deliveries (D7, D20b).** The bus keeps no cursor. It keeps one delivery per event with the
-subscribers it waits for, and ends it when each has answered `MessageAck` or `MessageFailed`,
-when the deadline passes (10 minutes: "undelivered", no ack, logged and listed by
-`GetDeliveryStatus`), or when the subscriber stops (watched; its subscriptions are dropped).
+subscriptions it waits for, one per (subscriber, `DeliveryKind`): a projection with an events
+listener and a state listener of one type answers for each kind (F84). A delivery ends when
+each has answered `MessageAck` or `MessageFailed` (both carry the kind), when the deadline
+passes (10 minutes: "undelivered", no ack, logged and listed by `GetDeliveryStatus`), or when
+the subscriber stops (watched). A stopped subscriber keeps its subscriptions, marked stopped:
+the deliveries it would take end without an owner ack, so their rows stay in the outbox
+until the next start (F87); `DeliveryStatus.stopped` lists it.
 Only a delivery ended by acks and failures acknowledges the owner, grouped per owner and
 aggregate; one ended by the deadline or a stop keeps its outbox rows. An event published
 again while its delivery waits goes only to the subscribers it waits for. A re-publication
 to one subscriber (`PublishEvents(onlyTo = Some(s))`) never acknowledges the owner, so it
 cannot delete rows that others still wait for. Events nobody subscribed to are acknowledged
-at once. A delivery waiting longer than a minute is logged once, and waiting deliveries are
-summed up every 5 minutes. Timers are `Tick` messages to the bus (F79).
+at once. A delivery waiting longer than a minute is logged once (at most 10 lines per tick),
+and waiting deliveries are summed up every 5 minutes (F92). Timers are `Tick` messages to the
+bus (F79).
 
 **Re-publish requests.** `RequestRepublish(subscriber, type, id, from)` from a subscriber
 with a gap or a retry goes to the type's command bus as `RepublishRange(id, from,
@@ -503,7 +513,10 @@ in flight.
 - **In order per aggregate on the live path** (one owner per aggregate, Pekko's per-sender
   ordering).
 - **Applied exactly once** by `ProjectionActor`, through the sequence gate on the stored
-  subscription version (§6.3); a gap is asked from the owner.
+  subscription version (§6.3); a gap is asked from the owner. A `noDBSession` listener runs
+  before its version is written, so it sees a batch again if that write fails: at least once.
+- **No back-pressure on the live path** (F93): when commands come faster than a projection
+  applies them, its mailbox and the bus's deliveries grow with the lag.
 - A delivery that nobody answers ends at the deadline; the poller tries again at the next
   start.
 
@@ -551,36 +564,44 @@ Renaming or moving the class resets the projection's progress.
 
 Since M2 every delivery goes through one path (`receiveDelivery`, `drain`, `afterBatch`).
 Deliveries are queued per **(listener kind, aggregate)**; a queue exists only while it has
-work and is removed when idle (F15). Draining a queue, with `applied` the subscription's
-stored version:
+work and is removed when idle (F15). Acknowledgements and failures carry the kind (F84).
+Draining a queue, with `applied` the subscription's stored version:
 
-1. The waiting deliveries are taken in the order of their first versions, and the
-   `SequenceGate` (D4) decides for each against the running version: **already applied**
-   → acknowledged at once; **apply from–to** → its new versions join one batch (a partly
-   applied delivery adds only its new part, F5); **gap** → it and everything after it wait.
+1. The waiting deliveries are taken in the order of their first versions. One at or below
+   `applied` is acknowledged at once. For the others the `SequenceGate` (D4) decides against
+   the running version: **apply from–to** → its new versions join one batch (a partly
+   applied delivery adds only its new part, F5); **already applied** (all its versions lie
+   in the batch) → it is acknowledged with the batch (F86); **gap** → it and everything after
+   it wait.
 2. The batch runs `listener(...)` and `newVersionFor…(className, id, applied, to)` in one
    `localTx` (a `noDBSession` listener runs first, then the version is written in
    `autoCommit`). State-receiving listeners get the state of the delivery holding the last
-   version, and `created` when the batch starts at version 1. On success every delivery in
-   the batch is acknowledged with all its versions.
-3. A gap is asked from the owner: `RequestRepublish(self, type, id, from)` to the bus, again
-   every `gapRequestRepeat` (10 s) while it lasts, however many deliveries arrive meanwhile.
-   The re-publication arrives as a normal delivery; the waiting ones then become already
-   applied (D20c, F45).
+   version, and `created` when the batch starts at version 1. On success every delivery of
+   the batch is acknowledged with all its versions. One batch per queue runs at a time; in
+   parallel mode a scheduled drain during a batch is left to the batch's end (F89).
+3. A gap is asked from the owner: `RequestRepublish(self, type, id, from)` to the bus. An
+   unanswered request is repeated after `gapRequestRepeat` (10 s), doubling up to 5 minutes,
+   however many deliveries arrive meanwhile (F83); a long gap comes in parts of 1 000 events,
+   each next part asked at once. The re-publication arrives as a normal delivery; the waiting
+   ones then become already applied (D20c, F45). A gap still open after `gapGiveUpAfter`
+   (10 minutes) is recorded as a failure at its first version (F90).
 4. A batch that throws is retried with `options.retries` (`Backoff` 1 s doubling to 30 s,
    nine attempts, about two minutes); deliveries arriving meanwhile wait. After the last
    attempt the failure is recorded in `subscription_failures` (first version not applied,
-   error, since), the waiting deliveries and every later one of that aggregate and kind are
-   answered `MessageFailed`, and other aggregates keep flowing (D20a, R1).
+   error, since); only then are the waiting deliveries and every later one of that aggregate
+   and kind answered `MessageFailed`, and other aggregates keep flowing (D20a, R1). While the
+   failure cannot be stored, nothing is answered and the batch is tried again every 30 s (F85).
 5. A store that cannot be read (the version) is retried every 30 s without becoming a
    failure.
 
 **Failed subscriptions** (D20a). `GetProjectionStatus` → `ProjectionStatus(name, failures,
-retrying, waitingForGap)`. `RetryFailedSubscription(id)` clears the aggregate's failures and
-asks the owner for each failed version again; `SkipFailedVersion(id)` marks each failed
-version as applied without applying it and asks for the versions after it; both answer
-`FailedSubscriptionsHandled(id, count)`. Failures recorded before a start are loaded when
-the bus registers the projection and retried one per second (`retryFailuresOnStart`).
+retrying, waitingForGap)`. `RetryFailedSubscription(id)` asks the owner for each failed
+version again, repeated like a gap, and clears the failure once a batch reaches that version
+(F88); `RetryAllFailedSubscriptions` does it for every failure, 20 per second
+(`failureRetryInterval`); `SkipFailedVersion(id)` marks each failed version as applied without
+applying it and asks once for the versions after it. Failures recorded before a start are
+loaded when the bus registers the projection and retried the same way
+(`retryFailuresOnStart`).
 
 **Failures of the actor itself** (AR7, F80). A message the projection fails on, a query
 included, is answered with `Status.Failure` and never rethrown, so the actor keeps its
@@ -596,8 +617,10 @@ queues. The parallel pool is shut down when the actor stops.
 | `parallelUpdateProcessing` | 0 | when > 1, batches run on a fixed pool of that many threads, one batch per queue at a time, so each aggregate keeps its order. Listeners must be thread-safe; the connection pool must have at least that many connections |
 | `eventsLogger` | None | verbose per-delivery debug logging |
 | `retries` | `Backoff(1 s, 30 s, 9 attempts)` | the retries of a failing batch before the failure is recorded (D20a) |
-| `retryFailuresOnStart` | true | retry the recorded failures at start, one per second |
-| `gapRequestRepeat` | 10 s | how long a request for missing versions waits before it is sent again |
+| `retryFailuresOnStart` | true | retry the recorded failures at start, 20 per second |
+| `gapRequestRepeat` | 10 s | how long a request for missing versions waits before it is sent again, doubling up to 5 minutes |
+| `gapGiveUpAfter` | 10 minutes | how long missing versions are asked for before the gap is recorded as a failure |
+| `failureRetryInterval` | 50 ms | the pace of retrying many failures (at start, `RetryAllFailedSubscriptions`) |
 
 ### 6.5 Delayed queries (read-your-writes for queries)
 

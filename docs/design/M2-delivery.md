@@ -1,8 +1,17 @@
 # M2 design: the delivery module
 
 How milestone M2 implements the delivery decisions (D3, D4, D7, D8, D15, D20a–c of
-`KNOWN-ISSUES.md`). Written before the work, 16/10/2026; `ARCHITECTURE.md` describes the
-result once it is built.
+`KNOWN-ISSUES.md`). Written before the work, 16/10/2026; `ARCHITECTURE.md` §5–§7 describes the
+result.
+
+**Built as designed, with these differences** (16/10/2026, M2 close): the owner's targeted
+re-publish message is `RepublishRange(id, from, subscriber)`; subscription failures are kept
+in a table of their own, `subscription_failures`, not in new columns of `subscriptions`; the
+PostgreSQL store deletes delivered outbox rows in batches (one statement for many acks); the
+poller re-publishes at most 1 000 aggregates per poll, the longest waiting first; re-publications
+go in parts of 1 000 events; a delivery waits for each (subscriber, kind), and a stopped subscriber
+keeps its subscriptions (its events stay in the outbox); a retry is repeated until applied; a gap
+open for 10 minutes becomes a recorded failure (review 4, KNOWN-ISSUES F83–F90).
 
 ## Contract (D3)
 
@@ -26,7 +35,7 @@ bounded, visible and repairable; delivery bookkeeping returns to zero when idle.
 ## Flows
 
 **Live publication.** After commit the owner publishes the new events with its state. The bus
-records one delivery per (event, subscriber) and sends each subscriber one message per kind
+records one delivery per (event, subscription: subscriber and kind) and sends each subscriber one message per kind
 (`IdentifiableEvents`, `AggregateWithType`, `AggregateWithTypeAndEvents`, unchanged). A
 subscriber's `MessageAck` or `MessageFailed` ends its deliveries; when all deliveries of an event
 have ended by ack or failure, the bus sends the owner `PublishEventsAck`, and the owner deletes

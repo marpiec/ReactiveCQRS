@@ -41,7 +41,8 @@ object Baseline {
                     soakAggregates: Int = 20000,
                     soakEventsPerAggregate: Int = 10,
                     soakFailingSeconds: Int = 30,
-                    restartCycles: Int = 5)
+                    restartCycles: Int = 5,
+                    scenarios: Set[String] = Set.empty)
 
   private def configFrom(arguments: Seq[String]): Config = {
     val named = arguments.map(_.split("=", 2)).collect { case Array(key, value) => key -> value }.toMap
@@ -53,7 +54,8 @@ object Baseline {
       named.get("restoreSizes").map(_.split(",").toSeq.map(_.trim.toInt)).getOrElse(defaults.restoreSizes),
       int("soakSeconds", defaults.soakSeconds), int("soakAggregates", defaults.soakAggregates),
       int("soakEventsPerAggregate", defaults.soakEventsPerAggregate), int("soakFailingSeconds", defaults.soakFailingSeconds),
-      int("restartCycles", defaults.restartCycles))
+      int("restartCycles", defaults.restartCycles),
+      named.get("scenarios").map(_.split(",").map(_.trim).toSet).getOrElse(defaults.scenarios))
   }
 
   private val userId = UserId(1)
@@ -70,19 +72,23 @@ object Baseline {
       val stores = new BenchStores
       report.environment(DatabaseCounters.serverVersion())
 
-      val withProjections = startup(stores, report)
-      commandsOnManyAggregates("Commands on many aggregates, two projections", withProjections, config, report, projections = true)
-      withProjections.shutdown()
-
-      val plain = new BenchSystem("plain", stores, projections = false)
-      commandsOnManyAggregates("Commands on many aggregates, no subscribers", plain, config, report, projections = false)
-      commandsOnOneAggregate(plain, config, report)
-      plain.shutdown()
-
-      rebuild(stores, config, report)
-      restore(stores, config, report)
-      soak(stores, config, report)
-      deliverySoak(stores, config, report)
+      // `scenarios=commands,contended,rebuild,restore,soak,deliverySoak` runs only those; all by default.
+      def runs(scenario: String): Boolean = config.scenarios.isEmpty || config.scenarios.contains(scenario)
+      if (runs("commands")) {
+        val withProjections = startup(stores, report)
+        commandsOnManyAggregates("Commands on many aggregates, two projections", withProjections, config, report, projections = true)
+        shutdownDelivered(withProjections)
+      }
+      if (runs("commands") || runs("contended")) {
+        val plain = new BenchSystem("plain", stores, projections = false)
+        if (runs("commands")) commandsOnManyAggregates("Commands on many aggregates, no subscribers", plain, config, report, projections = false)
+        if (runs("contended")) commandsOnOneAggregate(plain, config, report)
+        plain.shutdown()
+      }
+      if (runs("rebuild")) rebuild(stores, config, report)
+      if (runs("restore")) restore(stores, config, report)
+      if (runs("soak")) soak(stores, config, report)
+      if (runs("deliverySoak")) deliverySoak(stores, config, report)
     } finally {
       BenchDatabase.drop()
     }
@@ -245,7 +251,7 @@ object Baseline {
     val heapAfterLoad = Heap.usedAfterGc()
     Thread.sleep(20000)
     val heapIdle = Heap.usedAfterGc()
-    system.shutdown()
+    shutdownDelivered(system)
     report.section("Memory over a soak run", Seq("Measure", "Value"), Seq(
       Seq("load", s"${sent.get} commands in ${config.soakSeconds} s from ${config.workers} callers, two projections" + (if (caughtUp.isEmpty) "; projections did not catch up within 120 s" else "")),
       Seq("heap after GC: before / after the load / after 20 s idle", s"${Heap.mb(heapStart)} / ${Heap.mb(heapAfterLoad)} / ${Heap.mb(heapIdle)}")),
@@ -303,6 +309,13 @@ object Baseline {
   }
 
   // ---- helpers ----
+
+  /** Stops a system once every subscriber has taken its events, so a later scenario's outbox poller finds nothing of it
+    * to re-publish. */
+  private def shutdownDelivered(system: BenchSystem): Unit = {
+    awaitUntil(5.minutes)(rows("events_to_publish") == 0)
+    system.shutdown()
+  }
 
   /** Writes an aggregate's history straight to the event store, as already published: each batch removes its outbox rows in
     * its own transaction, so no outbox scan starts an actor for the aggregate while it is being written. */
