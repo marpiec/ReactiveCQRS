@@ -664,3 +664,10 @@ Open test-infrastructure items:
   microseconds, and the store writes it instead of its own `Instant.now`. Test:
   `EventStoreStateSpec` (both stores). New follow-up F65 (time zone of `event_time`).
 - `sbt test`: 50 of 51 pass; the failure is still the F4 reproduction (`EventsReplaySpec`).
+
+**16/10/2026: F19 and F24**
+- The repository actor reloads when a command expects a newer version and after an SQL
+  conflict; concurrent commands retry with jittered back-off, at most 10 times (D37). The test
+  domain gains `AddItemConcurrently`, its first `ConcurrentCommand`. Test:
+  `ConcurrentModificationSpec`, with an event store that writes behind the actor's back.
+- `sbt test`: 53 of 54 pass; the failure is still the F4 reproduction.

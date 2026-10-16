@@ -334,7 +334,8 @@ implementation plan.
 - **Fix:** stop after replying.
 
 #### F19 — Stale aggregate after an external write; concurrent commands spin until timeout
-- **Medium**, likely (High in a cluster) · Fix in **M1** · `AggregateRepositoryActor`, `CommandExecutorActor`
+- **Medium**, confirmed (High in a cluster) · **Fixed in M1** (16/10/2026) · `AggregateRepositoryActor`, `CommandExecutorActor`
+- **Fix:** the repository actor reloads from the store when asked for a version newer than its own, and after an SQL concurrent-modification error. Test: `ConcurrentModificationSpec` (an external write followed by a concurrent command, or by a command expecting the new version, now succeeds; both failed before the fix).
 - **Symptom:** after another node, a rewrite or an SQL repair writes the aggregate, every `ConcurrentCommand` conflicts until the 60 s executor timeout (Neula J6).
 - **Root cause:** the SQL conflict is answered with the in-memory version, never reloaded (`AggregateRepositoryActor.scala:300-307`); the executor re-asks the same stale actor without limit (`CommandExecutorActor.scala:78-85`).
 - **Test:** external write, then a command on the same aggregate succeeds (Neula R4).
@@ -345,7 +346,8 @@ implementation plan.
 - **Fix:** D56 (R5): configurable timeout and an explicit error reply.
 
 #### F24 — Concurrent-command retry storm
-- **Medium**, likely · Fix in **M1** · `CommandExecutorActor`
+- **Medium**, confirmed · **Fixed in M1** (16/10/2026) · `CommandExecutorActor`
+- **Fix:** D37: re-runs after a conflict wait with jittered exponential back-off (10–500 ms) and stop after 10 attempts with `AggregateConcurrentModificationError`. Test: `ConcurrentModificationSpec` "gives up …" (timed out after 10 s before the fix).
 - **Root cause:** unlimited retries without back-off (`CommandExecutorActor.scala:78-85`); handler CPU about N²/2 under a burst of N (estimate).
 - **Fix:** D37; serial mode (D31) for contexts that opt in.
 
@@ -581,7 +583,7 @@ From §7 of Neula's change requests.
 
 | Milestone | Issues |
 |---|---|
-| M1 | F7 ✔, F9, F10, F12, F13, F14 ✔, F16 ✔, F17, F18 ✔, F19, F20, F21 ✔, F24, F34, F35, F36, F40, F64; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
+| M1 | F7 ✔, F9, F10, F12, F13, F14 ✔, F16 ✔, F17, F18 ✔, F19 ✔, F20, F21 ✔, F24 ✔, F34, F35, F36, F40, F64; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
 | M2 | F1, F2, F4, F5, F6, F11, F15, F26, F28, F29, F37, F41, F42, F45, F47; Neula H2 |
 | M3 | F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33, F38, F39, F43, F44, F65 |
 | M4 | F3, F54, F55, F56, F57, F58, F59, F60, F61, F62; Neula H1, H6 |

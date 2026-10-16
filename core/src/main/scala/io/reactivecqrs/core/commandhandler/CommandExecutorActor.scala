@@ -13,6 +13,7 @@ import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.Aggrega
 import io.reactivecqrs.core.util.RandomUtil
 
 import java.lang.Exception
+import java.util.concurrent.ThreadLocalRandom
 import scala.concurrent.duration._
 import scala.concurrent.duration.FiniteDuration
 import scala.util.{Failure, Success}
@@ -37,6 +38,16 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
   // The single timestamp of the persisted events (F7). PostgreSQL keeps microseconds, so the live path uses
   // exactly the value a restore will read back.
   private def eventsTimestamp(): Instant = Instant.now.truncatedTo(ChronoUnit.MICROS)
+
+  // A concurrent command is re-run on the latest state after a conflict, a bounded number of times (D37, F24).
+  private val MaxConcurrentAttempts = 10
+  private var concurrentAttempt = 0
+
+  /** Exponential back-off from 10 ms up to 500 ms, with jitter so competing commands spread out. */
+  private def retryDelay(attempt: Int): FiniteDuration = {
+    val ceilingMillis = math.min(500L, 10L << math.min(attempt - 1, 6))
+    (ceilingMillis / 2 + ThreadLocalRandom.current().nextLong(ceilingMillis / 2 + 1)).millis
+  }
 
   import context.dispatcher
 
@@ -82,12 +93,10 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
       context.stop(self)
     case e: AggregateConcurrentModificationError =>
       commandEnvelope match {
-        case InternalConcurrentCommandEnvelope(respondTo, commandId, command) =>
+        case _: InternalConcurrentCommandEnvelope[_, _] | _: InternalRewriteHistoryConcurrentCommandEnvelope[_, _] if concurrentAttempt < MaxConcurrentAttempts =>
+          concurrentAttempt += 1
           context.become(receiveAggregate)
-          repositoryActor ! GetAggregateRootCurrentVersion(self)
-        case InternalRewriteHistoryConcurrentCommandEnvelope(respondTo, commandId, command) =>
-          context.become(receiveAggregate)
-          repositoryActor ! GetAggregateRootCurrentVersion(self)
+          context.system.scheduler.scheduleOnce(retryDelay(concurrentAttempt), repositoryActor, GetAggregateRootCurrentVersion(self))
         case _ =>
           commandEnvelope.respondTo ! e
           context.stop(self)

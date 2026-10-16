@@ -194,7 +194,16 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
 
 
+  // A request for a version this actor has not seen means someone else wrote the aggregate
+  // (another node, a history rewrite, a repair): reload instead of rejecting the command (F19).
+  private def reloadIfBehind(requestedVersion: Option[AggregateVersion]): Unit = {
+    if (singleReadForVersionOnly.isEmpty && requestedVersion.exists(_ > version)) {
+      assureRestoredState()
+    }
+  }
+
   private def receiveReturnAggregateRoot(respondTo: ActorRef, requestedVersion: Option[AggregateVersion]): Unit = {
+    reloadIfBehind(requestedVersion)
     if(version == AggregateVersion.ZERO) {
       respondTo ! Success(Aggregate[AGGREGATE_ROOT](aggregateId, version, None))
     } else {
@@ -255,6 +264,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
 
   private def receiveReturnAggregateRootWithEvents(respondTo: ActorRef, requestedVersion: Option[AggregateVersion], eventTypes: Set[String]): Unit = {
+    reloadIfBehind(requestedVersion)
     if(version == AggregateVersion.ZERO) {
       val events: List[EventWithVersion[AGGREGATE_ROOT]] = List.empty
       respondTo ! Success(AggregateWithSelectedEvents[AGGREGATE_ROOT](Aggregate[AGGREGATE_ROOT](aggregateId, version, None), events))
@@ -299,7 +309,10 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
     eventsWithVersionsTry match {
       case Failure(exception) => exception match {
-        case e: PSQLException if e.getLocalizedMessage.contains("Concurrent aggregate modification exception") => eventsEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateId, aggregateType, eventsEnvelope.expectedVersion, version)
+        case e: PSQLException if e.getLocalizedMessage.contains("Concurrent aggregate modification exception") =>
+          // The store moved on without this actor (another writer): reload, so a retry sees the real state (F19).
+          assureRestoredState()
+          eventsEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateId, aggregateType, eventsEnvelope.expectedVersion, version)
         case e =>
           val errorId = RandomUtil.generateRandomString(16)
           eventsEnvelope.respondTo ! EventHandlingError(eventsEnvelope.events.head.getClass.getSimpleName, errorId, eventsEnvelope.commandId)

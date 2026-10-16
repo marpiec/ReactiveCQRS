@@ -139,9 +139,9 @@ matched in this order at `AggregateCommandBusActor.scala:117-121`.
 |---|---|---|---|---|
 | `FirstCommand` | `userId` | none; `initialAggregateRoot` is passed directly (`CommandHandlerActor.scala:62`) | expected = 0 | error |
 | `Command` | `userId`, `aggregateId`, `expectedVersion` | `GetAggregateRootExactVersion` | strict | `AggregateConcurrentModificationError` returned |
-| `ConcurrentCommand` | `userId`, `aggregateId` | `GetAggregateRootCurrentVersion` | current version | state re-fetched and handler re-run, no retry limit (`CommandExecutorActor.scala:78-85`) |
+| `ConcurrentCommand` | `userId`, `aggregateId` | `GetAggregateRootCurrentVersion` | current version | state re-fetched and handler re-run; since 1.0 with jittered back-off, at most 10 attempts (`CommandExecutorActor`) |
 | `RewriteHistoryCommand` | + `expectedVersion`, `eventsTypes` | `GetAggregateRootWithEventsExactVersion` | strict | error |
-| `RewriteHistoryConcurrentCommand` | + `eventsTypes` | `GetAggregateRootWithEventsCurrentVersion` | current version | re-run (`:83-85`) |
+| `RewriteHistoryConcurrentCommand` | + `eventsTypes` | `GetAggregateRootWithEventsCurrentVersion` | current version | re-run, same limit |
 
 Mix-in `IdempotentCommand[IID]` with `idempotencyId: Option[IID]` deduplicates responses
 by `IID.asDbKey` (`SagaStep(sagaId, step)` → `"sagaId|step"`, `Command.scala:42-47`).

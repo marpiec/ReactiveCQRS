@@ -11,6 +11,9 @@ case class DuplicateShoppingCart(userId: UserId, baseAggregateId: AggregateId, b
 case class AddItem(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
                    name: String) extends Command[ShoppingCart, CustomCommandResponse[_]]
 
+// No expected version: the framework uses the current one and retries on a concurrent change.
+case class AddItemConcurrently(userId: UserId, aggregateId: AggregateId, name: String) extends ConcurrentCommand[ShoppingCart, CustomCommandResponse[_]]
+
 case class RemoveItem(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
                       id: Int) extends Command[ShoppingCart, CustomCommandResponse[_]]
 
