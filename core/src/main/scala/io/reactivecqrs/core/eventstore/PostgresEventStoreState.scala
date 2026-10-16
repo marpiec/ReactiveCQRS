@@ -69,7 +69,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
               typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
               eventBaseTypeId,
               eventVersion,
-              Timestamp.from(Instant.now),
+              Timestamp.from(eventsEnvelope.timestamp),
               eventSerialized,
               undoEvent.eventsCount
             ).map(rs => rs.int(1)).single().get
@@ -82,7 +82,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
               typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
               eventBaseTypeId,
               eventVersion,
-              Timestamp.from(Instant.now),
+              Timestamp.from(eventsEnvelope.timestamp),
               eventSerialized,
               duplicationEvent.baseAggregateId.asLong,
               duplicationEvent.baseAggregateVersion.asInt
@@ -96,7 +96,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
               typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
               eventBaseTypeId,
               eventVersion,
-              Timestamp.from(Instant.now),
+              Timestamp.from(eventsEnvelope.timestamp),
               eventSerialized
             ).map(rs => rs.int(1)).single().get
           }
@@ -109,7 +109,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
               typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
               eventBaseTypeId,
               eventVersion,
-              Timestamp.from(Instant.now),
+              Timestamp.from(eventsEnvelope.timestamp),
               eventSerialized
             ).map(rs => rs.int(1)).single().get
         })
@@ -169,7 +169,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       aggregateTypeId,
       arrayParam("smallint", eventTypeIds),
       arrayParam("smallint", eventTypeVersions),
-      Timestamp.from(Instant.now),
+      Timestamp.from(eventsEnvelope.timestamp),
       arrayParam("varchar", serializedEvents)
     ).map(rs => rs.int(1)).list()
 

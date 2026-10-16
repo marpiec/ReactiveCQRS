@@ -658,3 +658,9 @@ Open test-infrastructure items:
   commits and are dropped on rollback; `PostgresSubscriptionsState.localTx`, used by every
   projection update, is such a transaction. Subscription versions and document-store cache
   entries now change only after commit. Tests: `CachesAfterRollbackSpec`, `AfterCommitSpec`.
+
+**16/10/2026: F7**
+- One timestamp per event: the executor takes it once per command, truncated to
+  microseconds, and the store writes it instead of its own `Instant.now`. Test:
+  `EventStoreStateSpec` (both stores). New follow-up F65 (time zone of `event_time`).
+- `sbt test`: 50 of 51 pass; the failure is still the F4 reproduction (`EventsReplaySpec`).

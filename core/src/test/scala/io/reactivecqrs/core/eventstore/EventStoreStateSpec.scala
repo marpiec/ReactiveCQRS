@@ -164,4 +164,25 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
 
   //TODO test for undo and duplication
 
+  // F7: restore must see the timestamp the live path used, which is the one given with the events.
+  Scenario("Events keep the timestamp they were persisted with") {
+    val f = new TestFixture(eventStoreState)
+    import f.{aggregateId, commandId, userId}
+
+    def persistAt(timestamp: Instant, expectedVersion: Int, events: Event[SomeAggregate]*): Unit =
+      eventStoreState.localTx { session =>
+        eventStoreState.persistEvents(Map.empty, aggregateId,
+          PersistEvents(ActorRef.noSender, commandId, userId, AggregateVersion(expectedVersion), timestamp, events, None))(session)
+      }.get
+
+    val batchTime = Instant.parse("2020-01-02T03:04:05.123456Z")
+    val singleTime = Instant.parse("2020-01-02T03:04:06.654321Z")
+    persistAt(batchTime, 0, EventA("one"), EventB(2))
+    persistAt(singleTime, 2, EventC(true))
+
+    var timestamps = Vector[Instant]()
+    eventStoreState.readAndProcessEvents[SomeAggregate](Map.empty, aggregateId, None)((_, eventTime, _, _, _, _) => timestamps :+= eventTime)
+    timestamps mustBe Vector(batchTime, batchTime, singleTime)
+  }
+
 }

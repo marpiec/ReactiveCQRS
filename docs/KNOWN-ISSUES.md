@@ -298,11 +298,11 @@ implementation plan.
 ### Commands and aggregates
 
 #### F7 — Event timestamps differ between live delivery and the store
-- **High**, likely · Fix in **M1** · `CommandExecutorActor`, `PostgresEventStoreState`
+- **High**, confirmed · **Fixed in M1** (16/10/2026) · `CommandExecutorActor`, `PostgresEventStoreState`
 - **Symptom:** state and projections that use event timestamps (Neula: process flows, reports, functions) differ after restore, re-send or replay; the difference is the persist queue wait.
 - **Root cause:** the live path uses the executor's `Instant` (`CommandExecutorActor.scala:198`); SQL stores a later `Instant.now` (`PostgresEventStoreState.scala:72, 85, 99, 112, 172`).
-- **Test:** persist with a controlled clock; assert restored `EventInfo.timestamp` equals the live one (Neula R6).
-- **Fix:** D10.
+- **Test:** `EventStoreStateSpec` "Events keep the timestamp they were persisted with" (single and batched writes; failed on PostgreSQL before the fix). An end-to-end check through the actors (Neula R6) is still to be written with the projection work in M2.
+- **Fix:** D10. The executor takes one timestamp per command, truncated to microseconds (PostgreSQL's precision); the store writes that timestamp instead of its own `Instant.now`. Follow-up: F65.
 - **Invariants:** I6.
 
 #### F8 — History rewrite is half-applied
@@ -374,6 +374,11 @@ implementation plan.
 #### F38 — Restore query order has no matching index; one index is redundant
 - **Low**, likely · Fix in **M3** · `PostgresEventStoreSchemaInitializer.scala:49-59`
 - **Fix:** index `events(aggregate_id, version)` built `CONCURRENTLY`, drop `events(aggregate_id)` in a later contract step (D34, D69).
+
+#### F65 — Event times are stored without a time zone
+- **Low**, likely · Fix in **M3** · `PostgresEventStoreState`, schema
+- **Symptom:** on a JVM whose default zone is not UTC, event times can shift by an hour around a daylight-saving change, because `event_time` is `TIMESTAMP` (without time zone) and is converted with the JVM default zone on write and read. Neula forces UTC (`Startup.scala:16`), so it is not affected today.
+- **Fix:** bind and read `event_time` with an explicit UTC calendar; the column type stays (D28). Promised as a separate entry by D10.
 
 #### F39 — Instant reads filter in Scala
 - **Low**, likely (1 call site in Neula) · Fix in **M3** · `PostgresEventStoreState.scala:233`
@@ -576,9 +581,9 @@ From §7 of Neula's change requests.
 
 | Milestone | Issues |
 |---|---|
-| M1 | F7, F9, F10, F12, F13, F14 ✔, F16 ✔, F17, F18 ✔, F19, F20, F21 ✔, F24, F34, F35, F36, F40, F64; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
+| M1 | F7 ✔, F9, F10, F12, F13, F14 ✔, F16 ✔, F17, F18 ✔, F19, F20, F21 ✔, F24, F34, F35, F36, F40, F64; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
 | M2 | F1, F2, F4, F5, F6, F11, F15, F26, F28, F29, F37, F41, F42, F45, F47; Neula H2 |
-| M3 | F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33, F38, F39, F43, F44 |
+| M3 | F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33, F38, F39, F43, F44, F65 |
 | M4 | F3, F54, F55, F56, F57, F58, F59, F60, F61, F62; Neula H1, H6 |
 | M5 | F46, F48, F50, F63 |
 | M6 | F8 (complete), F49 (backfill) |

@@ -1,6 +1,7 @@
 package io.reactivecqrs.core.commandhandler
 
 import java.time.Instant
+import java.time.temporal.ChronoUnit
 import org.apache.pekko.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.api._
@@ -32,6 +33,10 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
                                            initialState: () => AGGREGATE_ROOT) extends Actor with MyActorLogging {
 
   private val responseTimeout: FiniteDuration = 60.seconds // timeout for Response handler, we assume one minute is maximum for someone to wait for response
+
+  // The single timestamp of the persisted events (F7). PostgreSQL keeps microseconds, so the live path uses
+  // exactly the value a restore will read back.
+  private def eventsTimestamp(): Instant = Instant.now.truncatedTo(ChronoUnit.MICROS)
 
   import context.dispatcher
 
@@ -195,7 +200,7 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
           context.stop(self)
         } else {
           context.become(receiveEventsPersistResult(response))
-          repositoryActor ! PersistEvents[AGGREGATE_ROOT](self, commandEnvelope.commandId, userId, expectedVersion, Instant.now, success.events, idempotentCommandInfo(commandEnvelope.command, response))
+          repositoryActor ! PersistEvents[AGGREGATE_ROOT](self, commandEnvelope.commandId, userId, expectedVersion, eventsTimestamp(), success.events, idempotentCommandInfo(commandEnvelope.command, response))
         }
       case s: RewriteCommandSuccess[_, _] =>
 
@@ -211,7 +216,7 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
           context.stop(self)
         } else {
           context.become(receiveEventsPersistResult(response))
-          repositoryActor ! OverrideAndPersistEvents[AGGREGATE_ROOT](success.eventsRewritten, PersistEvents[AGGREGATE_ROOT](self, commandEnvelope.commandId, userId, expectedVersion, Instant.now, success.events, idempotentCommandInfo(commandEnvelope.command, response)))
+          repositoryActor ! OverrideAndPersistEvents[AGGREGATE_ROOT](success.eventsRewritten, PersistEvents[AGGREGATE_ROOT](self, commandEnvelope.commandId, userId, expectedVersion, eventsTimestamp(), success.events, idempotentCommandInfo(commandEnvelope.command, response)))
         }
 
       case failure: CommandFailure[_, _] =>
