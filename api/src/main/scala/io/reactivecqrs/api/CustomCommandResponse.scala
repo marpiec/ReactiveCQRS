@@ -22,3 +22,7 @@ case class AggregateConcurrentModificationError(aggregateId: AggregateId,
                                                 was: AggregateVersion) extends CustomCommandResponse[Nothing]
 case class CommandHandlingError(commandName: String, errorId: String, commandId: CommandId) extends CustomCommandResponse[Nothing]
 case class EventHandlingError(eventName: String, errorId: String, commandId: CommandId) extends CustomCommandResponse[Nothing]
+
+/** The command was not run: the aggregate's queue of waiting commands was full (serial command processing, R8).
+  * Sending it again later may succeed. */
+case class CommandRejected(aggregateId: AggregateId, reason: String) extends CustomCommandResponse[Nothing]

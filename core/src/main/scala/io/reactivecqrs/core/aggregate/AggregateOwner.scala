@@ -63,6 +63,7 @@ class OwnerSettings[AGGREGATE_ROOT: ClassTag](context: AggregateContext[AGGREGAT
   val initialState: () => AGGREGATE_ROOT = () => context.initialAggregateRoot
   val commandTimeout: FiniteDuration = context.commandTimeout
   val snapshots: Option[SnapshotPolicy] = context.snapshots
+  val commandProcessing: CommandProcessing = context.commandProcessing
   val restorer = new AggregateRestorer[AGGREGATE_ROOT](eventStore, eventHandlers, initialState, snapshots, context.version,
     classTag[AGGREGATE_ROOT].runtimeClass.getName)
 }
@@ -89,9 +90,13 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
   // The version of the aggregate's stored snapshot, as far as this owner knows (D30).
   private var snapshotVersion: AggregateVersion = AggregateVersion.ZERO
 
-  /** A command of this owner, from its arrival until it is answered: its handler is running or it waits to run again. */
-  private case class Pending(envelope: CommandEnvelope, timeout: Cancellable, attempt: Int, baseVersion: AggregateVersion, running: Boolean)
-  private val pending = mutable.HashMap[Long, Pending]() // by command id
+  /** A command of this owner, from its arrival until it is answered. `started`: it is under way (checked, its handler
+    * running, or waiting to run again); in serial mode a command waits in `queued` until it may start. */
+  private case class Pending(envelope: CommandEnvelope, timeout: Cancellable, attempt: Int, baseVersion: AggregateVersion, running: Boolean, started: Boolean)
+  private val pending = mutable.LinkedHashMap[Long, Pending]() // by command id, oldest first
+  private val queued = mutable.Queue[Long]() // serial mode (R8): commands that have not started, oldest first
+  private var startingQueued = false
+  private var restoreFailure: Option[AggregateRestoreFailedException] = None
 
   private case class HandlerFinished(commandId: CommandId, result: Try[CustomCommandResult[Any]])
   private case class CommandTimedOut(commandId: CommandId)
@@ -133,10 +138,12 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
         version = restored.version
         root = restored.root
         snapshotVersion = restored.fromSnapshot.getOrElse(AggregateVersion.ZERO)
+        restoreFailure = None
         None
       case Failure(e) =>
         log.error(e, "Restoring aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " failed, retry after " + failedRestoreRetryAfter)
         val failure = new AggregateRestoreFailedException(aggregateId, aggregateType, e)
+        restoreFailure = Some(failure)
         context.become(failedRestore(failure))
         context.system.scheduler.scheduleOnce(failedRestoreRetryAfter, self, AskToStop)
         Some(failure)
@@ -192,11 +199,42 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
 
   // ************** Commands
 
-  private def start(envelope: CommandEnvelope): Unit = {
-    val timeout = context.system.scheduler.scheduleOnce(commandTimeout, self, CommandTimedOut(envelope.commandId))
-    val command = Pending(envelope, timeout, attempt = 1, version, running = false)
-    pending += envelope.commandId.asLong -> command
-    attempt(command)
+  // The timeout counts from the command's arrival, also while it waits in the serial queue (R5).
+  private def start(envelope: CommandEnvelope): Unit = commandProcessing match {
+    case CommandProcessing.Serial(maxQueue, OverflowPolicy.Reject) if queued.size >= maxQueue =>
+      log.warning("Command " + envelope.command.getClass.getSimpleName + " for aggregate " + aggregateId.asLong + " of type " +
+        aggregateType.simpleName + " rejected: " + maxQueue + " commands wait already")
+      envelope.respondTo ! CommandRejected(aggregateId, maxQueue + " commands of the aggregate wait already")
+    case processing =>
+      val timeout = context.system.scheduler.scheduleOnce(commandTimeout, self, CommandTimedOut(envelope.commandId))
+      val command = Pending(envelope, timeout, attempt = 1, version, running = false, started = false)
+      pending += envelope.commandId.asLong -> command
+      processing match {
+        case CommandProcessing.Concurrent => begin(command)
+        case _: CommandProcessing.Serial =>
+          queued.enqueue(envelope.commandId.asLong)
+          startQueued()
+      }
+  }
+
+  // Serial mode: the oldest queued command starts once no command is under way. A command answered at once (a stored
+  // response, a version mismatch) lets the next one start in the same loop, without recursion.
+  private def startQueued(): Unit = if (!startingQueued) {
+    startingQueued = true
+    try {
+      while (queued.nonEmpty && !pending.valuesIterator.exists(_.started)) {
+        pending.get(queued.dequeue()).foreach(begin) // one that timed out while waiting is gone
+      }
+    } finally startingQueued = false
+  }
+
+  private def begin(command: Pending): Unit = {
+    val started = command.copy(started = true)
+    pending += command.envelope.commandId.asLong -> started
+    restoreFailure match {
+      case Some(failure) => finishWithError(command.envelope, failure)
+      case None => attempt(started) // the idempotency check runs now, also for a command that waited (D31)
+    }
   }
 
   // A copy of an idempotent command that was applied already is answered with the stored response (D12). A command
@@ -358,16 +396,19 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
   }
 
   private def timedOut(commandId: CommandId): Unit = pending.remove(commandId.asLong).foreach { command =>
+    queued.dequeueFirst(_ == commandId.asLong)
     val error = commandHandlingError(command.envelope)
     log.warning("Command " + command.envelope.command.getClass.getSimpleName + " timed out after " + commandTimeout +
       " and is not applied, errorId: [" + error.errorId + "]")
     command.envelope.respondTo ! error
+    startQueued()
     stopIfDone()
   }
 
   private def finish(commandId: CommandId, response: CustomCommandResponse[_]): Unit = pending.remove(commandId.asLong).foreach { command =>
     command.timeout.cancel()
     command.envelope.respondTo ! response
+    startQueued()
     stopIfDone()
   }
 
@@ -419,7 +460,8 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
 
   private def stopNow(withSnapshot: Boolean = true): Unit = {
     if (withSnapshot && snapshots.exists(_.onPassivation) && version > snapshotVersion) writeSnapshot()
-    pending.values.foreach(command => finishWithError(command.envelope, new IllegalStateException("The aggregate's owner stopped")))
+    queued.clear()
+    pending.values.toList.foreach(command => finishWithError(command.envelope, new IllegalStateException("The aggregate's owner stopped")))
     minVersionQueries.foreach(q => q.respondTo ! Failure(new AggregateInIncorrectVersionException(aggregateId, aggregateType, version, q.version)))
     minVersionQueries = Vector.empty
     context.stop(self)

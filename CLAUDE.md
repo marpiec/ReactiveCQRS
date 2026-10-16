@@ -156,7 +156,8 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
   instance (replaced the command handler, the per-command executors and the repository
   actor in M3). On first access it restores the root and version through `AggregateRestorer`:
   from the snapshot and the events after it when the context opts in (D30), otherwise by
-  replaying the *entire* event stream; then it keeps them updated. `aggregateVersionLimit` defaults to
+  replaying the *entire* event stream; then it keeps them updated. With `commandProcessing = Serial(...)`
+  (R8) it runs one command at a time from a bounded queue. `aggregateVersionLimit` defaults to
   10 000 events per aggregate. Design: `docs/design/M3-aggregates.md`.
 - **`EventsBusActor`** — in-memory routing and delivery tracking (deadline, stall
   logging, `GetDeliveryStatus`); routes re-publish requests to the type's command bus;

@@ -1168,3 +1168,16 @@ Open test-infrastructure items:
   (both stores: the tail read, snapshot invalidation); `PostgresEventStoreStateSpec` (instant
   reads, the online index).
 - `sbt test`: core 132, testdomain 63, all pass.
+
+**16/10/2026: serial command mode (D31, R8)**
+- `AggregateContext.commandProcessing`: `Concurrent` (default, D37) or `Serial(maxQueuePerAggregate
+  = 1000, onOverflow = Reject)`. In serial mode the owner starts one command at a time, in arrival
+  order, the next when the current one is answered; the idempotency check runs when a waiting
+  command starts; a command beyond the limit gets the new `CommandRejected(id, reason)` at once;
+  a command's timeout counts from its arrival, waiting included. The owner's queue lives with its
+  pending commands, so a stopping owner drains it and M5's shard entity gets the same mechanism.
+- Tests: `SerialCommandsSpec` (R8: 1 000 commands sent at once give versions 2–1001 with no
+  conflict, while the same load in concurrent mode ends partly in conflicts; the queue limit;
+  the timeout from arrival; an idempotent copy waiting behind its original gets the stored
+  response). Throughput across aggregates against concurrent mode is for the M3 bench.
+- `sbt test`: core 132, testdomain 68, all pass.

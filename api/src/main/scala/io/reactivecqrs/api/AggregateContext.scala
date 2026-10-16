@@ -33,6 +33,29 @@ case class SnapshotPolicy(every: Int = 200, onPassivation: Boolean = true, schem
   require(every > 0, "every must be positive")
 }
 
+/** How the owner of an aggregate runs its commands. */
+sealed trait CommandProcessing
+
+object CommandProcessing {
+  /** Commands of one aggregate run side by side, each on the state it found; a command whose events would follow
+    * another's fails with `AggregateConcurrentModificationError`, and a `ConcurrentCommand` runs again (D37). */
+  case object Concurrent extends CommandProcessing
+
+  /** Commands of one aggregate run one at a time, in the order they arrived: each starts when the one before it was
+    * answered, so every handler sees the latest state and nothing conflicts (R8, D31). At most
+    * `maxQueuePerAggregate` commands wait; one more is answered at once as `onOverflow` says. */
+  case class Serial(maxQueuePerAggregate: Int = 1000, onOverflow: OverflowPolicy = OverflowPolicy.Reject) extends CommandProcessing {
+    require(maxQueuePerAggregate > 0, "maxQueuePerAggregate must be positive")
+  }
+}
+
+sealed trait OverflowPolicy
+
+object OverflowPolicy {
+  /** The command is not run; the caller gets `CommandRejected` and may send it again later. */
+  case object Reject extends OverflowPolicy
+}
+
 /** An aggregate type's behaviour. Events are stored under their class name; an event class that must change shape is
   * kept, deprecated, and a new class (`...V2`) takes its place (D29: there is no event versioning). */
 abstract class AggregateContext[AGGREGATE_ROOT : ClassTag] {
@@ -64,6 +87,9 @@ abstract class AggregateContext[AGGREGATE_ROOT : ClassTag] {
 
   /** Opt-in performance snapshots (D30, R10); none by default. */
   val snapshots: Option[SnapshotPolicy] = None
+
+  /** One command at a time per aggregate (`Serial`, R8), or side by side (`Concurrent`, the default). */
+  val commandProcessing: CommandProcessing = CommandProcessing.Concurrent
 
   val aggregateType = AggregateType(classTag[AGGREGATE_ROOT].toString)
 

@@ -179,6 +179,7 @@ class without type parameters; the host must call `PostgresCommandResponseState.
 | `AsyncCommandResult(Future[...])` | the future's result comes back to the owner as a message | as above |
 | exception or unhandled command (`MatchError`) | logged with an errorId | `CommandHandlingError(name, errorId, commandId)` |
 | no result within `AggregateContext.commandTimeout` (60 s) | a result that comes later is dropped: the command is not applied (since M3) | `CommandHandlingError` (F20, R5) |
+| serial mode: `maxQueuePerAggregate` commands already wait | not run | `CommandRejected(id, reason)` (R8) |
 | the aggregate's restore failed (§4.4) | nothing persisted | `CommandHandlingError` |
 | no id available (the uid generator fails) | nothing persisted, the bus keeps running (F75) | `CommandHandlingError` with command id 0 |
 | event handler failed before persisting, or the persist failed | nothing persisted | `EventHandlingError(...)` |
@@ -228,6 +229,7 @@ abstract class AggregateContext[R : ClassTag] {           // AggregateContext.sc
   val version: Int                                        // bump to force projection rebuild
   val commandTimeout: FiniteDuration = 60.seconds         // since 1.0 (R5): answer CommandHandlingError after it
   val snapshots: Option[SnapshotPolicy] = None             // since 1.0 (D30): performance snapshots, opt-in
+  val commandProcessing: CommandProcessing = Concurrent    // since 1.0 (R8, D31): or Serial(maxQueuePerAggregate, Reject)
   val aggregateType = AggregateType(classTag[R].toString) // FQCN; the routing key everywhere
 }
 ```
@@ -261,6 +263,11 @@ abstract class AggregateContext[R : ClassTag] {           // AggregateContext.sc
    owner's reloads first (another writer moved the aggregate on, F19); a mismatch is
    `AggregateConcurrentModificationError` at once, without running the handler. A
    `FirstCommand` expects version 0; the concurrent kinds run on the current version.
+   **Serial mode** (`commandProcessing = Serial(...)`, R8, D31): the owner starts one command
+   at a time, in arrival order, the next when the current one is answered; so every handler
+   sees the latest state and nothing conflicts. The idempotency check runs when a waiting
+   command starts; a command beyond `maxQueuePerAggregate` waiting ones is answered
+   `CommandRejected` at once; a command's timeout counts from its arrival.
 4. **Handler** (`AggregateOwner.runHandler`). The handler runs as a `Future` on the owner's
    state (an immutable value; a rewrite also gets the events of the classes it names, read
    before); an `AsyncCommandResult` is flattened, and the result comes back as a message. A
