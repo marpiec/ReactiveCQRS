@@ -46,3 +46,6 @@ case class AddItemWithReceipt(idempotencyId: Option[ClientKey], userId: UserId, 
                               name: String) extends Command[ShoppingCart, CustomCommandResponse[_]] with IdempotentCommand[ClientKey]
 
 case class ItemReceipt(itemName: String)
+
+/** A recurring check that changes nothing: its handler returns no events (Neula R9). */
+case class CheckCart(userId: UserId, aggregateId: AggregateId) extends ConcurrentCommand[ShoppingCart, CustomCommandResponse[_]]

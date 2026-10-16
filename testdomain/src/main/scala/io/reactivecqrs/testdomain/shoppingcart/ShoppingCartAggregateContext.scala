@@ -17,6 +17,7 @@ class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
     case c: AddItemConcurrently => CommandSuccess(ItemAdded(c.name))
     case c: CreateShoppingCartWithId => CommandSuccess(ShoppingCartCreated(c.name))
     case c: AddItemWithReceipt => CommandSuccess(ItemAdded(c.name), ItemReceipt(c.name))
+    case _: CheckCart => CommandSuccess(Seq.empty[Event[ShoppingCart]])
     case c: RemoveItem => removeItem(c)
     case c: DeleteShoppingCart => deleteShoppingCart(c)
     case c: UndoShoppingCartChange => undoShoppingCartChange(c)
