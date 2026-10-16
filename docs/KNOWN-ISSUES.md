@@ -92,8 +92,8 @@ behaviour.
 
 | ID | Decision |
 |---|---|
-| D11 | A failed restore fails fast: the command bus watches its repository actors, removes dead refs, remembers the failure briefly and answers commands and queries for that aggregate with an explicit error. Restore moves from the constructor to the first message. |
-| D12 | Idempotency keys are globally unique: a unique index on `commands_responses(key)`; a colliding command's transaction rolls back (including its events) and the caller gets the stored response. Usable by any command kind, including `FirstCommand` with a caller-chosen id (R7); stored responses have a retention period. |
+| D11 | A failed restore fails fast: restore moves from the constructor to the first message; after a failure the repository actor itself answers every query and command with an explicit error for a short time (`failedRestoreRetryAfter`) and then stops; the command bus watches its repository actors and forgets stopped ones, so the next request restores again. |
+| D12 | Idempotency keys are globally unique: a unique index on `commands_responses(key)`; a colliding command's transaction rolls back (including its events) and the caller gets the stored response. Usable by any command kind, including `FirstCommand` with a caller-chosen id (R7); stored responses have a retention period (30 days by default). Only commands that changed state store a response: a copy of a command that failed or produced no events runs again. |
 | D37 | Contexts that stay in concurrent mode: on a version conflict the owner reloads state from the store, retries with jittered back-off, and gives up after about 10 attempts with `AggregateConcurrentModificationError`. |
 | D31 | Serial command mode (R8), opt-in per context: the aggregate's owner queues commands and runs one at a time; handlers always see the latest state; `ConcurrentCommand` re-runs disappear; queue limit and overflow policy configurable. In the cluster the shard entity uses the same mechanism. |
 | D56 (R5) | Async command timeout configurable per context (default 60 s); on timeout the caller gets `CommandHandlingError(timeout)`. |
@@ -302,6 +302,27 @@ implementation plan.
 #### F47 — `PostgresEventBusState` batch update ignores row counts
 - **Low** (unused by Neula), likely · Fix in **M2** (deleted, D7) · `EventBusState.scala:127-140`
 
+#### F77 — A failed compare-and-set leaves the subscription cache stale
+- **Medium**, likely · Fix in **M2** (subscription cache, work item 8) · `PostgresSubscriptionsState.newEventIdInDB`
+- **Symptom:** when the stored subscription version moved without this instance's cache (another node, a clear in the database, a repair), every later update of that aggregate for that projection fails the same way: the projection is stuck on it until the process restarts.
+- **Root cause:** the failed `UPDATE … WHERE aggregate_version = ?` throws, the transaction rolls back, and the cached version is kept; the next attempt starts from it again.
+- **Found:** plan review at the M1 close (review 3, §7).
+- **Fix:** evict the cached entry when the database check fails, so the next attempt reads the stored version.
+
+#### F79 — The event bus's 120-second debug timer changes actor state from another thread
+- **Medium**, likely · Fix in **M2** (bus rewrite) · `EventsBusActor` constructor (`scheduler.schedule(120 s, …, new Runnable …)`)
+- **Symptom:** the timer iterates `messagesSent` while the actor changes it, updates `lastLogged` and `orderedMessagePostponedTimestamp`, and calls `orderMoreMessagesToConsume()`: data races on the bus's mutable state, possibly `ConcurrentModificationException` or a corrupted map.
+- **Root cause:** the timer runs a `Runnable` on a dispatcher thread instead of sending the actor a message.
+- **Found:** plan review at the M1 close.
+- **Fix:** the rewritten bus sends itself a tick message; statistics are read in `receive` only.
+
+#### F80 — A failing projection query restarts the projection actor
+- **Medium**, likely · Fix in **M2** (projection delivery rework, with AR7) · `ProjectionActor.delayIfNotAvailable` and the "empty list of events" throws
+- **Symptom:** a query whose search throws is answered with the failure and then thrown again, which restarts the actor: its delay buffers and waiting queries are dropped, and with parallel processing a new thread pool is created while the old one is never shut down.
+- **Root cause:** exceptions leave `receive`; no supervision policy (AR7); the thread pool is created per actor instance.
+- **Found:** plan review at the M1 close.
+- **Fix:** answer the failure without rethrowing; one shared, closed-on-stop pool or the blocking dispatcher (F27).
+
 ### Commands and aggregates
 
 #### F7 — Event timestamps differ between live delivery and the store
@@ -436,6 +457,13 @@ implementation plan.
 - **Test:** `ConcurrentModificationSpec` "after a version conflict the actor's state still matches the store" (version 3 instead of 2 before the fix).
 - **Fix:** the events are applied right after the commit, before the next message; `EventsPersisted` is gone.
 
+#### F81 — An expired min-version query is dropped without a reply
+- **Low**, likely · Fix in **M3** (aggregate owner, AR1) · `AggregateRepositoryActor.receiveReturnAggregateRootMinVersion`, `replayDelayedQueries`
+- **Symptom:** a `GetAggregateMinVersion` whose version is not reached within its time gets no answer; the caller only sees its own ask time out and cannot tell "not yet" from "lost".
+- **Root cause:** expired queries are filtered out of `delayedQueries` without answering them, and only when another query or event arrives.
+- **Found:** plan review at the M1 close.
+- **Fix:** a timer per deadline answers the current version (or a "not reached" reply) when it expires.
+
 ### Event store and SQL
 
 #### F22 — Restore loads the whole event stream into memory before handling it
@@ -461,10 +489,18 @@ implementation plan.
 - **Fix:** push the `event_time` predicate into SQL.
 
 #### F49 — Legacy `aggregates` rows have `space_id = -1`
-- **Medium**, suspected (count unknown) · Pre-check in **M1**, backfill in **M6** · schema
+- **Medium**, suspected (count unknown) · Pre-check in **M1** (`StoredDataCheck` reports it), backfill in **M4** (before the per-organization rebuild needs it) · schema
 - **Root cause:** the column was added with `DEFAULT -1` (`PostgresEventStoreSchemaInitializer.scala:117-121`); six deprecated Neula events use `SpaceId.unknown`.
 - **Check:** `SELECT count(*) FROM aggregates WHERE space_id = -1` on production.
 - **Fix:** D38.
+
+#### F76 — Permanently deleting an aggregate that duplicates read from breaks the duplicates
+- **High** if Neula deletes such aggregates, suspected · Fix in **M3** (with the duplicate detach of D50) · `PostgresEventStoreState.deletePublishedEventsToPublish` (`PermanentDeleteEvent` branch)
+- **Symptom:** after a `PermanentDeleteEvent` on an aggregate that has duplicates, those duplicates restore without the history they share with it, so their state is silently wrong; their chain rows in `aggregates` point at a base that no longer exists.
+- **Root cause:** the delete removes the base's events and rows only; duplicates read the base's events through their chain rows (D50 solves the same problem for squash).
+- **Found:** plan review at the M1 close.
+- **Check:** Neula, on a production copy: `SELECT count(*) FROM aggregates a WHERE a.base_id <> a.id AND NOT EXISTS (SELECT 1 FROM aggregates b WHERE b.id = a.base_id AND b.base_id = b.id)` (duplicates whose base is gone).
+- **Fix:** detach every duplicate before deleting its base, as D50 does before a squash. With D20a the delete also needs a precondition like D51 (no failed subscriptions), because it removes the `subscriptions` rows that would hold the failure.
 
 ### Performance and runtime
 
@@ -486,7 +522,7 @@ implementation plan.
 - **Fix:** drop the pooling (D34).
 
 #### F33 — Small hot-path waste
-- **Low**, likely · Fix in **M3** · `pendingPublish.distinct` (`AggregateRepositoryActor.scala:95, 136`), eager log strings and an ERROR-level debug line (`ProjectionActor.scala:645`)
+- **Low**, likely · Fix in **M2** for `pendingPublish.distinct` (`AggregateRepositoryActor.scala:95, 136`, removed with D8) and the ERROR-level debug line (`ProjectionActor.scala:645`, rewritten with the sequence gate); in **M3** for the eager log strings
 
 #### F40 — `println` in production paths
 - **Low**, confirmed · **Fixed in M1** (16/10/2026) · `UidGeneratorActor.scala:39, 50, 61` (failures also leave the requester unanswered), `SagaActor.scala:47`, `EventsBusActor.scala:182-185`
@@ -496,6 +532,13 @@ implementation plan.
 #### F48 — In-memory caches have no cross-node invalidation
 - **Medium** in a cluster, likely · Fix in **M5** · `PostgresDocumentStore`, `PostgresSubscriptionsState`
 - **Fix:** one writer per projection (D53) keeps its caches valid.
+
+#### F78 — The type-name cache is changed from many threads without a lock; two nodes can race on a new name
+- **Medium**, likely · Fix in **M3** (with F30), the cross-node part in **M5** (with D67) · `PostgresTypesNamesState.typeIdByClassName`, `classNameById`, `insertName`
+- **Symptom:** the first use of a new class from two threads at once updates a plain `HashMap` concurrently (the lock covers only the database read); two nodes storing a new class at the same moment both `INSERT` the name and one persist fails on the unique index.
+- **Root cause:** `cache.getOrElseUpdate` runs outside the monitor; the insert has no conflict handling.
+- **Found:** plan review at the M1 close.
+- **Fix:** a concurrent map, and `INSERT … ON CONFLICT (name) DO NOTHING` followed by a read.
 
 ### Document store
 
@@ -518,7 +561,7 @@ implementation plan.
 - **Fix:** return the row count, evict the cache entry before retrying, limit retries in both stores; D16 for commit-safe caching.
 
 #### F43 — Document-store migration is not one transaction
-- **Low**, likely · Fix in **M3** · `PostgresDocumentStore.scala:30-33`
+- **Low**, likely · Fix in **M4** (where the document-store tables and indexes are reworked) · `PostgresDocumentStore.scala:30-33`
 - **Fix:** run the migration steps in one transaction, following D69 for large tables.
 
 ### Sagas
@@ -622,6 +665,12 @@ implementation plan.
 - **Root cause:** one transaction per aggregate per projection; a 100-event window in Neula (H1); every duplicate re-reads its base's history (`ReplayAggregateRepositoryActor.scala:70-77`); state-only projections replay every event; one replay actor per aggregate lingers 30 s; full state with every replayed message.
 - **Fix:** D58, D59, D61, D62.
 
+#### F82 — The replayer stops the whole JVM when a replay stalls
+- **Medium**, likely · Fix in **M4** (replaced by the shadow rebuild) · `EventsReplayerActor` (`System.exit(-1)`)
+- **Symptom:** a replay that times out ends the host application's process.
+- **Found:** plan review at the M1 close.
+- **Fix:** report the failure to the requester and stop the replay only.
+
 ### Code structure
 
 #### F14 — In-memory test doubles are wrong or incomplete
@@ -634,7 +683,7 @@ implementation plan.
 - **Still not mirrored** (documented gaps of the test double): instant reads, `PermanentDeleteEvent` clean-up, spaces in the document store.
 
 #### F50 — Type keys disagree for nested classes; runtime reflection blocks Scala 3
-- **Low**, likely · Fix in **M5** (groundwork; earlier for `Event` if F51 needs it) · `AggregateContext.scala:54` vs `ProjectionActor.scala:180-196`
+- **Low**, likely · Fix in **M3** (with F30 and D29, which touch the same type keys) · `AggregateContext.scala:54` vs `ProjectionActor.scala:180-196`; also the outbox scan (`AggregateCommandBusActor`: `runtimeClass.getName`) vs persist (`typeSymbol.fullName`), so a nested aggregate class never gets its waiting events re-sent
 - **Fix:** D75.
 
 ---
@@ -674,12 +723,12 @@ From §7 of Neula's change requests.
 
 | Milestone | Issues |
 |---|---|
-| M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔, F73 ✔, F74 ✔, F75 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
-| M2 | AR6; F72; F1, F2, F4, F5, F6, F11, F15, F26, F28, F29, F37, F41, F42, F45, F47; Neula H2 |
-| M3 | AR1, AR4, AR7; F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33, F38, F39, F43, F44, F65 |
-| M4 | F3, F54, F55, F56, F57, F58, F59, F60, F61, F62; Neula H1, H6 |
-| M5 | AR5; F46, F48, F50, F63 |
-| M6 | F8 (complete), F49 (backfill) |
+| M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔, F73 ✔, F74 ✔, F75 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53, F76 (Neula, on a production copy, with `StoredDataCheck` and the F76 query); Neula H3, H4, H5 |
+| M2 | AR6, AR7 (event bus and projections); F1, F2, F4, F5, F6, F11, F15, F26, F28, F29, F33 (part), F37, F41, F42, F45, F47, F72, F77, F79, F80; Neula H2 |
+| M3 | AR1, AR4, AR7 (owner and command bus); F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33 (rest), F38, F39, F44, F50, F65, F76, F78, F81 |
+| M4 | F3, F43, F49 (backfill), F54, F55, F56, F57, F58, F59, F60, F61, F62, F82; Neula H1, H6 |
+| M5 | AR5; F46, F48, F63, F78 (between nodes) |
+| M6 | F8 (complete) |
 
 ---
 
@@ -765,7 +814,7 @@ these modules to the command bus.
   every one.
 - **Proposal:** one `Backoff` module in `core/util` (delay for an attempt, jitter, limit),
   configured per use.
-- **When:** M2, when the delivery retries are built; the existing three move onto it then.
+- **When:** M2, when the delivery retries are built; the saga retries move onto it then, the executor retry in M3 with AR1 and AR4 (which rewrite it). The document-store retry stays immediate: it runs inside the listener transaction, so waiting would hold its locks (refined in review 3).
 
 #### AR7 — A per-request failure can restart a long-lived actor
 - **Finding:** there is no `supervisorStrategy` anywhere, so Pekko's default applies: a
@@ -777,4 +826,58 @@ these modules to the command bus.
   never throw for a failure that belongs to one request; they answer it. Each parent states
   explicitly what happens to a failed child (executors stop, owners stop and are forgotten
   as in F10).
-- **When:** M3, with AR1 (the actor tree changes there anyway); F70 now.
+- **When:** M2 for the event bus and the projection actors (rewritten there; F79, F80), M3 for the aggregate owner and the command bus (with AR1). Done in M1: F70 and F75 (unknown messages, id failures). Still open in the bus: a failing outbox-scan query throws inside `receive` (refined in review 3).
+
+### Review 3, 16/10/2026: closing M1 (architecture description, plan and code)
+
+Scope: `docs/ARCHITECTURE.md`, the remaining milestones of `docs/IMPLEMENTATION-PLAN.md` and
+this document, checked against the code at the end of M1 (`cc8925c`). Two read-only audits
+(the description against the code, the plan's premises against the code) and our own
+reading; every finding below was checked in the code before it was recorded.
+
+**Outcome.** The decisions hold: none is reversed. M1 changed no code that a later work item
+depends on in a way that invalidates it. The plan needs ordering changes, notes on how later
+items must build on what M1 added, and new issues. The architecture description had drifted
+and is updated with this review.
+
+**Fixed now, found by the audits:** F73 (a concurrent rewrite re-run after a conflict
+rewrote nothing), F74 (a leaked actor per historical events query), F75 (id-generator
+failures restarted the command bus and the saga actor).
+
+**New issues:** F76 (PermanentDelete of a duplicate's base, High if it happens; Neula check
+added), F77 (stale subscription cache after a failed compare-and-set), F78 (type-name cache
+without a lock), F79 (bus timer off the actor thread), F80 (projection queries restart the
+projection actor), F81 (expired min-version queries unanswered), F82 (replayer exits the
+JVM). F72 came from our own reading.
+
+**Moved:** F43 to M4, F50 to M3, the F49 backfill to M4, part of F33 to M2. AR6 and AR7
+refined (above).
+
+**Plan refinements** (recorded in the implementation plan):
+- M1: the F4 reproduction (`EventsReplaySpec`) is marked `pendingUntilFixed`, so the suite is
+  green and the test turns red when M2 fixes F4, as a reminder to make it a plain test.
+- M2: the single retry owner (D8) separates "reload the state" from "re-send the outbox"
+  (F72) and keeps the PermanentDelete trigger, which today rides on the acked events; gap
+  fetches for event listeners keep noop rows (D60); the controllable clock also drives the
+  timers M1 added (command timeout, retries, failed-restore window, retention).
+- M3: the aggregate owner (AR1) absorbs the idempotency pre-check and the failed-restore
+  answers, and drains executors on passivation (stopping a command handler stops its
+  executors today); snapshots hook into `assureRestoredState` (all restore paths), fall back
+  to a full replay when a snapshot cannot be read, and are invalidated inside the
+  transaction of an undo or rewrite; the outbox hook runs inside an `AfterCommit` transaction
+  and after `idempotency.record`; the blocking dispatcher (F27) must not bring back F69
+  (persist synchronously or stash); M3's schema changes (procedures for D32, F31, D49, the
+  snapshots table, F65) are one schema step.
+- M4: batching across aggregates needs a transaction-local overlay of the subscription and
+  document caches, because M1 defers cache updates to the commit (D16).
+- M5: the migration runner and F63 come before the multi-node sharding tests; cluster
+  serialization needs AR4's sealed protocol first (replies are `Try` today); a duplicate
+  `FirstCommand` with a caller-chosen id during a handover must map the `aggregates` key
+  violation to a conflict; `chosenAggregateId` is validated against the id ranges (D39); the
+  retention clean-up becomes a singleton.
+- M6: purge and complete rewrite need `commands_responses` rows tied to an aggregate (add
+  the column before Neula stores responses, H3) and saga orders tied to a space; ephemeral
+  aggregates (D77) cannot be built on the in-memory test double; the import round trip can
+  use two schemas of one database (F71).
+- M7: the upgrade runbook carries M1's prerequisites (`initSchema()` for command responses,
+  H5; no duplicate saga rows, F34; `StoredDataCheck` on a production copy).

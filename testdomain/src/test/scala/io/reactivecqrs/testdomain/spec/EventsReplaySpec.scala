@@ -85,19 +85,19 @@ class EventsReplaySpec extends CommonSpec {
 
   }
 
-  feature("System is able to recreate projections from historical events") {
-    scenario("Ability to replay events") {
+  Feature("System is able to recreate projections from historical events") {
+    Scenario("Ability to replay events") {
 
       val fixture = Fixture
       import fixture._
 
-      val start = System.nanoTime() / 1_000_000
-      val result: EventsReplayed = replayerActor.askActor[EventsReplayed](ReplayAllEvents(false, Seq(AggregateType(classOf[ShoppingCart].getName)), 50))(50.seconds)
-
-      println(result+" in "+(System.nanoTime() / 1_000_000 - start)+"mills")
-
-      Thread.sleep(20000)
-
+      // Reproduces F4: with events already published through the PostgreSQL bus state (here by the specs that ran
+      // before in the same schema), the replay never finishes. Fixed in M2 (D7); this then fails as a reminder to
+      // remove pendingUntilFixed.
+      pendingUntilFixed {
+        val result: EventsReplayed = replayerActor.askActor[EventsReplayed](ReplayAllEvents(false, Seq(AggregateType(classOf[ShoppingCart].getName)), 50))(50.seconds)
+        result.eventsCount must be > 0L
+      }
     }
   }
 

@@ -216,6 +216,19 @@ returns to zero when idle.
    The in-memory mode stays until M4, where rebuild stops needing it.
 9. **Delayed queries** keyed and coalesced (F28).
 
+**Refined at the M1 review** (KNOWN-ISSUES §7, review 3):
+- Item 6 (D8) separates reloading the state from re-sending the outbox (F72: every reload
+  started another re-send chain) and keeps the PermanentDelete trigger, which today runs on
+  the acked events of `pendingPublish`; `pendingPublish.distinct` (F33) goes with it.
+- Item 3: gap fetches for event listeners keep noop rows, as live delivery sent them (D60);
+  the range read is reused by M4.
+- The new bus and projection actors follow AR7 (answer per-request failures, never throw from
+  `receive`): F79 (the debug timer becomes a tick message), F80 (projection queries).
+- Item 8 also evicts the subscription cache when the database compare-and-set fails (F77).
+- The controllable clock also drives the timers M1 added: command timeout, concurrent
+  retries, saga write retries, `failedRestoreRetryAfter`, response retention.
+- Verification adds the end-to-end R6 timestamp check through delivery.
+
 **Verification**
 
 - Sequence-gate property test: for random delivery orders with duplicates, overlaps and
@@ -281,6 +294,28 @@ R7–R10, R12, R13), storage reduction by squash, and the low-risk performance f
    small hot-path waste (F33); instant reads filtered in SQL (F39); document-store migration
    in one transaction (F43).
 
+**Refined at the M1 review** (KNOWN-ISSUES §7, review 3):
+- Item 0 (AR1): the owner takes over the idempotency pre-check, the failed-restore answers
+  (F10) and the reload guard (`whenUpToDate`, F19); it drains executors when it is stopped
+  or passivated (today stopping a command handler stops its executors and their callers get
+  no reply); expired min-version queries get a reply (F81). AR7 applies to the owner and the
+  bus (the outbox-scan query still throws in the bus's `receive`).
+- Item 2 (snapshots): hook into `assureRestoredState`, which every restore path uses; a
+  snapshot that cannot be read falls back to an older one or a full replay instead of a failed
+  restore; undo and rewrite invalidate snapshots inside their own transaction; a snapshot
+  written after persist must not race that invalidation (version check).
+- Item 3 (serial mode): the executor's stop (`Terminated`) is the dequeue signal; the
+  idempotency pre-check runs again at dequeue.
+- Item 5 (outbox hook): the persist transaction becomes an `AfterCommit` transaction, and
+  the hook runs after `idempotency.record`.
+- Item 6 (squash) builds the duplicate detach (D50) that F76 (PermanentDelete of a base) also
+  needs; item 8's F27 must not bring back F69 (persist synchronously on the blocking
+  dispatcher, or stash while a persist runs); F30 also fixes the type-name cache (F78, one
+  node) and the type keys for nested classes (F50).
+- M3's schema changes (procedures for D32, F31 and D49, the snapshots table, the `events`
+  index of F38, F65's explicit UTC) are one schema step built at startup; M5's migration runner
+  then takes over all of them.
+
 **Verification**
 
 - Snapshot property test: for random command logs over testdomain aggregates (including undo
@@ -337,6 +372,14 @@ resumable after a crash, and faster than today.
    switch in one update, drop the old tables; the rebuild CLI mode uses the same path.
 9. **Rebuild throughput (F62, H1):** no bus window, many aggregates per transaction.
 
+**Refined at the M1 review** (KNOWN-ISSUES §7, review 3):
+- Batching across aggregates (D61) needs a transaction-local overlay of the subscription and
+  document caches: since D16 they change only after commit, so a second update of one
+  aggregate in a batch would fail its compare-and-set.
+- The `space_id` backfill (F49, D38) moves here, before item 7 rebuilds one organization.
+- F43 (document-store migration in one transaction) and F82 (the replayer's `System.exit`)
+  are fixed here, where that code is replaced.
+
 **Verification**
 
 - Equivalence property test: for random multi-aggregate logs (testdomain gains a
@@ -384,6 +427,19 @@ rolling upgrades from 1.0 on, and a cluster of one that behaves like today's sin
 7. **Scala 3 groundwork (D75, F50):** type keys by class name or `ClassTag`.
 8. **Metrics interface (D56, R19)** with a no-op default; trace context from metadata.
 
+**Refined at the M1 review** (KNOWN-ISSUES §7, review 3):
+- Item 6 (migration runner, F63) comes before item 3: the in-JVM multi-node tests need it. It
+  also takes over M1's startup DDL (the `commands_responses` index rebuild, the saga index).
+- Item 2 needs AR4's sealed protocol (M3) first: replies are `Try` values and generic types
+  today, which class-name manifests cannot carry (see F64).
+- Item 3: the failed-restore stop and the bus's watch (F10) become passivation; a `FirstCommand`
+  with a caller-chosen id sent to two owners during a handover must map the `aggregates` key
+  violation to a conflict, so the caller gets the stored response or the conflict.
+- Item 4: the response-retention clean-up becomes a singleton; PermanentDelete deletes
+  `subscriptions` rows from the owner's node, which breaks the single-writer premise of F48.
+- Item 5 validates `chosenAggregateId` (installation range, below 2^53, not negative).
+- F78's cross-node part: a new type name is inserted with `ON CONFLICT`.
+
 **Verification**
 
 - In-JVM multi-node tests: a command sent on node A to an aggregate owned by node B
@@ -430,6 +486,15 @@ history rewrites are complete; ephemeral aggregates and retention squash are ava
    squash-style first event under a new id; loss reported.
 6. **Retention squash with audit archive (D52, R11):** keep audit-class events in a
    readable archive; "who still uses this class" report.
+
+**Refined at the M1 review** (KNOWN-ISSUES §7, review 3):
+- Purge and complete rewrite need `commands_responses` rows tied to their aggregate (add the
+  column before Neula stores responses, H3) and saga orders tied to a space.
+- Purge detaches duplicates first (F76).
+- Ephemeral aggregates (D77) need their own in-memory store: `MemoryEventStoreState` is a test
+  double (no synchronization, no rollback).
+- The import round trip can use two schemas of one database (F71).
+- The F49 backfill moved to M4.
 
 **Verification**
 
@@ -516,6 +581,13 @@ GitHub documentation alone; the 0.12.47 → 1.0 migration is rehearsed on produc
    wiring changes for 1.0.
 8. **Release:** version `1.0.0`, tag `v1.0.0`; the owner publishes to Nexus.
 
+**Refined at the M1 review** (KNOWN-ISSUES §7, review 3): the upgrade runbook carries M1's
+prerequisites (`PostgresCommandResponseState.initSchema()`, H5; no duplicate `sagas` rows, F34;
+`StoredDataCheck` and the F76 query on a production copy) and the later format changes (AR5's
+`respond_to`, M4's projection tables, M3's procedures). The user guide states the one-writer
+rule (I1) in practice: a running owner never sees writes made around it, so repairs and
+imports run while the aggregate's owner is stopped (queries do not reload).
+
 **Verification**
 
 - Every example compiles and its test passes in the local test run; E2 also runs as a
@@ -571,16 +643,17 @@ Measured at M1 (baseline) and re-measured at the end of every milestone with the
 module; results committed under `docs/perf/`. A regression beyond the measurement noise
 blocks the milestone until explained.
 
-| Metric | How | Expected direction (estimates from code reading, to be replaced by measurements) |
-|---|---|---|
-| Command latency p50/p95/p99, one aggregate and many | load driver over testdomain | lower in serial mode under contention (no retry storm); unchanged otherwise |
-| Database statements and commits per command | statement counter | about 3 + 3S round trips today for S subscribers (estimate); fewer with batched outbox deletes |
-| Persist throughput (events/s) | load driver | higher with set-based `add_events` and the blocking dispatcher |
-| Restore time at 1k, 10k, 100k, 500k events | restore benchmark | today about 5–20 s and hundreds of MB at 500k (estimate); with snapshots: one snapshot + at most `every` events (Neula target: snapshot + 200 events) |
-| Projection throughput (events/s, one projection) | load driver | higher with batching across aggregates (M4) |
-| Rebuild throughput and peak memory | rebuild benchmark | much higher without the 100-event window and per-aggregate transactions (estimate) |
-| Memory after a soak run | heap after GC | flat; delivery bookkeeping zero at idle |
-| Startup time to ready | timer | no fixed 10 s / 30 s waits |
+| Metric | How | M1 baseline (measured, `docs/perf/baseline-M1.md`) | Expected direction |
+|---|---|---|---|
+| Command latency p50/p95/p99, many aggregates | bench | 2.4 / 5.0 / 7.2 ms with two projections; 1.6 / 2.3 / 2.8 ms without | unchanged; lower with the blocking dispatcher under load |
+| Command latency, one contended aggregate | bench | p50 0.6 ms, p99 190–320 ms, max 0.7–1.1 s (retries) | much lower tail in serial mode (M3) |
+| Database statements per command | statement counter | 2 + 2 per subscriber (2.0 without, 6.0 with two projections) | fewer with batched outbox deletes (M2) and projection batching (M4) |
+| Persist throughput | bench | 5.5k commands/s with two projections, 9k without; 21–22k events/s through the store in batches | higher with set-based `add_events` (M3) |
+| Restore time and peak heap | bench | 1k: 14 ms; 10k: 46 ms; 100k: 0.4 s / 132 MB; 500k: 2.3 s / 452 MB | with snapshots: one snapshot + at most `every` events (Neula target: snapshot + 200 events); streaming restore (F22) flattens the heap |
+| Projection throughput (one projection) | bench | about 1.7k events/s, 1.3 s behind after a 3 200-command load | higher with batching across aggregates (M4) |
+| Rebuild throughput and peak memory | bench | 0.12 replayer: about 3.1k events/s, peak heap about 200 MB for 108k events | much higher with the shadow rebuild (M4) |
+| Memory after a soak run | bench | heap after GC 15 → 36 → 19 MB (before, after 215k commands, after 20 s idle) | flat; delivery bookkeeping zero at idle |
+| Startup time to ready | bench | first command answered in about 0.5 s, first projected event 0.5–0.65 s | unchanged; no fixed waits for re-sends (the 10 s / 30 s timers go with D8) |
 
 Neula's own targets (verified by Neula's load tests, not by the library): task completion
 p95 below 150 ms excluding scripts and jobs; restore from at most one snapshot plus 200
@@ -768,3 +841,24 @@ Open test-infrastructure items:
   about the aggregate).
 - D78 dry-run tool `StoredDataCheck` (with the F49 and D29 pre-check counts), for Neula to
   run on a production copy; test `StoredDataCheckSpec`.
+
+**16/10/2026: M1 review (review 3) and close**
+- Architecture description, plan and decisions checked against the code (two read-only
+  audits plus our own reading; every finding verified in the code). No decision is reversed;
+  D11 and D12 are worded as implemented. Findings and the refinements per milestone are in
+  KNOWN-ISSUES §7 (review 3) and in the "Refined at the M1 review" blocks above; the §7
+  performance table now holds the measured baseline.
+- Fixed from the audits: F73 (concurrent rewrite retried without its events), F74 (a leaked
+  actor per historical events query), F75 (id-generator failures restarted the command bus
+  and the saga actor). New issues F76–F82; F43, F50, the F49 backfill and part of F33 moved.
+- `docs/ARCHITECTURE.md` brought up to date with M1; `CLAUDE.md` §7 now points to
+  KNOWN-ISSUES (D5).
+- `EventsReplaySpec` (the F4 reproduction) runs as `pendingUntilFixed`.
+- `sbt test`: 98 passed, 1 pending, 0 failed.
+- Neula acceptance in M1: R4, R5, R6, R7 and R9 pass as library tests; R2 is covered at the
+  state level (`CachesAfterRollbackSpec`: a rolled-back listener leaves the subscription at
+  its version, so the re-sent events are applied), its timely re-delivery comes with M2.
+- Exit criteria: every M1 library issue is fixed; the checks on a production copy are
+  Neula's and still open (`StoredDataCheck` for F52 with the F49 and D29 counts, the H4 grep
+  for F53, the F76 query; H3–H5). They gate Neula's move to 1.0 (M7 runbook), not M2, so M1
+  is tagged `v1.0.0-M1` with them open.
