@@ -4,7 +4,7 @@ import java.time.Instant
 
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.api.{AggregateVersion, Event, EventWithVersion}
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
+import io.reactivecqrs.core.eventstore.NewEvents
 import org.apache.pekko.actor.ActorRef
 import org.scalatest.GivenWhenThen
 import org.scalatest.featurespec.AnyFeatureSpec
@@ -26,7 +26,7 @@ class MemoryEventStoreStateTestDoubleSpec extends AnyFeatureSpec with GivenWhenT
 
   private def persist[R](store: MemoryEventStoreState, aggregateId: AggregateId, expectedVersion: Int, events: Event[R]*): Unit = {
     store.persistEvents(aggregateId,
-      PersistEvents(ActorRef.noSender, CommandId(1), UserId(1), AggregateVersion(expectedVersion), longAgo, events, None))(NoSession).get
+      NewEvents(UserId(1), AggregateVersion(expectedVersion), longAgo, events))(NoSession).get
   }
 
   private def eventsOf(store: MemoryEventStoreState, aggregateId: AggregateId): Vector[Event[SomeAggregate]] = {

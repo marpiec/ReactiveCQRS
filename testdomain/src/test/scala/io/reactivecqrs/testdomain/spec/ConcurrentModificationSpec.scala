@@ -5,7 +5,7 @@ import java.time.Instant
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
+import io.reactivecqrs.core.eventstore.NewEvents
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
@@ -31,7 +31,7 @@ class InterferingEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesName
   val interferencesLeft = new java.util.concurrent.atomic.AtomicInteger(Int.MaxValue)
 
   override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId,
-                                             eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = {
+                                             eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = {
     if (interfereWith.contains(aggregateId) && interferencesLeft.getAndDecrement() > 0) {
       writeFromElsewhere(aggregateId, eventsEnvelope.expectedVersion, ItemAdded("from elsewhere"))
     }
@@ -42,7 +42,7 @@ class InterferingEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesName
   def writeFromElsewhere(aggregateId: AggregateId, expectedVersion: AggregateVersion, event: Event[ShoppingCart]): Unit = {
     DB.localTx { session =>
       super.persistEvents(aggregateId,
-        PersistEvents[ShoppingCart](ActorRef.noSender, CommandId(0), UserId(2), expectedVersion, Instant.now, Seq(event), None))(session).get
+        NewEvents[ShoppingCart](UserId(2), expectedVersion, Instant.now, Seq(event)))(session).get
     }
   }
 }

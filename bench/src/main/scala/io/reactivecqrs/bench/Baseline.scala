@@ -9,7 +9,7 @@ import java.util.concurrent.{ConcurrentHashMap, Executors}
 
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
+import io.reactivecqrs.core.eventstore.NewEvents
 import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, ReplayAllEvents}
 import io.reactivecqrs.core.eventsreplayer.{EventsReplayerActor, ReplayerConfig, ReplayerRepositoryActorFactory}
 import org.apache.pekko.actor.{ActorRef, Props}
@@ -330,7 +330,7 @@ object Baseline {
       val batch: Seq[Event[Counter]] = (version until math.min(events, version + 1000)).map(v => if (v == 0) CounterCreated(io.reactivecqrs.api.id.SpaceId(0)) else Incremented(note))
       val expected = AggregateVersion(version)
       stores.eventStore.localTx { session =>
-        stores.eventStore.persistEvents(id, PersistEvents[Counter](ActorRef.noSender, CommandId(0), userId, expected, Instant.now, batch, None))(session).get
+        stores.eventStore.persistEvents(id, NewEvents[Counter](userId, expected, Instant.now, batch))(session).get
         sql"DELETE FROM events_to_publish WHERE aggregate_id = ${id.asLong}".update()(session)
       }
       version += batch.size

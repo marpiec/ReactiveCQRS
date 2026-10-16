@@ -4,10 +4,12 @@ import java.time.Instant
 
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import scalikejdbc.DBSession
 
 import scala.util.Try
+
+/** The events of one command, stored after `expectedVersion` with one user and one timestamp (D10). */
+case class NewEvents[AGGREGATE_ROOT](userId: UserId, expectedVersion: AggregateVersion, timestamp: Instant, events: Seq[Event[AGGREGATE_ROOT]])
 
 /** An aggregate with rows waiting in the outbox: its oldest waiting version, and when that event was written. */
 case class WaitingInOutbox(aggregateType: AggregateType, aggregateId: AggregateId, oldestVersion: AggregateVersion, since: Instant)
@@ -15,7 +17,7 @@ case class WaitingInOutbox(aggregateType: AggregateType, aggregateId: AggregateI
 abstract class EventStoreState {
   def countAllEvents(): Int
   def countEventsForAggregateTypes(strings: Seq[String]): Int
-  def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]]
+  def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]]
   def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit
   def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, version: Option[Either[AggregateVersion, Instant]])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit
   def readAndProcessAllEvents(aggregateType: String,

@@ -5,7 +5,7 @@ import java.time.Instant
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, SagaId, UserId}
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
+import io.reactivecqrs.core.eventstore.NewEvents
 import io.reactivecqrs.core.commandhandler.PostgresCommandResponseState
 import io.reactivecqrs.core.documentstore.{NoopDocumentStoreCache, PostgresDocumentStore}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
@@ -46,8 +46,8 @@ class StoredDataCheckSpec extends CommonSpec {
       Given("a cart with two events, a saga, an idempotent response and a projection document")
       val cartId = AggregateId(System.nanoTime())
       eventStore.localTx { session =>
-        eventStore.persistEvents(cartId, PersistEvents[ShoppingCart](ActorRef.noSender, CommandId(0), userId, AggregateVersion.ZERO,
-          Instant.now, Seq(ShoppingCartCreated("Checked"), ItemAdded("apple")), None))(session)
+        eventStore.persistEvents(cartId, NewEvents[ShoppingCart](userId, AggregateVersion.ZERO,
+          Instant.now, Seq(ShoppingCartCreated("Checked"), ItemAdded("apple"))))(session)
       }.get
       sagas.createSaga("StoredDataCheckSpec", SagaId(System.nanoTime()), "respondTo", CreateMultipleCarts(userId, "carts", 2))
       DB.localTx { implicit session =>

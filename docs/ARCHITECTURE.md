@@ -5,8 +5,8 @@ events and feeds projections/listeners. It is meant as the baseline for future c
 to the library's behaviour.
 
 > **Provenance.** Static read of `master` @ `4b5060f` (version 0.12.47), 16/10/2026, updated for
-> the changes of milestones M1 (to `cc8925c`) and M2 (the delivery module, to `v1.0.0-M2`), and
-> checked against that code at each milestone review. Where a milestone changed the code,
+> the changes of milestones M1 (to `cc8925c`), M2 (the delivery module, to `v1.0.0-M2`) and M3 as
+> it goes (the aggregate owner), and checked against that code at each milestone review. Where a milestone changed the code,
 > references name methods; the remaining line numbers are from `4b5060f` and may have drifted
 > by a few lines. Defaults and limits quoted below are the literal values in the code;
 > measured performance is in `docs/perf/`.
@@ -25,8 +25,9 @@ unless the path says `api/` or `testdomain/`).
 | Short name | Path |
 |---|---|
 | `AggregateContext.scala`, `Command.scala`, `Event.scala`, `CommandResult.scala`, `CustomCommandResponse.scala`, `Aggregate.scala` | `api/src/main/scala/io/reactivecqrs/api/` |
-| `AggregateCommandBusActor.scala`, `CommandHandlerActor.scala`, `CommandExecutorActor.scala`, `CommandResponseState.scala`, `Idempotency.scala` | `commandhandler/` |
-| `AggregateRepositoryActor.scala`, `ReplayAggregateRepositoryActor.scala` | `aggregaterepository/` |
+| `AggregateCommandBusActor.scala`, `CommandResponseState.scala`, `Idempotency.scala` | `commandhandler/` |
+| `AggregateOwner.scala` (with `OwnerSettings`), `AggregateRestorer.scala` (M3) | `aggregate/` |
+| `ReplayAggregateRepositoryActor.scala` (the 0.12 replayer's, until M4) | `aggregaterepository/` |
 | `PostgresEventStoreState.scala`, `PostgresEventStoreSchemaInitializer.scala`, `EventStoreState.scala` | `eventstore/` |
 | `EventsBusActor.scala`, `SubscriptionClassifier.scala` | `eventbus/` |
 | `SequenceGate.scala`, `RedeliveryPolicy.scala`, `OutboxPollerActor.scala`, `Republish.scala` (the delivery module, M2) | `delivery/` |
@@ -49,15 +50,12 @@ unless the path says `api/` or `testdomain/`).
 ```
 caller ──command──▶ AggregateCommandBusActor          one per aggregate TYPE
                       │ takes CommandId / AggregateId from pools (UidGeneratorActor)
+                      │ CommandEnvelope(respondTo, commandId, command)
                       ▼
-                    CommandHandlerActor                one per aggregate INSTANCE
-                      │ idempotency lookup (commands_responses), spawns ▼
-                    CommandExecutorActor               one per command, stops after its one reply
-                      │ ① asks for state   ② runs command handler   ③ PersistEvents
-                      ▼
-                    AggregateRepositoryActor           one per aggregate INSTANCE, owns state+version
+                    AggregateOwner                     one per aggregate INSTANCE, owns state+version
+                      │ idempotency lookup (commands_responses); runs the command handler as a Future
                       │ localTx: add_event(s) → events, aggregates, events_to_publish (+ command response)
-                      │ PublishEvents(type, events, id, Option(root))
+                      │ answers the caller; PublishEvents(type, events, id, Option(root))
                       ▼
                     EventsBusActor                     one per system
                       │ IdentifiableEvents | AggregateWithType | AggregateWithTypeAndEvents
@@ -66,8 +64,9 @@ caller ──command──▶ AggregateCommandBusActor          one per aggregat
                       │ SequenceGate; localTx: listener(...) + SubscriptionsState compare-and-set
                       │ MessageAck | MessageFailed | RequestRepublish (a gap)
                       ▼
-                    EventsBusActor ──PublishEventsAck──▶ AggregateRepositoryActor
-                                                          └─ delete the outbox rows (batched)
+                    EventsBusActor ──PublishEventsAck──▶ AggregateCommandBusActor
+                                                          ├─ deletes the outbox rows (batched)
+                                                          └─ passes the ack to a live owner
 
 OutboxPollerActor (one per system) ──Republish──▶ EventsBusActor ──▶ the type's command bus ──▶ owner
    every 30 s reads events_to_publish; re-publication at 3 and 6 minutes, "undelivered" at 10 (D8)
@@ -97,10 +96,10 @@ to that model.
 - The framework exposes it as `Aggregate[R](id, version, aggregateRoot: Option[R])`
   (`Aggregate.scala:16`). `aggregateRoot` is `None` when the aggregate never existed
   (version 0) or when an event handler returned `null`, which means "deleted"
-  (`Option(aggregateRoot)` in `AggregateRepositoryActor.publish`).
-- **It must be immutable.** The same instance is held by the repository actor and sent
-  inside `PublishEvents` to the bus and every subscriber, on other threads
-  (`AggregateRepositoryActor.publish`).
+  (`Option(root)` in `AggregateOwner.publish`).
+- **It must be immutable.** The same instance is held by the owner, given to command handlers
+  that run as futures, and sent inside `PublishEvents` to the bus and every subscriber, on
+  other threads (`AggregateOwner.runHandler`, `publish`).
 - **It should be a top-level class (inferred invariant).** The type name is derived in
   three ways that agree only for top-level classes: `classTag.toString`
   (`AggregateContext.aggregateType`, gives `Outer$Inner`), `typeOf[R].toString` (projection
@@ -143,13 +142,13 @@ through the removed `EV(...)` mappings) fails to read with `UnsupportedEventVers
 The five kinds are **abstract classes**, so a command is exactly one kind; the bus tells
 them apart by class (`AggregateCommandBusActor.receive`).
 
-| Kind | Members | State the executor requests | Version check | On concurrent modification |
+| Kind | Members | State the handler runs on | Version check | On concurrent modification |
 |---|---|---|---|---|
-| `FirstCommand` | `userId`; since 1.0 optionally `chosenAggregateId` | none; `initialAggregateRoot` is passed directly (`CommandHandlerActor.receive`) | expected = 0 | `AggregateConcurrentModificationError` (the chosen aggregate exists) |
-| `Command` | `userId`, `aggregateId`, `expectedVersion` | `GetAggregateRootExactVersion`; since 1.0 the actor reloads first when the expected version is newer than its own (F19) | strict | `AggregateConcurrentModificationError`; also for an aggregate that does not exist (`was` = 0, F67) |
-| `ConcurrentCommand` | `userId`, `aggregateId` | `GetAggregateRootCurrentVersion` | current version | state re-fetched and handler re-run, at most 10 more times, with jittered back-off from 5–10 ms up to 250–500 ms (`CommandExecutorActor.onConflict`) |
-| `RewriteHistoryCommand` | + `expectedVersion`, `eventsTypes` | `GetAggregateRootWithEventsExactVersion` | strict | error |
-| `RewriteHistoryConcurrentCommand` | + `eventsTypes` | `GetAggregateRootWithEventsCurrentVersion` | current version | re-run like `ConcurrentCommand`, again with the events (fixed F73) |
+| `FirstCommand` | `userId`; since 1.0 optionally `chosenAggregateId` | `initialAggregateRoot` | expected = 0 | `AggregateConcurrentModificationError` (the chosen aggregate exists) |
+| `Command` | `userId`, `aggregateId`, `expectedVersion` | the owner's state; the owner reloads first when the expected version is newer than its own (F19) | strict | `AggregateConcurrentModificationError` at once, without running the handler; also for an aggregate that does not exist (`was` = 0, F67) |
+| `ConcurrentCommand` | `userId`, `aggregateId` | the owner's current state | current version | handler run again on the new state, at most 10 attempts, waiting 10 ms doubling to 500 ms, jittered (`AggregateOwner.conflict`, D37) |
+| `RewriteHistoryCommand` | + `expectedVersion`, `eventsTypes` | the state and the events of `eventsTypes` | strict | error |
+| `RewriteHistoryConcurrentCommand` | + `eventsTypes` | the current state and the events of `eventsTypes` | current version | run again like `ConcurrentCommand`, with the events read again (fixed F73) |
 
 Mix-in `IdempotentCommand[IID]` with `idempotencyId: Option[IID]` makes a command take
 effect once per key `IID.asDbKey` (`SagaStep(sagaId, step)` → `"sagaId|step"`); keys are
@@ -174,35 +173,35 @@ class without type parameters; the host must call `PostgresCommandResponseState.
 | Result | Effect | Response to caller (`CustomCommandResponse.scala`) |
 |---|---|---|
 | `CommandSuccess(events, info)` | events persisted | `SuccessResponse(id, version + n)`, or `CustomSuccessResponse(id, version + n, info)` when `info` is not `Nothing` |
-| `CommandSuccess(Nil)` | nothing written at all, not even a statement (R9, `CommandExecutorActor.handleCommandResult`) | `SuccessResponse(id, version)` |
+| `CommandSuccess(Nil)` | nothing written at all, not even a statement (R9, `AggregateOwner.persistOrAnswer`) | `SuccessResponse(id, version)` |
 | `CommandFailure(msgs)` | nothing persisted | `FailureResponse(msgs)` |
 | `RewriteCommandSuccess(rewritten, events, info)` | past events overwritten, then new events persisted | as success |
-| `AsyncCommandResult(Future[...])` | the future's result is sent back to the executor | as above |
+| `AsyncCommandResult(Future[...])` | the future's result comes back to the owner as a message | as above |
 | exception or unhandled command (`MatchError`) | logged with an errorId | `CommandHandlingError(name, errorId, commandId)` |
-| no result within `AggregateContext.commandTimeout` (60 s) | the executor stops; the command may still be applied | `CommandHandlingError` (F20) |
-| the aggregate's restore failed (§4.4) | nothing persisted | `CommandHandlingError`; a `FirstCommand` gets `EventHandlingError` at persist |
+| no result within `AggregateContext.commandTimeout` (60 s) | a result that comes later is dropped: the command is not applied (since M3) | `CommandHandlingError` (F20, R5) |
+| the aggregate's restore failed (§4.4) | nothing persisted | `CommandHandlingError` |
 | no id available (the uid generator fails) | nothing persisted, the bus keeps running (F75) | `CommandHandlingError` with command id 0 |
-| event handler failed in tryout or persist | nothing persisted | `EventHandlingError(...)` |
+| event handler failed before persisting, or the persist failed | nothing persisted | `EventHandlingError(...)` |
 | version mismatch (memory or SQL) | nothing persisted | `AggregateConcurrentModificationError(...)`, or the stored response for an idempotent command whose copy won |
 | idempotency key taken, but its response already removed by retention | nothing persisted | `CommandHandlingError` |
 
 `AggregateContext` provides an implicit `Future[CustomCommandResult] → AsyncCommandResult`
-conversion (`AggregateContext.scala:26-28`). A command sent to a deleted aggregate throws
-"Aggregate is already deleted" and yields `CommandHandlingError`
-(`CommandExecutorActor.handleFollowingCommand`).
+conversion (`AggregateContext.scala:26-28`). A command sent to a deleted aggregate, or to one that does not
+exist, fails with "is already deleted" (or "does not exist") and yields
+`CommandHandlingError` (`AggregateOwner.runHandler`).
 
 ### 2.6 Event handlers
 
 `eventHandlers: (UserId, Instant, R) => PartialFunction[Any, R]` (`AggregateContext.scala:38,42`).
-They run in four places:
+They run in three places:
 
-1. **Tryout** before persisting, on a copy of the state (`AggregateRepositoryActor.tryToApplyEvents`).
-   A failure aborts the command with `EventHandlingError`; nothing is written.
-2. **Apply** right after the transaction commits (`applyPersisted`).
-3. **Restore** on the actor's first message, and again on every reload: after an SQL
-   conflict, when a command expects a newer version than the actor holds (F19), and after an
-   undo or duplication event (`assureRestoredState`, `handleEvent`).
-4. **Replay** during projection rebuilds (`ReplayAggregateRepositoryActor.scala:45-59`).
+1. **Before persisting**, on a copy of the state (`AggregateOwner.nextRoot`). A failure
+   aborts the command with `EventHandlingError`; nothing is written. After the commit the
+   copy becomes the owner's state, so they run once per event (fixed F25).
+2. **Restore** on the owner's first message, and again on every reload: after an SQL
+   conflict, when a command expects a newer version than the owner holds (F19), and after an
+   undo, a duplication event or a rewrite (`AggregateRestorer.restore`).
+3. **Replay** during projection rebuilds (`ReplayAggregateRepositoryActor.scala:45-59`).
 
 Rules that follow:
 
@@ -215,7 +214,7 @@ Rules that follow:
 - Handle `DuplicationEvent` subclasses by returning the given root unchanged: on restore,
   the base aggregate's events have already been applied (`:27`).
 - Undone (noop) events are skipped on restore but still count towards the version
-  (`AggregateRepositoryActor.handleEvent`).
+  (`AggregateRestorer.restore`).
 
 ### 2.7 `AggregateContext`: the binding unit
 
@@ -246,53 +245,52 @@ abstract class AggregateContext[R : ClassTag] {           // AggregateContext.sc
 
 ## 3. Write path: command → events
 
-1. **Routing** (`AggregateCommandBusActor.receive` and the `route*` methods). The bus takes a
-   `CommandId` (and, for `FirstCommand` without `chosenAggregateId`, a new `AggregateId`) from
-   in-memory pools. When a pool is empty it calls `UidGeneratorActor` with a **blocking**
-   `Await` of up to 60 s (`takeNextCommandId`, `takeNextAggregateId`); since F75 a failing
-   generator is answered with `CommandHandlingError` instead of restarting the bus, and since
-   F70 so is a message the bus does not understand (`Status.Failure`). It then creates or
-   reuses the `CommandHandlerActor` (and its `AggregateRepositoryActor`) and forwards an
-   `Internal*CommandEnvelope(respondTo, commandId, command)`.
-2. **Idempotency** (`CommandHandlerActor`). For an `IdempotentCommand` with a key, a
+1. **Routing** (`AggregateCommandBusActor.routeCommand`). The bus takes a `CommandId` (and,
+   for a `FirstCommand` without `chosenAggregateId`, a new `AggregateId`) from in-memory
+   pools. When a pool is empty it calls `UidGeneratorActor` with a **blocking** `Await` of up
+   to 60 s (F23, until M3's performance step); a failing generator is answered with
+   `CommandHandlingError` (F75), a message the bus does not understand with `Status.Failure`
+   (F70). It sends `CommandEnvelope(respondTo, commandId, command)` to the aggregate's
+   `AggregateOwner`, creating it if needed; an id just taken from the pool makes a *fresh*
+   owner, which skips the restore query.
+2. **Idempotency** (`AggregateOwner.attempt`). For an `IdempotentCommand` with a key, a
    synchronous `commands_responses` lookup returns the stored response instead of
-   executing. Copies running at the same time are settled at persist (steps 6 and 7).
-3. **Executor** (`CommandHandlerActor.receive`). A `CommandExecutorActor` is spawned
-   per command; the handler actor asks the repository for the state the command kind
-   needs (table in §2.4).
-4. **Handler** (`CommandExecutorActor.handleFollowingCommand`, `handleFirstCommand`). The
-   in-memory version check runs first, then the command handler; sync results and async
-   results (via `onComplete → self !`) converge on `handleCommandResult`.
-5. **PersistEvents** carries `expectedVersion`, one timestamp taken **in the executor** and
-   truncated to microseconds (`eventsTimestamp`), the events and an optional
-   `IdempotentCommandInfo`.
-6. **Repository** (`AggregateRepositoryActor.handlePersistEvents`). Tryout of all events on
-   the current root, then a second in-memory check `expectedVersion == version`, then
-   `persist`: one `eventStore.localTx` on the actor thread that
+   executing. Copies running at the same time are settled at persist (step 5).
+3. **Version check.** A `Command` or `RewriteHistoryCommand` expecting a version above the
+   owner's reloads first (another writer moved the aggregate on, F19); a mismatch is
+   `AggregateConcurrentModificationError` at once, without running the handler. A
+   `FirstCommand` expects version 0; the concurrent kinds run on the current version.
+4. **Handler** (`AggregateOwner.runHandler`). The handler runs as a `Future` on the owner's
+   state (an immutable value; a rewrite also gets the events of the classes it names, read
+   before); an `AsyncCommandResult` is flattened, and the result comes back as a message. A
+   timer per command answers `CommandHandlingError` at the context's `commandTimeout` (R5); a
+   result that arrives later is dropped, so a timed-out command is never persisted.
+5. **Persist** (`AggregateOwner.persist`). A command without events writes nothing (R9).
+   When another command persisted since the handler started, a `ConcurrentCommand` (or
+   concurrent rewrite) runs again on the new state after a `Backoff` wait (10 ms doubling to
+   500 ms, jittered, at most 10 attempts, D37), and any other command gets the conflict error
+   (after the idempotency check). Otherwise the event handlers run once, on a copy of the state
+   (F25), and one `eventStore.localTx` on the owner's thread
    - optionally overwrites past events (rewrite commands),
-   - calls `persistEvents` (`add_event` per event, or one `add_events` call for 2+ plain/first events),
+   - calls `persistEvents` (`add_event` per event, or one `add_events` call for 2+
+     plain/first events), with one timestamp truncated to microseconds (D10),
    - stores the idempotent command response in the **same transaction**
      (`INSERT … ON CONFLICT (key) DO NOTHING`; nothing inserted means the key is taken).
 
-   Any failure inside the transaction is thrown, so it rolls back whole (fixed F68: a
-   later step used to fail after earlier statements had run, and they were committed).
-7. **After commit** the repository applies the events to its in-memory root at once (or
-   re-reads everything for undo/duplication events), sends `PublishEvents` to the bus,
-   answers any waiting `GetAggregateMinVersion`
-   queries and replies `AggregateModified` to the executor, which forwards the prepared
-   response to the caller. Every other outcome is one reply as well (AR3): "Concurrent
-   aggregate modification exception" from PostgreSQL → reload, then
-   `AggregateConcurrentModificationError`; a taken idempotency key → `IdempotencyKeyTaken`;
-   anything else → `EventHandlingError`. For an idempotent command the executor answers a
-   conflict or a taken key with the stored response. If the re-read after an undo or
-   duplication event fails, nothing is published and the actor enters the failed-restore
-   state (§4.4); the caller still gets success, because the events are committed, and the
-   outbox poller has them re-published later.
+   Any failure inside the transaction is thrown, so it rolls back whole (fixed F68).
+6. **After commit** the copy of step 5 becomes the owner's state (undo and duplication
+   events, and rewrites, re-read it from the store instead), the events are published,
+   waiting `GetAggregateMinVersion` queries are answered, and the caller gets the response
+   with the new version. Every other outcome is one answer as well: "Concurrent aggregate
+   modification exception" from PostgreSQL → reload, then the conflict rule of step 5; a
+   taken idempotency key → the stored response; anything else → `EventHandlingError`. If the
+   re-read after an undo, duplication or rewrite fails, nothing is published and the owner
+   enters the failed-restore state (§4.4); the caller still gets success, because the events
+   are committed, and the outbox poller has them re-published later.
 
-Ordering note: the state changes before the next message is processed (fixed F69; it used
-to change through a self-message, and a reload in between applied the events twice), so a
-`PersistEvents` already queued behind a successful one is rejected by the in-memory version
-check. The SQL lock (§4.2) still catches writers outside this actor.
+Ordering note: the state changes before the next message is processed (fixed F69), so a
+command whose handler ran on the older state meets the version check of step 5. The SQL lock
+(§4.2) still catches writers outside the owner.
 
 ---
 
@@ -334,9 +332,10 @@ Related functions:
 - `add_duplication_event` (`:231-263`) copies the base's `aggregates` chain rows, caps the
   base row at `_base_version`, and appends its own row with `base_order = n + 1`.
 
-Version checks happen twice: in memory (repository actor) and in SQL. The SQL check is the
-real arbiter, for example when two repository actors exist for one aggregate during
-reaping, or in a multi-node setup.
+Version checks happen twice: in memory (the owner) and in SQL. The SQL check is the real
+arbiter for writers outside the owner: another node (M5), or a write made outside the
+library. Two owners of one aggregate never run at once in one command bus: a new one starts
+only after the stopped one terminated (§4.4).
 
 Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` characters
 (overridable per class), `aggregateVersionLimit = 10000`, `fetchSize = 1000`.
@@ -348,52 +347,60 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   (`events.aggregate_id = aggregates.base_id AND events.version <= aggregates.base_version`),
   left-join `noop_events` to get the noop flag, order by `base_order, version`. Ancestor
   events rebuild the state but don't increment the version (`aggId == aggregateId` check).
-- **There are no snapshots.** Every restore replays the whole chain on the actor thread:
-  on the actor's first message and on every reload (§2.6). Measured: about 210k events/s,
-  with peak heap growing with the history (452 MB at 500k events, `docs/perf/baseline-M1.md`).
-- **Historical reads** (`GetAggregateForVersion`, `GetAggregateAtInstant`,
-  `GetEventsForAggregateForVersion`) spawn a temporary repository actor that answers once
-  and stops (`stopIfSingleRead`; the events read did not before F74)
-  (`AggregateCommandBusActor.createAggregateRepositoryActorForVersion`, `…ForInstant`). Version reads filter the aggregate's own
-  events in SQL (`PostgresEventStoreState.scala:204-211`); instant reads fetch **all**
-  events and filter in Scala after deserialization (`:233`, TODO). Restore reads use
-  `DB.readOnly` with autocommit on and no `fetchSize`, so the PostgreSQL driver loads the
-  whole result set into memory before the first row is handled.
-- `GetAggregateMinVersion(id, v, maxMillis)` parks the request in `delayedQueries` until
-  the version is reached; an expired query is dropped without a reply (F81)
-  (`AggregateRepositoryActor.receiveReturnAggregateRootMinVersion`).
-- Queries never reload: a running actor does not see writes made around it (I1, one writer
+- **There are no snapshots.** Every restore replays the whole chain on the owner's thread:
+  on the owner's first message and on every reload (§3). Measured: about 230k events/s,
+  with peak heap growing with the history (450 MB at 500k events, `docs/perf/baseline-M2.md`).
+- **The restore module** (`AggregateRestorer`): the state at the newest version, at a version
+  or at an instant, and the events behind it; it hides the chains and the noop events. The
+  owner restores through it, and the command bus answers **historical reads**
+  (`GetAggregateForVersion`, `GetAggregateAtInstant`, `GetEventsForAggregateForVersion`) with
+  it in a `Future`, without an actor (since M3; before, each read started a temporary
+  repository actor). Version reads filter the aggregate's own events in SQL
+  (`readAndProcessEvents`); instant reads fetch **all** events and filter in Scala after
+  deserialization (F39). Restore reads use `DB.readOnly` with autocommit on and no
+  `fetchSize`, so the PostgreSQL driver loads the whole result set into memory before the
+  first row is handled (F22).
+- `GetAggregateMinVersion(id, v, maxMillis)` waits in the owner until the version is reached
+  and is answered then; when `maxMillis` passes first, it is answered with
+  `Failure(AggregateInIncorrectVersionException)` (fixed F81).
+- Queries never reload: a running owner does not see writes made around it (I1, one writer
   per aggregate). Only a command that expects a newer version reloads it (F19).
 
-### 4.4 Repository-actor lifecycle
+### 4.4 Owner lifecycle
 
 - Created lazily by `AggregateCommandBusActor` on the first command, query or re-publish
-  request for an id (`getOrCreateAggregateRepositoryActor`). The first message runs
-  `assureRestoredState()`, which only reads the state; what waits in the outbox is
-  re-published when the outbox poller asks (D8, F72).
-- **Failed restore** (fixed F10): the actor answers queries with
-  `Failure(AggregateRestoreFailedException)` and persists with `EventHandlingError`, then stops
-  after `failedRestoreRetryAfter` (5 s). The command bus watches its repository actors and on
-  `Terminated` drops the actor and its command handler, so the next request restores again.
+  request for an id. The first message restores the state; what waits in the outbox is
+  re-published when the outbox poller asks (D8, F72). An owner made for an id just taken from
+  the pool starts at version 0 without reading.
+- **Failed restore** (F10, D11): the owner answers commands with `CommandHandlingError` and
+  queries with `Failure(AggregateRestoreFailedException)`, and after `failedRestoreRetryAfter`
+  (5 s) asks the command bus to stop it (`OwnerPassivate`); the next request restores again in
+  a new owner.
+- **Stopping (passivation):** the command bus sends `StopOwner` and keeps the messages that
+  arrive for that aggregate meanwhile; the owner answers the commands it started (and any
+  waiting min-version queries) and stops; once it terminated, a new owner gets the kept
+  messages. Reasons: reaping (below), a permanent delete, a failed restore, and
+  `PassivateAggregate(id)` (operations, tests). It is Cluster Sharding's passivation (D43,
+  D72), so M5 can put a shard in the bus's place without changing the owner.
 - **Reaping** (`AggregateCommandBusActor.clearOldAggregateRepositories`): at most every 5
-  minutes, and only when a command or query arrives. When more than `keepAliveLimit` (200)
-  actors are tracked, the least-recently used ones idle for more than 2 minutes are killed;
-  any actor idle for more than `maxInactivityMillis` (12 h) is killed too. Kill =
-  `PoisonPill` plus removal from the maps; a replacement may start while the old one drains
-  (`spawnedCount` keeps names unique). Stopping a command handler also stops its executors,
-  so a command still running then gets no reply (AR1 drains them, M3).
-- No `supervisorStrategy` in `core`: Pekko defaults apply, so a throw inside `receive`
-  restarts an actor and stops its children (AR7). Since M2 the event bus, the projections and
-  the outbox poller answer or log a failing message instead of throwing; the owner and the
-  command bus follow in M3. `DeathWatch`: the command bus on its repository actors, the event
-  bus on its subscribers.
+  minutes, and only when a message for some owner arrives. When more than `keepAliveLimit`
+  (200) owners are tracked, the least recently used ones idle for more than 2 minutes are
+  stopped; any owner idle for more than `maxInactivityMillis` (12 h) too.
+- **Failures (AR7):** the owner never throws from `receive`: a failure that belongs to one
+  command or query is answered to its caller; an unexpected failure of the owner itself is
+  logged, and its state is read again from the store with the next message. The command bus's
+  supervisor strategy stops a failed owner instead of restarting it (a restart would lose its
+  pending callers). The event bus, the projections and the outbox poller (M2) also answer or
+  log a failing message. `DeathWatch`: the command bus on its owners, the event bus on its
+  subscribers.
 
 ### 4.5 History rewrite and permanent delete
 
 - **Rewrite** (`RewriteCommandSuccess`): `overwriteEvents` runs `UPDATE events SET event = ?`
-  per `(aggregate_id, version)` in the same transaction (`PostgresEventStoreState.scala:180-186`).
-  Only new events are published, and the in-memory root is **not** rebuilt (F8). The test
-  domain pairs each rewrite with a compensating event (`CartNameRewritten`).
+  per `(aggregate_id, version)` in the same transaction (`overwriteEvents`). Only new events
+  are published; after the commit the owner reads its state again from the store (D17). A
+  rewrite to another event class is not rejected yet (F8, M3's rewrite step). The test domain
+  pairs each rewrite with a compensating event (`CartNameRewritten`).
 - **Permanent delete**: the bus names the version of a `PermanentDeleteEvent` in its
   acknowledgement (`permanentDeleteAt`); the command bus then calls
   `EventStoreState.deleteAggregatePermanently` and stops the owner, whose state is gone. In one transaction it deletes the
@@ -755,7 +762,7 @@ index on `(name, saga_id)`, built `CONCURRENTLY`. Still open: the blocking id-po
 ## 10. Invariants to preserve when modifying the library
 
 1. **One writer per aggregate, version strictly +1.** All persistence for an aggregate goes
-   through its `AggregateRepositoryActor`, and the SQL procedures remain the final
+   through its `AggregateOwner`, and the SQL procedures remain the final
    optimistic lock (`aggregates.base_version` on the own row).
 2. **Event, aggregate-row and outbox writes share one transaction**, as do idempotent
    command responses. Publishing happens strictly after commit.
@@ -804,10 +811,10 @@ still open, at the end of M2:
 
 | Goal | Touch | Watch out for |
 |---|---|---|
-| New command kind / routing rule | `Command.scala`, `AggregateCommandBusActor.receive`, `CommandHandlerActor`, `CommandExecutorActor.handleFollowingCommand` | envelope types; the retry semantics in `CommandExecutorActor.onConflict` and `retryRequest` (a rewrite must fetch its events again, F73) |
-| New special event type | `Event.scala`, `PostgresEventStoreState.persistEventsOneByOne` + a stored procedure, `AggregateRepositoryActor.applyPersisted`/`tryToApplyEvents`, `readAndProcessEvents` | batch eligibility (`:31-32`); restore semantics; replay path |
-| Snapshots | `AggregateRepositoryActor.assureRestoredState`, `EventStoreState` (new read from version N), a new snapshot table | duplication chains (ancestor events), noop events whose `from_version` lies after the snapshot, the event-versioning map |
-| Non-blocking persistence | `AggregateRepositoryActor.persist` → a dedicated dispatcher, re-entering via message | keep one in-flight persist per aggregate; apply the events before the next message is handled (F69: persist synchronously or stash); the in-memory version check |
+| New command kind / routing rule | `Command.scala`, `AggregateCommandBusActor.receive`, `AggregateOwner` (`expectedVersion`, `runsAgainOnConflict`, `rewrittenClasses`, `userIdOf`) | the retry rule in `AggregateOwner.conflict` (a rewrite must read its events again, F73); a timed-out command must never be persisted |
+| New special event type | `Event.scala`, `PostgresEventStoreState.persistEventsOneByOne` + a stored procedure, `AggregateOwner.persist`/`nextRoot` (`readAfterCommit`), `readAndProcessEvents` | batch eligibility (`:31-32`); restore semantics; replay path |
+| Snapshots | `AggregateRestorer`, `EventStoreState` (new read from version N), a new snapshot table | duplication chains (ancestor events), noop events whose `from_version` lies after the snapshot |
+| Non-blocking persistence | `AggregateOwner.persist` → a dedicated dispatcher, re-entering via message | keep one in-flight persist per aggregate; apply the events before the next message is handled (F69: persist synchronously or stash); the in-memory version check |
 | Re-delivery timing | `delivery/RedeliveryPolicy` (pure), `OutboxPollerActor`, `EventStoreState.readWaitingInOutbox` | one owner of retries (D8); the attempts at 3 and 6 minutes come after a subscriber's own retries (about 2 minutes, D20a); the per-poll limit |
 | Outbox deletes | `AggregateCommandBusActor.delivered`, `EventStoreState.deletePublished` / `deleteAggregatePermanently`, `OutboxDeletes` | only acked (or failed) versions; the acknowledgement goes to the command bus, never only to the owner, which may be reaped (F91); a permanent delete waits while a subscription of the aggregate is failed |
 | Delivery tracking | `EventsBusActor` (`publish`, `finish`, `checkDeadlines`, `subscriberStopped`) | a delivery that ends without every ack or failure must not ack the owner; re-publications to one subscriber never do; back-pressure counters stay balanced; AR7 (no throws) |
@@ -815,4 +822,4 @@ still open, at the end of M2:
 | Projection progress storage | `SubscriptionsState` | CAS semantics; same-session atomicity; the bounded cache and its eviction on a failed CAS (F29, F77); `dump()` lifecycle (F3); failures (D20a) |
 | Rebuild logic | `EventsReplayOrchestrator`, `EventsReplayerActor`, `ReplayAggregateRepositoryActor`, `VersionsState` | undone events left out (F58); back-pressure accounting; replaced in M4 |
 | Idempotency rules | `commandhandler/Idempotency.scala`, `CommandResponseState` | the response is written in the persist transaction (I2); a taken key and a version conflict both answer with the stored response |
-| Retries and timeouts | `util/Backoff`; `CommandExecutorActor` (concurrent retries, command timeout), `SagaActor` (write retries), `ProjectionActor` (listener retries), `RedeliveryPolicy`, `PostgresDocumentStore.updateWithRetries` | bounded everywhere; the document-store retry runs inside the listener transaction and must stay immediate (AR6) |
+| Retries and timeouts | `util/Backoff`; `AggregateOwner` (concurrent retries, command timeout), `SagaActor` (write retries), `ProjectionActor` (listener retries), `RedeliveryPolicy`, `PostgresDocumentStore.updateWithRetries` | bounded everywhere; the document-store retry runs inside the listener transaction and must stay immediate (AR6) |

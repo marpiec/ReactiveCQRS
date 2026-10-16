@@ -449,8 +449,8 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Fix:** D37; serial mode (D31) for contexts that opt in.
 
 #### F25 — Event handlers run twice per persisted event
-- **Low**, likely · Fix in **M3** · `AggregateRepositoryActor.scala:150-172, 133`
-- **Fix:** check the version before the trial, reuse the trial result (D34).
+- **Low**, confirmed · **Fixed in M3** (16/10/2026) · `AggregateOwner.persist`, `nextRoot`
+- **Fix:** the version is checked before the handlers run on a copy of the state; after the commit that copy becomes the owner's state (D34). Test: `AggregateOwnerSpec` "run once per persisted event" (red under a mutation that applies the events again after the commit).
 
 #### F44 — No snapshots: every restore replays the full history
 - **Medium**, likely · Fix in **M3** · `AggregateRepositoryActor`, event store
@@ -522,11 +522,11 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Fix:** the events are applied right after the commit, before the next message; `EventsPersisted` is gone.
 
 #### F81 — An expired min-version query is dropped without a reply
-- **Low**, likely · Fix in **M3** (aggregate owner, AR1) · `AggregateRepositoryActor.receiveReturnAggregateRootMinVersion`, `replayDelayedQueries`
+- **Low**, confirmed · **Fixed in M3** (16/10/2026, with the owner) · `AggregateOwner` (min-version queries)
 - **Symptom:** a `GetAggregateMinVersion` whose version is not reached within its time gets no answer; the caller only sees its own ask time out and cannot tell "not yet" from "lost".
 - **Root cause:** expired queries are filtered out of `delayedQueries` without answering them, and only when another query or event arrives.
 - **Found:** plan review at the M1 close.
-- **Fix:** a timer per deadline answers the current version (or a "not reached" reply) when it expires.
+- **Fix:** a timer for the nearest deadline answers expired queries with `Failure(AggregateInIncorrectVersionException)`; a stopping owner answers its waiting queries the same way. Test: `AggregateOwnerSpec` "is answered with an error when its time is up" (red with the timer removed).
 
 ### Event store and SQL
 
@@ -798,7 +798,7 @@ From §7 of Neula's change requests.
 |---|---|
 | M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔, F73 ✔, F74 ✔, F75 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53, F76 (Neula, on a production copy, with `StoredDataCheck` and the F76 query); Neula H3, H4, H5 |
 | M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔, F95 ✔; Neula H2, H7 |
-| M3 | AR1, AR4, AR7 (owner and command bus); AR8; F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33 (rest), F38, F39, F44, F50, F65, F76, F78, F81 |
+| M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8; F8 (contract), F22, F23, F25 ✔, F27, F30, F31, F32, F33 (rest), F38, F39, F44, F50, F65, F76, F78, F81 ✔ |
 | M4 | F3, F43, F49 (backfill), F54, F55, F56, F57, F58, F59, F60, F61, F62, F82, F93, F94; Neula H1, H6 |
 | M5 | AR5; F46, F48, F63, F78 (between nodes) |
 | M6 | F8 (complete) |
@@ -829,6 +829,7 @@ Scope: `AggregateCommandBusActor`, `CommandHandlerActor`, `CommandExecutorActor`
   that owns restore and lifecycle, idempotency, the command queue (concurrent or serial),
   persistence and publication. The bus keeps one map. Executors stay as per-command runners
   of possibly asynchronous handlers, as children of the owner.
+- **Done** 16/10/2026 (M3): `AggregateOwner` (`core/aggregate/`). Refined: the per-command executor actors went too; the owner runs a handler as a `Future` with a timer per command, and stops by passivation (the command bus keeps the messages that arrive meanwhile).
 - **When:** M3, first work item, before serial mode and snapshots; M5 sharding then turns
   the owner into the shard entity.
 
@@ -860,7 +861,7 @@ Scope: `AggregateCommandBusActor`, `CommandHandlerActor`, `CommandExecutorActor`
 - **Proposal:** a sealed reply protocol between owner and executor, handled the same way in
   every state. With AR1 the executor's protocol shrinks to "run the handler, return the
   result".
-- **When:** M3 with AR1; F67 is fixed now.
+- **When:** M3 with AR1; F67 is fixed now. **Done** 16/10/2026 by construction: with the executors gone, the owner's messages to itself about a command (`HandlerFinished`, `CommandTimedOut`, `RunAgain`) are private and handled in every state.
 
 ### Review 2, 16/10/2026: sagas, id allocation and failure isolation (after F35)
 
@@ -899,7 +900,7 @@ these modules to the command bus.
   never throw for a failure that belongs to one request; they answer it. Each parent states
   explicitly what happens to a failed child (executors stop, owners stop and are forgotten
   as in F10).
-- **When:** M2 for the event bus and the projection actors (rewritten there; F79, F80), M3 for the aggregate owner and the command bus (with AR1). Done in M1: F70 and F75 (unknown messages, id failures). Still open in the bus: a failing outbox-scan query throws inside `receive` (refined in review 3).
+- **When:** M2 for the event bus and the projection actors (rewritten there; F79, F80), M3 for the aggregate owner and the command bus (with AR1). Done in M1: F70 and F75 (unknown messages, id failures). The outbox scan left the command bus in M2. **Done for the owner and the command bus** 16/10/2026 (M3): the owner answers per-command failures and, on an unexpected one, reads its state again; the command bus stops a failed owner instead of restarting it.
 
 ### Review 3, 16/10/2026: closing M1 (architecture description, plan and code)
 

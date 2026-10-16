@@ -1117,3 +1117,30 @@ Open test-infrastructure items:
   (`PostgresEventStoreStateSpec`); `StoredDataCheck` reports such rows as unreadable and no
   longer takes the contexts. Neula defines no `eventsVersions`.
 - `sbt test`: core 126, testdomain 51, all pass.
+
+**16/10/2026: the aggregate owner (AR1, AR4, AR6 part, AR7; F25, F81)**
+- `AggregateOwner` (`core/aggregate/`) replaces `CommandHandlerActor`, the per-command
+  `CommandExecutorActor`s and `AggregateRepositoryActor`: one actor per aggregate restores it,
+  checks idempotency and versions, runs command handlers as futures with a timer per command (a
+  result after the timeout is dropped, never persisted), persists, publishes, re-publishes and
+  answers queries. The command bus keeps one map; `OwnerSettings` holds what the owners of a
+  type share; `AggregateRestorer` reads states for the owner and answers historical reads in the
+  bus, without the temporary actors of before. An id just taken from the pool makes a fresh
+  owner that skips the restore query.
+- Stopping is passivation: the bus sends `StopOwner` and keeps the messages that arrive
+  meanwhile; the owner answers the commands it started and stops; a new owner gets the kept
+  messages. Used for reaping, permanent deletes, failed restores (`OwnerPassivate`, D11) and the
+  new `PassivateAggregate(id)`. Before, a reaped command handler took its running executors with
+  it, and messages sent to a stopping actor were lost.
+- AR7: the owner answers per-command failures and, on an unexpected failure, reads its state
+  again; the command bus stops a failed owner instead of restarting it. AR4 is solved by
+  construction. AR6: concurrent retries use `Backoff`. F25: event handlers run once per
+  persisted event. F81: a min-version query whose deadline passes is answered with a failure.
+  The store takes the events of one command as `NewEvents` (`PersistEvents` carried the
+  executor's reply fields).
+- Tests: `AggregateOwnerSpec` (timeout without a late persist; a stop with a command in flight
+  and one kept meanwhile; both min-version outcomes; handlers once), with F25 and F81 red under
+  mutations restoring the old behaviour; `PersistTransactionSpec` goes through the command bus
+  (`AddItems`, a command with two events); `OutboxPollerSpec` stops the owner with
+  `PassivateAggregate`; the other specs pass unchanged.
+- `sbt test`: core 126, testdomain 56, all pass.

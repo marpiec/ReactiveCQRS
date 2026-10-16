@@ -5,7 +5,7 @@ import java.time.Instant
 import org.apache.pekko.actor.ActorRef
 import io.reactivecqrs.api.{AggregateVersion, DuplicationEvent, Event, FirstEvent, UndoEvent}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, SpaceId, UserId}
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
+import io.reactivecqrs.core.eventstore.NewEvents
 import io.reactivecqrs.testutils.CommonSpec
 
 import scala.concurrent.duration._
@@ -35,7 +35,7 @@ class TestFixture(val eventStoreState: EventStoreState) {
   def storeEvents(events: Seq[Event[SomeAggregate]], id: AggregateId = aggregateId, exVersion: AggregateVersion = expectedVersion): Unit = {
     eventStoreState.localTx { session =>
       eventStoreState.persistEvents(id,
-        PersistEvents(ActorRef.noSender, commandId, userId, exVersion, Instant.now, events, None))(session)
+        NewEvents(userId, exVersion, Instant.now, events))(session)
     }.get
     if(exVersion == expectedVersion) {
       expectedVersion = expectedVersion.incrementBy(events.length)
@@ -170,7 +170,7 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     val aggregateId = AggregateId(5000000000L + System.nanoTime() % 1000000L)
     eventStoreState.localTx { session =>
       eventStoreState.persistEvents(aggregateId,
-        PersistEvents(ActorRef.noSender, CommandId(1), UserId(1), AggregateVersion.ZERO, Instant.now.minusSeconds(120), Seq(EventA("one")), None))(session)
+        NewEvents(UserId(1), AggregateVersion.ZERO, Instant.now.minusSeconds(120), Seq(EventA("one"))))(session)
     }.get
 
     eventStoreState.readWaitingInOutbox().filter(_.aggregateId == aggregateId).map(w => (w.aggregateType.typeName, w.oldestVersion)) mustBe
@@ -222,7 +222,7 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     def persistAt(timestamp: Instant, expectedVersion: Int, events: Event[SomeAggregate]*): Unit =
       eventStoreState.localTx { session =>
         eventStoreState.persistEvents(aggregateId,
-          PersistEvents(ActorRef.noSender, commandId, userId, AggregateVersion(expectedVersion), timestamp, events, None))(session)
+          NewEvents(userId, AggregateVersion(expectedVersion), timestamp, events))(session)
       }.get
 
     val batchTime = Instant.parse("2020-01-02T03:04:05.123456Z")

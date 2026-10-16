@@ -5,7 +5,7 @@ import java.time.Instant
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, SpaceId, UserId}
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
+import io.reactivecqrs.core.eventstore.NewEvents
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.delivery.OutboxPollerActor.Poll
 import io.reactivecqrs.core.delivery.{OutboxPollerActor, OutboxPollerOptions, RepublishOutbox}
@@ -137,8 +137,8 @@ class PermanentDeleteSpec extends CommonSpec {
     Scenario("still waiting in the outbox after a restart, it is carried out when delivered again") {
       val memoId = AggregateId(System.nanoTime())
       eventStore.localTx { session =>
-        eventStore.persistEvents(memoId, PersistEvents[Memo](ActorRef.noSender, CommandId(0), userId, AggregateVersion.ZERO,
-          Instant.now, Seq(MemoWritten("note"), MemoErased()), None))(session)
+        eventStore.persistEvents(memoId, NewEvents[Memo](userId, AggregateVersion.ZERO,
+          Instant.now, Seq(MemoWritten("note"), MemoErased())))(session)
       }.get
       val f = new Fixture
       val poller = system.actorOf(Props(new OutboxPollerActor(eventStore, f.bus, OutboxPollerOptions(firstPollAfter = 1.hour, pollInterval = 1.hour))))

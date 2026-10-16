@@ -10,6 +10,9 @@ case class DuplicateShoppingCart(userId: UserId, baseAggregateId: AggregateId, b
 
 case class AddItem(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
                    name: String) extends Command[ShoppingCart, CustomCommandResponse[_]]
+/** Adds several items in one command, one event each. */
+case class AddItems(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, names: Seq[String])
+  extends Command[ShoppingCart, CustomCommandResponse[_]]
 
 // No expected version: the framework uses the current one and retries on a concurrent change.
 case class AddItemConcurrently(userId: UserId, aggregateId: AggregateId, name: String, idempotencyId: Option[ClientKey] = None)

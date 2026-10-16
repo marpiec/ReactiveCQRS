@@ -5,8 +5,8 @@ import java.time.Instant
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
+import io.reactivecqrs.core.aggregate.{AggregateOwner, OwnerSettings}
+import io.reactivecqrs.core.eventstore.NewEvents
 import io.reactivecqrs.core.commandhandler.{Idempotency, MemoryCommandResponseState}
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
@@ -36,15 +36,16 @@ class RepublishSpec extends CommonSpec {
   private def storedCart(): AggregateId = {
     val cartId = AggregateId(System.nanoTime())
     eventStore.localTx { session =>
-      eventStore.persistEvents(cartId, PersistEvents[ShoppingCart](ActorRef.noSender, CommandId(0), userId, AggregateVersion.ZERO,
-        Instant.now, Seq(ShoppingCartCreated("Groceries"), ItemAdded("apple"), ItemAdded("pear")), None))(session)
+      eventStore.persistEvents(cartId, NewEvents[ShoppingCart](userId, AggregateVersion.ZERO,
+        Instant.now, Seq(ShoppingCartCreated("Groceries"), ItemAdded("apple"), ItemAdded("pear"))))(session)
     }.get
     cartId
   }
 
-  private def ownerOf(cartId: AggregateId, eventBus: TestProbe, maxRepublishEvents: Int = 1000): ActorRef = system.actorOf(Props(new AggregateRepositoryActor[ShoppingCart](
-    cartId, eventStore, new Idempotency(new MemoryCommandResponseState), eventBus.ref, ActorRef.noSender, context.eventHandlers, () => context.initialAggregateRoot,
-    None, 5.seconds, maxRepublishEvents)))
+  private def ownerOf(cartId: AggregateId, eventBus: TestProbe, maxRepublishEvents: Int = 1000): ActorRef = system.actorOf(Props(new AggregateOwner[ShoppingCart](cartId,
+    new OwnerSettings[ShoppingCart](context.aggregateType, eventStore, new Idempotency(new MemoryCommandResponseState), eventBus.ref, ActorRef.noSender,
+      context.commandHandlers, context.rewriteHistoryCommandHandlers, context.eventHandlers, () => context.initialAggregateRoot,
+      context.commandTimeout, 5.seconds, maxRepublishEvents))))
 
   private def published(eventBus: TestProbe): PublishEvents[ShoppingCart] =
     eventBus.expectMsgType[PublishEvents[ShoppingCart]](5.seconds)

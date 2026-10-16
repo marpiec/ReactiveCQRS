@@ -6,7 +6,6 @@ import java.time.Instant
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.api._
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.core.types.TypesNamesState
 import scalikejdbc._
 
@@ -34,7 +33,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     className
   }
 
-  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = Try {
+  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = Try {
     // Undo/duplication events have their own stored procedures and per-event semantics, so they
     // always go through the one-by-one path. Plain and first events (even mixed) can be batched
     // into a single add_events round trip.
@@ -48,7 +47,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     }
   }
 
-  private def persistEventsOneByOne[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
+  private def persistEventsOneByOne[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
     var lastEventVersion: Option[Int] = None
 
     eventsEnvelope.events.map(event => {
@@ -127,7 +126,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     })
   }
 
-  private def persistEventsBatched[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
+  private def persistEventsBatched[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
 
     val events = eventsEnvelope.events.toIndexedSeq
     val baseVersion = eventsEnvelope.expectedVersion.asInt

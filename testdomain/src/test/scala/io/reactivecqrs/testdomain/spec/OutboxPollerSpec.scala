@@ -5,8 +5,9 @@ import java.time.Instant
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
+import io.reactivecqrs.core.eventstore.NewEvents
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
+import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.PassivateAggregate
 import io.reactivecqrs.core.delivery.OutboxPollerActor.{GetOutboxStatus, OutboxStatus, Poll}
 import io.reactivecqrs.core.delivery.{OutboxPollerActor, OutboxPollerOptions}
 import io.reactivecqrs.core.eventbus.EventsBusActor
@@ -16,7 +17,7 @@ import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testutils.{CommonSpec, TestClock, TestDatabase}
-import org.apache.pekko.actor.{ActorRef, PoisonPill, Props}
+import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.testkit.TestProbe
 
 import scala.concurrent.Await
@@ -84,8 +85,8 @@ class OutboxPollerSpec extends CommonSpec {
       Given("a cart committed but never published, as when the process stops right after the commit")
       val cartId = AggregateId(System.nanoTime())
       eventStore.localTx { session =>
-        eventStore.persistEvents(cartId, PersistEvents[ShoppingCart](ActorRef.noSender, CommandId(0), userId, AggregateVersion.ZERO,
-          Instant.now, Seq(ShoppingCartCreated("Groceries"), ItemAdded("apple")), None))(session)
+        eventStore.persistEvents(cartId, NewEvents[ShoppingCart](userId, AggregateVersion.ZERO,
+          Instant.now, Seq(ShoppingCartCreated("Groceries"), ItemAdded("apple"))))(session)
       }.get
       val f = new Fixture
 
@@ -137,10 +138,10 @@ class OutboxPollerSpec extends CommonSpec {
       val cartId = newCart(f)
       f.deliveredVersions(cartId) mustBe Seq(1)
 
-      val owner = Await.result(system.actorSelection(f.commandBus.path / s"ShoppingCart_AR_${cartId.asLong}_*").resolveOne(3.seconds), 3.seconds)
+      val owner = Await.result(system.actorSelection(f.commandBus.path / s"ShoppingCart_${cartId.asLong}_*").resolveOne(3.seconds), 3.seconds)
       val watcher = TestProbe()
       watcher.watch(owner)
-      owner ! PoisonPill
+      f.commandBus ! PassivateAggregate(cartId)
       watcher.expectTerminated(owner, 3.seconds)
 
       f.ack(cartId, 1)

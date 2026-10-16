@@ -4,7 +4,6 @@ import java.time.Instant
 
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.api._
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.core.eventstore.MemoryEventStoreState.EventRow
 import scalikejdbc.{DBSession, NoSession}
 
@@ -27,7 +26,7 @@ class MemoryEventStoreState extends EventStoreState {
   private var eventIdSeq: Long = 0
 
 
-  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = Try { synchronized {
+  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = Try { synchronized {
 
     var eventsForAggregate: Vector[EventStoreEntry[_]] = eventStore.getOrElse(aggregateId, Vector())
 

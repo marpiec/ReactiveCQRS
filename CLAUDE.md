@@ -75,7 +75,7 @@ sbt "project core" "~compile"   # incremental
   - `initialAggregateRoot`
   - `commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult]`
   - `eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT]`
-  - `eventsVersions` (event schema versioning via `EV(...)`) and `version`.
+  - `version` (no event versioning since 1.0, D29: a changed event shape is a new class).
   - See `testdomain/.../ShoppingCartAggregateContext.scala` for the pattern.
 - **Commands** (`api/.../Command.scala`) come in flavors that drive routing:
   - `FirstCommand` — creates a new aggregate (no id yet).
@@ -96,7 +96,7 @@ sbt "project core" "~compile"   # incremental
     (the "duplication chain" — see schema below).
   - `PermanentDeleteEvent` — hard-deletes aggregate + events.
 - **Versioning**: `AggregateVersion` is an `Int` starting at `ZERO`. Each persisted
-  event increments it by one (`AggregateRepositoryActor` `version.increment`).
+  event increments it by one (the owner's `version`; `AggregateRestorer` counts them on restore).
 
 ---
 
@@ -111,26 +111,24 @@ sagas).
 caller
   → AggregateCommandBusActor            (per aggregate TYPE; top-level router)
       routes by command flavor, allocates AggregateId/CommandId from pools
-  → CommandHandlerActor                 (per aggregate INSTANCE; idempotency dedup)
-  → CommandExecutorActor                (ephemeral, one per command; stops after its reply,
-                                         answers CommandHandlingError after commandTimeout)
-      asks AggregateRepositoryActor for current Aggregate state
-      runs the domain commandHandler → CommandResult (events)
-  → AggregateRepositoryActor            (per aggregate INSTANCE; owns state+version)
+  → AggregateOwner                      (per aggregate INSTANCE; owns state+version; M3, AR1)
+      idempotency dedup; version check (reload when a newer version is expected)
+      runs the domain commandHandler as a Future → CommandResult (events);
+      a timer answers CommandHandlingError after commandTimeout (the result is then dropped)
       eventStore.persistEvents(...) inside a localTx  (optimistic lock in SQL fn)
-      applies eventHandlers to update in-memory aggregateRoot + version
-      → EventsBusActor  ! PublishEvents
-  → response flows back to the original caller
+      the new state (handlers run once, on a copy) becomes the owner's after commit
+      → EventsBusActor  ! PublishEvents   → answers the caller
 ```
 
 ### Read path (state)
-`AggregateRepositoryActor` answers `GetAggregate`, `GetAggregateForVersion`,
-`GetAggregateAtInstant`, `GetAggregateMinVersion` (the last one can be *delayed*
-until the aggregate reaches a version — see `delayedQueries`).
+The owner answers `GetAggregate`, `GetEventsForAggregate` and `GetAggregateMinVersion` (held
+until the aggregate reaches the version, or answered with a failure at its deadline, F81).
+The command bus answers historical reads (`GetAggregateForVersion`, `GetAggregateAtInstant`,
+`GetEventsForAggregateForVersion`) itself with `AggregateRestorer`, in a `Future`.
 
 ### Event publication / projections
 ```
-AggregateRepositoryActor → EventsBusActor → subscribers (ProjectionActor, sagas,
+AggregateOwner → EventsBusActor → subscribers (ProjectionActor, sagas,
                                                           AggregateListenerActor)
   At start the host sends the bus RegisterSubscribers; the bus asks each subscriber
   for its subscriptions (GetSubscriptionRequests) and publishes nothing until all
@@ -149,15 +147,17 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
 
 ### Key actors
 - **`AggregateCommandBusActor`** (`core/.../commandhandler/`) — one per aggregate
-  type. Caches child `CommandHandlerActor`/`AggregateRepositoryActor` refs in
-  mutable maps, reaps idle ones (default keep-alive 200, sweep every 5 min).
+  type. Keeps one `AggregateOwner` per aggregate; stops idle ones (default keep-alive 200,
+  sweep every 5 min) by passivation: `StopOwner`, keeping the messages that arrive meanwhile
+  for a new owner. Deletes delivered outbox rows (acks come to it, F91).
   Allocates ids from pools via the UID generator (still with a blocking `Await`, F23;
   a failing generator is answered with `CommandHandlingError`, F75).
-- **`AggregateRepositoryActor`** — the source of truth for one aggregate instance.
-  **No snapshotting**: on first access it replays the *entire* event stream
-  (`restoreState` → `eventStore.readAndProcessEvents`) to rebuild
-  `aggregateRoot`/`version` in memory, then keeps them updated. `aggregateVersionLimit`
-  defaults to 10 000 events per aggregate.
+- **`AggregateOwner`** (`core/.../aggregate/`) — the source of truth for one aggregate
+  instance (replaced the command handler, the per-command executors and the repository
+  actor in M3). **No snapshotting yet**: on first access it replays the *entire* event
+  stream (`AggregateRestorer.restore` → `eventStore.readAndProcessEvents`) to rebuild the
+  root and version in memory, then keeps them updated. `aggregateVersionLimit` defaults to
+  10 000 events per aggregate. Design: `docs/design/M3-aggregates.md`.
 - **`EventsBusActor`** — in-memory routing and delivery tracking (deadline, stall
   logging, `GetDeliveryStatus`); routes re-publish requests to the type's command bus;
   back-pressure for the replayer (`DeliveryOptions.maxReplayBuffer`, 10 000).
@@ -244,8 +244,8 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
   injection risk lives — table/index/JSON-path fragments are interpolated, not
   bound. Keep identifiers validated (see `PostgresDocumentStore` uniqueId checks).
 - **Serialization**: events are stored as JSON text via mpjsons keyed by
-  `event_type_id` + `event_type_version`. Changing an event class shape without a
-  version mapping in `eventsVersions` breaks replay/deserialization.
+  `event_type_id` (the class name); `event_type_version` is always 0 (D29). Changing an
+  event class shape breaks replay: add a new class (`...V2`) and keep the old one.
 - **No aggregate snapshots**: aggregates are rebuilt by replaying all their events.
   Long-lived/high-version aggregates are a latency and memory concern by design.
 - **Logging**: use `MyActorLogging` / slf4j. There are stray `println`s in
@@ -271,8 +271,8 @@ planned in a way that the change must follow. Measured performance is in `docs/p
 | You want to understand… | Start here |
 |---|---|
 | Public API a domain author implements | `api/.../AggregateContext.scala`, `Command.scala`, `Event.scala`, `CommandResult.scala`; example `testdomain/.../shoppingcart/` |
-| How a command becomes events | `core/.../commandhandler/{AggregateCommandBusActor,CommandHandlerActor,CommandExecutorActor}.scala` |
-| Aggregate state & persistence | `core/.../aggregaterepository/AggregateRepositoryActor.scala` |
+| How a command becomes events | `core/.../commandhandler/AggregateCommandBusActor.scala`, `core/.../aggregate/AggregateOwner.scala` |
+| Aggregate state & persistence | `core/.../aggregate/{AggregateOwner,AggregateRestorer}.scala` |
 | Durable events + optimistic lock SQL | `core/.../eventstore/Postgres*` |
 | Event delivery, acks, back-pressure | `core/.../eventbus/EventsBusActor.scala`, `core/.../delivery/*`, `docs/design/M2-delivery.md` |
 | Read models | `core/.../projection/*`, `core/.../documentstore/*` |
