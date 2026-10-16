@@ -8,16 +8,15 @@ import io.reactivecqrs.api._
 import org.apache.pekko.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
-import io.reactivecqrs.core.commandhandler.{CommandExecutorActor, CommandResponseState}
+import io.reactivecqrs.core.commandhandler.{CommandExecutorActor, Idempotency, IdempotencyKeyTakenException}
 import io.reactivecqrs.core.util.RandomUtil
 import org.postgresql.util.PSQLException
-import scalikejdbc.DBSession
 
 import scala.concurrent.Future
 import scala.concurrent.duration._
 import scala.reflect._
 import scala.reflect.runtime.universe._
-import scala.util.{Failure, Success}
+import scala.util.{Failure, Success, Try}
 
 object AggregateRepositoryActor {
   case class GetEventsCurrentVersion(respondTo: ActorRef)
@@ -41,7 +40,6 @@ object AggregateRepositoryActor {
                                                       persist: PersistEvents[AGGREGATE_ROOT])
 
 
-  case class EventsPersisted[AGGREGATE_ROOT](events: Seq[IdentifiableEvent[AGGREGATE_ROOT]])
 
   case object ResendPersistedMessages
 
@@ -56,7 +54,7 @@ case class DelayedMinVersionQuery(respondTo: ActorRef, requestedVersion: Aggrega
 
 class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: AggregateId,
                                                                 eventStore: EventStoreState,
-                                                                commandResponseState: CommandResponseState,
+                                                                idempotency: Idempotency,
                                                                 eventsBus: ActorRef,
                                                                 eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
                                                                 initialState: () => AGGREGATE_ROOT,
@@ -114,17 +112,18 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   // instead of stopping the actor silently (F10).
   override def receive: Receive = {
     case message =>
-      restoreOnFirstMessage() match {
+      restore() match {
         case None =>
           context.become(restored)
           restored.applyOrElse(message, unhandled)
         case Some(failure) =>
-          context.become(failedRestore(failure))
           failedRestore(failure)(message)
       }
   }
 
-  private def restoreOnFirstMessage(): Option[AggregateRestoreFailedException] = {
+  /** Reads the aggregate from the store, first or again. If that fails, the actor answers every request with the
+    * failure and stops after `failedRestoreRetryAfter`, so the next request restores in a new actor (F10). */
+  private def restore(): Option[AggregateRestoreFailedException] = {
     try {
       assureRestoredState()
       None
@@ -134,7 +133,9 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
         if (singleReadForVersionOnly.isEmpty) {
           context.system.scheduler.scheduleOnce(failedRestoreRetryAfter, self, PoisonPill)(context.dispatcher)
         }
-        Some(new AggregateRestoreFailedException(aggregateId, aggregateType, e))
+        val failure = new AggregateRestoreFailedException(aggregateId, aggregateType, e)
+        context.become(failedRestore(failure))
+        Some(failure)
     }
   }
 
@@ -169,7 +170,6 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     case EnsureRestored => ()
     case ee: PersistEvents[_] => handlePersistEvents(ee)
     case ee: OverrideAndPersistEvents[_] => handleOverrideAndPersistEvents(ee)
-    case ep: EventsPersisted[_] => handleEventsPersisted(ep)
     case GetAggregateRootCurrentVersion(respondTo) => receiveReturnAggregateRoot(respondTo, None)
     case GetEventsCurrentVersion(respondTo) => receiveReturnEvents(respondTo, None)
     case GetAggregateRootCurrentMinVersion(respondTo, version, durationMillis) => receiveReturnAggregateRootMinVersion(respondTo, version, System.nanoTime() + durationMillis * 1_000_000L)
@@ -181,18 +181,22 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   }
 
 
-  private def handleEventsPersisted(ep: EventsPersisted[_]): Unit = {
-    val events = ep.asInstanceOf[EventsPersisted[AGGREGATE_ROOT]].events
-    if (events.exists(_.event.isInstanceOf[UndoEvent[_]]) ||
+  // Runs right after the commit, before the next message: a reload triggered by a later message then already
+  // includes these events, instead of having them applied a second time (F69).
+  private def applyPersisted(events: Seq[IdentifiableEvent[AGGREGATE_ROOT]]): Unit = {
+    val applied = if (events.exists(_.event.isInstanceOf[UndoEvent[_]]) ||
       events.exists(_.event.isInstanceOf[DuplicationEvent[_]])) {
       // In case of those events it's easier to re read past events
-      assureRestoredState()
+      restore().isEmpty
     } else {
       events.foreach(eventIdentifier => handleEvent(eventIdentifier.userId, eventIdentifier.timestamp, eventIdentifier.event, aggregateId, eventIdentifier.version.asInt, noopEvent = false))
+      true
     }
-    eventsBus ! PublishEvents(aggregateType, events.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
-    pendingPublish = (events.map(e => EventWithIdentifier[AGGREGATE_ROOT](e.aggregateId, e.version, e.event)).toList ::: pendingPublish).distinct
-    replayDelayedQueries()
+    if (applied) { // otherwise the state is unknown; the next actor's restore re-sends what waits in the outbox
+      eventsBus ! PublishEvents(aggregateType, events.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
+      pendingPublish = (events.map(e => EventWithIdentifier[AGGREGATE_ROOT](e.aggregateId, e.version, e.event)).toList ::: pendingPublish).distinct
+      replayDelayedQueries()
+    }
   }
 
   private def handleOverrideAndPersistEvents(ee: OverrideAndPersistEvents[_]): Unit = {
@@ -254,15 +258,19 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   // A request for a version this actor has not seen means someone else wrote the aggregate
   // (another node, a history rewrite, a repair): reload instead of rejecting the command (F19).
-  private def reloadIfBehind(requestedVersion: Option[AggregateVersion]): Unit = {
+  private def reloadIfBehind(requestedVersion: Option[AggregateVersion]): Option[AggregateRestoreFailedException] = {
     if (singleReadForVersionOnly.isEmpty && requestedVersion.exists(_ > version)) {
-      assureRestoredState()
+      restore()
+    } else {
+      None
     }
   }
 
   private def receiveReturnAggregateRoot(respondTo: ActorRef, requestedVersion: Option[AggregateVersion]): Unit = {
-    reloadIfBehind(requestedVersion)
-    if(version == AggregateVersion.ZERO) {
+    val reloadFailure = reloadIfBehind(requestedVersion)
+    if (reloadFailure.isDefined) {
+      respondTo ! Failure(reloadFailure.get)
+    } else if(version == AggregateVersion.ZERO) {
       respondTo ! Success(Aggregate[AGGREGATE_ROOT](aggregateId, version, None))
     } else {
 //      println("RepositoryActor "+this.toString+" Someone requested aggregate " + aggregateId.asLong + " of version " + requestedVersion.map(_.asInt.toString).getOrElse("None") + " and now I have version " + version.asInt)
@@ -322,8 +330,10 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
 
   private def receiveReturnAggregateRootWithEvents(respondTo: ActorRef, requestedVersion: Option[AggregateVersion], eventTypes: Set[String]): Unit = {
-    reloadIfBehind(requestedVersion)
-    if(version == AggregateVersion.ZERO) {
+    val reloadFailure = reloadIfBehind(requestedVersion)
+    if (reloadFailure.isDefined) {
+      respondTo ! Failure(reloadFailure.get)
+    } else if(version == AggregateVersion.ZERO) {
       val events: List[EventWithVersion[AGGREGATE_ROOT]] = List.empty
       respondTo ! Success(AggregateWithSelectedEvents[AGGREGATE_ROOT](Aggregate[AGGREGATE_ROOT](aggregateId, version, None), events))
     } else {
@@ -350,57 +360,43 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   }
   private def persist(eventsEnvelope: PersistEvents[AGGREGATE_ROOT], overwrite: Iterable[EventWithVersion[AGGREGATE_ROOT]])(afterPersist: Seq[Event[AGGREGATE_ROOT]] => Unit): Unit = {
-    //Future { FIXME this future can broke order in which events are stored
-    val eventsWithVersionsTry = eventStore.localTx {implicit session =>
-
-      if(overwrite.nonEmpty) {
-        eventStore.overwriteEvents(aggregateId, overwrite)
-      }
-
-      eventStore.persistEvents(eventsVersionsMapReverse, aggregateId, eventsEnvelope.asInstanceOf[PersistEvents[AnyRef]]) match {
-        case Failure(exception) => Failure(exception)
-        case Success(eventsWithVersions) =>
-          persistIdempotentCommandResponse(eventsEnvelope.commandInfo)
-          Success(eventsWithVersions)
+    // Every failure is thrown inside the transaction, so nothing of the command is stored (F68), and every
+    // outcome becomes exactly one reply to the executor (AR3).
+    val outcome = Try {
+      eventStore.localTx { implicit session =>
+        if (overwrite.nonEmpty) {
+          eventStore.overwriteEvents(aggregateId, overwrite)
+        }
+        val eventsWithVersions = eventStore.persistEvents(eventsVersionsMapReverse, aggregateId, eventsEnvelope.asInstanceOf[PersistEvents[AnyRef]]).get
+        eventsEnvelope.commandInfo.foreach(info => idempotency.record(info.command, info.response))
+        eventsWithVersions
       }
     }
 
-    eventsWithVersionsTry match {
-      case Failure(exception) => exception match {
-        case e: PSQLException if e.getLocalizedMessage.contains("Concurrent aggregate modification exception") =>
-          // The store moved on without this actor (another writer): reload, so a retry sees the real state (F19).
-          assureRestoredState()
-          eventsEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateId, aggregateType, eventsEnvelope.expectedVersion, version)
-        case e =>
-          val errorId = RandomUtil.generateRandomString(16)
-          eventsEnvelope.respondTo ! EventHandlingError(eventsEnvelope.events.head.getClass.getSimpleName, errorId, eventsEnvelope.commandId)
-          log.error(exception, "Error handling event, errorId: [" + errorId+"]")
-      }
+    outcome match {
       case Success(eventsWithVersions) =>
-        var mappedEvents = 0
-        self ! EventsPersisted(eventsWithVersions.map { case (event, eventVersion) =>
-          mappedEvents += 1
-          IdentifiableEvent(AggregateType(event.aggregateRootType.toString), aggregateId, eventVersion, event, eventsEnvelope.userId, eventsEnvelope.timestamp)
+        applyPersisted(eventsWithVersions.map { case (event, eventVersion) =>
+          IdentifiableEvent(AggregateType(event.aggregateRootType.toString), aggregateId, eventVersion, event.asInstanceOf[Event[AGGREGATE_ROOT]], eventsEnvelope.userId, eventsEnvelope.timestamp)
         })
         afterPersist(eventsEnvelope.events)
+      case Failure(_: IdempotencyKeyTakenException) =>
+        // A copy of this idempotent command was applied first; the executor answers with its stored response.
+        eventsEnvelope.respondTo ! CommandExecutorActor.IdempotencyKeyTaken
+      case Failure(e: PSQLException) if e.getLocalizedMessage.contains("Concurrent aggregate modification exception") =>
+        // The store moved on without this actor (another writer): reload, so a retry sees the real state (F19).
+        restore() match {
+          case None => eventsEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateId, aggregateType, eventsEnvelope.expectedVersion, version)
+          case Some(failure) => answerPersistFailed(eventsEnvelope, failure)
+        }
+      case Failure(exception) =>
+        answerPersistFailed(eventsEnvelope, exception)
     }
-//    } onFailure {
-//      case e: Exception => throw new IllegalStateException(e)
-//    }
   }
 
-  private def persistIdempotentCommandResponse(commandInfo: Option[IdempotentCommandInfo])(implicit session: DBSession): Unit = {
-    commandInfo match {
-      case Some(ci) =>
-        ci.command match {
-          case idm: IdempotentCommand[_] if idm.idempotencyId.isDefined =>
-            val key = idm.idempotencyId.get.asDbKey
-            commandResponseState.storeResponse(key, ci.response)
-          case _ => ()
-        }
-      case None => ()
-    }
-
+  private def answerPersistFailed(eventsEnvelope: PersistEvents[AGGREGATE_ROOT], exception: Throwable): Unit = {
+    val errorId = RandomUtil.generateRandomString(16)
+    eventsEnvelope.respondTo ! EventHandlingError(eventsEnvelope.events.head.getClass.getSimpleName, errorId, eventsEnvelope.commandId)
+    log.error(exception, "Error handling event, errorId: [" + errorId+"]")
   }
 
   private def respond(respondTo: ActorRef)(events: Seq[Event[AGGREGATE_ROOT]]): Unit = {

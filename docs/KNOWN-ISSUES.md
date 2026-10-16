@@ -319,12 +319,13 @@ implementation plan.
 - **Fix:** D17, then D76.
 
 #### F9 — Idempotent command responses: broken index, ambiguous lookup, race
-- **Medium**, confirmed · Fix in **M1** · `CommandResponseState`
-- **Status:** index part fixed 16/10/2026 (D24): `initSchema()` failed on a fresh database with `column "aggregate_id" does not exist`, which blocked `ReactiveTestDomainSpec` and `EventsReplaySpec`; it now drops the old index if present and creates a unique index on `key`. Still open: collision handling and the check-then-act race (D12), response retention (R7), F64.
+- **Medium**, confirmed · **Fixed in M1** (16/10/2026) · `CommandResponseState`, `Idempotency`
+- **Status:** index part fixed first (D24): `initSchema()` failed on a fresh database with `column "aggregate_id" does not exist`, which blocked `ReactiveTestDomainSpec` and `EventsReplaySpec`; it now drops the old index if present and creates a unique index on `key`. Collision handling, the race and retention fixed next (D12, R7).
 - **Symptom:** `initSchema()` fails on a fresh database, or the lookup scans the table; duplicate keys make `responseByKey` throw; two concurrent identical commands can both execute.
 - **Root cause:** unique index on `(aggregate_id, key)` but no `aggregate_id` column (`CommandResponseState.scala:36-53`); `.single()` on a non-unique key (`:60-65`); check-then-act (`CommandHandlerActor.scala:95-106`).
-- **Test:** the same idempotent command twice, concurrently and after a restart: one set of events, the same response (Neula R7).
-- **Fix:** D12, D24.
+- **Test:** `IdempotentCommandsSpec` (sequential, concurrent first command, concurrent `Command`, concurrent `ConcurrentCommand`, after a restart, caller-chosen id) and `CommandResponseStateSpec` (both adapters). Before the fix every concurrent case got no reply at all: the key collision was thrown out of the persist transaction and restarted the repository actor (AR3).
+- **Fix:** D12, D24, through the new `Idempotency` module (AR2). The response insert is `ON CONFLICT (key) DO NOTHING`; a taken key throws `IdempotencyKeyTakenException`, which rolls the persist back, and the executor answers with the stored response; a version conflict of an idempotent command is answered the same way when a copy already stored its response. Stored responses older than the retention period (default 30 days, a `PostgresCommandResponseState` parameter) are removed hourly by each command bus (index on `handling_timestamp`). R7's caller-chosen id: `FirstCommand.chosenAggregateId`, with ids from the new `ReserveAggregateId` bus message.
+- **Operations:** the insert needs the unique index, so `initSchema()` must run (H5): without it every idempotent command fails loudly.
 
 #### F10 — A failed restore leaves a dead actor reference cached
 - **Medium**, confirmed · **Fixed in M1** (16/10/2026) · `AggregateCommandBusActor`, `AggregateRepositoryActor`
@@ -374,10 +375,28 @@ implementation plan.
 - **Low**, likely · Fix in **M5** (replaced by passivation, D43) · `AggregateCommandBusActor.scala:168-184`
 
 #### F67 — A command for an aggregate that does not exist gets no reply until the timeout
-- **Medium**, likely · Fix in **M1** (with F9) · `CommandExecutorActor.scala` `handleFollowingCommand`, `handleRewriteHistoryCommand`
+- **Medium**, confirmed · **Fixed in M1** (16/10/2026, with F9) · `CommandExecutorActor.scala` `handleFollowingCommand`, `handleRewriteHistoryCommand`
 - **Symptom:** a `Command` or `RewriteHistoryCommand` whose expected version does not match an aggregate at version 0 (it does not exist, or the id is wrong) is answered only by the command timeout (`CommandHandlingError` after 60 s) instead of `AggregateConcurrentModificationError`.
 - **Root cause:** for version 0 the repository returns the aggregate whatever version was asked for; the executor then sends itself `AggregateConcurrentModificationError` while in the state that waits for the aggregate, which drops it as unhandled (AR4).
 - **Found:** architecture review 1 (§7).
+- **Test:** `CommandOutcomesSpec` "… a command for an aggregate that does not exist" (no reply within 10 s before the fix).
+- **Fix:** the conflict is answered where it is detected, through the same conflict handling as persist conflicts.
+
+#### F68 — A persist that fails part-way commits what it already wrote
+- **High**, confirmed · **Fixed in M1** (16/10/2026, with F9) · `AggregateRepositoryActor.persist`
+- **Symptom:** a command is reported as failed (`EventHandlingError`) while part of it is stored: the first of several events when a later one fails its size or count check, or a history overwrite when the new event is rejected. The in-memory state does not include the stored part, and projections receive it later through the outbox.
+- **Root cause:** `persistEvents` returns failures as a `Failure` value; the transaction block returned that value normally, so `DB.localTx` committed. SQL errors were rolled back by PostgreSQL itself (the transaction is aborted), but checks that throw in Scala after an earlier statement were not. Reachable only on the one-by-one path (a single event, or several with an undo or duplication event) and for rewrites; the batched path checks every event before writing.
+- **Found:** architecture review 1, while making every persist outcome a reply (AR3).
+- **Test:** `PersistTransactionSpec` (two events stored instead of none before the fix).
+- **Fix:** every failure is thrown inside the transaction, which rolls back whole.
+
+#### F69 — A reload after a version conflict applies the previous command's events twice
+- **High**, confirmed · **Fixed in M1** (16/10/2026, with F9) · `AggregateRepositoryActor`; introduced on 16/10/2026 by the F19 fix (not in 0.12.47)
+- **Symptom:** after two commands race on one aggregate, the actor is one command ahead of the store (version 3 with two items where the store has version 2 and one item); later commands are judged against that wrong state, and the wrong state is sent to state-receiving listeners.
+- **Root cause:** after a successful persist the repository sent itself `EventsPersisted` and applied the events only when that message came round. A `PersistEvents` already queued ahead of it passed the in-memory version check, failed in SQL, and the F19 reload read the store, which already held the events; `EventsPersisted` then applied them again.
+- **Found:** architecture review 1, while tracing the concurrent idempotent path.
+- **Test:** `ConcurrentModificationSpec` "after a version conflict the actor's state still matches the store" (version 3 instead of 2 before the fix).
+- **Fix:** the events are applied right after the commit, before the next message; `EventsPersisted` is gone.
 
 ### Event store and SQL
 
@@ -495,11 +514,11 @@ implementation plan.
 - **Medium**, suspected · Check in **M1** · mpjsons `docs/upgrading.md:31`; see H4.
 
 #### F64 — Command responses with custom info cannot be serialized for idempotent commands
-- **Medium**, confirmed · Fix in **M1** (with R7, D12) · `CommandResponseState.scala:58-61`
+- **Medium**, confirmed · **Fixed in M1** (16/10/2026, with R7, D12) · `CommandResponseState.scala:58-61`
 - **Symptom:** an idempotent command whose handler returns response info (`CustomSuccessResponse`) fails the whole persist transaction, so its events are not written. Neula has no idempotent commands yet; R7 and H3 will add them.
 - **Root cause:** responses are serialized by class name (`mpjsons.serialize(response, response.getClass.getName)`); for `CustomSuccessResponse[INFO]` mpjsons cannot resolve `INFO` ("key not found: type INFO"), with both 0.6.50 and 0.7.0.
-- **Test:** found while building `StoredFormatsSpec`; a dedicated failing test comes with the fix.
-- **Fix:** store the info value with its own class name next to the response.
+- **Test:** found while building `StoredFormatsSpec`; `IdempotentCommandsSpec` "a response with custom info …" (no reply before the fix) and `CommandResponseStateSpec`.
+- **Fix:** the id and version are stored as a `SuccessResponse`, the info in new nullable columns `info` and `info_type_id` with its own class (additive schema change, D28). The info must be of a class without type parameters, such as a case class; otherwise storing fails with an explicit message. Existing rows are read as before (no row with custom info could have been written).
 
 ### Schema initialization
 
@@ -575,7 +594,7 @@ The library cannot fix these; they are listed so the 1.0 migration does not miss
 | H2 | Medium, likely | Hard-coded expected subscription count 106 (`Context.scala:461-474`); replaced by the subscriber list (D15). | M2 |
 | H3 | Medium, likely | About 29 sagas, but no command implements `IdempotentCommand`: a saga resumed after a crash can run its current command twice. Make saga-issued commands idempotent with `SagaStep`. | after M1 (needs D12) |
 | H4 | Medium, suspected | `== null` checks on `Option` fields of events behave differently under mpjsons 0.7 (F53). | M1 gate |
-| H5 | Low, likely | `PostgresCommandResponseState` is built without `initSchema()` (`Context.scala:483`), so D24's index fix would not run. | M1 |
+| H5 | Medium, likely | `PostgresCommandResponseState` is built without `initSchema()` (`Context.scala:483`), so D24's index fix would not run; since the F9 fix every idempotent command then fails (the response insert needs the unique index). | M1 |
 | H6 | Medium, suspected | Event listeners of ScreenRelease and ProcessRelease (the two aggregates with undo) must handle undo, since rebuild will deliver it (D60). | M4 |
 
 ---
@@ -600,7 +619,7 @@ From §7 of Neula's change requests.
 
 | Milestone | Issues |
 |---|---|
-| M1 | F7 ✔, F9, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34, F35, F36, F40, F64, F66 ✔, F67; AR2, AR3; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
+| M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34, F35, F36, F40, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
 | M2 | F1, F2, F4, F5, F6, F11, F15, F26, F28, F29, F37, F41, F42, F45, F47; Neula H2 |
 | M3 | AR1, AR4; F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33, F38, F39, F43, F44, F65 |
 | M4 | F3, F54, F55, F56, F57, F58, F59, F60, F61, F62; Neula H1, H6 |
@@ -644,7 +663,7 @@ Scope: `AggregateCommandBusActor`, `CommandHandlerActor`, `CommandExecutorActor`
 - **Proposal:** one `Idempotency` module with a small interface: the stored response for a
   command, recording a response inside the persist transaction, recognising a taken key, and
   retention. Callers never see keys.
-- **When:** now, with F9 (M1).
+- **When:** now, with F9 (M1). **Done** 16/10/2026: `core/commandhandler/Idempotency.scala`.
 
 #### AR3 — The persist transaction's failure modes are not part of its interface
 - **Finding:** `persist` handles a `Failure` returned by `persistEvents`, but anything thrown
@@ -655,7 +674,7 @@ Scope: `AggregateCommandBusActor`, `CommandHandlerActor`, `CommandExecutorActor`
   executor (persisted, version conflict, idempotency key taken, error); no exception leaves
   the transaction block.
 - **When:** now, with F9, because D12 adds an outcome and D33 will add code inside the
-  transaction.
+  transaction. **Done** 16/10/2026; doing it exposed F68.
 
 #### AR4 — The executor's protocol is untyped, so a reply in the wrong state is lost
 - **Finding:** replies to the executor are a mix of `Try`, case classes and exceptions sent

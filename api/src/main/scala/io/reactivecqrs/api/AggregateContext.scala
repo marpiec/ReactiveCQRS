@@ -16,6 +16,10 @@ case class GetAggregateAtInstant(id: AggregateId, instant: Instant)
 case class GetEventsForAggregate(id: AggregateId)
 case class GetEventsForAggregateForVersion(id: AggregateId, version: AggregateVersion)
 
+/** Asks a command bus for a new aggregate id, for a `FirstCommand` that names its aggregate in `chosenAggregateId`.
+  * The reply is an `AggregateId`, taken from the same pool as the ids the bus assigns itself. */
+case object ReserveAggregateId
+
 case class SimulateEvent[AGGREGATE_ROOT](id: AggregateId, version: AggregateVersion, event: Event[AGGREGATE_ROOT])
 
 case class EventTypeVersion(eventType: String, version: Short)

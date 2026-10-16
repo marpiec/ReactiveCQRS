@@ -6,7 +6,7 @@ import org.apache.pekko.actor.{Actor, ActorRef}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRootCurrentVersion, IdempotentCommandInfo, OverrideAndPersistEvents, PersistEvents}
-import io.reactivecqrs.core.commandhandler.CommandExecutorActor.{AggregateModified, CommandTimedOut}
+import io.reactivecqrs.core.commandhandler.CommandExecutorActor.{AggregateModified, CommandTimedOut, IdempotencyKeyTaken}
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalCommandEnvelope, InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope, InternalRewriteHistoryCommandEnvelope, InternalRewriteHistoryConcurrentCommandEnvelope}
 import io.reactivecqrs.core.util.MyActorLogging
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.AggregateWithSelectedEvents
@@ -22,13 +22,15 @@ import scala.reflect.runtime.universe._
 
 object CommandExecutorActor {
   case object AggregateModified
+  /** The persist was rolled back because a copy of this idempotent command already stored its response. */
+  case object IdempotencyKeyTaken
   private case object CommandTimedOut
 }
 
 class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: AggregateId,
                                            commandEnvelope: InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]],
                                            repositoryActor: ActorRef,
-                                           commandResponseState: CommandResponseState,
+                                           idempotency: Idempotency,
                                            resultAggregatorName: String,
                                            commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]],
                                            rewriteHistoryCommandHandlers: (Iterable[EventWithVersion[AGGREGATE_ROOT]], AGGREGATE_ROOT) => PartialFunction[Any, GenericCommandResult[Any]],
@@ -103,16 +105,16 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
     case AggregateModified =>
       commandEnvelope.respondTo ! response
       context.stop(self)
-    case e: AggregateConcurrentModificationError =>
-      commandEnvelope match {
-        case _: InternalConcurrentCommandEnvelope[_, _] | _: InternalRewriteHistoryConcurrentCommandEnvelope[_, _] if concurrentAttempt < MaxConcurrentAttempts =>
-          concurrentAttempt += 1
-          context.become(whileWaiting(receiveAggregate))
-          context.system.scheduler.scheduleOnce(retryDelay(concurrentAttempt), repositoryActor, GetAggregateRootCurrentVersion(self))
-        case _ =>
-          commandEnvelope.respondTo ! e
-          context.stop(self)
+    case e: AggregateConcurrentModificationError => onConflict(e)
+    case IdempotencyKeyTaken =>
+      idempotency.storedResponse(commandEnvelope.command) match {
+        case Some(stored) => commandEnvelope.respondTo ! stored
+        case None => // removed by retention in the meantime; the caller may send the command again
+          val errorId = RandomUtil.generateRandomString(16)
+          commandEnvelope.respondTo ! CommandHandlingError(commandEnvelope.command.getClass.getSimpleName, errorId, commandEnvelope.commandId)
+          log.warning("Idempotency key taken but no stored response found, errorId: [" + errorId + "]")
       }
+      context.stop(self)
     case e: EventHandlingError =>
       commandEnvelope.respondTo ! e
       context.stop(self)
@@ -160,7 +162,7 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
       }
     } else {
 //      println("CommandExecutorActor AggregateConcurrentModificationError "+aggregateId.asLong+" expected " + expectedVersion.asInt+" was " + aggregate.version.asInt)
-      self ! AggregateConcurrentModificationError(aggregateId, AggregateType(classTag[AGGREGATE_ROOT].toString), expectedVersion, aggregate.version)
+      onConflict(AggregateConcurrentModificationError(aggregateId, AggregateType(classTag[AGGREGATE_ROOT].toString), expectedVersion, aggregate.version)) // answered here, not in a later state (F67)
     }
   }
 
@@ -183,7 +185,7 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
       }
     } else {
       //      println("CommandExecutorActor AggregateConcurrentModificationError "+aggregateId.asLong+" expected " + expectedVersion.asInt+" was " + aggregate.version.asInt)
-      self ! AggregateConcurrentModificationError(aggregateId, AggregateType(classTag[AGGREGATE_ROOT].toString), expectedVersion, aggregate.version)
+      onConflict(AggregateConcurrentModificationError(aggregateId, AggregateType(classTag[AGGREGATE_ROOT].toString), expectedVersion, aggregate.version)) // answered here, not in a later state (F67)
     }
   }
 
@@ -249,21 +251,37 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
 
 
   private def idempotentCommandInfo(command: Any, response: CustomCommandResponse[_]): Option[IdempotentCommandInfo] = {
-    command match {
-      case idm: IdempotentCommand[_] if idm.idempotencyId.isDefined => Some(IdempotentCommandInfo(idm, response))
-      case _ => None
+    if (idempotency.isIdempotent(command)) Some(IdempotentCommandInfo(command, response)) else None
+  }
+
+  // A conflict for an idempotent command usually means a copy of it won the race: that copy's stored response is
+  // the answer (D12). Otherwise a concurrent command is re-run on the latest state, and any other gets the error.
+  private def onConflict(error: AggregateConcurrentModificationError): Unit = {
+    idempotency.storedResponse(commandEnvelope.command) match {
+      case Some(stored) =>
+        commandEnvelope.respondTo ! stored
+        context.stop(self)
+      case None => commandEnvelope match {
+        case _: InternalConcurrentCommandEnvelope[_, _] | _: InternalRewriteHistoryConcurrentCommandEnvelope[_, _] if concurrentAttempt < MaxConcurrentAttempts =>
+          concurrentAttempt += 1
+          context.become(whileWaiting(receiveAggregate))
+          context.system.scheduler.scheduleOnce(retryDelay(concurrentAttempt), repositoryActor, GetAggregateRootCurrentVersion(self))
+        case _ =>
+          commandEnvelope.respondTo ! error
+          context.stop(self)
+      }
     }
   }
 
   private def handleCommandHandlingExceptionAndStop(exception: Throwable): Unit = {
     exception match {
-      case e: AggregateInIncorrectVersionException => commandEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateId, e.aggregateType, e.requestedVersion, e.currentVersion)
+      case e: AggregateInIncorrectVersionException => onConflict(AggregateConcurrentModificationError(aggregateId, e.aggregateType, e.requestedVersion, e.currentVersion))
       case _ =>
         val errorId = RandomUtil.generateRandomString(16)
         commandEnvelope.respondTo ! CommandHandlingError(commandEnvelope.command.getClass.getSimpleName, errorId, commandEnvelope.commandId)
         log.error(exception, "Error handling command, errorId: ["+errorId+"]")
+        context.stop(self)
     }
-    context.stop(self)
   }
 
 

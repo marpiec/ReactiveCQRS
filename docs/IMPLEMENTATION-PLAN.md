@@ -694,3 +694,23 @@ Open test-infrastructure items:
   spawn counter, like repository names, so a replacement never clashes with a stopping one.
   Test: `FailedRestoreSpec` (no reply at all before the fix).
 - `sbt test`: 59 of 60 pass; the failure is still the F4 reproduction.
+
+**16/10/2026: architecture review 1; F9, F64, F67, F68, F69**
+- First architecture review (KNOWN-ISSUES §7, at the user's request reviews now follow each
+  work item): one aggregate owner instead of two per-aggregate actors (AR1) and a typed
+  owner-executor protocol (AR4) go first in M3; AR2 and AR3 were done here.
+- Idempotent commands (D12, R7): new `Idempotency` module; the response is stored in the
+  persist transaction with `ON CONFLICT (key) DO NOTHING`, a copy that finds the key taken
+  or meets a version conflict gets the stored response; retention 30 days by default,
+  removed hourly. `FirstCommand.chosenAggregateId` and the `ReserveAggregateId` message give
+  callers safe creation retries. F64: response info stored in new `info` columns.
+- Every persist outcome is one reply (AR3); doing that exposed F68 (a persist failing
+  part-way committed what it had written) and F69 (a reload after a conflict applied the
+  previous command's events twice; introduced today by the F19 fix). F67 (no reply for a
+  command on a missing aggregate) came out of the review. All three fixed.
+- Tests: `IdempotentCommandsSpec`, `CommandResponseStateSpec`, `PersistTransactionSpec`,
+  new scenarios in `CommandOutcomesSpec` and `ConcurrentModificationSpec`; all failed before
+  the fix (no reply, two events instead of one, version 3 instead of 2).
+- `sbt test`: 81 of 82 pass; the failure is still the F4 reproduction.
+- Neula: `PostgresCommandResponseState.initSchema()` is now required (H5), or idempotent
+  commands fail.

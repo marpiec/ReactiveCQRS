@@ -14,8 +14,12 @@ import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
 import org.apache.pekko.actor.{ActorRef, Props}
+import org.apache.pekko.pattern.ask
+import org.apache.pekko.util.Timeout
 import scalikejdbc.{DB, DBSession}
 
+import scala.concurrent.duration._
+import scala.concurrent.{Await, Future}
 import scala.util.Try
 
 /** An event store that lets a test write events "from another node" right before the actor persists its own. */
@@ -40,7 +44,8 @@ class InterferingEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesName
   }
 }
 
-// F19, F24: an aggregate written by someone else must reload instead of failing, and conflicts must end in bounded time.
+// F19, F24, F69: an aggregate written by someone else must reload instead of failing, conflicts must end in bounded time,
+// and a reload must never make the actor apply events twice.
 class ConcurrentModificationSpec extends CommonSpec {
 
   TestDatabase.init()
@@ -107,6 +112,30 @@ class ConcurrentModificationSpec extends CommonSpec {
       } finally {
         eventStore.interfereWith = None
       }
+    }
+  }
+
+  Feature("Commands racing on one aggregate") {
+
+    Scenario("after a version conflict the actor's state still matches the store (F69)") {
+      Given("a cart and five commands that all expect version 1, sent at once")
+      val cartId = loadedCart()
+      import system.dispatcher
+      implicit val timeout: Timeout = Timeout(15.seconds)
+      val racing = Future.sequence((1 to 5).map(i => (commandBus ? AddItem(userId, cartId, AggregateVersion(1), "racer " + i)).mapTo[CustomCommandResponse[_]]))
+      val responses = Await.result(racing, 20.seconds)
+
+      Then("one of them is applied")
+      responses.count(_ == SuccessResponse(cartId, AggregateVersion(2))) mustBe 1
+
+      And("the aggregate is at version 2 with one item, as stored")
+      val cart: Try[Aggregate[ShoppingCart]] = commandBus ?? GetAggregate(cartId)
+      cart.get.version mustBe AggregateVersion(2)
+      cart.get.aggregateRoot.get.items.size mustBe 1
+
+      And("a command expecting version 2 succeeds")
+      val next: CustomCommandResponse[_] = commandBus ?? AddItem(userId, cartId, AggregateVersion(2), "after the race")
+      next mustBe SuccessResponse(cartId, AggregateVersion(3))
     }
   }
 }

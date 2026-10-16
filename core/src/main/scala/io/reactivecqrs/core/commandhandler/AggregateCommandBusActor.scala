@@ -8,7 +8,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{EnsureRestored, GetAggregateRootCurrentMinVersion, GetAggregateRootCurrentVersion, GetEventsCurrentVersion}
-import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.EnsureEventsPublished
+import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{EnsureEventsPublished, RemoveExpiredResponses}
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor._
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
@@ -24,6 +24,7 @@ import scala.reflect.runtime.universe._
 object AggregateCommandBusActor {
 
   private case class EnsureEventsPublished(oldOnly: Boolean)
+  private case object RemoveExpiredResponses
 
   def apply[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateContext: AggregateContext[AGGREGATE_ROOT],
                                              uidGenerator: ActorRef, eventStoreState: EventStoreState,
@@ -94,6 +95,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
   private var spawnedCount = 0 // used to force acotr name uniqueness if poisonpill not worked (or not yet worked)
 
+  private val idempotency = new Idempotency(commandResponseState)
+
 
   if (!eventsReplayMode) {
     context.system.scheduler.scheduleOnce(30.second, self, EnsureEventsPublished(false))(context.dispatcher)
@@ -102,6 +105,17 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   override def preStart(): Unit = {
     if (!eventsReplayMode) {
       context.system.scheduler.schedule(60.seconds, 60.seconds, self, EnsureEventsPublished(true))(context.dispatcher)
+      // Hourly, at a random minute, so the buses of different aggregate types do not all clean up at once.
+      val firstCleanUp = (60 + scala.util.Random.nextInt(3600)).seconds
+      context.system.scheduler.scheduleWithFixedDelay(firstCleanUp, 1.hour, self, RemoveExpiredResponses)(context.dispatcher)
+    }
+  }
+
+  private def removeExpiredResponses(): Unit = {
+    import context.dispatcher
+    Future(idempotency.removeExpired()).onComplete {
+      case scala.util.Failure(e) => log.warning("Removing expired idempotent command responses failed: " + e.getMessage)
+      case scala.util.Success(removed) => if (removed > 0) log.info("Removed " + removed + " expired idempotent command responses")
     }
   }
 
@@ -131,6 +145,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     case GetEventsForAggregate(id) => routeGetEvents(id)
     case GetEventsForAggregateForVersion(id, version) => routeGetEventsForVersion(id, version)
     case EnsureEventsPublished(oldOnly) => ensureEventsPublished(oldOnly)
+    case ReserveAggregateId => sender() ! takeNextAggregateId
+    case RemoveExpiredResponses => removeExpiredResponses()
     case Terminated(ref) => forgetRepositoryActor(ref)
     case m => throw new IllegalArgumentException("Cannot handle this kind of message: " + m + " class: " + m.getClass+". Maybe it should extend Command trait.")
   }
@@ -155,7 +171,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
 
   private def routeFirstCommand[RESPONSE <: CustomCommandResponse[_]](firstCommand: FirstCommand[AGGREGATE_ROOT, RESPONSE]): Unit = {
     val commandId = takeNextCommandId
-    val newAggregateId = takeNextAggregateId // Actor construction might be delayed so we need to store current aggregate id
+    val newAggregateId = firstCommand.chosenAggregateId.getOrElse(takeNextAggregateId) // Actor construction might be delayed so we need to store current aggregate id
     val respondTo = sender() // with sender this shouldn't be the case, but just to be sure
 
     val commandHandler = createCommandHandlerActorIfNeeded(newAggregateId)
@@ -172,7 +188,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private def createCommandHandlerActor(aggregateId: AggregateId): ActorRef = {
     val repositoryActor = getOrCreateAggregateRepositoryActor(aggregateId)
     val commandHandlerActor = context.actorOf(Props(new CommandHandlerActor[AGGREGATE_ROOT](
-      aggregateId, repositoryActor, commandResponseState,
+      aggregateId, repositoryActor, idempotency,
       commandsHandlers.asInstanceOf[AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]]],
       rewriteHistoryCommandHandlers.asInstanceOf[(Iterable[EventWithVersion[AGGREGATE_ROOT]], AGGREGATE_ROOT) => PartialFunction[Any, GenericCommandResult[Any]]],
       initialState, commandTimeout)),
@@ -216,7 +232,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private def getOrCreateAggregateRepositoryActor(aggregateId: AggregateId): ActorRef = {
     childrenActivity += aggregateId.asLong -> System.nanoTime() / 1_000_000
     aggregateRepositoryActors.getOrElse(aggregateId.asLong, {
-      val ref = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, commandResponseState, eventBus, eventHandlers, initialState, None, eventsVersionsMap, eventsVersionsMapReverse, failedRestoreRetryAfter)),
+      val ref = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, idempotency, eventBus, eventHandlers, initialState, None, eventsVersionsMap, eventsVersionsMapReverse, failedRestoreRetryAfter)),
         aggregateTypeSimpleName + "_AR_" + aggregateId.asLong+"_"+spawnedCount)
       spawnedCount += 1
       context.watch(ref)
@@ -226,14 +242,14 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   }
 
   private def createAggregateRepositoryActorForVersion(aggregateId: AggregateId, aggregateVersion: AggregateVersion): ActorRef = {
-    val actor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, commandResponseState, eventBus, eventHandlers, initialState, Some(Left(aggregateVersion)), eventsVersionsMap, eventsVersionsMapReverse, failedRestoreRetryAfter)),
+    val actor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, idempotency, eventBus, eventHandlers, initialState, Some(Left(aggregateVersion)), eventsVersionsMap, eventsVersionsMapReverse, failedRestoreRetryAfter)),
       aggregateTypeSimpleName + "_ARV_" + aggregateId.asLong+"_"+aggregateVersion.asInt+"_"+spawnedCount)
     spawnedCount += 1
     actor
   }
 
   private def createAggregateRepositoryActorForInstant(aggregateId: AggregateId, instant: Instant): ActorRef = {
-    val actor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, commandResponseState, eventBus, eventHandlers, initialState, Some(Right(instant)), eventsVersionsMap, eventsVersionsMapReverse, failedRestoreRetryAfter)),
+    val actor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, idempotency, eventBus, eventHandlers, initialState, Some(Right(instant)), eventsVersionsMap, eventsVersionsMapReverse, failedRestoreRetryAfter)),
       aggregateTypeSimpleName + "_ART_" + aggregateId.asLong+"_"+instant.getEpochSecond+"_"+spawnedCount)
     spawnedCount += 1
     actor

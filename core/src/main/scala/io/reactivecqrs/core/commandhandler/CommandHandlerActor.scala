@@ -42,7 +42,7 @@ object CommandHandlerActor {
 
 class CommandHandlerActor[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId,
                                           repositoryActor: ActorRef,
-                                          commandResponseState: CommandResponseState,
+                                          idempotency: Idempotency,
                                           commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]],
                                           rewriteHistoryCommandHandlers: (Iterable[EventWithVersion[AGGREGATE_ROOT]], AGGREGATE_ROOT) => PartialFunction[Any, GenericCommandResult[Any]],
                                           initialState: () => AGGREGATE_ROOT,
@@ -58,7 +58,7 @@ class CommandHandlerActor[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId,
       respondIfAlreadyHandled(commandEnvelope.respondTo, commandEnvelope.command) {
 
         val commandExecutorActor = context.actorOf(Props(new CommandExecutorActor[AGGREGATE_ROOT](aggregateId, commandEnvelope.asInstanceOf[InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]], repositoryActor,
-          commandResponseState, nextResultAggregatorName, commandHandlers, rewriteHistoryCommandHandlers, initialState, commandTimeout)), aggregateTypeSimpleName+"_CommandExecutor_" + aggregateId.asLong+"_"+commandEnvelope.commandId.asLong)
+          idempotency, nextResultAggregatorName, commandHandlers, rewriteHistoryCommandHandlers, initialState, commandTimeout)), aggregateTypeSimpleName+"_CommandExecutor_" + aggregateId.asLong+"_"+commandEnvelope.commandId.asLong)
 
         // Pass initial state immediatelly to command executor
         commandExecutorActor ! Success(Aggregate(aggregateId, AggregateVersion.ZERO, Some(initialState())))
@@ -67,43 +67,39 @@ class CommandHandlerActor[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId,
     case commandEnvelope: InternalConcurrentCommandEnvelope[_, _] =>
       respondIfAlreadyHandled(commandEnvelope.respondTo, commandEnvelope.command) {
         val commandExecutorActor = context.actorOf(Props(new CommandExecutorActor[AGGREGATE_ROOT](aggregateId, commandEnvelope.asInstanceOf[InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]], repositoryActor,
-          commandResponseState, nextResultAggregatorName, commandHandlers, rewriteHistoryCommandHandlers, initialState, commandTimeout)), aggregateTypeSimpleName+"_CommandExecutor_" + aggregateId.asLong+"_"+commandEnvelope.commandId.asLong)
+          idempotency, nextResultAggregatorName, commandHandlers, rewriteHistoryCommandHandlers, initialState, commandTimeout)), aggregateTypeSimpleName+"_CommandExecutor_" + aggregateId.asLong+"_"+commandEnvelope.commandId.asLong)
 
         repositoryActor ! GetAggregateRootCurrentVersion(commandExecutorActor)
       }
     case commandEnvelope: InternalFollowingCommandEnvelope[_, _] =>
       respondIfAlreadyHandled(commandEnvelope.respondTo, commandEnvelope.command) {
         val commandExecutorActor = context.actorOf(Props(new CommandExecutorActor[AGGREGATE_ROOT](aggregateId, commandEnvelope.asInstanceOf[InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]], repositoryActor,
-          commandResponseState, nextResultAggregatorName, commandHandlers, rewriteHistoryCommandHandlers, initialState, commandTimeout)), aggregateTypeSimpleName+"_CommandExecutor_" + aggregateId.asLong+"_"+commandEnvelope.commandId.asLong)
+          idempotency, nextResultAggregatorName, commandHandlers, rewriteHistoryCommandHandlers, initialState, commandTimeout)), aggregateTypeSimpleName+"_CommandExecutor_" + aggregateId.asLong+"_"+commandEnvelope.commandId.asLong)
 
         repositoryActor ! GetAggregateRootExactVersion(commandExecutorActor, commandEnvelope.command.expectedVersion)
       }
     case commandEnvelope: InternalRewriteHistoryCommandEnvelope[_, _] =>
       respondIfAlreadyHandled(commandEnvelope.respondTo, commandEnvelope.command) {
         val commandExecutorActor = context.actorOf(Props(new CommandExecutorActor[AGGREGATE_ROOT](aggregateId, commandEnvelope.asInstanceOf[InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]], repositoryActor,
-          commandResponseState, nextResultAggregatorName, commandHandlers, rewriteHistoryCommandHandlers, initialState, commandTimeout)), aggregateTypeSimpleName+"_CommandExecutor_" + aggregateId.asLong+"_"+commandEnvelope.commandId.asLong)
+          idempotency, nextResultAggregatorName, commandHandlers, rewriteHistoryCommandHandlers, initialState, commandTimeout)), aggregateTypeSimpleName+"_CommandExecutor_" + aggregateId.asLong+"_"+commandEnvelope.commandId.asLong)
 
         repositoryActor ! GetAggregateRootWithEventsExactVersion(commandExecutorActor, commandEnvelope.command.expectedVersion, commandEnvelope.command.eventsTypes.map(_.getName))
       }
     case commandEnvelope: InternalRewriteHistoryConcurrentCommandEnvelope[_, _] =>
       respondIfAlreadyHandled(commandEnvelope.respondTo, commandEnvelope.command) {
         val commandExecutorActor = context.actorOf(Props(new CommandExecutorActor[AGGREGATE_ROOT](aggregateId, commandEnvelope.asInstanceOf[InternalCommandEnvelope[AGGREGATE_ROOT, CustomCommandResponse[_]]], repositoryActor,
-          commandResponseState, nextResultAggregatorName, commandHandlers, rewriteHistoryCommandHandlers, initialState, commandTimeout)), aggregateTypeSimpleName+"_CommandExecutor_" + aggregateId.asLong+"_"+commandEnvelope.commandId.asLong)
+          idempotency, nextResultAggregatorName, commandHandlers, rewriteHistoryCommandHandlers, initialState, commandTimeout)), aggregateTypeSimpleName+"_CommandExecutor_" + aggregateId.asLong+"_"+commandEnvelope.commandId.asLong)
 
         repositoryActor ! GetAggregateRootWithEventsCurrentVersion(commandExecutorActor, commandEnvelope.command.eventsTypes.map(_.getName))
       }
   }
 
+  // Saves running the handler when a copy was already applied; copies running at the same time are settled at
+  // persist (Idempotency).
   private def respondIfAlreadyHandled(respondTo: ActorRef, command: Any)(block: => Unit): Unit = {
-    command match {
-      case idm: IdempotentCommand[_] if idm.idempotencyId.isDefined =>
-        val key = idm.idempotencyId.get.asDbKey
-        commandResponseState.responseByKey(key) match {
-          case Some(response) =>
-            respondTo ! response
-          case None => block
-        }
-      case _ => block
+    idempotency.storedResponse(command) match {
+      case Some(response) => respondTo ! response
+      case None => block
     }
   }
 

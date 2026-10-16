@@ -2,7 +2,7 @@ package io.reactivecqrs.testdomain.spec
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.UserId
+import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubscriptionsManagerApi, EventsBusActor, MemoryEventBusState}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
@@ -33,7 +33,7 @@ class SluggishAggregateContext extends AggregateContext[Sluggish] {
   }
 }
 
-// F13, F20: every command execution ends with a reply to the caller, and its executor stops.
+// F13, F20, F67: every command execution ends with a reply to the caller, and its executor stops.
 class CommandOutcomesSpec extends CommonSpec {
 
   TestDatabase.init()
@@ -77,6 +77,16 @@ class CommandOutcomesSpec extends CommonSpec {
 
       response mustBe a[CommandHandlingError]
       awaitAssert(liveExecutors("CommandOutcomesSluggishBus") mustBe 0, 3.seconds, 200.millis)
+    }
+  }
+
+  Feature("A command for an aggregate that does not exist") {
+    Scenario("the caller gets a concurrent-modification error at once instead of waiting for the timeout (F67)") {
+      val missing = AggregateId(System.nanoTime())
+
+      val response: CustomCommandResponse[_] = cartBus ?? AddItem(userId, missing, AggregateVersion(1), "apple")
+
+      response mustBe AggregateConcurrentModificationError(missing, AggregateType(classOf[ShoppingCart].getName), AggregateVersion(1), AggregateVersion.ZERO)
     }
   }
 }

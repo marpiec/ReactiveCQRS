@@ -12,7 +12,8 @@ case class AddItem(userId: UserId, aggregateId: AggregateId, expectedVersion: Ag
                    name: String) extends Command[ShoppingCart, CustomCommandResponse[_]]
 
 // No expected version: the framework uses the current one and retries on a concurrent change.
-case class AddItemConcurrently(userId: UserId, aggregateId: AggregateId, name: String) extends ConcurrentCommand[ShoppingCart, CustomCommandResponse[_]]
+case class AddItemConcurrently(userId: UserId, aggregateId: AggregateId, name: String, idempotencyId: Option[ClientKey] = None)
+  extends ConcurrentCommand[ShoppingCart, CustomCommandResponse[_]] with IdempotentCommand[ClientKey]
 
 case class RemoveItem(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
                       id: Int) extends Command[ShoppingCart, CustomCommandResponse[_]]
@@ -28,3 +29,20 @@ case class RewriteCartName(userId: UserId, aggregateId: AggregateId, expectedVer
                            name: String) extends RewriteHistoryCommand[ShoppingCart, CustomCommandResponse[_]] {
   override def eventsTypes = Set(classOf[ShoppingCartCreated])
 }
+
+/** A key chosen by the caller, the way a client retrying a request would send it. */
+case class ClientKey(value: String) extends CommandIdempotencyId {
+  override def asDbKey: String = value
+}
+
+/** Creates a cart under an id the caller reserved beforehand, so a retry cannot create a second cart. */
+case class CreateShoppingCartWithId(idempotencyId: Option[ClientKey], userId: UserId, cartId: AggregateId, name: String)
+  extends FirstCommand[ShoppingCart, CustomCommandResponse[_]] with IdempotentCommand[ClientKey] {
+  override def chosenAggregateId: Option[AggregateId] = Some(cartId)
+}
+
+/** Adds an item and answers with a receipt, so the stored response carries custom info. */
+case class AddItemWithReceipt(idempotencyId: Option[ClientKey], userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
+                              name: String) extends Command[ShoppingCart, CustomCommandResponse[_]] with IdempotentCommand[ClientKey]
+
+case class ItemReceipt(itemName: String)

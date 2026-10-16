@@ -143,10 +143,15 @@ matched in this order at `AggregateCommandBusActor.scala:117-121`.
 | `RewriteHistoryCommand` | + `expectedVersion`, `eventsTypes` | `GetAggregateRootWithEventsExactVersion` | strict | error |
 | `RewriteHistoryConcurrentCommand` | + `eventsTypes` | `GetAggregateRootWithEventsCurrentVersion` | current version | re-run, same limit |
 
-Mix-in `IdempotentCommand[IID]` with `idempotencyId: Option[IID]` deduplicates responses
-by `IID.asDbKey` (`SagaStep(sagaId, step)` → `"sagaId|step"`, `Command.scala:42-47`).
-The concurrent retry is bounded only by the executor's 60 s self-`PoisonPill`
-(`CommandExecutorActor.scala:38`).
+Mix-in `IdempotentCommand[IID]` with `idempotencyId: Option[IID]` makes a command take
+effect once per key `IID.asDbKey` (`SagaStep(sagaId, step)` → `"sagaId|step"`); keys are
+global across aggregate types. Since 1.0 (D12, fixed F9) the `Idempotency` module
+(`core/commandhandler/Idempotency.scala`) owns the rules: the response is stored in the
+persist transaction, a copy that finds the key taken rolls back and gets the stored
+response, and so does a copy that meets a version conflict. Stored responses are removed
+after the response state's retention period (default 30 days; each command bus runs the
+clean-up hourly). A `FirstCommand` can name its aggregate in `chosenAggregateId` (an id
+from `ReserveAggregateId`), so a resent creation cannot create a second aggregate.
 
 ### 2.5 Command handlers and results
 
@@ -227,9 +232,9 @@ abstract class AggregateContext[R : ClassTag] {           // AggregateContext.sc
    empty it calls `UidGeneratorActor` with a **blocking** `Await` of up to 60 s
    (`:315-348`). It then creates or reuses the `CommandHandlerActor` (and its
    `AggregateRepositoryActor`) and forwards an `Internal*CommandEnvelope(respondTo, commandId, command)`.
-2. **Idempotency** (`CommandHandlerActor.scala:95-106`). For an `IdempotentCommand` with a
-   key, a synchronous `commands_responses` lookup returns the stored response instead of
-   executing. This is read-then-act, not atomic.
+2. **Idempotency** (`CommandHandlerActor`). For an `IdempotentCommand` with a key, a
+   synchronous `commands_responses` lookup returns the stored response instead of
+   executing. Copies running at the same time are settled at persist (steps 6 and 7).
 3. **Executor** (`CommandHandlerActor.scala:54-93`). A `CommandExecutorActor` is spawned
    per command; the handler actor asks the repository for the state the command kind
    needs (table in §2.4).
@@ -243,20 +248,25 @@ abstract class AggregateContext[R : ClassTag] {           // AggregateContext.sc
    `persist` (`:284-319`): one `eventStore.localTx` on the actor thread that
    - optionally overwrites past events (rewrite commands),
    - calls `persistEvents` (`add_event` per event, or one `add_events` call for 2+ plain/first events),
-   - stores the idempotent command response in the **same transaction** (`:321-333`).
-7. **After commit**: the repository sends **itself** `EventsPersisted` and replies
-   `AggregateModified` to the executor, which forwards the prepared response to the caller.
-   A PostgreSQL error containing "Concurrent aggregate modification exception" becomes
-   `AggregateConcurrentModificationError`; anything else becomes `EventHandlingError`
-   (`:300-307`).
-8. **`EventsPersisted`** (`:126-138`) applies the events to the in-memory root (or re-reads
-   everything for undo/duplication events), sends `PublishEvents` to the bus, records the
-   events in `pendingPublish` and answers any waiting `GetAggregateMinVersion` queries.
+   - stores the idempotent command response in the **same transaction**
+     (`INSERT … ON CONFLICT (key) DO NOTHING`; nothing inserted means the key is taken).
 
-Ordering note: because state is updated via a self-message, a `PersistEvents` that was
-already queued may still see the old in-memory version. The SQL lock (§4.2) rejects it.
-The same caller still gets read-your-writes, since its next query is queued after
-`EventsPersisted`.
+   Any failure inside the transaction is thrown, so it rolls back whole (fixed F68: a
+   later step used to fail after earlier statements had run, and they were committed).
+7. **After commit** the repository applies the events to its in-memory root at once (or
+   re-reads everything for undo/duplication events), sends `PublishEvents` to the bus,
+   records the events in `pendingPublish`, answers any waiting `GetAggregateMinVersion`
+   queries and replies `AggregateModified` to the executor, which forwards the prepared
+   response to the caller. Every other outcome is one reply as well (AR3): "Concurrent
+   aggregate modification exception" from PostgreSQL → reload, then
+   `AggregateConcurrentModificationError`; a taken idempotency key → `IdempotencyKeyTaken`;
+   anything else → `EventHandlingError`. For an idempotent command the executor answers a
+   conflict or a taken key with the stored response.
+
+Ordering note: the state changes before the next message is processed (fixed F69; it used
+to change through a self-message, and a reload in between applied the events twice), so a
+`PersistEvents` already queued behind a successful one is rejected by the in-memory version
+check. The SQL lock (§4.2) still catches writers outside this actor.
 
 ---
 
@@ -271,7 +281,7 @@ The same caller still gets read-your-writes, since its next query is queued afte
 | `noop_events` (`:75-81`) | `id` (= `events.id`) PK, `from_version` | events cancelled by an undo, effective from that version |
 | `events_to_publish` (`:83-101`) | `event_id` PK, `aggregate_id`, `version`, `user_id`, `event_time`; index `(aggregate_id, version)` | **outbox**: events not yet confirmed by every subscriber |
 | `types_names` (`TypesNamesState.scala`) | `id SMALLINT`, unique `name` | class-name ↔ id dictionary (aggregates, events, subscribers, responses) |
-| `commands_responses` (`CommandResponseState.scala:36-53`) | `id`, `key`, `handling_timestamp`, `response`, `response_type_id` | idempotent responses (see F9) |
+| `commands_responses` (`CommandResponseState.scala`) | `id`, `key` (unique), `handling_timestamp` (indexed, for retention), `response`, `response_type_id`, and since 1.0 `info`, `info_type_id` (the info of a `CustomSuccessResponse`, F64) | idempotent responses (D12) |
 
 ### 4.2 Stored procedures and optimistic locking
 
