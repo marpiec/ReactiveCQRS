@@ -2,19 +2,20 @@
 
 Each file here is the report of one run of the `bench` module, the end-to-end load driver of
 the implementation plan (§7). `baseline-M1.md` is the reference that later milestones are
-compared with; `baseline-M2.md` adds the delivery soak of M2.
+compared with; `baseline-M2.md` adds the delivery soak of M2; `baseline-M3.md` adds serial command mode and
+restores from snapshots.
 
 ## Running it
 
 ```bash
-sbt "bench/run baseline-M2"
+sbt "bench/run baseline-M3 soakAggregates=100000 soakEventsPerAggregate=10"
 ```
 
 The name becomes the report file, `docs/perf/<name>.md`. Sizes can follow the name as
 `key=value` arguments (`workers`, `commandsPerWorker`, `contendedCommandsPerWorker`,
 `noteSize`, `rebuildAggregates`, `rebuildEventsPerAggregate`, `restoreSizes`,
 `soakSeconds`, `soakAggregates`, `soakEventsPerAggregate`, `soakFailingSeconds`,
-`restartCycles`), and `scenarios=commands,contended,rebuild,restore,soak,deliverySoak` runs
+`restartCycles`), and `scenarios=commands,contended,serial,rebuild,restore,soak,deliverySoak` runs
 only those; for example a quick check:
 
 ```bash
@@ -37,8 +38,9 @@ events carry a 200-character note, so the numbers show the library's costs, not 
 | Startup to ready | From wiring a system with two projections to the first command reply and to the first event seen by a projection |
 | Commands on many aggregates | 16 callers, each sending commands one at a time to its own aggregate; latency percentiles, throughput, SQL statements and committed transactions per command (with two projections, and with no subscribers) |
 | Concurrent commands on one aggregate | 16 callers at once on one aggregate (`ConcurrentCommand`): retries, latency tail, throughput |
+| Serial mode (M3, R8) | The two command measures again with `CommandProcessing.Serial`: commands of one aggregate wait for each other instead of conflicting |
 | Projection rebuild | The 0.12 replayer into two new projections: time, throughput, peak heap |
-| Aggregate restore | A new repository actor reading 1 000 to 500 000 events: time, peak heap, statements |
+| Aggregate restore | A new owner reading 1 000 to 500 000 events: time, peak heap, statements; since M3 also the restore from the snapshot the owner writes when it stops (D30) |
 | Memory over a soak run | Heap after GC before, right after a 60-second load (with the projections' backlog), and once the projections caught up and 20 s idle. The load itself varies widely between runs (it depends on how far the projections fall behind early, F93), so it is not a throughput measure |
 | Delivery soak (M2) | Many counters, a tenth of whose events-based listener fails for a while and recovers within its retries; subscriptions in the database (live mode). When every event is projected; the bus deliveries, outbox rows and recorded failures left (all zero when healthy); heap after GC before, after the load, after 20 s idle and after each of several restarts |
 

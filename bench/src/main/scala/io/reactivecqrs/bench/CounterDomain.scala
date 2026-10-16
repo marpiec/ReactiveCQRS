@@ -33,6 +33,16 @@ class CounterContext extends AggregateContext[Counter] {
   }
 }
 
+/** R8: one command at a time per counter. */
+class SerialCounterContext extends CounterContext {
+  override val commandProcessing: CommandProcessing = CommandProcessing.Serial()
+}
+
+/** D30: a snapshot every 200 events and when the owner stops. */
+class SnapshottingCounterContext extends CounterContext {
+  override val snapshots: Option[SnapshotPolicy] = Some(SnapshotPolicy(every = 200))
+}
+
 case class CounterProgress(increments: Long)
 
 /** Counts the increments it received per counter; the benchmark reads the sum to see when it caught up. `failing` makes

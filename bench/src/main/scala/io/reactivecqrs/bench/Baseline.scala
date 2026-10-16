@@ -8,7 +8,8 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.{ConcurrentHashMap, Executors}
 
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
+import io.reactivecqrs.api.id.{AggregateId, UserId}
+import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.PassivateAggregate
 import io.reactivecqrs.core.eventstore.NewEvents
 import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, ReplayAllEvents}
 import io.reactivecqrs.core.eventsreplayer.{EventsReplayerActor, ReplayerConfig, ReplayerRepositoryActorFactory}
@@ -72,7 +73,7 @@ object Baseline {
       val stores = new BenchStores
       report.environment(DatabaseCounters.serverVersion())
 
-      // `scenarios=commands,contended,rebuild,restore,soak,deliverySoak` runs only those; all by default.
+      // `scenarios=commands,contended,serial,rebuild,restore,soak,deliverySoak` runs only those; all by default.
       def runs(scenario: String): Boolean = config.scenarios.isEmpty || config.scenarios.contains(scenario)
       if (runs("commands")) {
         val withProjections = startup(stores, report)
@@ -82,8 +83,16 @@ object Baseline {
       if (runs("commands") || runs("contended")) {
         val plain = new BenchSystem("plain", stores, projections = false)
         if (runs("commands")) commandsOnManyAggregates("Commands on many aggregates, no subscribers", plain, config, report, projections = false)
-        if (runs("contended")) commandsOnOneAggregate(plain, config, report)
+        if (runs("contended")) commandsOnOneAggregate("Concurrent commands on one aggregate", plain, config, report,
+          "Conflicting commands are re-run with jittered back-off, at most 10 times (D37).")
         plain.shutdown()
+      }
+      if (runs("serial")) {
+        val serial = new BenchSystem("serial", stores, projections = false, context = new SerialCounterContext)
+        commandsOnManyAggregates("Commands on many aggregates, no subscribers, serial mode (R8)", serial, config, report, projections = false)
+        commandsOnOneAggregate("Concurrent commands on one aggregate, serial mode (R8)", serial, config, report,
+          "Each command waits for the one before it on the aggregate; none conflicts, none is re-run.")
+        serial.shutdown()
       }
       if (runs("rebuild")) rebuild(stores, config, report)
       if (runs("restore")) restore(stores, config, report)
@@ -153,7 +162,7 @@ object Baseline {
     report.section(title, Seq("Measure", "Value"), rowsOut.toSeq, s"Each command adds one event with a ${config.noteSize}-character note.")
   }
 
-  private def commandsOnOneAggregate(system: BenchSystem, config: Config, report: Report): Unit = {
+  private def commandsOnOneAggregate(title: String, system: BenchSystem, config: Config, report: Report, about: String): Unit = {
     val note = "n" * config.noteSize
     val counter = created(system)
     val latencies = new Latencies
@@ -167,13 +176,13 @@ object Baseline {
     val loadNanos = System.nanoTime() - started
     val commands = config.workers.toLong * config.contendedCommandsPerWorker
     val stored = DB.readOnly { implicit session => sql"SELECT count(*) - 1 FROM events WHERE aggregate_id = ${counter.asLong}".map(_.long(1)).single().get }
-    report.section("Concurrent commands on one aggregate", Seq("Measure", "Value"), Seq(
+    report.section(title, Seq("Measure", "Value"), Seq(
       Seq("commands", s"$commands (${config.workers} callers at once, all on one aggregate, `ConcurrentCommand`)"),
       Seq("outcomes", outcomes.summary),
       Seq("events stored", stored.toString),
       Seq("latency p50 / p95 / p99 / max", latencySummary(latencies)),
       Seq("throughput", f"${commands / seconds(loadNanos)}%.0f commands/s")),
-      "Conflicting commands are re-run with jittered back-off, at most 10 times (D37).")
+      about)
   }
 
   private def rebuild(stores: BenchStores, config: Config, report: Report): Unit = {
@@ -215,7 +224,7 @@ object Baseline {
 
   private def restore(stores: BenchStores, config: Config, report: Report): Unit = {
     val note = "n" * config.noteSize
-    val system = new BenchSystem("restore", stores, projections = false)
+    val system = new BenchSystem("restore", stores, projections = false, context = new SnapshottingCounterContext)
     val rowsOut = config.restoreSizes.zipWithIndex.map { case (size, i) =>
       val id = AggregateId(3000000000L + i)
       writeHistory(stores, id, size, note)
@@ -228,11 +237,17 @@ object Baseline {
       val statements = StatementCounter.current - statementsBefore
       val peak = Heap.peak()
       val outcome = restored.map(a => if (a.version.asInt == size) "ok" else "version " + a.version.asInt).getOrElse("failed: " + restored.failed.get.getMessage)
-      Seq(size.toString, millis(nanos), f"${size / seconds(nanos)}%.0f", s"${Heap.mb(heapBefore)} / ${Heap.mb(peak)}", statements.toString, outcome)
+      // D30: the owner stops, writing a snapshot of the state it restored; the next owner reads it, not the history.
+      system.counters ! PassivateAggregate(id)
+      awaitUntil(1.minute)(DB.readOnly { implicit session => sql"SELECT count(*) FROM snapshots WHERE aggregate_id = ${id.asLong}".map(_.int(1)).single().get } == 1)
+      val fromSnapshotStarted = System.nanoTime()
+      val again = Try(Await.result((system.counters ? GetAggregate(id))(Timeout(1.minute)), 2.minutes).asInstanceOf[Try[Aggregate[Counter]]].get)
+      val fromSnapshot = if (again.toOption.exists(_.version.asInt == size)) millis(System.nanoTime() - fromSnapshotStarted) else "failed"
+      Seq(size.toString, millis(nanos), f"${size / seconds(nanos)}%.0f", s"${Heap.mb(heapBefore)} / ${Heap.mb(peak)}", statements.toString, outcome, fromSnapshot)
     }
     system.shutdown()
-    report.section("Aggregate restore", Seq("Events", "Restore time", "Events/s", "Heap before / peak", "SQL statements", "Result"), rowsOut,
-      s"A new repository actor reads one aggregate's whole history (no snapshots before M3); events carry a ${config.noteSize}-character note.")
+    report.section("Aggregate restore", Seq("Events", "Restore time", "Events/s", "Heap before / peak", "SQL statements", "Result", "From a snapshot (D30)"), rowsOut,
+      s"A new owner reads one aggregate's whole history; then it stops, writing a snapshot, and a new owner restores from that. Events carry a ${config.noteSize}-character note.")
   }
 
   private def soak(stores: BenchStores, config: Config, report: Report): Unit = {

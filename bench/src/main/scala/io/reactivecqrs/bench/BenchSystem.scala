@@ -64,10 +64,11 @@ class BenchStores {
   * counters and, optionally, two projections, one events-based and one aggregate-based. `rebuild` wires a system
   * whose projections start empty, for replaying stored events into new projection tables. `liveSubscriptions` keeps the
   * subscription versions in the database, as live nodes do (the default in-memory mode is the one the M1 baseline used).
-  * `failing` makes the events-based projection fail for a counter.
+  * `failing` makes the events-based projection fail for a counter; `context` sets the counters' command processing
+  * and snapshots.
   */
 class BenchSystem(name: String, stores: BenchStores, projections: Boolean, rebuild: Boolean = false, liveSubscriptions: Boolean = false,
-                  failing: io.reactivecqrs.api.id.AggregateId => Boolean = _ => false) {
+                  failing: io.reactivecqrs.api.id.AggregateId => Boolean = _ => false, context: CounterContext = new CounterContext) {
 
   val system: ActorSystem = ActorSystem(name)
 
@@ -83,7 +84,7 @@ class BenchSystem(name: String, stores: BenchStores, projections: Boolean, rebui
 
   val eventBus: ActorRef = system.actorOf(Props(new EventsBusActor()), "eventBus")
 
-  val counters: ActorRef = system.actorOf(AggregateCommandBusActor(new CounterContext, uidGenerator, stores.eventStore,
+  val counters: ActorRef = system.actorOf(AggregateCommandBusActor(context, uidGenerator, stores.eventStore,
     stores.commandResponseState, eventBus, eventsReplayMode = rebuild), "counters")
 
   /** The table whose increments sum shows how far the events-based projection got. */
