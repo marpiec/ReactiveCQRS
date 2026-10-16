@@ -40,6 +40,9 @@ object AggregateOwner {
   /** To the command bus: this owner asks to be stopped, after a failed restore (D11). */
   case object OwnerPassivate
 
+  /** A squash request (D47) and the caller to answer with a `SquashResponse`. */
+  case class Squash(respondTo: ActorRef, request: SquashAggregate)
+
   /** D37: a concurrent command is run again on the latest state after a conflict, at most 10 times, waiting 10 ms
     * doubling to 500 ms, jittered so that competing commands spread out. */
   val defaultConcurrentRetries: Backoff = Backoff(10.millis, 500.millis, maxAttempts = 10, jitter = true)
@@ -64,6 +67,7 @@ class OwnerSettings[AGGREGATE_ROOT: ClassTag](context: AggregateContext[AGGREGAT
   val commandTimeout: FiniteDuration = context.commandTimeout
   val snapshots: Option[SnapshotPolicy] = context.snapshots
   val commandProcessing: CommandProcessing = context.commandProcessing
+  val squash: Option[SquashPolicy[AGGREGATE_ROOT]] = context.squash
   val outboxWriter: Option[OutboxWriter[AGGREGATE_ROOT]] = context match {
     case withWriter: WithOutboxWriter[AGGREGATE_ROOT @unchecked] => Some(withWriter.outboxWriter)
     case _ => None
@@ -162,6 +166,7 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
     case GetState(respondTo) => respondTo ! Failure(failure)
     case GetEvents(respondTo) => respondTo ! Failure(failure)
     case GetStateMinVersion(respondTo, _, _) => respondTo ! Failure(failure)
+    case Squash(respondTo, request) => respondTo ! SquashRefused(request.id, "the aggregate cannot be restored: " + failure.getMessage)
     case MinVersionDeadline => answerExpiredMinVersionQueries()
     case AskToStop => context.parent ! OwnerPassivate
     case StopOwner => stopNow(withSnapshot = false)
@@ -180,6 +185,7 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
     case PublishEventsAck(_, versions, _) => delivered(versions)
     case RepublishOutbox(_) => eventStore.oldestVersionToPublish(aggregateId).foreach(from => outboxRepublishedUpTo = republish(from, None))
     case RepublishRange(_, from, subscriber) => republish(from, Some(subscriber))
+    case Squash(respondTo, request) => respondTo ! squashHistory(request)
     case StopOwner =>
       stopping = true
       stopIfDone()
@@ -208,7 +214,7 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
     case CommandProcessing.Serial(maxQueue, OverflowPolicy.Reject) if queued.size >= maxQueue =>
       log.warning("Command " + envelope.command.getClass.getSimpleName + " for aggregate " + aggregateId.asLong + " of type " +
         aggregateType.simpleName + " rejected: " + maxQueue + " commands wait already")
-      envelope.respondTo ! CommandRejected(aggregateId, maxQueue + " commands of the aggregate wait already")
+      envelope.respondTo ! CommandRejected(aggregateId, s"$maxQueue commands of the aggregate wait already")
     case processing =>
       val timeout = context.system.scheduler.scheduleOnce(commandTimeout, self, CommandTimedOut(envelope.commandId))
       val command = Pending(envelope, timeout, attempt = 1, version, running = false, started = false)
@@ -465,6 +471,7 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
     case c: ConcurrentCommand[_, _] => c.userId
     case c: RewriteHistoryCommand[_, _] => c.userId
     case c: RewriteHistoryConcurrentCommand[_, _] => c.userId
+    case other => throw new IllegalArgumentException("Not a command: " + other.getClass.getName) // the bus sends only commands
   }
 
   // ************** Stopping
@@ -478,6 +485,38 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
     minVersionQueries.foreach(q => q.respondTo ! Failure(new AggregateInIncorrectVersionException(aggregateId, aggregateType, version, q.version)))
     minVersionQueries = Vector.empty
     context.stop(self)
+  }
+
+  // ************** Squash (D47–D52)
+
+  // On this owner's thread, between commands: the version and the state stay as they are, so commands in flight are not
+  // affected. The squash event is the context's, made from the state at `upTo`; the duplicates that read this
+  // aggregate below `upTo` are detached first, each with a squash event of its own state at version 1 (D50).
+  private def squashHistory(request: SquashAggregate): SquashResponse = squash match {
+    case None => SquashRefused(aggregateId, "squash is not enabled for " + aggregateType.simpleName)
+    case Some(_) if request.upTo <= AggregateVersion.ZERO || request.upTo > version =>
+      SquashRefused(aggregateId, "version " + request.upTo.asInt + " is not between 1 and " + version.asInt)
+    case Some(policy) =>
+      val upTo = request.upTo
+      // The blocker is checked first, before the states to squash are restored; the store checks it again.
+      Try(for {
+        _ <- eventStore.squashBlocker(aggregateId, upTo).toLeft(())
+        state <- Option(if (upTo == version) root else restorer.restore(aggregateId, Some(Left(upTo))).root)
+          .toRight("the aggregate is deleted at version " + upTo.asInt)
+        detach = eventStore.duplicatesReading(aggregateId, Some(upTo)).map(duplicate =>
+          duplicate -> policy.toEvent(restorer.restore(duplicate, Some(Left(AggregateVersion(1)))).root))
+        _ <- eventStore.squash(aggregateId, upTo, policy.toEvent(state), request.userId, request.metadata, detach)
+      } yield detach) match {
+        case Success(Right(detach)) =>
+          if (snapshotVersion <= upTo) snapshotVersion = AggregateVersion.ZERO
+          log.info("Aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " squashed up to version " + upTo.asInt +
+            (if (detach.isEmpty) "" else ", detaching " + detach.map(_._1.asLong).mkString(", ")))
+          AggregateSquashed(aggregateId, upTo)
+        case Success(Left(reason)) => SquashRefused(aggregateId, reason)
+        case Failure(e) =>
+          log.error(e, "Squashing aggregate " + aggregateId.asLong + " up to version " + upTo.asInt + " failed")
+          SquashRefused(aggregateId, "the squash failed: " + e.getMessage)
+      }
   }
 
   // ************** Snapshots (D30)
@@ -539,9 +578,11 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
   // subscribers continues when the bus acks the part, a subscriber filling its gap asks for the next part. The parts
   // before the last carry the current state too. Returns the last version sent.
   private def republish(from: AggregateVersion, onlyTo: Option[ActorRef]): Option[AggregateVersion] = {
-    if (from <= version) {
-      val to = AggregateVersion(math.min(version.asInt.toLong, from.asInt.toLong + maxRepublishEvents - 1).toInt)
-      val events = eventStore.readEventsRange[AGGREGATE_ROOT](aggregateId, from, to)
+    // D51: nothing below the squash point exists any more; a range from below it starts at the squash event.
+    val start = if (from <= version) eventStore.squashedVersion(aggregateId).filter(_ > from).getOrElse(from) else from
+    if (start <= version) {
+      val to = AggregateVersion(math.min(version.asInt.toLong, start.asInt.toLong + maxRepublishEvents - 1).toInt)
+      val events = eventStore.readEventsRange[AGGREGATE_ROOT](aggregateId, start, to)
       if (events.nonEmpty) {
         eventsBus.tell(PublishEvents(aggregateType, events, aggregateId, Option(root), onlyTo), publicationAcks)
         Some(events.last.version)

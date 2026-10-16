@@ -102,7 +102,7 @@ behaviour.
 | D48 | The squash event is a context-defined domain event class (a `FirstEvent` built from the state), handled by `eventHandlers` and projections, evolved with `V<n>` rules. The framework never stores raw root JSON as permanent history. |
 | D49 | Undo cannot cross the squash point: `add_undo_event` rejects it with an explicit error. Noop markers at or below N are deleted by the squash. |
 | D50 | Before squashing a base aggregate below a version that duplicates still read, each such duplicate is detached: its version-1 `DuplicationEvent` is replaced by a squash event holding its state at version 1, and its base-chain rows are removed. Squashing a duplicate detaches it the same way. |
-| D51 | Squash runs only with no `events_to_publish` rows and no failed subscriptions for the aggregate; live projections are not notified; rebuilds see the squash event first; performance snapshots at or below N are deleted; historical reads below N return an explicit "squashed" error (BusinessEntity contexts do not opt in until R11's archive exists); disk space is reclaimed by (auto)VACUUM, shrinking files needs `pg_repack`/`VACUUM FULL` (operations note). |
+| D51 | Squash runs only with no `events_to_publish` rows and no failed subscriptions for the aggregate; live projections are not notified; rebuilds see the squash event first; performance snapshots at or below N are deleted; historical reads below N return an explicit "squashed" error (BusinessEntity contexts do not opt in until R11's archive exists); disk space is reclaimed by (auto)VACUUM, shrinking files needs `pg_repack`/`VACUUM FULL` (operations note). **Refined in M3 (16/10/2026):** "no rows" means none at or below N (rows above N are not touched); a duplicate the squash detaches must have no outbox row at its version 1 and no failed subscription (the detach changes that event); an undo after N that undid events at or below N blocks it too; the preconditions are checked again inside the transaction, under the chain lock (F96). The squash event keeps event N's id and time. |
 | D52 | Squash runs on explicit request (`SquashAggregate(id, upTo)`) or by an optional per-context policy run by the squash scheduler singleton. R11's selective squash with an audit archive is an extension on top. |
 | D32 | Metadata envelope (R13): a new nullable JSONB `metadata` column on `events`; old rows get a default envelope built from `user_id` on read; commands supply metadata through a trait; `EventInfo` carries it; aggregate event handlers keep their signature. |
 | D33 | Outbox hook (R12): a typed writer per context, `(aggregateId, version, events, session) => Unit`, called inside the persist transaction; a failure rolls back the events; idempotent replays never call it twice. |
@@ -560,12 +560,19 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Fix:** D38.
 
 #### F76 — Permanently deleting an aggregate that duplicates read from breaks the duplicates
-- **High** if Neula deletes such aggregates, suspected · Fix in **M3** (with the duplicate detach of D50) · `PostgresEventStoreState.deletePublishedEventsToPublish` (`PermanentDeleteEvent` branch)
+- **High** if Neula deletes such aggregates, suspected · **Fixed in M3** (16/10/2026, with the duplicate detach of D50) · `PostgresEventStoreState.deletePublishedEventsToPublish` (`PermanentDeleteEvent` branch)
 - **Symptom:** after a `PermanentDeleteEvent` on an aggregate that has duplicates, those duplicates restore without the history they share with it, so their state is silently wrong; their chain rows in `aggregates` point at a base that no longer exists.
 - **Root cause:** the delete removes the base's events and rows only; duplicates read the base's events through their chain rows (D50 solves the same problem for squash).
 - **Found:** plan review at the M1 close.
 - **Check:** Neula, on a production copy: `SELECT count(*) FROM aggregates a WHERE a.base_id <> a.id AND NOT EXISTS (SELECT 1 FROM aggregates b WHERE b.id = a.base_id AND b.base_id = b.id)` (duplicates whose base is gone).
-- **Fix:** detach every duplicate before deleting its base, as D50 does before a squash. With D20a the delete also needs a precondition like D51 (no failed subscriptions), because it removes the `subscriptions` rows that would hold the failure. The precondition is in since M2 (16/10/2026): the delete waits while the aggregate has a row in `subscription_failures` (`PermanentDeleteSpec`).
+- **Fix:** detach every duplicate before deleting its base, as D50 does before a squash. With D20a the delete also needs a precondition like D51 (no failed subscriptions), because it removes the `subscriptions` rows that would hold the failure. The precondition is in since M2 (16/10/2026): the delete waits while the aggregate has a row in `subscription_failures` (`PermanentDeleteSpec`). Since M3 the command bus restores each duplicate at version 1 and the delete, in its transaction, makes that state the duplicate's first event (the type's squash event) and removes its chain rows, under the chain lock of F96; a duplicate made meanwhile postpones the delete. A type without a squash event cannot detach: its aggregate with duplicates is not deleted, with an error log, and the event stays in the outbox (H8).
+- **Tests:** `PermanentDeleteSpec` (the duplicate keeps its state; without a squash event the delete waits; failed against the old delete), `EventStoreStateSpec` (both stores).
+
+#### F96 — A duplication could read history a squash removes
+- **High** once squash is used, found in the M3 squash design review (16/10/2026) · **Fixed in M3** · `add_duplication_event`, `PostgresEventStoreState.squash`/`deleteAggregatePermanently`
+- **Symptom:** a duplication of an aggregate at a version below its squash point would read events that no longer exist, so the duplicate's state is silently wrong; a duplication committed between the owner listing the duplicates to detach and the squash's commit would not be detached; the same for a permanent delete (F76).
+- **Fix:** `add_duplication_event` locks the base's chain rows `FOR KEY SHARE` in key order and then refuses a missing base or a version below its `squashed_version`; a squash or permanent delete locks the aggregate's chain and its duplicates' rows to it `FOR UPDATE` in the same order, then checks its preconditions again and compares the duplicates with those it was given (else it changes nothing, "changed meanwhile"). Whichever runs first, the other sees its result. The in-memory store mirrors the checks.
+- **Tests:** `PostgresEventStoreStateSpec` (a duplication during a squash waits and is refused; a squash waiting for a duplication sees it and changes nothing), `EventStoreStateSpec`, `SquashSpec`; both failed against the code without the locks and checks.
 
 ### Performance and runtime
 
@@ -577,6 +584,7 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 #### F27 — Blocking JDBC runs on the default dispatcher
 - **Medium**, likely · Fix in **M3** · persist, restore, projections, futures
 - **Fix:** a dedicated blocking dispatcher (D34).
+- **Note (16/10/2026):** the command bus carries out permanent deletes on its own thread, and since F76 it first restores each duplicate of the deleted aggregate there; rare, but it holds up every command of the type meanwhile. Step 10 moves that work off the bus.
 
 #### F30 — Reflection per event on hot paths
 - **Low**, likely · Fix in **M3** · `PostgresEventStoreState.scala:69, 82, 96, 109, 127`; `AggregateRepositoryActor.scala:312`
@@ -755,6 +763,12 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Tests:** `MemorySubscriptionsStateSpec`, `MemoryEventStoreStateTestDoubleSpec`, `MemoryDocumentStoreSpec` (query conditions); `MemoryEventStoreStateSpec` (duplication) now passes.
 - **Still not mirrored** (documented gaps of the test double): instant reads, `PermanentDeleteEvent` clean-up, spaces in the document store.
 
+#### F97 — The in-memory store undid an undo instead of the event before it
+- **Low**, confirmed (found with the squash tests, 16/10/2026) · **Fixed in M3** · `MemoryEventStoreState.withNoopFlags`
+- **Symptom:** an undo right after another undo counted the first undo as the event it undoes, so in memory it brought the first undo's events back, while PostgreSQL's `add_undo_event` undoes the newest event not undone yet. Tests on the in-memory store saw another state than production.
+- **Fix:** the flags are computed as the procedure does: each undo marks itself and the newest `eventsCount` events not marked yet. The store's versions also come from the last event, not the count of events, since a squash removes events.
+- **Test:** `EventStoreStateSpec` "An undo right after another…" (both stores; failed on the in-memory store before).
+
 #### F50 — Type keys disagree for nested classes; runtime reflection blocks Scala 3
 - **Low**, likely · Fix in **M3** (with F30 and D29, which touch the same type keys) · `AggregateContext.scala:54` vs `ProjectionActor.scala:180-196`; also the outbox scan (`AggregateCommandBusActor`: `runtimeClass.getName`) vs persist (`typeSymbol.fullName`), so a nested aggregate class never gets its waiting events re-sent
 - **Fix:** D75.
@@ -774,7 +788,7 @@ The library cannot fix these; they are listed so the 1.0 migration does not miss
 | H5 | Medium, likely | `PostgresCommandResponseState` is built without `initSchema()` (`Context.scala:483`), so D24's index fix would not run; since the F9 fix every idempotent command then fails (the response insert needs the unique index). | M1 |
 | H6 | Medium, suspected | Event listeners of ScreenRelease and ProcessRelease (the two aggregates with undo) must handle undo, since rebuild will deliver it (D60). | M4 |
 | H7 | Medium, likely | The host wiring changes with M2: create one `OutboxPollerActor`; send the bus `RegisterSubscribers` with every projection and listener (with H2); drop `EventBusSubscriptionsManagerApi` and `PostgresEventBusState`; call `PostgresSubscriptionsState.initSchema()`, which creates `subscription_failures`. Show `GetProjectionStatus` failures and offer `RetryFailedSubscription` and `SkipFailedVersion` in the admin tools (R1, R14). `SubscriptionsState`'s six per-kind version methods became `lastVersion` and `newVersion` with a `SubscriptionType`; `ProcessFlowDetailsProjectionSpec` calls the old ones. | M2 (Neula) |
-| H8 | Low, likely | M3 host steps: run `PostgresEventStoreState.buildIndexesConcurrently()` once after the upgrade, in the background (F38); opt in to snapshots (`AggregateContext.snapshots`) for the contexts with long histories (R10); commands give their events a metadata envelope by mixing in `WithMetadata` (R13); a context writes its own rows with its events by mixing in `WithOutboxWriter` (R12); serial mode is `commandProcessing = Serial(...)` (R8), and `CommandRejected` is a new response; `PassivateAggregate(id)` is available for operations. | M3 (Neula) |
+| H8 | Low, likely | M3 host steps: run `PostgresEventStoreState.buildIndexesConcurrently()` once after the upgrade, in the background (F38); opt in to snapshots (`AggregateContext.snapshots`) for the contexts with long histories (R10); commands give their events a metadata envelope by mixing in `WithMetadata` (R13); a context writes its own rows with its events by mixing in `WithOutboxWriter` (R12); serial mode is `commandProcessing = Serial(...)` (R8), and `CommandRejected` is a new response; `PassivateAggregate(id)` is available for operations. Squash: a context opts in with a squash event (`squash = Some(SquashPolicy(state => SquashEvent(...)))`, a `FirstEvent` its event handlers and projections handle); `SquashAggregate(id, upTo)` squashes on request, and a `SquashScheduler` started with `SquashTarget.of(context, commandBus)` squashes by `SquashPolicy.automatic`; contexts with audit duties wait for R11 (M6). A type whose aggregates are duplicated and permanently deleted needs a squash event, or those deletes wait (F76). | M3 (Neula) |
 
 ---
 
@@ -800,7 +814,7 @@ From §7 of Neula's change requests.
 |---|---|
 | M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔, F73 ✔, F74 ✔, F75 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53, F76 (Neula, on a production copy, with `StoredDataCheck` and the F76 query); Neula H3, H4, H5 |
 | M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔, F95 ✔; Neula H2, H7 |
-| M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8; F8 (contract ✔), F22 ✔, F23, F25 ✔, F27, F30, F31 ✔, F32, F33 (rest), F38 ✔, F39 ✔, F44 ✔, F50, F65 ✔, F76, F78, F81 ✔; Neula H8 |
+| M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8; F8 (contract ✔), F22 ✔, F23, F25 ✔, F27, F30, F31 ✔, F32, F33 (rest), F38 ✔, F39 ✔, F44 ✔, F50, F65 ✔, F76 ✔, F78, F81 ✔, F96 ✔, F97 ✔; Neula H8 |
 | M4 | F3, F43, F49 (backfill), F54, F55, F56, F57, F58, F59, F60, F61, F62, F82, F93, F94; Neula H1, H6 |
 | M5 | AR5; F46, F48, F63, F78 (between nodes) |
 | M6 | F8 (complete) |

@@ -6,6 +6,7 @@ import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, SpaceId, UserId}
 import io.reactivecqrs.core.eventstore.NewEvents
+import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.PassivateAggregate
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.delivery.OutboxPollerActor.Poll
 import io.reactivecqrs.core.delivery.{OutboxPollerActor, OutboxPollerOptions, RepublishOutbox}
@@ -20,29 +21,40 @@ import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.testkit.TestProbe
 
 import scala.concurrent.duration._
+import scala.util.Try
 
 case class Memo(text: String)
 case class MemoWritten(text: String) extends FirstEvent[Memo] {
   def spaceId: SpaceId = SpaceId(0)
 }
 case class MemoErased() extends PermanentDeleteEvent[Memo]
+case class MemoCopied(spaceId: SpaceId, baseAggregateId: AggregateId, baseAggregateVersion: AggregateVersion) extends DuplicationEvent[Memo]
+case class MemoRestated(text: String) extends FirstEvent[Memo] {
+  def spaceId: SpaceId = SpaceId(0)
+}
 
 case class WriteMemo(userId: UserId, memoId: AggregateId, text: String) extends FirstCommand[Memo, CustomCommandResponse[_]] {
   override def chosenAggregateId: Option[AggregateId] = Some(memoId)
 }
 case class EraseMemo(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion) extends Command[Memo, CustomCommandResponse[_]]
+case class CopyMemo(userId: UserId, baseId: AggregateId, baseVersion: AggregateVersion) extends FirstCommand[Memo, CustomCommandResponse[_]]
 
-class MemoContext extends AggregateContext[Memo] {
+// With `squashable`, a memo duplicated from one that is deleted for good keeps its text (F76).
+class MemoContext(squashable: Boolean = true) extends AggregateContext[Memo] {
   override val version: Int = 1
   override def initialAggregateRoot: Memo = Memo("")
   override def commandHandlers = _ => {
     case c: WriteMemo => CommandSuccess(MemoWritten(c.text))
     case _: EraseMemo => CommandSuccess(MemoErased())
+    case c: CopyMemo => CommandSuccess(MemoCopied(SpaceId(0), c.baseId, c.baseVersion))
   }
   override def eventHandlers = (_, _, memo) => {
     case e: MemoWritten => Memo(e.text)
     case _: MemoErased => memo
+    case _: MemoCopied => memo
+    case e: MemoRestated => Memo(e.text)
   }
+  override val squash: Option[SquashPolicy[Memo]] = if (squashable) Some(SquashPolicy(memo => MemoRestated(memo.text))) else None
 }
 
 // A PermanentDeleteEvent deletes the aggregate for good, but only once every subscriber has it, so read models can
@@ -61,13 +73,13 @@ class PermanentDeleteSpec extends CommonSpec {
   private val userId = UserId(1)
   private val memoType = AggregateType(classOf[Memo].getName)
 
-  private class Fixture {
+  private class Fixture(context: MemoContext = new MemoContext) {
     val subscriber = TestProbe()
     val bus: ActorRef = system.actorOf(Props(new EventsBusActor()))
     bus ! RegisterSubscribers(Seq(subscriber.ref))
     subscriber.expectMsg(GetSubscriptionRequests)
     subscriber.reply(SubscriptionRequests(Seq(SubscribeForEvents(memoType, subscriber.ref))))
-    val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(new MemoContext, uidGenerator, eventStore,
+    val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(context, uidGenerator, eventStore,
       new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema(), bus, eventsReplayMode = false))
 
     def delivered(memoId: AggregateId): Seq[Int] =
@@ -148,6 +160,54 @@ class PermanentDeleteSpec extends CommonSpec {
       f.ack(memoId, 1, 2)
 
       deletedForGood(memoId)
+    }
+  }
+
+  Feature("Deleting an aggregate that others were duplicated from (F76)") {
+
+    /** A memo and a copy of it, both delivered, and the memo erased. */
+    def erasedWithCopy(f: Fixture): (AggregateId, AggregateId) = {
+      val memoId = AggregateId(System.nanoTime())
+      val written: CustomCommandResponse[_] = f.commandBus ?? WriteMemo(userId, memoId, "note")
+      written mustBe SuccessResponse(memoId, AggregateVersion(1))
+      f.delivered(memoId) mustBe Seq(1)
+      f.ack(memoId, 1)
+      val copied: CustomCommandResponse[_] = f.commandBus ?? CopyMemo(userId, memoId, AggregateVersion(1))
+      val copyId = copied.asInstanceOf[SuccessResponse].aggregateId
+      f.delivered(copyId) mustBe Seq(1)
+      f.ack(copyId, 1)
+      val erased: CustomCommandResponse[_] = f.commandBus ?? EraseMemo(userId, memoId, AggregateVersion(1))
+      erased mustBe SuccessResponse(memoId, AggregateVersion(2))
+      f.delivered(memoId) mustBe Seq(2)
+      (memoId, copyId)
+    }
+
+    def storedText(f: Fixture, memoId: AggregateId): String = {
+      f.commandBus ! PassivateAggregate(memoId) // read from the store, not from a live owner
+      val memo: Try[Aggregate[Memo]] = f.commandBus ?? GetAggregate(memoId)
+      memo.get.aggregateRoot.get.text
+    }
+
+    Scenario("detaches the duplicates first, with the type's squash event, so they keep their state") {
+      val f = new Fixture
+      val (memoId, copyId) = erasedWithCopy(f)
+
+      f.ack(memoId, 2)
+
+      deletedForGood(memoId)
+      eventStore.readEventsRange[Memo](copyId, AggregateVersion(1), AggregateVersion(1)).map(_.event) mustBe Seq(MemoRestated("note"))
+      storedText(f, copyId) mustBe "note"
+    }
+
+    Scenario("is not carried out for a type without a squash event: the event waits in the outbox, the duplicates keep reading") {
+      val f = new Fixture(new MemoContext(squashable = false))
+      val (memoId, copyId) = erasedWithCopy(f)
+
+      f.ack(memoId, 2)
+
+      awaitAssert(eventStore.oldestVersionToPublish(memoId) mustBe Some(AggregateVersion(2)), 5.seconds, 50.millis)
+      storedVersions(memoId) mustBe Seq(1, 2)
+      storedText(f, copyId) mustBe "note"
     }
   }
 }

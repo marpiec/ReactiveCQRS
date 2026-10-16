@@ -1,13 +1,18 @@
 package io.reactivecqrs.core.eventstore
 
 import java.time.Instant
+import java.util.concurrent.{CountDownLatch, TimeUnit}
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.{AggregateVersion, Event}
+import io.reactivecqrs.api.id.SpaceId
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.testutils.TestDatabase
 import scalikejdbc._
 
+import scala.concurrent.ExecutionContext.Implicits.global
+import scala.concurrent.duration._
+import scala.concurrent.{Await, Future}
 import scala.util.Try
 
 object PostgresEventStoreStateSpec {
@@ -97,5 +102,66 @@ class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStore
       failure.getMessage must include(classOf[EventB].getName)
       failure.getMessage must include("aggregate " + f.aggregateId.asLong + " at version 2")
     } finally setTypeVersion(0) // later specs in this schema read every stored event
+  }
+
+  private def waitingForLock(query: String): Boolean = DB.readOnly { implicit session =>
+    sql"""SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE $query)"""
+      .map(_.boolean(1)).single().get
+  }
+
+  /** Runs `block` in a transaction that stays open until the returned latch is counted down. */
+  private def heldOpen(block: DBSession => Unit): (Future[Unit], CountDownLatch) = {
+    val holding, release = new CountDownLatch(1)
+    val transaction = Future(DB.localTx { session =>
+      block(session)
+      holding.countDown()
+      release.await(10, TimeUnit.SECONDS)
+    })
+    holding.await(10, TimeUnit.SECONDS) mustBe true
+    (transaction.map(_ => ()), release)
+  }
+
+  // D50: the duplication procedure waits while a squash of its base holds the base's chain, then sees the squash point.
+  Scenario("a duplication made while a squash of its base runs waits for the squash, and is then refused below the squash point") {
+    val base = new TestFixture(eventStoreState)
+    base.storeEvents(Seq(EventA("one"), EventB(2), EventC(true)))
+    published(base.aggregateId)
+    val id = base.aggregateId.asLong
+    // The squash stops at the event it rewrites, with the chain locked.
+    val (holding, release) = heldOpen(implicit session => sql"SELECT id FROM events WHERE aggregate_id = $id AND version = 3 FOR UPDATE".map(_.long(1)).single())
+    val squashing = Future(eventStoreState.squash(base.aggregateId, AggregateVersion(3), EventA("squashed"), base.userId, None, Nil))
+    awaitAssert(waitingForLock("UPDATE events SET event%") mustBe true, 5.seconds, 20.millis)
+
+    val duplication = Future(Try(base.storeEvents(Seq(Copy(SpaceId(1), base.aggregateId, AggregateVersion(2))), newId(), AggregateVersion.ZERO)))
+    awaitAssert(waitingForLock("%add_duplication_event%") mustBe true, 5.seconds, 20.millis)
+    release.countDown()
+
+    Await.result(holding, 10.seconds)
+    Await.result(squashing, 10.seconds) mustBe Right(())
+    Await.result(duplication, 10.seconds).failed.get.getMessage must include("Duplication cannot read the squashed history")
+  }
+
+  // D50: a squash waits while a duplication of its base is in progress, then sees the new duplicate.
+  Scenario("a squash that waits for a duplication of its base in progress sees the new duplicate, and changes nothing") {
+    val base = new TestFixture(eventStoreState)
+    base.storeEvents(Seq(EventA("one"), EventB(2), EventC(true)))
+    published(base.aggregateId)
+    val id = base.aggregateId.asLong
+    val copyId = newId().asLong
+    // What add_duplication_event does first: lock the base's chain, then add the duplicate's chain row.
+    val (holding, release) = heldOpen { implicit session =>
+      sql"SELECT id FROM aggregates WHERE id = $id ORDER BY id, base_id FOR KEY SHARE".map(_.long(1)).list()
+      sql"""INSERT INTO aggregates (space_id, id, creation_time, type_id, base_order, base_id, base_version)
+           | VALUES (1, $copyId, current_timestamp, 1, 1, $id, 2)""".stripMargin.update()
+    }
+    val squashing = Future(eventStoreState.squash(base.aggregateId, AggregateVersion(3), EventA("squashed"), base.userId, None, Nil))
+    awaitAssert(waitingForLock("%ORDER BY id, base_id FOR UPDATE") mustBe true, 5.seconds, 20.millis)
+    release.countDown()
+
+    Await.result(holding, 10.seconds)
+    try {
+      Await.result(squashing, 10.seconds).left.toOption.get must include("the duplicates of the aggregate changed meanwhile")
+      base.getEvents() mustBe Seq(EventA("one"), EventB(2), EventC(true))
+    } finally DB.autoCommit(implicit session => sql"DELETE FROM aggregates WHERE id = $copyId".update())
   }
 }

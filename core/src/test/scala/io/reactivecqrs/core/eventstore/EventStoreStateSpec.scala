@@ -3,7 +3,7 @@ package io.reactivecqrs.core.eventstore
 import java.time.Instant
 
 import org.apache.pekko.actor.ActorRef
-import io.reactivecqrs.api.{AggregateVersion, DuplicationEvent, Event, EventMetadata, EventWithVersion, FirstEvent, UndoEvent}
+import io.reactivecqrs.api.{AggregateSquashedException, AggregateType, AggregateVersion, AutomaticSquash, DuplicationEvent, Event, EventMetadata, EventWithVersion, FirstEvent, UndoEvent}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, SpaceId, UserId}
 import io.reactivecqrs.core.eventstore.NewEvents
 import io.reactivecqrs.testutils.CommonSpec
@@ -208,7 +208,7 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     val f = new TestFixture(eventStoreState)
     f.storeEvents(Seq(EventA("one"), EventB(2)))
 
-    eventStoreState.deleteAggregatePermanently(f.aggregateId)
+    eventStoreState.deleteAggregatePermanently(f.aggregateId) mustBe Right(())
 
     f.getEvents() mustBe empty
     eventStoreState.oldestVersionToPublish(f.aggregateId) mustBe None
@@ -338,6 +338,117 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     eventStoreState.deletePublished(f.aggregateId, Seq(AggregateVersion(1)))
     awaitAssert(eventStoreState.oldestVersionToPublish(f.aggregateId) mustBe Some(AggregateVersion(2)), 3.seconds, 20.millis)
     eventStoreState.oldestVersionToPublish(AggregateId(f.aggregateId.asLong + 1)) mustBe None
+  }
+
+  // As add_undo_event: an undo counts back over the events not undone yet, so it never undoes another undo.
+  Scenario("An undo right after another undoes the newest event that is not undone yet") {
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one")))
+    f.storeEvents(Seq(EventB(2)))
+    f.storeEvents(Seq(EventC(true)))
+    f.storeEvents(Seq(Undo(1))) // undoes EventC
+    f.storeEvents(Seq(Undo(1))) // undoes EventB
+
+    f.getEvents() mustBe Seq(EventA("one"))
+    f.getEvents(Some(AggregateVersion(4))) mustBe Seq(EventA("one"), EventB(2))
+  }
+
+  protected def newId(): AggregateId = AggregateId(System.nanoTime())
+
+  protected def published(ids: AggregateId*): Unit = {
+    ids.foreach(id => eventStoreState.deletePublished(id, (1 to 20).map(AggregateVersion(_))))
+    awaitAssert(ids.foreach(id => eventStoreState.oldestVersionToPublish(id) mustBe None), 3.seconds, 20.millis)
+  }
+
+  private def squash(f: TestFixture, upTo: Int, detach: Seq[(AggregateId, FirstEvent[_])] = Nil, metadata: Option[EventMetadata] = None) =
+    eventStoreState.squash(f.aggregateId, AggregateVersion(upTo), EventA("squashed"), UserId(9), metadata, detach)
+
+  // D47, D49, D51.
+  Scenario("A squash keeps the version and the later events; reading, undoing and duplicating below the point are refused") {
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one"), EventB(2), EventC(true)))
+    f.storeEvents(Seq(EventB(4)))
+    published(f.aggregateId)
+    val metadata = EventMetadata("operator")
+
+    squash(f, 3, metadata = Some(metadata)) mustBe Right(())
+
+    f.getEvents() mustBe Seq(EventA("squashed"), EventB(4))
+    eventStoreState.readEventsRange[SomeAggregate](f.aggregateId, AggregateVersion(1), AggregateVersion(4)).map(e => (e.version.asInt, e.userId, e.storedMetadata)) mustBe
+      Seq((3, UserId(9), Some(metadata)), (4, f.userId, None))
+    eventStoreState.squashedVersion(f.aggregateId) mustBe Some(AggregateVersion(3))
+    f.getEvents(Some(AggregateVersion(3))) mustBe Seq(EventA("squashed"))
+    the[AggregateSquashedException] thrownBy f.getEvents(Some(AggregateVersion(2)))
+
+    f.storeEvents(Seq(EventC(false))) // version 5
+    Try(f.storeEvents(Seq(Undo(3)))).isFailure mustBe true // would undo the squash event
+    f.storeEvents(Seq(Undo(1)))
+    f.getEvents() mustBe Seq(EventA("squashed"), EventB(4))
+
+    Try(f.storeEvents(Seq(Copy(SpaceId(1), f.aggregateId, AggregateVersion(2))), newId(), AggregateVersion.ZERO)).isFailure mustBe true
+    val copyId = newId()
+    f.storeEvents(Seq(Copy(SpaceId(1), f.aggregateId, AggregateVersion(3))), copyId, AggregateVersion.ZERO)
+    f.getEvents(None, copyId) mustBe Seq(EventA("squashed"), Copy(SpaceId(1), f.aggregateId, AggregateVersion(3)))
+
+    squash(f, 3).left.toOption.get must include("already squashed up to version 3")
+  }
+
+  Scenario("A squash is refused, changing nothing, while events at or below the point wait in the outbox, or after an undo that reached them") {
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one"), EventB(2), EventC(true)))
+    eventStoreState.squashBlocker(f.aggregateId, AggregateVersion(2)).get must include("outbox")
+    squash(f, 2).left.toOption.get must include("outbox")
+
+    f.storeEvents(Seq(Undo(2))) // version 4 undoes versions 3 and 2
+    published(f.aggregateId)
+    squash(f, 3).left.toOption.get must include("undo")
+    f.getEvents() mustBe Seq(EventA("one"))
+    eventStoreState.squashBlocker(f.aggregateId, AggregateVersion(4)) mustBe None
+  }
+
+  // D50, F76.
+  Scenario("A squash or a permanent delete detaches the duplicates first, and changes nothing when given other duplicates than there are") {
+    val base = new TestFixture(eventStoreState)
+    base.storeEvents(Seq(EventA("one"), EventB(2), EventC(true), EventB(4)))
+    val (early, late) = (newId(), newId())
+    base.storeEvents(Seq(Copy(SpaceId(1), base.aggregateId, AggregateVersion(2))), early, AggregateVersion.ZERO)
+    base.storeEvents(Seq(Copy(SpaceId(1), base.aggregateId, AggregateVersion(4))), late, AggregateVersion.ZERO)
+
+    eventStoreState.duplicatesReading(base.aggregateId, Some(AggregateVersion(3))) mustBe Seq(early)
+    published(base.aggregateId)
+    eventStoreState.squashBlocker(base.aggregateId, AggregateVersion(3)).get must include("first event of duplicate " + early.asLong)
+    published(early, late)
+    squash(base, 3).left.toOption.get must include("changed meanwhile")
+
+    squash(base, 3, Seq(early -> EventA("early copy"))) mustBe Right(())
+    base.getEvents(None, early) mustBe Seq(EventA("early copy"))
+    base.getEvents(None, late) mustBe Seq(EventA("squashed"), EventB(4), Copy(SpaceId(1), base.aggregateId, AggregateVersion(4)))
+
+    eventStoreState.deleteAggregatePermanently(base.aggregateId).left.toOption.get must include("changed meanwhile")
+    base.getEvents() mustBe Seq(EventA("squashed"), EventB(4))
+    eventStoreState.deleteAggregatePermanently(base.aggregateId, Seq(late -> EventA("late copy"))) mustBe Right(())
+    base.getEvents() mustBe empty
+    base.getEvents(None, late) mustBe Seq(EventA("late copy"))
+    base.getEvents(None, early) mustBe Seq(EventA("early copy"))
+  }
+
+  // D52: what the squash scheduler reads.
+  Scenario("The squash candidates are the aggregates of the type with enough events older than the newest kept ones, in id order") {
+    val Seq(a, b, c) = Seq(6, 2, 8).map { events =>
+      val f = new TestFixture(eventStoreState)
+      f.storeEvents(EventA("first") +: (2 to events).map(EventB))
+      f
+    }
+    published(c.aggregateId)
+    squash(c, 4) mustBe Right(())
+    val rule = AutomaticSquash(afterEvents = 3, keepLast = 1)
+    val someAggregate = AggregateType(classOf[SomeAggregate].getName)
+    val before = AggregateId(a.aggregateId.asLong - 1) // aggregates of other scenarios have lower ids
+
+    eventStoreState.squashCandidates(someAggregate, rule, before, 10) mustBe Seq(a.aggregateId -> AggregateVersion(5), c.aggregateId -> AggregateVersion(7))
+    eventStoreState.squashCandidates(someAggregate, rule, before, 1) mustBe Seq(a.aggregateId -> AggregateVersion(5))
+    eventStoreState.squashCandidates(someAggregate, rule, a.aggregateId, 10) mustBe Seq(c.aggregateId -> AggregateVersion(7))
+    eventStoreState.squashCandidates(AggregateType("other.Type"), rule, before, 10) mustBe empty
   }
 
 }

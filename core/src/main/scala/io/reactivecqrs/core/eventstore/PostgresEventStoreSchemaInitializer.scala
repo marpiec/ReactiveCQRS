@@ -275,7 +275,9 @@ class PostgresEventStoreSchemaInitializer  {
         """.stripMargin).execute()
   }
 
-  // A duplicate starts with its base's chain up to the base version, then a row of its own.
+  // A duplicate starts with its base's chain up to the base version, then a row of its own. The base's chain rows stay
+  // locked until the transaction ends, in key order as a squash or a permanent delete locks them (D50, F76): either
+  // that one waits and then sees this duplicate, or this one waits and then sees the squash point or the delete.
   private def createAddDuplicationEventFunction(): Unit = DB.autoCommit { implicit session =>
     SQL("""
           |CREATE OR REPLACE FUNCTION add_duplication_event(user_id BIGINT, new_space_id BIGINT, aggregate_id BIGINT, expected_version INT, aggregate_type_id SMALLINT, event_type_id SMALLINT, event_time TIMESTAMP, event TEXT, _base_id BIGINT, _base_version INT, metadata JSONB)
@@ -284,6 +286,7 @@ class PostgresEventStoreSchemaInitializer  {
           |DECLARE
           |    current_version INT;
           |    base_count INT;
+          |    base_squashed INT;
           |    event_id BIGINT;
           |BEGIN
           |    UPDATE aggregates SET base_version = base_version + 1 WHERE id = aggregate_id AND base_id = aggregate_id RETURNING base_version - 1 INTO current_version;
@@ -291,6 +294,14 @@ class PostgresEventStoreSchemaInitializer  {
           |      IF expected_version >= 0 AND expected_version != 0 THEN
           |        RAISE EXCEPTION 'Duplication event might occur only for non existing aggregate, so expected version need to be 0';
           |      ELSE
+          |        PERFORM 1 FROM aggregates WHERE id = _base_id ORDER BY id, base_id FOR KEY SHARE;
+          |        SELECT squashed_version INTO base_squashed FROM aggregates WHERE id = _base_id AND base_id = _base_id;
+          |        IF NOT FOUND THEN
+          |          RAISE EXCEPTION 'Duplication of aggregate %, which does not exist', _base_id;
+          |        END IF;
+          |        IF _base_version < base_squashed THEN
+          |          RAISE EXCEPTION 'Duplication cannot read the squashed history: aggregate %, squashed up to version %, duplicated at version %', _base_id, base_squashed, _base_version;
+          |        END IF;
           |        current_version := 0;
           |        INSERT INTO aggregates (space_id, id, creation_time, type_id, base_order, base_id, base_version) (select new_space_id, aggregate_id, current_timestamp, aggregate_type_id, base_order, base_id, base_version FROM aggregates WHERE id = _base_id);
           |        SELECT base_order INTO base_count FROM aggregates WHERE id = aggregate_id AND base_id = _base_id;

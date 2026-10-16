@@ -114,6 +114,23 @@ class RepublishSpec extends CommonSpec {
       eventBus.expectNoMessage(300.millis)
     }
 
+    Scenario("from below the squash point starts at the squash event (D51)") {
+      val cartId = storedCart()
+      eventStore.deletePublished(cartId, (1 to 3).map(AggregateVersion(_)))
+      awaitAssert(eventStore.oldestVersionToPublish(cartId) mustBe None, 3.seconds, 20.millis)
+      val eventBus = TestProbe()
+      val owner = ownerOf(cartId, eventBus)
+      val caller = TestProbe()
+      owner ! AggregateOwner.Squash(caller.ref, SquashAggregate(cartId, AggregateVersion(2)))
+      caller.expectMsg(5.seconds, AggregateSquashed(cartId, AggregateVersion(2)))
+
+      owner ! RepublishRange(cartId, AggregateVersion(1), TestProbe().ref)
+
+      val publication = published(eventBus)
+      publication.events.map(_.version.asInt) mustBe Seq(2, 3)
+      publication.events.head.event mustBe a[CartSquashed]
+    }
+
     Scenario("sends nothing for a version the aggregate has not reached") {
       val cartId = storedCart()
       val eventBus = TestProbe()

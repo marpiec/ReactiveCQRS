@@ -149,6 +149,12 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
           AggregateVersion(sql"""SELECT coalesce(max(version), 0) FROM events WHERE aggregate_id = ${aggregateId.asLong} AND event_time <= ${utc(instant)}"""
             .map(_.int(1)).single().getOrElse(0))
       }
+      // D51: the history below the squash point is gone; reading it fails instead of giving a wrong state.
+      version.filter(_ > AggregateVersion.ZERO).foreach { v =>
+        sql"""SELECT squashed_version FROM aggregates WHERE id = ${aggregateId.asLong} AND base_id = ${aggregateId.asLong}"""
+          .map(_.intOpt(1)).single().flatten.filter(_ > v.asInt)
+          .foreach(squashed => throw new AggregateSquashedException(aggregateId, AggregateVersion(squashed), v))
+      }
       val query = version match {
         case Some(v) =>
           sql"""SELECT user_id, event_time, event_type_id, event_type_version, event, events.version, events.aggregate_id, events.metadata::text,
@@ -289,13 +295,37 @@ ORDER BY events.id""")
   override def deletePublished(aggregateId: AggregateId, versions: Seq[AggregateVersion]): Unit =
     outboxDeletes.add(aggregateId.asLong, versions.map(_.asInt))
 
-  override def deleteAggregatePermanently(aggregateId: AggregateId): Boolean = DB.localTx { implicit session =>
+  // A system without projections has no subscriptions tables.
+  private def tableExists(table: String)(implicit session: DBSession): Boolean =
+    SQL(s"SELECT to_regclass('$table') IS NOT NULL").map(_.boolean(1)).single().getOrElse(false)
+
+  private def exists(query: SQL[Nothing, NoExtractor])(implicit session: DBSession): Boolean = query.map(_.boolean(1)).single().getOrElse(false)
+
+  private def failedSubscription(aggregateId: Long)(implicit session: DBSession): Boolean = tableExists("subscription_failures") &&
+    exists(sql"""SELECT EXISTS (SELECT 1 FROM subscription_failures WHERE aggregate_id = $aggregateId)""")
+
+  // Locks the aggregate's chain rows and the rows by which its duplicates read it, in key order, as
+  // `add_duplication_event` locks the chain it copies (so the two cannot deadlock): a duplication of the aggregate or of
+  // one of its duplicates waits for this transaction, so the duplicates read after this are all there are (D50, F76).
+  private def lockChain(aggregateId: Long)(implicit session: DBSession): Unit =
+    sql"""SELECT id FROM aggregates WHERE id = $aggregateId OR base_id = $aggregateId ORDER BY id, base_id FOR UPDATE""".map(_.long(1)).list()
+
+  private def duplicates(baseId: Long, below: Option[Int])(implicit session: DBSession): Seq[AggregateId] = (below match {
+    case Some(version) => sql"""SELECT id FROM aggregates WHERE base_id = $baseId AND id <> $baseId AND base_version < $version ORDER BY id"""
+    case None => sql"""SELECT id FROM aggregates WHERE base_id = $baseId AND id <> $baseId ORDER BY id"""
+  }).map(rs => AggregateId(rs.long(1))).list()
+
+  private def detachingAll(found: Seq[AggregateId], detach: Seq[(AggregateId, FirstEvent[_])]): Either[String, Unit] =
+    Either.cond(found.toSet == detach.map(_._1).toSet, (), "the duplicates of the aggregate changed meanwhile")
+
+  override def deleteAggregatePermanently(aggregateId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])]): Either[String, Unit] = localTx { implicit session =>
     val id = aggregateId.asLong
-    // A system without projections has no subscriptions tables.
-    def exists(table: String): Boolean = SQL(s"SELECT to_regclass('$table') IS NOT NULL").map(_.boolean(1)).single().getOrElse(false)
-    val failed = exists("subscription_failures") &&
-      sql"""SELECT EXISTS (SELECT 1 FROM subscription_failures WHERE aggregate_id = $id)""".map(_.boolean(1)).single().getOrElse(false)
-    if (!failed) {
+    lockChain(id)
+    for {
+      _ <- Either.cond(!failedSubscription(id), (), "a subscription of it is failed")
+      _ <- detachingAll(duplicates(id, None), detach)
+    } yield {
+      detach.foreach(detachDuplicate) // F76: they read this aggregate's events, which go now
       sql"""DELETE FROM aggregates WHERE id = $id""".update()
       // noop_events must be deleted BEFORE events: it is resolved via a subquery over events,
       // so deleting events first would make the subquery match nothing and leak noop_events rows.
@@ -303,12 +333,93 @@ ORDER BY events.id""")
       sql"""DELETE FROM events WHERE aggregate_id = $id""".update()
       sql"""DELETE FROM events_to_publish WHERE aggregate_id = $id""".update()
       sql"""DELETE FROM snapshots WHERE aggregate_id = $id""".update()
-      if (exists("subscriptions")) {
+      if (tableExists("subscriptions")) {
         sql"""DELETE FROM subscriptions WHERE aggregate_id = $id""".update()
       }
     }
-    !failed
   }
+
+  // ************** Squash (D47–D52)
+
+  override def squashedVersion(aggregateId: AggregateId): Option[AggregateVersion] = DB.readOnly { implicit session =>
+    sql"""SELECT squashed_version FROM aggregates WHERE id = ${aggregateId.asLong} AND base_id = ${aggregateId.asLong}"""
+      .map(_.intOpt(1)).single().flatten.map(AggregateVersion(_))
+  }
+
+  override def squashBlocker(aggregateId: AggregateId, upTo: AggregateVersion): Option[String] =
+    DB.readOnly(implicit session => blocker(aggregateId.asLong, upTo.asInt))
+
+  // D51. The duplicates the squash detaches count too: their first event changes.
+  private def blocker(id: Long, n: Int)(implicit session: DBSession): Option[String] = {
+    def detachedOne(joined: SQLSyntax): Option[Long] =
+      sql"""SELECT a.id FROM aggregates a $joined WHERE a.base_id = $id AND a.id <> $id AND a.base_version < $n LIMIT 1""".map(_.long(1)).single()
+    val squashed = sql"""SELECT squashed_version FROM aggregates WHERE id = $id AND base_id = $id""".map(_.intOpt(1)).single().flatten
+    if (squashed.exists(_ >= n)) {
+      Some("already squashed up to version " + squashed.get)
+    } else if (exists(sql"""SELECT EXISTS (SELECT 1 FROM events_to_publish WHERE aggregate_id = $id AND version <= $n)""")) {
+      Some("events at or below version " + n + " still wait in the outbox")
+    } else if (failedSubscription(id)) {
+      Some("a subscription of the aggregate is failed")
+    } else if (exists(sql"""SELECT EXISTS (SELECT 1 FROM noop_events JOIN events ON events.id = noop_events.id
+                          |  WHERE events.aggregate_id = $id AND events.version <= $n AND noop_events.from_version > $n)""".stripMargin)) {
+      Some("an undo after version " + n + " undid events at or below it")
+    } else {
+      def failedDuplicate = if (tableExists("subscription_failures")) detachedOne(sqls"JOIN subscription_failures f ON f.aggregate_id = a.id") else None
+      detachedOne(sqls"JOIN events_to_publish p ON p.aggregate_id = a.id AND p.version = 1")
+        .map(d => "the first event of duplicate " + d + ", which the squash detaches, still waits in the outbox")
+        .orElse(failedDuplicate.map(d => "a subscription of duplicate " + d + ", which the squash detaches, is failed"))
+    }
+  }
+
+  override def duplicatesReading(baseId: AggregateId, below: Option[AggregateVersion]): Seq[AggregateId] =
+    DB.readOnly(implicit session => duplicates(baseId.asLong, below.map(_.asInt)))
+
+  // D50: the duplicate's first event becomes one that holds its state at version 1, so it no longer reads its bases.
+  private def detachDuplicate(duplicate: (AggregateId, FirstEvent[_]))(implicit session: DBSession): Unit = {
+    val (duplicateId, firstEvent) = duplicate
+    val id = duplicateId.asLong
+    val className = firstEvent.getClass.getName
+    sql"""DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = $id AND version = 1)""".update()
+    val updated = sql"""UPDATE events SET event = ${mpjsons.serialize(firstEvent, className)}, event_type_id = ${typesNamesState.typeIdByClassName(className)}
+                       | WHERE aggregate_id = $id AND version = 1""".stripMargin.update()
+    if (updated != 1) throw new IllegalStateException("Duplicate " + id + " has no event at version 1 to detach")
+    sql"""DELETE FROM aggregates WHERE id = $id AND base_id <> $id""".update()
+    sql"""UPDATE aggregates SET base_order = 1 WHERE id = $id AND base_id = $id""".update()
+  }
+
+  override def squash[AGGREGATE_ROOT](aggregateId: AggregateId, upTo: AggregateVersion, squashEvent: FirstEvent[AGGREGATE_ROOT], userId: UserId,
+                                      metadata: Option[EventMetadata], detach: Seq[(AggregateId, FirstEvent[_])]): Either[String, Unit] = localTx { implicit session =>
+    val id = aggregateId.asLong
+    val n = upTo.asInt
+    lockChain(id)
+    for {
+      _ <- blocker(id, n).toLeft(())
+      _ <- detachingAll(duplicates(id, Some(n)), detach)
+    } yield {
+      detach.foreach(detachDuplicate)
+      val className = squashEvent.getClass.getName
+      // noop rows first: they are found through the events they mark (F76's lesson).
+      sql"""DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = $id AND version <= $n)""".update()
+      sql"""DELETE FROM events WHERE aggregate_id = $id AND version < $n""".update()
+      val updated = sql"""UPDATE events SET event = ${mpjsons.serialize(squashEvent, className)}, event_type_id = ${typesNamesState.typeIdByClassName(className)},
+                         |   user_id = ${userId.asLong}, metadata = ${metadataJson(metadata)}::jsonb
+                         | WHERE aggregate_id = $id AND version = $n""".stripMargin.update()
+      if (updated != 1) throw new IllegalStateException("Aggregate " + id + " has no event at version " + n + " to squash into")
+      sql"""DELETE FROM events_to_publish WHERE aggregate_id = $id AND version <= $n""".update()
+      sql"""DELETE FROM snapshots WHERE aggregate_id = $id AND version <= $n""".update()
+      sql"""DELETE FROM aggregates WHERE id = $id AND base_id <> $id""".update()
+      sql"""UPDATE aggregates SET base_order = 1, squashed_version = $n WHERE id = $id AND base_id = $id""".update()
+    }
+  }
+
+  override def squashCandidates(aggregateType: AggregateType, policy: AutomaticSquash, after: AggregateId, limit: Int): Seq[(AggregateId, AggregateVersion)] =
+    DB.readOnly { implicit session =>
+      val keep = policy.keepLast
+      sql"""SELECT id, base_version - $keep FROM aggregates
+           | WHERE type_id = ${typesNamesState.typeIdByClassName(aggregateType.typeName)} AND base_id = id AND id > ${after.asLong}
+           |   AND base_version - $keep - coalesce(squashed_version, 0) >= ${policy.afterEvents}
+           | ORDER BY id LIMIT $limit""".stripMargin.map(rs => (AggregateId(rs.long(1)), AggregateVersion(rs.int(2)))).list()
+    }
 
   override def readNotYetPublishedEvents(): Map[AggregateId, AggregateVersion] = {
     DB.readOnly { implicit session =>

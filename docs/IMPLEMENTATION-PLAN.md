@@ -1224,3 +1224,34 @@ Open test-infrastructure items:
   compensating event; a class-changing rewrite stores nothing), `EventStoreStateSpec` (both
   stores).
 - `sbt test`: core 138, testdomain 75, all pass.
+
+**16/10/2026: squash (D47–D52; F76, F96, F97)**
+- A context opts in with its squash event (`squash = Some(SquashPolicy(toEvent, automatic))`).
+  `SquashAggregate(id, upTo)` goes to the owner, which checks D51's preconditions, restores the
+  state at `upTo` and each duplicate reading below it at version 1, and calls the store's
+  `squash`. In one transaction, under a lock of the aggregate's chain and its duplicates' rows
+  to it, the store checks the preconditions again and that the duplicates are the ones given,
+  detaches them (D50), deletes the history below `upTo`, its noop rows, outbox rows and
+  snapshot, and puts the squash event at `upTo` with event `upTo`'s id and time and the
+  request's user and metadata. Versions stay; reads below the point fail with
+  `AggregateSquashedException`; a `RepublishRange` from below it starts at the squash event.
+- Refinements of D51 (recorded there): no outbox rows *at or below* N; detached duplicates must
+  have no outbox row at version 1 and no failed subscription; a later undo that reached N
+  blocks it.
+- F96 (found in this step): `add_duplication_event` now locks the base's chain and refuses a
+  version below its squash point or a missing base; a squash or a permanent delete that ran
+  meanwhile is seen either way. F76: a permanent delete detaches the duplicates first, with the
+  type's squash event; a type without one keeps the event in the outbox, with an error log.
+- F97 (found with the tests): the in-memory store's undo flags now follow `add_undo_event`, and
+  its versions come from the last event (a squash removes events).
+- The squash scheduler (D52): `SquashScheduler`, one per system, reads per type the
+  aggregates `AutomaticSquash(afterEvents, keepLast)` selects (`squashCandidates`), `perRun` at
+  a time from where the last run stopped, and asks for their squashes one at a time.
+- Tests: `SquashSpec` (state, rows and metadata; multi-level detach; undo and duplication
+  guards; snapshots; random histories with undo and duplication, every state at and above the
+  point equal; the refusals; the scheduler end to end), `EventStoreStateSpec` (both stores:
+  squash, refusals, detach, candidates, undo after undo), `PostgresEventStoreStateSpec` (the
+  lock in both orders), `SquashSchedulerSpec` (runs, limits, timeouts), `PermanentDeleteSpec`
+  (F76), `RepublishSpec`. Mutation checks: the old memory undo flags and versions, no chain
+  lock or re-check, and the old delete each fail the new tests.
+- `sbt test`: core 153, testdomain 88, all pass.

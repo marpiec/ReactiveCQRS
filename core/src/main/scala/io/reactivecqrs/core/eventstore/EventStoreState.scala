@@ -50,9 +50,41 @@ abstract class EventStoreState {
   def deletePublished(aggregateId: AggregateId, versions: Seq[AggregateVersion]): Unit
 
   /** Carries out a `PermanentDeleteEvent` once it is delivered: removes the aggregate, its events, its outbox rows and
-    * its subscriptions in one transaction. Returns false, deleting nothing, while a subscription of the aggregate is
-    * failed (D20a): the delete would remove the record of that failure. */
-  def deleteAggregatePermanently(aggregateId: AggregateId): Boolean
+    * its subscriptions in one transaction, after detaching the duplicates given (see `squash`; F76). Deletes nothing,
+    * giving the reason, while a subscription of the aggregate is failed (D20a: the delete would remove the record of
+    * that failure), or when the duplicates given are not all those that read the aggregate (one was made meanwhile). */
+  def deleteAggregatePermanently(aggregateId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])] = Nil): Either[String, Unit]
+
+  // ************** Squash (D47–D52)
+
+  /** The version the aggregate's history is squashed up to, if it was. Reads below it fail with
+    * `AggregateSquashedException`, and so does a duplication of the aggregate below it. */
+  def squashedVersion(aggregateId: AggregateId): Option[AggregateVersion]
+
+  /** Why the aggregate cannot be squashed up to `upTo` now (D51), if it cannot: it is squashed that far already; events
+    * at or below `upTo` still wait in the outbox; a subscription of it is failed; an undo after `upTo` undid events at
+    * or below it; or a duplicate the squash would detach has its first event waiting in the outbox or a failed
+    * subscription (the detach changes that event). `squash` checks it again. */
+  def squashBlocker(aggregateId: AggregateId, upTo: AggregateVersion): Option[String]
+
+  /** The aggregates whose duplication chain reads `baseId`'s events, at any depth; with `below`, only those that read
+    * fewer than `below` of them: a squash up to `below` must detach those (D50). */
+  def duplicatesReading(baseId: AggregateId, below: Option[AggregateVersion]): Seq[AggregateId]
+
+  /** In one transaction (D47, D50): detaches each duplicate given (its version-1 event becomes the given first event,
+    * holding its state at version 1, and its chain rows to other aggregates go); then the event at `upTo` becomes
+    * `squashEvent` (keeping its id and time, so commit order holds), the events before it and the noop rows at or
+    * below it go, as do the snapshot at or below it, the aggregate's own chain rows to other aggregates and its outbox
+    * rows at or below it; the squash point is recorded. Changes nothing, giving the reason, when `squashBlocker` finds
+    * one, or when the duplicates given are not all those that read the aggregate below `upTo` (one was made
+    * meanwhile): the caller may try again. A duplication of the aggregate made at the same time waits for the
+    * transaction and is then refused below the squash point. */
+  def squash[AGGREGATE_ROOT](aggregateId: AggregateId, upTo: AggregateVersion, squashEvent: FirstEvent[AGGREGATE_ROOT], userId: UserId,
+                             metadata: Option[EventMetadata], detach: Seq[(AggregateId, FirstEvent[_])]): Either[String, Unit]
+
+  /** For the squash scheduler (D52): up to `limit` aggregates of the type with ids above `after`, in id order, that
+    * `policy` says to squash now, each with the version to squash it up to. */
+  def squashCandidates(aggregateType: AggregateType, policy: AutomaticSquash, after: AggregateId, limit: Int): Seq[(AggregateId, AggregateVersion)]
 
   /** Every aggregate with rows waiting in the outbox, for the outbox poller (D8). */
   def readWaitingInOutbox(): Seq[WaitingInOutbox]

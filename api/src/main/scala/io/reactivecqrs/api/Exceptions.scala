@@ -28,3 +28,8 @@ class TooManyEventsException(val aggregateId: AggregateId,
                              val maxCount: Int) extends Exception("Too many versions for aggregate " + aggregateId.asLong +"@"+aggregateTypeName+", max version is " + maxCount) {
   override def fillInStackTrace(): Throwable = this
 }
+
+/** The aggregate's history before `squashedUpTo` was squashed into one event (D51): it cannot be read at `requested`. */
+class AggregateSquashedException(val aggregateId: AggregateId, val squashedUpTo: AggregateVersion, val requested: AggregateVersion)
+  extends Exception("The history of aggregate " + aggregateId.asLong + " is squashed up to version " + squashedUpTo.asInt +
+    "; version " + requested.asInt + " cannot be read")

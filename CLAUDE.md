@@ -76,6 +76,9 @@ sbt "project core" "~compile"   # incremental
   - `commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult]`
   - `eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT]`
   - `version` (no event versioning since 1.0, D29: a changed event shape is a new class).
+  - Optional features: `snapshots` (D30), `commandProcessing` (R8), `squash` (D47: a squash
+    event that replaces events 1..N at version N, on request with `SquashAggregate` or by the
+    `SquashScheduler`; reads, undos and duplications below the squash point are refused).
   - See `testdomain/.../ShoppingCartAggregateContext.scala` for the pattern.
 - **Commands** (`api/.../Command.scala`) come in flavors that drive routing:
   - `FirstCommand` — creates a new aggregate (no id yet).
@@ -96,7 +99,8 @@ sbt "project core" "~compile"   # incremental
     (the "duplication chain" — see schema below).
   - `PermanentDeleteEvent` — hard-deletes aggregate + events.
 - **Versioning**: `AggregateVersion` is an `Int` starting at `ZERO`. Each persisted
-  event increments it by one (the owner's `version`; `AggregateRestorer` counts them on restore).
+  event increments it by one (the owner's `version`; on restore the version is read from the
+  stored events, which a squash leaves in place).
 
 ---
 
@@ -165,6 +169,9 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
   back-pressure for the replayer (`DeliveryOptions.maxReplayBuffer`, 10 000).
 - **`OutboxPollerActor`** (`core/.../delivery/`) — the single owner of re-deliveries
   (D8); its timing lives in the pure `RedeliveryPolicy`. The host creates one per system.
+- **`SquashScheduler`** (`core/.../aggregate/`) — squashes aggregates by their contexts'
+  `AutomaticSquash` rule (D52), a limited number per run, one at a time. The host creates one
+  per system.
 - **`ProjectionActor` / `SubscribableProjectionActor`** — apply events to read
   models. One queue per (listener kind, aggregate) through the `SequenceGate`:
   duplicates are acked, new versions applied in one transaction with the new
@@ -191,7 +198,7 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
   envelope of D32; null when none).
   Indices: `events(aggregate_id)`, `events(aggregate_id, id)`.
 - **`aggregates`** — PK `(id, base_id)`, plus `space_id, creation_time, type_id,
-  base_order, base_id, base_version, squashed_version` (D49). The `base_id`/`base_order`/`base_version`
+  base_order, base_id, base_version, squashed_version` (the squash point, D49, D51). The `base_id`/`base_order`/`base_version`
   columns implement **duplication chains**: a duplicated aggregate shares history
   with its base up to a version, then diverges. `base_version` is the current
   version and is what the stored procedures compare for optimistic locking.
@@ -279,6 +286,7 @@ planned in a way that the change must follow. Measured performance is in `docs/p
 | Public API a domain author implements | `api/.../AggregateContext.scala`, `Command.scala`, `Event.scala`, `CommandResult.scala`; example `testdomain/.../shoppingcart/` |
 | How a command becomes events | `core/.../commandhandler/AggregateCommandBusActor.scala`, `core/.../aggregate/AggregateOwner.scala` |
 | Aggregate state & persistence | `core/.../aggregate/{AggregateOwner,AggregateRestorer}.scala` |
+| Squash and duplication chains | `ARCHITECTURE.md` §4.6, `AggregateOwner.squashHistory`, `PostgresEventStoreState.squash`, `add_duplication_event` |
 | Durable events + optimistic lock SQL | `core/.../eventstore/Postgres*` |
 | Event delivery, acks, back-pressure | `core/.../eventbus/EventsBusActor.scala`, `core/.../delivery/*`, `docs/design/M2-delivery.md` |
 | Read models | `core/.../projection/*`, `core/.../documentstore/*` |

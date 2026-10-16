@@ -38,17 +38,18 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
       case Some(snapshot) =>
         var version = snapshot.version
         var root = snapshot.state
-        eventStore.readAndProcessOwnEvents[AGGREGATE_ROOT](aggregateId, snapshot.version, at.flatMap(_.left.toOption)) { (userId, timestamp, event, _, noop) =>
+        eventStore.readAndProcessOwnEvents[AGGREGATE_ROOT](aggregateId, snapshot.version, at.flatMap(_.left.toOption)) { (userId, timestamp, event, eventVersion, noop) =>
           if (!noop) root = eventHandlers(userId, timestamp, root)(event)
-          version = version.increment
+          version = AggregateVersion(eventVersion)
         }
         Restored(version, root, Some(snapshot.version))
       case None =>
         var version = AggregateVersion.ZERO
         var root = initialState()
-        eventStore.readAndProcessEvents[AGGREGATE_ROOT](aggregateId, at) { (userId, timestamp, event, eventAggregateId, _, noop) =>
+        // The version is the last own event's: after a squash (D47) the own events start at the squash point.
+        eventStore.readAndProcessEvents[AGGREGATE_ROOT](aggregateId, at) { (userId, timestamp, event, eventAggregateId, eventVersion, noop) =>
           if (!noop) root = eventHandlers(userId, timestamp, root)(event)
-          if (eventAggregateId == aggregateId) version = version.increment
+          if (eventAggregateId == aggregateId) version = AggregateVersion(eventVersion)
         }
         Restored(version, root)
     }

@@ -172,6 +172,13 @@ Undo below the point is rejected (D49); a historical read below it fails with an
 makes a permanent delete of a base safe (F76). The optional per-context squash scheduler (D52)
 runs on one node now and becomes a singleton in M5.
 
+**As built (16/10/2026):** the duplicates detached are those that read the aggregate *below*
+`upTo` (one that reads it at `upTo` reads the squash event); the preconditions also cover the
+detached duplicates' first events, and run again inside the transaction under a lock of the
+aggregate's chain, which a duplication takes too, so a duplication below the squash point is
+refused and one made meanwhile is detached or refuses the squash (F96). `ARCHITECTURE.md` §4.6
+describes the result.
+
 ## Performance (D34, D35)
 
 - **Blocking dispatcher (F27):** a `reactivecqrs.blocking-dispatcher` in the library's

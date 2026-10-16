@@ -5,7 +5,7 @@ import org.apache.pekko.actor.{Actor, ActorRef, OneForOneStrategy, Props, Status
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
+import io.reactivecqrs.api.id.{AggregateId, CommandId}
 import io.reactivecqrs.core.aggregate.AggregateOwner._
 import io.reactivecqrs.core.aggregate.{AggregateOwner, OwnerSettings}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{PassivateAggregate, RemoveExpiredResponses}
@@ -126,6 +126,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](aggregateContext: Aggrega
     case ack: PublishEventsAck => delivered(ack)
     // Re-publications count as activity, so the owners they start are stopped like others when idle.
     case m: RepublishRequest => toOwner(m.aggregateId, m)
+    case request: SquashAggregate => toOwner(request.id, Squash(sender(), request))
     case ReserveAggregateId =>
       val respondTo = sender()
       Try(takeNextAggregateId) match {
@@ -202,6 +203,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](aggregateContext: Aggrega
     val respondTo = sender()
     Future(read)(context.dispatcher).onComplete {
       case Success(answer) => respondTo ! Success(answer)
+      case Failure(e: AggregateSquashedException) => respondTo ! Failure(e) // D51: an answer, not a failure of the store
       case Failure(e) =>
         log.error(e, "Reading aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " failed")
         respondTo ! Failure(new AggregateRestoreFailedException(id, aggregateType, e))
@@ -215,22 +217,44 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](aggregateContext: Aggrega
 
   // Owners publish on behalf of this bus, so it gets the acknowledgements: it lives as long as the system, while an
   // owner may be stopped before slow subscribers catch up (F91). Deleting delivered rows needs no aggregate state. A
-  // permanent delete waits while a subscription of the aggregate is failed: that event's row stays, and the ack of its
-  // next re-publication tries again. A live owner gets the ack to continue re-publishing its outbox.
+  // permanent delete that cannot happen yet (a failed subscription, duplicates made meanwhile) keeps that event's row,
+  // and the ack of its next re-publication tries again. A live owner gets the ack to continue re-publishing its outbox.
   private def delivered(ack: PublishEventsAck): Unit = {
     val id = ack.aggregateId
     Try {
       ack.permanentDeleteAt match {
-        case Some(_) if eventStoreState.deleteAggregatePermanently(id) =>
-          stopOwner(id.asLong) // its state is gone
         case Some(at) =>
-          log.warning("Aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " is not deleted yet: a subscription of it is failed")
-          eventStoreState.deletePublished(id, ack.versions.filterNot(_ == at))
+          def notYet(): Unit = eventStoreState.deletePublished(id, ack.versions.filterNot(_ == at))
+          detachingDuplicates(id) match {
+            case Right(detach) => eventStoreState.deleteAggregatePermanently(id, detach) match {
+              case Right(()) => stopOwner(id.asLong) // its state is gone
+              case Left(reason) =>
+                log.warning("Aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " is not deleted yet: " + reason)
+                notYet()
+            }
+            case Left(reason) =>
+              log.error("Aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " is not deleted: " + reason)
+              notYet()
+          }
         case None =>
           eventStoreState.deletePublished(id, ack.versions)
       }
     }.failed.foreach(e => log.error(e, "Removing delivered events of aggregate " + id.asLong + " from the outbox failed; they are re-published later"))
     if (!keptForStopping.contains(id.asLong)) owners.get(id.asLong).foreach(_ ! ack)
+  }
+
+  // F76: duplicates that read the aggregate's history would lose it with the delete, so each is detached first, with a
+  // squash event of its state at version 1 (D50). A type without squash events cannot do that: its aggregate with
+  // duplicates is not deleted, and the event stays in the outbox.
+  private def detachingDuplicates(id: AggregateId): Either[String, Seq[(AggregateId, FirstEvent[_])]] = {
+    val duplicates = eventStoreState.duplicatesReading(id, None)
+    settings.squash match {
+      case _ if duplicates.isEmpty => Right(Nil)
+      case Some(policy) => Right(duplicates.map(duplicate =>
+        duplicate -> policy.toEvent(settings.restorer.restore(duplicate, Some(Left(AggregateVersion(1)))).root)))
+      case None => Left("aggregates " + duplicates.map(_.asLong).mkString(", ") + " were duplicated from it, and the type has no squash " +
+        "event to detach them (F76)")
+    }
   }
 
   private def clearOldAggregateRepositories(now: Long): Unit = {

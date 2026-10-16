@@ -1,6 +1,7 @@
 package io.reactivecqrs.testdomain.shoppingcart
 
 import io.reactivecqrs.api._
+import io.reactivecqrs.api.id.SpaceId
 import CommandsHandlers._
 import EventsHandlers._
 
@@ -37,7 +38,10 @@ class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
     case e: ShoppingCartDeleted => null
     case e: ShoppingCartChangesUndone => shoppingCart // TODO - this event should not need to be handled
     case e: CartNameRewritten => cartNameRewritten(shoppingCart, e)
+    case e: CartSquashed => ShoppingCart(e.name, e.items)
   }
+
+  override val squash: Option[SquashPolicy[ShoppingCart]] = Some(SquashPolicy(cart => CartSquashed(SpaceId(0), cart.name, cart.items)))
 
   override def initialAggregateRoot: ShoppingCart = ShoppingCart("", Vector())
 

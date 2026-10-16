@@ -26,7 +26,7 @@ unless the path says `api/` or `testdomain/`).
 |---|---|
 | `AggregateContext.scala`, `Command.scala`, `Event.scala`, `CommandResult.scala`, `CustomCommandResponse.scala`, `Aggregate.scala` | `api/src/main/scala/io/reactivecqrs/api/` |
 | `AggregateCommandBusActor.scala`, `CommandResponseState.scala`, `Idempotency.scala` | `commandhandler/` |
-| `AggregateOwner.scala` (with `OwnerSettings`), `AggregateRestorer.scala` (M3) | `aggregate/` |
+| `AggregateOwner.scala` (with `OwnerSettings`), `AggregateRestorer.scala`, `OutboxWriter.scala`, `SquashScheduler.scala` (M3) | `aggregate/` |
 | `ReplayAggregateRepositoryActor.scala` (the 0.12 replayer's, until M4) | `aggregaterepository/` |
 | `PostgresEventStoreState.scala`, `PostgresEventStoreSchemaInitializer.scala`, `EventStoreState.scala` | `eventstore/` |
 | `EventsBusActor.scala`, `SubscriptionClassifier.scala` | `eventbus/` |
@@ -353,8 +353,11 @@ The event time is bound and read as UTC whatever the JVM's zone (fixed F65; the 
   `undo_count` not-yet-noop events (walking back the index on `(aggregate_id, version)`, F31)
   and for itself; refuses an undo that would reach `squashed_version` (D49); deletes the
   aggregate's snapshot (D30).
-- `add_duplication_event` copies the base's `aggregates` chain rows, caps the
-  base row at `_base_version`, and appends its own row with `base_order = n + 1`.
+- `add_duplication_event` locks the base's chain rows (`FOR KEY SHARE`, in key order),
+  refuses a base that does not exist or a `_base_version` below the base's
+  `squashed_version` (D50), copies the base's `aggregates` chain rows, caps the base row at
+  `_base_version`, and appends its own row with `base_order = n + 1`. The lock makes a
+  duplication and a squash or permanent delete of its base wait for each other (§4.6).
 
 Version checks happen twice: in memory (the owner) and in SQL. The SQL check is the real
 arbiter for writers outside the owner: another node (M5), or a write made outside the
@@ -392,8 +395,8 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   (`readAndProcessOwnEvents`; a duplicate's base events all come before its own); otherwise,
   and for reads at an instant, it reads every event, never failing because of the snapshot
   (R10). An undo deletes the aggregate's snapshot, a rewrite those of the aggregate and of its
-  duplicates, a permanent delete its own, each in its transaction; the owner runs all of them,
-  so a snapshot write cannot race them.
+  duplicates, a squash the one at or below its point, a permanent delete its own, each in its
+  transaction; the owner runs all of them, so a snapshot write cannot race them.
 - `GetAggregateMinVersion(id, v, maxMillis)` waits in the owner until the version is reached
   and is answered then; when `maxMillis` passes first, it is answered with
   `Failure(AggregateInIncorrectVersionException)` (fixed F81).
@@ -437,13 +440,57 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   pairs each rewrite with a compensating event (`CartNameRewritten`).
 - **Permanent delete**: the bus names the version of a `PermanentDeleteEvent` in its
   acknowledgement (`permanentDeleteAt`); the command bus then calls
-  `EventStoreState.deleteAggregatePermanently` and stops the owner, whose state is gone. In one transaction it deletes the
-  `aggregates`, `noop_events` (before `events`, so its sub-select still matches), `events`,
-  `events_to_publish` and `subscriptions` rows. While a subscription of the aggregate is
-  failed (`subscription_failures`, D20a) it deletes nothing and returns false; the event's
-  outbox row stays and the next re-publication's ack tries again. In-memory caches are not
-  touched. Duplicates of the deleted aggregate keep chain rows that point at it and lose its
-  history (F76, M3).
+  `EventStoreState.deleteAggregatePermanently` and stops the owner, whose state is gone. In one transaction it locks
+  the aggregate's chain as a squash does (§4.6), detaches its duplicates (F76, fixed in M3:
+  each one's first event becomes the type's squash event of its state at version 1), and
+  deletes the `aggregates`, `noop_events` (before `events`, so its sub-select still matches),
+  `events`, `events_to_publish`, `snapshots` and `subscriptions` rows. It deletes nothing and
+  gives the reason while a subscription of the aggregate is failed (`subscription_failures`,
+  D20a) or when a duplicate was made after the command bus listed them; the event's outbox
+  row stays and the next re-publication's ack tries again. A type with duplicates and no
+  squash event cannot detach them: the command bus logs an error and the delete waits. In-memory caches are not
+  touched.
+
+### 4.6 Squash (D47–D52)
+
+- **Opt-in per context:** `squash = Some(SquashPolicy(toEvent, automatic))`. `toEvent` makes
+  the context's squash event from a state: an ordinary `FirstEvent` class of the context,
+  handled by its event handlers and projections like any other; the history never holds raw
+  state (D48).
+- **Request:** `SquashAggregate(id, upTo, userId, metadata)` to the command bus, which passes
+  it to the owner; the answer is `AggregateSquashed` or `SquashRefused(reason)`. The owner runs
+  it on its thread between commands; its version and state stay as they are.
+- **Preconditions (D51)**, checked by the owner first and again in the transaction
+  (`squashBlocker`): not squashed that far already; no outbox rows at or below `upTo`; no
+  failed subscription; no undo after `upTo` that undid events at or below it; and, for each
+  duplicate the squash detaches, no outbox row at its version 1 and no failed subscription
+  (the detach changes that event).
+- **The transaction** (`EventStoreState.squash`): locks the aggregate's chain rows and the
+  rows by which its duplicates read it (`ORDER BY id, base_id FOR UPDATE`); checks the
+  preconditions, and that the duplicates reading it below `upTo` are those the owner
+  prepared (else "changed meanwhile", nothing changes); detaches them (D50: the version-1
+  event becomes a squash event of the duplicate's state at version 1, its noop rows and its
+  chain rows to other aggregates go); deletes the noop rows at or below `upTo`, the events
+  below it, the outbox rows and snapshot at or below it and its own chain rows to its bases;
+  replaces the event at `upTo` with the squash event (keeping its id and time, with the
+  request's user and metadata); records `aggregates.squashed_version`.
+- **After a squash:** an undo that would reach the squash point is refused by
+  `add_undo_event` (D49), a duplication below it by `add_duplication_event`; historical reads
+  below it fail with `AggregateSquashedException`; a `RepublishRange` from below it starts at
+  the squash event; a restore and a rebuild read the squash event first. Versions come from
+  the stored events, so they stay as they were.
+- **Scheduler (D52):** `SquashScheduler(eventStore, targets, options)`, started by the host,
+  one per system (a cluster singleton in M5). Each run reads, per type, up to `perRun`
+  aggregates that `AutomaticSquash(afterEvents, keepLast)` selects (`squashCandidates`: on the
+  own row, `base_version - keepLast - coalesce(squashed_version, 0) >= afterEvents`), going
+  on after the last id of the run before, and asks the command bus to squash them one at a
+  time (`answerTimeout`); `GetSquashStatus` counts the answers. Its squash events carry the
+  actor `system:squash-scheduler`.
+- **Costs and operations:** each detached duplicate is restored at version 1 before the
+  transaction, which reads its base's history; long duplication chains are an M3 risk to
+  measure with release-freezing data. Disk space comes back through (auto)VACUUM; shrinking
+  files needs `pg_repack` or `VACUUM FULL`. Contexts with audit duties should not opt in
+  before R11's archive (M6).
 
 ---
 
@@ -817,6 +864,10 @@ index on `(name, saga_id)`, built `CONCURRENTLY`. Still open: the blocking id-po
 9. **The subscription set is fixed at bus start**: the host's `RegisterSubscribers` list,
    each subscriber answering `GetSubscriptionRequests`. Adding a projection means adding it
    to that list.
+10. **Nothing reads below a squash point.** Every path that reads or keeps an aggregate's
+   old history (restore, undo, duplication, re-publication, a chain row of a duplicate)
+   either starts at the squash event or is refused; a squash or a permanent delete detaches
+   the duplicates that read below it first, under the chain lock that duplication also takes.
 
 ---
 
@@ -827,11 +878,9 @@ Problems found in this read, and every decision about fixing them, are tracked i
 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md). M1 fixed the most serious problems of
 this read (lost document updates, caches ahead of the database, timestamps, lost sagas,
 partial persists, idempotency); M2 rebuilt delivery (no cursor, a single owner of
-re-deliveries, the sequence gate, gap requests, failure records). The most serious ones
-still open, at the end of M2:
+re-deliveries, the sequence gate, gap requests, failure records); M3 detaches duplicates
+before a permanent delete (F76). The most serious ones still open:
 
-- **F76:** permanently deleting an aggregate that duplicates read from breaks those
-  duplicates (High if it happens; checked on a production copy; M3).
 - **F58:** a rebuild leaves out undone events, and the gaps stall it unless the owner can be
   asked for them (High; M4 replaces the replayer).
 - **F23, F27:** the command bus blocks while it fetches an id pool; JDBC work runs on the
@@ -846,10 +895,11 @@ still open, at the end of M2:
 |---|---|---|
 | New command kind / routing rule | `Command.scala`, `AggregateCommandBusActor.receive`, `AggregateOwner` (`expectedVersion`, `runsAgainOnConflict`, `rewrittenClasses`, `userIdOf`) | the retry rule in `AggregateOwner.conflict` (a rewrite must read its events again, F73); a timed-out command must never be persisted |
 | New special event type | `Event.scala`, `PostgresEventStoreState.persistEventsOneByOne` + a stored procedure, `AggregateOwner.persist`/`nextRoot` (`readAfterCommit`), `readAndProcessEvents` | batch eligibility (`:31-32`); restore semantics; replay path |
-| Snapshots | `AggregateRestorer` (use), `AggregateOwner.snapshotIfDue`/`stopNow` (write), `EventStoreState.readSnapshot`/`writeSnapshot`/`readAndProcessOwnEvents`, the deletes in `add_undo_event`'s caller, `overwriteEvents` and `deleteAggregatePermanently` | every change that alters the state behind a snapshot must delete it in its own transaction; a snapshot is read only when its context and schema versions match; never fail a restore because of a snapshot |
+| Snapshots | `AggregateRestorer` (use), `AggregateOwner.snapshotIfDue`/`stopNow` (write), `EventStoreState.readSnapshot`/`writeSnapshot`/`readAndProcessOwnEvents`, the deletes in `add_undo_event`, `overwriteEvents`, `squash` and `deleteAggregatePermanently` | every change that alters the state behind a snapshot must delete it in its own transaction; a snapshot is read only when its context and schema versions match; never fail a restore because of a snapshot |
+| Squash | `AggregateOwner.squashHistory`, `EventStoreState.squashBlocker`/`duplicatesReading`/`squash`/`squashCandidates`, `add_undo_event` and `add_duplication_event` (the guards), `SquashScheduler` | the preconditions run again inside the transaction under the chain lock; duplicates reading below the point are detached first; every reader of old history must start at the squash event or be refused (§10, 10) |
 | Non-blocking persistence | `AggregateOwner.persist` → a dedicated dispatcher, re-entering via message | keep one in-flight persist per aggregate; apply the events before the next message is handled (F69: persist synchronously or stash); the in-memory version check |
 | Re-delivery timing | `delivery/RedeliveryPolicy` (pure), `OutboxPollerActor`, `EventStoreState.readWaitingInOutbox` | one owner of retries (D8); the attempts at 3 and 6 minutes come after a subscriber's own retries (about 2 minutes, D20a); the per-poll limit |
-| Outbox deletes | `AggregateCommandBusActor.delivered`, `EventStoreState.deletePublished` / `deleteAggregatePermanently`, `OutboxDeletes` | only acked (or failed) versions; the acknowledgement goes to the command bus, never only to the owner, which may be reaped (F91); a permanent delete waits while a subscription of the aggregate is failed |
+| Outbox deletes | `AggregateCommandBusActor.delivered`, `EventStoreState.deletePublished` / `deleteAggregatePermanently`, `OutboxDeletes` | only acked (or failed) versions; the acknowledgement goes to the command bus, never only to the owner, which may be reaped (F91); a permanent delete waits while a subscription of the aggregate is failed, or when duplicates changed after they were listed |
 | Delivery tracking | `EventsBusActor` (`publish`, `finish`, `checkDeadlines`, `subscriberStopped`) | a delivery that ends without every ack or failure must not ack the owner; re-publications to one subscriber never do; back-pressure counters stay balanced; AR7 (no throws) |
 | New listener kind | `ProjectionActor` (listener class, map, `subscriptionRequests`, the delivery case in `receiveUpdate`, `appliedVersion`, `advance`, `applyBatch`), `EventsBusActor` (request + message type), `SubscriptionType` | a new `subscription_type` id; everything else goes through the one gate path |
 | Projection progress storage | `SubscriptionsState` | CAS semantics; same-session atomicity; the bounded cache and its eviction on a failed CAS (F29, F77); `dump()` lifecycle (F3); failures (D20a) |

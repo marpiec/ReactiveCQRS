@@ -22,6 +22,30 @@ case object ReserveAggregateId
 
 case class SimulateEvent[AGGREGATE_ROOT](id: AggregateId, version: AggregateVersion, event: Event[AGGREGATE_ROOT])
 
+/** Replaces the aggregate's events 1..`upTo` with one squash event at `upTo` (D47); the version does not change. Answered
+  * with `AggregateSquashed` or `SquashRefused`. `userId` and `metadata` are stored with the squash event. */
+case class SquashAggregate(id: AggregateId, upTo: AggregateVersion, userId: UserId = UserId(0), metadata: Option[EventMetadata] = None)
+sealed trait SquashResponse
+case class AggregateSquashed(id: AggregateId, upTo: AggregateVersion) extends SquashResponse
+/** Nothing was changed, for `reason`: squash is not enabled for the type; the version is out of range, squashed
+  * already, or deleted; a precondition of D51 does not hold now (rows still wait in the outbox, a subscription is
+  * failed, a later undo reaches the squash point); or a duplicate was made meanwhile. The last two may pass later. */
+case class SquashRefused(id: AggregateId, reason: String) extends SquashResponse
+
+/**
+  * Squash (D47, D48), opt-in per context: `toEvent` makes the context's squash event from the aggregate's state at the
+  * squash point. It is an ordinary event class of the context, a `FirstEvent` whose event handler gives that state back,
+  * evolved like any other (D29); the history never holds raw state. `automatic`: the squash scheduler squashes the
+  * context's aggregates by this rule (D52).
+  */
+case class SquashPolicy[AGGREGATE_ROOT](toEvent: AGGREGATE_ROOT => FirstEvent[AGGREGATE_ROOT], automatic: Option[AutomaticSquash] = None)
+
+/** An aggregate is squashed once at least `afterEvents` of its events are older than its newest `keepLast` and not
+  * squashed yet; it is squashed up to the version before those `keepLast`. */
+case class AutomaticSquash(afterEvents: Int, keepLast: Int = 0) {
+  require(afterEvents > 0 && keepLast >= 0, "afterEvents must be positive and keepLast not negative")
+}
+
 /**
   * Performance snapshots of an aggregate's state (D30): the aggregate's owner stores its state every `every` events,
   * and when it stops if `onPassivation`, so a restore reads the snapshot and only the events after it. Snapshots
@@ -90,6 +114,9 @@ abstract class AggregateContext[AGGREGATE_ROOT : ClassTag] {
 
   /** One command at a time per aggregate (`Serial`, R8), or side by side (`Concurrent`, the default). */
   val commandProcessing: CommandProcessing = CommandProcessing.Concurrent
+
+  /** Opt-in squash of old history into one event (D47–D52); none by default. */
+  val squash: Option[SquashPolicy[AGGREGATE_ROOT]] = None
 
   val aggregateType = AggregateType(classTag[AGGREGATE_ROOT].toString)
 
