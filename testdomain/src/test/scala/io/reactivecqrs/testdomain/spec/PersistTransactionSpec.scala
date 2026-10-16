@@ -43,7 +43,7 @@ class PersistTransactionSpec extends CommonSpec {
   }
 
   private def repositoryOf(cartId: AggregateId): ActorRef = system.actorOf(Props(new AggregateRepositoryActor[ShoppingCart](
-    cartId, eventStore, new Idempotency(new MemoryCommandResponseState), TestProbe().ref, context.eventHandlers, () => context.initialAggregateRoot,
+    cartId, eventStore, new Idempotency(new MemoryCommandResponseState), TestProbe().ref, ActorRef.noSender, context.eventHandlers, () => context.initialAggregateRoot,
     None, Map.empty, Map.empty, 5.seconds)))
 
   private def storedEvents(cartId: AggregateId): Int = DB.readOnly { implicit session =>

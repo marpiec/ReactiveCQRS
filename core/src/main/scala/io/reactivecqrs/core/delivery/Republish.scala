@@ -8,8 +8,12 @@ import org.apache.pekko.actor.ActorRef
 // aggregate's owner. The owner re-publishes from the given version up to its current version, with its current
 // state, so a subscriber that receives state always gets a consistent range (docs/design/M2-delivery.md).
 
+sealed trait RepublishRequest {
+  def aggregateId: AggregateId
+}
+
 /** Re-publish everything from the oldest version still in the outbox (D8: lost or unacknowledged deliveries). */
-case class RepublishOutbox(aggregateId: AggregateId)
+case class RepublishOutbox(aggregateId: AggregateId) extends RepublishRequest
 
 /** Re-publish `from` up to the current version to one subscriber only: its gap or its retry (D20c). */
-case class RepublishRange(aggregateId: AggregateId, from: AggregateVersion, subscriber: ActorRef)
+case class RepublishRange(aggregateId: AggregateId, from: AggregateVersion, subscriber: ActorRef) extends RepublishRequest

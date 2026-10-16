@@ -16,6 +16,7 @@ import scalikejdbc.DBSession
 import scala.collection.mutable
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
+import scala.reflect.ClassTag
 import scala.reflect.runtime.universe._
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
@@ -194,22 +195,13 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
 
 
-  private lazy val eventListenersMap: Map[AggregateType, EventsListener[Any]] = {
-    validateListeners()
-    listeners.filter(_.isInstanceOf[EventsListener[Any]])
-      .map(l => (AggregateType(l.aggregateRootType.toString), l.asInstanceOf[EventsListener[Any]])).toMap
-  }
+  private lazy val eventListenersMap = listenersOfKind[EventsListener[Any]]
+  private lazy val aggregateListenersMap = listenersOfKind[AggregateListener[Any]]
+  private lazy val aggregateWithEventListenersMap = listenersOfKind[AggregateWithEventsListener[Any]]
 
-  private lazy val aggregateListenersMap: Map[AggregateType, AggregateListener[Any]] ={
+  private def listenersOfKind[L <: Listener[Any] : ClassTag]: Map[AggregateType, L] = {
     validateListeners()
-    listeners.filter(_.isInstanceOf[AggregateListener[Any]])
-      .map(l => (AggregateType(l.aggregateRootType.toString), l.asInstanceOf[AggregateListener[Any]])).toMap
-  }
-
-  private lazy val aggregateWithEventListenersMap: Map[AggregateType, AggregateWithEventsListener[Any]] ={
-    validateListeners()
-    listeners.filter(_.isInstanceOf[AggregateWithEventsListener[Any]])
-      .map(l => (AggregateType(l.aggregateRootType.toString), l.asInstanceOf[AggregateWithEventsListener[Any]])).toMap
+    listeners.collect { case l: L => AggregateType(l.aggregateRootType.toString) -> l }.toMap
   }
 
   // AR7, F80: a message that fails, such as a query, is answered with the failure; a throw would restart the actor
@@ -516,17 +508,10 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
   private def forgetIfIdle(key: Key, queue: Queue): Unit = if (queue.idle) queues -= key
 
-  private def appliedVersion(key: Key): AggregateVersion = key.subscriptionType match {
-    case SubscriptionType.EVENTS => subscriptionsState.lastVersionForEventsSubscription(subscriberName, key.aggregateId)
-    case SubscriptionType.AGGREGATES => subscriptionsState.lastVersionForAggregateSubscription(subscriberName, key.aggregateId)
-    case _ => subscriptionsState.lastVersionForAggregatesWithEventsSubscription(subscriberName, key.aggregateId)
-  }
+  private def appliedVersion(key: Key): AggregateVersion = subscriptionsState.lastVersion(subscriberName, key.subscriptionType, key.aggregateId)
 
-  private def advance(key: Key, from: AggregateVersion, to: AggregateVersion)(session: DBSession): Unit = key.subscriptionType match {
-    case SubscriptionType.EVENTS => subscriptionsState.newVersionForEventsSubscription(subscriberName, key.aggregateId, from, to)(session)
-    case SubscriptionType.AGGREGATES => subscriptionsState.newVersionForAggregatesSubscription(subscriberName, key.aggregateId, from, to)(session)
-    case _ => subscriptionsState.newVersionForAggregatesWithEventsSubscription(subscriberName, key.aggregateId, from, to)(session)
-  }
+  private def advance(key: Key, from: AggregateVersion, to: AggregateVersion)(session: DBSession): Unit =
+    subscriptionsState.newVersion(subscriberName, key.subscriptionType, key.aggregateId, from, to)(session)
 
   // The listener and the subscription's new version commit together; a listener without a transaction runs first and
   // the version is written after it, so such a listener may see a batch again if that write fails (at least once).
@@ -711,9 +696,6 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     }(context.system.dispatcher)
   }
 
-
-
-
   protected def delayIfNotAvailableAsyncCustom[T](respondTo: ActorRef, search: () => Future[T], found: T => Boolean, until: Instant): Unit = {
     search().onComplete {
       case Success(result) if found(result) => respondTo ! result
@@ -722,7 +704,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     }(context.system.dispatcher)
   }
 
-  var replayQueriesScheduled: Option[Cancellable] = None
+  private var replayQueriesScheduled: Option[Cancellable] = None
 
   private def scheduleNearest(): Unit = {
 

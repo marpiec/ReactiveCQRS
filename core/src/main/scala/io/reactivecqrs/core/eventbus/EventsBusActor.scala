@@ -251,7 +251,8 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     events.foreach { event =>
       val key = EventKey(aggregateId, event.version)
       if (!deliveries.contains(key)) {
-        val awaiting = sends.collect { case (s, forSubscription) if forSubscription.exists(_.version == event.version) => Target(s.subscriber, s.kind) }.toSet
+        // For an event not waiting yet, `wanted` is `accepts`: the subscriptions it was just sent to.
+        val awaiting = live.collect { case s if accepts(s, aggregateId, event) => Target(s.subscriber, s.kind) }.toSet
         // A stopped subscriber takes nothing, so its events stay in the outbox until it is back after a restart.
         val missedByStopped = ofStopped.exists(s => accepts(s, aggregateId, event))
         val delivery = Delivery(aggregateType, if (onlyTo.isEmpty && !replayed) Some(publisher) else None, now, awaiting, replayed,
@@ -334,22 +335,22 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   private def checkDeadlines(): Unit = {
     val now = System.nanoTime()
     val deadline = options.deadline.toNanos
-    val expired = deliveries.collect { case (key, delivery) if now - delivery.firstSent >= deadline => key }.toSet
+    val expired = deliveries.filter { case (_, delivery) => now - delivery.firstSent >= deadline }.toSeq
     if (expired.nonEmpty) {
-      val ended = deliveries.toSeq.filter { case (key, _) => expired.contains(key) }
-        .flatMap { case (key, delivery) => delivery.awaiting.toSeq.map(target => (key, delivery, target)) }
+      val ended = expired.flatMap { case (key, delivery) => delivery.awaiting.toSeq.map(target => (key, delivery, target)) }
       ended.take(options.stallLinesPerTick).foreach { case (key, delivery, target) =>
         log.error("Undelivered after " + options.deadline + ": " + delivery.aggregateType.simpleName + " " + key.aggregateId.asLong +
           " version " + key.version.asInt + " to " + target.subscriber.path.name + " (" + target.kind + "); it stays in the outbox until the next start")
       }
       if (ended.size > options.stallLinesPerTick) {
-        log.error((ended.size - options.stallLinesPerTick) + " more deliveries ended undelivered after " + options.deadline)
+        log.error(s"${ended.size - options.stallLinesPerTick} more deliveries ended undelivered after ${options.deadline}")
       }
       ended.foreach { case (key, delivery, target) =>
         undelivered.enqueue(Undelivered(delivery.aggregateType, key.aggregateId, key.version, target.subscriber.path.name, target.kind, Instant.now))
       }
       while (undelivered.size > undeliveredKept) undelivered.dequeue()
-      endDeliveries(_ => true, key => expired.contains(key))
+      val expiredKeys = expired.map(_._1).toSet
+      endDeliveries(_ => true, expiredKeys.contains)
     }
 
     // One line per stalled delivery, at most a few per tick: under overload the summary says the rest.
@@ -366,7 +367,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       lastSummary = now
       val stalled = deliveries.values.filter(d => now - d.firstSent >= stallAfter).toSeq
       if (stalled.nonEmpty) {
-        log.warning(stalled.size + " deliveries wait longer than " + options.stallAfter + ", by subscriber: " +
+        log.warning(s"${stalled.size} deliveries wait longer than ${options.stallAfter}, by subscriber: " +
           stalled.flatMap(_.awaiting).groupBy(_.subscriber.path.name).map { case (name, waits) => name + " " + waits.size }.mkString(", "))
       }
     }

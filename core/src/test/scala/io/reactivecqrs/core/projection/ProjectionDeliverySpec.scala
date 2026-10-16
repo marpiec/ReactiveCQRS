@@ -282,7 +282,7 @@ class ProjectionDeliverySpec extends CommonSpec {
       f.projection.askActor[FailedSubscriptionsHandled](SkipFailedVersion(id))(3.seconds) mustBe FailedSubscriptionsHandled(id, 1)
 
       f.requestedFrom(id) mustBe 2
-      f.state.lastVersionForEventsSubscription(classOf[RecordingProjection].getName, id) mustBe AggregateVersion(1)
+      f.state.lastVersion(classOf[RecordingProjection].getName, SubscriptionType.EVENTS, id) mustBe AggregateVersion(1)
       f.applied("events") mustBe empty
     }
 

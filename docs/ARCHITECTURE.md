@@ -404,9 +404,9 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   per `(aggregate_id, version)` in the same transaction (`PostgresEventStoreState.scala:180-186`).
   Only new events are published, and the in-memory root is **not** rebuilt (F8). The test
   domain pairs each rewrite with a compensating event (`CartNameRewritten`).
-- **Permanent delete**: the owner marks the version of a `PermanentDeleteEvent` when it
-  applies or restores it; when the bus acknowledges that version, the owner calls
-  `EventStoreState.deleteAggregatePermanently`. In one transaction it deletes the
+- **Permanent delete**: the bus names the version of a `PermanentDeleteEvent` in its
+  acknowledgement (`permanentDeleteAt`); the command bus then calls
+  `EventStoreState.deleteAggregatePermanently` and stops the owner, whose state is gone. In one transaction it deletes the
   `aggregates`, `noop_events` (before `events`, so its sub-select still matches), `events`,
   `events_to_publish` and `subscriptions` rows. While a subscription of the aggregate is
   failed (`subscription_failures`, D20a) it deletes nothing and returns false; the event's
@@ -428,14 +428,16 @@ Lifecycle of one event:
 
 1. Inserted by `add_event` in the command transaction, so it is never lost.
 2. After commit the owner publishes it with its state (`PublishEvents`).
-3. When every subscriber has acknowledged or failed it, the bus sends the owner
-   `PublishEventsAck(aggregateId, versions)`.
-4. The owner hands the versions to `EventStoreState.deletePublished`; the PostgreSQL store
-   deletes the rows of many acknowledgements in one statement (two arrays through `unnest`, up
-   to 5 000 rows), on one background thread shared by every store, at most 20 ms late
-   (`OutboxDeletes`, F26, F91). A failed delete is logged and only means a later,
-   harmless re-publication. A `PermanentDeleteEvent`'s acknowledgement deletes the whole
-   aggregate instead (§4.5).
+3. When every subscription has acknowledged or failed it, the bus sends
+   `PublishEventsAck(aggregateId, versions, permanentDeleteAt)` to the actor the owner
+   published on behalf of: its command bus (`publicationAcks`), which outlives the owner, so
+   an owner reaped meanwhile loses nothing (F91).
+4. The command bus hands the versions to `EventStoreState.deletePublished`; the PostgreSQL
+   store deletes the rows of many acknowledgements in one statement (two arrays through
+   `unnest`, up to 5 000 rows), on one background thread shared by every store, at most 20 ms
+   late (`OutboxDeletes`, F26). A failed delete is logged and only means a later, harmless
+   re-publication. When `permanentDeleteAt` is set it deletes the whole aggregate instead
+   (§4.5). A live owner gets the acknowledgement too, to continue re-publishing its outbox.
 
 **Re-delivery** has a single owner, the `OutboxPollerActor` (D8). Every 30 s (the first poll
 10 s after start) it reads every aggregate with waiting rows in one query for all types
@@ -573,7 +575,7 @@ Draining a queue, with `applied` the subscription's stored version:
    applied delivery adds only its new part, F5); **already applied** (all its versions lie
    in the batch) → it is acknowledged with the batch (F86); **gap** → it and everything after
    it wait.
-2. The batch runs `listener(...)` and `newVersionFor…(className, id, applied, to)` in one
+2. The batch runs `listener(...)` and `newVersion(className, kind, id, applied, to)` in one
    `localTx` (a `noDBSession` listener runs first, then the version is written in
    `autoCommit`). State-receiving listeners get the state of the delivery holding the last
    version, and `created` when the batch starts at version 1. On success every delivery of
@@ -635,7 +637,9 @@ projection has caught up.
 Adds push subscriptions for clients: `handleSubscribe[DATA, UPDATE](id, listener, filter)`
 and `sendUpdate[DATA](u)` deliver `SubscriptionUpdated(id, update)`. Subscriptions expire
 after 10 minutes without `RenewSubscription`; an optional `updatesCacheTTL` replays recent
-updates to new subscribers (`SubscribableProjectionActor.scala:33-140`).
+updates to new subscribers. Listeners may call `sendUpdate` from pool threads (parallel mode):
+the update reaches the subscriptions through a message to the actor. The one-minute tick that
+expires subscriptions also trims the cache, and stops with the projection (F95).
 
 ### 6.7 `AggregateListenerActor`
 
@@ -669,10 +673,10 @@ unique on `(subscriber_type_id, subscription_type, aggregate_id)`, plus an index
 `subscription_type`: 1 = AGGREGATES, 2 = EVENTS, 3 = AGGREGATES_WITH_EVENTS (`:15-33`).
 One projection can therefore keep three independent cursors per aggregate.
 
-**API.** `lastVersionFor…(subscriber, id)` and
-`newVersionFor…(subscriber, id, expectedLast, newVersion)(session)`, which is a
+**API.** `lastVersion(subscriber, subscriptionType, id)` and
+`newVersion(subscriber, subscriptionType, id, expectedLast, newVersion)(session)`, which is a
 **compare-and-set**: a mismatch throws `OptimisticLockingFailed` and rolls back the
-listener transaction.
+listener transaction. An unknown subscription is at version zero.
 
 **Two modes**, selected by `PostgresSubscriptionsState(typesNamesState, keepInMemory)` (`:120`):
 
@@ -815,7 +819,7 @@ still open, at the end of M2:
 | Snapshots | `AggregateRepositoryActor.assureRestoredState`, `EventStoreState` (new read from version N), a new snapshot table | duplication chains (ancestor events), noop events whose `from_version` lies after the snapshot, the event-versioning map |
 | Non-blocking persistence | `AggregateRepositoryActor.persist` → a dedicated dispatcher, re-entering via message | keep one in-flight persist per aggregate; apply the events before the next message is handled (F69: persist synchronously or stash); the in-memory version check |
 | Re-delivery timing | `delivery/RedeliveryPolicy` (pure), `OutboxPollerActor`, `EventStoreState.readWaitingInOutbox` | one owner of retries (D8); the attempts at 3 and 6 minutes come after a subscriber's own retries (about 2 minutes, D20a); the per-poll limit |
-| Outbox deletes | `AggregateRepositoryActor.delivered`, `EventStoreState.deletePublished`, `OutboxDeletes` | only acked (or failed) versions; the PermanentDelete marker and its wait for failed subscriptions |
+| Outbox deletes | `AggregateCommandBusActor.delivered`, `EventStoreState.deletePublished` / `deleteAggregatePermanently`, `OutboxDeletes` | only acked (or failed) versions; the acknowledgement goes to the command bus, never only to the owner, which may be reaped (F91); a permanent delete waits while a subscription of the aggregate is failed |
 | Delivery tracking | `EventsBusActor` (`publish`, `finish`, `checkDeadlines`, `subscriberStopped`) | a delivery that ends without every ack or failure must not ack the owner; re-publications to one subscriber never do; back-pressure counters stay balanced; AR7 (no throws) |
 | New listener kind | `ProjectionActor` (listener class, map, `subscriptionRequests`, the delivery case in `receiveUpdate`, `appliedVersion`, `advance`, `applyBatch`), `EventsBusActor` (request + message type), `SubscriptionType` | a new `subscription_type` id; everything else goes through the one gate path |
 | Projection progress storage | `SubscriptionsState` | CAS semantics; same-session atomicity; the bounded cache and its eviction on a failed CAS (F29, F77); `dump()` lifecycle (F3); failures (D20a) |

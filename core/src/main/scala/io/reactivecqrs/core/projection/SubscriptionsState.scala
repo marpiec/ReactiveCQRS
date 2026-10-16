@@ -41,14 +41,14 @@ case class SubscriptionFailure(subscriptionType: SubscriptionType, aggregateType
 
 trait SubscriptionsState {
 
+  /** The last version of the aggregate that the subscriber applied in this kind of subscription; zero when none. */
+  def lastVersion(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId): AggregateVersion
 
-  def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion
-  def lastVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion
-  def lastVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion
-
-  def newVersionForAggregatesSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit
-  def newVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit
-  def newVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit
+  /** Compare-and-set in the caller's transaction: moves the subscription from `lastAggregateVersion` to
+    * `aggregateVersion`, or throws `OptimisticLockingFailed` when it is not at `lastAggregateVersion`, so the caller
+    * rolls back the listener's work. */
+  def newVersion(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId,
+                 lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit
 
   /** Forgets everything about the subscriber: its versions, cached ones included (F6), and its failures. */
   def clearSubscriptionsInfo(subscriberName: String): Unit
@@ -73,23 +73,22 @@ class MemorySubscriptionsState extends SubscriptionsState {
 
   private val state = new mutable.HashMap[SubscriptionsKey, AggregateVersion]()
 
-  override def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion =
-    eventsCount(subscriberName, aggregateId, SubscriptionType.AGGREGATES)
+  // Locked: projections in parallel mode call these from their pool threads.
+  override def lastVersion(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId): AggregateVersion = synchronized {
+    state.getOrElse(SubscriptionsKey(subscriberName, subscriptionType, aggregateId), AggregateVersion.ZERO)
+  }
 
-  override def lastVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion =
-    eventsCount(subscriberName, aggregateId, SubscriptionType.EVENTS)
-
-  override def lastVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion =
-    eventsCount(subscriberName, aggregateId, SubscriptionType.AGGREGATES_WITH_EVENTS)
-
-  override def newVersionForAggregatesSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit =
-    newEventId(subscriberName, aggregateId, SubscriptionType.AGGREGATES, lastAggregateVersion, aggregateVersion)
-
-  override def newVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit =
-    newEventId(subscriberName, aggregateId, SubscriptionType.EVENTS, lastAggregateVersion, aggregateVersion)
-
-  override def newVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit =
-    newEventId(subscriberName, aggregateId, SubscriptionType.AGGREGATES_WITH_EVENTS, lastAggregateVersion, aggregateVersion)
+  // Same contract as PostgresSubscriptionsState.
+  override def newVersion(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId,
+                          lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit = synchronized {
+    val key = SubscriptionsKey(subscriberName, subscriptionType, aggregateId)
+    val current = state.getOrElse(key, AggregateVersion.ZERO)
+    if (current == lastAggregateVersion) {
+      state += key -> aggregateVersion
+    } else {
+      throw new OptimisticLockingFailed(getClass.getSimpleName+": optimistic locking failed for subscriber "+subscriberName+", subscription type "+subscriptionType.id+" and aggregate "+aggregateId.asLong+" expected version "+lastAggregateVersion.asInt+" but was "+current.asInt)
+    }
+  }
 
   private val failuresState = new mutable.LinkedHashMap[(String, SubscriptionType, AggregateId), SubscriptionFailure]()
 
@@ -113,28 +112,6 @@ class MemorySubscriptionsState extends SubscriptionsState {
   override def readOnly[A](block: DBSession => A): A = block(NoSession)
   override def localTx[A](block: DBSession => A): A = block(NoSession)
   override def autoCommit[A](block: DBSession => A): A = block(NoSession)
-
-  // Locked: projections in parallel mode call it from their pool threads.
-  private def eventsCount(subscriberName: String, aggregateId: AggregateId, subscriptionType: SubscriptionType): AggregateVersion = synchronized {
-    val key = SubscriptionsKey(subscriberName, subscriptionType, aggregateId)
-    state.getOrElse(key, {
-       state += key -> AggregateVersion.ZERO
-      AggregateVersion.ZERO
-     })
-  }
-
-  // Same contract as PostgresSubscriptionsState: an unknown subscription is at version zero, and a
-  // stale expected version throws, so callers roll back the listener's work.
-  private def newEventId(subscriberName: String, aggregateId: AggregateId, subscriptionType: SubscriptionType, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit = synchronized {
-    val key = SubscriptionsKey(subscriberName, subscriptionType, aggregateId)
-    val current = state.getOrElse(key, AggregateVersion.ZERO)
-    if (current == lastAggregateVersion) {
-      state += key -> aggregateVersion
-    } else {
-      throw new OptimisticLockingFailed(getClass.getSimpleName+": optimistic locking failed for subscriber "+subscriberName+", subscription type "+subscriptionType.id+" and aggregate "+aggregateId.asLong+" expected version "+lastAggregateVersion.asInt+" but was "+current.asInt)
-    }
-  }
-
 
   override def dump(): String = ""
 
@@ -253,19 +230,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
          | AND subscription_type = ${subscriptionType.id} AND aggregate_id = ${aggregateId.asLong}""".stripMargin.update()
   }
 
-  override def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion = {
-    lastAggregateVersion(subscriberName, SubscriptionType.AGGREGATES, aggregateId: AggregateId)
-  }
-
-  override def lastVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion = {
-    lastAggregateVersion(subscriberName, SubscriptionType.EVENTS, aggregateId: AggregateId)
-  }
-
-  override def lastVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion = {
-    lastAggregateVersion(subscriberName, SubscriptionType.AGGREGATES_WITH_EVENTS, aggregateId: AggregateId)
-  }
-
-  private def lastAggregateVersion(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId): AggregateVersion = {
+  override def lastVersion(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId): AggregateVersion = {
     val key = SubscriptionCacheKey.get(typesNamesState, subscriberName, subscriptionType)
     val versionsForAggregate = getVersionsForAggregate(aggregateId)
     // Read the shared mutable map under the monitor (it may be mutated concurrently by newEventId).
@@ -311,19 +276,8 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
     }
   }
 
-  override def newVersionForAggregatesSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit = {
-    newEventId(subscriberName, SubscriptionType.AGGREGATES, aggregateId, lastAggregateVersion, aggregateVersion)
-  }
-
-  override def newVersionForEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit = {
-    newEventId(subscriberName, SubscriptionType.EVENTS, aggregateId, lastAggregateVersion, aggregateVersion)
-  }
-
-  override def newVersionForAggregatesWithEventsSubscription(subscriberName: String, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit = {
-    newEventId(subscriberName, SubscriptionType.AGGREGATES_WITH_EVENTS, aggregateId, lastAggregateVersion, aggregateVersion)
-  }
-
-  private def newEventId(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit = {
+  override def newVersion(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId,
+                          lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit = {
     val key = SubscriptionCacheKey.get(typesNamesState, subscriberName, subscriptionType)
     // Fetch (and possibly DB-load) the aggregate's versions outside the monitor; only the compare-and-set
     // on the shared map needs the lock.
@@ -502,7 +456,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
 
   // No monitor here: operates only on the supplied DB session and the self-synchronized typesNamesState,
   // so subscription writes from different projection worker threads no longer serialize on this lock.
-  def newEventIdInDB(aggregateId: AggregateId, subscriberName: String, subscriptionType: SubscriptionType, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion, typesNamesState: TypesNamesState)(implicit session: DBSession): Unit = {
+  private def newEventIdInDB(aggregateId: AggregateId, subscriberName: String, subscriptionType: SubscriptionType, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion, typesNamesState: TypesNamesState)(implicit session: DBSession): Unit = {
     if(lastAggregateVersion == AggregateVersion.ZERO) {
       INSERT_INTO_SUBSCRIPTIONS.bind(typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, aggregateVersion.asInt).update()
     } else {

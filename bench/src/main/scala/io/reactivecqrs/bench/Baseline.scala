@@ -209,8 +209,8 @@ object Baseline {
       Seq("rebuild throughput", caughtUp.map(_ => f"${allEvents / seconds(totalNanos)}%.0f events/s").getOrElse("-")),
       Seq("heap before / peak during", s"${Heap.mb(heapBefore)} / ${Heap.mb(peak)}"),
       Seq("writing the history directly through the event store", f"${config.rebuildAggregates.toLong * config.rebuildEventsPerAggregate / seconds(writeNanos)}%.0f events/s (batches of up to 1000 events per transaction)")),
-      "The 0.12 replayer, into two new projections, over an in-memory bus state without a cursor; " +
-        "a PostgreSQL bus cursor that already moved past the events would stall it (F4).")
+      "The 0.12 replayer (replaced in M4), into two new projections that keep their subscriptions in memory until the " +
+        "replayer dumps them; since M2 the bus keeps no cursor that could stall it (F4).")
   }
 
   private def restore(stores: BenchStores, config: Config, report: Report): Unit = {

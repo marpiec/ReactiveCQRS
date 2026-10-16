@@ -366,10 +366,11 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Symptom:** a deleted aggregate, a missing publisher or a failing owner left the projection asking every 10 s, its queue never idle, the owner never reaped.
 - **Fix:** after `gapGiveUpAfter` (10 minutes) the gap is recorded as a failure at its first version, visible and repairable. Test: `ProjectionDeliverySpec` "a gap that is never filled".
 
-#### F91 — Outbox deletes fell behind under load
-- **Medium**, confirmed (measured) · **Fixed in M2** (re-measured in `baseline-M2`) · `PostgresEventStoreState` (`OutboxDeletes`)
-- **Symptom:** after 1 000 000 events at about 12 000 commands/s, 555 666 delivered rows were still in the outbox a minute after the projections caught up; the queue of pending deletes grows in memory meanwhile.
-- **Fix:** the rows go to PostgreSQL as two arrays (`unnest`), up to 5 000 per statement.
+#### F91 — Delivered rows stayed in the outbox when their owner had been reaped
+- **Medium**, confirmed (measured) · **Fixed in M2** (re-measured in `baseline-M2`) · `AggregateRepositoryActor`, `AggregateCommandBusActor`, `PostgresEventStoreState` (`OutboxDeletes`)
+- **Symptom:** after 1 000 000 events at about 12 000 commands/s, 555 666 delivered rows (546 704 in a second run) were still in the outbox after the projections caught up; only the poller's re-publications, 1 000 aggregates per 30 s, would clear them.
+- **Root cause:** the bus acknowledged the owners, and the command bus reaps idle owners (beyond 200, idle more than 2 minutes, every 5 minutes; re-publications count as activity and trigger it). Acknowledgements that arrived after the reaping, because the projections lagged, went to stopped actors. First taken for slow deletes.
+- **Fix:** owners publish on behalf of their command bus (`publicationAcks`), which lives as long as the system and deletes the rows itself; a live owner gets the acknowledgement only to continue re-publishing its outbox. Deletes go as two arrays (`unnest`), up to 5 000 rows per statement. Test: `OutboxPollerSpec` "Deleting delivered rows happens when the delivery is acknowledged after the aggregate's owner has stopped" (red first).
 
 #### F92 — Logs flooded under overload
 - **Medium**, confirmed (measured) · **Fixed in M2** · `EventsBusActor.checkDeadlines`, `OutboxPollerActor`, `ProjectionActor`
@@ -380,6 +381,11 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Medium**, confirmed (measured) · Fix in **M4** (projection throughput, D61) and a flow-control design after it · `EventsBusActor`, `ProjectionActor`
 - **Symptom:** when commands come faster than a projection applies them, its mailbox and the bus's deliveries grow with the lag. Measured: 1 000 000 events at about 12 000 commands/s against projections at about 1 700 events/s ended 10 minutes behind; it fit in a 2 GB heap (peak not measured).
 - **Fix idea:** a window per subscription in the bus; past it, events are left in the outbox and fetched from the store when the subscriber catches up (`RepublishRange`), so memory holds keys, not payloads.
+
+#### F95 — A subscribable projection's timer outlived it, and its cache of recent updates was trimmed only by new updates
+- **Low**, likely (found at the M2 simplification pass) · **Fixed in M2** · `SubscribableProjectionActor`
+- **Symptom:** the one-minute `ClearIdleSubscriptions` timer was never cancelled, so a stopped projection (a rebuild's, or one stopped and created again within a system) left a timer sending to dead letters for the life of the actor system. The cache of recent updates (`updatesCacheTTL`) was trimmed only when the next update arrived, so after a burst it kept the burst until then.
+- **Fix:** the timer is cancelled when the projection stops, and each tick also trims the cache to its TTL. No test: neither is visible in the actor's answers.
 
 ### Commands and aggregates
 
@@ -766,7 +772,7 @@ The library cannot fix these; they are listed so the 1.0 migration does not miss
 | H4 | Medium, suspected | `== null` checks on `Option` fields of events behave differently under mpjsons 0.7 (F53). | M1 gate |
 | H5 | Medium, likely | `PostgresCommandResponseState` is built without `initSchema()` (`Context.scala:483`), so D24's index fix would not run; since the F9 fix every idempotent command then fails (the response insert needs the unique index). | M1 |
 | H6 | Medium, suspected | Event listeners of ScreenRelease and ProcessRelease (the two aggregates with undo) must handle undo, since rebuild will deliver it (D60). | M4 |
-| H7 | Medium, likely | The host wiring changes with M2: create one `OutboxPollerActor`; send the bus `RegisterSubscribers` with every projection and listener (with H2); drop `EventBusSubscriptionsManagerApi` and `PostgresEventBusState`; call `PostgresSubscriptionsState.initSchema()`, which creates `subscription_failures`. Show `GetProjectionStatus` failures and offer `RetryFailedSubscription` and `SkipFailedVersion` in the admin tools (R1, R14). | M2 (Neula) |
+| H7 | Medium, likely | The host wiring changes with M2: create one `OutboxPollerActor`; send the bus `RegisterSubscribers` with every projection and listener (with H2); drop `EventBusSubscriptionsManagerApi` and `PostgresEventBusState`; call `PostgresSubscriptionsState.initSchema()`, which creates `subscription_failures`. Show `GetProjectionStatus` failures and offer `RetryFailedSubscription` and `SkipFailedVersion` in the admin tools (R1, R14). `SubscriptionsState`'s six per-kind version methods became `lastVersion` and `newVersion` with a `SubscriptionType`; `ProcessFlowDetailsProjectionSpec` calls the old ones. | M2 (Neula) |
 
 ---
 
@@ -791,7 +797,7 @@ From §7 of Neula's change requests.
 | Milestone | Issues |
 |---|---|
 | M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔, F73 ✔, F74 ✔, F75 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53, F76 (Neula, on a production copy, with `StoredDataCheck` and the F76 query); Neula H3, H4, H5 |
-| M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔; Neula H2, H7 |
+| M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔, F95 ✔; Neula H2, H7 |
 | M3 | AR1, AR4, AR7 (owner and command bus); AR8; F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33 (rest), F38, F39, F44, F50, F65, F76, F78, F81 |
 | M4 | F3, F43, F49 (backfill), F54, F55, F56, F57, F58, F59, F60, F61, F62, F82, F93, F94; Neula H1, H6 |
 | M5 | AR5; F46, F48, F63, F78 (between nodes) |
@@ -975,7 +981,7 @@ subscriptions so its events stay in the outbox; a retry is repeated until the fa
 is applied; a gap open for 10 minutes becomes a recorded failure. One problem stays open: the
 live path has no back-pressure (F93).
 
-**Fixed now:** F83–F92.
+**Fixed now:** F83–F92; F95 (found by the simplification pass at the close).
 
 **New open issues:** F93 (no back-pressure on the live path, measured), F94 (failure records
 of a removed projection block permanent deletes); AR8 (classifiers and the gate).
@@ -986,7 +992,10 @@ of a removed projection block permanent deletes); AR8 (classifiers and the gate)
   module; it now has 17 scenarios, five of them checked by mutation.
 - The bus keeps one entry per event in flight. Per-aggregate tracking (subscribers acknowledge
   in order, so "applied up to v" is enough) would make it one entry per aggregate and let the
-  owner delete "up to v"; it belongs with the flow-control work of F93, not before.
+  command bus delete "up to v"; it belongs with the flow-control work of F93, not before.
+- Acknowledgements went to the owner, whose lifetime the command bus decides (F91). They now
+  go to the command bus, which outlives every owner; the owner gets them passed on only to
+  continue a paged re-publication.
 - The audit proposed skipping the poller's re-publication while a delivery waits. It was tried
   and dropped: it saves little load, and a delivery lost while waiting (a subscriber restarted
   mid-message) would then wait for the deadline and the next start.
@@ -1007,3 +1016,29 @@ of a removed projection block permanent deletes); AR8 (classifiers and the gate)
   (R1's metric part).
 - M7: the runbook carries M2's wiring changes (H7); the operator guide explains failures
   (status, retry, retry all, skip), "undelivered" and stopped subscribers.
+
+**Looking ahead** (added at the user's request: reviews also weigh the changes the plan and
+Neula's requests will bring, and shape the code so they are easy):
+- *Outbox cleanup no longer depends on the owner's lifetime* (F91): owners publish on behalf
+  of an actor passed in (`publicationAcks`, the command bus today), which deletes the rows and
+  carries out permanent deletes. M3's passivation and M5's sharding can stop or move owners
+  freely; in M5 a node's command bus deletes rows without waking a sharded owner, and only
+  passes the acknowledgement on for re-publication paging.
+- *M3 owner (AR1)*: the owner's delivery duties are three small ones (publish after commit,
+  re-publish from the store in parts, continue on an acknowledgement); they move into
+  `AggregateOwner` as they are, with their tests.
+- *M4 rebuild*: the projection takes deliveries from any sender and answers that sender, so a
+  rebuild can feed one projection directly (D58) through the same gate, failure records and
+  status. Harder: batches across aggregates (D61) need `applyBatch`'s transaction to span
+  several queues, plus the cache overlay noted at review 3; the per-queue structure allows it
+  (the listener call and the version write are already separate steps).
+- *M5 cluster*: the bus answers per (subscriber, kind) and acknowledges the actor named in the
+  publication, both independent of where actors run; re-publish requests reach owners through
+  the command bus. The delivery messages carry `Seq[EventInfo[Any]]` and `Option[Any]` state,
+  so AR4's serializable protocol must cover them too.
+- *F93 flow control*: the bus's per-subscription tracking gives the window's unit, and the
+  targeted re-publication (`RepublishRange`) is the fetch-from-store path a window needs.
+- *R19 metrics*: `GetDeliveryStatus`, `GetOutboxStatus` and `GetProjectionStatus` already hold
+  the numbers; a metrics interface reads them rather than threading counters through the code.
+- *Watch*: classifiers (AR8) are the one feature that conflicts with the gate; the bus's
+  bookkeeping is per event in flight, which flow control would turn into per aggregate.

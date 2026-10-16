@@ -36,21 +36,21 @@ class CachesAfterRollbackSpec extends AnyFeatureSpec with GivenWhenThen with Mat
 
       When("a transaction advances it to version 3 and then rolls back")
       failingTransaction { implicit session =>
-        subscriptionsState.newVersionForEventsSubscription("CachesAfterRollbackProjection", aggregateId, AggregateVersion.ZERO, AggregateVersion(3))
+        subscriptionsState.newVersion("CachesAfterRollbackProjection", SubscriptionType.EVENTS, aggregateId, AggregateVersion.ZERO, AggregateVersion(3))
       }
 
       Then("the subscription is still at version zero, so the events are delivered again")
-      subscriptionsState.lastVersionForEventsSubscription("CachesAfterRollbackProjection", aggregateId) mustBe AggregateVersion.ZERO
+      subscriptionsState.lastVersion("CachesAfterRollbackProjection", SubscriptionType.EVENTS, aggregateId) mustBe AggregateVersion.ZERO
     }
 
     Scenario("a committed transaction advances the subscription") {
       val aggregateId = newAggregateId()
       subscriptionsState.localTx { implicit session =>
-        subscriptionsState.newVersionForEventsSubscription("CachesAfterRollbackProjection", aggregateId, AggregateVersion.ZERO, AggregateVersion(3))
+        subscriptionsState.newVersion("CachesAfterRollbackProjection", SubscriptionType.EVENTS, aggregateId, AggregateVersion.ZERO, AggregateVersion(3))
       }
-      subscriptionsState.lastVersionForEventsSubscription("CachesAfterRollbackProjection", aggregateId) mustBe AggregateVersion(3)
+      subscriptionsState.lastVersion("CachesAfterRollbackProjection", SubscriptionType.EVENTS, aggregateId) mustBe AggregateVersion(3)
       new PostgresSubscriptionsState(typesNamesState, keepInMemory = false)
-        .lastVersionForEventsSubscription("CachesAfterRollbackProjection", aggregateId) mustBe AggregateVersion(3)
+        .lastVersion("CachesAfterRollbackProjection", SubscriptionType.EVENTS, aggregateId) mustBe AggregateVersion(3)
     }
   }
 

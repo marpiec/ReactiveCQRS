@@ -57,7 +57,7 @@ class OutboxPollerActor(eventStore: EventStoreState, eventBus: ActorRef, options
       decision.gaveUp.take(maxLinesPerPoll).foreach(w => log.error("Undelivered: " + w.aggregateType.simpleName + " " + w.aggregateId.asLong +
         " from version " + w.oldestVersion.asInt + " still waits in the outbox after " + options.redelivery.giveUpAfter + "; it is re-published again at the next start"))
       if (decision.gaveUp.size > maxLinesPerPoll) {
-        log.error((decision.gaveUp.size - maxLinesPerPoll) + " more aggregates are undelivered after " + options.redelivery.giveUpAfter)
+        log.error(s"${decision.gaveUp.size - maxLinesPerPoll} more aggregates are undelivered after ${options.redelivery.giveUpAfter}")
       }
       memory = decision.memory
     case Failure(e) =>

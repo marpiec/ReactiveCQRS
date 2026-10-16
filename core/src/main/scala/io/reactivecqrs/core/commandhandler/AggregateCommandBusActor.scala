@@ -1,7 +1,7 @@
 package io.reactivecqrs.core.commandhandler
 
 import java.time.Instant
-import org.apache.pekko.actor.{Actor, ActorContext, ActorRef, PoisonPill, Props, Status, Terminated}
+import org.apache.pekko.actor.{Actor, ActorRef, PoisonPill, Props, Status, Terminated}
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api._
@@ -10,7 +10,7 @@ import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRootCurrentMinVersion, GetAggregateRootCurrentVersion, GetEventsCurrentVersion}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.RemoveExpiredResponses
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor._
-import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
+import io.reactivecqrs.core.delivery.RepublishRequest
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventsAck, RegisterPublisher}
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
@@ -122,10 +122,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     // do not call preStart
   }
 
-
-
-
-  def maintenance(id: AggregateId)(implicit context: ActorContext): Unit = {
+  private def maintenance(id: AggregateId): Unit = {
     val now = System.nanoTime() / 1_000_000
     this.childrenActivity += id.asLong -> now
     clearOldAggregateRepositories(now)
@@ -145,10 +142,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     case GetEventsForAggregateForVersion(id, version) => routeGetEventsForVersion(id, version)
     case ack: PublishEventsAck => delivered(ack)
     // Re-publications count as activity, so the owners they start are reaped like others when idle.
-    case m: RepublishOutbox =>
-      getOrCreateAggregateRepositoryActor(m.aggregateId) ! m
-      maintenance(m.aggregateId)
-    case m: RepublishRange =>
+    case m: RepublishRequest =>
       getOrCreateAggregateRepositoryActor(m.aggregateId) ! m
       maintenance(m.aggregateId)
     case ReserveAggregateId =>
@@ -186,7 +180,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     val id = ack.aggregateId
     Try {
       ack.permanentDeleteAt match {
-        case Some(at) if eventStoreState.deleteAggregatePermanently(id) =>
+        case Some(_) if eventStoreState.deleteAggregatePermanently(id) =>
           clearOldAggregateRepository(id.asLong) // its state is gone
         case Some(at) =>
           log.warning("Aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " is not deleted yet: a subscription of it is failed")
@@ -271,7 +265,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private def getOrCreateAggregateRepositoryActor(aggregateId: AggregateId): ActorRef = {
     childrenActivity += aggregateId.asLong -> System.nanoTime() / 1_000_000
     aggregateRepositoryActors.getOrElse(aggregateId.asLong, {
-      val ref = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, idempotency, eventBus, eventHandlers, initialState, None, eventsVersionsMap, eventsVersionsMapReverse, failedRestoreRetryAfter)),
+      val ref = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, idempotency, eventBus, self, eventHandlers, initialState, None, eventsVersionsMap, eventsVersionsMapReverse, failedRestoreRetryAfter)),
         aggregateTypeSimpleName + "_AR_" + aggregateId.asLong+"_"+spawnedCount)
       spawnedCount += 1
       context.watch(ref)
@@ -281,14 +275,14 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   }
 
   private def createAggregateRepositoryActorForVersion(aggregateId: AggregateId, aggregateVersion: AggregateVersion): ActorRef = {
-    val actor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, idempotency, eventBus, eventHandlers, initialState, Some(Left(aggregateVersion)), eventsVersionsMap, eventsVersionsMapReverse, failedRestoreRetryAfter)),
+    val actor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, idempotency, eventBus, self, eventHandlers, initialState, Some(Left(aggregateVersion)), eventsVersionsMap, eventsVersionsMapReverse, failedRestoreRetryAfter)),
       aggregateTypeSimpleName + "_ARV_" + aggregateId.asLong+"_"+aggregateVersion.asInt+"_"+spawnedCount)
     spawnedCount += 1
     actor
   }
 
   private def createAggregateRepositoryActorForInstant(aggregateId: AggregateId, instant: Instant): ActorRef = {
-    val actor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, idempotency, eventBus, eventHandlers, initialState, Some(Right(instant)), eventsVersionsMap, eventsVersionsMapReverse, failedRestoreRetryAfter)),
+    val actor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, idempotency, eventBus, self, eventHandlers, initialState, Some(Right(instant)), eventsVersionsMap, eventsVersionsMapReverse, failedRestoreRetryAfter)),
       aggregateTypeSimpleName + "_ART_" + aggregateId.asLong+"_"+instant.getEpochSecond+"_"+spawnedCount)
     spawnedCount += 1
     actor

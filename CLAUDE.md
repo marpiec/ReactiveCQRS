@@ -137,8 +137,9 @@ AggregateRepositoryActor → EventsBusActor → subscribers (ProjectionActor, sa
   have answered. Command buses register as their type's publishers (RegisterPublisher).
   EventsBusActor keeps one delivery per event until every subscription (subscriber and
   DeliveryKind) has answered MessageAck or MessageFailed, the deadline passes, or the
-  subscriber stops; only acks and failures ack the owner (PublishEventsAck), which deletes
-  the outbox rows. No cursor (D7). Re-publications go in parts of 1 000 events.
+  subscriber stops; only acks and failures acknowledge the publication (PublishEventsAck)
+  to the owner's command bus, which deletes the outbox rows (the owner may be reaped).
+  No cursor (D7). Re-publications go in parts of 1 000 events.
   OutboxPollerActor (one per system) alone re-delivers: every 30 s it reads the
   outbox and has owners re-publish (Republish via the bus) at 3 and 6 minutes, then
   reports "undelivered" at 10; rows from before the start go out at the first poll.

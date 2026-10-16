@@ -26,7 +26,7 @@ class PostgresSubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen w
   private def newAggregateId() = AggregateId(System.nanoTime())
 
   private def advance(state: PostgresSubscriptionsState, subscriber: String, id: AggregateId, from: Int, to: Int): Unit =
-    state.localTx { implicit session => state.newVersionForEventsSubscription(subscriber, id, AggregateVersion(from), AggregateVersion(to)) }
+    state.localTx { implicit session => state.newVersion(subscriber, SubscriptionType.EVENTS, id, AggregateVersion(from), AggregateVersion(to)) }
 
   Feature("The version cache in live mode") {
 
@@ -43,7 +43,7 @@ class PostgresSubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen w
       advance(state, projection, a, 0, 2)
       advance(state, projection, b, 0, 1)
 
-      state.lastVersionForEventsSubscription(projection, a) mustBe AggregateVersion(2)
+      state.lastVersion(projection, SubscriptionType.EVENTS, a) mustBe AggregateVersion(2)
     }
 
     Scenario("clearing a subscriber's subscriptions also clears its cached versions (F6)") {
@@ -55,8 +55,8 @@ class PostgresSubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen w
 
       state.clearSubscriptionsInfo(cleared)
 
-      state.lastVersionForEventsSubscription(cleared, id) mustBe AggregateVersion.ZERO
-      state.lastVersionForEventsSubscription(projection, id) mustBe AggregateVersion(2)
+      state.lastVersion(cleared, SubscriptionType.EVENTS, id) mustBe AggregateVersion.ZERO
+      state.lastVersion(projection, SubscriptionType.EVENTS, id) mustBe AggregateVersion(2)
     }
 
     Scenario("a version that moved in the database without this cache is read again after the failed update (F77)") {
@@ -70,9 +70,9 @@ class PostgresSubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen w
       an[OptimisticLockingFailed] must be thrownBy advance(state, projection, id, 3, 4)
 
       Then("the next read sees the stored version, and updates from it succeed")
-      state.lastVersionForEventsSubscription(projection, id) mustBe AggregateVersion(5)
+      state.lastVersion(projection, SubscriptionType.EVENTS, id) mustBe AggregateVersion(5)
       advance(state, projection, id, 5, 6)
-      state.lastVersionForEventsSubscription(projection, id) mustBe AggregateVersion(6)
+      state.lastVersion(projection, SubscriptionType.EVENTS, id) mustBe AggregateVersion(6)
     }
   }
 

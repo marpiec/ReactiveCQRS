@@ -20,15 +20,15 @@ class MemorySubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen wit
       Given("two subscribers that both processed version 3 of an aggregate")
       val state = new MemorySubscriptionsState
       Seq("ProjectionA", "ProjectionB").foreach { subscriber =>
-        state.newVersionForEventsSubscription(subscriber, aggregateId, AggregateVersion.ZERO, AggregateVersion(3))(NoSession)
+        state.newVersion(subscriber, SubscriptionType.EVENTS, aggregateId, AggregateVersion.ZERO, AggregateVersion(3))(NoSession)
       }
 
       When("the first subscriber's progress is cleared")
       state.clearSubscriptionsInfo("ProjectionA")
 
       Then("the first starts again from zero and the second keeps its version")
-      state.lastVersionForEventsSubscription("ProjectionA", aggregateId) mustBe AggregateVersion.ZERO
-      state.lastVersionForEventsSubscription("ProjectionB", aggregateId) mustBe AggregateVersion(3)
+      state.lastVersion("ProjectionA", SubscriptionType.EVENTS, aggregateId) mustBe AggregateVersion.ZERO
+      state.lastVersion("ProjectionB", SubscriptionType.EVENTS, aggregateId) mustBe AggregateVersion(3)
     }
   }
 
@@ -54,20 +54,20 @@ class MemorySubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen wit
   Feature("Advancing a subscription is a compare-and-set") {
     Scenario("an update from the expected version is stored without a prior read") {
       val state = new MemorySubscriptionsState
-      state.newVersionForAggregatesSubscription("Projection", aggregateId, AggregateVersion.ZERO, AggregateVersion(2))(NoSession)
-      state.lastVersionForAggregateSubscription("Projection", aggregateId) mustBe AggregateVersion(2)
+      state.newVersion("Projection", SubscriptionType.AGGREGATES, aggregateId, AggregateVersion.ZERO, AggregateVersion(2))(NoSession)
+      state.lastVersion("Projection", SubscriptionType.AGGREGATES, aggregateId) mustBe AggregateVersion(2)
     }
 
     Scenario("an update from a stale version is rejected") {
       Given("a subscription at version 2")
       val state = new MemorySubscriptionsState
-      state.newVersionForAggregatesWithEventsSubscription("Projection", aggregateId, AggregateVersion.ZERO, AggregateVersion(2))(NoSession)
+      state.newVersion("Projection", SubscriptionType.AGGREGATES_WITH_EVENTS, aggregateId, AggregateVersion.ZERO, AggregateVersion(2))(NoSession)
 
       Then("advancing it from version 1 fails and the version stays at 2")
       an[OptimisticLockingFailed] must be thrownBy {
-        state.newVersionForAggregatesWithEventsSubscription("Projection", aggregateId, AggregateVersion(1), AggregateVersion(3))(NoSession)
+        state.newVersion("Projection", SubscriptionType.AGGREGATES_WITH_EVENTS, aggregateId, AggregateVersion(1), AggregateVersion(3))(NoSession)
       }
-      state.lastVersionForAggregatesWithEventsSubscription("Projection", aggregateId) mustBe AggregateVersion(2)
+      state.lastVersion("Projection", SubscriptionType.AGGREGATES_WITH_EVENTS, aggregateId) mustBe AggregateVersion(2)
     }
   }
 }

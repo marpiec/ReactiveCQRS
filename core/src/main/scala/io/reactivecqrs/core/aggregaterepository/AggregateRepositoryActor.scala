@@ -50,6 +50,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
                                                                 eventStore: EventStoreState,
                                                                 idempotency: Idempotency,
                                                                 eventsBus: ActorRef,
+                                                                publicationAcks: ActorRef,
                                                                 eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
                                                                 initialState: () => AGGREGATE_ROOT,
                                                                 singleReadForVersionOnly: Option[Either[AggregateVersion, Instant]],
@@ -182,16 +183,16 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
       val to = AggregateVersion(math.min(version.asInt.toLong, from.asInt.toLong + maxRepublishEvents - 1).toInt)
       val events = eventStore.readEventsRange[AGGREGATE_ROOT](eventsVersionsMap, aggregateId, from, to)
       if (events.nonEmpty) {
-        eventsBus.tell(PublishEvents(aggregateType, events, aggregateId, Option(aggregateRoot), onlyTo), context.parent)
+        eventsBus.tell(PublishEvents(aggregateType, events, aggregateId, Option(aggregateRoot), onlyTo), publicationAcks)
         Some(events.last.version)
       } else None
     } else None
   }
 
   private def publish(events: Seq[IdentifiableEvent[AGGREGATE_ROOT]]): Unit = {
-    // On behalf of the command bus, which gets the acknowledgement: it lives as long as the system, so delivered rows
-    // are deleted even when this actor is reaped (or, later, passivated) before the subscribers caught up.
-    eventsBus.tell(PublishEvents(aggregateType, events.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot)), context.parent)
+    // The acknowledgement goes to `publicationAcks` (the command bus), which outlives this actor: delivered rows are deleted
+    // even when this actor is reaped (or, later, passivated) before the subscribers caught up.
+    eventsBus.tell(PublishEvents(aggregateType, events.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot)), publicationAcks)
     replayDelayedQueries()
   }
 

@@ -51,9 +51,12 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
   private val subscriptionsPerType = mutable.HashMap[String, List[String]]()
   private val updatesCache: mutable.Queue[UpdateCacheEntry] = mutable.Queue.empty
 
-  override def preStart(): Unit = {
-    super.preStart()
-    context.system.scheduler.schedule(1.minute, 1.minute, self, ClearIdleSubscriptions)(context.dispatcher)
+  // Expires idle subscriptions and trims the updates cache; created with each instance and cancelled when it stops (F95).
+  private val ticks = context.system.scheduler.scheduleWithFixedDelay(1.minute, 1.minute, self, ClearIdleSubscriptions)(context.dispatcher)
+
+  override def postStop(): Unit = {
+    ticks.cancel()
+    super.postStop()
   }
 
   override def postRestart(reason: Throwable): Unit = {
@@ -90,12 +93,16 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
   // message, so the subscription maps are only touched on the actor's thread.
   protected def sendUpdate[DATA: TypeTag](u: DATA): Unit = self ! SendUpdate(u, typeTag[DATA].toString())
 
+  private def trimUpdatesCache(): Unit = {
+    val shouldArriveAfter = Instant.now().minus(updatesCacheTTL)
+    updatesCache.dequeueAll(e => e.arrived.isBefore(shouldArriveAfter))
+  }
+
   private def deliverUpdate(u: Any, typeName: String): Unit = {
     try {
       if(updatesCacheTTL != Duration.ZERO) {
         updatesCache += UpdateCacheEntry(Instant.now(), u)
-        val shouldArriveAfter = Instant.now().minus(updatesCacheTTL)
-        updatesCache.dequeueAll(e => e.arrived.isBefore(shouldArriveAfter))
+        trimUpdatesCache()
       }
 
       // Find subscriptions for given type
@@ -124,6 +131,7 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
   }
 
   private def clearIdleSubscriptions(): Unit = {
+    trimUpdatesCache()
     val now = Instant.now()
     val subscriptionsToInvalidate = subscriptions.values.filter(_.renewal.plusMillis(subscriptionTTL).isBefore(now))
 
