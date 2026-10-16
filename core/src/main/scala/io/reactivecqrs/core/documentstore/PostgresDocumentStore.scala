@@ -142,22 +142,25 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
     inSession { implicit session =>
 
-      val updated = getFromCacheOrDB(key) match {
+      // Skipping the JSON write is only safe when the cached copy is still current; the version check proves it.
+      val versionWhenUnchanged = getFromCacheOrDB(key) match {
         case Some(VersionedDocument(version, cachedDocument)) if cachedDocument == document =>
-          sql"UPDATE ${tableNameSQL} SET version = version + 1 WHERE id = ? RETURNING version"
-            .bind(key)
-            .map(_.int(1)).list()
-        case _ =>
-          sql"UPDATE ${tableNameSQL} SET document = ?::JSONB, version = version + 1 WHERE id = ? RETURNING version"
-            .bind(mpjsons.serialize[T](document), key)
-            .map(_.int(1)).list()
+          sql"UPDATE ${tableNameSQL} SET version = version + 1 WHERE id = ? AND version = ? RETURNING version"
+            .bind(key, version)
+            .map(_.int(1)).single()
+        case _ => None
       }
 
-      if (updated.size != 1) {
-        throw new IllegalStateException("Expected 1, updated " + updated + " records")
-      } else {
-        cache.put(key, Some(VersionedDocument(updated.head, document)))
+      val newVersion = versionWhenUnchanged.getOrElse {
+        sql"UPDATE ${tableNameSQL} SET document = ?::JSONB, version = version + 1 WHERE id = ? RETURNING version"
+          .bind(mpjsons.serialize[T](document), key)
+          .map(_.int(1)).list() match {
+          case List(version) => version
+          case updated => throw new IllegalStateException("Expected 1, updated " + updated + " records")
+        }
       }
+
+      cache.put(key, Some(VersionedDocument(newVersion, document)))
     }
   }
 
@@ -447,6 +450,34 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     }).single())
   }
 
+  protected val maxUpdateAttempts = 10
+
+  /**
+   * Writes `modified` over the stored `previous` version (optimistic locking). Returns false when
+   * another writer changed the row first; the cached copy is then evicted, so a retry reads fresh data.
+   */
+  protected def writeNextVersion(key: Long, previous: VersionedDocument[T], modified: T)(implicit session: DBSession): Boolean = {
+    val updated = if (modified == previous.document) {
+      sql"UPDATE ${tableNameSQL} SET version = ? WHERE id = ? AND version = ?"
+        .bind(previous.version + 1, key, previous.version)
+        .update()
+    } else {
+      sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
+        .bind(previous.version + 1, mpjsons.serialize[T](modified), key, previous.version)
+        .update()
+    }
+    if (updated == 1) {
+      cache.put(key, Some(VersionedDocument(previous.version + 1, modified)))
+      true
+    } else {
+      cache.remove(key)
+      false
+    }
+  }
+
+  protected def tooManyUpdateAttempts(key: Long, version: Int): IllegalStateException =
+    new IllegalStateException("Too many tries to update document in table = [" + projectionTableName + "] id = " + key + " expected version " + version)
+
 
   def clearSpace(spaceId: Long)(implicit session: DBSession): Unit = {
     inSession { implicit session =>
@@ -490,29 +521,14 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
     inSession { implicit session =>
       getFromCacheOrDB(key) match {
         case None => throw new IllegalStateException("Document for update does not exist " + key)
-        case Some(VersionedDocument(version, document)) =>
-          val modified = modify(Document(document))
-
-          val updated = if(modified.document == document) {
-            sql"UPDATE ${tableNameSQL} SET version = ? WHERE id = ? AND version = ?"
-              .bind(version + 1, key, version)
-              .update()
-          } else {
-             sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
-              .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
-              .update()
-
-          }
-
-          if(updated == 0) {
-            if(tryNumber < 10) {
-              updateExistingDocumentRecur(key, modify, tryNumber + 1)
-            } else {
-              throw new IllegalStateException("Too many tries to update document in table = ["+tableNameSQL+"] id = " + key + " expected version " + version)
-            }
-          } else {
-            cache.put(key, Some(VersionedDocument(version + 1, modified.document)))
+        case Some(previous) =>
+          val modified = modify(Document(previous.document))
+          if (writeNextVersion(key, previous, modified.document)) {
             modified
+          } else if (tryNumber < maxUpdateAttempts) {
+            updateExistingDocumentRecur(key, modify, tryNumber + 1)
+          } else {
+            throw tooManyUpdateAttempts(key, previous.version)
           }
       }
     }
@@ -532,29 +548,14 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
           val modified = modify(None)
           insertDocument(spaceId, key, modified.document)
           modified
-        case Some(VersionedDocument(version, document)) =>
-          val modified = modify(Some(Document(document)))
-
-          val updated = if(modified.document == document) {
-            sql"UPDATE ${tableNameSQL} SET version = ? WHERE id = ? AND version = ?"
-              .bind(version + 1, key, version)
-              .update()
-          } else {
-            val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
-              .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
-              .update()
-          }
-
-          if(updated == 0) {
-            if(tryNumber < 10) {
-              updateDocumentRecur(spaceId, key, modify, tryNumber + 1)
-            } else {
-              throw new IllegalStateException("Too many tries to update document in table = ["+tableNameSQL+"] id = " + key + " expected version " + version)
-            }
-
-          } else {
-            cache.put(key, Some(VersionedDocument(version + 1, modified.document)))
+        case Some(previous) =>
+          val modified = modify(Some(Document(previous.document)))
+          if (writeNextVersion(key, previous, modified.document)) {
             modified
+          } else if (tryNumber < maxUpdateAttempts) {
+            updateDocumentRecur(spaceId, key, modify, tryNumber + 1)
+          } else {
+            throw tooManyUpdateAttempts(key, previous.version)
           }
       }
     }
@@ -619,28 +620,21 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
   }
 
   def updateExistingDocument(key: Long, modify: Document[T] => Document[T])(implicit session: DBSession): Document[T] = {
+    updateExistingDocumentRecur(key, modify, 1)
+  }
 
+  private def updateExistingDocumentRecur(key: Long, modify: Document[T] => Document[T], tryNumber: Int)(implicit session: DBSession): Document[T] = {
     inSession { implicit session =>
       getFromCacheOrDB(key) match {
         case None => throw new IllegalStateException(s"Document for key $key not found!")
-        case Some(VersionedDocument(version, document)) =>
-          val modified = modify(Document(document))
-
-          val updated = if(modified.document == document) {
-            sql"UPDATE ${tableNameSQL} SET version = ? WHERE id = ? AND version = ?"
-              .bind(version + 1, key, version)
-              .update()
-          } else {
-            sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
-              .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
-              .update()
-          }
-
-          if(updated == 0) {
-            updateExistingDocument(key, modify)
-          } else {
-            cache.put(key, Some(VersionedDocument(version + 1, modified.document)))
+        case Some(previous) =>
+          val modified = modify(Document(previous.document))
+          if (writeNextVersion(key, previous, modified.document)) {
             modified
+          } else if (tryNumber < maxUpdateAttempts) {
+            updateExistingDocumentRecur(key, modify, tryNumber + 1)
+          } else {
+            throw tooManyUpdateAttempts(key, previous.version)
           }
       }
     }
@@ -649,28 +643,21 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
 
   // Optimistic locking update
   def updateDocument(spaceId: Long, key: Long, modify: Option[Document[T]] => Document[T])(implicit session: DBSession): Document[T] = {
+    updateDocumentRecur(spaceId, key, modify, 1)
+  }
 
+  private def updateDocumentRecur(spaceId: Long, key: Long, modify: Option[Document[T]] => Document[T], tryNumber: Int)(implicit session: DBSession): Document[T] = {
     inSession { implicit session =>
       getFromCacheOrDB(key) match {
         case None => throw new IllegalStateException(s"Document for key $key not found!")
-        case Some(VersionedDocument(version, document)) =>
-          val modified = modify(Some(Document(document)))
-
-          val updated = if(modified.document == document) {
-            sql"UPDATE ${tableNameSQL} SET version = ? WHERE id = ? AND version = ?"
-              .bind(version + 1, key, version)
-              .update()
-          } else {
-            sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
-              .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
-              .update()
-          }
-
-          if(updated == 0) {
-            updateDocument(spaceId, key, modify)
-          } else {
-            cache.put(key, Some(VersionedDocument(version + 1, modified.document)))
+        case Some(previous) =>
+          val modified = modify(Some(Document(previous.document)))
+          if (writeNextVersion(key, previous, modified.document)) {
             modified
+          } else if (tryNumber < maxUpdateAttempts) {
+            updateDocumentRecur(spaceId, key, modify, tryNumber + 1)
+          } else {
+            throw tooManyUpdateAttempts(key, previous.version)
           }
       }
     }
