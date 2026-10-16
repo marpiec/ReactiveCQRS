@@ -254,6 +254,21 @@ class MemoryEventStoreState extends EventStoreState {
     })
   }
 
+  override def readCommitted(types: Seq[AggregateType], after: Long, limit: Int): Seq[CommittedEvent] = synchronized {
+    val wanted = types.toSet
+    eventsRows.reverseIterator.filter(row => row.eventId > after && wanted.contains(row.aggregateType)).take(limit).map { row =>
+      CommittedEvent(row.eventId, row.aggregateType, row.aggregateId, row.aggregateVersion, squashedVersions.get(row.aggregateId),
+        Right(EventInfo[Any](row.aggregateVersion, row.event.asInstanceOf[Event[Any]], row.userId, row.timestamp, row.metadata)))
+    }.toVector
+  }
+
+  override def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int): Seq[StoredAggregate] = synchronized {
+    val wanted = types.toSet
+    eventsRows.reverseIterator.filter(row => row.aggregateId.asLong > after.asLong && wanted.contains(row.aggregateType))
+      .map(row => row.aggregateId -> row.aggregateType).toVector.distinct.sortBy(_._1.asLong).take(limit)
+      .map { case (id, aggregateType) => StoredAggregate(aggregateType, id, eventStore(id).last.version, squashedVersions.get(id)) }
+  }
+
   // Like the SQL DELETE: deleting an event that is no longer waiting is a no-op.
   override def deletePublished(aggregateId: AggregateId, versions: Seq[AggregateVersion]): Unit = synchronized {
     eventsToPublish --= versions.map(version => (aggregateId, version))

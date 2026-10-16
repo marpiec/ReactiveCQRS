@@ -33,9 +33,25 @@ class PostgresSubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen w
 
     Scenario("keeps at most the configured number of aggregates (F29)") {
       val state = newState(maxCachedAggregates = 3)
-      (1 to 5).foreach(_ => advance(state, projection, newAggregateId(), 0, 1))
+      (1 to 5).foreach { _ =>
+        val id = newAggregateId()
+        state.lastVersion(projection, SubscriptionType.EVENTS, id) // a read caches the aggregate's versions
+        advance(state, projection, id, 0, 1)
+      }
 
       state.cachedAggregates mustBe 3
+    }
+
+    Scenario("versions of many aggregates are read at once, from the cache for those cached") {
+      val state = newState()
+      val (cached, stored, none) = (newAggregateId(), newAggregateId(), newAggregateId())
+      state.lastVersion(projection, SubscriptionType.EVENTS, cached)
+      advance(state, projection, cached, 0, 2)
+      advance(state, projection, stored, 0, 3)
+
+      state.lastVersions(projection, SubscriptionType.EVENTS, Seq(cached, stored, none)) mustBe
+        Map(cached -> AggregateVersion(2), stored -> AggregateVersion(3), none -> AggregateVersion.ZERO)
+      state.cachedAggregates mustBe 1 // only the one read before: a batch read fills nothing
     }
 
     Scenario("an aggregate dropped from the cache is read from the database again") {

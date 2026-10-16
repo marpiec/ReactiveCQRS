@@ -34,6 +34,10 @@ case object ProjectionDataCleared
 case object GetSubscribedAggregates
 case class SubscribedAggregates(projectionName: String, projectionVersion: Int, aggregates: Set[AggregateType])
 
+/** The aggregate types and listener kinds of a projection, one per listener: what a build delivers (D58). */
+case object GetListeners
+case class Listeners(subscriptions: Seq[(AggregateType, SubscriptionType)])
+
 // D20a: a projection's failed subscriptions, and what an operator can do about them.
 case object GetProjectionStatus
 /** `retrying`: aggregates whose listener failed and is retried now; `waitingForGap`: aggregates waiting for missing
@@ -55,10 +59,11 @@ case object ProjectionLive
 case class ApplyChunk(id: Long, items: Seq[ChunkItem])
 /** One subscription's versions `first` to `last` of one aggregate: its events (none for a state listener) and the
   * aggregate's state after `last`. `startsSequence`: nothing before `first` is needed: it is the aggregate's squash event
-  * (F98), or the item holds the aggregate's whole state (D62). */
+  * (F98), or the item holds the aggregate's whole state (D62). `unreadable`: the event at `first` cannot be read from
+  * the store, so the subscription fails there (D20a) instead of stopping the build (F82). */
 case class ChunkItem(subscriptionType: SubscriptionType, aggregateType: AggregateType, aggregateId: AggregateId,
                      first: AggregateVersion, last: AggregateVersion, events: Seq[EventInfo[Any]], aggregateRoot: Option[Any],
-                     startsSequence: Boolean = false)
+                     startsSequence: Boolean = false, unreadable: Option[String] = None)
 /** `gaps`: subscriptions whose items were not applied because versions before them are missing, with the first missing
   * one. `handedOver`: items applied one aggregate at a time instead, like deliveries (the chunk failed, or the
   * subscription had deliveries at work); each is answered to the builder with `MessageAck` or `MessageFailed`. Items
@@ -148,7 +153,8 @@ case class ListenerOptions(noTransaction: Boolean = false)
 abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActorOptions.DEFAULT) extends Actor with MyActorLogging {
 
   private val className = this.getClass.getSimpleName
-  private val subscriberName = this.getClass.getName
+  /** The name its subscription versions and failures are stored under: the class name, unless a build gives another. */
+  protected def subscriberName: String = this.getClass.getName
 
   protected val projectionName: String
   protected val subscriptionsState: SubscriptionsState
@@ -266,6 +272,10 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       sender() ! SubscriptionRequests(subscriptionRequests)
       loadFailures()
     case GetSubscribedAggregates => sender() ! getSubscribedAggregates
+    case GetListeners => sender() ! Listeners(
+      aggregateListenersMap.keys.toSeq.map(_ -> SubscriptionType.AGGREGATES) ++
+        eventListenersMap.keys.toSeq.map(_ -> SubscriptionType.EVENTS) ++
+        aggregateWithEventListenersMap.keys.toSeq.map(_ -> SubscriptionType.AGGREGATES_WITH_EVENTS))
     case e: IdentifiableEvents[_] =>
       receiveDelivery(Key(SubscriptionType.EVENTS, e.aggregateId), e.aggregateType,
         Pending(e.events.map(_.version), e.events.asInstanceOf[Seq[EventInfo[Any]]], None, e.replayed, sender(), e.startsAtSquash))
@@ -608,7 +618,13 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   // versions are applied one batch at a time; one with a gap or a failure skips the rest of the chunk. A chunk that
   // fails is handed to the queues whole, which apply, retry and record failures one aggregate at a time (D20a).
   private def applyChunk(chunk: ApplyChunk, builder: ActorRef): Unit = {
+    // One read per listener kind for the chunk's aggregates, not one per aggregate (D61).
     val leftAt = mutable.HashMap[Key, AggregateVersion]()
+    chunk.items.groupBy(_.subscriptionType).foreach { case (subscriptionType, items) =>
+      subscriptionsState.lastVersions(subscriberName, subscriptionType, items.map(_.aggregateId)).foreach { case (id, version) =>
+        leftAt(Key(subscriptionType, id)) = version
+      }
+    }
     val stopped = mutable.HashSet[Key]()
     var gaps = Vector[ChunkGap]()
     var toQueues = Vector[(Key, ChunkItem)]()
@@ -617,12 +633,17 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       val key = Key(item.subscriptionType, item.aggregateId)
       if (failed.contains(key) || stopped.contains(key)) {
         () // a failure is repaired by a retry; a gap is read again by the builder
-      } else if (queues.contains(key)) {
+      } else if (queues.contains(key) && item.unreadable.isEmpty) {
         toQueues :+= key -> item
       } else {
-        val applied = leftAt.getOrElseUpdate(key, appliedVersion(key))
+        val applied = leftAt(key)
         SequenceGate.decide(applied, item.first, item.last, item.startsSequence) match {
           case AlreadyApplied => ()
+          case Apply(from, _) if item.unreadable.isDefined =>
+            // F82: a stored event that cannot be read fails its subscription, visibly, instead of stopping the build;
+            // its queue, if it has one, is answered as failed too (D20a).
+            giveUp(key, queueFor(key, item.aggregateType), item.aggregateType, from, "a stored event cannot be read: " + item.unreadable.get, None)
+            stopped += key
           case Apply(from, to) =>
             batches :+= ((key, item, Batch(item.aggregateType, applied, from, to, item.events.dropWhile(_.version < from), item.aggregateRoot, Nil, Nil)))
             leftAt(key) = to

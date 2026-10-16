@@ -43,6 +43,10 @@ trait SubscriptionsState {
   /** The last version of the aggregate that the subscriber applied in this kind of subscription; zero when none. */
   def lastVersion(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId): AggregateVersion
 
+  /** `lastVersion` of many aggregates at once, in one read of the store for those not cached, which it does not cache:
+    * for a builder's batches of many aggregates (D61). */
+  def lastVersions(subscriberName: String, subscriptionType: SubscriptionType, aggregateIds: Seq[AggregateId]): Map[AggregateId, AggregateVersion]
+
   /** Compare-and-set in the caller's transaction: moves the subscription from `lastAggregateVersion` to
     * `aggregateVersion`, or throws `OptimisticLockingFailed` when it is not at `lastAggregateVersion`, so the caller
     * rolls back the listener's work. One transaction may move a subscription several times (D61: a batch of many
@@ -75,6 +79,9 @@ class MemorySubscriptionsState extends SubscriptionsState {
   override def lastVersion(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId): AggregateVersion = synchronized {
     state.getOrElse(SubscriptionsKey(subscriberName, subscriptionType, aggregateId), AggregateVersion.ZERO)
   }
+
+  override def lastVersions(subscriberName: String, subscriptionType: SubscriptionType, aggregateIds: Seq[AggregateId]): Map[AggregateId, AggregateVersion] =
+    aggregateIds.map(id => id -> lastVersion(subscriberName, subscriptionType, id)).toMap
 
   // Same contract as PostgresSubscriptionsState.
   override def newVersion(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId,
@@ -234,6 +241,20 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, eventsLogger:
     }
   }
 
+  // The cache holds every subscriber's versions of an aggregate; this reads one subscriber's only, so it does not fill it.
+  override def lastVersions(subscriberName: String, subscriptionType: SubscriptionType, aggregateIds: Seq[AggregateId]): Map[AggregateId, AggregateVersion] = {
+    val key = SubscriptionCacheKey.get(typesNamesState, subscriberName, subscriptionType)
+    val (cached, missing) = synchronized {
+      aggregateIds.distinct.partitionMap(id => Option(perAggregate.get(id)).map(versions => id -> versions.getOrElse(key, AggregateVersion.ZERO)).toLeft(id))
+    }
+    val stored = if (missing.isEmpty) Map.empty[AggregateId, AggregateVersion] else DB.readOnly { implicit session =>
+      sql"""SELECT aggregate_id, aggregate_version FROM subscriptions
+           | WHERE subscriber_type_id = ${typesNamesState.typeIdByClassName(subscriberName)} AND subscription_type = ${subscriptionType.id}
+           |   AND aggregate_id IN (${missing.map(_.asLong)})""".stripMargin.map(rs => AggregateId(rs.long(1)) -> AggregateVersion(rs.int(2))).list().toMap
+    }
+    cached.toMap ++ missing.map(id => id -> stored.getOrElse(id, AggregateVersion.ZERO))
+  }
+
 
   // Double-checked population guarded by a per-aggregate single-flight stripe: the DB read happens OUTSIDE
   // the instance monitor so cache-miss reads for different aggregates run concurrently (e.g. across
@@ -271,23 +292,21 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, eventsLogger:
   override def newVersion(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId,
                           lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit = {
     val key = SubscriptionCacheKey.get(typesNamesState, subscriberName, subscriptionType)
-    // Fetch (and possibly DB-load) the aggregate's versions outside the monitor; only the compare-and-set
-    // on the shared map needs the lock.
-    val versions = getVersionsForAggregate(aggregateId)
 
     def mismatch(current: AggregateVersion): OptimisticLockingFailed =
       new OptimisticLockingFailed(getClass.getSimpleName+": Subscription state update failed last version mismatch for subscriber "+subscriberName+" and aggregate "+aggregateId.asLong+" expected version "+lastAggregateVersion.asInt+" but was "+current.asInt)
 
     // The database is the source of truth: validate against the cache early (cheap reject), then persist. The UPDATE
-    // re-checks the version, so it is the real arbiter. The cache advances only once the transaction commits, so a
-    // rolled-back write can never leave it ahead of the stored state (F18); until then a later move of the same
-    // subscription in the transaction starts from this one's version (D61).
+    // re-checks the version, so it is the real arbiter; an aggregate that is not cached is not loaded for the early
+    // check, so a batch of many aggregates costs no read per aggregate (D61). The cache advances only once the
+    // transaction commits, so a rolled-back write can never leave it ahead of the stored state (F18); until then a later
+    // move of the same subscription in the transaction starts from this one's version.
     val moved = AfterCommit.local(session, this)(mutable.HashMap[(AggregateId, String), AggregateVersion]())
     synchronized {
-      val current = moved.flatMap(_.get((aggregateId, key))).getOrElse(versions.getOrElse(key, AggregateVersion.ZERO))
-      if (lastAggregateVersion != current) {
-        throw mismatch(current)
-      }
+      moved.flatMap(_.get((aggregateId, key)))
+        .orElse(Option(perAggregate.get(aggregateId)).map(_.getOrElse(key, AggregateVersion.ZERO)))
+        .filter(_ != lastAggregateVersion)
+        .foreach(current => throw mismatch(current))
     }
     eventsLogger.filter(_.isDebugEnabled).foreach(_.debug("Updating subscription state for " + aggregateId.asLong+": " + lastAggregateVersion.asInt+" -> "+aggregateVersion.asInt+" for subscriber "+subscriberName))
     try {

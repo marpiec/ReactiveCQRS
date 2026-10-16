@@ -290,6 +290,32 @@ ORDER BY events.id""")
     }
   }
 
+  // The aggregate's own row of its chain gives the type: a duplicate's events are read under it, not its base.
+  override def readCommitted(types: Seq[AggregateType], after: Long, limit: Int): Seq[CommittedEvent] =
+    if (types.isEmpty) Seq.empty else DB.readOnly { implicit session =>
+      sql"""SELECT e.id, a.type_id, e.aggregate_id, e.version, e.event_type_id, e.event_type_version, e.event, e.user_id, e.event_time,
+           |   e.metadata::text, a.squashed_version
+           | FROM events e JOIN aggregates a ON a.id = e.aggregate_id AND a.base_id = e.aggregate_id
+           | WHERE e.id > $after AND a.type_id IN (${typeIds(types)})
+           | ORDER BY e.id LIMIT $limit""".stripMargin.map { rs =>
+        val (aggregateId, version) = (AggregateId(rs.long(3)), AggregateVersion(rs.int(4)))
+        val event = Try(EventInfo[Any](version, mpjsons.deserialize[Event[Any]](rs.string(7), eventClass(rs.short(5), rs.short(6), aggregateId.asLong, version.asInt)),
+          UserId(rs.long(8)), utcTime(rs.underlying, 9), metadataOf(rs.string(10)))).toEither.left.map(e => e.getClass.getSimpleName + ": " + e.getMessage)
+        CommittedEvent(rs.long(1), AggregateType(typesNamesState.classNameById(rs.short(2))), aggregateId, version, rs.intOpt(11).map(AggregateVersion(_)), event)
+      }.list()
+    }
+
+  override def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int): Seq[StoredAggregate] =
+    if (types.isEmpty) Seq.empty else DB.readOnly { implicit session =>
+      sql"""SELECT type_id, id, base_version, squashed_version FROM aggregates
+           | WHERE base_id = id AND id > ${after.asLong} AND type_id IN (${typeIds(types)})
+           | ORDER BY id LIMIT $limit""".stripMargin
+        .map(rs => StoredAggregate(AggregateType(typesNamesState.classNameById(rs.short(1))), AggregateId(rs.long(2)), AggregateVersion(rs.int(3)),
+          rs.intOpt(4).map(AggregateVersion(_)))).list()
+    }
+
+  private def typeIds(types: Seq[AggregateType]): Seq[Short] = types.map(t => typesNamesState.typeIdByClassName(t.typeName)).distinct
+
   // F26: one statement deletes the delivered rows of many acknowledgements.
   // The rows travel as two arrays, so one statement deletes thousands of them.
   private val outboxDeletes = new OutboxDeletes(outboxDeleteDelay, maxRows = 5000)(rows => DB.autoCommit { implicit session =>

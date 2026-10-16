@@ -1343,3 +1343,33 @@ Open test-infrastructure items:
   to 500 000 events; clean soaks. Concurrent commands on one contended aggregate are slower
   than in M2 (F99).
 - `sbt test`: core 170, testdomain 97, all pass.
+
+### M4
+
+**17/10/2026: M4 design, the subscription state and the projection's feed (F3, F98, D58, D61)**
+- `docs/design/M4-rebuild.md`, written after a read-only survey of how Neula builds and uses its
+  projections (counts measured in its source): stores and state tables named per build, a
+  supervisor per projection whose `ActorRef` replaces the projection's, `rebuilding` and
+  `onActivated` instead of the hosts' rebuild-mode flags, reactors left unmanaged, builds
+  rather than versions owning tables, and the reconciliation after `GoLive` as the cut-over
+  from the store to live delivery. Refinements of D57, D61, D70 and D58 recorded there.
+- F3: the in-memory subscription mode and `dump()` are gone; one transaction may move a
+  subscription several times (`AfterCommit.local`), and an uncached aggregate is not loaded
+  for the early version check, so a chunk costs no read per aggregate.
+- F98: a re-publication from the squash point says so through the bus, and the gate starts a
+  subscription below it there.
+- The projection takes `ApplyChunk` (many aggregates in commit order, one transaction),
+  `BuildFromStore` and `GoLive`; a failing chunk is handed to the queues.
+- `sbt test`: core 185, testdomain 97, all pass.
+
+**17/10/2026: the builder (D59, D60, D62; F57, F58, F59, F62 part, F82 part)**
+- `ProjectionBuilder` and `ReplayStates` (`core/rebuild/`): the bulk pass in commit order with
+  bounded replay states (or final states for state-only projections), `GoLive`, then the
+  reconciliation; gaps read again by version; the position saved after each chunk; unreadable
+  rows and unrestorable states fail their subscription and the build goes on. The store reads
+  `readCommitted` and `aggregatesOf`, the subscription state `lastVersions`.
+- Tests: `ProjectionBuilderSpec` (built equals live for the three listener kinds over undo,
+  duplication, deletion and a squash; resume after a stop; a late row; events during the build;
+  the reconciliation alone; an unreadable row). Mutation checks: without the run split at a
+  missing version, the reconciliation, or the undo in the replay states, a test fails.
+- `sbt test`: core 186, testdomain 103, all pass.

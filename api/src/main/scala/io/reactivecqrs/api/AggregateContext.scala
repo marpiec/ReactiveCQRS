@@ -134,4 +134,7 @@ abstract class AggregateContext[AGGREGATE_ROOT : ClassTag] {
 
   val aggregateType: AggregateType = AggregateType.of[AGGREGATE_ROOT]
 
+  /** The root's class, under whose name its states are stored (snapshots, D30). */
+  val aggregateRootClass: Class[_] = implicitly[ClassTag[AGGREGATE_ROOT]].runtimeClass
+
 }

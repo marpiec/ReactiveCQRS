@@ -36,7 +36,8 @@ unless the path says `api/` or `testdomain/`).
 | `OutboxDeletes.scala` (batched outbox deletes) | `eventstore/` |
 | `Backoff.scala` (retry waits, AR6) | `util/` |
 | `ProjectionActor.scala`, `SubscriptionsState.scala`, `SubscribableProjectionActor.scala`, `AggregateListenerActor.scala`, `VersionsState.scala` | `projection/` |
-| `EventsReplayOrchestrator.scala`, `EventsReplayerActor.scala` | `eventsreplayer/` |
+| `EventsReplayOrchestrator.scala`, `EventsReplayerActor.scala` (the 0.12 replayer, until M4 removes it) | `eventsreplayer/` |
+| `ProjectionBuilder.scala`, `ReplayStates.scala` (with `ReplaySource`) (the M4 builder) | `rebuild/` |
 | `SagaActor.scala`, `PostgresSagaState.scala`, `PostgresSagaSchemaInitializer.scala` | `saga/` |
 | `PostgresDocumentStore.scala`, `DocumentStoreCache.scala` | `documentstore/` |
 | `AfterCommit.scala` (cache updates after commit) | `util/` |
@@ -845,6 +846,63 @@ aggregate context and projection; it is used only for rebuild decisions.
 ---
 
 ## 8. Replay / projection rebuild
+
+M4 replaces the 0.12 replayer below with a builder that feeds one projection directly from
+the event store (design: `docs/design/M4-rebuild.md`). The registry of builds, the projection
+supervisor that runs builds and switches them, and the targeted rebuild follow; until then
+hosts still use the 0.12 replayer.
+
+### 8.1 The builder (`rebuild/ProjectionBuilder.scala`, M4)
+
+`ProjectionBuilder(target, subscriberName, plan, eventStore, subscriptionsState, sources,
+positions, reportTo, settings)` builds the projection `target` (D58: no bus, no other
+subscriber). `BuildPlan` lists its subscriptions (the projection answers `GetListeners`);
+`ReplaySource.of(contexts, eventStore)` gives each aggregate type's restorer and event
+handlers. It runs on the blocking dispatcher and reads synchronously on its own thread.
+
+1. **Bulk pass.** `readCommitted(types, after, limit)` pages through the events of the plan's
+   types in commit order (`events.id`, D59), each under its own aggregate (a duplicate's own
+   events, not its base's), undone events and undo events included (D60), with the aggregate's
+   squash point. Consecutive rows of one aggregate with consecutive versions form a run; each
+   run becomes one `ChunkItem` per listener kind, with the state after its last version for
+   state listeners. `ReplayStates` keeps those states for at most `maxReplayStates` (10 000)
+   aggregates, least recently used out: a run continues the state it holds, an evicted or
+   unknown aggregate is restored at the version before the run (snapshot plus tail, D30), an
+   undo or a duplication takes the state the store gives at its version (as the owner did), a
+   duplicate starts from its base's state when the base is held at the duplicated version, and
+   a run that starts at the aggregate's first event or squash event starts from the initial
+   state. A projection whose listeners all take the state only (D62) gets one item per
+   aggregate instead, its final state (`aggregatesOf` pages through the aggregates), which
+   starts its subscription. Items go in chunks of about `chunkEvents` (1 000) events, two in
+   flight, so the next page is read while the projection applies a chunk in one transaction
+   (D61, §6.3). The projection acknowledges the bus's deliveries without applying them
+   meanwhile (`BuildFromStore`).
+2. **GoLive.** Once the pass is read and every chunk is answered, the builder sends `GoLive`;
+   from the projection's `ProjectionLive` on, it applies the bus's deliveries.
+3. **Reconciliation.** `aggregatesOf` pages through every aggregate of the plan's types, and
+   `SubscriptionsState.lastVersions` reads the projection's versions of a page at once; an
+   aggregate behind gets its missing versions, read by version (`readEventsRange`, a range from
+   below the squash point starting at the squash event, F98), with the state at its version.
+   This covers the events committed after the bulk pass read past them and rows that became
+   visible late (row ids are not commit order between concurrent transactions). Then the
+   builder sends `BuildCaughtUp` to `reportTo`.
+
+**Missing versions.** A run ends where a version is missing, so the projection reports the
+gap (`ChunkApplied.gaps`, or `RequestRepublish` from a queue while it is built), and the
+builder reads it again by version, ahead of everything else.
+
+**Resume (D61).** After each applied chunk of the bulk pass, its position (the last row id, or
+aggregate id for final states) is saved through `BuildPositions`; once the pass ends, that it
+ended. A builder started again continues from there (or goes straight to GoLive and the
+reconciliation), and repeats at most the chunks that were in flight, which the projection's
+stored versions make harmless.
+
+**Failures.** A store that cannot be read is tried again after `retryAfter` (5 s); a chunk the
+projection could not take is sent again. A row that cannot be read, or an aggregate whose state
+cannot be restored, fails its subscription at that version (D20a, visible in the projection's
+status) and the build goes on (F82).
+
+### 8.2 The 0.12 replayer (until M4 removes it)
 
 `EventsReplayOrchestrator.replay(...)` (`EventsReplayOrchestrator.scala:25-100`):
 
