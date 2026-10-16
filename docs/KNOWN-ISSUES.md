@@ -25,7 +25,8 @@ from `4b5060f`. Each issue is fixed in the milestone where its code is reworked 
 
 Contents: [1. Decisions](#1-decisions) · [2. Invariants](#2-invariants) ·
 [3. Issues in the library](#3-issues-in-the-library) · [4. Issues on the Neula side](#4-issues-on-the-neula-side) ·
-[5. Answers to Neula's questions](#5-answers-to-neulas-questions) · [6. Index by milestone](#6-index-by-milestone)
+[5. Answers to Neula's questions](#5-answers-to-neulas-questions) · [6. Index by milestone](#6-index-by-milestone) ·
+[7. Architecture reviews](#7-architecture-reviews)
 
 ---
 
@@ -372,6 +373,12 @@ implementation plan.
 #### F46 — Command-bus child cache reap sorts the whole map
 - **Low**, likely · Fix in **M5** (replaced by passivation, D43) · `AggregateCommandBusActor.scala:168-184`
 
+#### F67 — A command for an aggregate that does not exist gets no reply until the timeout
+- **Medium**, likely · Fix in **M1** (with F9) · `CommandExecutorActor.scala` `handleFollowingCommand`, `handleRewriteHistoryCommand`
+- **Symptom:** a `Command` or `RewriteHistoryCommand` whose expected version does not match an aggregate at version 0 (it does not exist, or the id is wrong) is answered only by the command timeout (`CommandHandlingError` after 60 s) instead of `AggregateConcurrentModificationError`.
+- **Root cause:** for version 0 the repository returns the aggregate whatever version was asked for; the executor then sends itself `AggregateConcurrentModificationError` while in the state that waits for the aggregate, which drops it as unhandled (AR4).
+- **Found:** architecture review 1 (§7).
+
 ### Event store and SQL
 
 #### F22 — Restore loads the whole event stream into memory before handling it
@@ -593,9 +600,68 @@ From §7 of Neula's change requests.
 
 | Milestone | Issues |
 |---|---|
-| M1 | F7 ✔, F9, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34, F35, F36, F40, F64, F66 ✔; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
+| M1 | F7 ✔, F9, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34, F35, F36, F40, F64, F66 ✔, F67; AR2, AR3; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
 | M2 | F1, F2, F4, F5, F6, F11, F15, F26, F28, F29, F37, F41, F42, F45, F47; Neula H2 |
-| M3 | F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33, F38, F39, F43, F44, F65 |
+| M3 | AR1, AR4; F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33, F38, F39, F43, F44, F65 |
 | M4 | F3, F54, F55, F56, F57, F58, F59, F60, F61, F62; Neula H1, H6 |
 | M5 | F46, F48, F50, F63 |
 | M6 | F8 (complete), F49 (backfill) |
+
+---
+
+## 7. Architecture reviews
+
+Regular reviews of the code touched by the work, at the level of modules and their
+interfaces rather than single bugs. Each finding gets a proposal and the milestone where it
+is best done; small ones are folded into the current work item.
+
+### Review 1, 16/10/2026: the command pipeline (after F10, before F9)
+
+Scope: `AggregateCommandBusActor`, `CommandHandlerActor`, `CommandExecutorActor`,
+`AggregateRepositoryActor`, `CommandResponseState`.
+
+#### AR1 — Two per-aggregate actors where every decision assumes one owner
+- **Finding:** per aggregate the bus keeps a `CommandHandlerActor` and an
+  `AggregateRepositoryActor` in two maps that must change together (F10 had to forget both
+  at once). The command handler is shallow: five near-identical branches that create an
+  executor and send the repository one query, plus the idempotency pre-check. D8, D31, D37,
+  D43, D47 and D72 all speak of "the aggregate's owner" as one entity; the serial queue (D31)
+  and the shard entity (D43) need exactly one.
+- **Deletion test:** deleting `CommandHandlerActor` moves about 20 lines into the repository
+  actor and removes one map, one actor per aggregate and one message hop per command.
+- **Proposal:** one per-aggregate owner (the repository actor, renamed `AggregateOwner`)
+  that owns restore and lifecycle, idempotency, the command queue (concurrent or serial),
+  persistence and publication. The bus keeps one map. Executors stay as per-command runners
+  of possibly asynchronous handlers, as children of the owner.
+- **When:** M3, first work item, before serial mode and snapshots; M5 sharding then turns
+  the owner into the shard entity.
+
+#### AR2 — Idempotency is spread over four modules
+- **Finding:** the key is extracted from the command in three actors (handler pre-check,
+  executor, repository) and stored through `CommandResponseState`; D12's collision handling
+  would add two more places. Low locality: a change to the key rules touches every actor of
+  the pipeline.
+- **Proposal:** one `Idempotency` module with a small interface: the stored response for a
+  command, recording a response inside the persist transaction, recognising a taken key, and
+  retention. Callers never see keys.
+- **When:** now, with F9 (M1).
+
+#### AR3 — The persist transaction's failure modes are not part of its interface
+- **Finding:** `persist` handles a `Failure` returned by `persistEvents`, but anything thrown
+  inside the transaction (storing the idempotent response, a history overwrite, and in M3 the
+  outbox hook of D33) escapes `receive`, restarts the actor and leaves the executor without a
+  reply until the command timeout.
+- **Proposal:** every outcome of the persist transaction becomes exactly one reply to the
+  executor (persisted, version conflict, idempotency key taken, error); no exception leaves
+  the transaction block.
+- **When:** now, with F9, because D12 adds an outcome and D33 will add code inside the
+  transaction.
+
+#### AR4 — The executor's protocol is untyped, so a reply in the wrong state is lost
+- **Finding:** replies to the executor are a mix of `Try`, case classes and exceptions sent
+  to itself; every state ends in a catch-all `unhandled`. A reply arriving in a state that
+  does not expect it is dropped silently and the caller waits for the timeout (F67).
+- **Proposal:** a sealed reply protocol between owner and executor, handled the same way in
+  every state. With AR1 the executor's protocol shrinks to "run the handler, return the
+  result".
+- **When:** M3 with AR1; F67 is fixed now.

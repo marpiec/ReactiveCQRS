@@ -251,6 +251,11 @@ R7–R10, R12, R13), storage reduction by squash, and the low-risk performance f
 
 **Work items**
 
+0. **Aggregate owner (AR1, AR4; KNOWN-ISSUES §7).** Merge `CommandHandlerActor` into the
+   repository actor, renamed `AggregateOwner`: one per-aggregate actor for restore,
+   idempotency, the command queue, persistence and publication; one map in the bus; a sealed
+   reply protocol between owner and executor. Done first because serial mode, snapshots and
+   squash all live in the owner, and M5 turns it into the shard entity.
 1. **Remove event versioning (D29).** Remove the API; reader check for non-zero versions.
 2. **Snapshots (D30, F44, F22, F38).** `snapshots` table; per-context policy (schema
    version, every N events, on passivation); written after persist; restore from the latest
