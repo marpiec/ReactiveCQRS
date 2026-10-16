@@ -18,9 +18,11 @@ import scala.util.control.NonFatal
 
 object EventsBusActor {
 
-  /** Events of one aggregate, committed or re-published; `onlyTo` limits a re-publication to one subscriber. */
+  /** Events of one aggregate, committed or re-published; `onlyTo` limits a re-publication to one subscriber.
+    * `startsAtSquash`: a re-publication that starts at the aggregate's squash event (F98). */
   case class PublishEvents[AGGREGATE_ROOT](aggregateType: AggregateType, events: Seq[EventInfo[AGGREGATE_ROOT]],
-                                            aggregateId: AggregateId, aggregate: Option[AGGREGATE_ROOT], onlyTo: Option[ActorRef] = None)
+                                            aggregateId: AggregateId, aggregate: Option[AGGREGATE_ROOT], onlyTo: Option[ActorRef] = None,
+                                            startsAtSquash: Boolean = false)
 
   /** To the publisher: every subscription has acknowledged (or failed on) these versions, so their outbox rows can go.
     * `permanentDeleteAt` is the version of a `PermanentDeleteEvent` among them: the aggregate is to be deleted for good. */
@@ -198,10 +200,10 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   }
 
   private def running: Receive = guarded {
-    case PublishEvents(aggregateType, events, aggregateId, aggregate, onlyTo) =>
-      publish(sender(), aggregateType, aggregateId, events, aggregate, replayed = false, onlyTo)
+    case PublishEvents(aggregateType, events, aggregateId, aggregate, onlyTo, startsAtSquash) =>
+      publish(sender(), aggregateType, aggregateId, events, aggregate, replayed = false, onlyTo, startsAtSquash)
     case PublishReplayedEvents(aggregateType, events, aggregateId, aggregate) =>
-      publish(sender(), aggregateType, aggregateId, events, aggregate, replayed = true, None)
+      publish(sender(), aggregateType, aggregateId, events, aggregate, replayed = true, None, startsAtSquash = false)
     case MessageAck(subscriber, aggregateId, versions, kind) => finish(Target(subscriber, kind), aggregateId, versions, failed = None)
     case MessageFailed(subscriber, aggregateId, versions, error, kind) => finish(Target(subscriber, kind), aggregateId, versions, failed = Some(error))
     case RequestRepublish(subscriber, aggregateType, aggregateId, from) =>
@@ -232,7 +234,8 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   }
 
   private def publish(publisher: ActorRef, aggregateType: AggregateType, aggregateId: AggregateId,
-                      events: Seq[EventInfo[Any]], aggregateRoot: Option[Any], replayed: Boolean, onlyTo: Option[ActorRef]): Unit = {
+                      events: Seq[EventInfo[Any]], aggregateRoot: Option[Any], replayed: Boolean, onlyTo: Option[ActorRef],
+                      startsAtSquash: Boolean): Unit = {
     val now = System.nanoTime()
     val targets = subscriptions.getOrElse(aggregateType, Vector.empty).filter(s => onlyTo.forall(_ == s.subscriber))
     val (live, ofStopped) = targets.partition(s => !stopped.contains(s.subscriber))
@@ -266,7 +269,11 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       orderedMessages -= events.size
     }
 
-    sends.foreach { case (s, forSubscription) => s.subscriber ! messageFor(s, aggregateType, aggregateId, forSubscription, aggregateRoot, replayed) }
+    // A subscription that is sent a later part of the events than the first does not start at the squash event.
+    sends.foreach { case (s, forSubscription) =>
+      s.subscriber ! messageFor(s, aggregateType, aggregateId, forSubscription, aggregateRoot, replayed,
+        startsAtSquash && forSubscription.head.version == events.head.version)
+    }
     eventsLogger.filter(_.isDebugEnabled).foreach(_.debug("EventBus publishing " + aggregateId.asLong + ": " + events.map(_.version.asInt).mkString(",") +
       " to " + sends.map(_._1.subscriber.path.name).mkString(", ")))
 
@@ -275,10 +282,10 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   }
 
   private def messageFor(s: SubscribeRequest, aggregateType: AggregateType, aggregateId: AggregateId, events: Seq[EventInfo[Any]],
-                         aggregateRoot: Option[Any], replayed: Boolean): AnyRef = s match {
-    case _: SubscribeForEvents => IdentifiableEvents(aggregateType, aggregateId, events, replayed)
-    case _: SubscribeForAggregates => AggregateWithType(aggregateType, aggregateId, events.last.version, events.map(_.version), aggregateRoot, replayed)
-    case _: SubscribeForAggregatesWithEvents => AggregateWithTypeAndEvents(aggregateType, aggregateId, aggregateRoot, events, replayed)
+                         aggregateRoot: Option[Any], replayed: Boolean, startsAtSquash: Boolean): AnyRef = s match {
+    case _: SubscribeForEvents => IdentifiableEvents(aggregateType, aggregateId, events, replayed, startsAtSquash)
+    case _: SubscribeForAggregates => AggregateWithType(aggregateType, aggregateId, events.last.version, events.map(_.version), aggregateRoot, replayed, startsAtSquash)
+    case _: SubscribeForAggregatesWithEvents => AggregateWithTypeAndEvents(aggregateType, aggregateId, aggregateRoot, events, replayed, startsAtSquash)
   }
 
   private def finish(target: Target, aggregateId: AggregateId, versions: Seq[AggregateVersion], failed: Option[String]): Unit = {

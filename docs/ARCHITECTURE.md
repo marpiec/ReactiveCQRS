@@ -581,11 +581,14 @@ subscription classifiers, AR8: the sequence gate needs every version):
 
 | Subscription request | Message sent | Listener kind (§6.2) |
 |---|---|---|
-| `SubscribeForEvents` | `IdentifiableEvents(type, id, events, replayed)` | `EventsListener` |
-| `SubscribeForAggregates` | `AggregateWithType(type, id, lastVersion, versions, root, replayed)` | `AggregateListener` |
-| `SubscribeForAggregatesWithEvents` | `AggregateWithTypeAndEvents(type, id, root, events, replayed)` | `AggregateWithEventsListener` |
+| `SubscribeForEvents` | `IdentifiableEvents(type, id, events, replayed, startsAtSquash)` | `EventsListener` |
+| `SubscribeForAggregates` | `AggregateWithType(type, id, lastVersion, versions, root, replayed, startsAtSquash)` | `AggregateListener` |
+| `SubscribeForAggregatesWithEvents` | `AggregateWithTypeAndEvents(type, id, root, events, replayed, startsAtSquash)` | `AggregateWithEventsListener` |
 
-`root` is the aggregate state after the delivered batch.
+`root` is the aggregate state after the delivered batch. `startsAtSquash` is set when an
+owner re-publishes from the aggregate's squash point (`PublishEvents(startsAtSquash = true)`)
+and the subscription gets that first event: a subscriber that never saw the aggregate starts
+there (F98, §6.3).
 
 **Deliveries (D7, D20b).** The bus keeps no cursor. It keeps one delivery per event with the
 subscriptions it waits for, one per (subscriber, `DeliveryKind`): a projection with an events
@@ -682,13 +685,16 @@ Draining a queue, with `applied` the subscription's stored version:
    the running version: **apply from–to** → its new versions join one batch (a partly
    applied delivery adds only its new part, F5); **already applied** (all its versions lie
    in the batch) → it is acknowledged with the batch (F86); **gap** → it and everything after
-   it wait.
+   it wait. A delivery that starts at the aggregate's squash event (`startsAtSquash`) is no gap
+   for a subscription below it: nothing before it exists any more, so the subscription starts
+   there (F98).
 2. The batch runs `listener(...)` and `newVersion(className, kind, id, applied, to)` in one
    `localTx` (a `noDBSession` listener runs first, then the version is written in
    `autoCommit`). State-receiving listeners get the state of the delivery holding the last
-   version, and `created` when the batch starts at version 1. On success every delivery of
-   the batch is acknowledged with all its versions. One batch per queue runs at a time; in
-   parallel mode a scheduled drain during a batch is left to the batch's end (F89).
+   version, and `created` when the subscription starts with the batch (at version 1, or at a
+   squash event). On success every delivery of the batch is acknowledged with all its versions.
+   One batch per queue runs at a time; in parallel mode a scheduled drain during a batch is
+   left to the batch's end (F89).
 3. A gap is asked from the owner: `RequestRepublish(self, type, id, from)` to the bus. An
    unanswered request is repeated after `gapRequestRepeat` (10 s), doubling up to 5 minutes,
    however many deliveries arrive meanwhile (F83); a long gap comes in parts of 1 000 events,
@@ -716,6 +722,27 @@ loaded when the bus registers the projection and retried the same way
 **Failures of the actor itself** (AR7, F80). A message the projection fails on, a query
 included, is answered with `Status.Failure` and never rethrown, so the actor keeps its
 queues. The parallel pool is shut down when the actor stops.
+
+**Fed by a builder** (M4, D58, D61; the builder itself is described in §8). The projection
+takes deliveries from any sender and answers that sender, so a builder that reads the event
+store can feed it directly, through the same gate, failure records and status:
+
+- `ApplyChunk(id, items)`: versions of many aggregates in commit order, one `ChunkItem` per
+  subscription (kind) and run of versions, with the events and the state after the last
+  version; `startsSequence` marks an item that needs nothing before it (a squash event, or a
+  whole state, D62). The gate decides each item against the version the chunk left its
+  subscription at, and every decided batch runs in **one transaction** with its versions
+  (`SubscriptionsState` lets one transaction move a subscription several times). The answer,
+  `ChunkApplied(id, gaps, handedOver)`, lists the subscriptions with missing versions (the rest
+  of that aggregate in the chunk waits). A subscription with deliveries at work takes its items
+  in its queue; a chunk that fails is handed to the queues whole, which apply, retry and record
+  failures one aggregate at a time (D20a); each handed-over item is answered to the builder
+  with `MessageAck` or `MessageFailed`. Items of a failed subscription are left out until a
+  retry.
+- `BuildFromStore(builder)`: while the projection is built (D57), deliveries from the bus are
+  acknowledged without being applied, as the builder reads their events from the store, and
+  missing versions are asked from the builder instead of the owner. `GoLive` ends that, retries
+  the failures recorded meanwhile, and is answered with `ProjectionLive`.
 
 ### 6.4 Options (`ProjectionActorOptions`)
 

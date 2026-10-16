@@ -181,6 +181,22 @@ class EventsBusActorSpec extends CommonSpec {
       delivered(b) mustBe Seq(1)
       a.expectNoMessage(300.millis)
     }
+
+    Scenario("that starts at the squash event says so to the subscriptions that get that event (F98)") {
+      val (a, b, owner) = (TestProbe(), TestProbe(), TestProbe())
+      val bus = busWith(a, b)
+      val id = newId()
+      publish(bus, owner, id, 4)
+      delivered(a); delivered(b)
+      ack(bus, a, id, 4)
+
+      bus.tell(PublishEvents[Any](cartType, events(4, 5), id, Some(BusCart("cart")), startsAtSquash = true), owner.ref)
+
+      val toA = a.expectMsgType[IdentifiableEvents[Any]](3.seconds)
+      (toA.events.map(_.version.asInt), toA.startsAtSquash) mustBe ((Seq(5), false)) // a has 4 already
+      val toB = b.expectMsgType[IdentifiableEvents[Any]](3.seconds)
+      (toB.events.map(_.version.asInt), toB.startsAtSquash) mustBe ((Seq(4, 5), true))
+    }
   }
 
   Feature("Deliveries that end without every subscriber (D20b)") {

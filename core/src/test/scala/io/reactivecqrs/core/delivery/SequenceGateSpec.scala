@@ -35,6 +35,13 @@ class SequenceGateSpec extends AnyFeatureSpec with Matchers {
       decide(AggregateVersion.ZERO, v(1), v(2)) mustBe Apply(v(1), v(2))
       decide(AggregateVersion.ZERO, v(2), v(2)) mustBe Gap(v(1))
     }
+
+    Scenario("a delivery that starts the sequence (a squash event, F98) needs nothing before it") {
+      decide(AggregateVersion.ZERO, v(7), v(9), startsSequence = true) mustBe Apply(v(7), v(9))
+      decide(v(3), v(7), v(9), startsSequence = true) mustBe Apply(v(7), v(9))
+      decide(v(7), v(7), v(9), startsSequence = true) mustBe Apply(v(8), v(9))
+      decide(v(9), v(7), v(9), startsSequence = true) mustBe AlreadyApplied
+    }
   }
 
   Feature("Any order of deliveries, with duplicates, overlaps and losses") {

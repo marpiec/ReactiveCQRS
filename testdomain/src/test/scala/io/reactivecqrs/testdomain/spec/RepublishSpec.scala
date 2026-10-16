@@ -129,6 +129,12 @@ class RepublishSpec extends CommonSpec {
       val publication = published(eventBus)
       publication.events.map(_.version.asInt) mustBe Seq(2, 3)
       publication.events.head.event mustBe a[CartSquashed]
+      publication.startsAtSquash mustBe true // a subscriber that never saw the aggregate starts there (F98)
+
+      owner ! RepublishRange(cartId, AggregateVersion(2), TestProbe().ref)
+      published(eventBus).startsAtSquash mustBe true
+      owner ! RepublishRange(cartId, AggregateVersion(3), TestProbe().ref)
+      published(eventBus).startsAtSquash mustBe false
     }
 
     Scenario("sends nothing for a version the aggregate has not reached") {

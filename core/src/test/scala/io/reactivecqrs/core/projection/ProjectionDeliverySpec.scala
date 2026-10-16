@@ -82,6 +82,14 @@ class ProjectionDeliverySpec extends CommonSpec {
     def stateAt(id: AggregateId, text: String, versions: Int*): Unit =
       bus.send(projection, AggregateWithType[GateNote](noteType, id, AggregateVersion(versions.last), versions.map(AggregateVersion(_)), Some(GateNote(text)), replayed = false))
 
+    // A builder (D58) feeding the projection from the store.
+    val builder = TestProbe()
+
+    def chunk(id: Long, items: ChunkItem*): ChunkApplied = {
+      builder.send(projection, ApplyChunk(id, items))
+      builder.expectMsgType[ChunkApplied](3.seconds)
+    }
+
     def acked(id: AggregateId): Seq[Int] =
       bus.fishForSpecificMessage(3.seconds) { case MessageAck(_, `id`, versions, _) => versions.map(_.asInt) }
 
@@ -105,6 +113,13 @@ class ProjectionDeliverySpec extends CommonSpec {
   }
 
   private def newId(): AggregateId = AggregateId(System.nanoTime())
+
+  private def eventsItem(id: AggregateId, versions: Int*): ChunkItem =
+    ChunkItem(SubscriptionType.EVENTS, noteType, id, AggregateVersion(versions.head), AggregateVersion(versions.last),
+      versions.map(v => EventInfo[Any](AggregateVersion(v), GateNoteChanged(v).asInstanceOf[Event[Any]], UserId(1), Instant.now)), None)
+
+  private def stateItem(id: AggregateId, text: String, first: Int, last: Int, startsSequence: Boolean = false): ChunkItem =
+    ChunkItem(SubscriptionType.AGGREGATES, noteType, id, AggregateVersion(first), AggregateVersion(last), Seq.empty, Some(GateNote(text)), startsSequence)
 
   Feature("Applying deliveries (D4)") {
 
@@ -132,6 +147,114 @@ class ProjectionDeliverySpec extends CommonSpec {
       f.acked(id)
 
       f.applied("state") mustBe Seq(id -> Seq(1, 1, 1), id -> Seq(3, 0, 3))
+    }
+
+    Scenario("a re-publication that starts at the squash event starts a subscription that never saw the aggregate (F98)") {
+      val f = new Fixture
+      val id = newId()
+
+      f.bus.send(f.projection, IdentifiableEvents[GateNote](noteType, id, Seq(7, 8).map(v =>
+        EventInfo[GateNote](AggregateVersion(v), GateNoteChanged(v), UserId(1), Instant.now)), replayed = false, startsAtSquash = true))
+      f.bus.send(f.projection, AggregateWithType[GateNote](noteType, id, AggregateVersion(8), Seq(AggregateVersion(7), AggregateVersion(8)),
+        Some(GateNote("ab")), replayed = false, startsAtSquash = true))
+
+      f.acked(id) mustBe Seq(7, 8)
+      f.acked(id) mustBe Seq(7, 8)
+      f.applied("events") mustBe Seq(id -> Seq(7, 8))
+      f.applied("state") mustBe Seq(id -> Seq(8, 1, 2)) // told it is created: the subscription starts here
+    }
+  }
+
+  Feature("Chunks from a builder (D58, D61)") {
+
+    Scenario("a chunk applies many aggregates in commit order, and nothing that was applied before") {
+      val f = new Fixture
+      val (a, b) = (newId(), newId())
+
+      f.chunk(1, eventsItem(a, 1, 2), eventsItem(b, 1), eventsItem(a, 3)) mustBe ChunkApplied(1, Nil, 0)
+      f.applied("events") mustBe Seq(a -> Seq(1, 2), b -> Seq(1), a -> Seq(3))
+
+      f.chunk(2, eventsItem(a, 2, 3), eventsItem(b, 1, 2)) mustBe ChunkApplied(2, Nil, 0)
+      f.applied("events") mustBe Seq(a -> Seq(1, 2), b -> Seq(1), a -> Seq(3), b -> Seq(2))
+      f.builder.expectNoMessage(200.millis) // nothing is acknowledged item by item
+    }
+
+    Scenario("an item after missing versions is reported as a gap, and the rest of its aggregate in the chunk waits") {
+      val f = new Fixture
+      val (a, b) = (newId(), newId())
+
+      f.chunk(1, eventsItem(a, 3), eventsItem(b, 1), eventsItem(a, 4)) mustBe
+        ChunkApplied(1, Seq(ChunkGap(SubscriptionType.EVENTS, noteType, a, AggregateVersion(1))), 0)
+      f.applied("events") mustBe Seq(b -> Seq(1))
+    }
+
+    Scenario("a whole state starts the subscription, and the state listener is told it is created (D62)") {
+      val f = new Fixture
+      val id = newId()
+
+      f.chunk(1, stateItem(id, "abc", 1, 5, startsSequence = true)) mustBe ChunkApplied(1, Nil, 0)
+      f.applied("state") mustBe Seq(id -> Seq(5, 1, 3))
+    }
+
+    Scenario("a chunk that fails is applied one aggregate at a time, and each of its items is answered to the builder") {
+      val f = new Fixture
+      val (a, b) = (newId(), newId())
+      f.failTimes(b, 1)
+
+      f.chunk(1, eventsItem(a, 1), eventsItem(b, 1)) mustBe ChunkApplied(1, Nil, 2)
+
+      f.builder.receiveN(2, 3.seconds).collect { case MessageAck(_, id, versions, _) => id -> versions.map(_.asInt) }.toSet mustBe
+        Set(a -> Seq(1), b -> Seq(1))
+      f.applied("events").filter(_._1 == b) mustBe Seq(b -> Seq(1))
+    }
+
+    Scenario("a subscription with deliveries at work takes its items in its queue") {
+      val f = new Fixture
+      val id = newId()
+      f.events(id, 3)
+      f.requestedFrom(id) mustBe 1
+
+      f.chunk(1, eventsItem(id, 1, 2)) mustBe ChunkApplied(1, Nil, 1)
+
+      f.builder.expectMsgType[MessageAck](3.seconds).versions.map(_.asInt) mustBe Seq(1, 2)
+      f.acked(id) mustBe Seq(3)
+      f.applied("events") mustBe Seq(id -> Seq(1, 2, 3))
+    }
+
+    Scenario("while built, the projection takes no deliveries from the bus and asks the builder for missing versions, until GoLive") {
+      val f = new Fixture
+      val (a, b) = (newId(), newId())
+      f.builder.send(f.projection, BuildFromStore(f.builder.ref))
+
+      f.events(a, 1)
+      f.acked(a) mustBe Seq(1) // the builder reads it from the store
+      f.applied("events") mustBe empty
+
+      f.failTimes(b, 100)
+      f.chunk(1, eventsItem(b, 1)) mustBe ChunkApplied(1, Nil, 1)
+      f.builder.fishForSpecificMessage(3.seconds) { case MessageFailed(_, `b`, _, _, _) => () }
+      f.failTimes(b, 0)
+      f.projection.askActor[FailedSubscriptionsHandled](RetryFailedSubscription(b))(3.seconds) mustBe FailedSubscriptionsHandled(b, 1)
+      f.builder.fishForSpecificMessage(3.seconds) { case RequestRepublish(_, _, `b`, from) => from.asInt } mustBe 1
+
+      f.builder.send(f.projection, GoLive)
+      f.builder.fishForSpecificMessage(3.seconds) { case ProjectionLive => () }
+      f.events(a, 1, 2)
+      f.acked(a) mustBe Seq(1, 2)
+      f.applied("events") mustBe Seq(a -> Seq(1, 2))
+    }
+
+    Scenario("GoLive retries the subscriptions that failed while the projection was built") {
+      val f = new Fixture
+      val id = newId()
+      f.builder.send(f.projection, BuildFromStore(f.builder.ref))
+      f.failTimes(id, 100)
+      f.chunk(1, eventsItem(id, 1)) mustBe ChunkApplied(1, Nil, 1)
+      f.builder.fishForSpecificMessage(3.seconds) { case MessageFailed(_, `id`, _, _, _) => () }
+
+      f.builder.send(f.projection, GoLive)
+
+      f.requestedFrom(id) mustBe 1 // from the owner: the projection is live
     }
   }
 

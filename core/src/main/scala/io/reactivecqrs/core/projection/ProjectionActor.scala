@@ -39,6 +39,33 @@ case object GetProjectionStatus
 /** `retrying`: aggregates whose listener failed and is retried now; `waitingForGap`: aggregates waiting for missing
   * versions to be re-published. */
 case class ProjectionStatus(projectionName: String, failures: Seq[SubscriptionFailure], retrying: Seq[AggregateId], waitingForGap: Seq[AggregateId])
+// D57, D58, D61: a projection being built is fed by a builder that reads the event store.
+
+/** The projection is being built from the store by `builder` (D57): until `GoLive`, deliveries from the bus are
+  * acknowledged without being applied, as the builder reads their events from the store, and missing versions are
+  * asked from the builder. */
+case class BuildFromStore(builder: ActorRef)
+/** Deliveries from the bus are applied again; the failures recorded meanwhile are retried. Answered with
+  * `ProjectionLive`. */
+case object GoLive
+case object ProjectionLive
+
+/** From a builder (D58, D61): versions of many aggregates, in commit order, applied in one transaction. Answered with
+  * `ChunkApplied`. */
+case class ApplyChunk(id: Long, items: Seq[ChunkItem])
+/** One subscription's versions `first` to `last` of one aggregate: its events (none for a state listener) and the
+  * aggregate's state after `last`. `startsSequence`: nothing before `first` is needed: it is the aggregate's squash event
+  * (F98), or the item holds the aggregate's whole state (D62). */
+case class ChunkItem(subscriptionType: SubscriptionType, aggregateType: AggregateType, aggregateId: AggregateId,
+                     first: AggregateVersion, last: AggregateVersion, events: Seq[EventInfo[Any]], aggregateRoot: Option[Any],
+                     startsSequence: Boolean = false)
+/** `gaps`: subscriptions whose items were not applied because versions before them are missing, with the first missing
+  * one. `handedOver`: items applied one aggregate at a time instead, like deliveries (the chunk failed, or the
+  * subscription had deliveries at work); each is answered to the builder with `MessageAck` or `MessageFailed`. Items
+  * of an aggregate whose subscription is failed are left out (D20a): a retry repairs it. */
+case class ChunkApplied(id: Long, gaps: Seq[ChunkGap], handedOver: Int)
+case class ChunkGap(subscriptionType: SubscriptionType, aggregateType: AggregateType, aggregateId: AggregateId, from: AggregateVersion)
+
 /** Has the aggregate's failed versions delivered again; each failure is cleared once its version is applied. */
 case class RetryFailedSubscription(aggregateId: AggregateId)
 /** Retries every failed subscription, a few per second; answered with `FailedSubscriptionsRetried`. */
@@ -241,12 +268,22 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     case GetSubscribedAggregates => sender() ! getSubscribedAggregates
     case e: IdentifiableEvents[_] =>
       receiveDelivery(Key(SubscriptionType.EVENTS, e.aggregateId), e.aggregateType,
-        Pending(e.events.map(_.version), e.events.asInstanceOf[Seq[EventInfo[Any]]], None, e.replayed, sender()))
+        Pending(e.events.map(_.version), e.events.asInstanceOf[Seq[EventInfo[Any]]], None, e.replayed, sender(), e.startsAtSquash))
     case a: AggregateWithType[_] =>
-      receiveDelivery(Key(SubscriptionType.AGGREGATES, a.id), a.aggregateType, Pending(a.events, Seq.empty, a.aggregateRoot, a.replayed, sender()))
+      receiveDelivery(Key(SubscriptionType.AGGREGATES, a.id), a.aggregateType, Pending(a.events, Seq.empty, a.aggregateRoot, a.replayed, sender(), a.startsAtSquash))
     case ae: AggregateWithTypeAndEvents[_] =>
       receiveDelivery(Key(SubscriptionType.AGGREGATES_WITH_EVENTS, ae.id), ae.aggregateType,
-        Pending(ae.events.map(_.version), ae.events.asInstanceOf[Seq[EventInfo[Any]]], ae.aggregateRoot, ae.replayed, sender()))
+        Pending(ae.events.map(_.version), ae.events.asInstanceOf[Seq[EventInfo[Any]]], ae.aggregateRoot, ae.replayed, sender(), ae.startsAtSquash))
+    case chunk: ApplyChunk => applyChunk(chunk, sender())
+    case BuildFromStore(builder) => building = Some(builder)
+    case GoLive =>
+      val wasBuilt = building.isDefined
+      building = None
+      if (wasBuilt && options.retryFailuresOnStart && failed.nonEmpty) {
+        log.info("Projection " + projectionName + " is live and retries " + failed.size + " subscriptions that failed while it was built")
+        retryRateLimited(failed.keys.toVector)
+      }
+      sender() ! ProjectionLive
     case Drain(key, token) => queues.get(key).foreach(queue => queue.scheduled match {
       // While a batch runs, the queue is drained when it ends: one batch per queue at a time.
       case Some((`token`, _)) if queue.processing => queue.scheduled = None
@@ -286,8 +323,9 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   }
 
   /** A delivery waiting in its queue: its versions, its events (none for state-only listeners), the state after its
-    * last version, and the bus to answer. */
-  private case class Pending(versions: Seq[AggregateVersion], events: Seq[EventInfo[Any]], aggregateRoot: Option[Any], replayed: Boolean, respondTo: ActorRef) {
+    * last version, and the bus (or builder) to answer. `startsAtSquash`: see `SequenceGate` (F98). */
+  private case class Pending(versions: Seq[AggregateVersion], events: Seq[EventInfo[Any]], aggregateRoot: Option[Any], replayed: Boolean,
+                             respondTo: ActorRef, startsAtSquash: Boolean) {
     def first: AggregateVersion = versions.head
     def last: AggregateVersion = versions.last
   }
@@ -328,8 +366,12 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   private val failed = mutable.LinkedHashMap[Key, SubscriptionFailure]()
   private var failuresToRetry = Vector[Key]()
   private var eventBus: Option[ActorRef] = None
+  private var building: Option[ActorRef] = None // the builder, while the projection is built from the store (D57)
   private var drainTokens = 0
   private var queueIds = 0
+
+  // Missing versions come from the builder while the projection is built, and from the aggregate's owner otherwise.
+  private def republisher: Option[ActorRef] = building.orElse(eventBus)
 
   private def queueFor(key: Key, aggregateType: AggregateType): Queue = queues.getOrElseUpdate(key, {
     queueIds += 1
@@ -339,19 +381,26 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   private def receiveDelivery(key: Key, aggregateType: AggregateType, delivery: Pending): Unit = {
     if (delivery.versions.isEmpty) {
       log.warning("Projection " + projectionName + " received a delivery without events for aggregate " + key.aggregateId.asLong)
+    } else if (building.isDefined) {
+      // D57: the builder reads these events from the store, the bulk pass or the reconciliation after GoLive.
+      delivery.respondTo ! MessageAck(self, key.aggregateId, delivery.versions, key.kind)
     } else if (failed.contains(key)) {
       delivery.respondTo ! MessageFailed(self, key.aggregateId, delivery.versions, failed(key).error, key.kind)
     } else {
       eventBus = Some(delivery.respondTo)
-      val queue = queueFor(key, aggregateType)
-      queue.pending :+= delivery
-      options.eventsLogger.filter(_.isDebugEnabled).foreach(_.debug(s"$className ${key.aggregateId.asLong} received ${delivery.versions.map(_.asInt).mkString(",")}"))
-      if (!queue.processing) queue.scheduled.map(_._2) match {
-        case None => if (mayWait(delivery)) schedule(key, queue, options.groupUpdatesDelayMillis.millis, GroupingDelay) else drain(key, queue)
-        case Some(GroupingDelay) => if (!mayWait(delivery)) drain(key, queue)
-        case Some(GapRecheck) => drain(key, queue)
-        case Some(RetryBackOff) => () // re-deliveries during the retries wait for them (D20a)
-      }
+      enqueue(key, aggregateType, delivery)
+    }
+  }
+
+  private def enqueue(key: Key, aggregateType: AggregateType, delivery: Pending): Unit = {
+    val queue = queueFor(key, aggregateType)
+    queue.pending :+= delivery
+    options.eventsLogger.filter(_.isDebugEnabled).foreach(_.debug(s"$className ${key.aggregateId.asLong} received ${delivery.versions.map(_.asInt).mkString(",")}"))
+    if (!queue.processing) queue.scheduled.map(_._2) match {
+      case None => if (mayWait(delivery)) schedule(key, queue, options.groupUpdatesDelayMillis.millis, GroupingDelay) else drain(key, queue)
+      case Some(GroupingDelay) => if (!mayWait(delivery)) drain(key, queue)
+      case Some(GapRecheck) => drain(key, queue)
+      case Some(RetryBackOff) => () // re-deliveries during the retries wait for them (D20a)
     }
   }
 
@@ -393,7 +442,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         waiting :+= delivery
       } else if (delivery.last <= applied) {
         delivery.respondTo ! MessageAck(self, key.aggregateId, delivery.versions, key.kind)
-      } else SequenceGate.decide(next, delivery.first, delivery.last) match {
+      } else SequenceGate.decide(next, delivery.first, delivery.last, delivery.startsAtSquash) match {
         case AlreadyApplied => covered :+= delivery // all its versions are in this batch
         case Apply(from, to) =>
           parts :+= (delivery -> from)
@@ -412,7 +461,8 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     }
 
     if (parts.nonEmpty) {
-      val batch = Batch(queue.aggregateType, applied, applied.increment, next,
+      // The batch starts after the applied version, or at a squash event the subscriber never reached (F98).
+      val batch = Batch(queue.aggregateType, applied, parts.head._2, next,
         parts.flatMap { case (delivery, from) => delivery.events.dropWhile(_.version < from) },
         parts.last._1.aggregateRoot, parts.map(_._1), covered)
       queue.processing = true
@@ -443,7 +493,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         " times in " + options.gapGiveUpAfter + " without an answer", None)
     } else {
       if (!sameGap || gapRecheck) {
-        eventBus.foreach(_ ! RequestRepublish(self, queue.aggregateType, key.aggregateId, from))
+        republisher.foreach(_ ! RequestRepublish(self, queue.aggregateType, key.aggregateId, from))
         if (!sameGap) log.info("Projection " + projectionName + " asks for versions from " + from.asInt + " of " + queue.aggregateType.simpleName + " " + key.aggregateId.asLong)
         queue.gapRequestedFrom = Some(from)
         queue.gapRequestedAt = now
@@ -522,18 +572,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   // The listener and the subscription's new version commit together; a listener without a transaction runs first and
   // the version is written after it, so such a listener may see a batch again if that write fails (at least once).
   private def applyBatch(key: Key, batch: Batch): Unit = {
-    val id = key.aggregateId
-    val (noTransaction, work): (Boolean, DBSession => Unit) = key.subscriptionType match {
-      case SubscriptionType.EVENTS =>
-        val listener = eventListenersMap(batch.aggregateType)
-        (listener.options.noTransaction, listener.listener(id, batch.events))
-      case SubscriptionType.AGGREGATES =>
-        val listener = aggregateListenersMap(batch.aggregateType)
-        (listener.options.noTransaction, listener.listener(id, batch.to, batch.from.isOne, batch.aggregateRoot))
-      case _ =>
-        val listener = aggregateWithEventListenersMap(batch.aggregateType)
-        (listener.options.noTransaction, listener.listener(id, batch.to, batch.aggregateRoot, batch.events))
-    }
+    val (noTransaction, work) = listenerWork(key, batch)
     if (noTransaction) {
       work(null) // no session: the listener does not write to the database
       subscriptionsState.autoCommit(advance(key, batch.applied, batch.to))
@@ -542,6 +581,73 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         work(session)
         advance(key, batch.applied, batch.to)(session)
       }
+    }
+  }
+
+  // A state listener is told the aggregate is created when the subscription starts with this batch: at version 1, at
+  // the squash event (F98) or with a whole state (D62).
+  private def listenerWork(key: Key, batch: Batch): (Boolean, DBSession => Unit) = {
+    val id = key.aggregateId
+    key.subscriptionType match {
+      case SubscriptionType.EVENTS =>
+        val listener = eventListenersMap(batch.aggregateType)
+        (listener.options.noTransaction, listener.listener(id, batch.events))
+      case SubscriptionType.AGGREGATES =>
+        val listener = aggregateListenersMap(batch.aggregateType)
+        (listener.options.noTransaction, listener.listener(id, batch.to, batch.applied == AggregateVersion.ZERO, batch.aggregateRoot))
+      case _ =>
+        val listener = aggregateWithEventListenersMap(batch.aggregateType)
+        (listener.options.noTransaction, listener.listener(id, batch.to, batch.aggregateRoot, batch.events))
+    }
+  }
+
+  // ************** Chunks from a builder (D58, D61)
+
+  // The gate decides each item against the version the chunk left its subscription at; the decided batches run in one
+  // transaction with their versions. A subscription with deliveries at work takes its items in its queue, so its
+  // versions are applied one batch at a time; one with a gap or a failure skips the rest of the chunk. A chunk that
+  // fails is handed to the queues whole, which apply, retry and record failures one aggregate at a time (D20a).
+  private def applyChunk(chunk: ApplyChunk, builder: ActorRef): Unit = {
+    val leftAt = mutable.HashMap[Key, AggregateVersion]()
+    val stopped = mutable.HashSet[Key]()
+    var gaps = Vector[ChunkGap]()
+    var toQueues = Vector[(Key, ChunkItem)]()
+    var batches = Vector[(Key, ChunkItem, Batch)]()
+    chunk.items.foreach { item =>
+      val key = Key(item.subscriptionType, item.aggregateId)
+      if (failed.contains(key) || stopped.contains(key)) {
+        () // a failure is repaired by a retry; a gap is read again by the builder
+      } else if (queues.contains(key)) {
+        toQueues :+= key -> item
+      } else {
+        val applied = leftAt.getOrElseUpdate(key, appliedVersion(key))
+        SequenceGate.decide(applied, item.first, item.last, item.startsSequence) match {
+          case AlreadyApplied => ()
+          case Apply(from, to) =>
+            batches :+= ((key, item, Batch(item.aggregateType, applied, from, to, item.events.dropWhile(_.version < from), item.aggregateRoot, Nil, Nil)))
+            leftAt(key) = to
+          case Gap(from) =>
+            gaps :+= ChunkGap(item.subscriptionType, item.aggregateType, item.aggregateId, from)
+            stopped += key
+        }
+      }
+    }
+    val committed = batches.isEmpty || Try(subscriptionsState.localTx { session =>
+      batches.foreach { case (key, _, batch) =>
+        val (noTransaction, work) = listenerWork(key, batch)
+        work(if (noTransaction) null else session)
+        advance(key, batch.applied, batch.to)(session)
+      }
+    }).fold(e => {
+      log.warning("Projection " + projectionName + " failed on a chunk of " + batches.size + " batches; they are applied one aggregate at a time: " + e)
+      false
+    }, _ => true)
+    if (committed) requestQueriesReplay() else toQueues ++= batches.map { case (key, item, _) => key -> item }
+    // The builder learns how many answers to expect before the first of them.
+    builder ! ChunkApplied(chunk.id, gaps, toQueues.size)
+    toQueues.foreach { case (key, item) =>
+      val versions = if (item.events.nonEmpty) item.events.map(_.version) else (item.first.asInt to item.last.asInt).map(AggregateVersion(_))
+      enqueue(key, item.aggregateType, Pending(versions, item.events, item.aggregateRoot, replayed = true, builder, item.startsSequence))
     }
   }
 
@@ -596,7 +702,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       case Success(_) =>
         log.warning("Projection " + projectionName + " skipped version " + failure.version.asInt + " of " + failure.aggregateType.simpleName + " " + aggregateId.asLong)
         failed -= key
-        eventBus.foreach(_ ! RequestRepublish(self, failure.aggregateType, failure.aggregateId, failure.version.increment))
+        republisher.foreach(_ ! RequestRepublish(self, failure.aggregateType, failure.aggregateId, failure.version.increment))
         true
       case Failure(e) =>
         log.error(e, "Projection " + projectionName + " could not skip version " + failure.version.asInt + " of aggregate " + aggregateId.asLong)

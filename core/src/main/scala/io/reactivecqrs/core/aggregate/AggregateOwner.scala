@@ -606,13 +606,15 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
   // subscribers continues when the bus acks the part, a subscriber filling its gap asks for the next part. The parts
   // before the last carry the current state too. Returns the last version sent.
   private def republish(from: AggregateVersion, onlyTo: Option[ActorRef]): Option[AggregateVersion] = {
-    // D51: nothing below the squash point exists any more; a range from below it starts at the squash event.
-    val start = if (from <= version) eventStore.squashedVersion(aggregateId).filter(_ > from).getOrElse(from) else from
+    // D51: nothing below the squash point exists any more; a range from below it starts at the squash event, and says
+    // so, so a subscriber that never saw the squash point starts there (F98).
+    val squashed = if (from <= version) eventStore.squashedVersion(aggregateId) else None
+    val start = squashed.filter(_ > from).getOrElse(from)
     if (start <= version) {
       val to = AggregateVersion(math.min(version.asInt.toLong, start.asInt.toLong + maxRepublishEvents - 1).toInt)
       val events = eventStore.readEventsRange[AGGREGATE_ROOT](aggregateId, start, to)
       if (events.nonEmpty) {
-        eventsBus.tell(PublishEvents(aggregateType, events, aggregateId, Option(root), onlyTo), publicationAcks)
+        eventsBus.tell(PublishEvents(aggregateType, events, aggregateId, Option(root), onlyTo, startsAtSquash = squashed.contains(start)), publicationAcks)
         Some(events.last.version)
       } else None
     } else None
