@@ -63,11 +63,20 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
 
   private def handleTimeout: Receive = {
     case CommandTimedOut =>
-      val errorId = RandomUtil.generateRandomString(16)
-      commandEnvelope.respondTo ! CommandHandlingError(commandEnvelope.command.getClass.getSimpleName, errorId, commandEnvelope.commandId)
-      log.warning("Command timed out after " + commandTimeout + "; it may still be applied. errorId: [" + errorId + "]")
-      context.stop(self)
+      val error = newCommandHandlingError()
+      log.warning("Command timed out after " + commandTimeout + "; it may still be applied. errorId: [" + error.errorId + "]")
+      finish(error)
   }
+
+  /** Answers the caller and ends this command's execution. */
+  private def finish(response: CustomCommandResponse[_]): Unit = {
+    commandEnvelope.respondTo ! response
+    context.stop(self)
+  }
+
+  /** An error for the caller; its id is also written to the log, so both can be matched. */
+  private def newCommandHandlingError(): CommandHandlingError =
+    CommandHandlingError(commandEnvelope.command.getClass.getSimpleName, RandomUtil.generateRandomString(16), commandEnvelope.commandId)
 
   // Receiving aggregate from aggregate repository
   private def receiveAggregate: Receive = logReceive {
@@ -102,22 +111,17 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
   }
 
   private def receiveEventsPersistResult(response: CustomCommandResponse[_]) = logReceive {
-    case AggregateModified =>
-      commandEnvelope.respondTo ! response
-      context.stop(self)
+    case AggregateModified => finish(response)
     case e: AggregateConcurrentModificationError => onConflict(e)
     case IdempotencyKeyTaken =>
       idempotency.storedResponse(commandEnvelope.command) match {
-        case Some(stored) => commandEnvelope.respondTo ! stored
+        case Some(stored) => finish(stored)
         case None => // removed by retention in the meantime; the caller may send the command again
-          val errorId = RandomUtil.generateRandomString(16)
-          commandEnvelope.respondTo ! CommandHandlingError(commandEnvelope.command.getClass.getSimpleName, errorId, commandEnvelope.commandId)
-          log.warning("Idempotency key taken but no stored response found, errorId: [" + errorId + "]")
+          val error = newCommandHandlingError()
+          log.warning("Idempotency key taken but no stored response found, errorId: [" + error.errorId + "]")
+          finish(error)
       }
-      context.stop(self)
-    case e: EventHandlingError =>
-      commandEnvelope.respondTo ! e
-      context.stop(self)
+    case e: EventHandlingError => finish(e)
     case m =>
       log.error("receiveEventsPersistResult Unsupported message received" + m)
       unhandled(m)
@@ -219,8 +223,7 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
         }
 
         if(success.events.isEmpty) {
-          commandEnvelope.respondTo ! response
-          context.stop(self)
+          finish(response)
         } else {
           context.become(whileWaiting(receiveEventsPersistResult(response)))
           repositoryActor ! PersistEvents[AGGREGATE_ROOT](self, commandEnvelope.commandId, userId, expectedVersion, eventsTimestamp(), success.events, idempotentCommandInfo(commandEnvelope.command, response))
@@ -235,16 +238,13 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
           case _ => CustomSuccessResponse(aggregateId, version.incrementBy(success.events.size), success.responseInfo)
         }
         if(success.events.isEmpty) {
-          commandEnvelope.respondTo ! response
-          context.stop(self)
+          finish(response)
         } else {
           context.become(whileWaiting(receiveEventsPersistResult(response)))
           repositoryActor ! OverrideAndPersistEvents[AGGREGATE_ROOT](success.eventsRewritten, PersistEvents[AGGREGATE_ROOT](self, commandEnvelope.commandId, userId, expectedVersion, eventsTimestamp(), success.events, idempotentCommandInfo(commandEnvelope.command, response)))
         }
 
-      case failure: CommandFailure[_, _] =>
-        commandEnvelope.respondTo ! failure.response
-        context.stop(self)
+      case failure: CommandFailure[_, _] => finish(failure.response)
     }
 
   }
@@ -258,17 +258,13 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
   // the answer (D12). Otherwise a concurrent command is re-run on the latest state, and any other gets the error.
   private def onConflict(error: AggregateConcurrentModificationError): Unit = {
     idempotency.storedResponse(commandEnvelope.command) match {
-      case Some(stored) =>
-        commandEnvelope.respondTo ! stored
-        context.stop(self)
+      case Some(stored) => finish(stored)
       case None => commandEnvelope match {
         case _: InternalConcurrentCommandEnvelope[_, _] | _: InternalRewriteHistoryConcurrentCommandEnvelope[_, _] if concurrentAttempt < MaxConcurrentAttempts =>
           concurrentAttempt += 1
           context.become(whileWaiting(receiveAggregate))
           context.system.scheduler.scheduleOnce(retryDelay(concurrentAttempt), repositoryActor, GetAggregateRootCurrentVersion(self))
-        case _ =>
-          commandEnvelope.respondTo ! error
-          context.stop(self)
+        case _ => finish(error)
       }
     }
   }
@@ -277,10 +273,9 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
     exception match {
       case e: AggregateInIncorrectVersionException => onConflict(AggregateConcurrentModificationError(aggregateId, e.aggregateType, e.requestedVersion, e.currentVersion))
       case _ =>
-        val errorId = RandomUtil.generateRandomString(16)
-        commandEnvelope.respondTo ! CommandHandlingError(commandEnvelope.command.getClass.getSimpleName, errorId, commandEnvelope.commandId)
-        log.error(exception, "Error handling command, errorId: ["+errorId+"]")
-        context.stop(self)
+        val error = newCommandHandlingError()
+        log.error(exception, "Error handling command, errorId: [" + error.errorId + "]")
+        finish(error)
     }
   }
 

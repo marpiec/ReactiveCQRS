@@ -97,27 +97,29 @@ class PostgresCommandResponseState(mpjsons: MPJsons, typesNamesState: TypesNames
     sql"""CREATE INDEX IF NOT EXISTS commands_responses_handling_timestamp_idx ON commands_responses (handling_timestamp)""".execute()
   }
 
+  /** A JSON value with the id of its class. */
+  private case class Stored(json: String, typeId: Short)
+
   override def storeResponse(key: String, response: CustomCommandResponse[_])(implicit session: DBSession): Unit = {
-    val (json, typeId, info, infoTypeId) = response match {
+    val (stored, info) = response match {
       case CustomSuccessResponse(aggregateId, aggregateVersion, info) =>
-        val storedInfo = Option(info).map(i => serializeInfo(i.asInstanceOf[AnyRef]))
-        (mpjsons.serialize(SuccessResponse(aggregateId, aggregateVersion), classOf[SuccessResponse].getName),
-          typesNamesState.typeIdByClassName(customSuccessClassName), storedInfo.map(_._1), storedInfo.map(_._2))
+        (Stored(mpjsons.serialize(SuccessResponse(aggregateId, aggregateVersion), classOf[SuccessResponse].getName),
+          typesNamesState.typeIdByClassName(customSuccessClassName)), Option(info).map(i => storedInfo(i.asInstanceOf[AnyRef])))
       case _ =>
-        (mpjsons.serialize(response, response.getClass.getName), typesNamesState.typeIdByClass(response.getClass), None, None)
+        (Stored(mpjsons.serialize(response, response.getClass.getName), typesNamesState.typeIdByClass(response.getClass)), None)
     }
     // ON CONFLICT waits for a concurrent copy's transaction, so a taken key is seen once that copy committed.
     val inserted = sql"""INSERT INTO commands_responses (id, key, handling_timestamp, response, response_type_id, info, info_type_id)
                          VALUES (nextval('commands_responses_seq'), ?, current_timestamp, ?, ?, ?, ?) ON CONFLICT (key) DO NOTHING"""
-      .bind(key, json, typeId, info, infoTypeId).update()
+      .bind(key, stored.json, stored.typeId, info.map(_.json), info.map(_.typeId)).update()
     if (inserted == 0) {
       throw new IdempotencyKeyTakenException(key)
     }
   }
 
-  private def serializeInfo(info: AnyRef): (String, Short) = {
+  private def storedInfo(info: AnyRef): Stored = {
     try {
-      (mpjsons.serialize(info, info.getClass.getName), typesNamesState.typeIdByClass(info.getClass))
+      Stored(mpjsons.serialize(info, info.getClass.getName), typesNamesState.typeIdByClass(info.getClass))
     } catch {
       case e: Exception => throw new IllegalArgumentException("The response info of an idempotent command must be of a class " +
         "without type parameters, such as a case class; " + info.getClass.getName + " cannot be stored", e)

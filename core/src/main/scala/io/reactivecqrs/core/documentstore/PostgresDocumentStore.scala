@@ -4,6 +4,7 @@ import io.mpjsons.MPJsons
 import org.postgresql.util.PSQLException
 import scalikejdbc.{DB, DBSession}
 
+import scala.annotation.tailrec
 import scala.reflect.runtime.universe._
 import scalikejdbc._
 import io.reactivecqrs.core.util.AfterCommit
@@ -494,8 +495,29 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     }
   }
 
-  protected def tooManyUpdateAttempts(key: Long, version: Int): IllegalStateException =
-    new IllegalStateException("Too many tries to update document in table = [" + projectionTableName + "] id = " + key + " expected version " + version)
+  /**
+   * Applies `modify` to the stored document and writes the next version. When another writer changed the
+   * document first, it starts again from the fresh data, at most `maxUpdateAttempts` times (F21).
+   * `whenMissing` gives the result when there is no document.
+   */
+  protected def updateWithRetries(key: Long, modify: Document[T] => Document[T], whenMissing: => Document[T])(implicit session: DBSession): Document[T] = {
+    inSession { implicit session =>
+      @tailrec
+      def attempt(number: Int): Document[T] = getFromCacheOrDB(key) match {
+        case None => whenMissing
+        case Some(previous) =>
+          val modified = modify(Document(previous.document))
+          if (writeNextVersion(key, previous, modified.document)) {
+            modified
+          } else if (number < maxUpdateAttempts) {
+            attempt(number + 1)
+          } else {
+            throw new IllegalStateException("Too many tries to update document in table = [" + projectionTableName + "] id = " + key + " expected version " + previous.version)
+          }
+      }
+      attempt(1)
+    }
+  }
 
 
   def clearSpace(spaceId: Long)(implicit session: DBSession): Unit = {
@@ -533,51 +555,16 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
   }
 
   def updateExistingDocument(key: Long, modify: Document[T] => Document[T])(implicit session: DBSession): Document[T] = {
-    updateExistingDocumentRecur(key, modify, 1)
+    updateWithRetries(key, modify, whenMissing = throw new IllegalStateException("Document for update does not exist " + key))
   }
 
-  private def updateExistingDocumentRecur(key: Long, modify: Document[T] => Document[T], tryNumber: Int)(implicit session: DBSession): Document[T] = {
-    inSession { implicit session =>
-      getFromCacheOrDB(key) match {
-        case None => throw new IllegalStateException("Document for update does not exist " + key)
-        case Some(previous) =>
-          val modified = modify(Document(previous.document))
-          if (writeNextVersion(key, previous, modified.document)) {
-            modified
-          } else if (tryNumber < maxUpdateAttempts) {
-            updateExistingDocumentRecur(key, modify, tryNumber + 1)
-          } else {
-            throw tooManyUpdateAttempts(key, previous.version)
-          }
-      }
-    }
-  }
-  // Optimistic locking update
+  // Optimistic locking update; a missing document is inserted.
   def updateDocument(spaceId: Long, key: Long, modify: Option[Document[T]] => Document[T])(implicit session: DBSession): Document[T] = {
-    updateDocumentRecur(spaceId, key, modify, 1)
-  }
-
-
-  // Optimistic locking update
-  private def updateDocumentRecur(spaceId: Long, key: Long, modify: Option[Document[T]] => Document[T], tryNumber: Int)(implicit session: DBSession): Document[T] = {
-
-    inSession { implicit session =>
-      getFromCacheOrDB(key) match {
-        case None =>
-          val modified = modify(None)
-          insertDocument(spaceId, key, modified.document)
-          modified
-        case Some(previous) =>
-          val modified = modify(Some(Document(previous.document)))
-          if (writeNextVersion(key, previous, modified.document)) {
-            modified
-          } else if (tryNumber < maxUpdateAttempts) {
-            updateDocumentRecur(spaceId, key, modify, tryNumber + 1)
-          } else {
-            throw tooManyUpdateAttempts(key, previous.version)
-          }
-      }
-    }
+    updateWithRetries(key, document => modify(Some(document)), whenMissing = {
+      val created = modify(None)
+      insertDocument(spaceId, key, created.document)
+      created
+    })
   }
 
 
@@ -639,47 +626,12 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
   }
 
   def updateExistingDocument(key: Long, modify: Document[T] => Document[T])(implicit session: DBSession): Document[T] = {
-    updateExistingDocumentRecur(key, modify, 1)
+    updateWithRetries(key, modify, whenMissing = throw new IllegalStateException(s"Document for key $key not found!"))
   }
 
-  private def updateExistingDocumentRecur(key: Long, modify: Document[T] => Document[T], tryNumber: Int)(implicit session: DBSession): Document[T] = {
-    inSession { implicit session =>
-      getFromCacheOrDB(key) match {
-        case None => throw new IllegalStateException(s"Document for key $key not found!")
-        case Some(previous) =>
-          val modified = modify(Document(previous.document))
-          if (writeNextVersion(key, previous, modified.document)) {
-            modified
-          } else if (tryNumber < maxUpdateAttempts) {
-            updateExistingDocumentRecur(key, modify, tryNumber + 1)
-          } else {
-            throw tooManyUpdateAttempts(key, previous.version)
-          }
-      }
-    }
-  }
-
-
-  // Optimistic locking update
+  // Optimistic locking update; keys come from the sequence, so a missing document cannot be inserted here.
   def updateDocument(spaceId: Long, key: Long, modify: Option[Document[T]] => Document[T])(implicit session: DBSession): Document[T] = {
-    updateDocumentRecur(spaceId, key, modify, 1)
-  }
-
-  private def updateDocumentRecur(spaceId: Long, key: Long, modify: Option[Document[T]] => Document[T], tryNumber: Int)(implicit session: DBSession): Document[T] = {
-    inSession { implicit session =>
-      getFromCacheOrDB(key) match {
-        case None => throw new IllegalStateException(s"Document for key $key not found!")
-        case Some(previous) =>
-          val modified = modify(Some(Document(previous.document)))
-          if (writeNextVersion(key, previous, modified.document)) {
-            modified
-          } else if (tryNumber < maxUpdateAttempts) {
-            updateDocumentRecur(spaceId, key, modify, tryNumber + 1)
-          } else {
-            throw tooManyUpdateAttempts(key, previous.version)
-          }
-      }
-    }
+    updateWithRetries(key, document => modify(Some(document)), whenMissing = throw new IllegalStateException(s"Document for key $key not found!"))
   }
 
   def clearAllData()(implicit session: DBSession): Unit = {

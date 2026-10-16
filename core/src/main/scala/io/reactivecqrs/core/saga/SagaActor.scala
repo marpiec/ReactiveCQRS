@@ -95,12 +95,12 @@ abstract class SagaActor extends Actor with MyActorLogging {
   override def receive: Receive = {
     case LoadPendingSagas => loadPendingSagas(1)
     case LoadPendingSagasAttempt(attempt) => loadPendingSagas(attempt)
-    case m: SagaOrder => write(CreateSaga(RunningSaga(takeNextSagaId, sender().path.toString, m, CONTINUES, 0)), 1)
+    case m: SagaOrder => write(CreateSaga(RunningSaga(takeNextSagaId, sender().path.toString, m, CONTINUES, 0)))
     case m: SagaPersisted => runStep(RunningSaga(m.sagaId, m.respondTo, m.order, m.phase, m.step))
     case StepCompleted(saga, result) => handleStepResult(saga, result)
     case RevertStepCompleted(saga, result) => handleRevertStepResult(saga, result)
-    case WriteCompleted(write, attempt, result) => handleWriteResult(write, attempt, result)
-    case RetryWrite(write, attempt) => this.write(write, attempt)
+    case WriteCompleted(pending, attempt, result) => handleWriteResult(pending, attempt, result)
+    case RetryWrite(pending, attempt) => write(pending, attempt)
     case m => log.warning("Received incorrect message of type: [" + m.getClass.getName +"] "+m)
   }
 
@@ -123,30 +123,30 @@ abstract class SagaActor extends Actor with MyActorLogging {
 
   private def handleStepResult(saga: RunningSaga, result: Try[SagaHandlingStatus]): Unit = result match {
     case Success(SagaContinues(order)) =>
-      write(StoreProgress(saga.copy(order = order, step = saga.step + 1)), 1)
+      write(StoreProgress(saga.copy(order = order, step = saga.step + 1)))
     case Success(SagaSucceded(response)) =>
       respond(saga, response)
-      write(DeleteSaga(saga), 1)
+      write(DeleteSaga(saga))
     case Success(SagaFailed(response)) =>
       respond(saga, response)
-      write(StoreProgress(saga.copy(phase = REVERTING, step = saga.step + 1)), 1)
+      write(StoreProgress(saga.copy(phase = REVERTING, step = saga.step + 1)))
     case Failure(e) =>
       log.error(e, "Saga " + name + " " + saga.sagaId.asLong + " step " + saga.step + " failed, reverting")
       respond(saga, SagaFailureResponse(List(e.getMessage)))
-      write(StoreProgress(saga.copy(phase = REVERTING, step = saga.step + 1)), 1)
+      write(StoreProgress(saga.copy(phase = REVERTING, step = saga.step + 1)))
   }
 
   private def handleRevertStepResult(saga: RunningSaga, result: Try[SagaRevertHandlingStatus]): Unit = result match {
     case Success(SagaRevertContinues(order)) =>
-      write(StoreProgress(saga.copy(order = order, phase = REVERTING, step = saga.step + 1)), 1)
+      write(StoreProgress(saga.copy(order = order, phase = REVERTING, step = saga.step + 1)))
     case Success(SagaRevertSucceded) =>
-      write(DeleteSaga(saga), 1)
+      write(DeleteSaga(saga))
     case Success(SagaRevertFailed(exceptions)) =>
       log.error(s"Saga revert failed, sagaId = ${saga.sagaId.asLong}, order = ${saga.order}, " + exceptions.mkString(", "))
-      write(DeleteSaga(saga), 1)
+      write(DeleteSaga(saga))
     case Failure(e) =>
       log.error(e, s"Saga revert failed, sagaId = ${saga.sagaId.asLong}, order = ${saga.order}")
-      write(DeleteSaga(saga), 1)
+      write(DeleteSaga(saga))
   }
 
   private def respond(saga: RunningSaga, response: SagaResponse): Unit = {
@@ -154,32 +154,32 @@ abstract class SagaActor extends Actor with MyActorLogging {
   }
 
   // The write runs off the actor's thread and touches no actor state; its result comes back as a message.
-  private def write(write: SagaWrite, attempt: Int): Unit = {
-    val saga = write.saga
+  private def write(pending: SagaWrite, attempt: Int = 1): Unit = {
+    val saga = pending.saga
     Future {
-      write match {
+      pending match {
         case _: CreateSaga => state.createSaga(name, saga.sagaId, saga.respondTo, saga.order); true
         case _: StoreProgress => state.updateSaga(name, saga.sagaId, saga.order, saga.phase, saga.step)
         case _: DeleteSaga => state.deleteSaga(name, saga.sagaId)
       }
-    }.onComplete(result => self ! WriteCompleted(write, attempt, result))
+    }.onComplete(result => self ! WriteCompleted(pending, attempt, result))
   }
 
-  private def handleWriteResult(write: SagaWrite, attempt: Int, result: Try[Boolean]): Unit = {
-    val saga = write.saga
+  private def handleWriteResult(pending: SagaWrite, attempt: Int, result: Try[Boolean]): Unit = {
+    val saga = pending.saga
     result match {
-      case Success(true) => write match {
+      case Success(true) => pending match {
         case _: CreateSaga | _: StoreProgress => runStep(saga)
         case _: DeleteSaga => ()
       }
-      case Success(false) => write match {
+      case Success(false) => pending match {
         case _: DeleteSaga => log.warning("Saga " + name + " " + saga.sagaId.asLong + " was already removed")
         case _ => log.error("Saga " + name + " " + saga.sagaId.asLong + " is no longer stored (removed elsewhere?), stopping it at step " + saga.step)
       }
       case Failure(e) if attempt < maxPersistAttempts =>
         log.warning("Storing saga " + name + " " + saga.sagaId.asLong + " failed (attempt " + attempt + " of " + maxPersistAttempts + "): " + e.getMessage)
-        context.system.scheduler.scheduleOnce(persistRetryDelay(attempt), self, RetryWrite(write, attempt + 1))
-      case Failure(e) => write match {
+        context.system.scheduler.scheduleOnce(persistRetryDelay(attempt), self, RetryWrite(pending, attempt + 1))
+      case Failure(e) => pending match {
         case _: CreateSaga =>
           log.error(e, "Saga " + name + " could not be stored, its order is refused")
           respond(saga, SagaFailureResponse(List("The saga could not be stored: " + e.getMessage)))

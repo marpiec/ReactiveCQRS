@@ -148,15 +148,15 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     case GetAggregateRootExactVersion(respondTo, _) => answerRestoreFailed(respondTo, failure)
     case GetAggregateRootWithEventsCurrentVersion(respondTo, _) => answerRestoreFailed(respondTo, failure)
     case GetAggregateRootWithEventsExactVersion(respondTo, _, _) => answerRestoreFailed(respondTo, failure)
-    case ee: PersistEvents[_] => refusePersist(ee)
-    case ee: OverrideAndPersistEvents[_] => refusePersist(ee.persist)
+    case ee: PersistEvents[_] => answerEventHandlingError(ee, ee.events.head, failure)
+    case ee: OverrideAndPersistEvents[_] => answerEventHandlingError(ee.persist, ee.persist.events.head, failure)
     case _ => () // nothing to publish without a restored state
   }
 
-  private def refusePersist(ee: PersistEvents[_]): Unit = {
+  private def answerEventHandlingError(persist: PersistEvents[_], event: Any, cause: Throwable): Unit = {
     val errorId = RandomUtil.generateRandomString(16)
-    ee.respondTo ! EventHandlingError(ee.events.head.getClass.getSimpleName, errorId, ee.commandId)
-    log.error("Cannot persist events, aggregate restore failed, errorId: [" + errorId + "]")
+    persist.respondTo ! EventHandlingError(event.getClass.getSimpleName, errorId, persist.commandId)
+    log.error(cause, "Error handling event, errorId: [" + errorId+"]")
   }
 
   private def answerRestoreFailed(respondTo: ActorRef, failure: AggregateRestoreFailedException): Unit = {
@@ -173,9 +173,11 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     case GetAggregateRootCurrentVersion(respondTo) => receiveReturnAggregateRoot(respondTo, None)
     case GetEventsCurrentVersion(respondTo) => receiveReturnEvents(respondTo, None)
     case GetAggregateRootCurrentMinVersion(respondTo, version, durationMillis) => receiveReturnAggregateRootMinVersion(respondTo, version, System.nanoTime() + durationMillis * 1_000_000L)
-    case GetAggregateRootExactVersion(respondTo, version) => receiveReturnAggregateRoot(respondTo, Some(version)) // for following command
+    case GetAggregateRootExactVersion(respondTo, version) => // for following command
+      whenUpToDate(version, respondTo)(receiveReturnAggregateRoot(respondTo, Some(version)))
     case GetAggregateRootWithEventsCurrentVersion(respondTo, eventTypes) => receiveReturnAggregateRootWithEvents(respondTo, None, eventTypes) // for following command
-    case GetAggregateRootWithEventsExactVersion(respondTo, version, eventTypes) => receiveReturnAggregateRootWithEvents(respondTo, Some(version), eventTypes) // for following command
+    case GetAggregateRootWithEventsExactVersion(respondTo, version, eventTypes) => // for following command
+      whenUpToDate(version, respondTo)(receiveReturnAggregateRootWithEvents(respondTo, Some(version), eventTypes))
     case PublishEventsAck(aggId, versions) => markPublishedEvents(aggregateId, versions)
     case ResendPersistedMessages => resendEventsToPublish()
   }
@@ -184,38 +186,33 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   // Runs right after the commit, before the next message: a reload triggered by a later message then already
   // includes these events, instead of having them applied a second time (F69).
   private def applyPersisted(events: Seq[IdentifiableEvent[AGGREGATE_ROOT]]): Unit = {
-    val applied = if (events.exists(_.event.isInstanceOf[UndoEvent[_]]) ||
-      events.exists(_.event.isInstanceOf[DuplicationEvent[_]])) {
-      // In case of those events it's easier to re read past events
-      restore().isEmpty
+    if (events.exists(e => e.event.isInstanceOf[UndoEvent[_]] || e.event.isInstanceOf[DuplicationEvent[_]])) {
+      // In case of those events it's easier to re read past events. If that fails the state is unknown, so nothing
+      // is published now: the next actor's restore re-sends what waits in the outbox.
+      if (restore().isEmpty) publish(events)
     } else {
-      events.foreach(eventIdentifier => handleEvent(eventIdentifier.userId, eventIdentifier.timestamp, eventIdentifier.event, aggregateId, eventIdentifier.version.asInt, noopEvent = false))
-      true
+      events.foreach(e => handleEvent(e.userId, e.timestamp, e.event, aggregateId, e.version.asInt, noopEvent = false))
+      publish(events)
     }
-    if (applied) { // otherwise the state is unknown; the next actor's restore re-sends what waits in the outbox
-      eventsBus ! PublishEvents(aggregateType, events.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
-      pendingPublish = (events.map(e => EventWithIdentifier[AGGREGATE_ROOT](e.aggregateId, e.version, e.event)).toList ::: pendingPublish).distinct
-      replayDelayedQueries()
-    }
+  }
+
+  private def publish(events: Seq[IdentifiableEvent[AGGREGATE_ROOT]]): Unit = {
+    eventsBus ! PublishEvents(aggregateType, events.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
+    pendingPublish = (events.map(e => EventWithIdentifier[AGGREGATE_ROOT](e.aggregateId, e.version, e.event)).toList ::: pendingPublish).distinct
+    replayDelayedQueries()
   }
 
   private def handleOverrideAndPersistEvents(ee: OverrideAndPersistEvents[_]): Unit = {
     tryToApplyEvents(ee.persist) match {
       case s: Right[_, _] => overrideAndPersistEvents(ee.asInstanceOf[OverrideAndPersistEvents[AGGREGATE_ROOT]])
-      case Left((exception, event)) =>
-        val errorId = RandomUtil.generateRandomString(16)
-        ee.persist.respondTo ! EventHandlingError(event.getClass.getSimpleName, errorId, ee.persist.commandId)
-        log.error(exception, "Error handling event, errorId: [" + errorId+"]")
+      case Left((exception, event)) => answerEventHandlingError(ee.persist, event, exception)
     }
   }
 
   private def handlePersistEvents(ee: PersistEvents[_]): Unit = {
     tryToApplyEvents(ee) match {
       case s: Right[_, _] => persistEvents(ee.asInstanceOf[PersistEvents[AGGREGATE_ROOT]])
-      case Left((exception, event)) =>
-        val errorId = RandomUtil.generateRandomString(16)
-        ee.respondTo ! EventHandlingError(event.getClass.getSimpleName, errorId, ee.commandId)
-        log.error(exception, "Error handling event, errorId: [" + errorId+"]")
+      case Left((exception, event)) => answerEventHandlingError(ee, event, exception)
     }
   }
 
@@ -235,7 +232,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   private def overrideAndPersistEvents(eventsEnvelope: OverrideAndPersistEvents[AGGREGATE_ROOT]): Unit = {
     if (eventsEnvelope.persist.expectedVersion == version) {
-      persist(eventsEnvelope.persist, eventsEnvelope.rewriteEvents)(respond(eventsEnvelope.persist.respondTo))
+      persist(eventsEnvelope.persist, eventsEnvelope.rewriteEvents)
       //      println("AggregateRepository persisted events for expected version " + eventsEnvelope.expectedVersion)
     } else {
       eventsEnvelope.persist.respondTo ! AggregateConcurrentModificationError(aggregateId, aggregateType, eventsEnvelope.persist.expectedVersion, version)
@@ -245,7 +242,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   private def persistEvents(eventsEnvelope: PersistEvents[AGGREGATE_ROOT]): Unit = {
     if (eventsEnvelope.expectedVersion == version) {
-      persist(eventsEnvelope, Seq.empty)(respond(eventsEnvelope.respondTo))
+      persist(eventsEnvelope, Seq.empty)
 //      println("AggregateRepository persisted events for expected version " + eventsEnvelope.expectedVersion)
     } else {
       eventsEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateId, aggregateType, eventsEnvelope.expectedVersion, version)
@@ -257,20 +254,17 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
 
   // A request for a version this actor has not seen means someone else wrote the aggregate
-  // (another node, a history rewrite, a repair): reload instead of rejecting the command (F19).
-  private def reloadIfBehind(requestedVersion: Option[AggregateVersion]): Option[AggregateRestoreFailedException] = {
-    if (singleReadForVersionOnly.isEmpty && requestedVersion.exists(_ > version)) {
-      restore()
-    } else {
-      None
+  // (another node, a history rewrite, a repair): reload before answering instead of rejecting the command (F19).
+  private def whenUpToDate(requestedVersion: AggregateVersion, respondTo: ActorRef)(answer: => Unit): Unit = {
+    val reloadFailure = if (singleReadForVersionOnly.isEmpty && requestedVersion > version) restore() else None
+    reloadFailure match {
+      case None => answer
+      case Some(failure) => respondTo ! Failure(failure)
     }
   }
 
   private def receiveReturnAggregateRoot(respondTo: ActorRef, requestedVersion: Option[AggregateVersion]): Unit = {
-    val reloadFailure = reloadIfBehind(requestedVersion)
-    if (reloadFailure.isDefined) {
-      respondTo ! Failure(reloadFailure.get)
-    } else if(version == AggregateVersion.ZERO) {
+    if(version == AggregateVersion.ZERO) {
       respondTo ! Success(Aggregate[AGGREGATE_ROOT](aggregateId, version, None))
     } else {
 //      println("RepositoryActor "+this.toString+" Someone requested aggregate " + aggregateId.asLong + " of version " + requestedVersion.map(_.asInt.toString).getOrElse("None") + " and now I have version " + version.asInt)
@@ -330,10 +324,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
 
   private def receiveReturnAggregateRootWithEvents(respondTo: ActorRef, requestedVersion: Option[AggregateVersion], eventTypes: Set[String]): Unit = {
-    val reloadFailure = reloadIfBehind(requestedVersion)
-    if (reloadFailure.isDefined) {
-      respondTo ! Failure(reloadFailure.get)
-    } else if(version == AggregateVersion.ZERO) {
+    if(version == AggregateVersion.ZERO) {
       val events: List[EventWithVersion[AGGREGATE_ROOT]] = List.empty
       respondTo ! Success(AggregateWithSelectedEvents[AGGREGATE_ROOT](Aggregate[AGGREGATE_ROOT](aggregateId, version, None), events))
     } else {
@@ -359,7 +350,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     }
 
   }
-  private def persist(eventsEnvelope: PersistEvents[AGGREGATE_ROOT], overwrite: Iterable[EventWithVersion[AGGREGATE_ROOT]])(afterPersist: Seq[Event[AGGREGATE_ROOT]] => Unit): Unit = {
+  private def persist(eventsEnvelope: PersistEvents[AGGREGATE_ROOT], overwrite: Iterable[EventWithVersion[AGGREGATE_ROOT]]): Unit = {
     // Every failure is thrown inside the transaction, so nothing of the command is stored (F68), and every
     // outcome becomes exactly one reply to the executor (AR3).
     val outcome = Try {
@@ -378,7 +369,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
         applyPersisted(eventsWithVersions.map { case (event, eventVersion) =>
           IdentifiableEvent(AggregateType(event.aggregateRootType.toString), aggregateId, eventVersion, event.asInstanceOf[Event[AGGREGATE_ROOT]], eventsEnvelope.userId, eventsEnvelope.timestamp)
         })
-        afterPersist(eventsEnvelope.events)
+        eventsEnvelope.respondTo ! CommandExecutorActor.AggregateModified
       case Failure(_: IdempotencyKeyTakenException) =>
         // A copy of this idempotent command was applied first; the executor answers with its stored response.
         eventsEnvelope.respondTo ! CommandExecutorActor.IdempotencyKeyTaken
@@ -386,21 +377,11 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
         // The store moved on without this actor (another writer): reload, so a retry sees the real state (F19).
         restore() match {
           case None => eventsEnvelope.respondTo ! AggregateConcurrentModificationError(aggregateId, aggregateType, eventsEnvelope.expectedVersion, version)
-          case Some(failure) => answerPersistFailed(eventsEnvelope, failure)
+          case Some(failure) => answerEventHandlingError(eventsEnvelope, eventsEnvelope.events.head, failure)
         }
       case Failure(exception) =>
-        answerPersistFailed(eventsEnvelope, exception)
+        answerEventHandlingError(eventsEnvelope, eventsEnvelope.events.head, exception)
     }
-  }
-
-  private def answerPersistFailed(eventsEnvelope: PersistEvents[AGGREGATE_ROOT], exception: Throwable): Unit = {
-    val errorId = RandomUtil.generateRandomString(16)
-    eventsEnvelope.respondTo ! EventHandlingError(eventsEnvelope.events.head.getClass.getSimpleName, errorId, eventsEnvelope.commandId)
-    log.error(exception, "Error handling event, errorId: [" + errorId+"]")
-  }
-
-  private def respond(respondTo: ActorRef)(events: Seq[Event[AGGREGATE_ROOT]]): Unit = {
-    respondTo ! CommandExecutorActor.AggregateModified
   }
 
   private def tryToHandleEvent(userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT], noopEvent: Boolean, tmpAggregateRoot: AGGREGATE_ROOT): Either[(Exception, Event[AGGREGATE_ROOT]), AGGREGATE_ROOT] = {

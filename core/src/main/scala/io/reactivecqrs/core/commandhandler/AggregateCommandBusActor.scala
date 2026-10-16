@@ -19,6 +19,7 @@ import scala.collection.mutable
 import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
 import scala.reflect.ClassTag
+import scala.util.{Failure, Random, Success}
 import scala.reflect.runtime.universe._
 
 object AggregateCommandBusActor {
@@ -106,7 +107,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     if (!eventsReplayMode) {
       context.system.scheduler.schedule(60.seconds, 60.seconds, self, EnsureEventsPublished(true))(context.dispatcher)
       // Hourly, at a random minute, so the buses of different aggregate types do not all clean up at once.
-      val firstCleanUp = (60 + scala.util.Random.nextInt(3600)).seconds
+      val firstCleanUp = (60 + Random.nextInt(3600)).seconds
       context.system.scheduler.scheduleWithFixedDelay(firstCleanUp, 1.hour, self, RemoveExpiredResponses)(context.dispatcher)
     }
   }
@@ -114,8 +115,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private def removeExpiredResponses(): Unit = {
     import context.dispatcher
     Future(idempotency.removeExpired()).onComplete {
-      case scala.util.Failure(e) => log.warning("Removing expired idempotent command responses failed: " + e.getMessage)
-      case scala.util.Success(removed) => if (removed > 0) log.info("Removed " + removed + " expired idempotent command responses")
+      case Failure(e) => log.warning("Removing expired idempotent command responses failed: " + e.getMessage)
+      case Success(removed) => if (removed > 0) log.info("Removed " + removed + " expired idempotent command responses")
     }
   }
 
