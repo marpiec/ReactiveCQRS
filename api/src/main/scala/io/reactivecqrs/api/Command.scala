@@ -54,3 +54,9 @@ case class SagaStep(sagaId: SagaId, step: Int) extends CommandIdempotencyId {
 trait IdempotentCommand[IID <: CommandIdempotencyId] {
   val idempotencyId: Option[IID]
 }
+
+/** A command that gives every event it stores this metadata envelope (R13, D32). Event handlers do not see it;
+  * listeners get it with each event (`EventInfo.metadata`). */
+trait WithMetadata {
+  def metadata: EventMetadata
+}

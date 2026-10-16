@@ -327,14 +327,14 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
         val outcome = Try {
           eventStore.localTx { implicit session =>
             if (rewritten.nonEmpty) eventStore.overwriteEvents(aggregateId, rewritten)
-            val stored = eventStore.persistEvents(aggregateId, NewEvents(userId, version, timestamp, events)).get
+            val stored = eventStore.persistEvents(aggregateId, NewEvents(userId, version, timestamp, events, metadataOf(envelope.command))).get
             if (idempotency.isIdempotent(envelope.command)) idempotency.record(envelope.command, response)
             stored
           }
         }
         outcome match {
           case Success(stored) =>
-            val published = stored.map { case (event, eventVersion) => EventInfo(eventVersion, event, userId, timestamp) }
+            val published = stored.map { case (event, eventVersion) => EventInfo(eventVersion, event, userId, timestamp, metadataOf(envelope.command)) }
             if (readAfterCommit) {
               // If the state cannot be read, nothing is published now: the outbox poller has it re-published later.
               if (restore().isEmpty) {
@@ -443,6 +443,12 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
   private def rewrittenClasses(command: Any): Option[Set[String]] = command match {
     case c: RewriteHistoryCommand[_, _] => Some(c.eventsTypes.map(_.getName))
     case c: RewriteHistoryConcurrentCommand[_, _] => Some(c.eventsTypes.map(_.getName))
+    case _ => None
+  }
+
+  // D32: the envelope a command gives its events, if it gives one.
+  private def metadataOf(command: Any): Option[EventMetadata] = command match {
+    case withMetadata: WithMetadata => Some(withMetadata.metadata)
     case _ => None
   }
 

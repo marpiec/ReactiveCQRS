@@ -11,10 +11,11 @@ import scala.util.Try
 
 object MemoryEventStoreState {
   case class EventRow(eventId: Long, aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregateType: AggregateType,
-                      event: Event[_], userId: UserId, timestamp: Instant)
+                      event: Event[_], userId: UserId, timestamp: Instant, metadata: Option[EventMetadata] = None)
 }
 
-case class EventStoreEntry[AGGREGATE_ROOT](userId: UserId, timestamp: Instant, version: AggregateVersion, event: Event[AGGREGATE_ROOT])
+case class EventStoreEntry[AGGREGATE_ROOT](userId: UserId, timestamp: Instant, version: AggregateVersion, event: Event[AGGREGATE_ROOT],
+                                           metadata: Option[EventMetadata] = None)
 
 // State is read and changed under the object's lock: owners, the outbox poller and the replayer call the store from
 // their own threads. Callbacks run outside the lock, on a snapshot.
@@ -35,10 +36,10 @@ class MemoryEventStoreState extends EventStoreState {
     }
     val eventsWithVersions = eventsEnvelope.events.map(event => {
       val version = AggregateVersion(eventsForAggregate.size + 1)
-      eventsForAggregate :+= EventStoreEntry(eventsEnvelope.userId, eventsEnvelope.timestamp, version, event)
+      eventsForAggregate :+= EventStoreEntry(eventsEnvelope.userId, eventsEnvelope.timestamp, version, event, eventsEnvelope.metadata)
       eventIdSeq += 1
       eventsRows ::= EventRow(eventIdSeq, aggregateId, version,
-                    AggregateType(event.aggregateRootType.toString), event, eventsEnvelope.userId, eventsEnvelope.timestamp)
+                    AggregateType(event.aggregateRootType.toString), event, eventsEnvelope.userId, eventsEnvelope.timestamp, eventsEnvelope.metadata)
       val key = (aggregateId, version)
 
       val value = (eventsEnvelope.userId, eventsEnvelope.timestamp, event, eventIdSeq)
@@ -52,7 +53,17 @@ class MemoryEventStoreState extends EventStoreState {
   }}
 
 
-  override def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, upToVersion: Option[Either[AggregateVersion, Instant]])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit = {
+  override def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, upToVersion: Option[Either[AggregateVersion, Instant]])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit =
+    processEvents[AGGREGATE_ROOT](aggregateId, upToVersion)((entry, eventAggregateId, noop) =>
+      eventHandler(entry.userId, entry.timestamp, entry.event, eventAggregateId, entry.version.asInt, noop))
+
+  override def readAndProcessEventsWithMetadata[AGGREGATE_ROOT](aggregateId: AggregateId, upToVersion: Option[Either[AggregateVersion, Instant]])
+                                                               (eventHandler: (EventInfo[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit =
+    processEvents[AGGREGATE_ROOT](aggregateId, upToVersion)((entry, eventAggregateId, noop) =>
+      eventHandler(EventInfo(entry.version, entry.event, entry.userId, entry.timestamp, entry.metadata), eventAggregateId, noop))
+
+  private def processEvents[AGGREGATE_ROOT](aggregateId: AggregateId, upToVersion: Option[Either[AggregateVersion, Instant]])
+                                           (eventHandler: (EventStoreEntry[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit = {
     var eventsForAggregate: Vector[EventStoreEntry[AGGREGATE_ROOT]] = synchronized(eventStore.getOrElse(aggregateId, Vector())).asInstanceOf[Vector[EventStoreEntry[AGGREGATE_ROOT]]]
 
     if(upToVersion.isDefined) {
@@ -68,11 +79,11 @@ class MemoryEventStoreState extends EventStoreState {
     // aggregates chain does in PostgreSQL; base events are reported with the base's id.
     eventsForAggregate.headOption.map(_.event).foreach {
       case duplication: DuplicationEvent[_] =>
-        readAndProcessEvents(duplication.baseAggregateId, Some(Left(duplication.baseAggregateVersion)))(eventHandler)
+        processEvents[AGGREGATE_ROOT](duplication.baseAggregateId, Some(Left(duplication.baseAggregateVersion)))(eventHandler)
       case _ => ()
     }
 
-    eventsWithNoop.foreach(eventWithNoop => eventHandler(eventWithNoop._1.userId, eventWithNoop._1.timestamp, eventWithNoop._1.event, aggregateId, eventWithNoop._1.version.asInt, eventWithNoop._2))
+    eventsWithNoop.foreach { case (entry, noop) => eventHandler(entry, aggregateId, noop) }
   }
 
   // An undo event marks itself and the events it undoes as noop, counting back from it.
@@ -122,7 +133,7 @@ class MemoryEventStoreState extends EventStoreState {
 
   override def readAndProcessAllEvents(aggregateType: String, batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit = {
     synchronized(eventsRows).reverse.filter(_.aggregateType.typeName == aggregateType).foreach(row => { // oldest first, as in SQL
-      eventHandler(Seq(EventInfo(row.aggregateVersion, row.event, row.userId, row.timestamp)), row.aggregateId, row.aggregateType)
+      eventHandler(Seq(EventInfo(row.aggregateVersion, row.event, row.userId, row.timestamp, row.metadata)), row.aggregateId, row.aggregateType)
     })
   }
 
@@ -152,7 +163,7 @@ class MemoryEventStoreState extends EventStoreState {
                                                from: AggregateVersion, to: AggregateVersion): Seq[EventInfo[AGGREGATE_ROOT]] = {
     synchronized(eventStore.getOrElse(aggregateId, Vector.empty))
       .filter(entry => entry.version >= from && entry.version <= to)
-      .map(entry => EventInfo[AGGREGATE_ROOT](entry.version, entry.event.asInstanceOf[Event[AGGREGATE_ROOT]], entry.userId, entry.timestamp))
+      .map(entry => EventInfo[AGGREGATE_ROOT](entry.version, entry.event.asInstanceOf[Event[AGGREGATE_ROOT]], entry.userId, entry.timestamp, entry.metadata))
   }
 
   override def oldestVersionToPublish(aggregateId: AggregateId): Option[AggregateVersion] = synchronized {

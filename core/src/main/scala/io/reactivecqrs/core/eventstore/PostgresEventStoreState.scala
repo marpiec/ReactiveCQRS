@@ -2,6 +2,7 @@ package io.reactivecqrs.core.eventstore
 
 import java.sql.Timestamp
 import java.time.Instant
+import java.util.{Calendar, TimeZone}
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.id.{AggregateId, UserId}
@@ -31,151 +32,81 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     className
   }
 
-  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = Try {
-    // Undo/duplication events have their own stored procedures and per-event semantics, so they
-    // always go through the one-by-one path. Plain and first events (even mixed) can be batched
-    // into a single add_events round trip.
-    val batchable = eventsEnvelope.events.size > 1 &&
-      !eventsEnvelope.events.exists(e => e.isInstanceOf[UndoEvent[_]] || e.isInstanceOf[DuplicationEvent[_]])
+  // F65: event times are written and read as UTC whatever the JVM's zone; the column stays TIMESTAMP (D28). Neula runs
+  // in UTC, so the values it stored read back unchanged.
+  private val Utc = TimeZone.getTimeZone("UTC")
+  private def utc(instant: Instant): ParameterBinder = {
+    val timestamp = Timestamp.from(instant)
+    ParameterBinder(timestamp, (statement, index) => statement.setTimestamp(index, timestamp, Calendar.getInstance(Utc)))
+  }
+  private def utcTime(rs: java.sql.ResultSet, column: Int): Instant = rs.getTimestamp(column, Calendar.getInstance(Utc)).toInstant
 
-    if (batchable) {
-      persistEventsBatched(aggregateId, eventsEnvelope)
+  // D32: the metadata envelope of a command's events; a null column means "stored without one".
+  private def metadataJson(metadata: Option[EventMetadata]): Option[String] = metadata.map(m => mpjsons.serialize(m, classOf[EventMetadata].getName))
+  private def metadataOf(json: String): Option[EventMetadata] = Option(json).map(mpjsons.deserialize[EventMetadata](_, classOf[EventMetadata].getName))
+
+  // Plain and first events of a command go in one `add_events` call (F31); undo and duplication events have procedures
+  // of their own, one call per event. Every failure is thrown, so the caller's transaction rolls back whole.
+  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, newEvents: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = Try {
+    val events = newEvents.events
+    val metadata = metadataJson(newEvents.metadata)
+    if (events.exists(e => e.isInstanceOf[UndoEvent[_]] || e.isInstanceOf[DuplicationEvent[_]])) {
+      var version = newEvents.expectedVersion
+      events.map { event =>
+        version = persistOne(aggregateId, newEvents, event, version, metadata)
+        (event, version)
+      }
     } else {
-      persistEventsOneByOne(aggregateId, eventsEnvelope)
+      persistPlain(aggregateId, newEvents, events, newEvents.expectedVersion, metadata)
+      events.zipWithIndex.map { case (event, i) => (event, newEvents.expectedVersion.incrementBy(i + 1)) }
     }
   }
 
-  private def persistEventsOneByOne[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
-    var lastEventVersion: Option[Int] = None
-
-    eventsEnvelope.events.map(event => {
-
-      val eventSerialized = mpjsons.serialize(event, event.getClass.getName)
-
-      val aggregateVersion = lastEventVersion.getOrElse(eventsEnvelope.expectedVersion.asInt)
-
-      val effectiveEventSizeLimit = eventSizeLimitPerClassName.getOrElse(event.getClass.getName, eventSizeLimit)
-
-      if(eventSerialized.length > effectiveEventSizeLimit) {
-        throw new EventTooLargeException(aggregateId, event.aggregateRootType.typeSymbol.fullName, AggregateVersion(aggregateVersion), event.getClass.getName, eventSerialized.length, effectiveEventSizeLimit)
-      } else if(aggregateVersion > aggregateVersionLimit) {
-        throw new TooManyEventsException(aggregateId, event.aggregateRootType.typeSymbol.fullName, aggregateVersionLimit)
-      } else {
-
-        val eventBaseTypeId = typesNamesState.typeIdByClassName(event.getClass.getName)
-        val eventVersion: Short = 0 // D29: event classes are not versioned
-
-        lastEventVersion = Some(event match {
-          case undoEvent: UndoEvent[_] =>
-            // An undo changes the state behind a snapshot: the snapshot goes, in this transaction (D30).
-            sql"""DELETE FROM snapshots WHERE aggregate_id = ${aggregateId.asLong}""".update()
-            sql"""SELECT add_undo_event(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
-              eventsEnvelope.userId.asLong,
-              aggregateId.asLong,
-              aggregateVersion,
-              typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
-              eventBaseTypeId,
-              eventVersion,
-              Timestamp.from(eventsEnvelope.timestamp),
-              eventSerialized,
-              undoEvent.eventsCount
-            ).map(rs => rs.int(1)).single().get
-          case duplicationEvent: DuplicationEvent[_] =>
-            sql"""SELECT add_duplication_event(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
-              eventsEnvelope.userId.asLong,
-              duplicationEvent.spaceId.asLong,
-              aggregateId.asLong,
-              aggregateVersion,
-              typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
-              eventBaseTypeId,
-              eventVersion,
-              Timestamp.from(eventsEnvelope.timestamp),
-              eventSerialized,
-              duplicationEvent.baseAggregateId.asLong,
-              duplicationEvent.baseAggregateVersion.asInt
-            ).map(rs => rs.int(1)).single().get
-          case firstEvent: FirstEvent[_] => {
-            sql"""SELECT add_event(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
-              eventsEnvelope.userId.asLong,
-              firstEvent.spaceId.asLong,
-              aggregateId.asLong,
-              aggregateVersion,
-              typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
-              eventBaseTypeId,
-              eventVersion,
-              Timestamp.from(eventsEnvelope.timestamp),
-              eventSerialized
-            ).map(rs => rs.int(1)).single().get
-          }
-          case _ =>
-            sql"""SELECT add_event(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
-              eventsEnvelope.userId.asLong,
-              -1L,
-              aggregateId.asLong,
-              aggregateVersion,
-              typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName),
-              eventBaseTypeId,
-              eventVersion,
-              Timestamp.from(eventsEnvelope.timestamp),
-              eventSerialized
-            ).map(rs => rs.int(1)).single().get
-        })
-
-        (event, AggregateVersion(lastEventVersion.get))
-      }
-    })
+  private def serializedChecked(aggregateId: AggregateId, event: Event[_], version: AggregateVersion): String = {
+    val serialized = mpjsons.serialize(event, event.getClass.getName)
+    val limit = eventSizeLimitPerClassName.getOrElse(event.getClass.getName, eventSizeLimit)
+    if (serialized.length > limit) {
+      throw new EventTooLargeException(aggregateId, event.aggregateRootType.typeSymbol.fullName, version, event.getClass.getName, serialized.length, limit)
+    } else if (version.asInt > aggregateVersionLimit) {
+      throw new TooManyEventsException(aggregateId, event.aggregateRootType.typeSymbol.fullName, aggregateVersionLimit)
+    }
+    serialized
   }
 
-  private def persistEventsBatched[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
-
-    val events = eventsEnvelope.events.toIndexedSeq
-    val baseVersion = eventsEnvelope.expectedVersion.asInt
+  private def persistPlain[AGGREGATE_ROOT](aggregateId: AggregateId, newEvents: NewEvents[AGGREGATE_ROOT], events: Seq[Event[AGGREGATE_ROOT]],
+                                           expectedVersion: AggregateVersion, metadata: Option[String])(implicit session: DBSession): AggregateVersion = {
+    val serialized = events.zipWithIndex.map { case (event, i) => serializedChecked(aggregateId, event, expectedVersion.incrementBy(i)) }
+    val spaceIds = events.map {
+      case first: FirstEvent[_] => Long.box(first.spaceId.asLong)
+      case _ => Long.box(-1L)
+    }
+    val eventTypeIds = events.map(e => Short.box(typesNamesState.typeIdByClassName(e.getClass.getName)))
+    def array(elementType: String, elements: Seq[AnyRef]): ParameterBinder = {
+      val sqlArray = session.connection.createArrayOf(elementType, elements.toArray)
+      ParameterBinder(sqlArray, (statement, index) => statement.setArray(index, sqlArray))
+    }
     val aggregateTypeId = typesNamesState.typeIdByClassName(events.head.aggregateRootType.typeSymbol.fullName)
+    AggregateVersion(sql"""SELECT add_events(${newEvents.userId.asLong}, ${array("bigint", spaceIds)}, ${aggregateId.asLong}, ${expectedVersion.asInt},
+                          |  $aggregateTypeId, ${array("smallint", eventTypeIds)}, ${utc(newEvents.timestamp)}, ${array("text", serialized)}, $metadata::jsonb)"""
+      .stripMargin.map(_.int(1)).single().get)
+  }
 
-    val n = events.size
-    val spaceIds = new Array[AnyRef](n)
-    val eventTypeIds = new Array[AnyRef](n)
-    val eventTypeVersions = new Array[AnyRef](n)
-    val serializedEvents = new Array[AnyRef](n)
-
-    events.iterator.zipWithIndex.foreach { case (event, i) =>
-      val eventSerialized = mpjsons.serialize(event, event.getClass.getName)
-      val aggregateVersion = baseVersion + i
-      val effectiveEventSizeLimit = eventSizeLimitPerClassName.getOrElse(event.getClass.getName, eventSizeLimit)
-
-      if (eventSerialized.length > effectiveEventSizeLimit) {
-        throw new EventTooLargeException(aggregateId, event.aggregateRootType.typeSymbol.fullName, AggregateVersion(aggregateVersion), event.getClass.getName, eventSerialized.length, effectiveEventSizeLimit)
-      } else if (aggregateVersion > aggregateVersionLimit) {
-        throw new TooManyEventsException(aggregateId, event.aggregateRootType.typeSymbol.fullName, aggregateVersionLimit)
-      }
-      spaceIds(i) = Long.box(event match {
-        case firstEvent: FirstEvent[_] => firstEvent.spaceId.asLong
-        case _ => -1L
-      })
-      eventTypeIds(i) = Short.box(typesNamesState.typeIdByClassName(event.getClass.getName))
-      eventTypeVersions(i) = Short.box(0: Short) // D29
-      serializedEvents(i) = eventSerialized
-    }
-
-    val connection = session.connection
-    def arrayParam(elementType: String, elements: Array[AnyRef]): ParameterBinder = {
-      val sqlArray = connection.createArrayOf(elementType, elements)
-      ParameterBinder(value = sqlArray, binder = (stmt, idx) => stmt.setArray(idx, sqlArray))
-    }
-
-    val versions = sql"""SELECT add_events(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
-      eventsEnvelope.userId.asLong,
-      arrayParam("bigint", spaceIds),
-      aggregateId.asLong,
-      baseVersion,
-      aggregateTypeId,
-      arrayParam("smallint", eventTypeIds),
-      arrayParam("smallint", eventTypeVersions),
-      Timestamp.from(eventsEnvelope.timestamp),
-      arrayParam("varchar", serializedEvents)
-    ).map(rs => rs.int(1)).list()
-
-    events.zip(versions.map(AggregateVersion(_)))
+  private def persistOne[AGGREGATE_ROOT](aggregateId: AggregateId, newEvents: NewEvents[AGGREGATE_ROOT], event: Event[AGGREGATE_ROOT],
+                                         expectedVersion: AggregateVersion, metadata: Option[String])(implicit session: DBSession): AggregateVersion = event match {
+    case undo: UndoEvent[_] =>
+      val serialized = serializedChecked(aggregateId, event, expectedVersion)
+      AggregateVersion(sql"""SELECT add_undo_event(${newEvents.userId.asLong}, ${aggregateId.asLong}, ${expectedVersion.asInt},
+                            |  ${typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName)}, ${typesNamesState.typeIdByClassName(event.getClass.getName)},
+                            |  ${utc(newEvents.timestamp)}, $serialized, ${undo.eventsCount}, $metadata::jsonb)"""
+        .stripMargin.map(_.int(1)).single().get)
+    case duplication: DuplicationEvent[_] =>
+      val serialized = serializedChecked(aggregateId, event, expectedVersion)
+      AggregateVersion(sql"""SELECT add_duplication_event(${newEvents.userId.asLong}, ${duplication.spaceId.asLong}, ${aggregateId.asLong}, ${expectedVersion.asInt},
+                            |  ${typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName)}, ${typesNamesState.typeIdByClassName(event.getClass.getName)},
+                            |  ${utc(newEvents.timestamp)}, $serialized, ${duplication.baseAggregateId.asLong}, ${duplication.baseAggregateVersion.asInt}, $metadata::jsonb)"""
+        .stripMargin.map(_.int(1)).single().get)
+    case _ =>
+      persistPlain(aggregateId, newEvents, Seq(event), expectedVersion, metadata)
   }
 
 
@@ -194,24 +125,36 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   // at an instant reads up to the aggregate's version at that instant (F39): its own events up to it, undone as they
   // were then, and its base's events as for any version.
   override def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, versionOrInstant: Option[Either[AggregateVersion, Instant]])
-                                                   (eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit = {
+                                                   (eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit =
+    processEvents[AGGREGATE_ROOT](aggregateId, versionOrInstant, withMetadata = false) { (userId, time, event, eventAggregateId, version, noop, _) =>
+      eventHandler(userId, time, event, eventAggregateId, version, noop)
+    }
+
+  override def readAndProcessEventsWithMetadata[AGGREGATE_ROOT](aggregateId: AggregateId, versionOrInstant: Option[Either[AggregateVersion, Instant]])
+                                                               (eventHandler: (EventInfo[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit =
+    processEvents[AGGREGATE_ROOT](aggregateId, versionOrInstant, withMetadata = true) { (userId, time, event, eventAggregateId, version, noop, metadata) =>
+      eventHandler(EventInfo(AggregateVersion(version), event, userId, time, metadata), eventAggregateId, noop)
+    }
+
+  private def processEvents[AGGREGATE_ROOT](aggregateId: AggregateId, versionOrInstant: Option[Either[AggregateVersion, Instant]], withMetadata: Boolean)
+                                           (eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean, Option[EventMetadata]) => Unit): Unit = {
     DB.localTx { implicit session =>
       val version: Option[AggregateVersion] = versionOrInstant.map {
         case Left(version) => version
         case Right(instant) =>
-          AggregateVersion(sql"""SELECT coalesce(max(version), 0) FROM events WHERE aggregate_id = ${aggregateId.asLong} AND event_time <= ${Timestamp.from(instant)}"""
+          AggregateVersion(sql"""SELECT coalesce(max(version), 0) FROM events WHERE aggregate_id = ${aggregateId.asLong} AND event_time <= ${utc(instant)}"""
             .map(_.int(1)).single().getOrElse(0))
       }
       val query = version match {
         case Some(v) =>
-          sql"""SELECT user_id, event_time, event_type_id, event_type_version, event, events.version, events.aggregate_id,
+          sql"""SELECT user_id, event_time, event_type_id, event_type_version, event, events.version, events.aggregate_id, events.metadata::text,
                 noop_events.id IS NOT NULL AND (events.aggregate_id != ? AND noop_events.from_version <= aggregates.base_version OR events.aggregate_id = ? AND noop_events.from_version <= ?) as noop
              FROM events
              JOIN aggregates ON events.aggregate_id = aggregates.base_id AND (events.aggregate_id != ? AND events.version <= aggregates.base_version OR events.aggregate_id = ? AND events.version <= ?)
              LEFT JOIN noop_events ON events.id = noop_events.id AND noop_events.from_version <= aggregates.base_version
              WHERE aggregates.id = ? ORDER BY aggregates.base_order, version""".stripMargin.bind(aggregateId.asLong, aggregateId.asLong, v.asInt, aggregateId.asLong, aggregateId.asLong, v.asInt, aggregateId.asLong)
         case None =>
-          sql"""SELECT user_id, event_time, event_type_id, event_type_version, event, events.version, events.aggregate_id,
+          sql"""SELECT user_id, event_time, event_type_id, event_type_version, event, events.version, events.aggregate_id, events.metadata::text,
                 noop_events.id IS NOT NULL AND noop_events.from_version <= aggregates.base_version as noop
              FROM events
              JOIN aggregates ON events.aggregate_id = aggregates.base_id AND events.version <= aggregates.base_version
@@ -221,7 +164,8 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       query.fetchSize(fetchSize).foreach { rs =>
         val eventType = eventClass(rs.short(3), rs.short(4), rs.long(7), rs.int(6))
         val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(5), eventType)
-        eventHandler(UserId(rs.long(1)), rs.timestamp(2).toInstant, event, AggregateId(rs.long(7)), rs.int(6), rs.boolean(8))
+        eventHandler(UserId(rs.long(1)), utcTime(rs.underlying, 2), event, AggregateId(rs.long(7)), rs.int(6), rs.boolean(9),
+          if (withMetadata) metadataOf(rs.string(8)) else None)
       }
     }
   }
@@ -237,7 +181,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
            | WHERE events.aggregate_id = ${aggregateId.asLong} AND events.version > ${after.asInt} AND events.version <= $last
            | ORDER BY events.version""".stripMargin.fetchSize(fetchSize).foreach { rs =>
         val eventType = eventClass(rs.short(3), rs.short(4), aggregateId.asLong, rs.int(6))
-        eventHandler(UserId(rs.long(1)), rs.timestamp(2).toInstant, mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(5), eventType), rs.int(6), rs.boolean(7))
+        eventHandler(UserId(rs.long(1)), utcTime(rs.underlying, 2), mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(5), eventType), rs.int(6), rs.boolean(7))
       }
     }
   }
@@ -283,14 +227,14 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       connection.setAutoCommit(false)
 
       val statement = if(batchPerAggregate) {
-        connection.prepareStatement("""SELECT event_type_id, event_type_version, event, events.version, events.aggregate_id, user_id, event_time,
+        connection.prepareStatement("""SELECT event_type_id, event_type_version, event, events.version, events.aggregate_id, user_id, event_time, events.metadata::text,
        noop_events.id IS NOT NULL AND noop_events.from_version <= aggregates.base_version as noop
 FROM events
          JOIN aggregates ON aggregates.type_id = ? AND events.aggregate_id = aggregates.base_id AND events.aggregate_id = aggregates.id
          LEFT JOIN noop_events ON events.id = noop_events.id AND noop_events.from_version <= aggregates.base_version
 ORDER BY events.aggregate_id, events.id""".stripMargin, java.sql.ResultSet.TYPE_FORWARD_ONLY, java.sql.ResultSet.CONCUR_READ_ONLY)
       } else {
-        connection.prepareStatement("""SELECT event_type_id, event_type_version, event, events.version, events.aggregate_id, user_id, event_time,
+        connection.prepareStatement("""SELECT event_type_id, event_type_version, event, events.version, events.aggregate_id, user_id, event_time, events.metadata::text,
        noop_events.id IS NOT NULL AND noop_events.from_version <= aggregates.base_version as noop
 FROM events
          JOIN aggregates ON aggregates.type_id = ? AND events.aggregate_id = aggregates.base_id AND events.aggregate_id = aggregates.id
@@ -303,13 +247,13 @@ ORDER BY events.id""")
       val rs = statement.executeQuery()
 
       while(rs.next()) {
-        if(!rs.getBoolean(8)) { // ignore noop
+        if(!rs.getBoolean(9)) { // ignore noop
           val eventType = eventClass(rs.getShort(1), rs.getShort(2), rs.getLong(5), rs.getInt(4))
 
           val event = mpjsons.deserialize[Event[_]](rs.getString(3), eventType)
           val aggregateId = AggregateId(rs.getLong(5))
           val version = AggregateVersion(rs.getInt(4))
-          val eventInfo: EventInfo[Any] = EventInfo[Any](version, event.asInstanceOf[Event[Any]], UserId(rs.getLong(6)), rs.getTimestamp(7).toInstant)
+          val eventInfo: EventInfo[Any] = EventInfo[Any](version, event.asInstanceOf[Event[Any]], UserId(rs.getLong(6)), utcTime(rs, 7), metadataOf(rs.getString(8)))
 
           if (!batchPerAggregate || lastAggregateId != aggregateId) {
             if (buffer.nonEmpty) {
@@ -376,7 +320,7 @@ ORDER BY events.id""")
          | JOIN aggregates ON aggregates.id = events_to_publish.aggregate_id AND aggregates.base_id = aggregates.id
          | GROUP BY aggregates.type_id, events_to_publish.aggregate_id""".stripMargin
       .map(rs => WaitingInOutbox(AggregateType(typesNamesState.classNameById(rs.short(1))), AggregateId(rs.long(2)),
-        AggregateVersion(rs.int(3)), rs.timestamp(4).toInstant))
+        AggregateVersion(rs.int(3)), utcTime(rs.underlying, 4)))
       .list()
   }
 
@@ -406,13 +350,13 @@ ORDER BY events.id""")
   override def readEventsRange[AGGREGATE_ROOT](aggregateId: AggregateId,
                                                from: AggregateVersion, to: AggregateVersion): Seq[EventInfo[AGGREGATE_ROOT]] = {
     DB.readOnly { implicit session =>
-      sql"""SELECT version, event_type_id, event_type_version, event, user_id, event_time
+      sql"""SELECT version, event_type_id, event_type_version, event, user_id, event_time, metadata::text
            | FROM events
            | WHERE aggregate_id = ? AND version BETWEEN ? AND ?
            | ORDER BY version""".stripMargin.bind(aggregateId.asLong, from.asInt, to.asInt).map { rs =>
         val eventType = eventClass(rs.short(2), rs.short(3), aggregateId.asLong, rs.int(1))
         EventInfo[AGGREGATE_ROOT](AggregateVersion(rs.int(1)), mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(4), eventType),
-          UserId(rs.long(5)), rs.timestamp(6).toInstant)
+          UserId(rs.long(5)), utcTime(rs.underlying, 6), metadataOf(rs.string(7)))
       }.list()
     }
   }

@@ -10,6 +10,9 @@ case class DuplicateShoppingCart(userId: UserId, baseAggregateId: AggregateId, b
 
 case class AddItem(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
                    name: String) extends Command[ShoppingCart, CustomCommandResponse[_]]
+/** Adds an item for someone else: its event carries a metadata envelope (R13). */
+case class AddItemOnBehalf(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, name: String, metadata: EventMetadata)
+  extends Command[ShoppingCart, CustomCommandResponse[_]] with WithMetadata
 /** Adds several items in one command, one event each. */
 case class AddItems(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, names: Seq[String])
   extends Command[ShoppingCart, CustomCommandResponse[_]]

@@ -8,8 +8,10 @@ import scalikejdbc.DBSession
 
 import scala.util.Try
 
-/** The events of one command, stored after `expectedVersion` with one user and one timestamp (D10). */
-case class NewEvents[AGGREGATE_ROOT](userId: UserId, expectedVersion: AggregateVersion, timestamp: Instant, events: Seq[Event[AGGREGATE_ROOT]])
+/** The events of one command, stored after `expectedVersion` with one user and one timestamp (D10) and the
+  * command's metadata envelope, if it has one (D32). */
+case class NewEvents[AGGREGATE_ROOT](userId: UserId, expectedVersion: AggregateVersion, timestamp: Instant, events: Seq[Event[AGGREGATE_ROOT]],
+                                     metadata: Option[EventMetadata] = None)
 
 /** A performance snapshot (D30): the aggregate's state at `version`, usable only with the context and schema versions
   * it was made with. */
@@ -24,6 +26,10 @@ abstract class EventStoreState {
   def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]]
   def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit
   def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, version: Option[Either[AggregateVersion, Instant]])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit
+  /** Like `readAndProcessEvents`, with each event's metadata envelope (D32): for answers that return events. */
+  def readAndProcessEventsWithMetadata[AGGREGATE_ROOT](aggregateId: AggregateId, version: Option[Either[AggregateVersion, Instant]])
+                                                      (eventHandler: (EventInfo[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit
+
   /** The aggregate's own events after version `after`, up to `upTo` (or its newest), in order, each with whether it
     * was undone as of that version: the tail after a snapshot. A duplicate's base events all come before its own. */
   def readAndProcessOwnEvents[AGGREGATE_ROOT](aggregateId: AggregateId, after: AggregateVersion, upTo: Option[AggregateVersion])

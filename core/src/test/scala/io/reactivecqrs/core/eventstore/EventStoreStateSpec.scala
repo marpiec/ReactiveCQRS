@@ -3,7 +3,7 @@ package io.reactivecqrs.core.eventstore
 import java.time.Instant
 
 import org.apache.pekko.actor.ActorRef
-import io.reactivecqrs.api.{AggregateVersion, DuplicationEvent, Event, EventWithVersion, FirstEvent, UndoEvent}
+import io.reactivecqrs.api.{AggregateVersion, DuplicationEvent, Event, EventMetadata, EventWithVersion, FirstEvent, UndoEvent}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, SpaceId, UserId}
 import io.reactivecqrs.core.eventstore.NewEvents
 import io.reactivecqrs.testutils.CommonSpec
@@ -289,6 +289,30 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     eventStoreState.localTx(session => eventStoreState.overwriteEvents(f.aggregateId, Seq(EventWithVersion(AggregateVersion(1), EventA("rewritten"))))(session))
     eventStoreState.readSnapshot[SomeAggregate](f.aggregateId, stateClass) mustBe None
     eventStoreState.readSnapshot[SomeAggregate](copyId, stateClass) mustBe None
+  }
+
+  // D32, R13: the metadata envelope travels with the events; events stored without one get their user as the actor.
+  Scenario("A command's metadata envelope is read back with each of its events, and a default one for events without") {
+    val f = new TestFixture(eventStoreState)
+    val metadata = EventMetadata("agent:7", correlationId = Some("corr"), causationId = Some("cmd 1"), traceContext = Some("00-ab-cd-01"),
+      spaceId = Some(SpaceId(3)), custom = Map("channel" -> "api"))
+    eventStoreState.localTx(session => eventStoreState.persistEvents(f.aggregateId,
+      NewEvents(f.userId, AggregateVersion.ZERO, Instant.now, Seq(EventA("one"), EventB(2)), Some(metadata)))(session)).get
+    eventStoreState.localTx(session => eventStoreState.persistEvents(f.aggregateId,
+      NewEvents(f.userId, AggregateVersion(2), Instant.now, Seq(EventC(true))))(session)).get
+
+    val range = eventStoreState.readEventsRange[SomeAggregate](f.aggregateId, AggregateVersion(1), AggregateVersion(3))
+    range.map(_.storedMetadata) mustBe Seq(Some(metadata), Some(metadata), None)
+    range.last.metadata mustBe EventMetadata.ofUser(f.userId)
+
+    var read = Vector[Option[EventMetadata]]()
+    eventStoreState.readAndProcessEventsWithMetadata[SomeAggregate](f.aggregateId, None)((event, _, _) => read :+= event.storedMetadata)
+    read mustBe Vector(Some(metadata), Some(metadata), None)
+
+    var replayed = Vector[Option[EventMetadata]]()
+    eventStoreState.readAndProcessAllEvents(classOf[SomeAggregate].getName, batchPerAggregate = false, (events, aggregateId, _) =>
+      if (aggregateId == f.aggregateId) replayed ++= events.map(_.storedMetadata))
+    replayed mustBe Vector(Some(metadata), Some(metadata), None)
   }
 
   Scenario("The oldest version waiting in the outbox is found") {

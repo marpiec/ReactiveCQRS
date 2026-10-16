@@ -19,9 +19,12 @@ class PostgresEventStoreSchemaInitializer  {
     createAggregatesBaseIdIndex()
     createEventsSequence()
     createSnapshotsTable()
-    dropExistingFunctions()
-    createAddEventFunction()
+    addEventsMetadataColumn()
+    addAggregatesSquashedVersionColumn()
+    createEventsAggregateVersionIndexWhenSmall()
+    dropOldFunctions()
     createAddEventsFunction()
+    createAddEventFunction()
     createAddUndoEventFunction()
     createAddDuplicationEventFunction()
   }
@@ -138,103 +141,133 @@ class PostgresEventStoreSchemaInitializer  {
       """.execute()
   }
 
-  private def dropExistingFunctions(): Unit = DB.autoCommit { implicit session =>
-    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240))""".execute()
-    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240))""".execute()
-    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240))""".execute() // space_id added
-    sql"""DROP FUNCTION IF EXISTS add_events(BIGINT, BIGINT[], BIGINT, INT, SMALLINT, SMALLINT[], SMALLINT[], TIMESTAMP, VARCHAR(102400)[])""".execute()
-    sql"""DROP FUNCTION IF EXISTS add_undo_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), INT)""".execute()
-    sql"""DROP FUNCTION IF EXISTS add_undo_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), INT)""".execute()
-    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), BIGINT, INT)""".execute()
-    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), BIGINT, INT)""".execute()
-    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), BIGINT, INT)""".execute() // space_id added
+  // D32: the metadata envelope of an event; null for events stored without one.
+  private def addEventsMetadataColumn(): Unit = DB.autoCommit { implicit session =>
+    sql"""ALTER TABLE events ADD COLUMN IF NOT EXISTS metadata JSONB""".execute()
   }
 
+  // D49, D51: the version an aggregate's history is squashed up to; null when it never was.
+  private def addAggregatesSquashedVersionColumn(): Unit = DB.autoCommit { implicit session =>
+    sql"""ALTER TABLE aggregates ADD COLUMN IF NOT EXISTS squashed_version INT""".execute()
+  }
+
+  // F38: a new or small installation gets the restore index at once; a large one builds it online
+  // (`PostgresEventStoreState.buildIndexesConcurrently`), since a plain build would block writes for its duration (D69).
+  private def createEventsAggregateVersionIndexWhenSmall(): Unit = DB.autoCommit { implicit session =>
+    val estimatedRows = sql"""SELECT reltuples::bigint FROM pg_class WHERE oid = 'events'::regclass""".map(_.long(1)).single().getOrElse(0L)
+    if (estimatedRows < 100000L) {
+      sql"""CREATE INDEX IF NOT EXISTS events_aggregate_version_idx ON events (aggregate_id, version)""".execute()
+    }
+  }
+
+  // Signatures of earlier versions only: the current functions are replaced in place, so a node starting never drops a
+  // function that other nodes are using (the migration runner of M5 takes this over).
+  private def dropOldFunctions(): Unit = DB.autoCommit { implicit session =>
+    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR)""".execute()
+    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR)""".execute()
+    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR)""".execute()
+    sql"""DROP FUNCTION IF EXISTS add_events(BIGINT, BIGINT[], BIGINT, INT, SMALLINT, SMALLINT[], SMALLINT[], TIMESTAMP, VARCHAR[])""".execute()
+    sql"""DROP FUNCTION IF EXISTS add_undo_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR, INT)""".execute()
+    sql"""DROP FUNCTION IF EXISTS add_undo_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR, INT)""".execute()
+    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR, BIGINT, INT)""".execute()
+    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR, BIGINT, INT)""".execute()
+    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR, BIGINT, INT)""".execute()
+  }
+
+  // One event: `add_events` with a single element.
   private def createAddEventFunction(): Unit = DB.autoCommit { implicit session =>
     SQL("""
-          |CREATE OR REPLACE FUNCTION add_event(user_id BIGINT, space_id BIGINT, aggregate_id BIGINT, expected_version INT, aggregate_type_id SMALLINT, event_type_id SMALLINT, event_type_version SMALLINT, event_time TIMESTAMP, event VARCHAR(102400))
-          |RETURNS BIGINT AS
+          |CREATE OR REPLACE FUNCTION add_event(user_id BIGINT, space_id BIGINT, aggregate_id BIGINT, expected_version INT, aggregate_type_id SMALLINT, event_type_id SMALLINT, event_time TIMESTAMP, event TEXT, metadata JSONB)
+          |RETURNS INT AS
           |$$
-          |DECLARE
-          |    current_version INT;
-          |    event_id BIGINT;
           |BEGIN
-          |    UPDATE aggregates SET base_version = base_version + 1 WHERE id = aggregate_id AND base_id = aggregate_id RETURNING base_version - 1 INTO current_version;
-          |    IF NOT FOUND THEN
-          |        IF expected_version = 0 AND space_id >= 0 THEN
-          |            INSERT INTO aggregates (space_id, id, creation_time, type_id, base_order, base_id, base_version) VALUES (space_id, aggregate_id, current_timestamp, aggregate_type_id, 1, aggregate_id, 1);
-          |            current_version := 0;
-          |        ELSE
-          |            IF space_id = -1 THEN
-          |                RAISE EXCEPTION 'Space incorrect defined for aggregate not found, id %, aggregate_type_id %. Maybe FirstEvent was not used.', aggregate_id, aggregate_type_id;
-          |            ELSE
-          |	               RAISE EXCEPTION 'aggregate not found, id %, aggregate_type_id %', aggregate_id, aggregate_type_id;
-          |            END IF;
-          |        END IF;
-          |    END IF;
-          |    IF expected_version >= 0 AND current_version != expected_version THEN
-          |  	     RAISE EXCEPTION 'Concurrent aggregate modification exception, user id %, aggregate id %, expected version %, current_version %, event_type_id %, event %', user_id, aggregate_id, expected_version, current_version, event_type_id, event;
-          |    END IF;
-          |    SELECT NEXTVAL('events_seq') INTO event_id;
-          |    INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event) VALUES (event_id, user_id, aggregate_id, event_time, current_version + 1, event_type_id, event_type_version, event);
-          |    INSERT INTO events_to_publish (event_id, aggregate_id, version, user_id, event_time) VALUES(event_id, aggregate_id, current_version + 1, user_id, event_time);
-          |    RETURN current_version + 1;
+          |    RETURN add_events(user_id, ARRAY[space_id], aggregate_id, expected_version, aggregate_type_id, ARRAY[event_type_id], event_time, ARRAY[event], metadata);
           |END;
           |$$
           |LANGUAGE 'plpgsql' VOLATILE
         """.stripMargin).execute()
   }
 
-  // Batches multiple plain/first events for a single aggregate into one round trip.
-  // Delegates each element to add_event in order; the per-call expected_version is
-  // _expected_version + (i - 1), which matches the sequential base_version increments
-  // add_event performs, so the optimistic-lock check is preserved exactly.
+  // The aggregate's own row of its chain holds its version: updating it locks the aggregate for the transaction, so the
+  // writers of one aggregate queue up there, and a version other than the expected one raises (the optimistic lock).
+  // F31: one update of that row for the whole command, then the events and their outbox rows. Events are written with
+  // type version 0 (D29) and the command's metadata envelope (D32). A first event (space id >= 0) creates the row.
+  // Returns the aggregate's new version.
   private def createAddEventsFunction(): Unit = DB.autoCommit { implicit session =>
     SQL("""
-          |CREATE OR REPLACE FUNCTION add_events(_user_id BIGINT, _space_ids BIGINT[], _aggregate_id BIGINT, _expected_version INT, _aggregate_type_id SMALLINT, _event_type_ids SMALLINT[], _event_type_versions SMALLINT[], _event_time TIMESTAMP, _events VARCHAR(102400)[])
-          |RETURNS SETOF BIGINT AS
+          |CREATE OR REPLACE FUNCTION add_events(_user_id BIGINT, _space_ids BIGINT[], _aggregate_id BIGINT, _expected_version INT, _aggregate_type_id SMALLINT, _event_type_ids SMALLINT[], _event_time TIMESTAMP, _events TEXT[], _metadata JSONB)
+          |RETURNS INT AS
           |$$
           |DECLARE
-          |    i INT;
+          |    n INT := array_length(_events, 1);
+          |    current_version INT;
+          |    event_id BIGINT;
           |BEGIN
-          |    FOR i IN 1 .. array_length(_events, 1) LOOP
-          |        RETURN NEXT add_event(_user_id, _space_ids[i], _aggregate_id, _expected_version + i - 1, _aggregate_type_id, _event_type_ids[i], _event_type_versions[i], _event_time, _events[i]);
+          |    UPDATE aggregates SET base_version = base_version + n WHERE id = _aggregate_id AND base_id = _aggregate_id RETURNING base_version - n INTO current_version;
+          |    IF NOT FOUND THEN
+          |        IF _expected_version = 0 AND _space_ids[1] >= 0 THEN
+          |            INSERT INTO aggregates (space_id, id, creation_time, type_id, base_order, base_id, base_version) VALUES (_space_ids[1], _aggregate_id, current_timestamp, _aggregate_type_id, 1, _aggregate_id, n);
+          |            current_version := 0;
+          |        ELSIF _space_ids[1] = -1 THEN
+          |            RAISE EXCEPTION 'Space incorrect defined for aggregate not found, id %, aggregate_type_id %. Maybe FirstEvent was not used.', _aggregate_id, _aggregate_type_id;
+          |        ELSE
+          |            RAISE EXCEPTION 'aggregate not found, id %, aggregate_type_id %', _aggregate_id, _aggregate_type_id;
+          |        END IF;
+          |    END IF;
+          |    IF _expected_version >= 0 AND current_version != _expected_version THEN
+          |        RAISE EXCEPTION 'Concurrent aggregate modification exception, user id %, aggregate id %, expected version %, current_version %', _user_id, _aggregate_id, _expected_version, current_version;
+          |    END IF;
+          |    FOR i IN 1 .. n LOOP
+          |        event_id := nextval('events_seq');
+          |        INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event, metadata) VALUES (event_id, _user_id, _aggregate_id, _event_time, current_version + i, _event_type_ids[i], 0, _events[i], _metadata);
+          |        INSERT INTO events_to_publish (event_id, aggregate_id, version, user_id, event_time) VALUES (event_id, _aggregate_id, current_version + i, _user_id, _event_time);
           |    END LOOP;
-          |    RETURN;
+          |    RETURN current_version + n;
           |END;
           |$$
           |LANGUAGE 'plpgsql' VOLATILE
         """.stripMargin).execute()
   }
 
+  // Marks the last `undo_count` events not undone yet, and itself, as noop from the new version. F31: the newest events
+  // are found walking back the index on (aggregate_id, version), not by sorting the history. D49: an undo that would reach
+  // the squashed history is refused. D30: the aggregate's snapshot no longer matches its history and goes.
   private def createAddUndoEventFunction(): Unit = DB.autoCommit { implicit session =>
     SQL("""
-          |CREATE OR REPLACE FUNCTION add_undo_event(user_id BIGINT, _aggregate_id BIGINT, expected_version INT, aggregate_type_id SMALLINT, event_type_id SMALLINT, event_type_version SMALLINT, event_time TIMESTAMP, event VARCHAR(102400), undo_count INT)
-          |RETURNS BIGINT AS
+          |CREATE OR REPLACE FUNCTION add_undo_event(user_id BIGINT, _aggregate_id BIGINT, expected_version INT, aggregate_type_id SMALLINT, event_type_id SMALLINT, event_time TIMESTAMP, event TEXT, undo_count INT, metadata JSONB)
+          |RETURNS INT AS
           |$$
           |DECLARE
           |    current_version INT;
+          |    squashed INT;
+          |    first_undone INT;
           |    event_id BIGINT;
           |BEGIN
-          |    UPDATE aggregates SET base_version = base_version + 1 WHERE id = _aggregate_id AND base_id = _aggregate_id RETURNING base_version - 1 INTO current_version;
+          |    UPDATE aggregates SET base_version = base_version + 1 WHERE id = _aggregate_id AND base_id = _aggregate_id RETURNING base_version - 1, squashed_version INTO current_version, squashed;
           |    IF NOT FOUND THEN
           |        IF expected_version = 0 THEN
           |            RAISE EXCEPTION 'Cannot undo event for non existing aggregate';
           |        ELSE
-          |	           RAISE EXCEPTION 'aggregate not found, id %, aggregate_type_id %', _aggregate_id, aggregate_type_id;
+          |            RAISE EXCEPTION 'aggregate not found, id %, aggregate_type_id %', _aggregate_id, aggregate_type_id;
           |        END IF;
           |    END IF;
           |    IF expected_version >= 0 AND current_version != expected_version THEN
-          |	       RAISE EXCEPTION 'Concurrent aggregate modification exception, user id %, aggregate id %, expected version %, current_version %, event_type_id %, event %', user_id, _aggregate_id, expected_version, current_version, event_type_id, event;
+          |        RAISE EXCEPTION 'Concurrent aggregate modification exception, user id %, aggregate id %, expected version %, current_version %', user_id, _aggregate_id, expected_version, current_version;
           |    END IF;
-          |    SELECT NEXTVAL('events_seq') INTO event_id;
-          |    INSERT INTO noop_events (id, from_version) (select events.id, current_version + 1
-          |     from events
-          |     left join noop_events on events.id = noop_events.id
-          |     where events.aggregate_id = _aggregate_id AND noop_events.id is null order by events.version desc limit undo_count);
-          |    INSERT INTO noop_events(id, from_version) VALUES (event_id, current_version + 1);
-          |    INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event) VALUES (event_id, user_id, _aggregate_id, event_time, current_version + 1, event_type_id, event_type_version, event);
-          |    INSERT INTO events_to_publish (event_id, aggregate_id, version, user_id, event_time) VALUES(event_id, _aggregate_id, current_version + 1, user_id, event_time);
+          |    SELECT min(last.version) INTO first_undone FROM (
+          |        SELECT events.version FROM events LEFT JOIN noop_events ON events.id = noop_events.id
+          |        WHERE events.aggregate_id = _aggregate_id AND noop_events.id IS NULL ORDER BY events.version DESC LIMIT undo_count) AS last;
+          |    IF squashed IS NOT NULL AND first_undone <= squashed THEN
+          |        RAISE EXCEPTION 'Undo cannot reach the squashed history: aggregate %, squashed up to version %, the undo would reach version %', _aggregate_id, squashed, first_undone;
+          |    END IF;
+          |    event_id := nextval('events_seq');
+          |    INSERT INTO noop_events (id, from_version)
+          |        SELECT events.id, current_version + 1 FROM events LEFT JOIN noop_events ON events.id = noop_events.id
+          |        WHERE events.aggregate_id = _aggregate_id AND noop_events.id IS NULL ORDER BY events.version DESC LIMIT undo_count;
+          |    INSERT INTO noop_events (id, from_version) VALUES (event_id, current_version + 1);
+          |    INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event, metadata) VALUES (event_id, user_id, _aggregate_id, event_time, current_version + 1, event_type_id, 0, event, metadata);
+          |    INSERT INTO events_to_publish (event_id, aggregate_id, version, user_id, event_time) VALUES (event_id, _aggregate_id, current_version + 1, user_id, event_time);
+          |    DELETE FROM snapshots WHERE aggregate_id = _aggregate_id;
           |    RETURN current_version + 1;
           |END;
           |$$
@@ -242,10 +275,11 @@ class PostgresEventStoreSchemaInitializer  {
         """.stripMargin).execute()
   }
 
+  // A duplicate starts with its base's chain up to the base version, then a row of its own.
   private def createAddDuplicationEventFunction(): Unit = DB.autoCommit { implicit session =>
     SQL("""
-          |CREATE OR REPLACE FUNCTION add_duplication_event(user_id BIGINT, new_space_id BIGINT, aggregate_id BIGINT, expected_version INT, aggregate_type_id SMALLINT, event_type_id SMALLINT, event_type_version SMALLINT, event_time TIMESTAMP, event VARCHAR(102400), _base_id BIGINT, _base_version INT)
-          |RETURNS BIGINT AS
+          |CREATE OR REPLACE FUNCTION add_duplication_event(user_id BIGINT, new_space_id BIGINT, aggregate_id BIGINT, expected_version INT, aggregate_type_id SMALLINT, event_type_id SMALLINT, event_time TIMESTAMP, event TEXT, _base_id BIGINT, _base_version INT, metadata JSONB)
+          |RETURNS INT AS
           |$$
           |DECLARE
           |    current_version INT;
@@ -266,9 +300,9 @@ class PostgresEventStoreSchemaInitializer  {
           |    ELSE
           |      RAISE EXCEPTION 'Duplication event might occur only for non existing aggregate, but such was found';
           |    END IF;
-          |    SELECT NEXTVAL('events_seq') INTO event_id;
-          |    INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event) VALUES (event_id, user_id, aggregate_id, event_time, current_version + 1, event_type_id, event_type_version, event);
-          |    INSERT INTO events_to_publish (event_id, aggregate_id, version, user_id, event_time) VALUES(event_id, aggregate_id, current_version + 1, user_id, event_time);
+          |    event_id := nextval('events_seq');
+          |    INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event, metadata) VALUES (event_id, user_id, aggregate_id, event_time, current_version + 1, event_type_id, 0, event, metadata);
+          |    INSERT INTO events_to_publish (event_id, aggregate_id, version, user_id, event_time) VALUES (event_id, aggregate_id, current_version + 1, user_id, event_time);
           |    RETURN current_version + 1;
           |END;
           |$$

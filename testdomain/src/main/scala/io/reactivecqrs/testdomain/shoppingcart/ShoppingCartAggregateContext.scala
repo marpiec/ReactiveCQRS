@@ -15,6 +15,7 @@ class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
     case c: AddItem => addItem(c.userId, c.aggregateId, c.expectedVersion, shoppingCart)(c)
     case c: AddItemConcurrently => CommandSuccess(ItemAdded(c.name))
     case c: AddItems => CommandSuccess(c.names.map(ItemAdded))
+    case c: AddItemOnBehalf => CommandSuccess(ItemAdded(c.name))
     case c: CreateShoppingCartWithId => CommandSuccess(ShoppingCartCreated(c.name))
     case c: AddItemWithReceipt => CommandSuccess(ItemAdded(c.name), ItemReceipt(c.name))
     case _: CheckCart => CommandSuccess(Seq.empty[Event[ShoppingCart]])

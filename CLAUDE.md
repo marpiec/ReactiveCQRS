@@ -186,10 +186,11 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
 
 ### Event store (`PostgresEventStoreSchemaInitializer.scala`)
 - **`events`** — `id (events_seq) PK, user_id, aggregate_id, event_time, version,
-  event_type_id, event_type_version, event TEXT(json)`.
+  event_type_id, event_type_version, event TEXT(json), metadata JSONB` (the
+  envelope of D32; null when none).
   Indices: `events(aggregate_id)`, `events(aggregate_id, id)`.
 - **`aggregates`** — PK `(id, base_id)`, plus `space_id, creation_time, type_id,
-  base_order, base_id, base_version`. The `base_id`/`base_order`/`base_version`
+  base_order, base_id, base_version, squashed_version` (D49). The `base_id`/`base_order`/`base_version`
   columns implement **duplication chains**: a duplicated aggregate shares history
   with its base up to a version, then diverges. `base_version` is the current
   version and is what the stored procedures compare for optimistic locking.

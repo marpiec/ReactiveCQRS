@@ -536,17 +536,17 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Fix:** restores read in a transaction (autocommit off) with a fetch size, so the driver streams the rows (D34); snapshots (D30) shorten the history read.
 
 #### F31 — `add_events` loops `add_event`; `add_undo_event` scans and sorts the whole history
-- **Low**, likely · Fix in **M3** · `PostgresEventStoreSchemaInitializer.scala:178-194, 217-220`
-- **Fix:** set-based SQL (D34).
+- **Low**, likely · **Fixed in M3** (16/10/2026; statements measured in `baseline-M3`) · `PostgresEventStoreSchemaInitializer` (`add_events`, `add_undo_event`)
+- **Fix:** `add_events` updates the aggregate's row once for the whole command and inserts the events in a loop inside the function; plain and first events always go through it, one call per command. `add_undo_event` walks back the index on `(aggregate_id, version)` with `LIMIT` instead of sorting the history (D34).
 
 #### F38 — Restore query order has no matching index; one index is redundant
 - **Low**, likely · **Fixed in M3** (16/10/2026), the drop later · `PostgresEventStoreState.buildIndexesConcurrently`
 - **Fix:** index `events(aggregate_id, version)` built `CONCURRENTLY` by `buildIndexesConcurrently()`, which the host runs once in the background after the upgrade (H8); an index an interrupted build left invalid is built again. Drop `events(aggregate_id)` in a later contract step (D34, D69). Test: `PostgresEventStoreStateSpec`.
 
 #### F65 — Event times are stored without a time zone
-- **Low**, likely · Fix in **M3** · `PostgresEventStoreState`, schema
+- **Low**, confirmed · **Fixed in M3** (16/10/2026) · `PostgresEventStoreState` (`utc`, `utcTime`)
 - **Symptom:** on a JVM whose default zone is not UTC, event times can shift by an hour around a daylight-saving change, because `event_time` is `TIMESTAMP` (without time zone) and is converted with the JVM default zone on write and read. Neula forces UTC (`Startup.scala:16`), so it is not affected today.
-- **Fix:** bind and read `event_time` with an explicit UTC calendar; the column type stays (D28). Promised as a separate entry by D10.
+- **Fix:** `event_time` is bound and read with an explicit UTC calendar; the column type stays (D28). Neula runs in UTC, so its stored values read back unchanged. Promised as a separate entry by D10. Test: `PostgresEventStoreStateSpec` "event times are stored as UTC" (red under a mutation binding with the JVM's zone, on a machine in Central European time).
 
 #### F39 — Instant reads filter in Scala
 - **Low**, confirmed (1 call site in Neula) · **Fixed in M3** (16/10/2026) · `PostgresEventStoreState.readAndProcessEvents`
@@ -774,7 +774,7 @@ The library cannot fix these; they are listed so the 1.0 migration does not miss
 | H5 | Medium, likely | `PostgresCommandResponseState` is built without `initSchema()` (`Context.scala:483`), so D24's index fix would not run; since the F9 fix every idempotent command then fails (the response insert needs the unique index). | M1 |
 | H6 | Medium, suspected | Event listeners of ScreenRelease and ProcessRelease (the two aggregates with undo) must handle undo, since rebuild will deliver it (D60). | M4 |
 | H7 | Medium, likely | The host wiring changes with M2: create one `OutboxPollerActor`; send the bus `RegisterSubscribers` with every projection and listener (with H2); drop `EventBusSubscriptionsManagerApi` and `PostgresEventBusState`; call `PostgresSubscriptionsState.initSchema()`, which creates `subscription_failures`. Show `GetProjectionStatus` failures and offer `RetryFailedSubscription` and `SkipFailedVersion` in the admin tools (R1, R14). `SubscriptionsState`'s six per-kind version methods became `lastVersion` and `newVersion` with a `SubscriptionType`; `ProcessFlowDetailsProjectionSpec` calls the old ones. | M2 (Neula) |
-| H8 | Low, likely | M3 host steps: run `PostgresEventStoreState.buildIndexesConcurrently()` once after the upgrade, in the background (F38); opt in to snapshots (`AggregateContext.snapshots`) for the contexts with long histories (R10); `PassivateAggregate(id)` is available for operations. | M3 (Neula) |
+| H8 | Low, likely | M3 host steps: run `PostgresEventStoreState.buildIndexesConcurrently()` once after the upgrade, in the background (F38); opt in to snapshots (`AggregateContext.snapshots`) for the contexts with long histories (R10); commands give their events a metadata envelope by mixing in `WithMetadata` (R13); serial mode is `commandProcessing = Serial(...)` (R8), and `CommandRejected` is a new response; `PassivateAggregate(id)` is available for operations. | M3 (Neula) |
 
 ---
 
@@ -800,7 +800,7 @@ From §7 of Neula's change requests.
 |---|---|
 | M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔, F73 ✔, F74 ✔, F75 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53, F76 (Neula, on a production copy, with `StoredDataCheck` and the F76 query); Neula H3, H4, H5 |
 | M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔, F95 ✔; Neula H2, H7 |
-| M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8; F8 (contract), F22 ✔, F23, F25 ✔, F27, F30, F31, F32, F33 (rest), F38 ✔, F39 ✔, F44 ✔, F50, F65, F76, F78, F81 ✔; Neula H8 |
+| M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8; F8 (contract), F22 ✔, F23, F25 ✔, F27, F30, F31 ✔, F32, F33 (rest), F38 ✔, F39 ✔, F44 ✔, F50, F65 ✔, F76, F78, F81 ✔; Neula H8 |
 | M4 | F3, F43, F49 (backfill), F54, F55, F56, F57, F58, F59, F60, F61, F62, F82, F93, F94; Neula H1, H6 |
 | M5 | AR5; F46, F48, F63, F78 (between nodes) |
 | M6 | F8 (complete) |

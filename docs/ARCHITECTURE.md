@@ -127,6 +127,12 @@ to that model.
   uses it to resolve the aggregate type id.
 - Storage format: JSON text (mpjsons), with the class identified by a `types_names` id;
   `event_type_version` is always 0 (D29).
+- **Metadata envelope** (since M3, D32, R13): a command that mixes in `WithMetadata` gives each
+  of its events an `EventMetadata(actor, correlationId, causationId, traceContext, spaceId,
+  custom)`, stored in `events.metadata`. Event handlers do not see it; listeners get it as
+  `EventInfo.metadata`, live, re-published and replayed, and event queries return it. An event
+  stored without one has its user as the actor (`EventMetadata.ofUser`). A history rewrite
+  keeps it.
 
 ### 2.3 Changing an event class (D29)
 
@@ -313,8 +319,8 @@ run works in a new schema (`TestDatabase`).
 
 | Table | Columns / keys | Role |
 |---|---|---|
-| `events` (`:29-41`) | `id` (from `events_seq`) PK, `user_id`, `aggregate_id`, `event_time TIMESTAMP`, `version`, `event_type_id`, `event_type_version`, `event TEXT`; indexes `(aggregate_id)`, `(aggregate_id, id)`, and `(aggregate_id, version)` built online by `buildIndexesConcurrently()` (F38) | append-only event log |
-| `aggregates` (`:103-115`) | PK `(id, base_id)`, `space_id`, `creation_time`, `type_id`, `base_order`, `base_id`, `base_version`; indexes `(type_id)`, `(base_id)` | one row per (aggregate, ancestor) in its duplication chain; the own row (`base_id = id`) holds the **current version** used for locking |
+| `events` (`:29-41`) | `id` (from `events_seq`) PK, `user_id`, `aggregate_id`, `event_time TIMESTAMP`, `version`, `event_type_id`, `event_type_version` (always 0, D29), `event TEXT`, since M3 `metadata JSONB` (the envelope, D32; null when none); indexes `(aggregate_id)`, `(aggregate_id, id)`, and `(aggregate_id, version)` built online by `buildIndexesConcurrently()` (F38) | append-only event log |
+| `aggregates` (`:103-115`) | PK `(id, base_id)`, `space_id`, `creation_time`, `type_id`, `base_order`, `base_id`, `base_version`, since M3 `squashed_version` (null unless squashed, D49); indexes `(type_id)`, `(base_id)` | one row per (aggregate, ancestor) in its duplication chain; the own row (`base_id = id`) holds the **current version** used for locking |
 | `noop_events` (`:75-81`) | `id` (= `events.id`) PK, `from_version` | events cancelled by an undo, effective from that version |
 | `snapshots` (since M3) | `aggregate_id` PK, `version`, `context_version`, `schema_version`, `state TEXT`, `created` | the latest performance snapshot of an aggregate (D30, §4.3); disposable |
 | `events_to_publish` (`:83-101`) | `event_id` PK, `aggregate_id`, `version`, `user_id`, `event_time`; index `(aggregate_id, version)` | **outbox**: events not yet confirmed by every subscriber |
@@ -323,22 +329,26 @@ run works in a new schema (`TestDatabase`).
 
 ### 4.2 Stored procedures and optimistic locking
 
-`add_event(user, space, aggregate, expected_version, type ids…, time, json)` (`:139-172`):
+`add_events(user, space ids[], aggregate, expected_version, aggregate type, event types[], time, events[], metadata)`,
+used for the plain and first events of a command (since M3 one call per command, F31):
 
-1. `UPDATE aggregates SET base_version = base_version + 1 WHERE id = agg AND base_id = agg RETURNING base_version - 1`.
+1. `UPDATE aggregates SET base_version = base_version + n WHERE id = agg AND base_id = agg RETURNING base_version - n`.
    The row lock serialises concurrent writers to the same aggregate.
-2. No row: when `expected_version = 0` and `space_id >= 0` (a first event), insert the
-   `aggregates` row; otherwise raise.
+2. No row: when `expected_version = 0` and the first event's space id is `>= 0` (a first
+   event), insert the `aggregates` row; otherwise raise.
 3. When `current_version != expected_version`, raise "Concurrent aggregate modification exception".
-4. Insert into `events` **and** `events_to_publish` with `version = current + 1`.
+4. Insert each event into `events` (type version 0, the command's metadata) **and**
+   `events_to_publish` with `version = current + i`; return the new version.
 
-Related functions:
+The event time is bound and read as UTC whatever the JVM's zone (fixed F65; the column stays
+`TIMESTAMP`). Related functions:
 
-- `add_events` (`:178-194`) loops `add_event` with `expected + i - 1`: one round trip for a
-  multi-event command.
-- `add_undo_event` (`:196-229`) inserts `noop_events` rows (`from_version = new version`)
-  for the last `undo_count` not-yet-noop events and for itself.
-- `add_duplication_event` (`:231-263`) copies the base's `aggregates` chain rows, caps the
+- `add_event` is `add_events` with one element.
+- `add_undo_event` inserts `noop_events` rows (`from_version = new version`) for the last
+  `undo_count` not-yet-noop events (walking back the index on `(aggregate_id, version)`, F31)
+  and for itself; refuses an undo that would reach `squashed_version` (D49); deletes the
+  aggregate's snapshot (D30).
+- `add_duplication_event` copies the base's `aggregates` chain rows, caps the
   base row at `_base_version`, and appends its own row with `base_order = n + 1`.
 
 Version checks happen twice: in memory (the owner) and in SQL. The SQL check is the real

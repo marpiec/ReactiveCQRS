@@ -83,12 +83,11 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
     }
   }
 
-  /** Every event of the aggregate up to its newest version or `at`, its base's included, undone ones too, in order. */
+  /** Every event of the aggregate up to its newest version or `at`, its base's included, undone ones too, in order,
+    * with their metadata envelopes (D32). */
   def events(aggregateId: AggregateId, at: Option[Either[AggregateVersion, Instant]] = None): List[EventInfo[AGGREGATE_ROOT]] = {
     var events = List[EventInfo[AGGREGATE_ROOT]]()
-    eventStore.readAndProcessEvents[AGGREGATE_ROOT](aggregateId, at) { (userId, timestamp, event, _, eventVersion, _) =>
-      events ::= EventInfo(AggregateVersion(eventVersion), event, userId, timestamp)
-    }
+    eventStore.readAndProcessEventsWithMetadata[AGGREGATE_ROOT](aggregateId, at)((event, _, _) => events ::= event)
     events.reverse
   }
 

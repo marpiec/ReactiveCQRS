@@ -1181,3 +1181,23 @@ Open test-infrastructure items:
   the timeout from arrival; an idempotent copy waiting behind its original gets the stored
   response). Throughput across aggregates against concurrent mode is for the M3 bench.
 - `sbt test`: core 132, testdomain 68, all pass.
+
+**16/10/2026: the schema step and the metadata envelope (D32, D49 guard, R13; F31, F65)**
+- Metadata (R13, D32): `EventMetadata(actor, correlationId, causationId, traceContext, spaceId,
+  custom)`; a command mixing in `WithMetadata` gives it to each of its events; it is stored in
+  the new `events.metadata JSONB` column and travels as `EventInfo.storedMetadata`, with
+  `EventInfo.metadata` giving the user as the actor for events stored without one. Live
+  publication, re-publication (gap fills), replay and event queries carry it; event handlers
+  do not see it; a history rewrite keeps it. Restores do not read it.
+- The procedures, rewritten once: `add_events` updates the aggregate's row once per command
+  and loops the inserts (F31), and `add_event` calls it; `add_undo_event` walks back the index
+  instead of sorting, refuses an undo reaching the new `aggregates.squashed_version` (the D49
+  guard, used by squash later) and deletes the snapshot itself; all take the metadata and write
+  type version 0. Only old signatures are dropped at startup, so a starting node never drops a
+  function others use. Event times are bound and read as UTC (F65). A new or small
+  installation builds the F38 index at startup.
+- Tests: `EventStoreStateSpec` (both stores: metadata through range reads, reads with
+  metadata, replay reads, and the default), `PostgresEventStoreStateSpec` (UTC storage, red
+  under a mutation binding with the JVM's zone; the undo guard), `MetadataSpec` (a command's
+  envelope reaches a projection live and through a gap fill; event queries; a rewrite keeps it).
+- `sbt test`: core 136, testdomain 70, all pass.
