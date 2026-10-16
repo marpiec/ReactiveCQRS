@@ -37,7 +37,11 @@ object Baseline {
                     rebuildAggregates: Int = 1000,
                     rebuildEventsPerAggregate: Int = 100,
                     restoreSizes: Seq[Int] = Seq(1000, 10000, 100000, 500000),
-                    soakSeconds: Int = 60)
+                    soakSeconds: Int = 60,
+                    soakAggregates: Int = 20000,
+                    soakEventsPerAggregate: Int = 10,
+                    soakFailingSeconds: Int = 30,
+                    restartCycles: Int = 5)
 
   private def configFrom(arguments: Seq[String]): Config = {
     val named = arguments.map(_.split("=", 2)).collect { case Array(key, value) => key -> value }.toMap
@@ -47,7 +51,9 @@ object Baseline {
       int("contendedCommandsPerWorker", defaults.contendedCommandsPerWorker), int("noteSize", defaults.noteSize),
       int("rebuildAggregates", defaults.rebuildAggregates), int("rebuildEventsPerAggregate", defaults.rebuildEventsPerAggregate),
       named.get("restoreSizes").map(_.split(",").toSeq.map(_.trim.toInt)).getOrElse(defaults.restoreSizes),
-      int("soakSeconds", defaults.soakSeconds))
+      int("soakSeconds", defaults.soakSeconds), int("soakAggregates", defaults.soakAggregates),
+      int("soakEventsPerAggregate", defaults.soakEventsPerAggregate), int("soakFailingSeconds", defaults.soakFailingSeconds),
+      int("restartCycles", defaults.restartCycles))
   }
 
   private val userId = UserId(1)
@@ -76,6 +82,7 @@ object Baseline {
       rebuild(stores, config, report)
       restore(stores, config, report)
       soak(stores, config, report)
+      deliverySoak(stores, config, report)
     } finally {
       BenchDatabase.drop()
     }
@@ -245,6 +252,56 @@ object Baseline {
       "Growth that stays after the idle period points at bookkeeping that is never released (KNOWN-ISSUES §C).")
   }
 
+  // M2 verification (docs/IMPLEMENTATION-PLAN.md): many aggregates, a tenth of whose events-based listener fails for a
+  // while and recovers within its retries; afterwards every event is projected, the bus waits for nothing, the outbox is
+  // empty, and the heap stays flat, also over restarts of the system (R4). Subscriptions are kept in the database.
+  private def deliverySoak(stores: BenchStores, config: Config, report: Report): Unit = {
+    val note = "n" * config.noteSize
+    val failUntil = new AtomicLong(0L)
+    val failing = (id: AggregateId) => id.asLong % 10 == 0 && System.nanoTime() < failUntil.get
+    val system = new BenchSystem("deliverysoak", stores, projections = true, liveSubscriptions = true, failing = failing)
+    val counters = parallel(config.workers)(_ => (1 to config.soakAggregates / config.workers).map(_ => created(system)))
+    val aggregates = counters.map(_.size).sum
+    awaitUntil(5.minutes)(rows(system.progressTable) >= aggregates)
+    val heapStart = Heap.usedAfterGc()
+
+    failUntil.set(System.nanoTime() + config.soakFailingSeconds.seconds.toNanos)
+    val started = System.nanoTime()
+    parallel(config.workers)(w => (1 to config.soakEventsPerAggregate).foreach(_ => counters(w).foreach(id => send(system.counters, Increment(userId, id, note)))))
+    val loadNanos = System.nanoTime() - started
+    val events = aggregates.toLong * config.soakEventsPerAggregate
+    val caughtUp = awaitUntil(20.minutes)(system.projectedIncrements() >= events)
+    val catchUpNanos = System.nanoTime() - started
+    awaitUntil(60.seconds)(system.deliveryStatus().waiting == 0 && rows("events_to_publish") == 0)
+    val status = system.deliveryStatus()
+    val outbox = rows("events_to_publish")
+    val failures = rows("subscription_failures")
+    val heapAfterLoad = Heap.usedAfterGc()
+    Thread.sleep(20000)
+    val heapIdle = Heap.usedAfterGc()
+    system.shutdown()
+
+    val heapAfterRestarts = (1 to config.restartCycles).map { cycle =>
+      val again = new BenchSystem("deliverysoak", stores, projections = true, liveSubscriptions = true)
+      parallel(config.workers)(w => (1 to 10).foreach(_ => send(again.counters, Increment(userId, counters(w).head, note))))
+      awaitUntil(60.seconds)(again.projectedIncrements() >= events + cycle * config.workers * 10L)
+      again.shutdown()
+      Heap.mb(Heap.usedAfterGc())
+    }
+
+    report.section("Delivery soak (M2)", Seq("Measure", "Value"), Seq(
+      Seq("load", s"$aggregates counters x ${config.soakEventsPerAggregate} increments = $events events from ${config.workers} callers; " +
+        s"the events-based listener fails on every tenth counter for the first ${config.soakFailingSeconds} s"),
+      Seq("command throughput", f"${events / seconds(loadNanos)}%.0f commands/s"),
+      Seq("every event projected", caughtUp.map(_ => millis(catchUpNanos) + " after the load started").getOrElse("not within 20 minutes")),
+      Seq("bus deliveries waiting / undelivered afterwards", s"${status.waiting} / ${status.undelivered.size}"),
+      Seq("outbox rows afterwards", outbox.toString),
+      Seq("recorded subscription failures", failures.toString + " (the failures lasted less than the retries)"),
+      Seq("heap after GC: before / after the load / after 20 s idle", s"${Heap.mb(heapStart)} / ${Heap.mb(heapAfterLoad)} / ${Heap.mb(heapIdle)}"),
+      Seq(s"heap after GC after each of ${config.restartCycles} restarts", heapAfterRestarts.mkString(", "))),
+      "Subscriptions in the database (live mode, F29's bounded cache); the other scenarios keep the in-memory mode of the M1 baseline.")
+  }
+
   // ---- helpers ----
 
   /** Writes an aggregate's history straight to the event store, as already published: each batch removes its outbox rows in
@@ -323,7 +380,8 @@ object Baseline {
         Seq("PostgreSQL", postgresVersion + ", same machine (" + BenchDatabase.url + ")"),
         Seq("sizes", s"${config.workers} callers; ${config.commandsPerWorker} commands each on many aggregates, ${config.contendedCommandsPerWorker} each on one; " +
           s"notes of ${config.noteSize} characters; rebuild data ${config.rebuildAggregates} x ${config.rebuildEventsPerAggregate} events; " +
-          s"restore sizes ${config.restoreSizes.mkString(", ")}; soak ${config.soakSeconds} s")))
+          s"restore sizes ${config.restoreSizes.mkString(", ")}; soak ${config.soakSeconds} s; " +
+          s"delivery soak ${config.soakAggregates} x ${config.soakEventsPerAggregate} events, failing ${config.soakFailingSeconds} s, ${config.restartCycles} restarts")))
     }
 
     def section(title: String, header: Seq[String], rowsIn: Seq[Seq[String]], note: String): Unit = {

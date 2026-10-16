@@ -8,6 +8,19 @@ import org.slf4j.LoggerFactory
 import scala.concurrent.duration._
 import scala.util.control.NonFatal
 
+private object OutboxDeletes {
+  private val log = LoggerFactory.getLogger(classOf[OutboxDeletes])
+
+  // One thread for every store in the JVM, so stores created again (tests, restarts) leave no threads behind (R4).
+  private val executor = Executors.newSingleThreadScheduledExecutor(new ThreadFactory {
+    override def newThread(task: Runnable): Thread = {
+      val thread = new Thread(task, "reactivecqrs-outbox-deletes")
+      thread.setDaemon(true)
+      thread
+    }
+  })
+}
+
 /**
   * Collects the outbox rows of delivered events from every aggregate owner and deletes them in batches on one
   * background thread, so under load many acknowledgements cost one statement (F26). A row waits at most `maxDelay`.
@@ -16,16 +29,10 @@ import scala.util.control.NonFatal
   */
 private[eventstore] class OutboxDeletes(maxDelay: FiniteDuration, maxRows: Int)(delete: Seq[(Long, Int)] => Unit) {
 
-  private val log = LoggerFactory.getLogger(classOf[OutboxDeletes])
+  import OutboxDeletes._
+
   private val waiting = new ConcurrentLinkedQueue[(Long, Int)]()
   private val flushScheduled = new AtomicBoolean(false)
-  private val executor = Executors.newSingleThreadScheduledExecutor(new ThreadFactory {
-    override def newThread(task: Runnable): Thread = {
-      val thread = new Thread(task, "reactivecqrs-outbox-deletes")
-      thread.setDaemon(true)
-      thread
-    }
-  })
   private val flushTask = new Runnable {
     override def run(): Unit = flush()
   }

@@ -5,14 +5,15 @@ events and feeds projections/listeners. It is meant as the baseline for future c
 to the library's behaviour.
 
 > **Provenance.** Static read of `master` @ `4b5060f` (version 0.12.47), 16/10/2026, updated for
-> the changes of milestone M1 (to `cc8925c`) and checked against that code at the M1 review.
-> Where M1 changed the code, references name methods; the remaining line numbers are from
-> `4b5060f` and may have drifted by a few lines. Defaults and limits quoted below are the
-> literal values in the code; measured performance is in `docs/perf/`.
+> the changes of milestones M1 (to `cc8925c`) and M2 (the delivery module, to `v1.0.0-M2`), and
+> checked against that code at each milestone review. Where a milestone changed the code,
+> references name methods; the remaining line numbers are from `4b5060f` and may have drifted
+> by a few lines. Defaults and limits quoted below are the literal values in the code;
+> measured performance is in `docs/perf/`.
 >
 > **Naming.** There is no `events_queue` table or class. The publication queue is the
-> **`events_to_publish`** table (a transactional outbox); the bus-side cursor is the
-> **`event_bus`** table or its in-memory equivalent. This document uses those names.
+> **`events_to_publish`** table (a transactional outbox). The 0.12 bus cursor, the
+> **`event_bus`** table, is no longer used since M2 (D7, D24). This document uses those names.
 
 ---
 
@@ -27,7 +28,10 @@ unless the path says `api/` or `testdomain/`).
 | `AggregateCommandBusActor.scala`, `CommandHandlerActor.scala`, `CommandExecutorActor.scala`, `CommandResponseState.scala`, `Idempotency.scala` | `commandhandler/` |
 | `AggregateRepositoryActor.scala`, `ReplayAggregateRepositoryActor.scala` | `aggregaterepository/` |
 | `PostgresEventStoreState.scala`, `PostgresEventStoreSchemaInitializer.scala`, `EventStoreState.scala` | `eventstore/` |
-| `EventsBusActor.scala`, `EventBusState.scala`, `EventBusSubscriptionsManager.scala`, `SubscriptionClassifier.scala` | `eventbus/` |
+| `EventsBusActor.scala`, `SubscriptionClassifier.scala` | `eventbus/` |
+| `SequenceGate.scala`, `RedeliveryPolicy.scala`, `OutboxPollerActor.scala`, `Republish.scala` (the delivery module, M2) | `delivery/` |
+| `OutboxDeletes.scala` (batched outbox deletes) | `eventstore/` |
+| `Backoff.scala` (retry waits, AR6) | `util/` |
 | `ProjectionActor.scala`, `SubscriptionsState.scala`, `SubscribableProjectionActor.scala`, `AggregateListenerActor.scala`, `VersionsState.scala` | `projection/` |
 | `EventsReplayOrchestrator.scala`, `EventsReplayerActor.scala` | `eventsreplayer/` |
 | `SagaActor.scala`, `PostgresSagaState.scala`, `PostgresSagaSchemaInitializer.scala` | `saga/` |
@@ -59,20 +63,24 @@ caller ──command──▶ AggregateCommandBusActor          one per aggregat
                       │ IdentifiableEvents | AggregateWithType | AggregateWithTypeAndEvents
                       ▼
                     ProjectionActor / AggregateListenerActor  (N subscribers)
-                      │ localTx: listener(...) + SubscriptionsState compare-and-set
-                      │ MessageAck
+                      │ SequenceGate; localTx: listener(...) + SubscriptionsState compare-and-set
+                      │ MessageAck | MessageFailed | RequestRepublish (a gap)
                       ▼
                     EventsBusActor ──PublishEventsAck──▶ AggregateRepositoryActor
-                                                          └─ DELETE FROM events_to_publish
+                                                          └─ delete the outbox rows (batched)
+
+OutboxPollerActor (one per system) ──Republish──▶ EventsBusActor ──▶ the type's command bus ──▶ owner
+   every 30 s reads events_to_publish; re-publication at 3 and 6 minutes, "undelivered" at 10 (D8)
 ```
 
-Wiring reference: `ReactiveTestDomainSpec.scala:36-89`. The host application must
+Wiring reference: `ReactiveTestDomainSpec.scala` (fixture). The host application must
 initialise the ScalikeJDBC singleton connection pool before creating any component
 (`README.md`), and call `initSchema()` on `PostgresTypesNamesState`,
-`PostgresEventStoreState`, `PostgresCommandResponseState`, `PostgresEventBusState`,
-`PostgresSubscriptionsState` and `PostgresSagaState`; the uid generators and the document
-stores create their own tables. Since 1.0 the saga index build refuses duplicate
-`(name, saga_id)` rows (F34).
+`PostgresEventStoreState`, `PostgresCommandResponseState`, `PostgresSubscriptionsState` and
+`PostgresSagaState`; the uid generators and the document stores create their own tables.
+It creates the event bus, its subscribers and the command buses, sends the bus
+`RegisterSubscribers(subscribers)` (D15), and creates one `OutboxPollerActor`. Since 1.0 the
+saga index build refuses duplicate `(name, saga_id)` rows (F34).
 
 ---
 
@@ -280,7 +288,7 @@ abstract class AggregateContext[R : ClassTag] {           // AggregateContext.sc
    later step used to fail after earlier statements had run, and they were committed).
 7. **After commit** the repository applies the events to its in-memory root at once (or
    re-reads everything for undo/duplication events), sends `PublishEvents` to the bus,
-   records the events in `pendingPublish`, answers any waiting `GetAggregateMinVersion`
+   answers any waiting `GetAggregateMinVersion`
    queries and replies `AggregateModified` to the executor, which forwards the prepared
    response to the caller. Every other outcome is one reply as well (AR3): "Concurrent
    aggregate modification exception" from PostgreSQL → reload, then
@@ -289,7 +297,7 @@ abstract class AggregateContext[R : ClassTag] {           // AggregateContext.sc
    conflict or a taken key with the stored response. If the re-read after an undo or
    duplication event fails, nothing is published and the actor enters the failed-restore
    state (§4.4); the caller still gets success, because the events are committed, and the
-   outbox re-sends them later.
+   outbox poller has them re-published later.
 
 Ordering note: the state changes before the next message is processed (fixed F69; it used
 to change through a self-message, and a reload in between applied the events twice), so a
@@ -369,10 +377,10 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
 
 ### 4.4 Repository-actor lifecycle
 
-- Created lazily by `AggregateCommandBusActor` on the first command or query for an id
-  (`getOrCreateAggregateRepositoryActor`). The first message runs `assureRestoredState()`,
-  which also loads that aggregate's outbox rows; the outbox scan sends `EnsureRestored` so
-  the re-send starts.
+- Created lazily by `AggregateCommandBusActor` on the first command, query or re-publish
+  request for an id (`getOrCreateAggregateRepositoryActor`). The first message runs
+  `assureRestoredState()`, which only reads the state; what waits in the outbox is
+  re-published when the outbox poller asks (D8, F72).
 - **Failed restore** (fixed F10): the actor answers queries with
   `Failure(AggregateRestoreFailedException)` and persists with `EventHandlingError`, then stops
   after `failedRestoreRetryAfter` (5 s). The command bus watches its repository actors and on
@@ -385,8 +393,10 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   (`spawnedCount` keeps names unique). Stopping a command handler also stops its executors,
   so a command still running then gets no reply (AR1 drains them, M3).
 - No `supervisorStrategy` in `core`: Pekko defaults apply, so a throw inside `receive`
-  restarts an actor and stops its children (AR7). The command bus's watch on its repository
-  actors is the only `DeathWatch`.
+  restarts an actor and stops its children (AR7). Since M2 the event bus, the projections and
+  the outbox poller answer or log a failing message instead of throwing; the owner and the
+  command bus follow in M3. `DeathWatch`: the command bus on its repository actors, the event
+  bus on its subscribers.
 
 ### 4.5 History rewrite and permanent delete
 
@@ -394,102 +404,117 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   per `(aggregate_id, version)` in the same transaction (`PostgresEventStoreState.scala:180-186`).
   Only new events are published, and the in-memory root is **not** rebuilt (F8). The test
   domain pairs each rewrite with a compensating event (`CartNameRewritten`).
-- **Permanent delete**: the deletion runs when the bus acknowledges a published batch that
-  contains a `PermanentDeleteEvent`. In one transaction it deletes the `aggregates`,
-  `noop_events` (before `events`, so its sub-select still matches), `events`,
-  `events_to_publish` and `subscriptions` rows (`PostgresEventStoreState.deletePublishedEventsToPublish`).
-  The `event_bus` row and in-memory caches are not touched. Duplicates of the deleted
-  aggregate keep chain rows that point at it and lose its history (F76).
+- **Permanent delete**: the owner marks the version of a `PermanentDeleteEvent` when it
+  applies or restores it; when the bus acknowledges that version, the owner calls
+  `EventStoreState.deleteAggregatePermanently`. In one transaction it deletes the
+  `aggregates`, `noop_events` (before `events`, so its sub-select still matches), `events`,
+  `events_to_publish` and `subscriptions` rows. While a subscription of the aggregate is
+  failed (`subscription_failures`, D20a) it deletes nothing and returns false; the event's
+  outbox row stays and the next re-publication's ack tries again. In-memory caches are not
+  touched. Duplicates of the deleted aggregate keep chain rows that point at it and lose its
+  history (F76, M3).
 
 ---
 
 ## 5. Event publication
+
+The delivery module of M2 (D3, D4, D7, D8, D15, D20a–c; design in `docs/design/M2-delivery.md`).
+Contract: at least once, in order per aggregate, applied exactly once; failures and silence
+are bounded, visible and repairable; the bookkeeping returns to zero when idle.
 
 ### 5.1 The outbox: `events_to_publish`
 
 Lifecycle of one event:
 
 1. Inserted by `add_event` in the command transaction, so it is never lost.
-2. After commit it is published in memory (`PublishEvents`) and added to `pendingPublish`.
-3. When every subscriber has acked it, the bus sends `PublishEventsAck(aggId, versions)` to
-   the publishing repository actor (`EventsBusActor.scala:423-427`).
-4. `markPublishedEvents` deletes the rows in a fire-and-forget `Future`
-   (`AggregateRepositoryActor.markPublishedEvents`); a failed delete is only logged.
+2. After commit the owner publishes it with its state (`PublishEvents`).
+3. When every subscriber has acknowledged or failed it, the bus sends the owner
+   `PublishEventsAck(aggregateId, versions)`.
+4. The owner hands the versions to `EventStoreState.deletePublished`; the PostgreSQL store
+   deletes the rows of many acknowledgements in one statement, on one background thread, at
+   most 20 ms late (`OutboxDeletes`, F26). A failed delete is logged and only means a later,
+   harmless re-publication. A `PermanentDeleteEvent`'s acknowledgement deletes the whole
+   aggregate instead (§4.5).
 
-Re-send paths (the only retry mechanism in the system):
+**Re-delivery** has a single owner, the `OutboxPollerActor` (D8). Every 30 s (the first poll
+10 s after start) it reads every aggregate with waiting rows in one query for all types
+(`readWaitingInOutbox`, F37), and the pure `RedeliveryPolicy` decides:
 
-| Trigger | What is re-sent | Where |
+| Rows | Re-publication | Then |
 |---|---|---|
-| Every restore: the actor's first message and every reload (§2.6) | outbox rows loaded at that moment, 10 s later, then every 180 s while any remain; each restore starts one more such chain, so repeated reloads multiply the re-sends while rows remain (F72) | `AggregateRepositoryActor.assureRestoredState`, `resendEventsToPublish` |
-| `EnsureEventsPublished(false)` 30 s after the command bus starts, then `(true)` every 60 s | creates the actor (and sends it `EnsureRestored`) for each aggregate whose outbox rows are older than 10 s / 1 min, which triggers the row above | `AggregateCommandBusActor.ensureEventsPublished`, `PostgresEventStoreState.readAggregatesWithEventsToPublish` |
+| written while the process runs (the live publication was the first attempt) | 3 and 6 minutes after it | at 10 minutes "undelivered", logged once; the rows stay for the next start |
+| written before the process started | at the first poll, then 3 and 6 minutes later | the same, 10 minutes after the first poll |
+| a newer oldest version (the older rows were delivered) | a fresh set of attempts | |
 
-`pendingPublish` is never re-sent, and `EnsureEventsPublished` is a no-op for an actor that
-already exists. Events persisted during an actor's lifetime that are never acked are
-therefore retried only after the actor restores again, or is reaped and recreated (F2).
+At most 1 000 aggregates are re-published per poll, the longest waiting first, so a backlog
+after an outage does not start every owner at once. The poller sends `Republish(type, id)`
+to the bus, which passes `RepublishOutbox(id)` to the type's command bus (registered with
+`RegisterPublisher`), which passes it to the owner (creating it if needed; re-publications
+count as activity for reaping). The owner re-publishes from its oldest outbox version to its
+current version, with its current state, so a state-receiving subscriber always gets a
+consistent range. `GetOutboxStatus` reports the waiting and the given-up aggregates.
 
 ### 5.2 `EventsBusActor`
 
-**Subscription registry.** Projections send `SubscribeFor*` requests to
-`EventBusSubscriptionsManager(minimumExpectedSubscriptions)` from `preStart`. The bus pulls
-the list once, on its first message (an `InitEventBus` is self-scheduled at 10 s), with an
-`Await` of up to 180 s (`EventsBusActor.scala:187-205`). The manager then closes; a later
-subscription **throws** (`EventBusSubscriptionsManager.scala:62-72`).
-`minimumExpectedSubscriptions` counts **requests**, which is one per listener per aggregate
-type, not one per projection. There is no unsubscribe.
+**Start-up (D15).** The host sends `RegisterSubscribers(subscribers)`. The bus watches each,
+asks it for its subscriptions (`GetSubscriptionRequests` → `SubscriptionRequests`), and
+stashes everything else until all have answered, logging the missing ones on each tick. A
+subscriber that stops before answering is dropped. Subscriptions are fixed after start.
 
-**Routing** (`handlePublishEvents`, `:282-369`). The bus drops the prefix
-`version <= lastPublishedVersion` (`span`, `:294`), then builds one message per matching
-subscription of the aggregate type:
+**Routing.** For each subscription of the event's aggregate type that accepts the event:
 
-| Subscription (request) | Classifier | Message sent | Listener kind (§6.2) |
+| Subscription request | Classifier | Message sent | Listener kind (§6.2) |
 |---|---|---|---|
 | `SubscribeForEvents` | `SubscriptionClassifier` (aggregate id + event type) | `IdentifiableEvents(type, id, events, replayed)` | `EventsListener` |
 | `SubscribeForAggregates` | `AggregateSubscriptionClassifier` (id only) | `AggregateWithType(type, id, lastVersion, versions, root, replayed)` | `AggregateListener` |
 | `SubscribeForAggregatesWithEvents` | `SubscriptionClassifier` | `AggregateWithTypeAndEvents(type, id, root, events, replayed)` | `AggregateWithEventsListener` |
 
-`root` is the aggregate state after the whole batch. `ProjectionActor` always subscribes
-with accept-all classifiers (`ProjectionActor.scala:749-761`).
+`root` is the aggregate state after the delivered batch. `ProjectionActor` subscribes with
+accept-all classifiers.
 
-**Acknowledgement tracking** (`:91-95`, `handleMessageAck` `:382-459`):
+**Deliveries (D7, D20b).** The bus keeps no cursor. It keeps one delivery per event with the
+subscribers it waits for, and ends it when each has answered `MessageAck` or `MessageFailed`,
+when the deadline passes (10 minutes: "undelivered", no ack, logged and listed by
+`GetDeliveryStatus`), or when the subscriber stops (watched; its subscriptions are dropped).
+Only a delivery ended by acks and failures acknowledges the owner, grouped per owner and
+aggregate; one ended by the deadline or a stop keeps its outbox rows. An event published
+again while its delivery waits goes only to the subscribers it waits for. A re-publication
+to one subscriber (`PublishEvents(onlyTo = Some(s))`) never acknowledges the owner, so it
+cannot delete rows that others still wait for. Events nobody subscribed to are acknowledged
+at once. A delivery waiting longer than a minute is logged once, and waiting deliveries are
+summed up every 5 minutes. Timers are `Tick` messages to the bus (F79).
 
-- `messagesSent: EventIdentifier → receivers` and `eventSenders: EventIdentifier → publisher`.
-- Each `MessageAck(subscriber, id, versions)` removes that subscriber from the event's
-  receivers. When the set empties, the event is finished and `PublishEventsAck` goes to the
-  publisher.
-- When nobody subscribes, the bus acks itself (`:365-368`).
+**Re-publish requests.** `RequestRepublish(subscriber, type, id, from)` from a subscriber
+with a gap or a retry goes to the type's command bus as `RepublishRange(id, from,
+subscriber)`; the owner re-publishes `from` to its current version to that subscriber only
+(D20c).
 
-**Cursor** (`EventBusState`). After finishing events the bus advances "last published
-version per aggregate" only when the first finished version is exactly `cursor + 1`;
-otherwise it parks them in `eventsPropagatedNotPersisted` (`:431-449`). The cursor is cached
-in `publishedEvents`.
+**Failures inside the bus (AR7).** A message the bus fails on (a classifier that throws) is
+logged and dropped. A restart would lose every delivery and the subscriptions.
 
-- `MemoryEventBusState` (`EventBusState.scala:18-42`) starts at 0 for every aggregate.
-  `claude-log/optimization.md` describes it as the production bus.
-- `PostgresEventBusState` (`:48-149`) keeps the `event_bus` table and flushes batched
-  updates every 5 s or every 20 aggregates, ignoring row counts (CLAUDE.md §7.B).
-
-**Back-pressure** (`BackPressureActor.scala`). It is active only when a producer sends
-`ConsumerStart`, which only the replayer does. The bus then grants up to `MAX_BUFFER_SIZE`
-(10000, `EventsBusActor.scala:66`) in-flight events.
+**Back-pressure.** Only for the replayer (until M4): `ConsumerStart`/`ConsumerStop` and
+`ConsumerAllowedMore`, bounded by `DeliveryOptions.maxReplayBuffer` (10 000) replayed events
+in flight.
 
 ### 5.3 What subscribers can rely on
 
-- **At-least-once** delivery, through the outbox and its re-send paths.
-- **Per-aggregate order** on the live path (one publisher per aggregate, Pekko's
-  per-sender ordering). Re-sends can arrive as duplicates, overlaps or after later events.
-  Subscribers must deduplicate and detect gaps; `ProjectionActor` does this through
-  `SubscriptionsState`.
-- No ack → no retry from the bus itself; the retry comes only from the outbox.
+- **At least once**, through the outbox, the live publication and the poller's
+  re-publications; deliveries can repeat, overlap or arrive after later ones.
+- **In order per aggregate on the live path** (one owner per aggregate, Pekko's per-sender
+  ordering).
+- **Applied exactly once** by `ProjectionActor`, through the sequence gate on the stored
+  subscription version (§6.3); a gap is asked from the owner.
+- A delivery that nobody answers ends at the deadline; the poller tries again at the next
+  start.
 
 ---
 
 ## 6. Projections and listeners
 
-### 6.1 The `ProjectionActor` contract (`ProjectionActor.scala:91-102`)
+### 6.1 The `ProjectionActor` contract (`ProjectionActor.scala`)
 
 ```scala
-class MyProjection(val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi,
-                   val subscriptionsState: SubscriptionsState, store: DocumentStore[Doc])
+class MyProjection(val subscriptionsState: SubscriptionsState, store: DocumentStore[Doc])
     extends ProjectionActor(ProjectionActorOptions.DEFAULT) {
   protected val projectionName = "MyProjection"   // used by VersionsState (rebuild decisions)
   protected val version = 1                       // bump to force rebuild
@@ -499,9 +524,10 @@ class MyProjection(val eventBusSubscriptionsManager: EventBusSubscriptionsManage
 }
 ```
 
-Progress in `SubscriptionsState` is keyed by **`this.getClass.getName`**, not
-`projectionName` (`:420, 503, 654`). Renaming or moving the class resets the projection's
-progress.
+The projection is passed to the bus in the host's `RegisterSubscribers` list; it answers the
+bus's `GetSubscriptionRequests` with one request per listener (D15). Progress in
+`SubscriptionsState` is keyed by **`this.getClass.getName`**, not `projectionName`.
+Renaming or moving the class resets the projection's progress.
 
 ### 6.2 Listener kinds
 
@@ -523,38 +549,63 @@ progress.
 
 ### 6.3 Per-message algorithm (same for all three kinds)
 
-For a message about aggregate `id`, with `last = subscriptionsState.lastVersionFor…(className, id)`
-(`handleIdentifiableEventsUpdate` `:419-454`, `handleAggregateWithTypeAndEventsUpdate`
-`:502-544`, `handleAggregateWithTypeUpdate` `:653-686`):
+Since M2 every delivery goes through one path (`receiveDelivery`, `drain`, `afterBatch`).
+Deliveries are queued per **(listener kind, aggregate)**; a queue exists only while it has
+work and is removed when idle (F15). Draining a queue, with `applied` the subscription's
+stored version:
 
-1. Split the message into `alreadyProcessed` (`version <= last`) and `newEvents`.
-2. Only already-processed events → **ack immediately** (deduplication).
-3. `newEvents.head == last + 1` → process:
-   `subscriptionsState.localTx { s => listener(...)(s); newVersionFor…(className, id, last, newLast)(s) }`,
-   then `MessageAck` to the bus. Any exception is **logged and not acked** (`:476-477, 623-626, 709-710`).
-4. A gap (`head > last + 1`) → buffer the message in `delayed*Update(id)`. It is merged and
-   retried when the next message for `id` arrives or when processing for `id` completes
-   (`handleMessage*Processed`, `:489-500, 639-650, 723-733`).
-5. Merging (`merge*Update`, `:309-416`) sorts the buffered messages by first version,
-   concatenates contiguous runs, drops full overlaps, trims partial overlaps, and leaves the
-   rest buffered.
+1. The waiting deliveries are taken in the order of their first versions, and the
+   `SequenceGate` (D4) decides for each against the running version: **already applied**
+   → acknowledged at once; **apply from–to** → its new versions join one batch (a partly
+   applied delivery adds only its new part, F5); **gap** → it and everything after it wait.
+2. The batch runs `listener(...)` and `newVersionFor…(className, id, applied, to)` in one
+   `localTx` (a `noDBSession` listener runs first, then the version is written in
+   `autoCommit`). State-receiving listeners get the state of the delivery holding the last
+   version, and `created` when the batch starts at version 1. On success every delivery in
+   the batch is acknowledged with all its versions.
+3. A gap is asked from the owner: `RequestRepublish(self, type, id, from)` to the bus, again
+   every `gapRequestRepeat` (10 s) while it lasts, however many deliveries arrive meanwhile.
+   The re-publication arrives as a normal delivery; the waiting ones then become already
+   applied (D20c, F45).
+4. A batch that throws is retried with `options.retries` (`Backoff` 1 s doubling to 30 s,
+   nine attempts, about two minutes); deliveries arriving meanwhile wait. After the last
+   attempt the failure is recorded in `subscription_failures` (first version not applied,
+   error, since), the waiting deliveries and every later one of that aggregate and kind are
+   answered `MessageFailed`, and other aggregates keep flowing (D20a, R1).
+5. A store that cannot be read (the version) is retried every 30 s without becoming a
+   failure.
 
-### 6.4 Options (`ProjectionActorOptions`, `:41-76`)
+**Failed subscriptions** (D20a). `GetProjectionStatus` → `ProjectionStatus(name, failures,
+retrying, waitingForGap)`. `RetryFailedSubscription(id)` clears the aggregate's failures and
+asks the owner for each failed version again; `SkipFailedVersion(id)` marks each failed
+version as applied without applying it and asks for the versions after it; both answer
+`FailedSubscriptionsHandled(id, count)`. Failures recorded before a start are loaded when
+the bus registers the projection and retried one per second (`retryFailuresOnStart`).
+
+**Failures of the actor itself** (AR7, F80). A message the projection fails on, a query
+included, is answered with `Status.Failure` and never rethrown, so the actor keeps its
+queues. The parallel pool is shut down when the actor stops.
+
+### 6.4 Options (`ProjectionActorOptions`)
 
 | Option | Default | Effect |
 |---|---|---|
-| `groupUpdatesDelayMillis` | 0 | when > 0, non-replayed messages with first version ≥ `minimumDelayVersion` are buffered and processed together after the delay (`:249-274`) |
+| `groupUpdatesDelayMillis` | 0 | when > 0, live deliveries whose first version is ≥ `minimumDelayVersion` wait that long before their queue is drained, so they are applied together; a delivery that must not wait drains the queue at once |
 | `minimumDelayVersion` | 1 | lower bound for that grouping |
-| `eventsToProcessImmediately` | ∅ | event classes that bypass grouping (event-carrying listeners only) |
-| `parallelUpdateProcessing` | 0 | when > 1, listener work runs on a fixed thread pool, kept sequential **per aggregate** by a queue per aggregate (`runTaskAsyncPerAggregate`, `:564-598`). Listeners must be thread-safe; the connection pool must have at least that many connections. While an aggregate is being processed, its new non-replayed messages are buffered (`processedAggregates`). |
-| `eventsLogger` | None | verbose per-message debug logging |
+| `eventsToProcessImmediately` | ∅ | event classes whose deliveries never wait (event-carrying listeners only) |
+| `parallelUpdateProcessing` | 0 | when > 1, batches run on a fixed pool of that many threads, one batch per queue at a time, so each aggregate keeps its order. Listeners must be thread-safe; the connection pool must have at least that many connections |
+| `eventsLogger` | None | verbose per-delivery debug logging |
+| `retries` | `Backoff(1 s, 30 s, 9 attempts)` | the retries of a failing batch before the failure is recorded (D20a) |
+| `retryFailuresOnStart` | true | retry the recorded failures at start, one per second |
+| `gapRequestRepeat` | 10 s | how long a request for missing versions waits before it is sent again |
 
 ### 6.5 Delayed queries (read-your-writes for queries)
 
-`delayIfNotAvailable[Async|AsyncCustom](respondTo, search, maxMillis)` (`:796-841`) answers
-when `search` succeeds, otherwise parks the query and re-runs it after each processed
-update (`ReplayQueries`) or at its deadline, then replies `None`. This lets a caller query
-a document right after a command, before the projection has caught up.
+`delayIfNotAvailable[Async|AsyncCustom](respondTo, search, maxMillis)` answers when `search`
+succeeds, otherwise parks the query and re-runs it after applied updates (once per burst,
+F28) or at its deadline, then replies `None`. A search that throws is answered with the
+failure (F80). This lets a caller query a document right after a command, before the
+projection has caught up.
 
 ### 6.6 `SubscribableProjectionActor`
 
@@ -610,16 +661,23 @@ listener transaction.
 | Risk | one DB round trip per update | progress lost on crash or restart unless the host calls `dump()` (F3); the test wiring uses `true` |
 
 **Caches and concurrency.** `perAggregate` (and `dumped` in memory mode) cache one map per
-touched aggregate (`:131-132`). Cache misses load from the DB outside the main monitor,
-with 64 striped single-flight locks (`:134-140, 196-223`). The only eviction is in `dump()`,
-which drops entries left unchanged during the write. `dump()` is meaningful only in memory
-mode: `dumped` is never populated in DB mode, so a dump there would re-INSERT existing rows.
-In DB mode the cache therefore grows with every aggregate touched (CLAUDE.md §7.C).
+touched aggregate. Cache misses load from the DB outside the main monitor, with 64 striped
+single-flight locks. In DB mode the cache is an LRU of at most `maxCachedAggregates`
+(10 000) aggregates (F29); the database stays the source of truth, and a failed
+compare-and-set in the database evicts the aggregate's entry, so the next attempt starts
+from the stored version (F77). In memory mode nothing is evicted except by `dump()`, which
+drops entries left unchanged during the write; `dump()` is meaningful only in memory mode.
 
-**Clearing.** `clearSubscriptionsInfo(subscriber)` deletes that subscriber's DB rows
-(`:291-294`) but not the caches (F6). `MemorySubscriptionsState` is a test double with the
-same compare-and-set contract (fixed F14). A failed compare-and-set in the database keeps
-the cached version, so that aggregate stays stuck for the projection (F77).
+**Clearing.** `clearSubscriptionsInfo(subscriber)` deletes that subscriber's version rows and
+failures and removes its cached versions (F6). `MemorySubscriptionsState` is a test double
+with the same contract (F14).
+
+**Failures (D20a).** Table `subscription_failures(subscriber_type_id, subscription_type,
+aggregate_id, aggregate_type_id, failed_version, error, failed_since)`, primary key on the
+first three, index on `aggregate_id`: one row per subscription that gave up on an aggregate,
+replaced by a later failure of the same subscription. `recordFailure`, `failures(subscriber)`
+and `clearFailure(...)(session)`; a permanent delete waits while the aggregate has a row
+here (§4.5).
 
 **Related.** `VersionsState` (`components_versions`) stores the last-built `version` of each
 aggregate context and projection; it is used only for rebuild decisions.
@@ -643,8 +701,12 @@ aggregate context and projection; it is used only for rebuild decisions.
    sends `PublishReplayedEvents(..., replayed = true)` (`ReplayAggregateRepositoryActor.scala:68-97`).
 5. Saves the new versions to `VersionsState`.
 
-Replayed messages go through the same bus routing, so the bus cursor must not already be
-past them (F4). In practice the replay must run with a fresh in-memory bus.
+Replayed messages go through the same bus routing; since M2 the bus keeps no cursor, so
+events delivered before do not stall a replay (F4). A replay leaves out undone events, so a
+projection rebuilding from cleared state sees gaps at those versions (F58, High, M4): it asks
+the owner for them, which works only when a command bus of the type is registered on the
+replay bus; otherwise the replay waits until the bus deadline ends those deliveries. M4
+replaces this replayer.
 
 ---
 
@@ -680,10 +742,12 @@ index on `(name, saga_id)`, built `CONCURRENTLY`. Still open: the blocking id-po
    optimistic lock (`aggregates.base_version` on the own row).
 2. **Event, aggregate-row and outbox writes share one transaction**, as do idempotent
    command responses. Publishing happens strictly after commit.
-3. **Outbox rows are deleted only after every subscriber has acked.** Anything that
-   finishes an event in the bus must also send `PublishEventsAck` to the publisher.
-4. **Subscribers deduplicate by version** through `SubscriptionsState` and only advance on
-   contiguous versions; the bus may deliver duplicates and out-of-order re-sends.
+3. **Outbox rows are deleted only after every subscriber has acked or failed them.** A
+   delivery that ends otherwise (deadline, a stopped subscriber, a re-publication to one
+   subscriber) must not send `PublishEventsAck`; the poller re-publishes its rows.
+4. **Subscribers apply each version once, in order**, through the `SequenceGate` on the
+   stored `SubscriptionsState` version, and ask the owner for gaps; the bus may deliver
+   duplicates, overlaps and out-of-order re-publications.
 5. **Listener writes and subscription CAS share the `DBSession`** (DB mode). Code that runs
    listeners off the actor thread must not touch actor state; only messages to `self`
    (the existing async path is the pattern).
@@ -692,8 +756,9 @@ index on `(name, saga_id)`, built `CONCURRENTLY`. Still open: the blocking id-po
 7. **Type names are stable identifiers.** Aggregate root, event, projection-class and
    response class names are persisted via `types_names`; renaming one is a data migration.
 8. **Aggregate roots are immutable** and shared across threads by reference.
-9. **The subscription set is fixed at bus start.** Adding a listener means changing
-   `minimumExpectedSubscriptions` and creating the projection before the bus initialises.
+9. **The subscription set is fixed at bus start**: the host's `RegisterSubscribers` list,
+   each subscriber answering `GetSubscriptionRequests`. Adding a projection means adding it
+   to that list.
 
 ---
 
@@ -703,18 +768,18 @@ Problems found in this read, and every decision about fixing them, are tracked i
 [KNOWN-ISSUES.md](KNOWN-ISSUES.md). The order of the work is in
 [IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md). M1 fixed the most serious problems of
 this read (lost document updates, caches ahead of the database, timestamps, lost sagas,
-partial persists, idempotency). The most serious ones still open, at the end of M1:
+partial persists, idempotency); M2 rebuilt delivery (no cursor, a single owner of
+re-deliveries, the sequence gate, gap requests, failure records). The most serious ones
+still open, at the end of M2:
 
 - **F76:** permanently deleting an aggregate that duplicates read from breaks those
-  duplicates (High if it happens; checked on a production copy).
-- **F2, F5:** after a re-send, a projection can stall on an aggregate or apply events twice
-  (M2).
-- **F4:** a replay over a PostgreSQL bus cursor that moved past the events never finishes
-  (M2; reproduced by `EventsReplaySpec`).
+  duplicates (High if it happens; checked on a production copy; M3).
+- **F58:** a rebuild leaves out undone events, and the gaps stall it unless the owner can be
+  asked for them (High; M4 replaces the replayer).
 - **F44, F22:** no snapshots, and a restore holds the whole history in memory (M3).
-- **F23:** the command bus blocks while it fetches an id pool (M3).
-- **F79, F80:** the bus's debug timer changes actor state from another thread; a failing
-  projection query restarts the projection actor (M2).
+- **F23, F27:** the command bus blocks while it fetches an id pool; JDBC work runs on the
+  default dispatcher (M3).
+- **F82:** the replayer stops the JVM when a replay stalls (M4).
 
 ---
 
@@ -726,10 +791,11 @@ partial persists, idempotency). The most serious ones still open, at the end of 
 | New special event type | `Event.scala`, `PostgresEventStoreState.persistEventsOneByOne` + a stored procedure, `AggregateRepositoryActor.applyPersisted`/`tryToApplyEvents`, `readAndProcessEvents` | batch eligibility (`:31-32`); restore semantics; replay path |
 | Snapshots | `AggregateRepositoryActor.assureRestoredState`, `EventStoreState` (new read from version N), a new snapshot table | duplication chains (ancestor events), noop events whose `from_version` lies after the snapshot, the event-versioning map |
 | Non-blocking persistence | `AggregateRepositoryActor.persist` → a dedicated dispatcher, re-entering via message | keep one in-flight persist per aggregate; apply the events before the next message is handled (F69: persist synchronously or stash); the in-memory version check |
-| Outbox / re-send redesign | `AggregateRepositoryActor` (`eventsToPublish`, `pendingPublish`, `markPublishedEvents`), `AggregateCommandBusActor.ensureEventsPublished`, `EventStoreState` outbox methods | F2, F4; idempotency of re-send; PermanentDelete is triggered from the outbox delete |
-| Bus cursor / dedup | `EventsBusActor.handlePublishEvents`/`handleMessageAck`, `EventBusState` | F1, F4, F11; back-pressure counters must stay balanced |
-| New listener kind | `ProjectionActor` (listener class, map, `subscribe`, a handle/process/merge trio), `EventsBusActor` (subscription + message type), `SubscriptionType` | a new `subscription_type` id; dedup and gap logic; async path |
-| Projection progress storage | `SubscriptionsState` | CAS semantics; same-session atomicity; `dump()` lifecycle (F3, F6) |
-| Rebuild logic | `EventsReplayOrchestrator`, `EventsReplayerActor`, `ReplayAggregateRepositoryActor`, `VersionsState` | needs a bus cursor that doesn't filter replayed versions; back-pressure accounting |
+| Re-delivery timing | `delivery/RedeliveryPolicy` (pure), `OutboxPollerActor`, `EventStoreState.readWaitingInOutbox` | one owner of retries (D8); the attempts at 3 and 6 minutes come after a subscriber's own retries (about 2 minutes, D20a); the per-poll limit |
+| Outbox deletes | `AggregateRepositoryActor.delivered`, `EventStoreState.deletePublished`, `OutboxDeletes` | only acked (or failed) versions; the PermanentDelete marker and its wait for failed subscriptions |
+| Delivery tracking | `EventsBusActor` (`publish`, `finish`, `checkDeadlines`, `subscriberStopped`) | a delivery that ends without every ack or failure must not ack the owner; re-publications to one subscriber never do; back-pressure counters stay balanced; AR7 (no throws) |
+| New listener kind | `ProjectionActor` (listener class, map, `subscriptionRequests`, the delivery case in `receiveUpdate`, `appliedVersion`, `advance`, `applyBatch`), `EventsBusActor` (request + message type), `SubscriptionType` | a new `subscription_type` id; everything else goes through the one gate path |
+| Projection progress storage | `SubscriptionsState` | CAS semantics; same-session atomicity; the bounded cache and its eviction on a failed CAS (F29, F77); `dump()` lifecycle (F3); failures (D20a) |
+| Rebuild logic | `EventsReplayOrchestrator`, `EventsReplayerActor`, `ReplayAggregateRepositoryActor`, `VersionsState` | undone events left out (F58); back-pressure accounting; replaced in M4 |
 | Idempotency rules | `commandhandler/Idempotency.scala`, `CommandResponseState` | the response is written in the persist transaction (I2); a taken key and a version conflict both answer with the stored response |
-| Retries and timeouts | `CommandExecutorActor` (concurrent retries, command timeout), `SagaActor` (write retries), `PostgresDocumentStore.updateWithRetries` | bounded everywhere; the document-store retry runs inside the listener transaction and must stay immediate (AR6) |
+| Retries and timeouts | `util/Backoff`; `CommandExecutorActor` (concurrent retries, command timeout), `SagaActor` (write retries), `ProjectionActor` (listener retries), `RedeliveryPolicy`, `PostgresDocumentStore.updateWithRetries` | bounded everywhere; the document-store retry runs inside the listener transaction and must stay immediate (AR6) |

@@ -35,15 +35,18 @@ class CounterContext extends AggregateContext[Counter] {
 
 case class CounterProgress(increments: Long)
 
-/** Counts the increments it received per counter; the benchmark reads the sum to see when it caught up. */
+/** Counts the increments it received per counter; the benchmark reads the sum to see when it caught up. `failing` makes
+  * the listener throw for a counter, as a listener with a temporary problem does. */
 class CountingProjection(
                          val subscriptionsState: SubscriptionsState,
                          documentStore: DocumentStore[CounterProgress],
-                         override protected val projectionName: String) extends ProjectionActor {
+                         override protected val projectionName: String,
+                         failing: AggregateId => Boolean = _ => false) extends ProjectionActor {
 
   protected val listeners = List(EventsListener(update))
 
   private def update(aggregateId: AggregateId, events: Seq[EventInfo[Counter]]) = { implicit session: DBSession =>
+    if (failing(aggregateId)) throw new IllegalStateException("the listener fails for a while on counter " + aggregateId.asLong)
     events.foreach(_.event match {
       case _: CounterCreated => documentStore.insertDocument(0, aggregateId.asLong, CounterProgress(0))
       case _: Incremented => documentStore.updateDocument(0, aggregateId.asLong, {

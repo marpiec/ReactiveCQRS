@@ -419,8 +419,10 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         if (options.retries.exhausted(queue.failedAttempts)) {
           giveUp(key, queue, batch, e)
         } else {
-          log.warning("Projection " + projectionName + " failed on " + batch.aggregateType.simpleName + " " + key.aggregateId.asLong +
-            " versions " + batch.from.asInt + "-" + batch.to.asInt + " (attempt " + queue.failedAttempts + "), retrying: " + e)
+          // One warning per failing batch; its retries log at debug level, so a problem across many aggregates does not flood the log.
+          val message = "Projection " + projectionName + " failed on " + batch.aggregateType.simpleName + " " + key.aggregateId.asLong +
+            " versions " + batch.from.asInt + "-" + batch.to.asInt + " (attempt " + queue.failedAttempts + "), retrying: " + e
+          if (queue.failedAttempts == 1) log.warning(message) else log.debug(message)
           schedule(key, queue, options.retries.delay(queue.failedAttempts + 1), RetryBackOff)
         }
     }
