@@ -120,11 +120,12 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
     events.reverse
   }
 
-  /** The aggregate's events of the given classes, for a history rewrite. */
+  /** The aggregate's own events of the given classes, for a history rewrite: a duplicate's base keeps its events, so its
+    * versions are not the duplicate's, and a rewrite of the duplicate must not reach them. */
   def eventsOfClasses(aggregateId: AggregateId, classNames: Set[String]): List[EventWithVersion[AGGREGATE_ROOT]] = {
     var events = List[EventWithVersion[AGGREGATE_ROOT]]()
-    eventStore.readAndProcessEvents[AGGREGATE_ROOT](aggregateId, None) { (_, _, event, _, eventVersion, _) =>
-      if (classNames.contains(event.getClass.getName)) events ::= EventWithVersion(AggregateVersion(eventVersion), event)
+    eventStore.readAndProcessEvents[AGGREGATE_ROOT](aggregateId, None) { (_, _, event, eventAggregateId, eventVersion, _) =>
+      if (eventAggregateId == aggregateId && classNames.contains(event.getClass.getName)) events ::= EventWithVersion(AggregateVersion(eventVersion), event)
     }
     events.reverse
   }

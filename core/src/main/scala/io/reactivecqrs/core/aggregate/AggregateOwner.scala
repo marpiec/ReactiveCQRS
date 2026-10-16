@@ -36,13 +36,16 @@ object AggregateOwner {
   /** From the command bus, which routes nothing more to this owner: it finishes the commands it started and stops
     * (Cluster Sharding's passivation, D43, D72). */
   case object StopOwner
+  /** As `StopOwner`, when the store changed under this owner (a permanent delete, a detach, a squash or a rewrite of
+    * its base): its state may no longer be what the history gives, so it writes no snapshot of it. */
+  case object StopOwnerStale
   /** To the command bus: this owner asks to be stopped, after a failed restore (D11). */
   case object OwnerPassivate
 
   /** A squash request (D47) and the caller to answer with a `SquashResponse`. */
   case class Squash(respondTo: ActorRef, request: SquashAggregate)
-  /** To the command bus: the histories of these aggregates now give other states (a squash that may change the state
-    * detached them, D85); their owners, if running, must stop and read them again. */
+  /** To the command bus: the histories of these aggregates changed under their owners (a squash or a rewrite of their
+    * base, a detach, D85): the owners, if running, stop without a snapshot, and new ones read the histories again. */
   case class HistoryChanged(aggregateIds: Seq[AggregateId])
 
   /** D37: a concurrent command is run again on the latest state after a conflict, at most 10 times, waiting 10 ms
@@ -124,6 +127,8 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
   private var outboxRepublishedUpTo: Option[AggregateVersion] = None
 
   private var stopping = false
+  // The store changed under this owner: its state must not become a snapshot.
+  private var stale = false
 
   override def postStop(): Unit = minVersionTimer.foreach(_.cancel())
 
@@ -173,7 +178,7 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
     case Squash(respondTo, request) => respondTo ! SquashRefused(request.id, "the aggregate cannot be restored: " + failure.getMessage)
     case MinVersionDeadline => answerExpiredMinVersionQueries()
     case AskToStop => context.parent ! OwnerPassivate
-    case StopOwner => stopNow(withSnapshot = false)
+    case StopOwner | StopOwnerStale => stopNow(withSnapshot = false)
     case _ => () // nothing to publish without a state
   }
 
@@ -192,6 +197,10 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
     case Squash(respondTo, request) => respondTo ! squashHistory(request)
     case StopOwner =>
       stopping = true
+      stopIfDone()
+    case StopOwnerStale =>
+      stopping = true
+      stale = true
       stopIfDone()
     case AskToStop => () // left from a failed restore that was followed by a successful one
   }
@@ -353,6 +362,8 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
         outcome match {
           case Success(published) =>
             if (readAfterCommit) {
+              // A rewrite changed what the history gives to the duplicates too: their owners read it again.
+              if (rewritten.nonEmpty) historyChangedForDuplicates()
               // If the state cannot be read, nothing is published now: the outbox poller has it re-published later.
               if (restore().isEmpty) {
                 publish(published)
@@ -480,9 +491,9 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
 
   // ************** Stopping
 
-  private def stopIfDone(): Unit = if (stopping && pending.isEmpty) stopNow()
+  private def stopIfDone(): Unit = if (stopping && pending.isEmpty) stopNow(withSnapshot = !stale)
 
-  private def stopNow(withSnapshot: Boolean = true): Unit = {
+  private def stopNow(withSnapshot: Boolean): Unit = {
     if (withSnapshot && snapshots.exists(_.onPassivation) && version > snapshotVersion) writeSnapshot()
     queued.clear()
     pending.values.toList.foreach(command => finishWithError(command.envelope, new IllegalStateException("The aggregate's owner stopped")))
@@ -497,7 +508,8 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
   // affected. The squash event is the context's, made from the state at `upTo` and checked against it (D85); the
   // duplicates that read this aggregate below `upTo` are detached first, each with a checked squash event of its own
   // state at version 1 (D50). A squash event that may change the state changes what the history gives: this owner reads
-  // its state again, and the command bus stops the owners of the duplicates detached so, to read theirs again.
+  // its state again, and the command bus stops the owners of every duplicate that reads it (or was detached with such an
+  // event), so that new ones read theirs again.
   private def squashHistory(request: SquashAggregate): SquashResponse = squash match {
     case None => SquashRefused(aggregateId, "squash is not enabled for " + aggregateType.simpleName)
     case Some(_) if request.upTo <= AggregateVersion.ZERO || request.upTo > version =>
@@ -508,15 +520,18 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
       Try(for {
         _ <- eventStore.squashBlocker(aggregateId, upTo).toLeft(())
         event <- restorer.squashEvent(aggregateId, upTo, policy, Some(request.userId), if (upTo == version) Some(root) else None)
+        changesState = event.isInstanceOf[SquashMayChangeState]
+        // Every duplicate reads the new squash event, or is detached: with an event that changes the state, all change.
+        reading = if (changesState) eventStore.duplicatesReading(aggregateId, None) else Nil
         detach <- restorer.detachEvents(eventStore.duplicatesReading(aggregateId, Some(upTo)), policy)
         _ <- eventStore.squash(aggregateId, upTo, event, request.userId, request.metadata, detach)
-      } yield (event, detach)) match {
-        case Success(Right((event, detach))) =>
+      } yield (changesState, reading, detach)) match {
+        case Success(Right((changesState, reading, detach))) =>
           log.info("Aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " squashed up to version " + upTo.asInt +
             (if (detach.isEmpty) "" else ", detaching " + detach.map(_._1.asLong).mkString(", ")))
-          val changed = detach.collect { case (duplicate, _: SquashMayChangeState) => duplicate }
+          val changed = (reading ++ detach.collect { case (duplicate, _: SquashMayChangeState) => duplicate }).distinct
           if (changed.nonEmpty) context.parent ! HistoryChanged(changed)
-          if (event.isInstanceOf[SquashMayChangeState]) restore()
+          if (changesState) restore()
           else if (snapshotVersion <= upTo) snapshotVersion = AggregateVersion.ZERO
           AggregateSquashed(aggregateId, upTo)
         case Success(Left(reason)) => SquashRefused(aggregateId, reason)
@@ -524,6 +539,12 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
           log.error(e, "Squashing aggregate " + aggregateId.asLong + " up to version " + upTo.asInt + " failed")
           SquashRefused(aggregateId, "the squash failed: " + e.getMessage)
       }
+  }
+
+  // The duplicates' owners hold states made from the history of before; the command bus stops them without a snapshot.
+  private def historyChangedForDuplicates(): Unit = Try(eventStore.duplicatesReading(aggregateId, None)) match {
+    case Success(duplicates) => if (duplicates.nonEmpty) context.parent ! HistoryChanged(duplicates)
+    case Failure(e) => log.error(e, "Reading the duplicates of aggregate " + aggregateId.asLong + " failed; their owners keep the states of before")
   }
 
   // ************** Snapshots (D30)
@@ -535,7 +556,7 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
   }
 
   private def writeSnapshot(): Unit =
-    if (version > AggregateVersion.ZERO && root != null && restorer.writeSnapshot(aggregateId, version, root)) snapshotVersion = version
+    if (!stale && version > AggregateVersion.ZERO && root != null && restorer.writeSnapshot(aggregateId, version, root)) snapshotVersion = version
 
   // ************** Queries for a version not reached yet (F81)
 

@@ -4,7 +4,7 @@ import java.time.Instant
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.{AggregateId, UserId}
+import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
@@ -85,6 +85,33 @@ class HistoryRewriteSpec extends CommonSpec {
       rewritten.version mustBe AggregateVersion(3)
       rewritten.aggregateRoot.get.name mustBe "Renamed"
       rewritten.aggregateRoot.get.items.map(_.name) mustBe Vector("apple", "audit")
+    }
+
+    Scenario("of a base reaches its duplicates: their running owners read the rewritten history again") {
+      val baseId = cartWithAnItem()
+      val copied: CustomCommandResponse[_] = commandBus ?? DuplicateShoppingCart(userId, baseId, AggregateVersion(2))
+      val copyId = copied.asInstanceOf[SuccessResponse].aggregateId
+      cart(copyId).aggregateRoot.get.name mustBe "Groceries" // its owner runs
+
+      val renamed: CustomCommandResponse[_] = commandBus ?? RenameQuietly(userId, baseId, AggregateVersion(2), "Renamed")
+      renamed mustBe SuccessResponse(baseId, AggregateVersion(3))
+
+      cart(copyId).aggregateRoot.get.name mustBe "Renamed"
+    }
+
+    Scenario("of a duplicate reaches only the duplicate's own events, never those of its base") {
+      val baseId = cartWithAnItem()
+      val copied: CustomCommandResponse[_] = commandBus ?? DuplicateShoppingCart(userId, baseId, AggregateVersion(2))
+      val copyId = copied.asInstanceOf[SuccessResponse].aggregateId
+
+      // The copy has no creation event of its own: nothing is rewritten, the audit item is added.
+      val renamed: CustomCommandResponse[_] = commandBus ?? RenameQuietly(userId, copyId, AggregateVersion(1), "Copy")
+      renamed mustBe SuccessResponse(copyId, AggregateVersion(2))
+
+      val baseEvents: Try[List[EventInfo[ShoppingCart]]] = commandBus ?? GetEventsForAggregate(baseId)
+      baseEvents.get.map(_.event) mustBe List(ShoppingCartCreated("Groceries"), ItemAdded("apple"))
+      eventStore.readEventsRange[ShoppingCart](copyId, AggregateVersion(1), AggregateVersion(1)).map(_.event) mustBe
+        Seq(ShoppingCartDuplicated(SpaceId(0), baseId, AggregateVersion(2)))
     }
 
     Scenario("that would change an event's class is refused, and nothing of the command is stored") {

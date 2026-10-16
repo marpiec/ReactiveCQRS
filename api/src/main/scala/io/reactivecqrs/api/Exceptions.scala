@@ -1,5 +1,7 @@
 package io.reactivecqrs.api
 
+import java.time.Instant
+
 import io.reactivecqrs.api.id.AggregateId
 
 class NoEventsForAggregateException(val aggregateId: AggregateId, val aggregateType: AggregateType) extends Exception("No events for aggregate " + aggregateId.asLong)
@@ -29,7 +31,9 @@ class TooManyEventsException(val aggregateId: AggregateId,
   override def fillInStackTrace(): Throwable = this
 }
 
-/** The aggregate's history before `squashedUpTo` was squashed into one event (D51): it cannot be read at `requested`. */
-class AggregateSquashedException(val aggregateId: AggregateId, val squashedUpTo: AggregateVersion, val requested: AggregateVersion)
-  extends Exception("The history of aggregate " + aggregateId.asLong + " is squashed up to version " + squashedUpTo.asInt +
-    "; version " + requested.asInt + " cannot be read")
+/** The aggregate's history before `squashedUpTo` was squashed into one event (D51): it cannot be read at `requested`,
+  * nor at the instant `at` when a read was asked for one (it lies before the squash event's time). */
+class AggregateSquashedException(val aggregateId: AggregateId, val squashedUpTo: AggregateVersion, val requested: AggregateVersion,
+                                 val at: Option[Instant] = None)
+  extends Exception("The history of aggregate " + aggregateId.asLong + " is squashed up to version " + squashedUpTo.asInt + "; " +
+    at.fold("version " + requested.asInt)(instant => "its state at " + instant) + " cannot be read")

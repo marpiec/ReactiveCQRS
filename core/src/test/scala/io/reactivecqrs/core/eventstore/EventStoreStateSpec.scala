@@ -368,7 +368,7 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     awaitAssert(ids.foreach(id => eventStoreState.oldestVersionToPublish(id) mustBe None), 3.seconds, 20.millis)
   }
 
-  private def squash(f: TestFixture, upTo: Int, detach: Seq[(AggregateId, FirstEvent[_])] = Nil, metadata: Option[EventMetadata] = None) =
+  protected def squash(f: TestFixture, upTo: Int, detach: Seq[(AggregateId, FirstEvent[_])] = Nil, metadata: Option[EventMetadata] = None) =
     eventStoreState.squash(f.aggregateId, AggregateVersion(upTo), EventA("squashed"), UserId(9), metadata, detach)
 
   // D47, D49, D51.
@@ -468,6 +468,36 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     eventStoreState.squashCandidates(someAggregate, rule, before, 1) mustBe Seq(a.aggregateId -> AggregateVersion(5))
     eventStoreState.squashCandidates(someAggregate, rule, a.aggregateId, 10) mustBe Seq(c.aggregateId -> AggregateVersion(7))
     eventStoreState.squashCandidates(AggregateType("other.Type"), rule, before, 10) mustBe empty
+  }
+
+  // A detach replaces the duplicate's first event; if an undo marked it, the undo would then take the base's state too.
+  Scenario("A squash or a permanent delete is refused while a duplicate it would detach has its first event undone") {
+    val base = new TestFixture(eventStoreState)
+    base.storeEvents(Seq(EventA("one"), EventB(2), EventC(true)))
+    val copy = newId()
+    base.storeEvents(Seq(Copy(SpaceId(1), base.aggregateId, AggregateVersion(2))), copy, AggregateVersion.ZERO)
+    base.storeEvents(Seq(EventB(20)), copy, AggregateVersion(1))
+    base.storeEvents(Seq(Undo(2)), copy, AggregateVersion(2)) // undoes EventB(20) and the copy's first event
+    published(base.aggregateId, copy)
+
+    eventStoreState.squashBlocker(base.aggregateId, AggregateVersion(3)).get must include("first event of duplicate " + copy.asLong + ", which the squash detaches, was undone")
+    squash(base, 3, Seq(copy -> EventA("copy"))).left.toOption.get must include("was undone")
+    eventStoreState.deleteAggregatePermanently(base.aggregateId, Seq(copy -> EventA("copy"))).left.toOption.get must include("was undone")
+    base.getEvents() mustBe Seq(EventA("one"), EventB(2), EventC(true))
+  }
+
+  // As the procedures store a command's events one after another, each undo is checked against the events before it.
+  Scenario("The undos of one command are checked one after another against the squash point") {
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one"), EventB(2), EventC(true)))
+    published(f.aggregateId)
+    squash(f, 3) mustBe Right(())
+
+    f.storeEvents(Seq(EventB(4), Undo(1))) // the undo reaches the event stored just before it
+    f.getEvents() mustBe Seq(EventA("squashed"))
+    Try(f.storeEvents(Seq(EventB(6), Undo(1), Undo(1)))).isFailure mustBe true // the second undo would reach the squash event
+    f.getEvents() mustBe Seq(EventA("squashed"))
+    eventStoreState.readEventsRange[SomeAggregate](f.aggregateId, AggregateVersion(1), AggregateVersion(10)).map(_.version.asInt) mustBe Seq(3, 4, 5)
   }
 
 }

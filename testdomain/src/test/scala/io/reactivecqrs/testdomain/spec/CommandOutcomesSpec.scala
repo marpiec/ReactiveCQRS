@@ -213,6 +213,26 @@ class CommandOutcomesSpec extends CommonSpec {
       commandIds.release()
       Await.result(waiting, 5.seconds) mustBe SuccessResponse(cartId, AggregateVersion(3))
     }
+
+    Scenario("a pool asked for ahead that does not come fails no command while ids of its kind are still at hand") {
+      implicit val timeout: Timeout = Timeout(10.seconds)
+      val aggregateIds = new GatedUidGenerator(poolSize = 1)
+      val bus = system.actorOf(AggregateCommandBusActor(new ShoppingCartAggregateContext,
+        system.actorOf(Props(new UidGeneratorActor(aggregateIds, new OnePoolUidGenerator(10), new PostgresUidGenerator("sagas_uids_seq")))),
+        eventStore, commandResponseState, eventBus, eventsReplayMode = false))
+
+      Given("a cart made with the only aggregate id at hand, and commands that leave two of the ten command ids")
+      val cartId = Await.result(bus ? CreateShoppingCart(None, userId, "Groceries"), 5.seconds).asInstanceOf[SuccessResponse].aggregateId
+      (1 to 7).foreach(_ => Await.result(bus ? CheckCart(userId, cartId), 5.seconds) mustBe a[SuccessResponse])
+
+      When("a new cart waits for aggregate ids, and the pool of command ids asked for ahead fails")
+      val second = bus ? CreateShoppingCart(None, userId, "Second")
+
+      Then("it keeps waiting, and runs once the aggregate ids come")
+      Try(Await.result(second, 1.second)).isFailure mustBe true // not answered, so not failed
+      aggregateIds.release()
+      Await.result(second, 5.seconds) mustBe a[SuccessResponse]
+    }
   }
 }
 

@@ -17,11 +17,12 @@ import io.reactivecqrs.core.projection.{PostgresSubscriptionsState, Subscription
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
-import org.apache.pekko.actor.{ActorRef, Props}
+import org.apache.pekko.actor.{ActorIdentity, ActorRef, Identify, Props}
 import org.apache.pekko.testkit.TestProbe
 
 import scala.concurrent.duration._
 import scala.util.Try
+import scalikejdbc._
 
 case class Memo(text: String)
 case class MemoWritten(text: String) extends FirstEvent[Memo] {
@@ -93,6 +94,12 @@ class PermanentDeleteSpec extends CommonSpec {
     def ack(memoId: AggregateId, versions: Int*): Unit = bus ! MessageAck(subscriber.ref, memoId, versions.map(AggregateVersion(_)), EventsDelivery)
   }
 
+  private def ownerOf(memoId: AggregateId): ActorRef = {
+    val probe = TestProbe()
+    system.actorSelection("/user/*/Memo_" + memoId.asLong + "_*").tell(Identify(memoId), probe.ref)
+    probe.expectMsgType[ActorIdentity](3.seconds).ref.getOrElse(fail("No owner of memo " + memoId.asLong))
+  }
+
   private def storedVersions(memoId: AggregateId): Seq[Int] =
     eventStore.readEventsRange[Memo](memoId, AggregateVersion(1), AggregateVersion(100)).map(_.version.asInt)
 
@@ -149,6 +156,27 @@ class PermanentDeleteSpec extends CommonSpec {
 
       Then("the memo is deleted for good")
       deletedForGood(memoId)
+    }
+
+    Scenario("leaves no snapshot behind, also when the owner takes snapshots and stops after the delete") {
+      val f = new Fixture(new MemoContext() { override val snapshots: Option[SnapshotPolicy] = Some(SnapshotPolicy(every = 100)) })
+      val memoId = AggregateId(System.nanoTime())
+      val written: CustomCommandResponse[_] = f.commandBus ?? WriteMemo(userId, memoId, "note")
+      written mustBe SuccessResponse(memoId, AggregateVersion(1))
+      f.delivered(memoId) mustBe Seq(1)
+      f.ack(memoId, 1)
+      val owner = ownerOf(memoId)
+      val watcher = TestProbe()
+      watcher.watch(owner)
+
+      val erased: CustomCommandResponse[_] = f.commandBus ?? EraseMemo(userId, memoId, AggregateVersion(1))
+      erased mustBe SuccessResponse(memoId, AggregateVersion(2))
+      f.delivered(memoId) mustBe Seq(2)
+      f.ack(memoId, 2)
+
+      deletedForGood(memoId)
+      watcher.expectTerminated(owner, 5.seconds)
+      DB.readOnly(implicit session => sql"SELECT count(*) FROM snapshots WHERE aggregate_id = ${memoId.asLong}".map(_.int(1)).single()) mustBe Some(0)
     }
 
     Scenario("still waiting in the outbox after a restart, it is carried out when delivered again") {

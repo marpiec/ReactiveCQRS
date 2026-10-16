@@ -132,9 +132,9 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
     case request: SquashAggregate => toOwner(request.id, Squash(sender(), request))
     case RemoveExpiredResponses => removeExpiredResponses()
     case PassivateAggregate(id) => stopOwner(id.asLong)
-    case DeletedPermanently(id, changed) => (id +: changed).foreach(aggregate => stopOwner(aggregate.asLong)) // its state is gone
-    case HistoryChanged(changed) => changed.foreach(aggregate => stopOwner(aggregate.asLong))
-    case OwnerPassivate => ownerIds.get(sender()).foreach(stopOwner)
+    case DeletedPermanently(id, changed) => (id +: changed).foreach(aggregate => stopOwner(aggregate.asLong, stale = true)) // its state is gone
+    case HistoryChanged(changed) => changed.foreach(aggregate => stopOwner(aggregate.asLong, stale = true))
+    case OwnerPassivate => ownerIds.get(sender()).foreach(key => stopOwner(key))
     case Terminated(ref) => ownerTerminated(ref)
     case m =>
       // Answered, not thrown: a throw would restart the bus, which stops its children and with them every
@@ -187,10 +187,12 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   // The waiting messages that need such ids are answered with the failure (F75: answered, not thrown, AR7). The pool is
   // asked for again when the next message arrives, not at once, so a generator that is down is not asked in a loop.
   private def idsNotReceived(ofAggregates: Boolean, e: Throwable): Unit = {
-    if (ofAggregates) aggregateIds.failed() else commandIds.failed()
+    val pool = if (ofAggregates) aggregateIds else commandIds
+    pool.failed()
     log.error(e, "No pool of " + (if (ofAggregates) "aggregate" else "command") + " ids for " + aggregateTypeSimpleName + " came")
+    // A pool asked for ahead that does not come fails nothing while ids of the kind are still at hand.
     val (failing, others) = waitingForIds.partition { case (message, _) =>
-      if (ofAggregates) needsAggregateId(message) else message != ReserveAggregateId
+      !pool.available && (if (ofAggregates) needsAggregateId(message) else message != ReserveAggregateId)
     }
     waitingForIds = others
     failing.foreach {
@@ -222,12 +224,15 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
     owner
   }
 
-  private def stopOwner(key: Long): Unit = owners.get(key).foreach { owner =>
-    if (!keptForStopping.contains(key)) {
+  // `stale`: the store changed under the owner, so it must not write its state as a snapshot; it is told so also when it
+  // is stopping already.
+  private def stopOwner(key: Long, stale: Boolean = false): Unit = owners.get(key).foreach { owner =>
+    val stopping = keptForStopping.contains(key)
+    if (!stopping) {
       keptForStopping += key -> Vector.empty
       childrenActivity -= key
-      owner ! StopOwner
     }
+    if (stale) owner ! StopOwnerStale else if (!stopping) owner ! StopOwner
   }
 
   // An owner stopped: on request, after a failure, or after a failed restore. Messages kept for it go to a new owner.

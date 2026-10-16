@@ -67,6 +67,8 @@ class NameOnlyCarts(onPurpose: Boolean) extends ShoppingCartAggregateContext {
   }
   override val squash: Option[SquashPolicy[ShoppingCart]] =
     Some(SquashPolicy(cart => if (onPurpose) CartArchived(SpaceId(0), cart.name) else CartNameKept(SpaceId(0), cart.name)))
+  // Owners write a snapshot when they stop: one stopped after the history changed under it must not.
+  override val snapshots: Option[SnapshotPolicy] = Some(SnapshotPolicy(every = 1000))
 }
 
 // D47–D52: squashing old history into one event.
@@ -340,19 +342,27 @@ class SquashSpec extends CommonSpec {
       val cartId = createdOn(bus, "apple", "pear", "plum")
       val copyId = sent(DuplicateShoppingCart(userId, cartId, AggregateVersion(2))).asInstanceOf[SuccessResponse].aggregateId
       sent(AddItem(userId, copyId, AggregateVersion(1), "fig")) mustBe SuccessResponse(copyId, AggregateVersion(2))
-      itemsOf(copyId) mustBe Vector("apple", "fig") // its owner runs, with the state of before
+      val lateCopyId = sent(DuplicateShoppingCart(userId, cartId, AggregateVersion(4))).asInstanceOf[SuccessResponse].aggregateId
+      // Their owners run, with the states of before.
+      itemsOf(copyId) mustBe Vector("apple", "fig")
+      itemsOf(lateCopyId) mustBe Vector("apple", "pear", "plum")
       val stateClass = classOf[ShoppingCart].getName
       eventStore.writeSnapshot(cartId, Snapshot(AggregateVersion(4), carts.version, 1, cartsRestorer.restore(cartId).root), stateClass)
-      outboxEmpty(cartId, copyId)
+      eventStore.writeSnapshot(lateCopyId, Snapshot(AggregateVersion(1), carts.version, 1, cartsRestorer.restore(lateCopyId).root), stateClass)
+      outboxEmpty(cartId, copyId, lateCopyId)
 
       squash(cartId, 3, bus = bus) mustBe AggregateSquashed(cartId, AggregateVersion(3))
 
       Then("the history now gives the cart without the items squashed away, and its live owner shows that")
       itemsOf(cartId) mustBe Vector("plum")
       cartsRestorer.restore(cartId).root.items.map(_.name) mustBe Vector("plum")
-      eventStore.readSnapshot[ShoppingCart](cartId, stateClass) mustBe None // it was made from the history of before
-      And("the copy, detached with its own state left out the same way, is read again by a new owner")
+      // Made from the histories of before: the cart's, and that of the copy that reads the cart after the squash point.
+      eventStore.readSnapshot[ShoppingCart](cartId, stateClass) mustBe None
+      eventStore.readSnapshot[ShoppingCart](lateCopyId, stateClass) mustBe None
+      And("the copy, detached with its own state left out the same way, is read again by a new owner, not from a snapshot of before")
       itemsOf(copyId) mustBe Vector("fig")
+      And("the copy that reads the cart after the squash point now reads the squash event, and its owner reads it again")
+      itemsOf(lateCopyId) mustBe Vector("plum")
       And("commands go on from the new states")
       sent(AddItem(userId, cartId, AggregateVersion(4), "kiwi")) mustBe SuccessResponse(cartId, AggregateVersion(5))
       itemsOf(cartId) mustBe Vector("plum", "kiwi")

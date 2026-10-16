@@ -397,7 +397,10 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   and for reads at an instant, it reads every event, never failing because of the snapshot
   (R10). An undo deletes the aggregate's snapshot, a rewrite those of the aggregate and of its
   duplicates, a squash the one at or below its point, a permanent delete its own, each in its
-  transaction; the owner runs all of them, so a snapshot write cannot race them.
+  transaction; the owner runs all of them, so a snapshot write cannot race them. A snapshot is
+  written only while its aggregate is stored at that version, and an owner whose history
+  changed under it (a delete, a detach, a rewrite or state-changing squash of its base) is
+  stopped without writing one (F100).
 - `GetAggregateMinVersion(id, v, maxMillis)` waits in the owner until the version is reached
   and is answered then; when `maxMillis` passes first, it is answered with
   `Failure(AggregateInIncorrectVersionException)` (fixed F81).
@@ -418,7 +421,10 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   arrive for that aggregate meanwhile; the owner answers the commands it started (and any
   waiting min-version queries) and stops; once it terminated, a new owner gets the kept
   messages. Reasons: reaping (below), a permanent delete, a failed restore, and
-  `PassivateAggregate(id)` (operations, tests). It is Cluster Sharding's passivation (D43,
+  `PassivateAggregate(id)` (operations, tests). When the store changed under the owner (a
+  permanent delete; `HistoryChanged` from another owner after a rewrite or a state-changing
+  squash of its base, or a detach) the bus sends `StopOwnerStale` instead, also to an owner
+  stopping already: it writes no snapshot (F100). It is Cluster Sharding's passivation (D43,
   D72), so M5 can put a shard in the bus's place without changing the owner.
 - **Dispatchers (F27, since M3):** owners run on `reactivecqrs.blocking-dispatcher` (the
   library's `reference.conf`: a fixed pool of 32 threads, throughput 1; size it near the JDBC
@@ -445,9 +451,11 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
 
 - **Rewrite** (`RewriteCommandSuccess`): `overwriteEvents` runs `UPDATE events SET event = ?`
   per `(aggregate_id, version)` in the same transaction (`overwriteEvents`), and only where the
-  stored event has the same class: a rewrite to another class is refused (D17, F8). Only new
-  events are published; after the commit the owner reads its state again from the store. The test domain
-  pairs each rewrite with a compensating event (`CartNameRewritten`).
+  stored event has the same class: a rewrite to another class is refused (D17, F8). The handler
+  gets only the aggregate's own events, never its base's (F103). Only new events are published;
+  after the commit the owner reads its state again from the store, and the owners of its
+  duplicates are stopped to read theirs again (`HistoryChanged`, F100). The test domain pairs
+  each rewrite with a compensating event (`CartNameRewritten`).
 - **Permanent delete**: the bus names the version of a `PermanentDeleteEvent` in its
   acknowledgement (`permanentDeleteAt`); the command bus then calls
   `EventStoreState.deleteAggregatePermanently` and stops the owner, whose state is gone. In one transaction it locks
@@ -476,16 +484,17 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   at the time of the event it replaces), and the result must equal (`==`) the state it
   replaces, or the squash is refused (a permanent delete waits, F76). A class that mixes in
   `SquashMayChangeState` may differ on purpose: it is only applied, not compared; the store
-  then deletes every snapshot of that aggregate, the owner reads its state again, and it asks
-  the command bus (`HistoryChanged`) to stop the owners of the duplicates detached so, which
-  read theirs again. Projections are not told (D51).
+  then deletes every snapshot of that aggregate and of the duplicates still reading it, the
+  owner reads its state again, and it asks the command bus (`HistoryChanged`) to stop the
+  owners of all its duplicates, which read theirs again (F101). Projections are not told (D51).
 - **Preconditions (D51)**, checked by the owner first and again in the transaction
   (`squashBlocker`): not squashed that far already; no outbox rows at or below `upTo`; no
   failed subscription; no undo after `upTo` that undid events at or below it; and, for each
-  duplicate the squash detaches, no outbox row at its version 1 and no failed subscription
-  (the detach changes that event).
-- **The transaction** (`EventStoreState.squash`): locks the aggregate's chain rows and the
-  rows by which its duplicates read it (`ORDER BY id, base_id FOR UPDATE`); checks the
+  duplicate the squash detaches, its first event not undone (F105), no outbox row at its
+  version 1 and no failed subscription (the detach changes that event).
+- **The transaction** (`EventStoreState.squash`): locks, in one statement and in key order,
+  every chain row of the aggregate and of each aggregate that reads it (`ORDER BY id, base_id
+  FOR UPDATE`; F104: so it cannot deadlock with a duplication, which locks the same way); checks the
   preconditions, and that the duplicates reading it below `upTo` are those the owner
   prepared (else "changed meanwhile", nothing changes); detaches them (D50: the version-1
   event becomes a squash event of the duplicate's state at version 1, its noop rows and its
@@ -495,7 +504,9 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   request's user and metadata); records `aggregates.squashed_version`.
 - **After a squash:** an undo that would reach the squash point is refused by
   `add_undo_event` (D49), a duplication below it by `add_duplication_event`; historical reads
-  below it fail with `AggregateSquashedException`; a `RepublishRange` from below it starts at
+  below it fail with `AggregateSquashedException`, checked after the read so a squash during it
+  is seen, and so does a read at an instant before the squash event's time (F102); a
+  `RepublishRange` from below it starts at
   the squash event; a restore and a rebuild read the squash event first. Versions come from
   the stored events, so they stay as they were.
 - **Scheduler (D52):** `SquashScheduler(eventStore, targets, options)`, started by the host,

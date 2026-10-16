@@ -47,9 +47,10 @@ case class SquashPolicy[AGGREGATE_ROOT](toEvent: AGGREGATE_ROOT => FirstEvent[AG
 /**
   * Mixed into a squash event class whose state may differ from the state it replaces, on purpose (D85): for example one
   * that leaves out data the aggregate no longer needs. Such a squash is not compared (its event handler must still
-  * apply it), and since the history then gives another state than before: every snapshot of the aggregate goes, its
-  * owner reads its state again, and so do the owners of the duplicates it detaches. Projections are not told (D51):
-  * they keep what they made from the events it replaced, and only a rebuild sees the new state.
+  * apply it), and since the history then gives another state than before: every snapshot of the aggregate and of the
+  * duplicates reading it goes, and the owners of the aggregate and of all its duplicates read their states again.
+  * Projections are not told (D51): they keep what they made from the events it replaced, and only a rebuild sees the
+  * new state.
   */
 trait SquashMayChangeState
 

@@ -39,7 +39,8 @@ abstract class EventStoreState {
     * An undo, a history rewrite and a permanent delete remove the snapshots they make wrong, in their own transaction. */
   def readSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, stateClassName: String): Option[Try[Snapshot[AGGREGATE_ROOT]]]
 
-  /** Stores the aggregate's snapshot in a transaction of its own, in place of the one it had. */
+  /** Stores the aggregate's snapshot in a transaction of its own, in place of the one it had; only while the aggregate
+    * is stored at that version or later, so nothing is written for an aggregate deleted for good. */
   def writeSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, snapshot: Snapshot[AGGREGATE_ROOT], stateClassName: String): Unit
 
   def readAndProcessAllEvents(aggregateType: String,

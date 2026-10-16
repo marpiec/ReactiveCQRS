@@ -104,7 +104,7 @@ behaviour.
 | D50 | Before squashing a base aggregate below a version that duplicates still read, each such duplicate is detached: its version-1 `DuplicationEvent` is replaced by a squash event holding its state at version 1, and its base-chain rows are removed. Squashing a duplicate detaches it the same way. |
 | D51 | Squash runs only with no `events_to_publish` rows and no failed subscriptions for the aggregate; live projections are not notified; rebuilds see the squash event first; performance snapshots at or below N are deleted; historical reads below N return an explicit "squashed" error (BusinessEntity contexts do not opt in until R11's archive exists); disk space is reclaimed by (auto)VACUUM, shrinking files needs `pg_repack`/`VACUUM FULL` (operations note). **Refined in M3 (16/10/2026):** "no rows" means none at or below N (rows above N are not touched); a duplicate the squash detaches must have no outbox row at its version 1 and no failed subscription (the detach changes that event); an undo after N that undid events at or below N blocks it too; the preconditions are checked again inside the transaction, under the chain lock (F96). The squash event keeps event N's id and time. |
 | D52 | Squash runs on explicit request (`SquashAggregate(id, upTo)`) or by an optional per-context policy run by the squash scheduler singleton. R11's selective squash with an audit archive is an extension on top. |
-| D85 | (16/10/2026, at the user's request) Every squash event is checked before it is stored: the event handlers apply it to the initial state as a restore will (by the user it is stored by, at the time of the event it replaces), and the result must equal (`==`) the state it replaces; otherwise the squash is refused, and so is a permanent delete that would detach a duplicate with it (F76). A squash event class that mixes in `SquashMayChangeState` may differ on purpose: it is not compared (its handler must still apply it), it takes every snapshot of its aggregate, and the owners of the aggregate and of the duplicates it detached read their states again; projections are not told (D51). |
+| D85 | (16/10/2026, at the user's request) Every squash event is checked before it is stored: the event handlers apply it to the initial state as a restore will (by the user it is stored by, at the time of the event it replaces), and the result must equal (`==`) the state it replaces; otherwise the squash is refused, and so is a permanent delete that would detach a duplicate with it (F76). A squash event class that mixes in `SquashMayChangeState` may differ on purpose: it is not compared (its handler must still apply it), it takes every snapshot of its aggregate and of the duplicates reading it, and the owners of the aggregate and of all its duplicates read their states again (F101); projections are not told (D51). |
 | D32 | Metadata envelope (R13): a new nullable JSONB `metadata` column on `events`; old rows get a default envelope built from `user_id` on read; commands supply metadata through a trait; `EventInfo` carries it; aggregate event handlers keep their signature. |
 | D33 | Outbox hook (R12): a typed writer per context, `(aggregateId, version, events, session) => Unit`, called inside the persist transaction; a failure rolls back the events; idempotent replays never call it twice. |
 | D17 | History rewrite is safe by contract: a rewritten event must keep its class; the in-memory aggregate is rebuilt from the store after a rewrite; rewrite + compensating event stays the documented way to notify projections. |
@@ -575,6 +575,49 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Fix:** `add_duplication_event` locks the base's chain rows `FOR KEY SHARE` in key order and then refuses a missing base or a version below its `squashed_version`; a squash or permanent delete locks the aggregate's chain and its duplicates' rows to it `FOR UPDATE` in the same order, then checks its preconditions again and compares the duplicates with those it was given (else it changes nothing, "changed meanwhile"). Whichever runs first, the other sees its result. The in-memory store mirrors the checks.
 - **Tests:** `PostgresEventStoreStateSpec` (a duplication during a squash waits and is refused; a squash waiting for a duplication sees it and changes nothing), `EventStoreStateSpec`, `SquashSpec`; both failed against the code without the locks and checks.
 
+F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2026) and fixed then; each test below failed against the code before the fix.
+
+#### F100 — Owners wrote snapshots of states the store no longer had
+- **High**, confirmed · **Fixed in M3** · `AggregateOwner.stopNow`, `AggregateCommandBusActor.stopOwner`, `writeSnapshot`
+- **Symptom:** an owner stopped after its aggregate was deleted for good wrote a snapshot of it, so the erased state stayed in `snapshots`; owners of duplicates whose history changed under them (a detach with a state-changing squash event, a rewrite of their base) wrote their old states back as snapshots, which later restores read.
+- **Fix:** the command bus stops such owners with `StopOwnerStale`, which writes no snapshot (also when the owner was stopping already); after a rewrite or a state-changing squash the owner names the duplicates whose histories changed (`HistoryChanged`); a snapshot is written only while the aggregate is stored at that version.
+- **Tests:** `PermanentDeleteSpec` (no snapshot after a delete), `SquashSpec`, `HistoryRewriteSpec` (a duplicate's live owner shows its base's rewritten history).
+
+#### F101 — A squash that changed the state on purpose left the duplicates still reading the aggregate stale
+- **Medium**, confirmed · **Fixed in M3** · `PostgresEventStoreState.squash`, `AggregateOwner.squashHistory` (and the in-memory store)
+- **Symptom:** after a `SquashMayChangeState` squash, duplicates that read the aggregate above the squash point read the new squash event, so their states changed, but their snapshots and running owners kept the old ones.
+- **Fix:** such a squash deletes the snapshots of every aggregate still reading the squashed one and has the owners of all its duplicates stopped. Test: `SquashSpec`.
+
+#### F102 — A read at an instant before the squash point answered "did not exist"
+- **Medium**, confirmed · **Fixed in M3** · `PostgresEventStoreState.processEvents`
+- **Symptom:** no event is left before the squash point, so an instant before the squash event's time resolved to version 0 and the read answered an empty aggregate; also, a squash committed between the read's check and its query left the read incomplete.
+- **Fix:** the squash point is checked after the read, in its transaction, and an instant before the squash event's time fails with `AggregateSquashedException` (now also naming the instant). Test: `PostgresEventStoreStateSpec`.
+
+#### F103 — A history rewrite of a duplicate reached its base's events
+- **Medium**, confirmed (from before 1.0) · **Fixed in M3** · `AggregateRestorer.eventsOfClasses`
+- **Symptom:** the rewrite handler got the base's events of the classes asked for, with the base's versions, and the store applied them to the duplicate's own rows: the rewrite failed on the class check, or, with the same class, replaced the duplicate's own event.
+- **Fix:** only the aggregate's own events are given to the handler. Test: `HistoryRewriteSpec`.
+
+#### F104 — A squash or delete could deadlock with a duplication of a duplicate
+- **Low** (PostgreSQL detected it and aborted one side), confirmed · **Fixed in M3** · `PostgresEventStoreState.lockChain`
+- **Symptom:** the squash locked only the rows that point to the aggregate, then deleted the detached duplicate's other chain rows, which a duplication of that duplicate could hold while it waited for a row the squash held.
+- **Fix:** one ordered statement locks every chain row of the aggregate and of each aggregate reading it. Test: `PostgresEventStoreStateSpec` (the two run side by side; deadlocked before).
+
+#### F105 — Detaching a duplicate whose first event was undone changed its state
+- **Low**, confirmed · **Fixed in M3** · `squashBlocker`, `deleteAggregatePermanently` (both stores)
+- **Symptom:** the detach replaced the undone first event with a squash event that was no longer undone, so the duplicate got back what its undo had taken; the in-memory store kept it undone, so the stores differed.
+- **Fix:** a squash is refused, and a permanent delete waits, while a duplicate to detach has its first event undone. Test: `EventStoreStateSpec`.
+
+#### F106 — The in-memory store checked a command's undos against the history before the command
+- **Low**, confirmed · **Fixed in M3** · `MemoryEventStoreState.persistEvents`
+- **Symptom:** after a squash, an undo of an event stored by the same command was refused, and a second undo that reached the squash event was accepted; PostgreSQL does the opposite, as its procedures store the events one after another.
+- **Fix:** each event is checked against the events before it, the command's included, before anything changes. Test: `EventStoreStateSpec`.
+
+#### F107 — A failed pool fetched ahead failed commands that had ids at hand
+- **Low**, confirmed · **Fixed in M3** · `AggregateCommandBusActor.idsNotReceived`
+- **Symptom:** when the next pool of one kind of ids did not come, every waiting command was answered with an error, also while ids of that kind were still at hand (they waited for the other kind).
+- **Fix:** a failed pool fails only the commands that need its kind of ids while none is left. Test: `CommandOutcomesSpec`.
+
 ### Performance and runtime
 
 #### F23 — Id pools of 100 and a blocking wait on refill
@@ -582,6 +625,12 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Fix:** pools of 10 000 (`ALTER SEQUENCE … INCREMENT BY`), asynchronous prefetch at a low-water mark (D34).
 - **Note (16/10/2026):** since F40 a failing id store fails the `Await` at once instead of after 60 s; F75 makes the bus and the saga actor answer that failure instead of restarting. The `Await` itself (the bus blocks while a pool is fetched) goes with the asynchronous prefetch.
 - **As fixed:** the sequences step by 10 000 (an older one is changed at start; the next pool starts past every pool handed out, so no id is given twice, also with a node still on the old size). The command bus and the saga actor keep their ids in an `IdPool`, which asks for the next pool when a fifth is left; a command or order that arrives while none is at hand waits, with the ones after it, and the actor keeps answering other messages; a pool that does not come fails the waiting ones (F75) and is asked for again with the next. Tests: `IdPoolSpec`; `CommandOutcomesSpec` (a query is answered while a command waits for a slow pool; failed against the old bus), the F75 scenarios.
+
+#### F99 — Contended concurrent commands wait a back-off even for conflicts their owner sees itself
+- **Low** (serial mode is the remedy, R8), confirmed (measured at the M3 close, 16/10/2026) · Fix in **M5** (with the owner as shard entity), or earlier if Neula needs concurrent mode on hot aggregates · `AggregateOwner.conflict`
+- **Symptom:** 16 callers sending `ConcurrentCommand`s at once to one aggregate: 738 commands/s, p99 380 ms (`baseline-M3.md`), against 1 166 commands/s and p99 197 ms before the owner (`baseline-M2.md`). The same load in serial mode runs at 2 501 commands/s, p99 11 ms.
+- **Root cause:** every conflict waits D37's jittered back-off (10 ms doubling) before the command runs again, also when the owner itself saw it (another command of the same owner committed first), where no other writer is involved and waiting spreads nothing.
+- **Fix idea:** a command that conflicts with a commit of its own owner runs again as soon as that commit is done, one at a time (serial after a first conflict); conflicts found by the store (another writer) keep the back-off. Measure with the bench's contended scenario; the attempt limit must not fail commands that only waited their turn.
 
 #### F27 — Blocking JDBC runs on the default dispatcher
 - **Medium**, likely · **Fixed in M3** (16/10/2026) · persist, restore, projections, futures
@@ -830,7 +879,7 @@ From §7 of Neula's change requests.
 | M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔, F95 ✔; Neula H2, H7 |
 | M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8 ✔; F8 (contract ✔), F22 ✔, F23 ✔, F25 ✔, F27 ✔, F30 ✔, F31 ✔, F32 ✔, F33 (rest ✔), F38 ✔, F39 ✔, F44 ✔, F50 ✔, F65 ✔, F76 ✔, F78 ✔, F81 ✔, F96 ✔, F97 ✔; Neula H8 |
 | M4 | F3, F43, F49 (backfill), F54, F55, F56, F57, F58, F59, F60, F61, F62, F82, F93, F94, F98; Neula H1, H6 |
-| M5 | AR5; F46, F48, F63, F78 (between nodes) |
+| M5 | AR5; F46, F48, F63, F99 (F78 between nodes ✔ in M3) |
 | M6 | F8 (complete) |
 
 ---

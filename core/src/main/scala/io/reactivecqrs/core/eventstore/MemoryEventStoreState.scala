@@ -36,14 +36,22 @@ class MemoryEventStoreState extends EventStoreState {
     if (eventsEnvelope.expectedVersion.asInt != currentVersion) {
       throw new IllegalStateException("Incorrect version for event, expected " + eventsEnvelope.expectedVersion.asInt + " but was " + currentVersion)
     }
-    eventsEnvelope.events.foreach {
-      case undo: UndoEvent[_] => refuseUndoIntoSquashed(aggregateId, eventsForAggregate, undo.eventsCount)
-      case duplication: DuplicationEvent[_] => refuseDuplicationOfSquashed(duplication)
-      case _ => ()
+    // Each event is checked against the history before it, the command's earlier events included, as the procedures
+    // store them one after another; all are checked before anything changes, as a failed transaction rolls back.
+    val entries = eventsEnvelope.events.zipWithIndex.map { case (event, i) =>
+      EventStoreEntry(eventsEnvelope.userId, eventsEnvelope.timestamp, AggregateVersion(currentVersion + i + 1), event, eventsEnvelope.metadata)
     }
-    val eventsWithVersions = eventsEnvelope.events.zipWithIndex.map { case (event, i) =>
-      val version = AggregateVersion(currentVersion + i + 1)
-      eventsForAggregate :+= EventStoreEntry(eventsEnvelope.userId, eventsEnvelope.timestamp, version, event, eventsEnvelope.metadata)
+    entries.foldLeft(eventsForAggregate) { (before, entry) =>
+      entry.event match {
+        case undo: UndoEvent[_] => refuseUndoIntoSquashed(aggregateId, before, undo.eventsCount)
+        case duplication: DuplicationEvent[_] => refuseDuplicationOfSquashed(duplication)
+        case _ => ()
+      }
+      before :+ entry
+    }
+    val eventsWithVersions = entries.map { entry =>
+      val (event, version) = (entry.event, entry.version)
+      eventsForAggregate :+= entry
       eventIdSeq += 1
       eventsRows ::= EventRow(eventIdSeq, aggregateId, version,
                     AggregateType.ofClass(event.aggregateRootClass), event, eventsEnvelope.userId, eventsEnvelope.timestamp, eventsEnvelope.metadata)
@@ -140,8 +148,11 @@ class MemoryEventStoreState extends EventStoreState {
   override def readSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, stateClassName: String): Option[Try[Snapshot[AGGREGATE_ROOT]]] =
     synchronized(snapshots.get(aggregateId)).map(snapshot => Try(snapshot.asInstanceOf[Snapshot[AGGREGATE_ROOT]]))
 
+  // As in PostgreSQL: only while the aggregate is stored at that version.
   override def writeSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, snapshot: Snapshot[AGGREGATE_ROOT], stateClassName: String): Unit =
-    synchronized { snapshots += aggregateId -> snapshot }
+    synchronized {
+      if (eventStore.get(aggregateId).exists(_.lastOption.exists(_.version >= snapshot.version))) snapshots += aggregateId -> snapshot
+    }
 
   // The aggregates whose duplication chain includes `aggregateId`, at any depth, as the aggregates rows hold it in PostgreSQL.
   private def duplicatesOf(aggregateId: AggregateId): Set[AggregateId] = {
@@ -172,21 +183,34 @@ class MemoryEventStoreState extends EventStoreState {
       Some("events at or below version " + upTo.asInt + " still wait in the outbox")
     } else if (withNoopFlags(entries).exists { case (entry, noop) => entry.version <= upTo && noop != undoneThen(entry.version) }) {
       Some("an undo after version " + upTo.asInt + " undid events at or below it")
-    } else duplicatesReading(aggregateId, Some(upTo)).find(waiting(_, AggregateVersion(1)))
-      .map(d => "the first event of duplicate " + d.asLong + ", which the squash detaches, still waits in the outbox")
+    } else {
+      val detached = duplicatesReading(aggregateId, Some(upTo))
+      detached.find(firstEventUndone).map(d => "the first event of duplicate " + d.asLong + ", which the squash detaches, was undone")
+        .orElse(detached.find(waiting(_, AggregateVersion(1)))
+          .map(d => "the first event of duplicate " + d.asLong + ", which the squash detaches, still waits in the outbox"))
+    }
   }
+
+  // As in PostgreSQL: a detach replaces the first event, and one that was undone cannot be.
+  private def firstEventUndone(aggregateId: AggregateId): Boolean =
+    withNoopFlags(eventStore.getOrElse(aggregateId, Vector()).asInstanceOf[Vector[EventStoreEntry[Any]]]).headOption.exists(_._2)
 
   private def detachingAll(found: Seq[AggregateId], detach: Seq[(AggregateId, FirstEvent[_])]): Either[String, Unit] =
     Either.cond(found.toSet == detach.map(_._1).toSet, (), "the duplicates of the aggregate changed meanwhile")
 
-  // A duplicate's chain is followed through its first event here, so only direct duplicates read the base itself.
+  // Without `below`, every duplicate at any depth, as in PostgreSQL. With it, only the direct ones that read the base
+  // below that version: a duplicate's chain is followed through its first event here, so a deeper one reads the base
+  // through them, and once they are detached it reads their squash events.
   override def duplicatesReading(baseId: AggregateId, below: Option[AggregateVersion]): Seq[AggregateId] = synchronized {
-    eventStore.collect {
-      case (id, entries) if entries.headOption.exists(_.event match {
-        case duplication: DuplicationEvent[_] => duplication.baseAggregateId == baseId && below.forall(duplication.baseAggregateVersion < _)
-        case _ => false
-      }) => id
-    }.toSeq.sortBy(_.asLong)
+    below match {
+      case None => duplicatesOf(baseId).toSeq.sortBy(_.asLong)
+      case Some(version) => eventStore.collect {
+        case (id, entries) if entries.headOption.exists(_.event match {
+          case duplication: DuplicationEvent[_] => duplication.baseAggregateId == baseId && duplication.baseAggregateVersion < version
+          case _ => false
+        }) => id
+      }.toSeq.sortBy(_.asLong)
+    }
   }
 
   override def squash[AGGREGATE_ROOT](aggregateId: AggregateId, upTo: AggregateVersion, squashEvent: FirstEvent[AGGREGATE_ROOT], userId: UserId,
@@ -200,7 +224,9 @@ class MemoryEventStoreState extends EventStoreState {
       eventsRows = eventsRows.filterNot(row => row.aggregateId == aggregateId && row.aggregateVersion < upTo)
       replaceEvent(aggregateId, upTo, squashEvent, Some(userId), Some(metadata))
       eventsToPublish = eventsToPublish.filterNot { case ((id, version), _) => id == aggregateId && version <= upTo }
-      if (squashEvent.isInstanceOf[SquashMayChangeState] || snapshots.get(aggregateId).exists(_.version <= upTo)) snapshots -= aggregateId // D85
+      // D85: an event that may change the state takes the snapshots of the aggregate and of the duplicates still reading it.
+      if (squashEvent.isInstanceOf[SquashMayChangeState]) snapshots --= duplicatesOf(aggregateId) + aggregateId
+      else if (snapshots.get(aggregateId).exists(_.version <= upTo)) snapshots -= aggregateId
       squashedVersions += aggregateId -> upTo
     }
   }
@@ -233,9 +259,13 @@ class MemoryEventStoreState extends EventStoreState {
     eventsToPublish --= versions.map(version => (aggregateId, version))
   }
 
-  // Subscription failures live in the subscriptions state, which this store does not see: it always deletes.
+  // Subscription failures live in the subscriptions state, which this store does not see.
   override def deleteAggregatePermanently(aggregateId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])]): Either[String, Unit] = synchronized {
-    detachingAll(duplicatesReading(aggregateId, None), detach).map { _ =>
+    val duplicates = duplicatesReading(aggregateId, None)
+    for {
+      _ <- duplicates.find(firstEventUndone).map(d => "the first event of duplicate " + d.asLong + " was undone, so it cannot be detached").toLeft(())
+      _ <- detachingAll(duplicates, detach)
+    } yield {
       detach.foreach(detachDuplicate)
       snapshots -= aggregateId
       eventsRows = eventsRows.filterNot(_.aggregateId == aggregateId)

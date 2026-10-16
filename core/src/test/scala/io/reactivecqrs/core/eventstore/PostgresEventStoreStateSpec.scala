@@ -4,7 +4,7 @@ import java.time.Instant
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 
 import io.mpjsons.MPJsons
-import io.reactivecqrs.api.{AggregateVersion, Event}
+import io.reactivecqrs.api.{AggregateSquashedException, AggregateVersion, Event}
 import io.reactivecqrs.api.id.SpaceId
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.testutils.TestDatabase
@@ -13,7 +13,7 @@ import scalikejdbc._
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
-import scala.util.Try
+import scala.util.{Success, Try}
 
 object PostgresEventStoreStateSpec {
   def storeState = {
@@ -139,6 +139,56 @@ class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStore
     Await.result(holding, 10.seconds)
     Await.result(squashing, 10.seconds) mustBe Right(())
     Await.result(duplication, 10.seconds).failed.get.getMessage must include("Duplication cannot read the squashed history")
+  }
+
+  // D51: an instant before the squash point cannot be answered, not even as "the aggregate did not exist yet".
+  Scenario("a read at an instant before the squash point fails, also before the oldest event left") {
+    val f = new TestFixture(eventStoreState)
+    def storeAt(time: String, expected: Int, event: Event[SomeAggregate]): Unit = eventStoreState.localTx { session =>
+      eventStoreState.persistEvents(f.aggregateId, NewEvents(f.userId, AggregateVersion(expected), Instant.parse(time), Seq(event)))(session)
+    }.get
+    storeAt("2026-02-01T10:00:00Z", 0, EventA("one"))
+    storeAt("2026-02-01T11:00:00Z", 1, EventB(2))
+    storeAt("2026-02-01T12:00:00Z", 2, EventC(true))
+    published(f.aggregateId)
+    squash(f, 2) mustBe Right(()) // the squash event keeps version 2's time, 11:00
+
+    def at(time: String): Try[Seq[Int]] = Try {
+      var read = Vector[Int]()
+      eventStoreState.readAndProcessEvents[SomeAggregate](f.aggregateId, Some(Right(Instant.parse(time))))((_, _, _, _, version, _) => read :+= version)
+      read
+    }
+    at("2026-02-01T11:30:00Z") mustBe Success(Seq(2))
+    at("2026-02-01T10:30:00Z").failed.get mustBe an[AggregateSquashedException]
+    at("2026-02-01T09:00:00Z").failed.get mustBe an[AggregateSquashedException]
+  }
+
+  // F96, review 5: every row a detach changes is locked in the one key order, so a duplication of a duplicate waits.
+  Scenario("a squash that detaches a duplicate of a duplicate does not deadlock with a duplication of it in progress") {
+    val base = new TestFixture(eventStoreState)
+    base.storeEvents(Seq(EventA("one"), EventB(2)))
+    val (middle, last) = (newId(), newId())
+    base.storeEvents(Seq(Copy(SpaceId(1), base.aggregateId, AggregateVersion(2))), middle, AggregateVersion.ZERO)
+    base.storeEvents(Seq(EventB(3)), middle, AggregateVersion(1))
+    base.storeEvents(Seq(Copy(SpaceId(1), middle, AggregateVersion(1))), last, AggregateVersion.ZERO) // reads middle below 2
+    published(base.aggregateId, middle, last)
+    val (baseId, middleId, lastId) = (base.aggregateId.asLong, middle.asLong, last.asLong)
+    // A duplication of `last` in progress: it holds the first row of last's chain, and asks for the next one later.
+    val holding, goOn = new CountDownLatch(1)
+    val duplicating = Future(DB.localTx { implicit session =>
+      sql"SELECT 1 FROM aggregates WHERE id = $lastId AND base_id = $baseId FOR KEY SHARE".map(_.int(1)).single()
+      holding.countDown()
+      goOn.await(10, TimeUnit.SECONDS)
+      sql"SELECT 1 FROM aggregates WHERE id = $lastId AND base_id = $middleId FOR KEY SHARE".map(_.int(1)).single()
+    })
+    holding.await(10, TimeUnit.SECONDS) mustBe true
+    val squashing = Future(eventStoreState.squash(middle, AggregateVersion(2), EventA("squashed"), base.userId, None, Seq(last -> EventA("copy"))))
+    awaitAssert(waitingForLock("%") mustBe true, 5.seconds, 20.millis)
+
+    goOn.countDown()
+
+    Await.result(duplicating, 10.seconds) mustBe Some(1)
+    Await.result(squashing, 10.seconds) mustBe Right(())
   }
 
   // D50: a squash waits while a duplication of its base is in progress, then sees the new duplicate.
