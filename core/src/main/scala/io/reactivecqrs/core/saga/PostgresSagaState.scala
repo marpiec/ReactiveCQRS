@@ -20,17 +20,17 @@ class PostgresSagaState(mpjsons: MPJsons, typesNamesState: TypesNamesState) exte
     }
   }
 
-  override def updateSaga(name: String, sagaId: SagaId, order: SagaInternalOrder, phase: SagaPhase, step: Int): Unit = {
+  override def updateSaga(name: String, sagaId: SagaId, order: SagaInternalOrder, phase: SagaPhase, step: Int): Boolean = {
     DB.autoCommit { implicit session =>
       sql"""UPDATE sagas SET update_time = current_timestamp, saga_order = ?, order_type_id = ?, phase = ?, step = ? WHERE name = ? AND saga_id = ?"""
-        .bind(mpjsons.serialize(order, order.getClass.getName), typesNamesState.typeIdByClass(order.getClass), phase.name, step, name, sagaId.asLong).update()
+        .bind(mpjsons.serialize(order, order.getClass.getName), typesNamesState.typeIdByClass(order.getClass), phase.name, step, name, sagaId.asLong).update() == 1
     }
   }
 
-  override def deleteSaga(name: String, sagaId: SagaId): Unit = {
+  override def deleteSaga(name: String, sagaId: SagaId): Boolean = {
     DB.autoCommit { implicit session =>
       sql"""DELETE FROM sagas WHERE name = ? AND saga_id = ?"""
-        .bind(name, sagaId.asLong).update()
+        .bind(name, sagaId.asLong).update() == 1
     }
   }
 

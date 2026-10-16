@@ -5,24 +5,44 @@ import org.apache.pekko.actor.{Actor, ActorRef}
 import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api.SagaStep
 import io.reactivecqrs.api.id.{SagaId, UserId}
-import io.reactivecqrs.core.saga.SagaActor.{LoadPendingSagas, SagaPersisted}
+import io.reactivecqrs.core.saga.SagaActor._
 import io.reactivecqrs.core.uid.{NewSagasIdsPool, UidGeneratorActor}
 import io.reactivecqrs.core.util.MyActorLogging
 
 import scala.concurrent.{Await, Future}
-import scala.util.{Failure, Success}
+import scala.util.{Failure, Success, Try}
 import scala.concurrent.duration._
 
 object SagaActor {
 
-
+  /** A saga to run from its stored step; sent by the actor to itself for every saga loaded at start. */
   case class SagaPersisted(sagaId: SagaId, respondTo: String, order: SagaInternalOrder, phase: SagaPhase, step: Int)
 
   case object LoadPendingSagas
+  private case class LoadPendingSagasAttempt(attempt: Int)
+
+  private case class RunningSaga(sagaId: SagaId, respondTo: String, order: SagaInternalOrder, phase: SagaPhase, step: Int)
+
+  /** A write of saga progress; after it is stored the saga goes on (create, store) or is done (delete). */
+  private sealed trait SagaWrite { val saga: RunningSaga }
+  private case class CreateSaga(saga: RunningSaga) extends SagaWrite
+  private case class StoreProgress(saga: RunningSaga) extends SagaWrite
+  private case class DeleteSaga(saga: RunningSaga) extends SagaWrite
+
+  private case class WriteCompleted(write: SagaWrite, attempt: Int, result: Try[Boolean])
+  private case class RetryWrite(write: SagaWrite, attempt: Int)
+  private case class StepCompleted(saga: RunningSaga, result: Try[SagaHandlingStatus])
+  private case class RevertStepCompleted(saga: RunningSaga, result: Try[SagaRevertHandlingStatus])
 }
 
-// Actor per saga -  to recieve messages from command bus?
-// TODO manual reply of saga? as saga might not know that previous command succeded? or command idempotency?
+/**
+  * Runs process managers. Each step's result and each write of the saga's progress come back to the actor as a
+  * message, so all decisions are taken on the actor's thread (F17). A failed write is retried with back-off; after
+  * `maxPersistAttempts` the saga stays at its last stored step and resumes from there after a restart (F35), which
+  * repeats that step, so the commands a step sends must be idempotent (use the `SagaStep` key, H3).
+  *
+  * `handleOrder` and `handleRevert` run on the actor's thread and must only start the work, returning a Future.
+  */
 abstract class SagaActor extends Actor with MyActorLogging {
 
   implicit val timeout: Timeout = Timeout(60.seconds)
@@ -33,6 +53,12 @@ abstract class SagaActor extends Actor with MyActorLogging {
   val state: SagaState
   val name: String
 
+  /** How many times a write of saga progress is tried before the saga is left for the next restart. */
+  protected val maxPersistAttempts: Int = 10
+
+  /** Exponential back-off between write attempts: 100 ms, doubling, at most 30 s. */
+  protected def persistRetryDelay(attempt: Int): FiniteDuration = math.min(30000L, 100L << math.min(attempt - 1, 9)).millis
+
   private var nextSagaId = 0L
   private var remainingSagasIds = 0L
 
@@ -42,11 +68,24 @@ abstract class SagaActor extends Actor with MyActorLogging {
   def handleOrder(sagaStep: SagaStep): ReceiveOrder
   def handleRevert(sagaStep: SagaStep): ReceiveRevert
 
-  private def loadPendingSagas(): Unit = {
-    state.loadAllSagas(name, (sagaId: SagaId, userId: UserId, respondTo: String, phase: SagaPhase, step: Int, order: SagaInternalOrder) => {
-      println("Continuing saga " + name+" "+sagaId+" "+step)
-      self ! SagaPersisted(sagaId, respondTo, order, phase, step)
-    })
+  // All rows are read before any saga starts, so a load that fails part-way and is retried starts no saga twice.
+  private def loadPendingSagas(attempt: Int): Unit = {
+    Try {
+      var loaded = Vector[SagaPersisted]()
+      state.loadAllSagas(name, (sagaId: SagaId, userId: UserId, respondTo: String, phase: SagaPhase, step: Int, order: SagaInternalOrder) => {
+        loaded :+= SagaPersisted(sagaId, respondTo, order, phase, step)
+      })
+      loaded
+    } match {
+      case Success(loaded) =>
+        loaded.foreach { saga =>
+          log.info("Continuing saga " + name + " " + saga.sagaId.asLong + " at step " + saga.step)
+          self ! saga
+        }
+      case Failure(e) =>
+        log.error(e, "Loading pending sagas " + name + " failed, attempt " + attempt + ", retrying")
+        context.system.scheduler.scheduleOnce(persistRetryDelay(attempt), self, LoadPendingSagasAttempt(attempt + 1))
+    }
   }
 
   override def preStart(): Unit = {
@@ -54,82 +93,99 @@ abstract class SagaActor extends Actor with MyActorLogging {
   }
 
   override def receive: Receive = {
-    case LoadPendingSagas => loadPendingSagas()
-    case m: SagaOrder => persistInitialSagaStatusAndSendConfirm(self, takeNextSagaId, sender().path.toString, m)
-    case m: SagaPersisted if m.phase == CONTINUES => internalHandleOrderContinue(self, m.sagaId, m.step, m.respondTo, m.order)
-    case m: SagaPersisted if m.phase == REVERTING => internalHandleRevert(self, m.sagaId, m.step, m.respondTo, m.order)
+    case LoadPendingSagas => loadPendingSagas(1)
+    case LoadPendingSagasAttempt(attempt) => loadPendingSagas(attempt)
+    case m: SagaOrder => write(CreateSaga(RunningSaga(takeNextSagaId, sender().path.toString, m, CONTINUES, 0)), 1)
+    case m: SagaPersisted => runStep(RunningSaga(m.sagaId, m.respondTo, m.order, m.phase, m.step))
+    case StepCompleted(saga, result) => handleStepResult(saga, result)
+    case RevertStepCompleted(saga, result) => handleRevertStepResult(saga, result)
+    case WriteCompleted(write, attempt, result) => handleWriteResult(write, attempt, result)
+    case RetryWrite(write, attempt) => this.write(write, attempt)
     case m => log.warning("Received incorrect message of type: [" + m.getClass.getName +"] "+m)
   }
 
-  private def persistInitialSagaStatusAndSendConfirm(me: ActorRef, sagaId: SagaId, respondTo: String, order: SagaOrder): Unit = {
-    Future {
-      state.createSaga(name, sagaId, respondTo, order)
-      me ! SagaPersisted(sagaId, respondTo, order, CONTINUES, 0)
-    } onComplete {
-      case Success(value) => ()
-      case Failure(e) => throw new IllegalStateException(e)
+  private def runStep(saga: RunningSaga): Unit = saga.phase match {
+    case CONTINUES =>
+      startStep(handleOrder(SagaStep(saga.sagaId, saga.step))(saga.order))(result => StepCompleted(saga, result))
+    case REVERTING =>
+      startStep(handleRevert(SagaStep(saga.sagaId, saga.step))(saga.order))(result => RevertStepCompleted(saga, result))
+    case phase =>
+      log.warning("Saga " + name + " " + saga.sagaId.asLong + " is in phase " + phase.name + " and is not run")
+  }
+
+  // A handler that throws, or does not handle the order, fails the step like a failed Future.
+  private def startStep[S](step: => Future[S])(completed: Try[S] => Any): Unit = {
+    Try(step) match {
+      case Success(future) => future.onComplete(result => self ! completed(result))
+      case Failure(e) => self ! completed(Failure(e))
     }
   }
 
-  private def persistSagaStatusAndSendConfirm(me: ActorRef, sagaId: SagaId, respondTo: String, order: SagaInternalOrder, phase: SagaPhase, step: Int): Unit = {
-    Future {
-      state.updateSaga(name, sagaId, order, phase, step)
-      me ! SagaPersisted(sagaId, respondTo, order, phase, step)
-    } onComplete {
-      case Success(value) => ()
-      case Failure(e) => throw new IllegalStateException(e)
-    }
+  private def handleStepResult(saga: RunningSaga, result: Try[SagaHandlingStatus]): Unit = result match {
+    case Success(SagaContinues(order)) =>
+      write(StoreProgress(saga.copy(order = order, step = saga.step + 1)), 1)
+    case Success(SagaSucceded(response)) =>
+      respond(saga, response)
+      write(DeleteSaga(saga), 1)
+    case Success(SagaFailed(response)) =>
+      respond(saga, response)
+      write(StoreProgress(saga.copy(phase = REVERTING, step = saga.step + 1)), 1)
+    case Failure(e) =>
+      log.error(e, "Saga " + name + " " + saga.sagaId.asLong + " step " + saga.step + " failed, reverting")
+      respond(saga, SagaFailureResponse(List(e.getMessage)))
+      write(StoreProgress(saga.copy(phase = REVERTING, step = saga.step + 1)), 1)
   }
 
-  private def deleteSagaStatus(sagaId: SagaId): Unit = {
-    state.deleteSaga(name, sagaId)
+  private def handleRevertStepResult(saga: RunningSaga, result: Try[SagaRevertHandlingStatus]): Unit = result match {
+    case Success(SagaRevertContinues(order)) =>
+      write(StoreProgress(saga.copy(order = order, phase = REVERTING, step = saga.step + 1)), 1)
+    case Success(SagaRevertSucceded) =>
+      write(DeleteSaga(saga), 1)
+    case Success(SagaRevertFailed(exceptions)) =>
+      log.error(s"Saga revert failed, sagaId = ${saga.sagaId.asLong}, order = ${saga.order}, " + exceptions.mkString(", "))
+      write(DeleteSaga(saga), 1)
+    case Failure(e) =>
+      log.error(e, s"Saga revert failed, sagaId = ${saga.sagaId.asLong}, order = ${saga.order}")
+      write(DeleteSaga(saga), 1)
   }
 
-  private def internalHandleOrderContinue(me: ActorRef, sagaId: SagaId, step: Int, respondTo: String, order: SagaInternalOrder): Unit = {
+  private def respond(saga: RunningSaga, response: SagaResponse): Unit = {
+    context.system.actorSelection(saga.respondTo) ! response
+  }
+
+  // The write runs off the actor's thread and touches no actor state; its result comes back as a message.
+  private def write(write: SagaWrite, attempt: Int): Unit = {
+    val saga = write.saga
     Future {
-      handleOrder(SagaStep(sagaId, step))(order).onComplete {
-        case Success(r) =>
-          r match {
-          case c: SagaContinues =>
-            persistSagaStatusAndSendConfirm(me, sagaId, respondTo, c.order, CONTINUES, step + 1)
-          case c: SagaSucceded =>
-            context.system.actorSelection(respondTo) ! c.response
-            deleteSagaStatus(sagaId)
-          case c: SagaFailed =>
-            context.system.actorSelection(respondTo) ! c.response
-            persistSagaStatusAndSendConfirm(me, sagaId, respondTo, order, REVERTING, step + 1)
-        }
-        case Failure(ex) =>
-          context.system.actorSelection(respondTo) ! SagaFailureResponse(List(ex.getMessage))
-          persistSagaStatusAndSendConfirm(me, sagaId, respondTo, order, REVERTING, step + 1)
+      write match {
+        case _: CreateSaga => state.createSaga(name, saga.sagaId, saga.respondTo, saga.order); true
+        case _: StoreProgress => state.updateSaga(name, saga.sagaId, saga.order, saga.phase, saga.step)
+        case _: DeleteSaga => state.deleteSaga(name, saga.sagaId)
       }
-    } onComplete {
-      case Success(value) => ()
-      case Failure(e) => throw new IllegalStateException(e)
-    }
+    }.onComplete(result => self ! WriteCompleted(write, attempt, result))
   }
 
-
-  private def internalHandleRevert(me: ActorRef, sagaId: SagaId, step: Int, respondTo: String, order: SagaInternalOrder): Unit = {
-    Future {
-      handleRevert(SagaStep(sagaId, step))(order).onComplete {
-        case Success(r) =>
-          r match {
-            case c: SagaRevertContinues =>
-              persistSagaStatusAndSendConfirm(me, sagaId, respondTo, c.order, REVERTING, step + 1)
-            case SagaRevertSucceded =>
-              deleteSagaStatus(sagaId)
-            case c: SagaRevertFailed =>
-              log.error(s"Saga revert failed, sagaId = $sagaId, order = $order, "+ c.exceptions.mkString(", "))
-              deleteSagaStatus(sagaId)
-          }
-        case Failure(ex) =>
-          log.error(ex, s"Saga revert failed, sagaId = $sagaId, order = $order")
-          deleteSagaStatus(sagaId)
+  private def handleWriteResult(write: SagaWrite, attempt: Int, result: Try[Boolean]): Unit = {
+    val saga = write.saga
+    result match {
+      case Success(true) => write match {
+        case _: CreateSaga | _: StoreProgress => runStep(saga)
+        case _: DeleteSaga => ()
       }
-    } onComplete {
-      case Success(value) => ()
-      case Failure(e) => throw new IllegalStateException(e)
+      case Success(false) => write match {
+        case _: DeleteSaga => log.warning("Saga " + name + " " + saga.sagaId.asLong + " was already removed")
+        case _ => log.error("Saga " + name + " " + saga.sagaId.asLong + " is no longer stored (removed elsewhere?), stopping it at step " + saga.step)
+      }
+      case Failure(e) if attempt < maxPersistAttempts =>
+        log.warning("Storing saga " + name + " " + saga.sagaId.asLong + " failed (attempt " + attempt + " of " + maxPersistAttempts + "): " + e.getMessage)
+        context.system.scheduler.scheduleOnce(persistRetryDelay(attempt), self, RetryWrite(write, attempt + 1))
+      case Failure(e) => write match {
+        case _: CreateSaga =>
+          log.error(e, "Saga " + name + " could not be stored, its order is refused")
+          respond(saga, SagaFailureResponse(List("The saga could not be stored: " + e.getMessage)))
+        case _ =>
+          log.error(e, "Storing saga " + name + " " + saga.sagaId.asLong + " failed " + attempt + " times; it resumes from its last stored step after a restart")
+      }
     }
   }
 
@@ -152,4 +208,3 @@ abstract class SagaActor extends Actor with MyActorLogging {
   }
 
 }
-

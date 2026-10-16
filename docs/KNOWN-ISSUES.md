@@ -433,6 +433,7 @@ implementation plan.
 #### F23 — Id pools of 100 and a blocking wait on refill
 - **Medium**, likely · Fix in **M3** · `UidGeneratorSchemaInitializer.scala:18-28`, `AggregateCommandBusActor.scala:315-348`, `SagaActor.scala:136-152`
 - **Fix:** pools of 10 000 (`ALTER SEQUENCE … INCREMENT BY`), asynchronous prefetch at a low-water mark (D34).
+- **Note (16/10/2026):** since F40 a failing id store fails the `Await` at once instead of after 60 s; the exception still escapes the command bus's `receive`, so the bus restarts and stops its children, and the commands they were running get no reply (the caller's own ask timeout ends them). The asynchronous prefetch removes that path.
 
 #### F27 — Blocking JDBC runs on the default dispatcher
 - **Medium**, likely · Fix in **M3** · persist, restore, projections, futures
@@ -450,7 +451,9 @@ implementation plan.
 - **Low**, likely · Fix in **M3** · `pendingPublish.distinct` (`AggregateRepositoryActor.scala:95, 136`), eager log strings and an ERROR-level debug line (`ProjectionActor.scala:645`)
 
 #### F40 — `println` in production paths
-- **Low**, likely · Fix in **M1** · `UidGeneratorActor.scala:39, 50, 61` (failures also leave the requester unanswered), `SagaActor.scala:47`, `EventsBusActor.scala:182-185`
+- **Low**, confirmed · **Fixed in M1** (16/10/2026) · `UidGeneratorActor.scala:39, 50, 61` (failures also leave the requester unanswered), `SagaActor.scala:47`, `EventsBusActor.scala:182-185`
+- **Test:** `UidGeneratorActorSpec` (the ask timed out before the fix).
+- **Fix:** logger instead of `println`; the uid generator answers a failure with `Status.Failure`, so the requester fails at once. The replay tools keep their console output (operator progress), reworked in M4.
 
 #### F48 — In-memory caches have no cross-node invalidation
 - **Medium** in a cluster, likely · Fix in **M5** · `PostgresDocumentStore`, `PostgresSubscriptionsState`
@@ -483,19 +486,24 @@ implementation plan.
 ### Sagas
 
 #### F17 — Saga uses `ActorContext` off its thread
-- **Low**, likely · Fix in **M1** · `SagaActor.scala:96, 99`
+- **Low**, likely · **Fixed in M1** (16/10/2026, with F35) · `SagaActor.scala:96, 99`
+- **Fix:** step results come back as messages; replies and decisions run on the actor's thread.
 
 #### F34 — `sagas` table has no primary key or index
-- **Medium**, likely · Fix in **M1** · `PostgresSagaSchemaInitializer.scala:10-23`
-- **Fix:** unique index `(name, saga_id)` built `CONCURRENTLY`.
+- **Medium**, confirmed · **Fixed in M1** (16/10/2026) · `PostgresSagaSchemaInitializer.scala:10-23`
+- **Test:** `PostgresSagaStateSpec` "holds one row per saga name and id" (a duplicate row was accepted before the fix).
+- **Fix:** unique index `sagas_name_saga_id_idx (name, saga_id)` built `CONCURRENTLY`; an invalid index left by an interrupted build is dropped and rebuilt; duplicate rows stop `initSchema()` with an explicit message (Neula: check for duplicates on a production copy before upgrading, `SELECT name, saga_id FROM sagas GROUP BY 1, 2 HAVING count(*) > 1`).
 
 #### F35 — Saga failures thrown inside `onComplete` lose the saga
-- **High**, likely · Fix in **M1** · `SagaActor.scala:70, 80, 108, 132`
+- **High**, confirmed · **Fixed in M1** (16/10/2026) · `SagaActor.scala:70, 80, 108, 132`
 - **Symptom:** a failed persist leaves the saga unfinished, with no retry and only an unsupervised exception.
-- **Fix:** handle failures in the actor (message to self), retry with back-off, log.
+- **Test:** `SagaRecoverySpec`: writes that fail a few times (before the fix the caller never got an answer), an order that cannot be stored (no answer before), a saga that resumes after a restart without repeating its last step's effects.
+- **Fix:** every write result comes back as a message; failed writes are retried with back-off (100 ms doubling to 30 s, at most `maxPersistAttempts` = 10, both overridable), then the saga is left at its last stored step and resumes after a restart. An order that cannot be stored is answered with `SagaFailureResponse`. Pending sagas are read completely before any starts, and a failed load is retried.
 
 #### F36 — Saga update and delete ignore row counts
-- **Medium**, likely · Fix in **M1** · `PostgresSagaState.scala:23-33`
+- **Medium**, confirmed · **Fixed in M1** (16/10/2026) · `PostgresSagaState.scala:23-33`
+- **Test:** `PostgresSagaStateSpec` (both returned `Unit` before the fix).
+- **Fix:** `updateSaga` and `deleteSaga` return whether the row was there; the actor stops a saga whose row vanished, with an error log.
 
 ### Serialization (mpjsons 0.7)
 
@@ -619,7 +627,7 @@ From §7 of Neula's change requests.
 
 | Milestone | Issues |
 |---|---|
-| M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34, F35, F36, F40, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
+| M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
 | M2 | F1, F2, F4, F5, F6, F11, F15, F26, F28, F29, F37, F41, F42, F45, F47; Neula H2 |
 | M3 | AR1, AR4; F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33, F38, F39, F43, F44, F65 |
 | M4 | F3, F54, F55, F56, F57, F58, F59, F60, F61, F62; Neula H1, H6 |

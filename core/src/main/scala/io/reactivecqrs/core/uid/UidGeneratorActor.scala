@@ -1,6 +1,6 @@
 package io.reactivecqrs.core.uid
 
-import org.apache.pekko.actor.{Actor, ActorRef}
+import org.apache.pekko.actor.{Actor, ActorRef, Status}
 import io.reactivecqrs.core.util.MyActorLogging
 
 import scala.concurrent.Future
@@ -25,41 +25,19 @@ class UidGeneratorActor(aggregatesUidGenerator: UidGenerator,
 
 
   override def receive: Receive = logReceive  {
-    case GetNewAggregatesIdsPool => handleGetNewAggregatesIdsPool(sender())
-    case GetNewCommandsIdsPool => handleGetNewCommandsIdsPool(sender())
-    case GetNewSagasIdsPool => handleGetNewSagsIdsPool(sender())
+    case GetNewAggregatesIdsPool => replyWithPool(sender(), "aggregates", aggregatesUidGenerator)(pool => NewAggregatesIdsPool(pool.from, pool.size))
+    case GetNewCommandsIdsPool => replyWithPool(sender(), "commands", commandsUidGenerator)(pool => NewCommandsIdsPool(pool.from, pool.size))
+    case GetNewSagasIdsPool => replyWithPool(sender(), "sagas", sagasUidGenerator)(pool => NewSagasIdsPool(pool.from, pool.size))
   }
 
-  def handleGetNewAggregatesIdsPool(respondTo: ActorRef): Unit = {
+  // A failure is sent back too, so the requester fails at once instead of waiting out its timeout (F40).
+  private def replyWithPool(respondTo: ActorRef, kind: String, generator: UidGenerator)(reply: IdsPool => Any): Unit = {
     import context.dispatcher
-    Future {
-      val pool: IdsPool = aggregatesUidGenerator.nextIdsPool
-      respondTo ! NewAggregatesIdsPool(pool.from, pool.size)
-    } onComplete {
-      case Failure(e) => println("Error while getting new aggregates ids pool", e)
-      case _ => ()
-    }
-  }
-
-  def handleGetNewCommandsIdsPool(respondTo: ActorRef): Unit = {
-    import context.dispatcher
-    Future {
-      val pool: IdsPool = commandsUidGenerator.nextIdsPool
-      respondTo ! NewCommandsIdsPool(pool.from, pool.size)
-    } onComplete {
-      case Failure(e) => println("Error while getting new commands ids pool", e)
-      case _ => ()
-    }
-  }
-
-  def handleGetNewSagsIdsPool(respondTo: ActorRef): Unit = {
-    import context.dispatcher
-    Future {
-      val pool: IdsPool = sagasUidGenerator.nextIdsPool
-      respondTo ! NewSagasIdsPool(pool.from, pool.size)
-    } onComplete {
-      case Failure(e) => println("Error while getting new sagas ids pool", e)
-      case _ => ()
+    Future(generator.nextIdsPool).onComplete {
+      case Success(pool) => respondTo ! reply(pool)
+      case Failure(e) =>
+        log.error(e, "Error while getting new " + kind + " ids pool")
+        respondTo ! Status.Failure(e)
     }
   }
 }

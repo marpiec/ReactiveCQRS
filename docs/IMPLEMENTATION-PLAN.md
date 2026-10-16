@@ -714,3 +714,19 @@ Open test-infrastructure items:
 - `sbt test`: 81 of 82 pass; the failure is still the F4 reproduction.
 - Neula: `PostgresCommandResponseState.initSchema()` is now required (H5), or idempotent
   commands fail.
+
+**16/10/2026: sagas (F35, F17, F36, F34) and F40**
+- `SagaActor`: step results and progress writes come back as messages, so decisions and
+  replies run on the actor's thread; failed writes are retried with back-off and then left
+  for the next start, which resumes the saga at its last stored step; an order that cannot
+  be stored is answered with `SagaFailureResponse`; pending sagas are read completely before
+  any starts. `updateSaga`/`deleteSaga` report whether the row existed. Unique index on
+  `sagas (name, saga_id)`, built `CONCURRENTLY`.
+- F40: the uid generator answers failures (`Status.Failure`) and logs instead of printing;
+  the event bus no longer prints.
+- Tests: `SagaRecoverySpec`, `PostgresSagaStateSpec`, `UidGeneratorActorSpec`; all failed
+  before the fix.
+- `sbt test`: 88 of 89 pass; the failure is still the F4 reproduction.
+- Neula, before upgrading: check `sagas` for duplicate `(name, saga_id)` rows (the index
+  build refuses them), and that saga steps send idempotent commands (H3), since a resumed
+  saga repeats its last step.

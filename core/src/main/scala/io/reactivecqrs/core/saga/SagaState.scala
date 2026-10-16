@@ -7,13 +7,11 @@ abstract class SagaState {
 
   def createSaga(name: String, sagaId: SagaId, respondTo: String, order: SagaInternalOrder): Unit
 
-  def updateSaga(name: String, sagaId: SagaId, order: SagaInternalOrder, phase: SagaPhase, step: Int): Unit
+  /** Stores a saga's progress; false when the saga is not stored (anymore). */
+  def updateSaga(name: String, sagaId: SagaId, order: SagaInternalOrder, phase: SagaPhase, step: Int): Boolean
 
-  def deleteSaga(name: String, sagaId: SagaId): Unit
+  /** Removes a finished saga; false when it was not stored. */
+  def deleteSaga(name: String, sagaId: SagaId): Boolean
 
   def loadAllSagas(name: String, handler: (SagaId, UserId, String, SagaPhase, Int, SagaInternalOrder) => Unit): Unit
 }
-
-
-
-

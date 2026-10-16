@@ -180,7 +180,6 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
   }
 
   private def logMessage(message: String): Unit = {
-    println(message)
     log.info(message)
   }
 

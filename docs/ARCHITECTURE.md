@@ -596,8 +596,20 @@ returns `SagaContinues | SagaSucceded | SagaFailed` (failure switches to the `RE
 phase and calls `handleRevert`). Progress is stored in `sagas` (`PostgresSagaState.scala`)
 and reloaded at start. Each step passes `SagaStep(sagaId, step)` as the idempotency key of
 the commands it sends, so a resumed saga doesn't repeat a command
-(`MultipleCartCreatorSaga.scala`). Known weaknesses are already listed in CLAUDE.md §7
-(blocking id pool, `throw` inside `onComplete`, no table index, ignored row counts).
+(`MultipleCartCreatorSaga.scala`).
+
+Since 1.0 (fixed F35, F17, F36, F34) every step result and every write of saga progress
+comes back to the actor as a message, so all decisions run on the actor's thread;
+`handleOrder` and `handleRevert` are called there too and must only start the work and
+return a Future. A failed write is retried with back-off (100 ms doubling to 30 s,
+`maxPersistAttempts` = 10). After that the saga stays at its last stored step and resumes
+from it at the next start, which repeats that step; its commands must therefore be
+idempotent. An order that cannot be stored at all is answered with `SagaFailureResponse`.
+Pending sagas are read completely before any is started, so a failed load is retried
+without starting a saga twice. `updateSaga` and `deleteSaga` report whether the row was
+there; a saga whose row vanished is stopped with an error log. The table has a unique
+index on `(name, saga_id)`, built `CONCURRENTLY`. Still open: the blocking id-pool `Await`
+(F23, M3).
 
 ---
 
