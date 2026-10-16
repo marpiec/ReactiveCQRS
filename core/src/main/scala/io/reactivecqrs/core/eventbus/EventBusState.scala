@@ -61,25 +61,25 @@ class PostgresEventBusState extends EventBusState {
          id BIGINT NOT NULL PRIMARY KEY,
          aggregate_id BIGINT NOT NULL,
          aggregate_version INT NOT NULL)
-     """.execute().apply()
+     """.execute()
   }
 
   private def createEventBusSequence() = DB.autoCommit { implicit session =>
-    sql"""CREATE SEQUENCE IF NOT EXISTS event_bus_seq""".execute().apply()
+    sql"""CREATE SEQUENCE IF NOT EXISTS event_bus_seq""".execute()
   }
 
   private def createAggregateIdIndex() = DB.autoCommit { implicit session =>
-    sql"""CREATE UNIQUE INDEX IF NOT EXISTS event_bus_agg_id_idx ON event_bus (aggregate_id)""".execute().apply()
+    sql"""CREATE UNIQUE INDEX IF NOT EXISTS event_bus_agg_id_idx ON event_bus (aggregate_id)""".execute()
   }
 
   private def createAggregateIdVersionIndex() = DB.autoCommit { implicit session =>
-    sql"""CREATE UNIQUE INDEX IF NOT EXISTS event_bus_agg_id_version_idx ON event_bus (aggregate_id, aggregate_version)""".execute().apply()
+    sql"""CREATE UNIQUE INDEX IF NOT EXISTS event_bus_agg_id_version_idx ON event_bus (aggregate_id, aggregate_version)""".execute()
   }
 
   override def lastPublishedEventForAggregate(aggregateId: AggregateId): AggregateVersion = {
     DB.localTx { implicit session =>
       val versionOption = sql"""SELECT aggregate_version FROM event_bus WHERE aggregate_id = ?"""
-        .bind(aggregateId.asLong).map(rs => AggregateVersion(rs.int(1))).single().apply()
+        .bind(aggregateId.asLong).map(rs => AggregateVersion(rs.int(1))).single()
 
       versionOption match {
         case Some(version) => version
@@ -90,7 +90,7 @@ class PostgresEventBusState extends EventBusState {
 
   private def addAggregateEntry(aggregateId: AggregateId)(implicit session: DBSession): AggregateVersion = {
     sql"""INSERT INTO event_bus (id, aggregate_id, aggregate_version) VALUES (nextval('event_bus_seq'), ?, 0)"""
-      .bind(aggregateId.asLong).update().apply()
+      .bind(aggregateId.asLong).update()
     AggregateVersion.ZERO
   }
 
@@ -114,7 +114,7 @@ class PostgresEventBusState extends EventBusState {
 
 //    DB.localTx { implicit session =>
 //      val rowsUpdated = sql"""UPDATE event_bus SET aggregate_version = ? WHERE aggregate_id = ? AND aggregate_version = ?"""
-//        .bind(aggregateVersion.asInt, aggregateId.asLong, lastAggregateVersion.asInt).map(rs => rs.int(1)).single().update().apply()
+//        .bind(aggregateVersion.asInt, aggregateId.asLong, lastAggregateVersion.asInt).map(rs => rs.int(1)).single().update()
 //      if (rowsUpdated == 1) {
 //        Success(())
 //      } else {

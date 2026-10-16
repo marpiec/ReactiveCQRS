@@ -62,60 +62,60 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
           |id BIGINT NOT NULL PRIMARY KEY,
           |version INT NOT NULL,
           |document JSONB NOT NULL)"""
-      .stripMargin.execute().apply()
+      .stripMargin.execute()
   }
 
   protected def addSpaceColumn(): Unit = DB.autoCommit { implicit session =>
     sql"""ALTER TABLE ${tableNameSQL} ADD COLUMN IF NOT EXISTS space_id BIGINT NOT NULL DEFAULT -1"""
-      .stripMargin.execute().apply()
+      .stripMargin.execute()
   }
 
   protected def dropMetadataColumn(): Unit = DB.autoCommit { implicit session =>
     sql"""ALTER TABLE ${tableNameSQL} DROP COLUMN IF EXISTS metadata"""
-      .stripMargin.execute().apply()
+      .stripMargin.execute()
   }
 
 
   private def readExistingIndices(): Iterable[String] = {
     DB.readOnly { implicit session =>
       SQL(s"SELECT indexname FROM pg_indexes WHERE tablename = '${projectionTableName}' and indexname like '%_idx_%'")
-        .map(rs => rs.string(1)).list().apply()
+        .map(rs => rs.string(1)).list()
     }
   }
 
   private def dropIndex(indexName: String): Unit = DB.autoCommit { implicit session =>
-    SQL(s"DROP INDEX IF EXISTS ${indexName}").execute().apply()
+    SQL(s"DROP INDEX IF EXISTS ${indexName}").execute()
   }
 
   private def createIndex(index: Index): Unit = DB.autoCommit { implicit session =>
     index match {
       case MultipleCombinedIndex(uniqueId, paths) =>
         val pathsQuery = pathsToQuery(paths)
-        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (${pathsQuery})").execute().apply()
+        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (${pathsQuery})").execute()
       case UniqueCombinedIndex(uniqueId, paths) =>
         val pathsQuery = pathsToQuery(paths)
-        SQL(s"CREATE UNIQUE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (${pathsQuery})").execute().apply()
+        SQL(s"CREATE UNIQUE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (${pathsQuery})").execute()
       case MultipleTextIndex(uniqueId, path) =>
         val p = path.mkString(",")
-        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} ((document #>> '{$p}'))").execute().apply()
+        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} ((document #>> '{$p}'))").execute()
       case UniqueTextIndex(uniqueId, path) =>
         val p = path.mkString(",")
-        SQL(s"CREATE UNIQUE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} ((document #>> '{$p}'))").execute().apply()
+        SQL(s"CREATE UNIQUE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} ((document #>> '{$p}'))").execute()
       case MultipleLongIndex(uniqueId, path) =>
         val p = path.mkString(",")
-        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (((document #> '{$p}')::bigint))").execute().apply()
+        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (((document #> '{$p}')::bigint))").execute()
       case UniqueLongIndex(uniqueId, path) =>
         val p = path.mkString(",")
-        SQL(s"CREATE UNIQUE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (((document #> '{$p}')::bigint))").execute().apply()
+        SQL(s"CREATE UNIQUE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (((document #> '{$p}')::bigint))").execute()
       case MultipleIntIndex(uniqueId, path) =>
         val p = path.mkString(",")
-        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (((document #> '{$p}')::int))").execute().apply()
+        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (((document #> '{$p}')::int))").execute()
       case UniqueIntIndex(uniqueId, path) =>
         val p = path.mkString(",")
-        SQL(s"CREATE UNIQUE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (((document #> '{$p}')::int))").execute().apply()
+        SQL(s"CREATE UNIQUE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (((document #> '{$p}')::int))").execute()
       case MultipleTextArrayIndex(uniqueId, path) =>
         val p = path.mkString(",")
-        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} USING GIN ((document #> '{$p}'))").execute().apply()
+        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} USING GIN ((document #> '{$p}'))").execute()
     }
   }
 
@@ -135,7 +135,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
   def dropTable(): Unit = DB.autoCommit { implicit session =>
     sql"""DROP TABLE ${tableNameSQL}"""
-      .stripMargin.execute().apply()
+      .stripMargin.execute()
   }
 
   def overwriteDocument(key: Long, document: T)(implicit session: DBSession): Unit = {
@@ -146,11 +146,11 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
         case Some(VersionedDocument(version, cachedDocument)) if cachedDocument == document =>
           sql"UPDATE ${tableNameSQL} SET version = version + 1 WHERE id = ? RETURNING version"
             .bind(key)
-            .map(_.int(1)).list().apply()
+            .map(_.int(1)).list()
         case _ =>
           sql"UPDATE ${tableNameSQL} SET document = ?::JSONB, version = version + 1 WHERE id = ? RETURNING version"
             .bind(mpjsons.serialize[T](document), key)
-            .map(_.int(1)).list().apply()
+            .map(_.int(1)).list()
       }
 
       if (updated.size != 1) {
@@ -172,7 +172,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
           val loaded = sql"SELECT version, document FROM ${tableNameSQL} WHERE id = ?"
             .bind(key).map(rs => {
             VersionedDocument[T](rs.int(1), mpjsons.deserialize[T](rs.string(2)))
-          }).single().apply()
+          }).single()
           loaded match {
             case Some(doc) =>
               cache.put(key, Some(doc))
@@ -189,7 +189,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
     inSession { implicit session =>
       sql"DELETE FROM ${tableNameSQL} WHERE id = ?"
-        .bind(key).update().apply()
+        .bind(key).update()
       cache.put(key, None)
     }
 
@@ -240,7 +240,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     inSession { implicit session =>
       val loaded = query
         .bind(getAllValues(searchParams.where): _*).map(rs => rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3))))
-        .list().apply()
+        .list()
       loaded.foreach(t => cache.put(t._1, Some(t._2)))
       loaded.map({case (key, value) => (key, Document[T](value.document))})
     }
@@ -256,7 +256,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
         val beforeTransform = mpjsons.deserialize[T](rs.string(3))
         cache.put(id, Some(VersionedDocument[T](version, beforeTransform)))
         id -> VersionedDocument[TT](version, transform(beforeTransform))
-      }).list().apply()
+      }).list()
       loaded.map({case (key, value) => (key, Document[TT](value.document))})
     }
   }
@@ -268,7 +268,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
       query
         .bind(getAllValues(searchParams.where): _*)
         .map(rs => rs.long(1) -> mpjsons.deserialize[P](rs.string(2)))
-        .list().apply()
+        .list()
     }
   }
 
@@ -279,7 +279,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
       val loaded = query
         .bind(getAllValues(searchParams.where): _*)
         .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3))))
-        .list().apply()
+        .list()
 
       loaded
     }
@@ -292,7 +292,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
       val loaded = query
         .bind(getAllValues(searchParams.where): _*)
         .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3)), mpjsons.deserialize[P3](rs.string(4))))
-        .list().apply()
+        .list()
 
       loaded
     }
@@ -305,7 +305,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
       val loaded = query
         .bind(getAllValues(searchParams.where): _*)
         .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3)), mpjsons.deserialize[P3](rs.string(4)), mpjsons.deserialize[P4](rs.string(5))))
-        .list().apply()
+        .list()
 
       loaded
     }
@@ -369,7 +369,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     inSession { implicit session =>
       val loaded = SQL(QUERY(array.mkString("{", ",", "}"), makeJson(objectPath, value)))
         .map(rs => rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3))))
-        .list().apply()
+        .list()
 
       loaded.foreach(t => cache.put(t._1, Some(t._2)))
       loaded.map({case (key, v) => (key, Document[T](v.document))}).toMap
@@ -381,7 +381,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     val loaded = inSession { implicit session =>
       sql"SELECT id, version, document FROM ${tableNameSQL}"
           .map(rs => rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3))))
-        .list().apply()
+        .list()
     }
     loaded.foreach(t => cache.put(t._1, Some(t._2)))
     loaded.map(v => (v._1, Document(v._2.document))).toMap
@@ -391,7 +391,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     inSession { implicit session =>
       sql"SELECT count(*) FROM ${tableNameSQL}"
         .map(rs => rs.int(1))
-        .single().apply().get
+        .single().get
     }
   }
 
@@ -419,7 +419,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
         sql"SELECT id, version, document FROM ${tableNameSQL} WHERE id IN (${toLoad})"
           .map(rs => {
             rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3)))
-          }).list().apply()
+          }).list()
       }
       val loadedById = loaded.toMap
       toLoad.foreach(id => {
@@ -444,7 +444,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     cache.get(key).getOrElse(sql"SELECT version, document FROM ${tableNameSQL} WHERE id = ?"
       .bind(key).map(rs => {
       VersionedDocument[T](rs.int(1), mpjsons.deserialize[T](rs.string(2)))
-    }).single().apply())
+    }).single())
   }
 
 
@@ -452,7 +452,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     inSession { implicit session =>
       val idsRemoved = sql"DELETE from ${tableNameSQL} WHERE space_id = ? RETURNING id".
         bind(spaceId)
-        .map(_.long(1)).list().apply()
+        .map(_.long(1)).list()
 
       idsRemoved.foreach(id => cache.remove(id))
     }
@@ -468,7 +468,7 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
     inSession { implicit session =>
       sql"INSERT INTO ${tableNameSQL} (space_id, id, version, document) VALUES (?, ?, 1, ?::jsonb)"
         .bind(spaceId, key, mpjsons.serialize(document))
-        .update().apply()
+        .update()
       cache.put(key, Some(VersionedDocument(1, document)))
     }
   }
@@ -496,11 +496,11 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
           val updated = if(modified.document == document) {
             sql"UPDATE ${tableNameSQL} SET version = ? WHERE id = ? AND version = ?"
               .bind(version + 1, key, version)
-              .map(_.int(1)).single().update().apply()
+              .update()
           } else {
              sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
               .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
-              .map(_.int(1)).single().update().apply()
+              .update()
 
           }
 
@@ -538,11 +538,11 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
           val updated = if(modified.document == document) {
             sql"UPDATE ${tableNameSQL} SET version = ? WHERE id = ? AND version = ?"
               .bind(version + 1, key, version)
-              .map(_.int(1)).single().update().apply()
+              .update()
           } else {
             val updated = sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
               .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
-              .map(_.int(1)).single().update().apply()
+              .update()
           }
 
           if(updated == 0) {
@@ -563,7 +563,7 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
 
   def clearAllData()(implicit session: DBSession): Unit = {
     inSession { implicit session =>
-      sql"TRUNCATE TABLE ${tableNameSQL}".update().apply()
+      sql"TRUNCATE TABLE ${tableNameSQL}".update()
       cache.clear()
     }
   }
@@ -584,7 +584,7 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
     try {
       DB.autoCommit { implicit session =>
         sql"CREATE SEQUENCE IF NOT EXISTS ${sequenceNameSQL} START 1"
-          .update().apply()
+          .update()
       }
     } catch {
       case e: PSQLException if e.getServerErrorMessage.getSQLState == "42P07" => () // IF NOT EXIST workaround, 42P07 - PostgreSQL duplicate_table
@@ -593,10 +593,10 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
 
   override def dropTable(): Unit = DB.autoCommit { implicit session =>
     sql"""DROP TABLE ${tableNameSQL}"""
-      .stripMargin.execute().apply()
+      .stripMargin.execute()
 
     sql"""DROP SEQUENCE ${sequenceNameSQL}"""
-      .stripMargin.execute().apply()
+      .stripMargin.execute()
 
   }
 
@@ -604,7 +604,7 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
     inSession {implicit session =>
       val key = sql"INSERT INTO ${tableNameSQL} (space_id, id, version, document) VALUES (?, nextval('${sequenceNameSQL}'), 1, ?::jsonb) RETURNING currval('${sequenceNameSQL}')"
           .bind(spaceId, mpjsons.serialize(document))
-          .map(_.long(1)).single().apply().get
+          .map(_.long(1)).single().get
       cache.put(key, Some(VersionedDocument(1, document)))
       key
     }
@@ -629,11 +629,11 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
           val updated = if(modified.document == document) {
             sql"UPDATE ${tableNameSQL} SET version = ? WHERE id = ? AND version = ?"
               .bind(version + 1, key, version)
-              .map(_.int(1)).single().update().apply()
+              .update()
           } else {
             sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
               .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
-              .map(_.int(1)).single().update().apply()
+              .update()
           }
 
           if(updated == 0) {
@@ -659,11 +659,11 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
           val updated = if(modified.document == document) {
             sql"UPDATE ${tableNameSQL} SET version = ? WHERE id = ? AND version = ?"
               .bind(version + 1, key, version)
-              .map(_.int(1)).single().update().apply()
+              .update()
           } else {
             sql"UPDATE ${tableNameSQL} SET version = ?, document = ?::JSONB WHERE id = ? AND version = ?"
               .bind(version + 1, mpjsons.serialize[T](modified.document), key, version)
-              .map(_.int(1)).single().update().apply()
+              .update()
           }
 
           if(updated == 0) {
@@ -678,8 +678,8 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
 
   def clearAllData()(implicit session: DBSession): Unit = {
     inSession { implicit session =>
-      sql"TRUNCATE TABLE ${tableNameSQL}".update().apply()
-      sql"ALTER SEQUENCE ${sequenceNameSQL} RESTART WITH 1".update().apply()
+      sql"TRUNCATE TABLE ${tableNameSQL}".update()
+      sql"ALTER SEQUENCE ${sequenceNameSQL} RESTART WITH 1".update()
       cache.clear()
     }
   }

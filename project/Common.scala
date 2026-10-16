@@ -5,7 +5,7 @@ object Common {
 
   def settings(moduleName: String) = Seq[Setting[_]](
 
-    version := "0.12.47",
+    version := "1.0.0-SNAPSHOT",
 
     organization := "io.reactivecqrs",
     name := s"reactivecqrs-$moduleName",
@@ -25,7 +25,7 @@ object Common {
       "-Xlint",
       "-Ywarn-dead-code",
       "-language:_",
-      "-target:jvm-1.8",
+      "-release", "17",
       "-encoding", "UTF-8"
     ),
 
@@ -37,6 +37,10 @@ object Common {
     ),
 
     libraryDependencies ++= dependencies.common,
+
+    // Suites share one local PostgreSQL database; running them one at a time avoids concurrent
+    // schema initialization and interference between suites.
+    Test / parallelExecution := false,
 
     licenses += ("MIT", url("http://opensource.org/licenses/MIT")),
 
@@ -58,10 +62,10 @@ object Common {
 
   object dependencies {
 
-    val pekkoVersion = "1.4.0"
+    val pekkoVersion = "1.7.1"
 
     val common = Seq(
-      "io.mpjsons" %% "mpjsons" % "0.6.50",
+      "io.mpjsons" %% "mpjsons" % "0.7.0",
       "com.typesafe" % "config" % "1.4.3",
       "org.slf4j" % "slf4j-api" % "2.0.17",
       "org.scala-lang.modules" %% "scala-parallel-collections" % "1.2.0",
@@ -75,12 +79,12 @@ object Common {
     )
 
     val scalikejdbc = Seq(
-      "org.scalikejdbc" %% "scalikejdbc" % "3.5.0",
-      "org.scalikejdbc" %% "scalikejdbc-streams" % "3.5.0"
+      "org.scalikejdbc" %% "scalikejdbc" % "4.3.5",
+      "org.scalikejdbc" %% "scalikejdbc-streams" % "4.3.5"
     )
 
     val postgresql = Seq(
-      "org.postgresql" % "postgresql" % "42.7.10"
+      "org.postgresql" % "postgresql" % "42.7.14"
     )
 
     val logback = Seq(

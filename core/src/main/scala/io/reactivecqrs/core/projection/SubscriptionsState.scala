@@ -7,7 +7,6 @@ import io.reactivecqrs.core.types.TypesNamesState
 import org.slf4j.Logger
 import scalikejdbc._
 
-import scala.util.{Failure, Success, Try}
 import scala.collection.mutable
 
 class OptimisticLockingFailed(message: String) extends Exception(message)
@@ -77,7 +76,7 @@ class MemorySubscriptionsState extends SubscriptionsState {
     newEventId(subscriberName, aggregateId, SubscriptionType.AGGREGATES_WITH_EVENTS, lastAggregateVersion, aggregateVersion)
 
   override def clearSubscriptionsInfo(subscriberName: String): Unit = {
-    state --= state.keys.filter(_.subscriberName != subscriberName)
+    state --= state.keys.filter(_.subscriberName == subscriberName)
   }
 
   override def readOnly[A](block: DBSession => A): A = block(NoSession)
@@ -92,13 +91,15 @@ class MemorySubscriptionsState extends SubscriptionsState {
      })
   }
 
-  private def newEventId(subscriberName: String, aggregateId: AggregateId, subscriptionType: SubscriptionType, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Try[Unit] = {
+  // Same contract as PostgresSubscriptionsState: an unknown subscription is at version zero, and a
+  // stale expected version throws, so callers roll back the listener's work.
+  private def newEventId(subscriberName: String, aggregateId: AggregateId, subscriptionType: SubscriptionType, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion): Unit = {
     val key = SubscriptionsKey(subscriberName, subscriptionType, aggregateId)
-    if (state.get(key).contains(lastAggregateVersion)) {
+    val current = state.getOrElse(key, AggregateVersion.ZERO)
+    if (current == lastAggregateVersion) {
       state += key -> aggregateVersion
-      Success(())
     } else {
-      Failure(new OptimisticLockingFailed(getClass.getSimpleName+": optimistic locking failed for subscriber "+subscriberName+", subscription type "+subscriptionType.id+" and aggregate "+aggregateId.asLong+" expected version "+lastAggregateVersion.asInt+" but was "+state.get(key).map(_.asInt).getOrElse("-")))
+      throw new OptimisticLockingFailed(getClass.getSimpleName+": optimistic locking failed for subscriber "+subscriberName+", subscription type "+subscriptionType.id+" and aggregate "+aggregateId.asLong+" expected version "+lastAggregateVersion.asInt+" but was "+current.asInt)
     }
   }
 
@@ -147,21 +148,21 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
            subscription_type SMALLINT NOT NULL,
            aggregate_id BIGINT NOT NULL,
            aggregate_version INT NOT NULL)
-       """.execute().apply()
+       """.execute()
 
   }
 
   private def createSubscriptionsSequence() = DB.autoCommit { implicit session =>
-    sql"""CREATE SEQUENCE IF NOT EXISTS subscriptions_seq""".execute().apply()
+    sql"""CREATE SEQUENCE IF NOT EXISTS subscriptions_seq""".execute()
   }
 
   private def createSubscriberTypeAggregateIdIndex() = DB.autoCommit { implicit session =>
-    sql"""CREATE UNIQUE INDEX IF NOT EXISTS subscriptions_sub_type_agg_id_idx ON subscriptions (subscriber_type_id, subscription_type, aggregate_id)""".execute().apply()
+    sql"""CREATE UNIQUE INDEX IF NOT EXISTS subscriptions_sub_type_agg_id_idx ON subscriptions (subscriber_type_id, subscription_type, aggregate_id)""".execute()
   }
 
 
   private def createAggregateIdIndex() = DB.autoCommit { implicit session =>
-    sql"""CREATE INDEX IF NOT EXISTS subscriptions_agg_id_idx ON subscriptions (aggregate_id)""".execute().apply()
+    sql"""CREATE INDEX IF NOT EXISTS subscriptions_agg_id_idx ON subscriptions (aggregate_id)""".execute()
   }
 
   override def lastVersionForAggregateSubscription(subscriberName: String, aggregateId: AggregateId): AggregateVersion = {
@@ -290,7 +291,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
 
   override def clearSubscriptionsInfo(subscriberName: String): Unit = DB.autoCommit { implicit session =>
     sql"""DELETE FROM subscriptions WHERE subscriber_type_id = ?"""
-      .bind(typesNamesState.typeIdByClassName(subscriberName)).update().apply()
+      .bind(typesNamesState.typeIdByClassName(subscriberName)).update()
   }
 
   private val INSERT_INTO_SUBSCRIPTIONS = sql"""INSERT INTO subscriptions (id, subscriber_type_id, subscription_type, aggregate_id, aggregate_version) VALUES (nextval('subscriptions_seq'), ?, ?, ?, ?)"""
@@ -386,7 +387,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
           val cacheKey = SubscriptionCacheKey.getById(rs.short(2), rs.short(3))
           val version = AggregateVersion(rs.int(1))
           cacheKey -> version
-        }).list().apply()
+        }).list()
       mutable.HashMap(m: _*)
     }
   }
@@ -396,9 +397,9 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
   // so subscription writes from different projection worker threads no longer serialize on this lock.
   def newEventIdInDB(aggregateId: AggregateId, subscriberName: String, subscriptionType: SubscriptionType, lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion, typesNamesState: TypesNamesState)(implicit session: DBSession): Unit = {
     if(lastAggregateVersion == AggregateVersion.ZERO) {
-      INSERT_INTO_SUBSCRIPTIONS.bind(typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, aggregateVersion.asInt).update().apply()
+      INSERT_INTO_SUBSCRIPTIONS.bind(typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, aggregateVersion.asInt).update()
     } else {
-      val rowsUpdated = UPDATE_SUBSCRIPTIONS.bind(aggregateVersion.asInt, typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, lastAggregateVersion.asInt).update().apply()
+      val rowsUpdated = UPDATE_SUBSCRIPTIONS.bind(aggregateVersion.asInt, typesNamesState.typeIdByClassName(subscriberName), subscriptionType.id, aggregateId.asLong, lastAggregateVersion.asInt).update()
       if (rowsUpdated != 1) {
 
         var subscriptionState = "Aggregate " + aggregateId.asLong+" subscription state: "
@@ -407,7 +408,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
           subscriptionState += AGGREGATE_VERSIONS_QUERY.bind(aggregateId.asLong)
           .map(rs => {
             "version: "+rs.short(1)+", subscriber: "+ rs.short(2)+", subscription: "+ rs.int(3)
-          }).list().apply().mkString("; ")
+          }).list().mkString("; ")
         } catch {
           case e: Exception => subscriptionState += " (error reading current state: "+e.getMessage+")"
         }

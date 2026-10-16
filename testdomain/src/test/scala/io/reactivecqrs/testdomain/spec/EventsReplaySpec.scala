@@ -13,20 +13,14 @@ import io.reactivecqrs.core.projection.{PostgresSubscriptionsState, PostgresVers
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCart, ShoppingCartAggregateContext, ShoppingCartsListProjectionAggregatesBased, ShoppingCartsListProjectionEventsBased}
-import io.reactivecqrs.testutils.CommonSpec
-import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
+import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
 
 import scala.concurrent.duration._
 
 class EventsReplaySpec extends CommonSpec {
 
-  val settings = ConnectionPoolSettings(
-    initialSize = 5,
-    maxSize = 20,
-    connectionTimeoutMillis = 3000L)
 
-  Class.forName("org.postgresql.Driver")
-  ConnectionPool.singleton("jdbc:postgresql://localhost:5432/reactivecqrs", "reactivecqrs", "reactivecqrs", settings)
+  TestDatabase.init()
 
 
 

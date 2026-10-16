@@ -47,15 +47,15 @@ class PostgresTypesNamesState extends TypesNamesState {
        CREATE TABLE IF NOT EXISTS types_names (
          id SMALLINT NOT NULL PRIMARY KEY,
          name VARCHAR(255) NOT NULL)
-     """.execute().apply()
+     """.execute()
   }
 
   private def createTypesNamesSequence() = DB.autoCommit { implicit session =>
-    sql"""CREATE SEQUENCE IF NOT EXISTS types_names_seq""".execute().apply()
+    sql"""CREATE SEQUENCE IF NOT EXISTS types_names_seq""".execute()
   }
 
   private def createNamesIndex() = DB.autoCommit { implicit session =>
-    sql"""CREATE UNIQUE INDEX IF NOT EXISTS types_names_names_idx ON types_names (name)""".execute().apply()
+    sql"""CREATE UNIQUE INDEX IF NOT EXISTS types_names_names_idx ON types_names (name)""".execute()
   }
 
   override def typeIdByClassName(className: String): Short = {
@@ -72,7 +72,7 @@ class PostgresTypesNamesState extends TypesNamesState {
       case Some(id) => id
       case None => DB.localTx { implicit session =>
         val idOption = sql"""SELECT id FROM types_names WHERE name = ?"""
-          .bind(className).map(_.short(1)).single().apply()
+          .bind(className).map(_.short(1)).single()
         idOption match {
           case Some(id) => id
           case None => insertName(className)
@@ -87,14 +87,14 @@ class PostgresTypesNamesState extends TypesNamesState {
       case Some(className) => className
       case None => DB.readOnly { implicit session =>
         sql"""SELECT name FROM types_names WHERE id = ?"""
-          .bind(id).map(_.string(1)).single().apply().getOrElse(throw new IllegalStateException("No entry for type id " + id+" in types_names found"))
+          .bind(id).map(_.string(1)).single().getOrElse(throw new IllegalStateException("No entry for type id " + id+" in types_names found"))
       }
     }
   }
 
   private def insertName(className: String)(implicit session: DBSession): Short = {
     sql"""INSERT INTO types_names (id, name) VALUES (nextval('types_names_seq'), ?) RETURNING currval('types_names_seq')"""
-      .bind(className).map(_.short(1)).single().apply().getOrElse(throw new IllegalStateException("No entry for type className '" + className+"' in types_names found"))
+      .bind(className).map(_.short(1)).single().getOrElse(throw new IllegalStateException("No entry for type className '" + className+"' in types_names found"))
   }
 
   private def init(): Unit = {

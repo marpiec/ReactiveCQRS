@@ -37,37 +37,37 @@ class PostgresEventStoreSchemaInitializer  {
           event_type_id SMALLINT NOT NULL,
           event_type_version SMALLINT NOT NULL,
           event TEXT NOT NULL)
-      """.execute().apply()
+      """.execute()
   }
 
   private def dropColumnCommandId(): Unit = DB.autoCommit { implicit session =>
     sql"""
         ALTER TABLE events DROP COLUMN IF EXISTS command_id
-    """.execute().apply()
+    """.execute()
   }
 
   private def createEventsIdAndAggregateIndex(): Unit = DB.autoCommit { implicit session =>
     sql"""
       CREATE INDEX IF NOT EXISTS events_id_aggregates_idx ON events (aggregate_id, id);
-    """.execute().apply()
+    """.execute()
   }
 
   private def createEventsAggregateIdIndex(): Unit = DB.autoCommit { implicit session =>
     sql"""
         CREATE INDEX IF NOT EXISTS events_aggregates_idx ON events (aggregate_id);
-      """.execute().apply()
+      """.execute()
   }
 
   private def createAggregatesTypeIndex(): Unit = DB.autoCommit { implicit session =>
     sql"""
         CREATE INDEX IF NOT EXISTS aggregates_type_idx ON aggregates (type_id);
-      """.execute().apply()
+      """.execute()
   }
 
   private def createAggregatesBaseIdIndex(): Unit = DB.autoCommit { implicit session =>
     sql"""
         CREATE INDEX IF NOT EXISTS aggregates_base_id_idx ON aggregates (base_id);
-      """.execute().apply()
+      """.execute()
   }
 
 
@@ -77,7 +77,7 @@ class PostgresEventStoreSchemaInitializer  {
         CREATE TABLE IF NOT EXISTS noop_events (
           id BIGINT NOT NULL PRIMARY KEY,
           from_version INT NOT NULL)
-      """.execute().apply()
+      """.execute()
   }
 
   private def createEventsBroadcastTable(): Unit = DB.autoCommit { implicit session =>
@@ -88,7 +88,7 @@ class PostgresEventStoreSchemaInitializer  {
           version INT NOT NULL,
           user_id BIGINT NOT NULL,
           event_time TIMESTAMP NOT NULL)
-      """.execute().apply()
+      """.execute()
 
   }
 
@@ -97,7 +97,7 @@ class PostgresEventStoreSchemaInitializer  {
   private def createEventsBroadcastAggregateIndex(): Unit = DB.autoCommit { implicit session =>
     sql"""
         CREATE INDEX IF NOT EXISTS events_to_publish_aggregate_idx ON events_to_publish (aggregate_id, version);
-      """.execute().apply()
+      """.execute()
   }
 
   private def createAggregatesTable(): Unit = DB.autoCommit { implicit session =>
@@ -111,29 +111,29 @@ class PostgresEventStoreSchemaInitializer  {
         base_id BIGINT NOT NULL,
         base_version INT NOT NULL,
         CONSTRAINT aggregates_pk PRIMARY KEY (id, base_id))
-      """.execute().apply()
+      """.execute()
   }
 
   private def addAggregateSpaceColumn(): Unit = DB.autoCommit { implicit session =>
     sql"""
         ALTER TABLE aggregates ADD COLUMN IF NOT EXISTS space_id BIGINT NOT NULL DEFAULT -1
-    """.execute().apply()
+    """.execute()
   }
 
   private def createEventsSequence(): Unit = DB.autoCommit { implicit session =>
-    sql"""CREATE SEQUENCE IF NOT EXISTS events_seq""".execute().apply()
+    sql"""CREATE SEQUENCE IF NOT EXISTS events_seq""".execute()
   }
 
   private def dropExistingFunctions(): Unit = DB.autoCommit { implicit session =>
-    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240))""".execute().apply()
-    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240))""".execute().apply()
-    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240))""".execute().apply() // space_id added
-    sql"""DROP FUNCTION IF EXISTS add_events(BIGINT, BIGINT[], BIGINT, INT, SMALLINT, SMALLINT[], SMALLINT[], TIMESTAMP, VARCHAR(102400)[])""".execute().apply()
-    sql"""DROP FUNCTION IF EXISTS add_undo_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), INT)""".execute().apply()
-    sql"""DROP FUNCTION IF EXISTS add_undo_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), INT)""".execute().apply()
-    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), BIGINT, INT)""".execute().apply()
-    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), BIGINT, INT)""".execute().apply()
-    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), BIGINT, INT)""".execute().apply() // space_id added
+    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240))""".execute()
+    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240))""".execute()
+    sql"""DROP FUNCTION IF EXISTS add_event(BIGINT, BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240))""".execute() // space_id added
+    sql"""DROP FUNCTION IF EXISTS add_events(BIGINT, BIGINT[], BIGINT, INT, SMALLINT, SMALLINT[], SMALLINT[], TIMESTAMP, VARCHAR(102400)[])""".execute()
+    sql"""DROP FUNCTION IF EXISTS add_undo_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), INT)""".execute()
+    sql"""DROP FUNCTION IF EXISTS add_undo_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), INT)""".execute()
+    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), BIGINT, INT)""".execute()
+    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), BIGINT, INT)""".execute()
+    sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR(10240), BIGINT, INT)""".execute() // space_id added
   }
 
   private def createAddEventFunction(): Unit = DB.autoCommit { implicit session =>
@@ -168,7 +168,7 @@ class PostgresEventStoreSchemaInitializer  {
           |END;
           |$$
           |LANGUAGE 'plpgsql' VOLATILE
-        """.stripMargin).execute().apply()
+        """.stripMargin).execute()
   }
 
   // Batches multiple plain/first events for a single aggregate into one round trip.
@@ -190,7 +190,7 @@ class PostgresEventStoreSchemaInitializer  {
           |END;
           |$$
           |LANGUAGE 'plpgsql' VOLATILE
-        """.stripMargin).execute().apply()
+        """.stripMargin).execute()
   }
 
   private def createAddUndoEventFunction(): Unit = DB.autoCommit { implicit session =>
@@ -225,7 +225,7 @@ class PostgresEventStoreSchemaInitializer  {
           |END;
           |$$
           |LANGUAGE 'plpgsql' VOLATILE
-        """.stripMargin).execute().apply()
+        """.stripMargin).execute()
   }
 
   private def createAddDuplicationEventFunction(): Unit = DB.autoCommit { implicit session =>
@@ -259,7 +259,7 @@ class PostgresEventStoreSchemaInitializer  {
           |END;
           |$$
           |LANGUAGE 'plpgsql' VOLATILE
-        """.stripMargin).execute().apply()
+        """.stripMargin).execute()
   }
 
 }

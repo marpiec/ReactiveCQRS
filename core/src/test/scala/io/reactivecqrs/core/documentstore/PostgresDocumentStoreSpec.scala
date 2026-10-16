@@ -2,9 +2,14 @@ package io.reactivecqrs.core.documentstore
 
 import io.mpjsons.MPJsons
 import org.scalatest._
+import org.scalatest.featurespec.AnyFeatureSpec
+import org.scalatest.matchers.must.Matchers
+import io.reactivecqrs.testutils.TestDatabase
 import scalikejdbc.DB
 
-class PostgresDocumentStoreSpec extends FeatureSpec with GivenWhenThen with BeforeAndAfter with MustMatchers {
+class PostgresDocumentStoreSpec extends AnyFeatureSpec with GivenWhenThen with BeforeAndAfter with Matchers {
+
+  TestDatabase.init()
 
   val mpjsons = new MPJsons
 
@@ -18,18 +23,21 @@ class PostgresDocumentStoreSpec extends FeatureSpec with GivenWhenThen with Befo
     scenario("value exists") {
       Given("document store with some values")
       val documentStore = new PostgresDocumentStore[ComplexType](testTable, mpjsons, new NoopDocumentStoreCache)
-      DB.localTx { implicit connection =>
+      try {
+        DB.localTx { implicit connection =>
 
-        documentStore.insertDocument(0, 1, ComplexType(List(SimpleType(1), SimpleType(2))))
-        documentStore.insertDocument(0, 2, ComplexType(List(SimpleType(1))))
-        documentStore.insertDocument(0, 3, ComplexType(List(SimpleType(2), SimpleType(3))))
+          documentStore.insertDocument(0, 1, ComplexType(List(SimpleType(1), SimpleType(2))))
+          documentStore.insertDocument(0, 2, ComplexType(List(SimpleType(1))))
+          documentStore.insertDocument(0, 3, ComplexType(List(SimpleType(2), SimpleType(3))))
 
-        When("document store is searched by array value")
-        val result = documentStore.findDocumentByObjectInArray(List("simpleArray"), Seq("field"), 2, 10000)
+          When("document store is searched by array value")
+          val result = documentStore.findDocumentByObjectInArray(List("simpleArray"), Seq("field"), 2, 10000)
 
-        Then("correct documents are retrieved")
-        result.keySet mustBe Set(1, 3)
-
+          Then("correct documents are retrieved")
+          result.keySet mustBe Set(1, 3)
+        }
+      } finally {
+        // Outside the transaction: DROP TABLE on another connection would wait for its locks forever.
         documentStore.dropTable()
       }
     }
@@ -39,15 +47,18 @@ class PostgresDocumentStoreSpec extends FeatureSpec with GivenWhenThen with Befo
     scenario("option value exists") {
       Given("document store with one value")
       val documentStore = new PostgresDocumentStore[OptionIntType](testTable, mpjsons, new NoopDocumentStoreCache)
-      DB.localTx { implicit connection =>
-        documentStore.insertDocument(0, 1, OptionIntType(Some(13)))
+      try {
+        DB.localTx { implicit connection =>
+          documentStore.insertDocument(0, 1, OptionIntType(Some(13)))
 
-        When("searching by option value")
-        val result = documentStore.findDocumentByPath(Seq("option", "value"), "13")
+          When("searching by option value")
+          val result = documentStore.findDocumentByPath(Seq("option", "value"), "13")
 
-        Then("correct document is retrieved")
-        result.keySet mustBe Set(1)
-
+          Then("correct document is retrieved")
+          result.keySet mustBe Set(1)
+        }
+      } finally {
+        // Outside the transaction: DROP TABLE on another connection would wait for its locks forever.
         documentStore.dropTable()
       }
     }
@@ -58,19 +69,22 @@ class PostgresDocumentStoreSpec extends FeatureSpec with GivenWhenThen with Befo
       Given("empty document store")
       val documentStore = new PostgresDocumentStoreAutoId[SimpleType](testTable, mpjsons, new NoopDocumentStoreCache)
 
-      DB.localTx { implicit connection =>
-        When("document is inserted")
-        val result = documentStore.insertDocument(0, SimpleType(42))
+      try {
+        DB.localTx { implicit connection =>
+          When("document is inserted")
+          val result = documentStore.insertDocument(0, SimpleType(42))
 
-        Then("id must be 1")
-        result mustBe 1
+          Then("id must be 1")
+          result mustBe 1
 
-        When("another document is inserted")
-        val another = documentStore.insertDocument(0, SimpleType(44))
+          When("another document is inserted")
+          val another = documentStore.insertDocument(0, SimpleType(44))
 
-        Then("another id must be 2")
-        another mustBe 2
-
+          Then("another id must be 2")
+          another mustBe 2
+        }
+      } finally {
+        // Outside the transaction: DROP TABLE on another connection would wait for its locks forever.
         documentStore.dropTable()
       }
     }

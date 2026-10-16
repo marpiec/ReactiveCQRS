@@ -1,6 +1,7 @@
 package io.reactivecqrs.core.documentstore
 
 import java.lang.reflect.Field
+import java.util.regex.Pattern
 
 import scalikejdbc.DBSession
 
@@ -13,20 +14,56 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef] {
   val store = mutable.ParHashMap[Long, Document[T]]()
 
 
+  // Conditions mirror PostgresDocumentStore.createQuery, so tests using this store see the same results.
   def findDocument(query: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, Document[T])] = {
-    store.filter(keyValuePair => query.where.forall {
-      case ExpectedNoValue(path) => ???
-      case ExpectedSingleTextValue(path, value) => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, value)
-      case ExpectedSingleTextValueLike(path, pattern) => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, pattern)
-      case ExpectedMultipleTextValues(path, vals) => vals.exists(value => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, value))
-      case ExpectedMultipleIntValues(path, vals) => vals.exists(value => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, value))
-      case ExpectedMultipleLongValues(path, vals) => vals.exists(value => matches(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, path, value))
-      case ExpectedSingleIntValue(path, vals) => ???
-      case ExpectedSingleLongValue(path, vals) => ???
-      case ExpectedSingleBooleanValue(path, vals) => ???
-      case ExpectedGreaterThanIntValue(path, vals) => ???
-      case ExpectedLessThanIntValue(path, vals) => ???
+    store.filter(keyValuePair => {
+      val document = keyValuePair._2.asInstanceOf[Document[AnyRef]].document
+      query.where.forall {
+        case ExpectedNoValue(path) => valueAtPath(document, path).isEmpty
+        case ExpectedSingleTextValue(path, value) => matches(document, path, value)
+        case ExpectedSingleTextValueLike(path, pattern) => valueAtPath(document, path).exists(value => ilike(value.toString, pattern))
+        case ExpectedSingleTextValueInArray(path, value) => arrayMatchSeq(document, path).exists(_.toString == value)
+        case ExpectedMultipleTextValuesInArray(path, values) => arrayMatchSeq(document, path).exists(element => values.exists(_ == element.toString))
+        case ExpectedMultipleTextValues(path, vals) => vals.exists(value => matches(document, path, value))
+        case ExpectedMultipleIntValues(path, vals) => vals.exists(value => matches(document, path, value))
+        case ExpectedMultipleLongValues(path, vals) => vals.exists(value => matches(document, path, value))
+        case ExpectedSingleIntValue(path, value) => matches(document, path, value)
+        case ExpectedSingleLongValue(path, value) => matches(document, path, value)
+        case ExpectedSingleBooleanValue(path, value) => matches(document, path, value)
+        case ExpectedGreaterThanIntValue(path, value) => valueAtPath(document, path).exists(_.toString.toInt > value)
+        case ExpectedLessThanIntValue(path, value) => valueAtPath(document, path).exists(_.toString.toInt < value)
+      }
     }).seq.toSeq
+  }
+
+  /** Value at the path, like `document #> path`: `None` for null, a missing option value, or an absent field value. */
+  protected def valueAtPath(element: AnyRef, path: Seq[String]): Option[AnyRef] = {
+    if (element == null) {
+      None
+    } else if (path.isEmpty) {
+      Some(element)
+    } else {
+      element match {
+        case None => None
+        case Some(inner) if path.head == "value" => valueAtPath(inner.asInstanceOf[AnyRef], path.tail)
+        case _ =>
+          try {
+            valueAtPath(getPrivateValue(element, element.getClass.getDeclaredField(path.head)), path.tail)
+          } catch {
+            case _: NoSuchFieldException => throw new IllegalArgumentException(s"No field [${path.head}] found in type [${element.getClass}] for element $element")
+          }
+      }
+    }
+  }
+
+  /** SQL ILIKE: `%` is any sequence, `_` is one character, case-insensitive. */
+  private def ilike(value: String, pattern: String): Boolean = {
+    val regex = pattern.map {
+      case '%' => ".*"
+      case '_' => "."
+      case c => Pattern.quote(c.toString)
+    }.mkString
+    Pattern.compile(regex, Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE | Pattern.DOTALL).matcher(value).matches()
   }
 
   def findDocumentWithTransform[TT <: AnyRef](query: DocumentStoreQuery, transform: T => TT)(implicit session: DBSession = null): Seq[(Long, Document[TT])] = {
@@ -192,7 +229,8 @@ class MemoryDocumentStore[T <: AnyRef] extends DocumentStore[T] with MemoryDocum
       store += key -> Document[T](document)
     }
 
-  override def insertDocuments(spaceId: Long, documents: Seq[DocumentToInsert[T]])(implicit session: DBSession): Unit = ???
+  override def insertDocuments(spaceId: Long, documents: Seq[DocumentToInsert[T]])(implicit session: DBSession): Unit =
+    documents.foreach(document => insertDocument(spaceId, document.key, document.document))
 }
 
 class MemoryDocumentStoreAutoId[T <: AnyRef] extends DocumentStoreAutoId[T] with MemoryDocumentStoreTrait[T] {
@@ -213,5 +251,6 @@ class MemoryDocumentStoreAutoId[T <: AnyRef] extends DocumentStoreAutoId[T] with
     key
   }
 
-  override def insertDocuments(spaceId: Long, documents: Seq[T])(implicit session: DBSession): Unit = ???
+  override def insertDocuments(spaceId: Long, documents: Seq[T])(implicit session: DBSession): Unit =
+    documents.foreach(document => insertDocument(spaceId, document))
 }

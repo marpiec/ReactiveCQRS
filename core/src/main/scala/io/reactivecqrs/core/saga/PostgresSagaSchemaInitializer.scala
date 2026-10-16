@@ -20,6 +20,6 @@ class PostgresSagaSchemaInitializer {
           update_time TIMESTAMP NOT NULL,
           saga_order TEXT NOT NULL,
           order_type_id INT NOT NULL)
-      """.execute().apply()
+      """.execute()
   }
 }

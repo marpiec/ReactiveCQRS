@@ -32,7 +32,7 @@ class PostgresVersionsState() extends VersionsState {
            component_name VARCHAR(255) NOT NULL,
            component_type SMALLINT NOT NULL,
            component_version INT NOT NULL)
-       """.execute().apply()
+       """.execute()
 
   }
 
@@ -46,18 +46,18 @@ class PostgresVersionsState() extends VersionsState {
   private def versionFor(componentName: String, componentType: Short) = DB.readOnly { implicit session =>
     sql"""SELECT component_version FROM components_versions WHERE component_name = ? AND component_type = ?"""
       .bind(componentName, componentType)
-      .map(_.int(1)).single().apply().getOrElse(0)
+      .map(_.int(1)).single().getOrElse(0)
   }
 
   private def saveVersionFor(componentName: String, componentType: Short, version: Int): Unit = DB.autoCommit { implicit session =>
     if(versionFor(componentName, componentType) > 0) {
       sql"""UPDATE components_versions SET component_version = ? WHERE component_name = ? AND component_type = ?""".stripMargin
         .bind(version, componentName, componentType)
-        .update().apply()
+        .update()
     } else {
       sql"""INSERT INTO components_versions (component_name, component_type, component_version) VALUES (?, ?, ?)""".stripMargin
         .bind(componentName, componentType, version)
-        .update().apply()
+        .update()
     }
 
   }

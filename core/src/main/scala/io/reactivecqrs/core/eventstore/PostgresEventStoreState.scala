@@ -72,7 +72,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
               Timestamp.from(Instant.now),
               eventSerialized,
               undoEvent.eventsCount
-            ).map(rs => rs.int(1)).single().apply().get
+            ).map(rs => rs.int(1)).single().get
           case duplicationEvent: DuplicationEvent[_] =>
             sql"""SELECT add_duplication_event(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
               eventsEnvelope.userId.asLong,
@@ -86,7 +86,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
               eventSerialized,
               duplicationEvent.baseAggregateId.asLong,
               duplicationEvent.baseAggregateVersion.asInt
-            ).map(rs => rs.int(1)).single().apply().get
+            ).map(rs => rs.int(1)).single().get
           case firstEvent: FirstEvent[_] => {
             sql"""SELECT add_event(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
               eventsEnvelope.userId.asLong,
@@ -98,7 +98,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
               eventVersion,
               Timestamp.from(Instant.now),
               eventSerialized
-            ).map(rs => rs.int(1)).single().apply().get
+            ).map(rs => rs.int(1)).single().get
           }
           case _ =>
             sql"""SELECT add_event(?, ?, ?, ?, ?, ?, ?, ?, ?)""".bind(
@@ -111,7 +111,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
               eventVersion,
               Timestamp.from(Instant.now),
               eventSerialized
-            ).map(rs => rs.int(1)).single().apply().get
+            ).map(rs => rs.int(1)).single().get
         })
 
         (event, AggregateVersion(lastEventVersion.get))
@@ -171,7 +171,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       arrayParam("smallint", eventTypeVersions),
       Timestamp.from(Instant.now),
       arrayParam("varchar", serializedEvents)
-    ).map(rs => rs.int(1)).list().apply()
+    ).map(rs => rs.int(1)).list()
 
     events.zip(versions.map(AggregateVersion(_)))
   }
@@ -181,7 +181,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     events.foreach(e => {
       sql"""
            |UPDATE events SET event = ? WHERE aggregate_id = ? AND version = ?
-      """.stripMargin.bind(mpjsons.serialize(e.event, e.event.getClass.getName), aggregateId.asLong, e.version.asInt).update().apply()
+      """.stripMargin.bind(mpjsons.serialize(e.event, e.event.getClass.getName), aggregateId.asLong, e.version.asInt).update()
     })
   }
 
@@ -315,20 +315,20 @@ ORDER BY events.id""")
 
     if(events.exists(e => e.event.isInstanceOf[PermanentDeleteEvent[_]])) {
       DB.localTx { implicit session =>
-        sql"""DELETE FROM aggregates WHERE id = ?""".bind(aggregateId.asLong).update().apply()
+        sql"""DELETE FROM aggregates WHERE id = ?""".bind(aggregateId.asLong).update()
         // noop_events must be deleted BEFORE events: it is resolved via a subquery over events,
         // so deleting events first would make the subquery match nothing and leak noop_events rows.
-        sql"""DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = ?)""".bind(aggregateId.asLong).update().apply()
-        sql"""DELETE FROM events WHERE aggregate_id = ?""".bind(aggregateId.asLong).update().apply()
-        sql"""DELETE FROM events_to_publish WHERE aggregate_id = ?""".bind(aggregateId.asLong).update().apply()
-        sql"""DELETE FROM subscriptions WHERE aggregate_id = ?""".bind(aggregateId.asLong).update().apply()
+        sql"""DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = ?)""".bind(aggregateId.asLong).update()
+        sql"""DELETE FROM events WHERE aggregate_id = ?""".bind(aggregateId.asLong).update()
+        sql"""DELETE FROM events_to_publish WHERE aggregate_id = ?""".bind(aggregateId.asLong).update()
+        sql"""DELETE FROM subscriptions WHERE aggregate_id = ?""".bind(aggregateId.asLong).update()
       }
     } else if(events.length == 1) {
       val event = events.head
       DB.autoCommit { implicit session =>
         DELETE_EVENT_QUERY
             .bind(event.aggregateId.asLong, event.version.asInt)
-            .update().apply()
+            .update()
       }
     } else {
       val versions = events.map(_.version.asInt)
@@ -337,7 +337,6 @@ ORDER BY events.id""")
         SQL(s"""DELETE FROM events_to_publish WHERE aggregate_id = ? AND version IN ($params)""")
           .bind(aggregateId.asLong +: versions: _*)
           .update()
-          .apply()
       }
     }
   }
@@ -345,7 +344,7 @@ ORDER BY events.id""")
   override def readNotYetPublishedEvents(): Map[AggregateId, AggregateVersion] = {
     DB.readOnly { implicit session =>
       sql"""SELECT aggregate_id, MIN(version) FROM events_to_publish GROUP BY aggregate_id"""
-        .map(rs => (AggregateId(rs.long(1)), AggregateVersion(rs.int(2)))).list().apply().toMap
+        .map(rs => (AggregateId(rs.long(1)), AggregateVersion(rs.int(2)))).list().toMap
     }
   }
 
@@ -377,10 +376,10 @@ ORDER BY events.id""")
 
     // much faster, although might be not exact
     val count = sql"""SELECT reltuples::bigint AS count FROM pg_class WHERE oid = 'public.events'::regclass"""
-      .map(rs => rs.int(1)).single().apply().get
+      .map(rs => rs.int(1)).single().get
 
     if(count == 0) {
-      sql"""SELECT COUNT(*) FROM events""".map(rs => rs.int(1)).single().apply().get
+      sql"""SELECT COUNT(*) FROM events""".map(rs => rs.int(1)).single().get
     } else {
       count
     }
@@ -392,7 +391,7 @@ ORDER BY events.id""")
       0
     } else {
       val typesIds = aggregateTypes.map(t => typesNamesState.typeIdByClassName(t)).distinct
-      sql"""SELECT COUNT(*) FROM events JOIN aggregates ON events.aggregate_id = aggregates.id WHERE aggregates.type_id in ($typesIds) and aggregates.base_order = 1""".map(rs => rs.int(1)).single().apply().get
+      sql"""SELECT COUNT(*) FROM events JOIN aggregates ON events.aggregate_id = aggregates.id WHERE aggregates.type_id in ($typesIds) and aggregates.base_order = 1""".map(rs => rs.int(1)).single().get
     }
   }
 

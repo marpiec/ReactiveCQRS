@@ -22,18 +22,18 @@ class EventBusSchemaInitializer {
            subscriber VARCHAR(256) NOT NULL,
            message_type VARCHAR(256) NOT NULL,
            message bytea NOT NULL)
-       """.execute().apply()
+       """.execute()
 
    }
 
 
   private def createEventsToRouteIndex() = DB.autoCommit { implicit session =>
-    sql"""CREATE UNIQUE INDEX IF NOT EXISTS events_to_route_idx ON events_to_route (aggregate_id, version, subscriber)""".execute().apply()
+    sql"""CREATE UNIQUE INDEX IF NOT EXISTS events_to_route_idx ON events_to_route (aggregate_id, version, subscriber)""".execute()
   }
 
 
   private def createEventsToRouteSequence() = DB.autoCommit { implicit session =>
-    sql"""CREATE SEQUENCE IF NOT EXISTS events_to_route_seq""".execute().apply()
+    sql"""CREATE SEQUENCE IF NOT EXISTS events_to_route_seq""".execute()
   }
 
 }
