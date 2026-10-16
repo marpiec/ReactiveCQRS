@@ -374,6 +374,14 @@ implementation plan.
 #### F46 — Command-bus child cache reap sorts the whole map
 - **Low**, likely · Fix in **M5** (replaced by passivation, D43) · `AggregateCommandBusActor.scala:168-184`
 
+#### F70 — An unknown message restarts the command bus and drops every command in flight
+- **Medium**, confirmed · **Fixed in M1** (16/10/2026) · `AggregateCommandBusActor.receive` (catch-all)
+- **Symptom:** a message the bus does not understand (for example a command class that does not extend a command type) gets no reply, and every command of that aggregate type running at that moment never gets one either.
+- **Root cause:** the catch-all threw `IllegalArgumentException`; the default supervision restarts the bus, and the default `preRestart` stops all its children, executors included (AR7).
+- **Found:** architecture review 2 (§7).
+- **Test:** `CommandOutcomesSpec` "A message the command bus does not understand" (no reply, and the in-flight command's executor was stopped, before the fix).
+- **Fix:** the bus logs a warning and answers `Status.Failure(IllegalArgumentException)`.
+
 #### F67 — A command for an aggregate that does not exist gets no reply until the timeout
 - **Medium**, confirmed · **Fixed in M1** (16/10/2026, with F9) · `CommandExecutorActor.scala` `handleFollowingCommand`, `handleRewriteHistoryCommand`
 - **Symptom:** a `Command` or `RewriteHistoryCommand` whose expected version does not match an aggregate at version 0 (it does not exist, or the id is wrong) is answered only by the command timeout (`CommandHandlingError` after 60 s) instead of `AggregateConcurrentModificationError`.
@@ -627,11 +635,11 @@ From §7 of Neula's change requests.
 
 | Milestone | Issues |
 |---|---|
-| M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
-| M2 | F1, F2, F4, F5, F6, F11, F15, F26, F28, F29, F37, F41, F42, F45, F47; Neula H2 |
-| M3 | AR1, AR4; F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33, F38, F39, F43, F44, F65 |
+| M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
+| M2 | AR6; F1, F2, F4, F5, F6, F11, F15, F26, F28, F29, F37, F41, F42, F45, F47; Neula H2 |
+| M3 | AR1, AR4, AR7; F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33, F38, F39, F43, F44, F65 |
 | M4 | F3, F54, F55, F56, F57, F58, F59, F60, F61, F62; Neula H1, H6 |
-| M5 | F46, F48, F50, F63 |
+| M5 | AR5; F46, F48, F50, F63 |
 | M6 | F8 (complete), F49 (backfill) |
 
 ---
@@ -692,3 +700,42 @@ Scope: `AggregateCommandBusActor`, `CommandHandlerActor`, `CommandExecutorActor`
   every state. With AR1 the executor's protocol shrinks to "run the handler, return the
   result".
 - **When:** M3 with AR1; F67 is fixed now.
+
+### Review 2, 16/10/2026: sagas, id allocation and failure isolation (after F35)
+
+Scope: `SagaActor`, `PostgresSagaState`, `UidGeneratorActor`, and how failures travel from
+these modules to the command bus.
+
+#### AR5 — Saga authors subclass the runner
+- **Finding:** a saga is written by extending `SagaActor` and supplying `uidGenerator`,
+  `state` and `name`; user code and the framework's write-and-retry state machine share one
+  class and one actor context. That sharing caused F17 (user-visible `context` used from
+  callbacks) and makes the runner's interface the whole actor API. Aggregates already show
+  the deeper shape: the author supplies an `AggregateContext` (data and functions), the
+  framework owns the actors.
+- **Proposal:** a `SagaDefinition` (name, `handleOrder`, `handleRevert`) run by a
+  framework-owned saga runner; the caller to answer is kept as a serialized `ActorRef`
+  instead of a path string, which also works across nodes (D45).
+- **When:** M5, with the saga runner singleton (D46).
+
+#### AR6 — Retry and back-off rules are repeated with different shapes
+- **Finding:** the executor retries concurrent commands (10 attempts, 10–500 ms with
+  jitter), the saga runner retries writes (10 attempts, 100 ms–30 s), the document store
+  retries updates (10 immediate attempts), and M2 adds bounded re-delivery (D20b). Each has
+  its own arithmetic and its own limit, so tuning them or reporting on them means visiting
+  every one.
+- **Proposal:** one `Backoff` module in `core/util` (delay for an attempt, jitter, limit),
+  configured per use.
+- **When:** M2, when the delivery retries are built; the existing three move onto it then.
+
+#### AR7 — A per-request failure can restart a long-lived actor
+- **Finding:** there is no `supervisorStrategy` anywhere, so Pekko's default applies: a
+  throw restarts the actor, and the default `preRestart` stops all its children. The
+  command bus threw on an unknown message (F70, fixed now) and still throws when id
+  allocation fails (F23 note); a restart of the bus drops every in-flight command of that
+  aggregate type without a reply.
+- **Proposal:** long-lived actors (command bus, aggregate owner, event bus, saga runner)
+  never throw for a failure that belongs to one request; they answer it. Each parent states
+  explicitly what happens to a failed child (executors stop, owners stop and are forgotten
+  as in F10).
+- **When:** M3, with AR1 (the actor tree changes there anyway); F70 now.

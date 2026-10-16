@@ -204,7 +204,8 @@ returns to zero when idle.
    version; automatic, rate-limited retry of failed subscriptions on start.
 5. **Bus rewrite (D7, D20b).** Remove the cursor and `EventBusState` (F1, F4, F11, F47);
    ack tracking that ends on ack, failure or deadline; watch subscribers; balanced counters;
-   stalled-delivery log lines and summary.
+   stalled-delivery log lines and summary. The re-delivery limits use the shared `Backoff`
+   module (AR6), and the existing retries (executor, sagas, document store) move onto it.
 6. **Single retry owner (D8).** One outbox poller for all types (F37) sends re-publish
    messages to owners; owners re-read their outbox rows older than `redeliveryAfter`; every
    outbox row gets fresh attempts at startup; `eventsToPublish`/`pendingPublish` removed;
@@ -255,7 +256,9 @@ R7–R10, R12, R13), storage reduction by squash, and the low-risk performance f
    repository actor, renamed `AggregateOwner`: one per-aggregate actor for restore,
    idempotency, the command queue, persistence and publication; one map in the bus; a sealed
    reply protocol between owner and executor. Done first because serial mode, snapshots and
-   squash all live in the owner, and M5 turns it into the shard entity.
+   squash all live in the owner, and M5 turns it into the shard entity. With it, explicit
+   supervision (AR7): long-lived actors answer per-request failures instead of throwing, and
+   each parent states what happens to a failed child.
 1. **Remove event versioning (D29).** Remove the API; reader check for non-zero versions.
 2. **Snapshots (D30, F44, F22, F38).** `snapshots` table; per-context policy (schema
    version, every N events, on passivation); written after persist; restore from the latest
@@ -370,7 +373,9 @@ rolling upgrades from 1.0 on, and a cluster of one that behaves like today's sin
    serial mode); passivation replaces reaping (F46); handover rules (D72).
 4. **Singletons (D46, D53):** outbox poller, saga runner, rebuild orchestration, squash
    scheduler, one per projection; state across nodes (D54); transparent queries (D55);
-   single-writer projections keep caches valid (F48).
+   single-writer projections keep caches valid (F48). The saga runner runs a user-supplied
+   `SagaDefinition` instead of user code subclassing the actor (AR5); the caller to answer is
+   kept as a serialized `ActorRef` rather than a path string.
 5. **Id ranges (D39):** installation number in configuration; sequences moved forward;
    check below 2^53.
 6. **Rolling upgrades (D65–D73):** `app-version`; per-feature write switch for new event
@@ -730,3 +735,11 @@ Open test-infrastructure items:
 - Neula, before upgrading: check `sagas` for duplicate `(name, saga_id)` rows (the index
   build refuses them), and that saga steps send idempotent commands (H3), since a resumed
   saga repeats its last step.
+
+**16/10/2026: architecture review 2; F70**
+- Review 2 (KNOWN-ISSUES §7): saga definitions instead of subclassing the runner (AR5, M5),
+  one `Backoff` module for all retries (AR6, M2), explicit supervision so per-request
+  failures never restart long-lived actors (AR7, M3 with AR1). Plan items extended.
+- F70 found by the review and fixed: an unknown message restarted the command bus, which
+  stopped every command in flight for that aggregate type. Test in `CommandOutcomesSpec`.
+- `sbt test`: 89 of 90 pass; the failure is still the F4 reproduction.

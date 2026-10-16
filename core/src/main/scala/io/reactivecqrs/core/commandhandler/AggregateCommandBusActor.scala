@@ -1,7 +1,7 @@
 package io.reactivecqrs.core.commandhandler
 
 import java.time.Instant
-import org.apache.pekko.actor.{Actor, ActorContext, ActorRef, PoisonPill, Props, Terminated}
+import org.apache.pekko.actor.{Actor, ActorContext, ActorRef, PoisonPill, Props, Status, Terminated}
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api._
@@ -148,7 +148,11 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     case ReserveAggregateId => sender() ! takeNextAggregateId
     case RemoveExpiredResponses => removeExpiredResponses()
     case Terminated(ref) => forgetRepositoryActor(ref)
-    case m => throw new IllegalArgumentException("Cannot handle this kind of message: " + m + " class: " + m.getClass+". Maybe it should extend Command trait.")
+    case m =>
+      // Answered, not thrown: a throw would restart the bus, which stops its children and with them every
+      // command in flight for this aggregate type (F70).
+      log.warning("Cannot handle this kind of message: " + m.getClass.getName)
+      sender() ! Status.Failure(new IllegalArgumentException("Cannot handle this kind of message: " + m + " class: " + m.getClass+". Maybe it should extend Command trait."))
   }
 
   private def ensureEventsPublished(oldOnly: Boolean): Unit = {

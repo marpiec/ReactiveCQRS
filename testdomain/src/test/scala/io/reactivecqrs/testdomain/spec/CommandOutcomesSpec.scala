@@ -11,9 +11,11 @@ import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
 import org.apache.pekko.actor.{ActorIdentity, ActorRef, Identify, Props}
+import org.apache.pekko.pattern.ask
 import org.apache.pekko.testkit.TestProbe
+import org.apache.pekko.util.Timeout
 
-import scala.concurrent.Promise
+import scala.concurrent.{Await, Promise}
 import scala.concurrent.duration._
 
 case class Sluggish()
@@ -33,7 +35,7 @@ class SluggishAggregateContext extends AggregateContext[Sluggish] {
   }
 }
 
-// F13, F20, F67: every command execution ends with a reply to the caller, and its executor stops.
+// F13, F20, F67, F70: every command execution ends with a reply to the caller, and its executor stops.
 class CommandOutcomesSpec extends CommonSpec {
 
   TestDatabase.init()
@@ -87,6 +89,23 @@ class CommandOutcomesSpec extends CommonSpec {
       val response: CustomCommandResponse[_] = cartBus ?? AddItem(userId, missing, AggregateVersion(1), "apple")
 
       response mustBe AggregateConcurrentModificationError(missing, AggregateType(classOf[ShoppingCart].getName), AggregateVersion(1), AggregateVersion.ZERO)
+    }
+  }
+
+  Feature("A message the command bus does not understand") {
+    Scenario("is answered with a failure, and commands in flight are not affected (F70)") {
+      implicit val timeout: Timeout = Timeout(5.seconds)
+      Given("a command in flight")
+      val inFlight = sluggishBus ? StartSluggish(userId)
+
+      When("the bus receives a message it does not understand")
+      val unknown = Await.ready(sluggishBus ? "not a command", 10.seconds).value.get
+
+      Then("the sender gets a failure")
+      unknown.failed.get mustBe an[IllegalArgumentException]
+
+      And("the command in flight still ends with its own reply")
+      Await.result(inFlight, 10.seconds) mustBe a[CommandHandlingError]
     }
   }
 }
