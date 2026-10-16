@@ -11,7 +11,7 @@ import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAgg
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.RemoveExpiredResponses
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor._
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
-import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterPublisher
+import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventsAck, RegisterPublisher}
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
 import io.reactivecqrs.core.util.{MyActorLogging, RandomUtil}
@@ -143,6 +143,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     case GetAggregateAtInstant(id, instant) => routeGetAggregateRootAtInstant(id, instant)
     case GetEventsForAggregate(id) => routeGetEvents(id)
     case GetEventsForAggregateForVersion(id, version) => routeGetEventsForVersion(id, version)
+    case ack: PublishEventsAck => delivered(ack)
     // Re-publications count as activity, so the owners they start are reaped like others when idle.
     case m: RepublishOutbox =>
       getOrCreateAggregateRepositoryActor(m.aggregateId) ! m
@@ -175,6 +176,26 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
         log.error(e, "Cannot route command " + command.getClass.getSimpleName + ", errorId: [" + errorId + "]")
         respondTo ! CommandHandlingError(command.getClass.getSimpleName, errorId, CommandId(0)) // no command id was assigned
     }
+  }
+
+  // Owners publish on behalf of this bus, so it gets the acknowledgements: it lives as long as the system, while an
+  // owner may be reaped (later passivated) before slow subscribers catch up. Deleting delivered rows needs no aggregate
+  // state. A permanent delete waits while a subscription of the aggregate is failed: that event's row stays, and the
+  // ack of its next re-publication tries again. A live owner gets the ack to continue re-publishing its outbox.
+  private def delivered(ack: PublishEventsAck): Unit = {
+    val id = ack.aggregateId
+    Try {
+      ack.permanentDeleteAt match {
+        case Some(at) if eventStoreState.deleteAggregatePermanently(id) =>
+          clearOldAggregateRepository(id.asLong) // its state is gone
+        case Some(at) =>
+          log.warning("Aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " is not deleted yet: a subscription of it is failed")
+          eventStoreState.deletePublished(id, ack.versions.filterNot(_ == at))
+        case None =>
+          eventStoreState.deletePublished(id, ack.versions)
+      }
+    }.failed.foreach(e => log.error(e, "Removing delivered events of aggregate " + id.asLong + " from the outbox failed; they are re-published later"))
+    aggregateRepositoryActors.get(id.asLong).foreach(_ ! ack)
   }
 
   // A repository actor stops after a failed restore (F10) or when reaped; its command handler holds the stopped

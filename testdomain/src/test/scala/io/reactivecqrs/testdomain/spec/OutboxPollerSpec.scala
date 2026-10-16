@@ -16,9 +16,10 @@ import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testutils.{CommonSpec, TestClock, TestDatabase}
-import org.apache.pekko.actor.{ActorRef, Props}
+import org.apache.pekko.actor.{ActorRef, PoisonPill, Props}
 import org.apache.pekko.testkit.TestProbe
 
+import scala.concurrent.Await
 import scala.concurrent.duration._
 
 // D8, D20b, F2: the outbox poller alone re-delivers. Rows from before the start go out at the first poll; a delivery
@@ -126,6 +127,24 @@ class OutboxPollerSpec extends CommonSpec {
 
       f.pollAfter(5.minutes)
       f.noDeliveryOf(cartId, 1.second)
+    }
+  }
+
+  Feature("Deleting delivered rows") {
+
+    Scenario("happens when the delivery is acknowledged after the aggregate's owner has stopped (reaped, passivated)") {
+      val f = new Fixture
+      val cartId = newCart(f)
+      f.deliveredVersions(cartId) mustBe Seq(1)
+
+      val owner = Await.result(system.actorSelection(f.commandBus.path / s"ShoppingCart_AR_${cartId.asLong}_*").resolveOne(3.seconds), 3.seconds)
+      val watcher = TestProbe()
+      watcher.watch(owner)
+      owner ! PoisonPill
+      watcher.expectTerminated(owner, 3.seconds)
+
+      f.ack(cartId, 1)
+      outboxEmptyFor(cartId)
     }
   }
 }

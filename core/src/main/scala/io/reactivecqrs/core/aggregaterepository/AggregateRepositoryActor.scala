@@ -65,9 +65,6 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   private var aggregateRoot: AGGREGATE_ROOT = initialState()
   private val aggregateType = AggregateType(classTag[AGGREGATE_ROOT].toString)
 
-  // The version of a PermanentDeleteEvent: once the bus acks it, the aggregate is deleted for good.
-  private var permanentDeleteAt: Option[AggregateVersion] = None
-
   private var delayedQueries = List[DelayedMinVersionQuery]()
 
   // The last version of the outbox part being re-published (RepublishOutbox): the next part follows its ack.
@@ -78,7 +75,6 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     //TODO make it future
     version = AggregateVersion.ZERO
     aggregateRoot = initialState()
-    permanentDeleteAt = None
     eventStore.readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap, aggregateId, singleReadForVersionOnly)(handleEvent)
   }
 
@@ -157,7 +153,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     case GetAggregateRootWithEventsCurrentVersion(respondTo, eventTypes) => receiveReturnAggregateRootWithEvents(respondTo, None, eventTypes) // for following command
     case GetAggregateRootWithEventsExactVersion(respondTo, version, eventTypes) => // for following command
       whenUpToDate(version, respondTo)(receiveReturnAggregateRootWithEvents(respondTo, Some(version), eventTypes))
-    case PublishEventsAck(_, versions) => delivered(versions)
+    case PublishEventsAck(_, versions, _) => delivered(versions)
     case RepublishOutbox(_) => eventStore.oldestVersionToPublish(aggregateId).foreach(from => outboxRepublishedUpTo = republish(from, None))
     case RepublishRange(_, from, subscriber) => republish(from, Some(subscriber))
   }
@@ -186,14 +182,16 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
       val to = AggregateVersion(math.min(version.asInt.toLong, from.asInt.toLong + maxRepublishEvents - 1).toInt)
       val events = eventStore.readEventsRange[AGGREGATE_ROOT](eventsVersionsMap, aggregateId, from, to)
       if (events.nonEmpty) {
-        eventsBus ! PublishEvents(aggregateType, events, aggregateId, Option(aggregateRoot), onlyTo)
+        eventsBus.tell(PublishEvents(aggregateType, events, aggregateId, Option(aggregateRoot), onlyTo), context.parent)
         Some(events.last.version)
       } else None
     } else None
   }
 
   private def publish(events: Seq[IdentifiableEvent[AGGREGATE_ROOT]]): Unit = {
-    eventsBus ! PublishEvents(aggregateType, events.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
+    // On behalf of the command bus, which gets the acknowledgement: it lives as long as the system, so delivered rows
+    // are deleted even when this actor is reaped (or, later, passivated) before the subscribers caught up.
+    eventsBus.tell(PublishEvents(aggregateType, events.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot)), context.parent)
     replayDelayedQueries()
   }
 
@@ -406,23 +404,12 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
     if(aggregateId == aggId) { // otherwise it's event from base aggregate we don't want to count
       version = version.increment
-      if (!noopEvent && event.isInstanceOf[PermanentDeleteEvent[_]]) permanentDeleteAt = Some(version)
     }
   }
 
-  // The bus acked these versions: every subscriber took or failed them, so their outbox rows go. A failed delete only
-  // leaves rows that the outbox poller re-publishes later. A permanent delete waits while a subscription of the
-  // aggregate is failed: its event stays in the outbox and is tried again on the next re-publication's ack.
+  // The command bus deleted the rows of these acknowledged versions and passes the ack on: when it ends the outbox part
+  // being re-published, the next part follows.
   private def delivered(versions: Seq[AggregateVersion]): Unit = {
-    Try {
-      permanentDeleteAt.filter(versions.contains) match {
-        case Some(at) if !eventStore.deleteAggregatePermanently(aggregateId) =>
-          log.warning("Aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " is not deleted yet: a subscription of it is failed")
-          eventStore.deletePublished(aggregateId, versions.filterNot(_ == at))
-        case Some(_) => ()
-        case None => eventStore.deletePublished(aggregateId, versions)
-      }
-    }.failed.foreach(e => log.error(e, "Removing delivered events of aggregate " + aggregateId.asLong + " from the outbox failed"))
     outboxRepublishedUpTo.filter(versions.contains).foreach { end =>
       outboxRepublishedUpTo = if (end < version) republish(end.increment, None) else None
     }

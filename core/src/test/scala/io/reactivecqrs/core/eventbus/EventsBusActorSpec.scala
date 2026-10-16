@@ -14,6 +14,7 @@ import scala.concurrent.duration._
 
 case class BusCart(name: String)
 case class BusItemAdded(n: Int) extends Event[BusCart]
+case class BusCartErased() extends PermanentDeleteEvent[BusCart]
 
 // D7, D15, D20a, D20b: the bus routes, tracks each delivery until ack, failure, deadline or subscriber stop, and acks
 // the owner only for events every subscriber took.
@@ -108,6 +109,20 @@ class EventsBusActorSpec extends CommonSpec {
       bus ! MessageFailed(b.ref, id, Seq(AggregateVersion(1)), "listener failed", EventsDelivery)
 
       acked(owner) mustBe Seq(1)
+    }
+
+    Scenario("names the version of a permanent delete, so the publisher can delete the aggregate for good") {
+      val (a, owner) = (TestProbe(), TestProbe())
+      val bus = busWith(a)
+      val id = newId()
+      val erasing = Seq(EventInfo[BusCart](AggregateVersion(1), BusItemAdded(1), UserId(1), Instant.now),
+        EventInfo[BusCart](AggregateVersion(2), BusCartErased(), UserId(1), Instant.now)).asInstanceOf[Seq[EventInfo[Any]]]
+      bus.tell(PublishEvents[Any](cartType, erasing, id, Some(BusCart("cart"))), owner.ref)
+      delivered(a) mustBe Seq(1, 2)
+
+      ack(bus, a, id, 1, 2)
+
+      owner.expectMsgType[PublishEventsAck](3.seconds) mustBe PublishEventsAck(id, Seq(AggregateVersion(1), AggregateVersion(2)), Some(AggregateVersion(2)))
     }
 
     Scenario("is immediate for events nobody subscribed to") {

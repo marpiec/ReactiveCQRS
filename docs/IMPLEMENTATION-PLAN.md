@@ -316,6 +316,20 @@ R7–R10, R12, R13), storage reduction by squash, and the low-risk performance f
   index of F38, F65's explicit UTC) are one schema step built at startup; M5's migration runner
   then takes over all of them.
 
+**Refined at the M2 review** (KNOWN-ISSUES §7, review 4):
+- Item 0 (owner): the delivery duties M2 gave the owner move into `AggregateOwner` unchanged:
+  publish after commit; `RepublishOutbox` and `RepublishRange` from the store in parts of 1 000
+  events with the current state, the outbox continued on each ack; `delivered()` with the
+  PermanentDelete marker and its wait for failed subscriptions. `RepublishSpec`,
+  `PermanentDeleteSpec`, `OutboxPollerSpec` and `DeliveryEndToEndSpec` pass unchanged. AR7 for
+  the command bus covers re-publish routing too. AR8 (classifiers and the gate) is decided here.
+- Item 6 (squash): D51's preconditions (no outbox rows, no failed subscriptions) keep live
+  subscribers from needing versions below the squash point; a `RepublishRange` from below it
+  starts at the squash event instead of failing.
+- Item 8 (F27): the blocking dispatcher also covers the projection actors (their listener
+  transactions run on the actor's thread unless `parallelUpdateProcessing` is set), the outbox
+  poller's query and the replayer, not only the owner.
+
 **Verification**
 
 - Snapshot property test: for random command logs over testdomain aggregates (including undo
@@ -380,6 +394,19 @@ resumable after a crash, and faster than today.
 - F43 (document-store migration in one transaction) and F82 (the replayer's `System.exit`)
   are fixed here, where that code is replaced.
 
+**Refined at the M2 review** (KNOWN-ISSUES §7, review 4):
+- F93 (no back-pressure on the live path) comes with item 9's projection throughput and is
+  measured with the bench's delivery soak of M2 (1 000 000 events: 10 minutes behind at
+  about 1 700 events/s); a flow-control window per subscription follows if batching is not
+  enough.
+- Item 4: a rebuild must not depend on asking live owners for gaps; delivering the full live
+  sequence (D60) means a rebuilding projection sees none. The bus's replay back-pressure goes
+  with the old replayer.
+- Item 5: with the in-memory subscription mode gone, the bench's baseline scenarios move to
+  live subscriptions, like M2's delivery soak; compare with that, not with M1.
+- Item 1 (projection registry) removes a retired projection's `subscription_failures` rows
+  (F94).
+
 **Verification**
 
 - Equivalence property test: for random multi-aggregate logs (testdomain gains a
@@ -439,6 +466,14 @@ rolling upgrades from 1.0 on, and a cluster of one that behaves like today's sin
   `subscriptions` rows from the owner's node, which breaks the single-writer premise of F48.
 - Item 5 validates `chosenAggregateId` (installation range, below 2^53, not negative).
 - F78's cross-node part: a new type name is inserted with `ON CONFLICT`.
+
+**Refined at the M2 review** (KNOWN-ISSUES §7, review 4):
+- Items 3 and 4: the bus is per node and `RegisterPublisher` names the local command bus,
+  which forwards `RepublishOutbox` and `RepublishRange` to the shard region, so a
+  re-publication reaches the owner wherever it runs. The outbox poller singleton's fresh
+  attempts after a handover re-publish everything waiting, bounded by its per-poll limit.
+- Item 8: the metrics interface reads `GetDeliveryStatus`, `GetOutboxStatus` and
+  `GetProjectionStatus`; that is R1's metric part.
 
 **Verification**
 
@@ -587,6 +622,11 @@ prerequisites (`PostgresCommandResponseState.initSchema()`, H5; no duplicate `sa
 `respond_to`, M4's projection tables, M3's procedures). The user guide states the one-writer
 rule (I1) in practice: a running owner never sees writes made around it, so repairs and
 imports run while the aggregate's owner is stopped (queries do not reload).
+
+**Refined at the M2 review** (KNOWN-ISSUES §7, review 4): the runbook carries M2's wiring
+changes (H7: the subscriber list, one outbox poller, the new `subscription_failures` table);
+the operator guide explains failed subscriptions (status, retry, retry all, skip), the
+"undelivered" logs of the bus and the poller, and stopped subscribers.
 
 **Verification**
 

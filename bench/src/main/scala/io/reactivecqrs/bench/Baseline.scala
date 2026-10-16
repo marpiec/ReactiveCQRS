@@ -247,15 +247,20 @@ object Baseline {
       send(system.counters, Increment(userId, counters(w), note))
       sent.incrementAndGet()
     })
-    val caughtUp = awaitProjection(system, projections = true, sent.get)
+    val loadEnded = System.nanoTime()
     val heapAfterLoad = Heap.usedAfterGc()
+    // Commands can come faster than the projections apply them (F93): the idle heap is measured once they caught up.
+    val caughtUp = awaitUntil(20.minutes)(system.projectedIncrements() >= sent.get)
+    val catchUpNanos = System.nanoTime() - loadEnded
     Thread.sleep(20000)
     val heapIdle = Heap.usedAfterGc()
     shutdownDelivered(system)
     report.section("Memory over a soak run", Seq("Measure", "Value"), Seq(
-      Seq("load", s"${sent.get} commands in ${config.soakSeconds} s from ${config.workers} callers, two projections" + (if (caughtUp.isEmpty) "; projections did not catch up within 120 s" else "")),
-      Seq("heap after GC: before / after the load / after 20 s idle", s"${Heap.mb(heapStart)} / ${Heap.mb(heapAfterLoad)} / ${Heap.mb(heapIdle)}")),
-      "Growth that stays after the idle period points at bookkeeping that is never released (KNOWN-ISSUES §C).")
+      Seq("load", s"${sent.get} commands in ${config.soakSeconds} s from ${config.workers} callers, two projections"),
+      Seq("projections caught up", caughtUp.map(_ => millis(catchUpNanos) + " after the load").getOrElse("not within 20 minutes")),
+      Seq("heap after GC: before / right after the load / caught up and 20 s idle", s"${Heap.mb(heapStart)} / ${Heap.mb(heapAfterLoad)} / ${Heap.mb(heapIdle)}")),
+      "Growth that stays after the idle period points at bookkeeping that is never released (KNOWN-ISSUES §C); the heap right " +
+        "after the load holds the projections' backlog (F93).")
   }
 
   // M2 verification (docs/IMPLEMENTATION-PLAN.md): many aggregates, a tenth of whose events-based listener fails for a
@@ -313,7 +318,7 @@ object Baseline {
   /** Stops a system once every subscriber has taken its events, so a later scenario's outbox poller finds nothing of it
     * to re-publish. */
   private def shutdownDelivered(system: BenchSystem): Unit = {
-    awaitUntil(5.minutes)(rows("events_to_publish") == 0)
+    awaitUntil(20.minutes)(rows("events_to_publish") == 0)
     system.shutdown()
   }
 

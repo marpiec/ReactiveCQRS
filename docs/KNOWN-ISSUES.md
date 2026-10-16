@@ -792,7 +792,7 @@ From §7 of Neula's change requests.
 |---|---|
 | M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔, F73 ✔, F74 ✔, F75 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53, F76 (Neula, on a production copy, with `StoredDataCheck` and the F76 query); Neula H3, H4, H5 |
 | M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔; Neula H2, H7 |
-| M3 | AR1, AR4, AR7 (owner and command bus); F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33 (rest), F38, F39, F44, F50, F65, F76, F78, F81 |
+| M3 | AR1, AR4, AR7 (owner and command bus); AR8; F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33 (rest), F38, F39, F44, F50, F65, F76, F78, F81 |
 | M4 | F3, F43, F49 (backfill), F54, F55, F56, F57, F58, F59, F60, F61, F62, F82, F93, F94; Neula H1, H6 |
 | M5 | AR5; F46, F48, F63, F78 (between nodes) |
 | M6 | F8 (complete) |
@@ -948,3 +948,62 @@ refined (above).
   use two schemas of one database (F71).
 - M7: the upgrade runbook carries M1's prerequisites (`initSchema()` for command responses,
   H5; no duplicate saga rows, F34; `StoredDataCheck` on a production copy).
+
+#### AR8 — Subscription classifiers do not mix with the sequence gate
+
+- **Finding:** a subscription whose classifier leaves out some events of an aggregate sees
+  gaps at those versions; asking the owner does not help, because the re-publication passes
+  the same classifier, so the gap ends as a recorded failure after 10 minutes (F90).
+  `ProjectionActor` subscribes with accept-all classifiers and Neula uses none, so nothing is
+  affected today.
+- **Proposal:** remove classifiers, or allow them only for subscribers that do not run the
+  gate (their acknowledgements are tracked per accepted event already).
+- **When:** M3, with the owner's protocol work (AR4); low priority.
+
+### Review 4, 16/10/2026: closing M2 (architecture description, plan and code)
+
+Scope: the delivery module as built (bus, outbox poller, re-delivery policy, sequence gate,
+projections, subscription state, the owner's publication), `docs/ARCHITECTURE.md` §5–§7 and
+the remaining milestones. Inputs: the bench's delivery soak at full size (1 000 000 events,
+twice), a read-only audit of the M2 code, and our own reading; every finding was checked in
+the code, and every fix has a test that was red first or red under a mutation.
+
+**Outcome.** The delivery decisions hold (D3, D4, D7, D8, D15, D20a–c); none is reversed.
+Refinements: D20a's failure record has a table of its own; re-publications go in parts of
+1 000 events; the bus tracks each (subscriber, kind); a stopped subscriber keeps its
+subscriptions so its events stay in the outbox; a retry is repeated until the failed version
+is applied; a gap open for 10 minutes becomes a recorded failure. One problem stays open: the
+live path has no back-pressure (F93).
+
+**Fixed now:** F83–F92.
+
+**New open issues:** F93 (no back-pressure on the live path, measured), F94 (failure records
+of a removed projection block permanent deletes); AR8 (classifiers and the gate).
+
+**Observations:**
+- The pure parts held: the sequence gate and the re-delivery policy needed no change. Five of
+  the seven audit findings were in the projection's queue handling, the deepest part of the
+  module; it now has 17 scenarios, five of them checked by mutation.
+- The bus keeps one entry per event in flight. Per-aggregate tracking (subscribers acknowledge
+  in order, so "applied up to v" is enough) would make it one entry per aggregate and let the
+  owner delete "up to v"; it belongs with the flow-control work of F93, not before.
+- The audit proposed skipping the poller's re-publication while a delivery waits. It was tried
+  and dropped: it saves little load, and a delivery lost while waiting (a subscriber restarted
+  mid-message) would then wait for the deadline and the next start.
+- The outbox operations live on `EventStoreState`: the event procedures write the rows, so
+  that is where the seam is.
+
+**Plan refinements** (recorded in the implementation plan):
+- M3: the owner (AR1) keeps the delivery duties of M2 unchanged, with their tests; a
+  re-publication from below a squash point starts at the squash event; F27's blocking
+  dispatcher also covers the projections, the outbox poller and the replayer; AR8.
+- M4: F93 comes with projection throughput (batching across aggregates, D61) and is measured
+  with the M2 delivery soak; rebuilds must not depend on asking live owners for gaps (D60
+  delivers the full sequence); the bench's other scenarios move to live subscriptions when the
+  in-memory mode goes (D61); F94 with the projection registry.
+- M5: re-publish requests reach the owner's shard through the command bus; the outbox
+  poller's fresh attempts after a singleton handover are bounded by its per-poll limit; the
+  metrics interface reads `GetDeliveryStatus`, `GetOutboxStatus` and `GetProjectionStatus`
+  (R1's metric part).
+- M7: the runbook carries M2's wiring changes (H7); the operator guide explains failures
+  (status, retry, retry all, skip), "undelivered" and stopped subscribers.

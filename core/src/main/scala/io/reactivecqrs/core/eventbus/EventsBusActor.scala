@@ -22,8 +22,9 @@ object EventsBusActor {
   case class PublishEvents[AGGREGATE_ROOT](aggregateType: AggregateType, events: Seq[EventInfo[AGGREGATE_ROOT]],
                                             aggregateId: AggregateId, aggregate: Option[AGGREGATE_ROOT], onlyTo: Option[ActorRef] = None)
 
-  /** To the publisher: every subscriber has acknowledged (or failed on) these versions, so their outbox rows can go. */
-  case class PublishEventsAck(aggregateId: AggregateId, versions: Seq[AggregateVersion])
+  /** To the publisher: every subscription has acknowledged (or failed on) these versions, so their outbox rows can go.
+    * `permanentDeleteAt` is the version of a `PermanentDeleteEvent` among them: the aggregate is to be deleted for good. */
+  case class PublishEventsAck(aggregateId: AggregateId, versions: Seq[AggregateVersion], permanentDeleteAt: Option[AggregateVersion] = None)
 
   case class PublishReplayedEvents[AGGREGATE_ROOT](aggregateType: AggregateType, events: Seq[EventInfo[AGGREGATE_ROOT]],
                                                    aggregateId: AggregateId, aggregate: Option[AGGREGATE_ROOT])
@@ -111,7 +112,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     * subscriber never acknowledges the owner, so it cannot delete outbox rows others still wait for. `incomplete`
     * marks a delivery that some subscription did not take (deadline, a stopped subscriber): its outbox row must stay. */
   private case class Delivery(aggregateType: AggregateType, publisher: Option[ActorRef], firstSent: Long, awaiting: Set[Target],
-                              replayed: Boolean, incomplete: Boolean, stallLogged: Boolean)
+                              replayed: Boolean, incomplete: Boolean, stallLogged: Boolean, permanentDelete: Boolean)
 
   private val deliveries = mutable.HashMap[EventKey, Delivery]()
   private var subscriptions = Map[AggregateType, Vector[SubscribeRequest]]()
@@ -254,7 +255,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
         // A stopped subscriber takes nothing, so its events stay in the outbox until it is back after a restart.
         val missedByStopped = ofStopped.exists(s => accepts(s, aggregateId, event))
         val delivery = Delivery(aggregateType, if (onlyTo.isEmpty && !replayed) Some(publisher) else None, now, awaiting, replayed,
-          incomplete = missedByStopped, stallLogged = false)
+          incomplete = missedByStopped, stallLogged = false, permanentDelete = event.event.isInstanceOf[PermanentDeleteEvent[_]])
         if (replayed) replayedInFlight += 1
         if (awaiting.isEmpty) finished :+= (delivery -> key) else deliveries += key -> delivery
       }
@@ -308,9 +309,12 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   // count down the back-pressure, and incomplete ones keep their outbox rows.
   private def completeAll(finished: Seq[(Delivery, EventKey)]): Unit = {
     finished.foreach { case (delivery, _) => if (delivery.replayed) replayedInFlight -= 1 }
-    finished.collect { case (delivery, key) if delivery.publisher.isDefined && !delivery.incomplete => (delivery.publisher.get, key) }
-      .groupBy { case (publisher, key) => (publisher, key.aggregateId) }
-      .foreach { case ((publisher, aggregateId), keys) => publisher ! PublishEventsAck(aggregateId, keys.map(_._2.version).sortBy(_.asInt)) }
+    finished.collect { case (delivery, key) if delivery.publisher.isDefined && !delivery.incomplete => (delivery.publisher.get, delivery, key) }
+      .groupBy { case (publisher, _, key) => (publisher, key.aggregateId) }
+      .foreach { case ((publisher, aggregateId), acked) =>
+        publisher ! PublishEventsAck(aggregateId, acked.map(_._3.version).sortBy(_.asInt),
+          acked.collectFirst { case (_, delivery, key) if delivery.permanentDelete => key.version })
+      }
     if (replayedInFlight == 0) {
       afterFinishRespondTo.foreach(_ ! ConsumerFinished)
       afterFinishRespondTo = None
