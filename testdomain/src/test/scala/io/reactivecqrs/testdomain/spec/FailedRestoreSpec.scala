@@ -43,7 +43,7 @@ class FailedRestoreSpec extends CommonSpec {
   private def storedCart(): AggregateId = {
     val cartId = AggregateId(System.nanoTime())
     eventStore.localTx { session =>
-      eventStore.persistEvents(Map.empty, cartId,
+      eventStore.persistEvents(cartId,
         PersistEvents[ShoppingCart](ActorRef.noSender, CommandId(0), userId, AggregateVersion.ZERO, Instant.now, Seq(ShoppingCartCreated("Groceries")), None))(session)
     }.get
     cartId

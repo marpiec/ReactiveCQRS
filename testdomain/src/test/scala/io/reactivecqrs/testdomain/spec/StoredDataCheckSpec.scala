@@ -35,7 +35,7 @@ class StoredDataCheckSpec extends CommonSpec {
   private val userId = UserId(1)
 
   private def check(): StoredDataCheck.Report =
-    StoredDataCheck.run(mpjsons, typesNamesState, Seq(new ShoppingCartAggregateContext), Seq(ProjectionTable[String]("stored_data_check")))
+    StoredDataCheck.run(mpjsons, typesNamesState, Seq(ProjectionTable[String]("stored_data_check")))
 
   private def result(report: StoredDataCheck.Report, table: String, className: String): StoredDataCheck.ClassResult =
     report.results.find(r => r.table == table && r.className == className).getOrElse(StoredDataCheck.ClassResult(table, className, 0, 0, Nil))
@@ -46,7 +46,7 @@ class StoredDataCheckSpec extends CommonSpec {
       Given("a cart with two events, a saga, an idempotent response and a projection document")
       val cartId = AggregateId(System.nanoTime())
       eventStore.localTx { session =>
-        eventStore.persistEvents(Map.empty, cartId, PersistEvents[ShoppingCart](ActorRef.noSender, CommandId(0), userId, AggregateVersion.ZERO,
+        eventStore.persistEvents(cartId, PersistEvents[ShoppingCart](ActorRef.noSender, CommandId(0), userId, AggregateVersion.ZERO,
           Instant.now, Seq(ShoppingCartCreated("Checked"), ItemAdded("apple")), None))(session)
       }.get
       sagas.createSaga("StoredDataCheckSpec", SagaId(System.nanoTime()), "respondTo", CreateMultipleCarts(userId, "carts", 2))

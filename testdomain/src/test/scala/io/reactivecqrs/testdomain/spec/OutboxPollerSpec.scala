@@ -84,7 +84,7 @@ class OutboxPollerSpec extends CommonSpec {
       Given("a cart committed but never published, as when the process stops right after the commit")
       val cartId = AggregateId(System.nanoTime())
       eventStore.localTx { session =>
-        eventStore.persistEvents(Map.empty, cartId, PersistEvents[ShoppingCart](ActorRef.noSender, CommandId(0), userId, AggregateVersion.ZERO,
+        eventStore.persistEvents(cartId, PersistEvents[ShoppingCart](ActorRef.noSender, CommandId(0), userId, AggregateVersion.ZERO,
           Instant.now, Seq(ShoppingCartCreated("Groceries"), ItemAdded("apple")), None))(session)
       }.get
       val f = new Fixture

@@ -15,10 +15,10 @@ case class WaitingInOutbox(aggregateType: AggregateType, aggregateId: AggregateI
 abstract class EventStoreState {
   def countAllEvents(): Int
   def countEventsForAggregateTypes(strings: Seq[String]): Int
-  def persistEvents[AGGREGATE_ROOT](eventsVersionsMapReverse: Map[String, EventTypeVersion], aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]]
+  def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]]
   def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit
-  def readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId, version: Option[Either[AggregateVersion, Instant]])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit
-  def readAndProcessAllEvents(eventsVersionsMap: Map[EventTypeVersion, String], aggregateType: String,
+  def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, version: Option[Either[AggregateVersion, Instant]])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit
+  def readAndProcessAllEvents(aggregateType: String,
                               batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit
 
   /** Removes delivered versions from the outbox. It may return before the rows are gone (the PostgreSQL store batches
@@ -35,7 +35,7 @@ abstract class EventStoreState {
 
   /** The aggregate's own events with versions `from` to `to`, in order, undone ones included, as live delivery sent
     * them (D60): what a re-publication sends. */
-  def readEventsRange[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId,
+  def readEventsRange[AGGREGATE_ROOT](aggregateId: AggregateId,
                                       from: AggregateVersion, to: AggregateVersion): Seq[EventInfo[AGGREGATE_ROOT]]
 
   /** The oldest version of the aggregate still waiting in the outbox, if any. */

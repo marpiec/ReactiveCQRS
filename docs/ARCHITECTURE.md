@@ -126,26 +126,17 @@ to that model.
   `PostgresEventStoreSchemaInitializer.scala:154-155`).
 - Events carry a `TypeTag` of their aggregate root (`Event.scala:7-9`); the persist path
   uses it to resolve the aggregate type id.
-- Storage format: JSON text (mpjsons), with the class identified by a `types_names` id
-  plus `event_type_version`.
+- Storage format: JSON text (mpjsons), with the class identified by a `types_names` id;
+  `event_type_version` is always 0 (D29).
 
-### 2.3 Event schema versioning (`EV`)
+### 2.3 Changing an event class (D29)
 
-`AggregateContext.EV[Base](v -> classOf[Concrete], ...)` (`AggregateContext.scala:30-32`)
-builds an `EventVersion(baseTypeName, List(EventTypeVersion(concreteClass, v)))`. Two maps
-are derived (`AggregateCommandBusActor.scala:66-72`):
-
-- **write:** concrete class → `(baseTypeName, v)`; the row stores
-  `event_type_id = typeId(baseTypeName)`, `event_type_version = v`
-  (`PostgresEventStoreState.scala:59-61`). Unmapped classes are stored as
-  `(ownClassName, 0)`.
-- **read:** `(baseTypeName, v)` → concrete class to deserialize into
-  (`PostgresEventStoreState.scala:224-227`).
-
-There is no upcasting step. To change an event's shape, keep the old class, map it to the
-old version number, and handle **both** classes in event handlers and projections, e.g.
-`EV[ItemAdded](0 -> classOf[ItemAddedV0], 1 -> classOf[ItemAdded])`. Renaming or moving
-an event class without a mapping breaks replay.
+There is no event versioning since 1.0: an event is stored under its own class name with
+`event_type_version` 0. To change an event's shape, keep the old class (deprecated) and add a
+new one (`ItemAddedV2`); event handlers and projections handle both. Renaming or moving a
+stored event class breaks restore and replay. A stored row with another type version (written
+through the removed `EV(...)` mappings) fails to read with `UnsupportedEventVersionException`;
+`StoredDataCheck` counts such rows on a production copy before the upgrade.
 
 ### 2.4 Commands (`Command.scala`)
 
@@ -235,7 +226,6 @@ abstract class AggregateContext[R : ClassTag] {           // AggregateContext.sc
   def eventHandlers: (UserId, Instant, R) => PartialFunction[Any, R]
   def rewriteHistoryCommandHandlers                       // optional; default throws
       : (Iterable[EventWithVersion[R]], R) => PartialFunction[Any, GenericCommandResult[Any]]
-  val eventsVersions: List[EventVersion[R]] = List.empty  // EV(...) mappings
   val version: Int                                        // bump to force projection rebuild
   val commandTimeout: FiniteDuration = 60.seconds         // since 1.0 (R5): answer CommandHandlingError after it
   val aggregateType = AggregateType(classTag[R].toString) // FQCN; the routing key everywhere

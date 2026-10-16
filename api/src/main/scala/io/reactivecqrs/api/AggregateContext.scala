@@ -22,18 +22,12 @@ case object ReserveAggregateId
 
 case class SimulateEvent[AGGREGATE_ROOT](id: AggregateId, version: AggregateVersion, event: Event[AGGREGATE_ROOT])
 
-case class EventTypeVersion(eventType: String, version: Short)
-
-case class EventVersion[AGGREGATE_ROOT](eventBaseType: String, mapping: List[EventTypeVersion])
-
+/** An aggregate type's behaviour. Events are stored under their class name; an event class that must change shape is
+  * kept, deprecated, and a new class (`...V2`) takes its place (D29: there is no event versioning). */
 abstract class AggregateContext[AGGREGATE_ROOT : ClassTag] {
 
   protected implicit def future2AsyncResult[T](future: Future[CustomCommandResult[T]]): AsyncCommandResult[T] = {
     AsyncCommandResult(future)
-  }
-
-  protected def EV[EVENT_BASE <: Event[AGGREGATE_ROOT] : ClassTag](versionedType: (Int, Class[_ <: Event[AGGREGATE_ROOT]])*) = {
-    EventVersion[AGGREGATE_ROOT](classTag[EVENT_BASE].toString, versionedType.map(vt => EventTypeVersion(vt._2.getTypeName, vt._1.toShort)).toList)
   }
 
   def initialAggregateRoot: AGGREGATE_ROOT
@@ -51,8 +45,6 @@ abstract class AggregateContext[AGGREGATE_ROOT : ClassTag] {
   def rewriteHistoryCommandHandlers: RewriteHistoryCommandHandler = (events, AGGREGATE_ROOT) => {
     case _ => throw new IllegalStateException("Please implement rewriteHistoryCommandHandlers in AggregateContext "+this.getClass.getSimpleName)
   }
-
-  val eventsVersions: List[EventVersion[AGGREGATE_ROOT]] = List.empty
 
   val version: Int
 

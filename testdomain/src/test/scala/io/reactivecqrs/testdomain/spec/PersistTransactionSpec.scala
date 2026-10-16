@@ -36,7 +36,7 @@ class PersistTransactionSpec extends CommonSpec {
   private def storedCart(): AggregateId = {
     val cartId = AggregateId(System.nanoTime())
     eventStore.localTx { session =>
-      eventStore.persistEvents(Map.empty, cartId,
+      eventStore.persistEvents(cartId,
         PersistEvents[ShoppingCart](ActorRef.noSender, CommandId(0), userId, AggregateVersion.ZERO, Instant.now, Seq(ShoppingCartCreated("Groceries")), None))(session)
     }.get
     cartId
@@ -44,7 +44,7 @@ class PersistTransactionSpec extends CommonSpec {
 
   private def repositoryOf(cartId: AggregateId): ActorRef = system.actorOf(Props(new AggregateRepositoryActor[ShoppingCart](
     cartId, eventStore, new Idempotency(new MemoryCommandResponseState), TestProbe().ref, ActorRef.noSender, context.eventHandlers, () => context.initialAggregateRoot,
-    None, Map.empty, Map.empty, 5.seconds)))
+    None, 5.seconds)))
 
   private def storedEvents(cartId: AggregateId): Int = DB.readOnly { implicit session =>
     sql"SELECT count(*) FROM events WHERE aggregate_id = ${cartId.asLong}".map(_.int(1)).single().get

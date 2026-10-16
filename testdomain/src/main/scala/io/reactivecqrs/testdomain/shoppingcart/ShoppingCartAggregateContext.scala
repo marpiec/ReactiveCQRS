@@ -8,7 +8,6 @@ class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
 
   override val version: Int = 1
 
-  override val eventsVersions = EV[ShoppingCartCreated](0 -> classOf[ShoppingCartCreated]) :: Nil
 
   override def commandHandlers = shoppingCart => {
     case c: CreateShoppingCart => createShoppingCart(c.userId, c)

@@ -1,7 +1,6 @@
 package io.reactivecqrs.core.tools
 
 import io.mpjsons.MPJsons
-import io.reactivecqrs.api.{AggregateContext, EventTypeVersion}
 import io.reactivecqrs.core.commandhandler.PostgresCommandResponseState
 import io.reactivecqrs.core.types.TypesNamesState
 import scalikejdbc._
@@ -17,7 +16,7 @@ import scala.util.{Failure, Success, Try}
  *
  * Run it from the application, which has all stored classes on its classpath, against a copy of production:
  * {{{
- * val report = StoredDataCheck.run(mpjsons, typesNamesState, allAggregateContexts,
+ * val report = StoredDataCheck.run(mpjsons, typesNamesState,
  *   Seq(StoredDataCheck.ProjectionTable[CaseView]("cases"), ...))
  * println(report.text)
  * }}}
@@ -45,12 +44,10 @@ object StoredDataCheck {
     }
   }
 
-  def run(mpjsons: MPJsons, typesNamesState: TypesNamesState, contexts: Seq[AggregateContext[_]],
+  def run(mpjsons: MPJsons, typesNamesState: TypesNamesState,
           projections: Seq[ProjectionTable[_]] = Seq.empty, examplesPerClass: Int = 5, fetchSize: Int = 1000): Report = {
 
     val results = new Results(examplesPerClass)
-    val eventClasses: Map[EventTypeVersion, String] = contexts.flatMap(_.eventsVersions)
-      .flatMap(evs => evs.mapping.map(e => EventTypeVersion(evs.eventBaseType, e.version) -> e.eventType)).toMap
     val responses = new PostgresCommandResponseState(mpjsons, typesNamesState)
 
     // An id missing from types_names makes its rows unreadable instead of stopping the check.
@@ -61,9 +58,11 @@ object StoredDataCheck {
       DB.localTx { implicit session => query.fetchSize(fetchSize).foreach(handle) }
 
     eachRow(sql"SELECT id, event_type_id, event_type_version, event FROM events") { rs =>
-      val baseClass = className(rs.short(2))
-      val eventClass = eventClasses.getOrElse(EventTypeVersion(baseClass, rs.short(3)), baseClass)
-      results.add("events", eventClass, "id " + rs.long(1), Try(mpjsons.deserialize[AnyRef](rs.string(4), eventClass)))
+      val eventClass = className(rs.short(2))
+      // D29: 1.0 reads only version 0; a row of another version fails to restore.
+      val read = if (rs.short(3) != 0) Failure(new IllegalStateException("event_type_version " + rs.short(3) + " (event versioning was removed, D29)"))
+        else Try(mpjsons.deserialize[AnyRef](rs.string(4), eventClass))
+      results.add("events", eventClass, "id " + rs.long(1), read)
     }
 
     eachRow(sql"SELECT name, saga_id, order_type_id, saga_order FROM sagas") { rs =>

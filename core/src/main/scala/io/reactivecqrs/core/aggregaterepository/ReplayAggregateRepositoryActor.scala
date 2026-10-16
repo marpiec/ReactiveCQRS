@@ -23,7 +23,6 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
                                                                       eventsBus: ActorRef,
                                                                       eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
                                                                       initialState: () => AGGREGATE_ROOT,
-                                                                      eventsVersionsMap: Map[EventTypeVersion, String],
                                                                       maxInactivitySeconds: Int) extends Actor with MyActorLogging {
 
   private var version: AggregateVersion = AggregateVersion.ZERO
@@ -72,7 +71,7 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
         // We need state from original aggregate
         version = AggregateVersion.ZERO
         aggregateRoot = initialState()
-        eventStore.readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap, duplicationEvent.baseAggregateId, Some(Left(duplicationEvent.baseAggregateVersion)))(handleEvent)
+        eventStore.readAndProcessEvents[AGGREGATE_ROOT](duplicationEvent.baseAggregateId, Some(Left(duplicationEvent.baseAggregateVersion)))(handleEvent)
       case _ => ()
     }
 

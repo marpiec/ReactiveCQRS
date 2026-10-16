@@ -36,7 +36,7 @@ class RepublishSpec extends CommonSpec {
   private def storedCart(): AggregateId = {
     val cartId = AggregateId(System.nanoTime())
     eventStore.localTx { session =>
-      eventStore.persistEvents(Map.empty, cartId, PersistEvents[ShoppingCart](ActorRef.noSender, CommandId(0), userId, AggregateVersion.ZERO,
+      eventStore.persistEvents(cartId, PersistEvents[ShoppingCart](ActorRef.noSender, CommandId(0), userId, AggregateVersion.ZERO,
         Instant.now, Seq(ShoppingCartCreated("Groceries"), ItemAdded("apple"), ItemAdded("pear")), None))(session)
     }.get
     cartId
@@ -44,7 +44,7 @@ class RepublishSpec extends CommonSpec {
 
   private def ownerOf(cartId: AggregateId, eventBus: TestProbe, maxRepublishEvents: Int = 1000): ActorRef = system.actorOf(Props(new AggregateRepositoryActor[ShoppingCart](
     cartId, eventStore, new Idempotency(new MemoryCommandResponseState), eventBus.ref, ActorRef.noSender, context.eventHandlers, () => context.initialAggregateRoot,
-    None, Map.empty, Map.empty, 5.seconds, maxRepublishEvents)))
+    None, 5.seconds, maxRepublishEvents)))
 
   private def published(eventBus: TestProbe): PublishEvents[ShoppingCart] =
     eventBus.expectMsgType[PublishEvents[ShoppingCart]](5.seconds)

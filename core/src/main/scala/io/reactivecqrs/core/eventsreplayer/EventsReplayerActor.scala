@@ -31,19 +31,11 @@ object ReplayerRepositoryActorFactory {
 
 class ReplayerRepositoryActorFactory[AGGREGATE_ROOT: TypeTag:ClassTag](aggregateContext: AggregateContext[AGGREGATE_ROOT]) {
 
-  val eventsVersionsMap: Map[EventTypeVersion, String] = {
-    aggregateContext.eventsVersions.flatMap(evs => evs.mapping.map(e => EventTypeVersion(evs.eventBaseType, e.version) -> e.eventType)).toMap
-  }
-
-  val eventsVersionsMapReverse: Map[String, EventTypeVersion] = {
-    aggregateContext.eventsVersions.flatMap(evs => evs.mapping.map(e => e.eventType -> EventTypeVersion(evs.eventBaseType, e.version))).toMap
-  }
-
   def aggregateRootType = aggregateContext.aggregateType.typeName
 
   def create(context: ActorContext, aggregateId: AggregateId, eventStore: EventStoreState, eventsBus: ActorRef, actorName: String, maxInactivitySeconds: Int): ActorRef = {
     context.actorOf(Props(new ReplayAggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStore, eventsBus, aggregateContext.eventHandlers,
-      () => aggregateContext.initialAggregateRoot, eventsVersionsMap, maxInactivitySeconds)), actorName)
+      () => aggregateContext.initialAggregateRoot, maxInactivitySeconds)), actorName)
   }
 
 }
@@ -84,7 +76,6 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
   var backPressureActor: ActorRef = context.actorOf(Props(new BackPressureActor(eventsBus)), "BackPressure")
 
-  val combinedEventsVersionsMap: Map[EventTypeVersion, String] = actorsFactory.map(_.eventsVersionsMap).foldLeft(Map[EventTypeVersion, String]())((acc, m) => acc ++ m)
 
   private def logMessage(message: String): Unit = {
     println(message)
@@ -119,7 +110,7 @@ class EventsReplayerActor(eventStore: EventStoreState,
       val start = new Date().getTime
       logMessage("Processing events for " + aggregateType.simpleName)
       first = true
-      eventStore.readAndProcessAllEvents(combinedEventsVersionsMap, aggregateType.typeName, batchPerAggregate, (events: Seq[EventInfo[_]], aggregateId: AggregateId, aggregateType: AggregateType) => {
+      eventStore.readAndProcessAllEvents(aggregateType.typeName, batchPerAggregate, (events: Seq[EventInfo[_]], aggregateId: AggregateId, aggregateType: AggregateType) => {
 
         if(first) {
           logMessage("Processing first event for " + aggregateType.simpleName)

@@ -41,7 +41,6 @@ object AggregateCommandBusActor {
       aggregateContext.eventHandlers,
       aggregateContext.rewriteHistoryCommandHandlers,
       eventBus,
-      aggregateContext.eventsVersions,
       eventsReplayMode,
       keepAliveLimit, maxInactivityMillis, None,
       () => aggregateContext.initialAggregateRoot,
@@ -60,7 +59,6 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
                                                        val eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
                                                        val rewriteHistoryCommandHandlers: (Iterable[EventWithVersion[AGGREGATE_ROOT]], AGGREGATE_ROOT) => PartialFunction[Any, GenericCommandResult[Any]],
                                                        val eventBus: ActorRef,
-                                                       val eventsVersions: List[EventVersion[AGGREGATE_ROOT]],
                                                        val eventsReplayMode: Boolean,
                                                        val keepAliveLimit: Int, val maxInactivityMillis: Long,
                                                        val eventsLogger: Option[Logger],
@@ -70,14 +68,6 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
                                                         (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor with MyActorLogging {
 
   val minimumInactivityMillis: Long = 120000L // 2 minutes
-
-  val eventsVersionsMap: Map[EventTypeVersion, String] = {
-    eventsVersions.flatMap(evs => evs.mapping.map(e => EventTypeVersion(evs.eventBaseType, e.version) -> e.eventType)).toMap
-  }
-
-  val eventsVersionsMapReverse: Map[String, EventTypeVersion] = {
-    eventsVersions.flatMap(evs => evs.mapping.map(e => e.eventType -> EventTypeVersion(evs.eventBaseType, e.version))).toMap
-  }
 
   val aggregateTypeName: String = aggregateRootClassTag.runtimeClass.getName
   val aggregateTypeSimpleName: String = aggregateRootClassTag.runtimeClass.getSimpleName
@@ -265,7 +255,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private def getOrCreateAggregateRepositoryActor(aggregateId: AggregateId): ActorRef = {
     childrenActivity += aggregateId.asLong -> System.nanoTime() / 1_000_000
     aggregateRepositoryActors.getOrElse(aggregateId.asLong, {
-      val ref = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, idempotency, eventBus, self, eventHandlers, initialState, None, eventsVersionsMap, eventsVersionsMapReverse, failedRestoreRetryAfter)),
+      val ref = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, idempotency, eventBus, self, eventHandlers, initialState, None, failedRestoreRetryAfter)),
         aggregateTypeSimpleName + "_AR_" + aggregateId.asLong+"_"+spawnedCount)
       spawnedCount += 1
       context.watch(ref)
@@ -275,14 +265,14 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   }
 
   private def createAggregateRepositoryActorForVersion(aggregateId: AggregateId, aggregateVersion: AggregateVersion): ActorRef = {
-    val actor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, idempotency, eventBus, self, eventHandlers, initialState, Some(Left(aggregateVersion)), eventsVersionsMap, eventsVersionsMapReverse, failedRestoreRetryAfter)),
+    val actor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, idempotency, eventBus, self, eventHandlers, initialState, Some(Left(aggregateVersion)), failedRestoreRetryAfter)),
       aggregateTypeSimpleName + "_ARV_" + aggregateId.asLong+"_"+aggregateVersion.asInt+"_"+spawnedCount)
     spawnedCount += 1
     actor
   }
 
   private def createAggregateRepositoryActorForInstant(aggregateId: AggregateId, instant: Instant): ActorRef = {
-    val actor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, idempotency, eventBus, self, eventHandlers, initialState, Some(Right(instant)), eventsVersionsMap, eventsVersionsMapReverse, failedRestoreRetryAfter)),
+    val actor = context.actorOf(Props(new AggregateRepositoryActor[AGGREGATE_ROOT](aggregateId, eventStoreState, idempotency, eventBus, self, eventHandlers, initialState, Some(Right(instant)), failedRestoreRetryAfter)),
       aggregateTypeSimpleName + "_ART_" + aggregateId.asLong+"_"+instant.getEpochSecond+"_"+spawnedCount)
     spawnedCount += 1
     actor

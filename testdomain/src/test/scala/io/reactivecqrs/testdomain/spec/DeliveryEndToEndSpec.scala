@@ -86,7 +86,7 @@ class DeliveryEndToEndSpec extends CommonSpec {
 
       And("every timestamp the projection saw, the live one included, is the stored one (R6)")
       val delivered = projection.askActor[Map[AggregateId, Vector[(Int, Instant)]]](GetDeliveredCarts)(3.seconds)(cartId)
-      delivered.map(_._2) mustBe eventStore.readEventsRange[ShoppingCart](Map.empty, cartId, AggregateVersion(1), AggregateVersion(4)).map(_.timestamp)
+      delivered.map(_._2) mustBe eventStore.readEventsRange[ShoppingCart](cartId, AggregateVersion(1), AggregateVersion(4)).map(_.timestamp)
     }
   }
 }

@@ -34,7 +34,7 @@ class TestFixture(val eventStoreState: EventStoreState) {
 
   def storeEvents(events: Seq[Event[SomeAggregate]], id: AggregateId = aggregateId, exVersion: AggregateVersion = expectedVersion): Unit = {
     eventStoreState.localTx { session =>
-      eventStoreState.persistEvents(Map.empty, id,
+      eventStoreState.persistEvents(id,
         PersistEvents(ActorRef.noSender, commandId, userId, exVersion, Instant.now, events, None))(session)
     }.get
     if(exVersion == expectedVersion) {
@@ -44,7 +44,7 @@ class TestFixture(val eventStoreState: EventStoreState) {
 
   def getEvents(version: Option[AggregateVersion] = None, id: AggregateId = aggregateId): Vector[Event[SomeAggregate]] = {
     var events = Vector[Event[SomeAggregate]]()
-    eventStoreState.readAndProcessEvents[SomeAggregate](Map.empty, id, version.map(Left(_)))((userId: UserId, timestamp: Instant, event: Event[SomeAggregate], id: AggregateId, eventVersion: Int, noop: Boolean) => {
+    eventStoreState.readAndProcessEvents[SomeAggregate](id, version.map(Left(_)))((userId: UserId, timestamp: Instant, event: Event[SomeAggregate], id: AggregateId, eventVersion: Int, noop: Boolean) => {
         if(!noop) {
           events :+= event
         }
@@ -169,7 +169,7 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
   Scenario("Aggregates with events waiting for publication are found, also with ids beyond 32 bits") {
     val aggregateId = AggregateId(5000000000L + System.nanoTime() % 1000000L)
     eventStoreState.localTx { session =>
-      eventStoreState.persistEvents(Map.empty, aggregateId,
+      eventStoreState.persistEvents(aggregateId,
         PersistEvents(ActorRef.noSender, CommandId(1), UserId(1), AggregateVersion.ZERO, Instant.now.minusSeconds(120), Seq(EventA("one")), None))(session)
     }.get
 
@@ -221,7 +221,7 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
 
     def persistAt(timestamp: Instant, expectedVersion: Int, events: Event[SomeAggregate]*): Unit =
       eventStoreState.localTx { session =>
-        eventStoreState.persistEvents(Map.empty, aggregateId,
+        eventStoreState.persistEvents(aggregateId,
           PersistEvents(ActorRef.noSender, commandId, userId, AggregateVersion(expectedVersion), timestamp, events, None))(session)
       }.get
 
@@ -231,7 +231,7 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     persistAt(singleTime, 2, EventC(true))
 
     var timestamps = Vector[Instant]()
-    eventStoreState.readAndProcessEvents[SomeAggregate](Map.empty, aggregateId, None)((_, eventTime, _, _, _, _) => timestamps :+= eventTime)
+    eventStoreState.readAndProcessEvents[SomeAggregate](aggregateId, None)((_, eventTime, _, _, _, _) => timestamps :+= eventTime)
     timestamps mustBe Vector(batchTime, batchTime, singleTime)
   }
 
@@ -244,7 +244,7 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     f.storeEvents(Seq(Undo(1))) // undoes EventC
     f.storeEvents(Seq(EventB(5)))
 
-    val range = eventStoreState.readEventsRange[SomeAggregate](Map.empty, f.aggregateId, AggregateVersion(2), AggregateVersion(4))
+    val range = eventStoreState.readEventsRange[SomeAggregate](f.aggregateId, AggregateVersion(2), AggregateVersion(4))
 
     range.map(_.version.asInt) mustBe Seq(2, 3, 4)
     range.map(_.event) mustBe Seq(EventB(2), EventC(true), Undo(1))

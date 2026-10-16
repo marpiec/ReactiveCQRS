@@ -25,13 +25,13 @@ class MemoryEventStoreStateTestDoubleSpec extends AnyFeatureSpec with GivenWhenT
   private val longAgo = Instant.now.minusSeconds(120)
 
   private def persist[R](store: MemoryEventStoreState, aggregateId: AggregateId, expectedVersion: Int, events: Event[R]*): Unit = {
-    store.persistEvents(Map.empty, aggregateId,
+    store.persistEvents(aggregateId,
       PersistEvents(ActorRef.noSender, CommandId(1), UserId(1), AggregateVersion(expectedVersion), longAgo, events, None))(NoSession).get
   }
 
   private def eventsOf(store: MemoryEventStoreState, aggregateId: AggregateId): Vector[Event[SomeAggregate]] = {
     var events = Vector[Event[SomeAggregate]]()
-    store.readAndProcessEvents[SomeAggregate](Map.empty, aggregateId, None)((_, _, event, _, _, _) => events :+= event)
+    store.readAndProcessEvents[SomeAggregate](aggregateId, None)((_, _, event, _, _, _) => events :+= event)
     events
   }
 
@@ -69,7 +69,7 @@ class MemoryEventStoreStateTestDoubleSpec extends AnyFeatureSpec with GivenWhenT
 
       Then("restore and re-publication both read the rewritten event")
       eventsOf(store, aggregateA) mustBe Vector(EventA("rewritten"), EventB(2))
-      store.readEventsRange[SomeAggregate](Map.empty, aggregateA, AggregateVersion(1), AggregateVersion(2)).map(_.event) mustBe Seq(EventA("rewritten"), EventB(2))
+      store.readEventsRange[SomeAggregate](aggregateA, AggregateVersion(1), AggregateVersion(2)).map(_.event) mustBe Seq(EventA("rewritten"), EventB(2))
     }
   }
 

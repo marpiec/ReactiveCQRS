@@ -77,7 +77,7 @@ class PermanentDeleteSpec extends CommonSpec {
   }
 
   private def storedVersions(memoId: AggregateId): Seq[Int] =
-    eventStore.readEventsRange[Memo](Map.empty, memoId, AggregateVersion(1), AggregateVersion(100)).map(_.version.asInt)
+    eventStore.readEventsRange[Memo](memoId, AggregateVersion(1), AggregateVersion(100)).map(_.version.asInt)
 
   private def deletedForGood(memoId: AggregateId): Unit = awaitAssert({
     storedVersions(memoId) mustBe empty
@@ -137,7 +137,7 @@ class PermanentDeleteSpec extends CommonSpec {
     Scenario("still waiting in the outbox after a restart, it is carried out when delivered again") {
       val memoId = AggregateId(System.nanoTime())
       eventStore.localTx { session =>
-        eventStore.persistEvents(Map.empty, memoId, PersistEvents[Memo](ActorRef.noSender, CommandId(0), userId, AggregateVersion.ZERO,
+        eventStore.persistEvents(memoId, PersistEvents[Memo](ActorRef.noSender, CommandId(0), userId, AggregateVersion.ZERO,
           Instant.now, Seq(MemoWritten("note"), MemoErased()), None))(session)
       }.get
       val f = new Fixture

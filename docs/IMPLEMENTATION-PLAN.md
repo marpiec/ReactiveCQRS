@@ -1099,3 +1099,21 @@ Open test-infrastructure items:
   and the new wiring (H7). Like M1's production checks, it gates Neula's move to 1.0 (M7
   runbook), not M3, so M2 is tagged `v1.0.0-M2` with it open.
 - `sbt test`: core 125, testdomain 51, all pass.
+
+### M3
+
+**16/10/2026: M3 design and event versioning removed (D29)**
+- `docs/design/M3-aggregates.md`: the owner, restore and snapshots, serial mode, the schema
+  step, metadata, the outbox hook, the rewrite contract, squash and the performance fixes, with
+  the order of the work. Refined from AR1/AR4: the per-command executor actors go too; the owner
+  runs a handler as a `Future` with a timer, so a command that timed out is never persisted
+  afterwards, and the owner–executor protocol disappears instead of being typed. Stopping an
+  owner follows Cluster Sharding's passivation (the command bus keeps the messages that arrive
+  meanwhile), so M5 swaps the bus for a shard without changing the owner.
+- D29: `EV`, `eventsVersions`, `EventVersion` and `EventTypeVersion` are gone from the API, and
+  the version maps from the stores, the command bus, the repository actor and the replayer.
+  Events are written with type version 0; reading a row with another version fails with
+  `UnsupportedEventVersionException`, naming the class, aggregate and version
+  (`PostgresEventStoreStateSpec`); `StoredDataCheck` reports such rows as unreadable and no
+  longer takes the contexts. Neula defines no `eventsVersions`.
+- `sbt test`: core 126, testdomain 51, all pass.

@@ -26,8 +26,15 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     this
   }
 
-  override def persistEvents[AGGREGATE_ROOT](eventsVersionsMapReverse: Map[String, EventTypeVersion],
-                                             aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = Try {
+  // D29: events are stored under their own class name with type version 0. Another version was written through the
+  // event versioning that 1.0 removed; its class cannot be known any more, so reading it fails instead of guessing.
+  private def eventClass(typeId: Short, typeVersion: Short, aggregateId: Long, version: Int): String = {
+    val className = typesNamesState.classNameById(typeId)
+    if (typeVersion != 0) throw new UnsupportedEventVersionException(className, typeVersion, aggregateId, version)
+    className
+  }
+
+  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = Try {
     // Undo/duplication events have their own stored procedures and per-event semantics, so they
     // always go through the one-by-one path. Plain and first events (even mixed) can be batched
     // into a single add_events round trip.
@@ -35,14 +42,13 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       !eventsEnvelope.events.exists(e => e.isInstanceOf[UndoEvent[_]] || e.isInstanceOf[DuplicationEvent[_]])
 
     if (batchable) {
-      persistEventsBatched(eventsVersionsMapReverse, aggregateId, eventsEnvelope)
+      persistEventsBatched(aggregateId, eventsEnvelope)
     } else {
-      persistEventsOneByOne(eventsVersionsMapReverse, aggregateId, eventsEnvelope)
+      persistEventsOneByOne(aggregateId, eventsEnvelope)
     }
   }
 
-  private def persistEventsOneByOne[AGGREGATE_ROOT](eventsVersionsMapReverse: Map[String, EventTypeVersion],
-                                                    aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
+  private def persistEventsOneByOne[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
     var lastEventVersion: Option[Int] = None
 
     eventsEnvelope.events.map(event => {
@@ -59,9 +65,8 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
         throw new TooManyEventsException(aggregateId, event.aggregateRootType.typeSymbol.fullName, aggregateVersionLimit)
       } else {
 
-        val eventType = event.getClass.getName
-        val EventTypeVersion(eventBaseType, eventVersion) = eventsVersionsMapReverse.getOrElse(eventType, EventTypeVersion(eventType, 0))
-        val eventBaseTypeId = typesNamesState.typeIdByClassName(eventBaseType)
+        val eventBaseTypeId = typesNamesState.typeIdByClassName(event.getClass.getName)
+        val eventVersion: Short = 0 // D29: event classes are not versioned
 
         lastEventVersion = Some(event match {
           case undoEvent: UndoEvent[_] =>
@@ -122,8 +127,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     })
   }
 
-  private def persistEventsBatched[AGGREGATE_ROOT](eventsVersionsMapReverse: Map[String, EventTypeVersion],
-                                                   aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
+  private def persistEventsBatched[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Seq[(Event[AGGREGATE_ROOT], AggregateVersion)] = {
 
     val events = eventsEnvelope.events.toIndexedSeq
     val baseVersion = eventsEnvelope.expectedVersion.asInt
@@ -145,16 +149,12 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       } else if (aggregateVersion > aggregateVersionLimit) {
         throw new TooManyEventsException(aggregateId, event.aggregateRootType.typeSymbol.fullName, aggregateVersionLimit)
       }
-
-      val eventType = event.getClass.getName
-      val EventTypeVersion(eventBaseType, eventVersion) = eventsVersionsMapReverse.getOrElse(eventType, EventTypeVersion(eventType, 0))
-
       spaceIds(i) = Long.box(event match {
         case firstEvent: FirstEvent[_] => firstEvent.spaceId.asLong
         case _ => -1L
       })
-      eventTypeIds(i) = Short.box(typesNamesState.typeIdByClassName(eventBaseType))
-      eventTypeVersions(i) = Short.box(eventVersion)
+      eventTypeIds(i) = Short.box(typesNamesState.typeIdByClassName(event.getClass.getName))
+      eventTypeVersions(i) = Short.box(0: Short) // D29
       serializedEvents(i) = eventSerialized
     }
 
@@ -189,8 +189,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
 
 
-  override def readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String],
-                                                    aggregateId: AggregateId, versionOrInstant: Option[Either[AggregateVersion, Instant]])
+  override def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, versionOrInstant: Option[Either[AggregateVersion, Instant]])
                                                    (eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit = {  //event, id, noop
 
 
@@ -224,9 +223,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 
       if(instant.isDefined || version.isDefined) {
         query.foreach { rs =>
-          val eventBaseType = typesNamesState.classNameById(rs.short(3))
-          val eventTypeVersion = rs.short(4)
-          val eventType = eventsVersionsMap.getOrElse(EventTypeVersion(eventBaseType, eventTypeVersion), eventBaseType)
+          val eventType = eventClass(rs.short(3), rs.short(4), rs.long(7), rs.int(6))
           val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(5), eventType)
           val id = AggregateId(rs.long(7))
           val eventVersion = rs.int(6)
@@ -238,9 +235,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       } else {
 
         query.foreach { rs =>
-          val eventBaseType = typesNamesState.classNameById(rs.short(3))
-          val eventTypeVersion = rs.short(4)
-          val eventType = eventsVersionsMap.getOrElse(EventTypeVersion(eventBaseType, eventTypeVersion), eventBaseType)
+          val eventType = eventClass(rs.short(3), rs.short(4), rs.long(7), rs.int(6))
           val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(5), eventType)
           val id = AggregateId(rs.long(7))
           val eventVersion = rs.int(6)
@@ -251,7 +246,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
 
 
-  override def readAndProcessAllEvents(eventsVersionsMap: Map[EventTypeVersion, String], aggregateTypeName: String,
+  override def readAndProcessAllEvents(aggregateTypeName: String,
                                        batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit = {
 
     val aggregateTypeId = typesNamesState.typeIdByClassName(aggregateTypeName)
@@ -285,9 +280,7 @@ ORDER BY events.id""")
 
       while(rs.next()) {
         if(!rs.getBoolean(8)) { // ignore noop
-          val eventBaseType = typesNamesState.classNameById(rs.getShort(1))
-          val eventTypeVersion = rs.getShort(2)
-          val eventType = eventsVersionsMap.getOrElse(EventTypeVersion(eventBaseType, eventTypeVersion), eventBaseType)
+          val eventType = eventClass(rs.getShort(1), rs.getShort(2), rs.getLong(5), rs.getInt(4))
 
           val event = mpjsons.deserialize[Event[_]](rs.getString(3), eventType)
           val aggregateId = AggregateId(rs.getLong(5))
@@ -385,15 +378,14 @@ ORDER BY events.id""")
     }
   }
 
-  override def readEventsRange[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId,
+  override def readEventsRange[AGGREGATE_ROOT](aggregateId: AggregateId,
                                                from: AggregateVersion, to: AggregateVersion): Seq[EventInfo[AGGREGATE_ROOT]] = {
     DB.readOnly { implicit session =>
       sql"""SELECT version, event_type_id, event_type_version, event, user_id, event_time
            | FROM events
            | WHERE aggregate_id = ? AND version BETWEEN ? AND ?
            | ORDER BY version""".stripMargin.bind(aggregateId.asLong, from.asInt, to.asInt).map { rs =>
-        val eventBaseType = typesNamesState.classNameById(rs.short(2))
-        val eventType = eventsVersionsMap.getOrElse(EventTypeVersion(eventBaseType, rs.short(3)), eventBaseType)
+        val eventType = eventClass(rs.short(2), rs.short(3), aggregateId.asLong, rs.int(1))
         EventInfo[AGGREGATE_ROOT](AggregateVersion(rs.int(1)), mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(4), eventType),
           UserId(rs.long(5)), rs.timestamp(6).toInstant)
       }.list()

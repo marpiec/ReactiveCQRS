@@ -54,8 +54,6 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
                                                                 eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT],
                                                                 initialState: () => AGGREGATE_ROOT,
                                                                 singleReadForVersionOnly: Option[Either[AggregateVersion, Instant]],
-                                                                eventsVersionsMap: Map[EventTypeVersion, String],
-                                                                eventsVersionsMapReverse: Map[String, EventTypeVersion],
                                                                 failedRestoreRetryAfter: FiniteDuration,
                                                                 maxRepublishEvents: Int = 1000) extends Actor with MyActorLogging {
 
@@ -76,7 +74,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     //TODO make it future
     version = AggregateVersion.ZERO
     aggregateRoot = initialState()
-    eventStore.readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap, aggregateId, singleReadForVersionOnly)(handleEvent)
+    eventStore.readAndProcessEvents[AGGREGATE_ROOT](aggregateId, singleReadForVersionOnly)(handleEvent)
   }
 
   override def preStart(): Unit = {
@@ -181,7 +179,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   private def republish(from: AggregateVersion, onlyTo: Option[ActorRef]): Option[AggregateVersion] = {
     if (from <= version) {
       val to = AggregateVersion(math.min(version.asInt.toLong, from.asInt.toLong + maxRepublishEvents - 1).toInt)
-      val events = eventStore.readEventsRange[AGGREGATE_ROOT](eventsVersionsMap, aggregateId, from, to)
+      val events = eventStore.readEventsRange[AGGREGATE_ROOT](aggregateId, from, to)
       if (events.nonEmpty) {
         eventsBus.tell(PublishEvents(aggregateType, events, aggregateId, Option(aggregateRoot), onlyTo), publicationAcks)
         Some(events.last.version)
@@ -284,7 +282,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
         case Some(v) if v != version => respondTo ! Failure(new AggregateInIncorrectVersionException(aggregateId, aggregateType, version, v))
         case _ => {
           var events: List[EventInfo[AGGREGATE_ROOT]] = List.empty
-          eventStore.readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap, aggregateId, singleReadForVersionOnly)((userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT], aggId: AggregateId, eventVersion: Int, noopEvent: Boolean) => {
+          eventStore.readAndProcessEvents[AGGREGATE_ROOT](aggregateId, singleReadForVersionOnly)((userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT], aggId: AggregateId, eventVersion: Int, noopEvent: Boolean) => {
             events ::= EventInfo(AggregateVersion(eventVersion), event, userId, timestamp)
           })
           respondTo ! Success(events.reverse)
@@ -330,7 +328,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
         case Some(v) if v != version => respondTo ! Failure(new AggregateInIncorrectVersionException(aggregateId, aggregateType, version, v))
         case _ => {
           var events: List[EventWithVersion[AGGREGATE_ROOT]] = List.empty
-          eventStore.readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap, aggregateId, singleReadForVersionOnly)((userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT], aggId: AggregateId, eventVersion: Int, noopEvent: Boolean) => {
+          eventStore.readAndProcessEvents[AGGREGATE_ROOT](aggregateId, singleReadForVersionOnly)((userId: UserId, timestamp: Instant, event: Event[AGGREGATE_ROOT], aggId: AggregateId, eventVersion: Int, noopEvent: Boolean) => {
             if(eventTypes.contains(event.getClass.getName)) {
               events ::= EventWithVersion(AggregateVersion(eventVersion), event)
             }
@@ -352,7 +350,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
         if (overwrite.nonEmpty) {
           eventStore.overwriteEvents(aggregateId, overwrite)
         }
-        val eventsWithVersions = eventStore.persistEvents(eventsVersionsMapReverse, aggregateId, eventsEnvelope.asInstanceOf[PersistEvents[AnyRef]]).get
+        val eventsWithVersions = eventStore.persistEvents(aggregateId, eventsEnvelope.asInstanceOf[PersistEvents[AnyRef]]).get
         eventsEnvelope.commandInfo.foreach(info => idempotency.record(info.command, info.response))
         eventsWithVersions
       }
