@@ -349,25 +349,28 @@ ORDER BY events.id""")
   }
 
   override def readAggregatesWithEventsToPublish(aggregateTypeName: String, oldOnly: Boolean)(aggregateHandler: AggregateId => Unit): Unit = {
+    // Built first, then bound and run: chained directly after an if/else, the calls applied only to
+    // the else branch, so the periodic (oldOnly) check never ran a query (F66).
+    val query = if(oldOnly) {
+      sql"""SELECT DISTINCT aggregate_id
+            | FROM events_to_publish
+            | JOIN aggregates
+            | ON events_to_publish.aggregate_id = aggregates.id
+            | WHERE aggregates.type_id = ?
+            | AND event_time < NOW() - INTERVAL '1 minute'
+         """
+    } else {
+      sql"""SELECT DISTINCT aggregate_id
+            | FROM events_to_publish
+            | JOIN aggregates
+            | ON events_to_publish.aggregate_id = aggregates.id
+            | WHERE aggregates.type_id = ?
+            | AND event_time < NOW() - INTERVAL '10 seconds'
+         """
+    }
     DB.readOnly { implicit session =>
-      if(oldOnly) {
-        sql"""SELECT DISTINCT aggregate_id
-              | FROM events_to_publish
-              | JOIN aggregates
-              | ON events_to_publish.aggregate_id = aggregates.id
-              | WHERE aggregates.type_id = ?
-              | AND event_time < NOW() - INTERVAL '1 minute'
-           """
-      } else {
-        sql"""SELECT DISTINCT aggregate_id
-              | FROM events_to_publish
-              | JOIN aggregates
-              | ON events_to_publish.aggregate_id = aggregates.id
-              | WHERE aggregates.type_id = ?
-              | AND event_time < NOW() - INTERVAL '10 seconds'
-           """
-      }.bind(typesNamesState.typeIdByClassName(aggregateTypeName)).stripMargin.foreach { rs =>
-        aggregateHandler(AggregateId(rs.int(1)))
+      query.stripMargin.bind(typesNamesState.typeIdByClassName(aggregateTypeName)).foreach { rs =>
+        aggregateHandler(AggregateId(rs.long(1)))
       }
     }
   }

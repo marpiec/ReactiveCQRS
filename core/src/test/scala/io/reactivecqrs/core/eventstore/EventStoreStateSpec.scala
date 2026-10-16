@@ -164,6 +164,19 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
 
   //TODO test for undo and duplication
 
+  // F12: ids beyond 32 bits (installation id ranges, D39) must survive the search for events to re-publish.
+  Scenario("Aggregates with events waiting for publication are found, also with ids beyond 32 bits") {
+    val aggregateId = AggregateId(5000000000L + System.nanoTime() % 1000000L)
+    eventStoreState.localTx { session =>
+      eventStoreState.persistEvents(Map.empty, aggregateId,
+        PersistEvents(ActorRef.noSender, CommandId(1), UserId(1), AggregateVersion.ZERO, Instant.now.minusSeconds(120), Seq(EventA("one")), None))(session)
+    }.get
+
+    var found = Set[AggregateId]()
+    eventStoreState.readAggregatesWithEventsToPublish(classOf[SomeAggregate].getName, oldOnly = true)(id => found += id)
+    found must contain(aggregateId)
+  }
+
   // F7: restore must see the timestamp the live path used, which is the one given with the events.
   Scenario("Events keep the timestamp they were persisted with") {
     val f = new TestFixture(eventStoreState)

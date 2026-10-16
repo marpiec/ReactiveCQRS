@@ -40,7 +40,8 @@ object AggregateCommandBusActor {
       aggregateContext.eventsVersions,
       eventsReplayMode,
       keepAliveLimit, maxInactivityMillis, None,
-      () => aggregateContext.initialAggregateRoot))
+      () => aggregateContext.initialAggregateRoot,
+      aggregateContext.commandTimeout))
   }
 
 
@@ -58,7 +59,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
                                                        val eventsReplayMode: Boolean,
                                                        val keepAliveLimit: Int, val maxInactivityMillis: Long,
                                                        val eventsLogger: Option[Logger],
-                                                       val initialState: () => AGGREGATE_ROOT)
+                                                       val initialState: () => AGGREGATE_ROOT,
+                                                       val commandTimeout: FiniteDuration)
                                                         (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT])extends Actor with MyActorLogging {
 
   val minimumInactivityMillis: Long = 120000L // 2 minutes
@@ -158,7 +160,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
       aggregateId, repositoryActor, commandResponseState,
       commandsHandlers.asInstanceOf[AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]]],
       rewriteHistoryCommandHandlers.asInstanceOf[(Iterable[EventWithVersion[AGGREGATE_ROOT]], AGGREGATE_ROOT) => PartialFunction[Any, GenericCommandResult[Any]]],
-      initialState)),
+      initialState, commandTimeout)),
       aggregateTypeSimpleName + "_CH_" + aggregateId.asLong)
 
     commandHandlerActors += aggregateId.asLong -> commandHandlerActor

@@ -5,6 +5,7 @@ import java.time.Instant
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 
 import scala.concurrent.Future
+import scala.concurrent.duration._
 import scala.reflect.{ClassTag, classTag}
 
 case class GetAggregate(id: AggregateId)
@@ -50,6 +51,9 @@ abstract class AggregateContext[AGGREGATE_ROOT : ClassTag] {
   val eventsVersions: List[EventVersion[AGGREGATE_ROOT]] = List.empty
 
   val version: Int
+
+  /** How long a command may take until the caller gets a `CommandHandlingError` (R5). */
+  val commandTimeout: FiniteDuration = 60.seconds
 
   val aggregateType = AggregateType(classTag[AGGREGATE_ROOT].toString)
 

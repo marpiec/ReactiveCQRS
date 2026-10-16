@@ -272,6 +272,12 @@ implementation plan.
 - **Root cause:** `perAggregate` is evicted only by `dump()`, which live mode never calls (`SubscriptionsState.scala:131-132, 196-223`).
 - **Fix:** bounded cache; the database is the source of truth (D34).
 
+#### F66 — The periodic check for unpublished events never ran a query
+- **High**, confirmed · **Fixed in M1** (16/10/2026) · `PostgresEventStoreState.readAggregatesWithEventsToPublish`
+- **Symptom:** after the first check 30 s after start, events whose publication was lost were never found again by `EnsureEventsPublished` (every 60 s); only a repository actor restart re-sent them. Worsens F2.
+- **Root cause:** `.bind(...).stripMargin.foreach` was chained after an `if/else`, so it applied only to the `else` branch; with `oldOnly = true` the method built a query and returned without running it.
+- **Fix:** build the query, then bind and run it. Test: `EventStoreStateSpec` "… ids beyond 32 bits" (uses `oldOnly = true`).
+
 #### F37 — Outbox scan query per aggregate type every minute
 - **Low**, likely · Fix in **M2** · `AggregateCommandBusActor`, `PostgresEventStoreState`
 - **Root cause:** each command bus runs its own scan (`PostgresEventStoreState.scala:352-374`), 51 per minute in Neula.
@@ -326,11 +332,13 @@ implementation plan.
 - **Fix:** D11.
 
 #### F12 — Aggregate ids read as `Int`
-- **Medium**, likely · Fix in **M1** (before D39) · `PostgresEventStoreState`
+- **Medium**, confirmed · **Fixed in M1** (16/10/2026) · `PostgresEventStoreState`
+- **Fix:** read as `Long`. Test: `EventStoreStateSpec` "… ids beyond 32 bits" (with `rs.int` the ids came back wrapped to other, sometimes negative, values).
 - **Root cause:** `aggregateHandler(AggregateId(rs.int(1)))` (`PostgresEventStoreState.scala:371`) overflows past 2^31.
 
 #### F13 — Command executor lingers after a `CommandFailure`
-- **Low**, likely · Fix in **M1** · `CommandExecutorActor.scala:217-218`
+- **Low**, confirmed · **Fixed in M1** (16/10/2026) · `CommandExecutorActor`
+- **Test:** `CommandOutcomesSpec` (the executor was still alive after the failure reply).
 - **Fix:** stop after replying.
 
 #### F19 — Stale aggregate after an external write; concurrent commands spin until timeout
@@ -342,7 +350,8 @@ implementation plan.
 - **Fix:** reload on conflict; D37.
 
 #### F20 — Async handler past 60 s gets no reply
-- **Medium**, likely · Fix in **M1** · `CommandExecutorActor.scala:38`
+- **Medium**, confirmed · **Fixed in M1** (16/10/2026) · `CommandExecutorActor`, `AggregateContext`
+- **Fix:** `AggregateContext.commandTimeout` (default 60 s); when it passes, the caller gets `CommandHandlingError` and the executor stops, in every state. The command may still complete afterwards (the warning log says so); idempotency keys (R7) protect a retry. Test: `CommandOutcomesSpec` (no reply before the fix).
 - **Fix:** D56 (R5): configurable timeout and an explicit error reply.
 
 #### F24 — Concurrent-command retry storm
@@ -583,7 +592,7 @@ From §7 of Neula's change requests.
 
 | Milestone | Issues |
 |---|---|
-| M1 | F7 ✔, F9, F10, F12, F13, F14 ✔, F16 ✔, F17, F18 ✔, F19 ✔, F20, F21 ✔, F24 ✔, F34, F35, F36, F40, F64; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
+| M1 | F7 ✔, F9, F10, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34, F35, F36, F40, F64, F66 ✔; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
 | M2 | F1, F2, F4, F5, F6, F11, F15, F26, F28, F29, F37, F41, F42, F45, F47; Neula H2 |
 | M3 | F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33, F38, F39, F43, F44, F65 |
 | M4 | F3, F54, F55, F56, F57, F58, F59, F60, F61, F62; Neula H1, H6 |

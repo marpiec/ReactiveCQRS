@@ -671,3 +671,11 @@ Open test-infrastructure items:
   domain gains `AddItemConcurrently`, its first `ConcurrentCommand`. Test:
   `ConcurrentModificationSpec`, with an event store that writes behind the actor's back.
 - `sbt test`: 53 of 54 pass; the failure is still the F4 reproduction.
+
+**16/10/2026: F12, F66, F13, F20**
+- F12: outbox scan reads aggregate ids as `Long`. Writing its test exposed F66: the periodic
+  outbox check (`oldOnly = true`, every 60 s) never ran its query. Both fixed.
+- F13 and F20: `AggregateContext.commandTimeout` (default 60 s); on timeout the caller gets
+  `CommandHandlingError`; the executor stops after failures and timeouts. Test:
+  `CommandOutcomesSpec`.
+- `sbt test`: 57 of 58 pass; the failure is still the F4 reproduction.
