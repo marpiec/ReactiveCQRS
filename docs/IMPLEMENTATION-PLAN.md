@@ -1201,3 +1201,14 @@ Open test-infrastructure items:
   under a mutation binding with the JVM's zone; the undo guard), `MetadataSpec` (a command's
   envelope reaches a projection live and through a gap fill; event queries; a rewrite keeps it).
 - `sbt test`: core 136, testdomain 70, all pass.
+
+**16/10/2026: the outbox hook (D33, R12)**
+- `OutboxWriter[R]` with `write(aggregateId, version, events)(session)`, given by a context that
+  mixes in `WithOutboxWriter` (in core, so the api module stays free of ScalikeJDBC). The owner
+  calls it inside the persist transaction, after the idempotency record, with the events as
+  `EventInfo` (metadata included); a failure rolls the events back, and a copy whose key is
+  taken rolls back before it. The PostgreSQL store's transactions are `AfterCommit`
+  transactions now, so cache updates made in them apply after the commit.
+- Tests: `OutboxHookSpec` (rows written with the events; a failing writer rolls them back and the
+  aggregate carries on; an idempotent copy writes nothing).
+- `sbt test`: core 136, testdomain 73, all pass.

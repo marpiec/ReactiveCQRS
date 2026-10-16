@@ -64,6 +64,10 @@ class OwnerSettings[AGGREGATE_ROOT: ClassTag](context: AggregateContext[AGGREGAT
   val commandTimeout: FiniteDuration = context.commandTimeout
   val snapshots: Option[SnapshotPolicy] = context.snapshots
   val commandProcessing: CommandProcessing = context.commandProcessing
+  val outboxWriter: Option[OutboxWriter[AGGREGATE_ROOT]] = context match {
+    case withWriter: WithOutboxWriter[AGGREGATE_ROOT @unchecked] => Some(withWriter.outboxWriter)
+    case _ => None
+  }
   val restorer = new AggregateRestorer[AGGREGATE_ROOT](eventStore, eventHandlers, initialState, snapshots, context.version,
     classTag[AGGREGATE_ROOT].runtimeClass.getName)
 }
@@ -324,17 +328,20 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
         finish(envelope.commandId, error)
       case Right(newRoot) =>
         val response = successResponse(version.incrementBy(events.size), info)
+        val metadata = metadataOf(envelope.command)
         val outcome = Try {
           eventStore.localTx { implicit session =>
             if (rewritten.nonEmpty) eventStore.overwriteEvents(aggregateId, rewritten)
-            val stored = eventStore.persistEvents(aggregateId, NewEvents(userId, version, timestamp, events, metadataOf(envelope.command))).get
+            val stored = eventStore.persistEvents(aggregateId, NewEvents(userId, version, timestamp, events, metadata)).get
+              .map { case (event, eventVersion) => EventInfo(eventVersion, event, userId, timestamp, metadata) }
             if (idempotency.isIdempotent(envelope.command)) idempotency.record(envelope.command, response)
+            // R12, D33: after the idempotency record, so a copy whose key is taken rolls back before writing anything.
+            outboxWriter.foreach(_.write(aggregateId, stored.last.version, stored))
             stored
           }
         }
         outcome match {
-          case Success(stored) =>
-            val published = stored.map { case (event, eventVersion) => EventInfo(eventVersion, event, userId, timestamp, metadataOf(envelope.command)) }
+          case Success(published) =>
             if (readAfterCommit) {
               // If the state cannot be read, nothing is published now: the outbox poller has it re-published later.
               if (restore().isEmpty) {
@@ -343,7 +350,7 @@ class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings
               }
             } else {
               root = newRoot
-              version = stored.last._2
+              version = published.last.version
               publish(published)
               snapshotIfDue(command.baseVersion)
             }

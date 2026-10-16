@@ -8,6 +8,7 @@ import io.mpjsons.MPJsons
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.types.TypesNamesState
+import io.reactivecqrs.core.util.AfterCommit
 import scalikejdbc._
 
 import scala.concurrent.duration._
@@ -366,8 +367,7 @@ ORDER BY events.id""")
       .map(_.intOpt(1).map(AggregateVersion(_))).single().flatten
   }
 
-  override def localTx[A](block: (DBSession) => A): A = DB.localTx { session =>
-    block(session)
-  }
+  // Cache updates made in the transaction through `AfterCommit`, an outbox writer's too (D33), apply once it committed.
+  override def localTx[A](block: (DBSession) => A): A = AfterCommit.localTx(block)
 
 }

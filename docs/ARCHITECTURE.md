@@ -290,6 +290,11 @@ abstract class AggregateContext[R : ClassTag] {           // AggregateContext.sc
      plain/first events), with one timestamp truncated to microseconds (D10),
    - stores the idempotent command response in the **same transaction**
      (`INSERT … ON CONFLICT (key) DO NOTHING`; nothing inserted means the key is taken).
+   - calls the context's outbox writer, if it mixes in `WithOutboxWriter` (R12, D33), with the
+     aggregate, its new version and the events: rows of the application's own in the same
+     transaction, so a failure rolls the events back, and a copy whose idempotency key is
+     taken never reaches it. The transaction is an `AfterCommit` one, so cache updates made in
+     it apply only after the commit.
 
    Any failure inside the transaction is thrown, so it rolls back whole (fixed F68).
 6. **After commit** the copy of step 5 becomes the owner's state (undo and duplication
