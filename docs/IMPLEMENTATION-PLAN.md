@@ -1255,3 +1255,28 @@ Open test-infrastructure items:
   (F76), `RepublishSpec`. Mutation checks: the old memory undo flags and versions, no chain
   lock or re-check, and the old delete each fail the new tests.
 - `sbt test`: core 153, testdomain 88, all pass.
+
+**16/10/2026: the performance fixes (D34, D75; F23, F27, F30, F32, F33, F50, F78; AR8)**
+- Type keys (D75, F30, F50): events and projection listeners carry a `ClassTag` of their root
+  instead of a `TypeTag`, and one key, `AggregateType.of[R]`, is used everywhere: Scala's full
+  name of the class, which is what the store has always kept, so no stored name changes and a
+  nested root class is routed like any other. The persist path no longer reflects per event;
+  mpjsons 0.7 already caches its codecs. The types-names cache is a concurrent map with a
+  conflict-safe insert (F78); `AggregateId` has no instance pool (F32); the events logger
+  builds its lines only when debug is on (F33).
+- Id pools (F23): sequences step by 10 000 (an older one is changed at start, safely); the
+  command bus and the saga actor take ids from an `IdPool` that asks for the next pool when a
+  fifth is left. Commands and orders that arrive while no id is at hand wait in order; the
+  actors keep answering other messages; a pool that does not come fails the waiting ones.
+- Blocking dispatcher (F27): `reactivecqrs.blocking-dispatcher` in core's `reference.conf`.
+  Owners run on it (persist stays synchronous, F69); command handlers run on the default
+  dispatcher; the bus, the uid generator, the saga state, the poller and the squash scheduler
+  run their JDBC in futures on it. Projections, made by the host, should use it: one on the
+  default dispatcher warns at start. The test domain and the bench do.
+- AR8: subscription classifiers are removed (every subscription takes every event).
+- F43 stays in M4 with the document-store rework, as the issue list has it (the plan's item 8
+  listed it here).
+- Tests: `IdPoolSpec`, `PostgresTypesNamesStateSpec` (F78, red before), `EventStoreStateSpec`
+  (a nested root class), `CommandOutcomesSpec` (a query answered while a command waits for a
+  slow pool, red against the old bus; where owners and handlers run, red without the change).
+- `sbt test`: core 159, testdomain 90, all pass.

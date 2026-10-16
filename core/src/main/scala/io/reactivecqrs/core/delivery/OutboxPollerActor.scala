@@ -5,9 +5,10 @@ import java.time.Clock
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.eventbus.EventsBusActor.Republish
 import io.reactivecqrs.core.eventstore.{EventStoreState, WaitingInOutbox}
-import io.reactivecqrs.core.util.MyActorLogging
+import io.reactivecqrs.core.util.{BlockingDispatcher, MyActorLogging}
 import org.apache.pekko.actor.{Actor, ActorRef}
 
+import scala.concurrent.Future
 import scala.concurrent.duration._
 import scala.util.{Failure, Success, Try}
 
@@ -17,6 +18,7 @@ object OutboxPollerActor {
   case object GetOutboxStatus
   /** `waiting`: aggregates with rows in the outbox at the last poll; `gaveUp`: those reported as undelivered. */
   case class OutboxStatus(waiting: Int, gaveUp: Seq[WaitingInOutbox])
+  private case class Read(result: Try[Seq[WaitingInOutbox]])
 }
 
 /** @param firstPollAfter gives the host time to start its command buses, which the bus routes re-publications to */
@@ -38,18 +40,28 @@ class OutboxPollerActor(eventStore: EventStoreState, eventBus: ActorRef, options
   private val startedAt = clock.instant()
   private val maxLinesPerPoll = 10
   private var memory = Map[AggregateId, RedeliveryPolicy.Tracked]()
+  private var reading = false
 
   private val polls = context.system.scheduler.scheduleWithFixedDelay(options.firstPollAfter, options.pollInterval, self, Poll)
 
   override def postStop(): Unit = polls.cancel()
 
   override def receive: Receive = {
-    case Poll => poll()
+    case Poll => if (!reading) read()
+    case Read(result) =>
+      reading = false
+      poll(result)
     case GetOutboxStatus => sender() ! OutboxStatus(memory.size, memory.values.filter(_.gaveUp).map(_.waiting).toSeq)
   }
 
+  // F27: the read runs on the blocking dispatcher; its result comes back as a message.
+  private def read(): Unit = {
+    reading = true
+    Future(eventStore.readWaitingInOutbox())(BlockingDispatcher(context.system)).onComplete(result => self ! Read(result))
+  }
+
   // A failed read is logged and retried at the next poll (AR7: a throw would restart the poller and forget the attempts).
-  private def poll(): Unit = Try(eventStore.readWaitingInOutbox()) match {
+  private def poll(result: Try[Seq[WaitingInOutbox]]): Unit = result match {
     case Success(waiting) =>
       val decision = RedeliveryPolicy.decide(waiting, memory, startedAt, clock.instant(), options.redelivery)
       decision.republish.foreach(w => eventBus ! Republish(w.aggregateType, w.aggregateId))

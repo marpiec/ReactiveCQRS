@@ -1,15 +1,15 @@
 package io.reactivecqrs.core.saga
 
-import org.apache.pekko.pattern.ask
+import org.apache.pekko.pattern.{ask, pipe}
 import org.apache.pekko.actor.{Actor, ActorRef}
 import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api.SagaStep
 import io.reactivecqrs.api.id.{SagaId, UserId}
 import io.reactivecqrs.core.saga.SagaActor._
-import io.reactivecqrs.core.uid.{NewSagasIdsPool, UidGeneratorActor}
-import io.reactivecqrs.core.util.{Backoff, MyActorLogging}
+import io.reactivecqrs.core.uid.{IdPool, NewSagasIdsPool, UidGeneratorActor}
+import io.reactivecqrs.core.util.{Backoff, BlockingDispatcher, MyActorLogging}
 
-import scala.concurrent.{Await, Future}
+import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
 import scala.concurrent.duration._
 
@@ -20,6 +20,7 @@ object SagaActor {
 
   case object LoadPendingSagas
   private case class LoadPendingSagasAttempt(attempt: Int)
+  private case class LoadFailed(attempt: Int)
 
   private case class RunningSaga(sagaId: SagaId, respondTo: String, order: SagaInternalOrder, phase: SagaPhase, step: Int)
 
@@ -33,6 +34,7 @@ object SagaActor {
   private case class RetryWrite(write: SagaWrite, attempt: Int)
   private case class StepCompleted(saga: RunningSaga, result: Try[SagaHandlingStatus])
   private case class RevertStepCompleted(saga: RunningSaga, result: Try[SagaRevertHandlingStatus])
+  private case class SagaIdsNotReceived(error: Throwable)
 }
 
 /**
@@ -48,6 +50,8 @@ abstract class SagaActor extends Actor with MyActorLogging {
   implicit val timeout: Timeout = Timeout(60.seconds)
 
   import context.dispatcher
+  // F27: the saga state's JDBC calls run on the blocking dispatcher.
+  private val blocking: ExecutionContext = BlockingDispatcher(context.system)
 
   val uidGenerator: ActorRef
   val state: SagaState
@@ -57,8 +61,10 @@ abstract class SagaActor extends Actor with MyActorLogging {
     * left for the next restart. */
   protected val persistRetries: Backoff = Backoff(100.millis, 30.seconds, maxAttempts = 10)
 
-  private var nextSagaId = 0L
-  private var remainingSagasIds = 0L
+  // F23: saga ids come from pools fetched ahead; an order that arrives while none is at hand waits for the next pool,
+  // with the orders after it.
+  private val sagaIds = new IdPool
+  private var waitingForIds = Vector[(SagaOrder, ActorRef)]()
 
   type ReceiveOrder = PartialFunction[SagaInternalOrder, Future[SagaHandlingStatus]]
   type ReceiveRevert = PartialFunction[SagaInternalOrder, Future[SagaRevertHandlingStatus]]
@@ -66,15 +72,16 @@ abstract class SagaActor extends Actor with MyActorLogging {
   def handleOrder(sagaStep: SagaStep): ReceiveOrder
   def handleRevert(sagaStep: SagaStep): ReceiveRevert
 
-  // All rows are read before any saga starts, so a load that fails part-way and is retried starts no saga twice.
+  // All rows are read before any saga starts, so a load that fails part-way and is retried starts no saga twice. The
+  // read runs off the actor's thread and touches no actor state.
   private def loadPendingSagas(attempt: Int): Unit = {
-    Try {
+    Future {
       var loaded = Vector[SagaPersisted]()
       state.loadAllSagas(name, (sagaId: SagaId, userId: UserId, respondTo: String, phase: SagaPhase, step: Int, order: SagaInternalOrder) => {
         loaded :+= SagaPersisted(sagaId, respondTo, order, phase, step)
       })
       loaded
-    } match {
+    }(blocking).onComplete {
       case Success(loaded) =>
         loaded.foreach { saga =>
           log.info("Continuing saga " + name + " " + saga.sagaId.asLong + " at step " + saga.step)
@@ -82,12 +89,13 @@ abstract class SagaActor extends Actor with MyActorLogging {
         }
       case Failure(e) =>
         log.error(e, "Loading pending sagas " + name + " failed, attempt " + attempt + ", retrying")
-        context.system.scheduler.scheduleOnce(persistRetries.delay(attempt + 1), self, LoadPendingSagasAttempt(attempt + 1))
+        self ! LoadFailed(attempt)
     }
   }
 
   override def preStart(): Unit = {
     self ! LoadPendingSagas
+    askForIds()
   }
 
   // After a restart the running sagas still send their results to this actor; loading the stored ones again would
@@ -99,7 +107,16 @@ abstract class SagaActor extends Actor with MyActorLogging {
   override def receive: Receive = {
     case LoadPendingSagas => loadPendingSagas(1)
     case LoadPendingSagasAttempt(attempt) => loadPendingSagas(attempt)
-    case m: SagaOrder => startSaga(m, sender())
+    case LoadFailed(attempt) => context.system.scheduler.scheduleOnce(persistRetries.delay(attempt + 1), self, LoadPendingSagasAttempt(attempt + 1))
+    case m: SagaOrder =>
+      waitingForIds :+= (m -> sender())
+      startWaiting()
+      askForIds()
+    case NewSagasIdsPool(from, size) =>
+      sagaIds.received(from, size)
+      startWaiting()
+      askForIds()
+    case SagaIdsNotReceived(e) => sagaIdsNotReceived(e)
     case m: SagaPersisted => runStep(RunningSaga(m.sagaId, m.respondTo, m.order, m.phase, m.step))
     case StepCompleted(saga, result) => handleStepResult(saga, result)
     case RevertStepCompleted(saga, result) => handleRevertStepResult(saga, result)
@@ -108,14 +125,22 @@ abstract class SagaActor extends Actor with MyActorLogging {
     case m => log.warning("Received incorrect message of type: [" + m.getClass.getName +"] "+m)
   }
 
-  // Without a saga id the order is refused, not thrown: a throw would restart this actor (F75).
-  private def startSaga(order: SagaOrder, respondTo: ActorRef): Unit = {
-    Try(takeNextSagaId) match {
-      case Success(sagaId) => write(CreateSaga(RunningSaga(sagaId, respondTo.path.toString, order, CONTINUES, 0)))
-      case Failure(e) =>
-        log.error(e, "No saga id for an order of saga " + name + ", the order is refused")
-        respondTo ! SagaFailureResponse(List("No saga id: " + e.getMessage))
-    }
+  private def startWaiting(): Unit = while (waitingForIds.nonEmpty && sagaIds.available) {
+    val (order, respondTo) = waitingForIds.head
+    waitingForIds = waitingForIds.tail
+    write(CreateSaga(RunningSaga(SagaId(sagaIds.take()), respondTo.path.toString, order, CONTINUES, 0)))
+  }
+
+  private def askForIds(): Unit =
+    if (sagaIds.shouldAsk) (uidGenerator ? UidGeneratorActor.GetNewSagasIdsPool).recover { case e => SagaIdsNotReceived(e) }.pipeTo(self)
+
+  // Without a saga id the waiting orders are refused, not thrown: a throw would restart this actor (F75). The pool is
+  // asked for again when the next order arrives.
+  private def sagaIdsNotReceived(e: Throwable): Unit = {
+    sagaIds.failed()
+    log.error(e, "No pool of saga ids for saga " + name + " came; " + waitingForIds.size + " orders waiting for one are refused")
+    waitingForIds.foreach { case (_, respondTo) => respondTo ! SagaFailureResponse(List("No saga id: " + e.getMessage)) }
+    waitingForIds = Vector.empty
   }
 
   private def runStep(saga: RunningSaga): Unit = saga.phase match {
@@ -176,7 +201,7 @@ abstract class SagaActor extends Actor with MyActorLogging {
         case _: StoreProgress => state.updateSaga(name, saga.sagaId, saga.order, saga.phase, saga.step)
         case _: DeleteSaga => state.deleteSaga(name, saga.sagaId)
       }
-    }.onComplete(result => self ! WriteCompleted(pending, attempt, result))
+    }(blocking).onComplete(result => self ! WriteCompleted(pending, attempt, result))
   }
 
   private def handleWriteResult(pending: SagaWrite, attempt: Int, result: Try[Boolean]): Unit = {
@@ -203,22 +228,5 @@ abstract class SagaActor extends Actor with MyActorLogging {
     }
   }
 
-  private def takeNextSagaId: SagaId = {
-    if(remainingSagasIds == 0) {
-      // TODO get rid of ask pattern
-      implicit val timeout = Timeout(60 seconds)
-      val pool: Future[NewSagasIdsPool] = (uidGenerator ? UidGeneratorActor.GetNewSagasIdsPool).mapTo[NewSagasIdsPool]
-      val newSagasIdsPool: NewSagasIdsPool = Await.result(pool, 60 seconds)
-      remainingSagasIds = newSagasIdsPool.size
-      nextSagaId = newSagasIdsPool.from
-    }
-
-    remainingSagasIds -= 1
-    val sagaId = nextSagaId
-    nextSagaId += 1
-    SagaId(sagaId)
-
-
-  }
 
 }

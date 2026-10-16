@@ -12,6 +12,7 @@ import io.reactivecqrs.core.eventstore.{NewEvents, PostgresEventStoreState}
 import io.reactivecqrs.core.projection.{MemorySubscriptionsState, ProjectionActor, SubscriptionsState}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
+import io.reactivecqrs.core.util.BlockingDispatcher
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
 import org.apache.pekko.actor.{ActorRef, Props}
@@ -57,7 +58,7 @@ class MetadataSpec extends CommonSpec {
   /** A system with one metadata-recording projection. */
   private class Fixture {
     val eventBus: ActorRef = system.actorOf(Props(new EventsBusActor()))
-    val projection: ActorRef = system.actorOf(Props(new CartsMetadataProjection(new MemorySubscriptionsState)))
+    val projection: ActorRef = system.actorOf(Props(new CartsMetadataProjection(new MemorySubscriptionsState)).withDispatcher(BlockingDispatcher.id))
     eventBus ! RegisterSubscribers(Seq(projection))
     val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStore, responses, eventBus, eventsReplayMode = false))
 

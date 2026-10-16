@@ -14,6 +14,7 @@ import io.reactivecqrs.core.projection.PostgresSubscriptionsState
 import io.reactivecqrs.core.saga.PostgresSagaState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
+import io.reactivecqrs.core.util.BlockingDispatcher
 import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.{CreateMultipleCarts, MultipleCartCreatorSagaResponse}
 import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCartAggregateContext, _}
 import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
@@ -76,8 +77,8 @@ class ReactiveTestDomainSpec extends CommonSpec {
     }
 
 
-    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(subscriptionsState, shoppingCartCommandBus, storeA)), "ShoppingCartsListProjectionEventsBased")
-    val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(subscriptionsState, storeB)), "ShoppingCartsListProjectionAggregatesBased")
+    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(subscriptionsState, shoppingCartCommandBus, storeA)).withDispatcher(BlockingDispatcher.id), "ShoppingCartsListProjectionEventsBased")
+    val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(subscriptionsState, storeB)).withDispatcher(BlockingDispatcher.id), "ShoppingCartsListProjectionAggregatesBased")
 
     eventBusActor ! EventsBusActor.RegisterSubscribers(List(shoppingCartsListProjectionEventsBased, shoppingCartsListProjectionAggregatesBased))
 

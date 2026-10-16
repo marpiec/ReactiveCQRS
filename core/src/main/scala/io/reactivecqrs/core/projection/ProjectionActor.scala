@@ -134,6 +134,13 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     if (options.parallelUpdateProcessing > 1) Some(Executors.newFixedThreadPool(options.parallelUpdateProcessing)) else None
   private val executionContext: Option[ExecutionContext] = executor.map(ExecutionContext.fromExecutor)
 
+  // F27: listener transactions run on this actor's thread (unless in parallel); on the default dispatcher they hold up
+  // everything else that runs there.
+  if (executor.isEmpty && context.dispatcher == context.system.dispatchers.defaultGlobalDispatcher) {
+    log.warning("Projection " + className + " runs its listener transactions on the default dispatcher; create it with " +
+      "Props(...).withDispatcher(BlockingDispatcher.id) (F27)")
+  }
+
   override def postStop(): Unit = executor.foreach(_.shutdown())
 
   protected trait Listener[+AGGREGATE_ROOT]  {

@@ -12,6 +12,7 @@ import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection.{MemorySubscriptionsState, ProjectionActor, SubscriptionsState}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
+import io.reactivecqrs.core.util.BlockingDispatcher
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
 import org.apache.pekko.actor.{ActorRef, Props}
@@ -71,7 +72,7 @@ class DeliveryEndToEndSpec extends CommonSpec {
 
       When("a new system with the projection adds a fourth event")
       val bus = system.actorOf(Props(new EventsBusActor()))
-      val projection = system.actorOf(Props(new DeliveredCartsProjection(new MemorySubscriptionsState)))
+      val projection = system.actorOf(Props(new DeliveredCartsProjection(new MemorySubscriptionsState)).withDispatcher(BlockingDispatcher.id))
       bus ! RegisterSubscribers(Seq(projection))
       val commands = commandBusOn(bus)
       val added: CustomCommandResponse[_] = commands ?? AddItem(userId, cartId, AggregateVersion(3), "plum")

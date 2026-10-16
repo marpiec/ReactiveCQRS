@@ -45,13 +45,14 @@ object EventsBusActor {
     def subscriber: ActorRef
     def kind: DeliveryKind
   }
-  case class SubscribeForEvents(aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier) extends SubscribeRequest {
+  // AR8: a subscription takes every event of its aggregate type; the sequence gate needs every version (no classifiers).
+  case class SubscribeForEvents(aggregateType: AggregateType, subscriber: ActorRef) extends SubscribeRequest {
     def kind: DeliveryKind = EventsDelivery
   }
-  case class SubscribeForAggregates(aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier = AcceptAllAggregateIdClassifier) extends SubscribeRequest {
+  case class SubscribeForAggregates(aggregateType: AggregateType, subscriber: ActorRef) extends SubscribeRequest {
     def kind: DeliveryKind = AggregatesDelivery
   }
-  case class SubscribeForAggregatesWithEvents(aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier) extends SubscribeRequest {
+  case class SubscribeForAggregatesWithEvents(aggregateType: AggregateType, subscriber: ActorRef) extends SubscribeRequest {
     def kind: DeliveryKind = AggregatesWithEventsDelivery
   }
 
@@ -187,7 +188,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
 
   // ****************** RUNNING
 
-  // AR7: a message the bus fails on (a classifier that throws) is logged and dropped; its outbox rows stay. A restart
+  // AR7: a message the bus fails on (a malformed one) is logged and dropped; its outbox rows stay. A restart
   // would lose every delivery and the subscriptions, and the bus would wait for a registration that never comes again.
   private def guarded(handler: Receive): Receive = {
     case message if handler.isDefinedAt(message) =>
@@ -236,11 +237,11 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     val targets = subscriptions.getOrElse(aggregateType, Vector.empty).filter(s => onlyTo.forall(_ == s.subscriber))
     val (live, ofStopped) = targets.partition(s => !stopped.contains(s.subscriber))
 
-    // A new event goes to every subscription that accepts it; an event that still waits goes again only to the
-    // subscriptions it waits for. A re-publication to one subscriber sends it everything it asked for.
+    // A new event goes to every subscription; an event that still waits goes again only to the subscriptions it waits
+    // for. A re-publication to one subscriber sends it everything it asked for.
     def wanted(s: SubscribeRequest, event: EventInfo[Any]): Boolean =
-      accepts(s, aggregateId, event) && (onlyTo.isDefined ||
-        deliveries.get(EventKey(aggregateId, event.version)).forall(_.awaiting.contains(Target(s.subscriber, s.kind))))
+      onlyTo.isDefined || deliveries.get(EventKey(aggregateId, event.version)).forall(_.awaiting.contains(Target(s.subscriber, s.kind)))
+    val everyLive = live.map(s => Target(s.subscriber, s.kind)).toSet
 
     val sends = live.flatMap { s =>
       val forSubscription = events.filter(e => wanted(s, e))
@@ -251,10 +252,10 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     events.foreach { event =>
       val key = EventKey(aggregateId, event.version)
       if (!deliveries.contains(key)) {
-        // For an event not waiting yet, `wanted` is `accepts`: the subscriptions it was just sent to.
-        val awaiting = live.collect { case s if accepts(s, aggregateId, event) => Target(s.subscriber, s.kind) }.toSet
-        // A stopped subscriber takes nothing, so its events stay in the outbox until it is back after a restart.
-        val missedByStopped = ofStopped.exists(s => accepts(s, aggregateId, event))
+        // An event not waiting yet was just sent to every live subscription. A stopped subscriber takes nothing, so its
+        // events stay in the outbox until it is back after a restart.
+        val awaiting = everyLive
+        val missedByStopped = ofStopped.nonEmpty
         val delivery = Delivery(aggregateType, if (onlyTo.isEmpty && !replayed) Some(publisher) else None, now, awaiting, replayed,
           incomplete = missedByStopped, stallLogged = false, permanentDelete = event.event.isInstanceOf[PermanentDeleteEvent[_]])
         if (replayed) replayedInFlight += 1
@@ -271,12 +272,6 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
 
     completeAll(finished)
     orderMoreMessagesToConsume()
-  }
-
-  private def accepts(s: SubscribeRequest, aggregateId: AggregateId, event: EventInfo[Any]): Boolean = s match {
-    case e: SubscribeForEvents => e.classifier.accept(aggregateId, EventType(event.event.getClass.getName))
-    case a: SubscribeForAggregates => a.classifier.accept(aggregateId)
-    case ae: SubscribeForAggregatesWithEvents => ae.classifier.accept(aggregateId, EventType(event.event.getClass.getName))
   }
 
   private def messageFor(s: SubscribeRequest, aggregateType: AggregateType, aggregateId: AggregateId, events: Seq[EventInfo[Any]],

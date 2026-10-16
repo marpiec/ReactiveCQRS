@@ -29,7 +29,9 @@ unless the path says `api/` or `testdomain/`).
 | `AggregateOwner.scala` (with `OwnerSettings`), `AggregateRestorer.scala`, `OutboxWriter.scala`, `SquashScheduler.scala` (M3) | `aggregate/` |
 | `ReplayAggregateRepositoryActor.scala` (the 0.12 replayer's, until M4) | `aggregaterepository/` |
 | `PostgresEventStoreState.scala`, `PostgresEventStoreSchemaInitializer.scala`, `EventStoreState.scala` | `eventstore/` |
-| `EventsBusActor.scala`, `SubscriptionClassifier.scala` | `eventbus/` |
+| `EventsBusActor.scala` | `eventbus/` |
+| `UidGeneratorActor.scala`, `IdPool.scala` (ids from pools fetched ahead, M3) | `uid/` |
+| `BlockingDispatcher.scala` (F27) and `reference.conf` (`reactivecqrs.blocking-dispatcher`) | `util/`, `core/src/main/resources/` |
 | `SequenceGate.scala`, `RedeliveryPolicy.scala`, `OutboxPollerActor.scala`, `Republish.scala` (the delivery module, M2) | `delivery/` |
 | `OutboxDeletes.scala` (batched outbox deletes) | `eventstore/` |
 | `Backoff.scala` (retry waits, AR6) | `util/` |
@@ -252,12 +254,13 @@ abstract class AggregateContext[R : ClassTag] {           // AggregateContext.sc
 
 ## 3. Write path: command → events
 
-1. **Routing** (`AggregateCommandBusActor.routeCommand`). The bus takes a `CommandId` (and,
-   for a `FirstCommand` without `chosenAggregateId`, a new `AggregateId`) from in-memory
-   pools. When a pool is empty it calls `UidGeneratorActor` with a **blocking** `Await` of up
-   to 60 s (F23, until M3's performance step); a failing generator is answered with
-   `CommandHandlingError` (F75), a message the bus does not understand with `Status.Failure`
-   (F70). It sends `CommandEnvelope(respondTo, commandId, command)` to the aggregate's
+1. **Routing** (`AggregateCommandBusActor.route`). The bus takes a `CommandId` (and, for a
+   `FirstCommand` without `chosenAggregateId`, a new `AggregateId`) from pools of 10 000 that it
+   asks `UidGeneratorActor` for ahead, when a fifth is left (`IdPool`, F23: no `Await`). A command
+   that arrives while no id is at hand waits, with the ones after it, until the pool comes; the
+   bus keeps answering other messages meanwhile. When a pool does not come, the waiting
+   commands get `CommandHandlingError` (F75), and the next command asks again; a message the
+   bus does not understand gets `Status.Failure` (F70). It sends `CommandEnvelope(respondTo, commandId, command)` to the aggregate's
    `AggregateOwner`, creating it if needed; an id just taken from the pool makes a *fresh*
    owner, which skips the restore query.
 2. **Idempotency** (`AggregateOwner.attempt`). For an `IdempotentCommand` with a key, a
@@ -417,6 +420,15 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   messages. Reasons: reaping (below), a permanent delete, a failed restore, and
   `PassivateAggregate(id)` (operations, tests). It is Cluster Sharding's passivation (D43,
   D72), so M5 can put a shard in the bus's place without changing the owner.
+- **Dispatchers (F27, since M3):** owners run on `reactivecqrs.blocking-dispatcher` (the
+  library's `reference.conf`: a fixed pool of 32 threads, throughput 1; size it near the JDBC
+  pool), so persisting stays synchronous on the owner's thread (F69) without holding up the
+  default dispatcher; command handlers, the application's code, run as futures on the default
+  one. The command bus stays on the host's dispatcher and runs its JDBC (historical reads, the
+  permanent delete, expired responses) in futures on the blocking dispatcher, as do the uid
+  generator, the saga state, the outbox poller and the squash scheduler. Projections are made
+  by the host: `Props(...).withDispatcher(BlockingDispatcher.id)`; one left on the default
+  dispatcher logs a warning at start.
 - **Reaping** (`AggregateCommandBusActor.clearOldAggregateRepositories`): at most every 5
   minutes, and only when a message for some owner arrives. When more than `keepAliveLimit`
   (200) owners are tracked, the least recently used ones idle for more than 2 minutes are
@@ -544,16 +556,16 @@ asks it for its subscriptions (`GetSubscriptionRequests` → `SubscriptionReques
 stashes everything else until all have answered, logging the missing ones on each tick. A
 subscriber that stops before answering is dropped. Subscriptions are fixed after start.
 
-**Routing.** For each subscription of the event's aggregate type that accepts the event:
+**Routing.** Every subscription of the event's aggregate type gets it (since M3 there are no
+subscription classifiers, AR8: the sequence gate needs every version):
 
-| Subscription request | Classifier | Message sent | Listener kind (§6.2) |
-|---|---|---|---|
-| `SubscribeForEvents` | `SubscriptionClassifier` (aggregate id + event type) | `IdentifiableEvents(type, id, events, replayed)` | `EventsListener` |
-| `SubscribeForAggregates` | `AggregateSubscriptionClassifier` (id only) | `AggregateWithType(type, id, lastVersion, versions, root, replayed)` | `AggregateListener` |
-| `SubscribeForAggregatesWithEvents` | `SubscriptionClassifier` | `AggregateWithTypeAndEvents(type, id, root, events, replayed)` | `AggregateWithEventsListener` |
+| Subscription request | Message sent | Listener kind (§6.2) |
+|---|---|---|
+| `SubscribeForEvents` | `IdentifiableEvents(type, id, events, replayed)` | `EventsListener` |
+| `SubscribeForAggregates` | `AggregateWithType(type, id, lastVersion, versions, root, replayed)` | `AggregateListener` |
+| `SubscribeForAggregatesWithEvents` | `AggregateWithTypeAndEvents(type, id, root, events, replayed)` | `AggregateWithEventsListener` |
 
-`root` is the aggregate state after the delivered batch. `ProjectionActor` subscribes with
-accept-all classifiers.
+`root` is the aggregate state after the delivered batch.
 
 **Deliveries (D7, D20b).** The bus keeps no cursor. It keeps one delivery per event with the
 subscriptions it waits for, one per (subscriber, `DeliveryKind`): a projection with an events
@@ -577,8 +589,8 @@ with a gap or a retry goes to the type's command bus as `RepublishRange(id, from
 subscriber)`; the owner re-publishes `from` to its current version to that subscriber only
 (D20c).
 
-**Failures inside the bus (AR7).** A message the bus fails on (a classifier that throws) is
-logged and dropped. A restart would lose every delivery and the subscriptions.
+**Failures inside the bus (AR7).** A message the bus fails on (a malformed one) is logged and
+dropped. A restart would lose every delivery and the subscriptions.
 
 **Back-pressure.** Only for the replayer (until M4): `ConsumerStart`/`ConsumerStop` and
 `ConsumerAllowedMore`, bounded by `DeliveryOptions.maxReplayBuffer` (10 000) replayed events
@@ -833,8 +845,9 @@ id, is answered with `SagaFailureResponse` (F75). Pending sagas are read complet
 any is started, so a failed load is retried (without limit) without starting a saga twice,
 and a restart of the actor does not load them again (F75). `updateSaga` and `deleteSaga` report whether the row was
 there; a saga whose row vanished is stopped with an error log. The table has a unique
-index on `(name, saga_id)`, built `CONCURRENTLY`. Still open: the blocking id-pool `Await`
-(F23, M3).
+index on `(name, saga_id)`, built `CONCURRENTLY`. Saga ids come from pools fetched ahead
+(F23); an order that arrives while none is at hand waits for the pool, and is refused if the
+pool does not come. The saga state's JDBC calls run on the blocking dispatcher (F27).
 
 ---
 
@@ -881,8 +894,6 @@ before a permanent delete (F76). The most serious ones still open:
 
 - **F58:** a rebuild leaves out undone events, and the gaps stall it unless the owner can be
   asked for them (High; M4 replaces the replayer).
-- **F23, F27:** the command bus blocks while it fetches an id pool; JDBC work runs on the
-  default dispatcher (M3).
 - **F82:** the replayer stops the JVM when a replay stalls (M4).
 
 ---

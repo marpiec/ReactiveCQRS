@@ -2,7 +2,7 @@ package io.reactivecqrs.testdomain.spec
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.{AggregateId, UserId}
+import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
@@ -34,6 +34,30 @@ class SluggishAggregateContext extends AggregateContext[Sluggish] {
   }
   override def eventHandlers = (_, _, root) => {
     case _ => root
+  }
+}
+
+case class ThreadsProbe()
+case class StartThreadsProbe(userId: UserId) extends FirstCommand[ThreadsProbe, CustomCommandResponse[_]]
+case class ThreadsProbeStarted() extends FirstEvent[ThreadsProbe] {
+  def spaceId: SpaceId = SpaceId(0)
+}
+
+/** Records the threads its command handler and its event handler run on (F27). */
+class ThreadsProbeContext extends AggregateContext[ThreadsProbe] {
+  val commandHandlerThread = new java.util.concurrent.atomic.AtomicReference[String]()
+  val eventHandlerThread = new java.util.concurrent.atomic.AtomicReference[String]()
+  override val version: Int = 1
+  override def initialAggregateRoot: ThreadsProbe = ThreadsProbe()
+  override def commandHandlers = _ => {
+    case _: StartThreadsProbe =>
+      commandHandlerThread.set(Thread.currentThread.getName)
+      CommandSuccess(ThreadsProbeStarted())
+  }
+  override def eventHandlers = (_, _, root) => {
+    case _: ThreadsProbeStarted =>
+      eventHandlerThread.set(Thread.currentThread.getName)
+      root
   }
 }
 
@@ -151,6 +175,56 @@ class CommandOutcomesSpec extends CommonSpec {
       And("reserving an aggregate id fails at once too")
       Await.ready(idlessBus ? ReserveAggregateId, 10.seconds).value.get.failed.get.getMessage mustBe "sequence unavailable"
     }
+  }
+
+  Feature("Where the work runs (F27)") {
+    Scenario("an owner persists, and applies events, on the blocking dispatcher; command handlers run on the default one") {
+      val probe = new ThreadsProbeContext
+      val bus = system.actorOf(AggregateCommandBusActor(probe, uidGenerator, eventStore, commandResponseState, eventBus, eventsReplayMode = false))
+      val started: CustomCommandResponse[_] = bus ?? StartThreadsProbe(userId)
+      started mustBe a[SuccessResponse]
+
+      probe.eventHandlerThread.get must include("reactivecqrs.blocking-dispatcher")
+      probe.commandHandlerThread.get must include("pekko.actor.default-dispatcher")
+    }
+  }
+
+  Feature("A command bus whose id generator is slow (F23)") {
+    Scenario("keeps answering other messages while a command waits for ids, and runs it when they come") {
+      implicit val timeout: Timeout = Timeout(10.seconds)
+      val commandIds = new GatedUidGenerator(poolSize = 2)
+      val bus = system.actorOf(AggregateCommandBusActor(new ShoppingCartAggregateContext,
+        system.actorOf(Props(new UidGeneratorActor(new PostgresUidGenerator("aggregates_uids_seq"), commandIds, new PostgresUidGenerator("sagas_uids_seq")))),
+        eventStore, commandResponseState, eventBus, eventsReplayMode = false))
+      val cartId = Await.result((bus ? ReserveAggregateId).mapTo[AggregateId], 5.seconds)
+
+      Given("a cart made with the two ids of the first pool; the next pool is held back")
+      Await.result(bus ? CreateShoppingCartWithId(None, userId, cartId, "Groceries"), 5.seconds) mustBe SuccessResponse(cartId, AggregateVersion(1))
+      Await.result(bus ? AddItem(userId, cartId, AggregateVersion(1), "apple"), 5.seconds) mustBe SuccessResponse(cartId, AggregateVersion(2))
+
+      When("a command needs an id")
+      val waiting = bus ? AddItem(userId, cartId, AggregateVersion(2), "pear")
+
+      Then("a query is answered meanwhile, and the command waits")
+      Await.result((bus ? GetAggregate(cartId)).mapTo[Try[Aggregate[ShoppingCart]]], 1.second).get.version mustBe AggregateVersion(2)
+      waiting.isCompleted mustBe false
+
+      And("it runs once the pool comes")
+      commandIds.release()
+      Await.result(waiting, 5.seconds) mustBe SuccessResponse(cartId, AggregateVersion(3))
+    }
+  }
+}
+
+/** Hands out its first pool at once; every later one only after `release`, like a slow sequence. */
+class GatedUidGenerator(poolSize: Long) extends UidGenerator {
+  private val gate = new java.util.concurrent.CountDownLatch(1)
+  private val pools = new java.util.concurrent.atomic.AtomicInteger(0)
+  private val next = new java.util.concurrent.atomic.AtomicLong(System.nanoTime())
+  def release(): Unit = gate.countDown()
+  override def nextIdsPool: IdsPool = {
+    if (pools.getAndIncrement() > 0) gate.await(20, java.util.concurrent.TimeUnit.SECONDS)
+    IdsPool(next.getAndAdd(poolSize), poolSize)
   }
 }
 

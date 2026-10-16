@@ -1,9 +1,9 @@
 package io.reactivecqrs.core.uid
 
 import org.apache.pekko.actor.{Actor, ActorRef, Status}
-import io.reactivecqrs.core.util.MyActorLogging
+import io.reactivecqrs.core.util.{BlockingDispatcher, MyActorLogging}
 
-import scala.concurrent.Future
+import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success}
 
 case class NewAggregatesIdsPool(from: Long, size: Long)
@@ -32,7 +32,7 @@ class UidGeneratorActor(aggregatesUidGenerator: UidGenerator,
 
   // A failure is sent back too, so the requester fails at once instead of waiting out its timeout (F40).
   private def replyWithPool(respondTo: ActorRef, kind: String, generator: UidGenerator)(reply: IdsPool => Any): Unit = {
-    import context.dispatcher
+    implicit val blocking: ExecutionContext = BlockingDispatcher(context.system) // F27
     Future(generator.nextIdsPool).onComplete {
       case Success(pool) => respondTo ! reply(pool)
       case Failure(e) =>

@@ -18,7 +18,6 @@ object AggregateType {
   def ofClass(rootClass: Class[_]): AggregateType = AggregateType(rootClass.getName.replace('$', '.'))
 }
 
-case class EventType(typeName: String)
 
 case class Aggregate[AGGREGATE_ROOT](id: AggregateId, version: AggregateVersion, aggregateRoot: Option[AGGREGATE_ROOT])
 

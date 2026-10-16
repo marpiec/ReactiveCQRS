@@ -242,16 +242,9 @@ class EventsBusActorSpec extends CommonSpec {
 
     Scenario("a publication the bus fails on is dropped without an ack, and the bus keeps routing") {
       val (a, owner) = (TestProbe(), TestProbe())
-      val poisoned = newId()
-      val bus = newBus()
-      bus ! RegisterSubscribers(Seq(a.ref))
-      a.expectMsg(GetSubscriptionRequests)
-      a.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, a.ref, new SubscriptionClassifier {
-        override def accept(aggregateId: AggregateId, eventType: EventType): Boolean =
-          if (aggregateId == poisoned) throw new IllegalStateException("classifier failed") else true
-      }))))
+      val bus = busWith(a)
 
-      publish(bus, owner, poisoned, 1)
+      owner.send(bus, PublishEvents[Any](cartType, null, newId(), None)) // malformed: no events at all
       owner.expectNoMessage(300.millis)
 
       val id = newId()

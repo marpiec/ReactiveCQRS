@@ -14,7 +14,7 @@ import org.apache.pekko.actor.{Actor, ActorRef, Cancellable}
 import org.postgresql.util.PSQLException
 
 import scala.collection.mutable
-import scala.concurrent.Future
+import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration._
 import scala.reflect.{ClassTag, classTag}
 import scala.util.control.NonFatal
@@ -91,6 +91,8 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
   import AggregateOwner._
   import settings._
   import context.dispatcher
+  // F27: the owner runs on the blocking dispatcher; command handlers are the application's code and run on the default one.
+  private val handlersContext: ExecutionContext = context.system.dispatcher
 
   private var version: AggregateVersion = AggregateVersion.ZERO
   private var root: AGGREGATE_ROOT = initialState()
@@ -287,7 +289,7 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
         case done: CustomCommandResult[_] => Future.successful(done)
         case AsyncCommandResult(future) => future
       }
-    }.flatten.onComplete(result => self ! HandlerFinished(envelope.commandId, result))
+    }(handlersContext).flatten.onComplete(result => self ! HandlerFinished(envelope.commandId, result))(handlersContext)
   }
 
   private def handlerFinished(commandId: CommandId, result: Try[CustomCommandResult[Any]]): Unit = {

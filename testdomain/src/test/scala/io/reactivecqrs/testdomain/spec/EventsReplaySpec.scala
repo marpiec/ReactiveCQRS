@@ -12,6 +12,7 @@ import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection.{MemorySubscriptionsState, ProjectionActor, SubscriptionsState}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
+import io.reactivecqrs.core.util.BlockingDispatcher
 import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
 import org.apache.pekko.actor.{ActorRef, Props}
 
@@ -77,7 +78,7 @@ class EventsReplaySpec extends CommonSpec {
   /** A bus with one new projection, as a rebuild starts from cleared read models. */
   private def projectionOnNewBus(): (ActorRef, ActorRef) = {
     val bus = system.actorOf(Props(new EventsBusActor()))
-    val projection = system.actorOf(Props(new ReplayNotesProjection(new MemorySubscriptionsState)))
+    val projection = system.actorOf(Props(new ReplayNotesProjection(new MemorySubscriptionsState)).withDispatcher(BlockingDispatcher.id))
     bus ! RegisterSubscribers(Seq(projection))
     (bus, projection)
   }

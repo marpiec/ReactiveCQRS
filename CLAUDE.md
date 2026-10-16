@@ -155,8 +155,8 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
   type. Keeps one `AggregateOwner` per aggregate; stops idle ones (default keep-alive 200,
   sweep every 5 min) by passivation: `StopOwner`, keeping the messages that arrive meanwhile
   for a new owner. Deletes delivered outbox rows (acks come to it, F91).
-  Allocates ids from pools via the UID generator (still with a blocking `Await`, F23;
-  a failing generator is answered with `CommandHandlingError`, F75).
+  Allocates ids from pools of 10 000 fetched ahead (`IdPool`, F23: no `Await`; a command waits
+  for a late pool, and a failing generator is answered with `CommandHandlingError`, F75).
 - **`AggregateOwner`** (`core/.../aggregate/`) — the source of truth for one aggregate
   instance (replaced the command handler, the per-command executors and the repository
   actor in M3). On first access it restores the root and version through `AggregateRestorer`:
@@ -249,6 +249,9 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
   dispatcher thread, not the actor thread, so they must **not** touch the actor's
   `var`s/mutable maps. Several places use fire-and-forget Futures — check whether
   they close over actor state.
+- **Blocking work** (JDBC) runs on `reactivecqrs.blocking-dispatcher` (`BlockingDispatcher`, F27): owners
+  run on it; other actors run their JDBC in futures on it and get the result back as a message.
+  Command handlers run on the default dispatcher. Never touch `context` from a callback.
 - **`sender()` capture**: never call `sender()` inside a `Future`/callback; capture
   it into a val first.
 - **SQL** is written with ScalikeJDBC. Two styles coexist: the `sql"..."`

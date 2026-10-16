@@ -194,6 +194,11 @@ describes the result.
 - **Smaller ones:** no global lock in the `AggregateId` pool (F32); lazy log strings (F33);
   the document-store migration in one transaction (F43).
 
+**As built (16/10/2026):** command handlers run on the default dispatcher, not the owner's;
+the outbox poller and the squash scheduler read in futures on the blocking dispatcher instead
+of running on it; aggregate type keys are Scala's full class names, as stored (D75); AR8 removed
+the subscription classifiers; F43 stays in M4 with the document-store rework.
+
 ## Looking ahead
 
 - **M4 rebuild** reads states through the restore module (snapshot plus tail, D59, D62) and

@@ -11,6 +11,7 @@ import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection.{PostgresSubscriptionsState, SubscriptionsState}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
+import io.reactivecqrs.core.util.BlockingDispatcher
 import org.apache.pekko.actor.{ActorRef, ActorSystem, Props}
 import scalikejdbc._
 
@@ -91,8 +92,8 @@ class BenchSystem(name: String, stores: BenchStores, projections: Boolean, rebui
   private val subscribers = if (projections) {
     val progress = new PostgresDocumentStore[CounterProgress](name + "_progress", stores.mpjsons, new NoopDocumentStoreCache[CounterProgress, AnyRef])
     val state = new PostgresDocumentStore[Counter](name + "_state", stores.mpjsons, new NoopDocumentStoreCache[Counter, AnyRef])
-    List(system.actorOf(Props(new CountingProjection(subscriptionsState, progress, name + "Progress", failing)), "progressProjection"),
-      system.actorOf(Props(new CounterStateProjection(subscriptionsState, state, name + "State")), "stateProjection"))
+    List(system.actorOf(Props(new CountingProjection(subscriptionsState, progress, name + "Progress", failing)).withDispatcher(BlockingDispatcher.id), "progressProjection"),
+      system.actorOf(Props(new CounterStateProjection(subscriptionsState, state, name + "State")).withDispatcher(BlockingDispatcher.id), "stateProjection"))
   } else Nil
   eventBus ! EventsBusActor.RegisterSubscribers(subscribers)
 

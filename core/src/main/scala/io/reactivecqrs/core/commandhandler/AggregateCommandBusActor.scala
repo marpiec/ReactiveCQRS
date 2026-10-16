@@ -2,29 +2,31 @@ package io.reactivecqrs.core.commandhandler
 
 import java.time.Instant
 import org.apache.pekko.actor.{Actor, ActorRef, OneForOneStrategy, Props, Status, SupervisorStrategy, Terminated}
-import org.apache.pekko.pattern.ask
+import org.apache.pekko.pattern.{ask, pipe}
 import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId}
 import io.reactivecqrs.core.aggregate.AggregateOwner._
 import io.reactivecqrs.core.aggregate.{AggregateOwner, OwnerSettings}
-import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{PassivateAggregate, RemoveExpiredResponses}
+import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{DeletedPermanently, IdsNotReceived, PassivateAggregate, RemoveExpiredResponses}
 import io.reactivecqrs.core.delivery.RepublishRequest
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventsAck, RegisterPublisher}
 import io.reactivecqrs.core.eventstore.EventStoreState
-import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
-import io.reactivecqrs.core.util.{MyActorLogging, RandomUtil}
+import io.reactivecqrs.core.uid.{IdPool, NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
+import io.reactivecqrs.core.util.{BlockingDispatcher, MyActorLogging, RandomUtil}
 import org.slf4j.Logger
 
 import scala.collection.mutable
 import scala.concurrent.duration._
-import scala.concurrent.{Await, Future}
+import scala.concurrent.{ExecutionContext, Future}
 import scala.reflect.ClassTag
 import scala.util.{Failure, Random, Success, Try}
 
 object AggregateCommandBusActor {
 
   private case object RemoveExpiredResponses
+  private case class IdsNotReceived(ofAggregates: Boolean, error: Throwable)
+  private case class DeletedPermanently(id: AggregateId)
 
   /** Stops the aggregate's owner once the commands it started are answered; the next message for the aggregate starts a
     * new owner. The bus does the same by itself for owners idle for long; this is for operations and tests. */
@@ -64,11 +66,11 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   val aggregateTypeName: String = aggregateType.typeName
   val aggregateTypeSimpleName: String = aggregateRootClassTag.runtimeClass.getSimpleName
 
-  private var nextAggregateId = 0L
-  private var remainingAggregateIds = 0L
-
-  private var nextCommandId = 0L
-  private var remainingCommandsIds = 0L
+  // F23: ids come from pools fetched ahead. While a command (or an id reservation) waits for a pool, the ones that arrive
+  // after it wait too, in order.
+  private val aggregateIds = new IdPool
+  private val commandIds = new IdPool
+  private var waitingForIds = Vector[(Any, ActorRef)]()
 
   private val owners = mutable.HashMap[Long, ActorRef]()
   private val ownerIds = mutable.HashMap[ActorRef, Long]()
@@ -91,6 +93,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   override def preStart(): Unit = {
     // The event bus routes re-publish requests for this aggregate type here (D8, D20c).
     eventBus ! RegisterPublisher(aggregateType, self)
+    askForIds()
     if (!eventsReplayMode) {
       // Hourly, at a random minute, so the buses of different aggregate types do not all clean up at once.
       val firstCleanUp = (60 + Random.nextInt(3600)).seconds
@@ -99,7 +102,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   }
 
   private def removeExpiredResponses(): Unit = {
-    import context.dispatcher
+    implicit val blocking: ExecutionContext = BlockingDispatcher(context.system)
     Future(idempotency.removeExpired()).onComplete {
       case Failure(e) => log.warning("Removing expired idempotent command responses failed: " + e.getMessage)
       case Success(removed) => if (removed > 0) log.info("Removed " + removed + " expired idempotent command responses")
@@ -111,11 +114,11 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   }
 
   override def receive: Receive = logReceive {
-    case c: FirstCommand[_,_] => routeCommand(c, () => c.chosenAggregateId.getOrElse(takeNextAggregateId), fresh = c.chosenAggregateId.isEmpty)
-    case c: ConcurrentCommand[_,_] => routeCommand(c, () => c.aggregateId)
-    case c: RewriteHistoryCommand[_,_] => routeCommand(c, () => c.aggregateId)
-    case c: RewriteHistoryConcurrentCommand[_,_] => routeCommand(c, () => c.aggregateId)
-    case c: Command[_,_] => routeCommand(c, () => c.aggregateId)
+    case c @ (_: FirstCommand[_, _] | _: ConcurrentCommand[_, _] | _: RewriteHistoryCommand[_, _] | _: RewriteHistoryConcurrentCommand[_, _] |
+              _: Command[_, _] | ReserveAggregateId) => withIds(c, sender())
+    case NewAggregatesIdsPool(from, size) => aggregateIds.received(from, size); serveWaiting(); askForIds()
+    case NewCommandsIdsPool(from, size) => commandIds.received(from, size); serveWaiting(); askForIds()
+    case IdsNotReceived(ofAggregates, e) => idsNotReceived(ofAggregates, e)
     case GetAggregate(id) => toOwner(id, GetState(sender()))
     case GetAggregateMinVersion(id, version, maxMillis) => toOwner(id, GetStateMinVersion(sender(), version, maxMillis))
     case GetEventsForAggregate(id) => toOwner(id, GetEvents(sender()))
@@ -126,14 +129,9 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
     // Re-publications count as activity, so the owners they start are stopped like others when idle.
     case m: RepublishRequest => toOwner(m.aggregateId, m)
     case request: SquashAggregate => toOwner(request.id, Squash(sender(), request))
-    case ReserveAggregateId =>
-      val respondTo = sender()
-      Try(takeNextAggregateId) match {
-        case Success(id) => respondTo ! id
-        case Failure(e) => respondTo ! Status.Failure(e)
-      }
     case RemoveExpiredResponses => removeExpiredResponses()
     case PassivateAggregate(id) => stopOwner(id.asLong)
+    case DeletedPermanently(id) => stopOwner(id.asLong) // its state is gone
     case OwnerPassivate => ownerIds.get(sender()).foreach(stopOwner)
     case Terminated(ref) => ownerTerminated(ref)
     case m =>
@@ -143,19 +141,64 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
       sender() ! Status.Failure(new IllegalArgumentException("Cannot handle this kind of message: " + m + " class: " + m.getClass+". Maybe it should extend Command trait."))
   }
 
-  // A failure while routing one command, such as the uid generator failing, is answered, not thrown: a throw would
-  // restart the bus, which stops its children and every command in flight (F75, AR7).
-  private def routeCommand(command: Any, aggregateIdOf: () => AggregateId, fresh: Boolean = false): Unit = {
-    val respondTo = sender()
-    try {
-      val commandId = takeNextCommandId
-      toOwner(aggregateIdOf(), CommandEnvelope(respondTo, commandId, command), fresh)
-    } catch {
-      case e: Exception =>
+  // ************** Ids (F23)
+
+  private def withIds(message: Any, respondTo: ActorRef): Unit = {
+    if (waitingForIds.nonEmpty || !route(message, respondTo)) waitingForIds :+= (message -> respondTo)
+    askForIds()
+  }
+
+  private def serveWaiting(): Unit =
+    while (waitingForIds.nonEmpty && route(waitingForIds.head._1, waitingForIds.head._2)) waitingForIds = waitingForIds.tail
+
+  private def needsAggregateId(message: Any): Boolean = message match {
+    case c: FirstCommand[_, _] => c.chosenAggregateId.isEmpty
+    case ReserveAggregateId => true
+    case _ => false
+  }
+
+  // Routes the message if the ids it needs are at hand, taking them; otherwise takes nothing and says so.
+  private def route(message: Any, respondTo: ActorRef): Boolean = {
+    val ready = (message == ReserveAggregateId || commandIds.available) && (!needsAggregateId(message) || aggregateIds.available)
+    if (ready) message match {
+      case ReserveAggregateId => respondTo ! AggregateId(aggregateIds.take())
+      case c: FirstCommand[_, _] => routeCommand(c, respondTo, c.chosenAggregateId.getOrElse(AggregateId(aggregateIds.take())), fresh = c.chosenAggregateId.isEmpty)
+      case c: ConcurrentCommand[_, _] => routeCommand(c, respondTo, c.aggregateId)
+      case c: RewriteHistoryCommand[_, _] => routeCommand(c, respondTo, c.aggregateId)
+      case c: RewriteHistoryConcurrentCommand[_, _] => routeCommand(c, respondTo, c.aggregateId)
+      case c: Command[_, _] => routeCommand(c, respondTo, c.aggregateId)
+      case other => log.error("Not a command: " + other.getClass.getName) // receive passes only commands and reservations
+    }
+    ready
+  }
+
+  private def routeCommand(command: Any, respondTo: ActorRef, aggregateId: AggregateId, fresh: Boolean = false): Unit =
+    toOwner(aggregateId, CommandEnvelope(respondTo, CommandId(commandIds.take()), command), fresh)
+
+  private def askForIds(): Unit = {
+    import context.dispatcher
+    implicit val timeout: Timeout = Timeout(60.seconds)
+    if (aggregateIds.shouldAsk) (uidGenerator ? UidGeneratorActor.GetNewAggregatesIdsPool).recover { case e => IdsNotReceived(ofAggregates = true, e) }.pipeTo(self)
+    if (commandIds.shouldAsk) (uidGenerator ? UidGeneratorActor.GetNewCommandsIdsPool).recover { case e => IdsNotReceived(ofAggregates = false, e) }.pipeTo(self)
+  }
+
+  // The waiting messages that need such ids are answered with the failure (F75: answered, not thrown, AR7). The pool is
+  // asked for again when the next message arrives, not at once, so a generator that is down is not asked in a loop.
+  private def idsNotReceived(ofAggregates: Boolean, e: Throwable): Unit = {
+    if (ofAggregates) aggregateIds.failed() else commandIds.failed()
+    log.error(e, "No pool of " + (if (ofAggregates) "aggregate" else "command") + " ids for " + aggregateTypeSimpleName + " came")
+    val (failing, others) = waitingForIds.partition { case (message, _) =>
+      if (ofAggregates) needsAggregateId(message) else message != ReserveAggregateId
+    }
+    waitingForIds = others
+    failing.foreach {
+      case (ReserveAggregateId, respondTo) => respondTo ! Status.Failure(e)
+      case (command, respondTo) =>
         val errorId = RandomUtil.generateRandomString(16)
-        log.error(e, "Cannot route command " + command.getClass.getSimpleName + ", errorId: [" + errorId + "]")
+        log.error("Cannot route command " + command.getClass.getSimpleName + " without ids, errorId: [" + errorId + "]")
         respondTo ! CommandHandlingError(command.getClass.getSimpleName, errorId, CommandId(0)) // no command id was assigned
     }
+    serveWaiting()
   }
 
   private def toOwner(id: AggregateId, message: Any, fresh: Boolean = false): Unit = {
@@ -170,7 +213,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   }
 
   private def createOwner(id: AggregateId, fresh: Boolean): ActorRef = {
-    val owner = context.actorOf(Props(new AggregateOwner[AGGREGATE_ROOT](id, settings, fresh)), aggregateTypeSimpleName + "_" + id.asLong + "_" + spawnedCount)
+    val owner = context.actorOf(Props(new AggregateOwner[AGGREGATE_ROOT](id, settings, fresh)).withDispatcher(BlockingDispatcher.id), aggregateTypeSimpleName + "_" + id.asLong + "_" + spawnedCount)
     spawnedCount += 1
     context.watch(owner)
     ownerIds += owner -> id.asLong
@@ -200,13 +243,14 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   // Historical reads need no owner: the aggregate is read up to the version or instant, outside the actor's thread.
   private def historicalRead(id: AggregateId)(read: => Any): Unit = {
     val respondTo = sender()
-    Future(read)(context.dispatcher).onComplete {
+    implicit val blocking: ExecutionContext = BlockingDispatcher(context.system)
+    Future(read).onComplete {
       case Success(answer) => respondTo ! Success(answer)
       case Failure(e: AggregateSquashedException) => respondTo ! Failure(e) // D51: an answer, not a failure of the store
       case Failure(e) =>
         log.error(e, "Reading aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " failed")
         respondTo ! Failure(new AggregateRestoreFailedException(id, aggregateType, e))
-    }(context.dispatcher)
+    }
   }
 
   private def aggregateAt(id: AggregateId, at: Either[AggregateVersion, Instant]): Aggregate[AGGREGATE_ROOT] = {
@@ -220,26 +264,31 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   // and the ack of its next re-publication tries again. A live owner gets the ack to continue re-publishing its outbox.
   private def delivered(ack: PublishEventsAck): Unit = {
     val id = ack.aggregateId
-    Try {
-      ack.permanentDeleteAt match {
-        case Some(at) =>
-          def notYet(): Unit = eventStoreState.deletePublished(id, ack.versions.filterNot(_ == at))
-          detachingDuplicates(id) match {
-            case Right(detach) => eventStoreState.deleteAggregatePermanently(id, detach) match {
-              case Right(()) => stopOwner(id.asLong) // its state is gone
-              case Left(reason) =>
-                log.warning("Aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " is not deleted yet: " + reason)
-                notYet()
-            }
-            case Left(reason) =>
-              log.error("Aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " is not deleted: " + reason)
-              notYet()
-          }
-        case None =>
-          eventStoreState.deletePublished(id, ack.versions)
-      }
-    }.failed.foreach(e => log.error(e, "Removing delivered events of aggregate " + id.asLong + " from the outbox failed; they are re-published later"))
+    ack.permanentDeleteAt match {
+      case Some(at) => deletePermanently(id, ack.versions.filterNot(_ == at))
+      case None => Try(eventStoreState.deletePublished(id, ack.versions)).failed.foreach(e =>
+        log.error(e, "Removing delivered events of aggregate " + id.asLong + " from the outbox failed; they are re-published later"))
+    }
     if (!keptForStopping.contains(id.asLong)) owners.get(id.asLong).foreach(_ ! ack)
+  }
+
+  // F27: off this bus's thread, as it restores the duplicates first (F76); the owner is stopped once the state is gone.
+  private def deletePermanently(id: AggregateId, otherVersions: Seq[AggregateVersion]): Unit = {
+    implicit val blocking: ExecutionContext = BlockingDispatcher(context.system)
+    Future {
+      val deleted = detachingDuplicates(id).left.map(reason => (reason, true))
+        .flatMap(detach => eventStoreState.deleteAggregatePermanently(id, detach).left.map(reason => (reason, false)))
+      deleted.left.foreach { case (reason, forGood) =>
+        if (forGood) log.error("Aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " is not deleted: " + reason)
+        else log.warning("Aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " is not deleted yet: " + reason)
+        eventStoreState.deletePublished(id, otherVersions)
+      }
+      deleted.isRight
+    }.onComplete {
+      case Success(true) => self ! DeletedPermanently(id)
+      case Success(false) => ()
+      case Failure(e) => log.error(e, "Deleting aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " failed; it is tried again when its event is delivered again")
+    }
   }
 
   // F76: duplicates that read the aggregate's history would lose it with the delete, so each is detached first, with a
@@ -276,38 +325,4 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
     }
   }
 
-  private def takeNextAggregateId: AggregateId = {
-    if(remainingAggregateIds == 0) {
-      // TODO get rid of ask pattern
-      implicit val timeout: Timeout = Timeout(60 seconds)
-      val pool: Future[NewAggregatesIdsPool] = (uidGenerator ? UidGeneratorActor.GetNewAggregatesIdsPool).mapTo[NewAggregatesIdsPool]
-      val newAggregatesIdsPool: NewAggregatesIdsPool = Await.result(pool, 60 seconds)
-      remainingAggregateIds = newAggregatesIdsPool.size
-      nextAggregateId = newAggregatesIdsPool.from
-    }
-
-    remainingAggregateIds -= 1
-    val aggregateId = AggregateId(nextAggregateId)
-    nextAggregateId += 1
-    aggregateId
-
-  }
-
-  private def takeNextCommandId: CommandId = {
-    if(remainingCommandsIds == 0) {
-      // TODO get rid of ask pattern
-      implicit val timeout: Timeout = Timeout(60 seconds)
-      val pool: Future[NewCommandsIdsPool] = (uidGenerator ? UidGeneratorActor.GetNewCommandsIdsPool).mapTo[NewCommandsIdsPool]
-      val newCommandsIdsPool: NewCommandsIdsPool = Await.result(pool, 60 seconds)
-      remainingCommandsIds = newCommandsIdsPool.size
-      nextCommandId = newCommandsIdsPool.from
-    }
-
-    remainingCommandsIds -= 1
-    val commandId = CommandId(nextCommandId)
-    nextCommandId += 1
-    commandId
-
-
-  }
 }
