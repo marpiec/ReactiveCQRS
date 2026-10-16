@@ -862,3 +862,43 @@ Open test-infrastructure items:
   Neula's and still open (`StoredDataCheck` for F52 with the F49 and D29 counts, the H4 grep
   for F53, the F76 query; H3–H5). They gate Neula's move to 1.0 (M7 runbook), not M2, so M1
   is tagged `v1.0.0-M1` with them open.
+
+### M2
+
+**16/10/2026: delivery design, `Backoff`, sequence gate, re-publication by the owner**
+- `docs/design/M2-delivery.md`: the delivery decisions as modules, messages, flows and the
+  order of the work. Refined: subscribers fill gaps by asking the owner to re-publish, for
+  all listener kinds (D20c); the outbox poller alone counts re-delivery attempts and the
+  deadline (D8, D20b).
+- `Backoff` (AR6) in `core/util`; the saga write and load retries use it (`BackoffSpec`).
+- `SequenceGate` (D4), pure: duplicate, apply from the next version (the F5 overlap), or
+  gap. Property test with 10 000 generated delivery histories per run (`SequenceGateSpec`).
+- The event store reads a range of an aggregate's own events, undone ones included (D60),
+  and the oldest outbox version. Owners answer `RepublishOutbox` and `RepublishRange` (to
+  one subscriber) with their current state (`RepublishSpec`, `EventStoreStateSpec`).
+
+**16/10/2026: bus rewrite (D7, D15, D20b; F1, F4, F11, F41, F42, F47, F79)**
+- `EventsBusActor` keeps no cursor. It keeps one delivery per event until every subscriber
+  has acknowledged or failed it (`MessageFailed`, D20a), the deadline passes (then
+  "undelivered": no ack, logged, listed by `GetDeliveryStatus`), or the subscriber stops
+  (watched). Only then does it ack the owner, grouped per owner and aggregate. A delivery
+  still waiting goes again only to the subscribers it waits for; a re-publication to one
+  subscriber never acks the owner. Stalls are logged once, with a periodic summary; the
+  timers are `Tick` messages (F79).
+- Start-up (D15): `RegisterSubscribers` from the host, `GetSubscriptionRequests` to each
+  subscriber, publications stashed until all have answered; command buses send
+  `RegisterPublisher`, and the bus routes `RequestRepublish` and `Republish` to them.
+  `EventBusState`, `EventBusSubscriptionsManager` and the bus schema initializer are deleted
+  (the unused tables stay, D24). Projections answer `GetSubscriptionRequests`; subscription
+  requests lost their unused message id.
+- AR7 for the bus: a message the bus fails on is logged and dropped. Before, a throwing
+  classifier restarted the bus, which then waited for a registration that never came again
+  (`EventsBusActorSpec`, 11 scenarios, red first with the old wrapper).
+- `EventsReplaySpec` (the F4 regression) replays notes of its own aggregate type after a
+  live projection applied them. Written after the fix; the M1 version of the spec had
+  reproduced F4. The M1 version, made a plain test again, failed in the full run for two
+  other reasons: it reused the read-model tables of `ReactiveTestDomainSpec`, and it replayed
+  carts with an undo, whose hidden versions stall a rebuild. F58 is raised to High (M4).
+- `FailedRestoreSpec` and `StoredDataCheckSpec` repair the events they damage, so later
+  specs in the run schema can read every stored event.
+- `sbt test`: core 87, testdomain 41, all pass.

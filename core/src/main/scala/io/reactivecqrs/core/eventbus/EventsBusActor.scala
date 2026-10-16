@@ -1,18 +1,19 @@
 package io.reactivecqrs.core.eventbus
 
 import java.time.Instant
-import org.apache.pekko.actor.{Actor, ActorRef}
-import org.apache.pekko.util.Timeout
+
+import org.apache.pekko.actor.{Actor, ActorRef, Stash, Terminated}
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.backpressure.BackPressureActor._
-import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventsAck, _}
-import io.reactivecqrs.core.util.{MyActorLogging, RandomUtil}
+import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
+import io.reactivecqrs.core.eventbus.EventsBusActor._
+import io.reactivecqrs.core.util.MyActorLogging
 import org.slf4j.Logger
 
 import scala.collection.mutable
-import scala.concurrent.Await
 import scala.concurrent.duration._
+import scala.util.control.NonFatal
 
 
 object EventsBusActor {
@@ -20,461 +21,341 @@ object EventsBusActor {
   /** Events of one aggregate, committed or re-published; `onlyTo` limits a re-publication to one subscriber. */
   case class PublishEvents[AGGREGATE_ROOT](aggregateType: AggregateType, events: Seq[EventInfo[AGGREGATE_ROOT]],
                                             aggregateId: AggregateId, aggregate: Option[AGGREGATE_ROOT], onlyTo: Option[ActorRef] = None)
+
+  /** To the publisher: every subscriber has acknowledged (or failed on) these versions, so their outbox rows can go. */
   case class PublishEventsAck(aggregateId: AggregateId, versions: Seq[AggregateVersion])
 
   case class PublishReplayedEvents[AGGREGATE_ROOT](aggregateType: AggregateType, events: Seq[EventInfo[AGGREGATE_ROOT]],
                                                    aggregateId: AggregateId, aggregate: Option[AGGREGATE_ROOT])
 
-  trait SubscribeRequest {
-
-    def summary: String
-
+  /** What one subscriber takes of one aggregate type: its events (`IdentifiableEvents`), its state with the versions
+    * (`AggregateWithType`), or both (`AggregateWithTypeAndEvents`). */
+  sealed trait SubscribeRequest {
+    def aggregateType: AggregateType
+    def subscriber: ActorRef
   }
+  case class SubscribeForEvents(aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier) extends SubscribeRequest
+  case class SubscribeForAggregates(aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier = AcceptAllAggregateIdClassifier) extends SubscribeRequest
+  case class SubscribeForAggregatesWithEvents(aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier) extends SubscribeRequest
 
-  case class SubscribeForEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier) extends SubscribeRequest {
-    override def summary = "for events of " + aggregateType.simpleName+" -> "+ subscriber.path.name
-  }
-  case class SubscribeForAggregates(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier = AcceptAllAggregateIdClassifier) extends SubscribeRequest {
-    override def summary = "for aggregates of " + aggregateType.simpleName+" -> "+ subscriber.path.name
-  }
-  case class SubscribeForAggregatesWithEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier = AcceptAllClassifier) extends SubscribeRequest {
-    override def summary = "for aggregates and events of " + aggregateType.simpleName+" -> "+ subscriber.path.name
-  }
+  // Start-up (D15): the host registers its subscribers; the bus asks each for its subscriptions and publishes nothing
+  // until all have answered. Command buses register as the publishers of their aggregate type.
+  case class RegisterSubscribers(subscribers: Seq[ActorRef])
+  case object GetSubscriptionRequests
+  case class SubscriptionRequests(requests: Seq[SubscribeRequest])
+  case class RegisterPublisher(aggregateType: AggregateType, publisher: ActorRef)
 
-  case class MessagesToRoute(subscriber: ActorRef, aggregateId: AggregateId, versions: Seq[AggregateVersion], message: AnyRef)
+  // From subscribers: a delivery applied (or already applied), a delivery the subscriber gave up on (D20a), or a
+  // request to re-publish from a version, for a gap or a retry (D20c).
   case class MessageAck(subscriber: ActorRef, aggregateId: AggregateId, versions: Seq[AggregateVersion])
+  case class MessageFailed(subscriber: ActorRef, aggregateId: AggregateId, versions: Seq[AggregateVersion], error: String)
+  case class RequestRepublish(subscriber: ActorRef, aggregateType: AggregateType, aggregateId: AggregateId, from: AggregateVersion)
+
+  /** From the outbox poller (D8): ask the aggregate's owner to re-publish what waits in its outbox. */
+  case class Republish(aggregateType: AggregateType, aggregateId: AggregateId)
+
+  case object GetDeliveryStatus
+  case class DeliveryStatus(waiting: Int, undelivered: Seq[Undelivered])
+  case class Undelivered(aggregateType: AggregateType, aggregateId: AggregateId, version: AggregateVersion, subscriber: String, at: Instant)
 
   object LogDetailedStatus
 
-  object InitEventBus
+  private case object Tick
 }
 
-abstract class Subscription {
-  val subscriptionId: String
-  val aggregateType: AggregateType
-}
-case class EventSubscription(subscriptionId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier) extends Subscription
-case class AggregateSubscription(subscriptionId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier) extends Subscription
-case class AggregateWithEventSubscription(subscriptionId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier) extends Subscription
+/**
+  * Timing of the bus. A delivery that is neither acknowledged nor failed by `deadline` ends as undelivered (its outbox
+  * row stays, so a restart delivers it again, D20b); one that waits `stallAfter` is logged once, and stalled deliveries
+  * are summed up every `summaryInterval`. `maxReplayBuffer` bounds the replayed events in flight (back-pressure).
+  */
+case class DeliveryOptions(deadline: FiniteDuration = 10.minutes,
+                           stallAfter: FiniteDuration = 1.minute,
+                           summaryInterval: FiniteDuration = 5.minutes,
+                           tickInterval: FiniteDuration = 5.seconds,
+                           maxReplayBuffer: Int = 10000)
 
+/**
+  * Routes events from their owners to the subscribers of their aggregate type and keeps one delivery per event until
+  * every subscriber has acknowledged or failed it (then the owner gets `PublishEventsAck`), the deadline passes, or the
+  * subscriber stops. It keeps no cursor (D7): subscribers drop duplicates by version, and re-deliveries come from
+  * the owners, asked by the outbox poller (D8) or by a subscriber with a gap (D20c). See docs/design/M2-delivery.md.
+  */
+class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger: Option[Logger] = None) extends Actor with Stash with MyActorLogging {
 
-// Glossary:
-// PUBLISHED - event was sent to all subscribers, but not necessarily confirmed
-// PROPAGATED - all subscribers confirmed receiving event
+  private case class EventKey(aggregateId: AggregateId, version: AggregateVersion)
 
+  /** One event's delivery to its subscribers. `publisher` is set for full publications only: a re-publication to one
+    * subscriber never acknowledges the owner, so it cannot delete outbox rows others still wait for. `incomplete`
+    * marks a delivery that some subscriber did not take (deadline, stop): its outbox row must stay. */
+  private case class Delivery(aggregateType: AggregateType, publisher: Option[ActorRef], firstSent: Long, awaiting: Set[ActorRef],
+                              replayed: Boolean, incomplete: Boolean, stallLogged: Boolean)
 
-/** TODO get rid of state, memory only */
-class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: EventBusSubscriptionsManagerApi, val MAX_BUFFER_SIZE: Int = 10000,
-                     eventsLogger: Option[Logger] = None) extends Actor with MyActorLogging {
+  private val deliveries = mutable.HashMap[EventKey, Delivery]()
+  private var subscriptions = Map[AggregateType, Vector[SubscribeRequest]]()
+  private var publishers = Map[AggregateType, ActorRef]()
 
-  private var subscriptions: Map[AggregateType, Vector[Subscription]] = Map()
-  private var subscriptionsByIds = Map[String, Subscription]()
+  private var awaitingRegistration = Set[ActorRef]()
+  private var registrationRequested = false
+  private var lastSummary = System.nanoTime()
 
-  private var eventsAlreadyPublishedTotal = 0
-  private var eventsPublishedTotal = 0
-  private var messagesSentTotal = 0
-  private var messageAckTotal = 0
+  private val undelivered = mutable.Queue[Undelivered]()
+  private val undeliveredKept = 1000
 
+  // Back-pressure for the replayer (until M4 replaces it): replayed events in flight.
   private var backPressureProducerActor: Option[ActorRef] = None
-  private var receivedTotal = 0
-  private var orderedTotal = 0
+  private var replayedInFlight = 0
   private var orderedMessages = 0
-  private var orderedMessageTimestamp = 0L
-  private var orderedMessagePostponedTimestamp = 0L
-  private var receivedInProgressMessages = 0
-
-  private var receivedInProgressMessagesSet: Set[EventIdentifier] = Set()
-
-  private var lastMessageAck = 0L
-  private var lastMessageSent = 0L
-
-  /** Message to subscribers that not yet confirmed receiving message */
-  private val messagesSent = mutable.HashMap[EventIdentifier, Vector[(Instant, ActorRef)]]()
-  private val eventSenders = mutable.HashMap[EventIdentifier, ActorRef]()
-
-  private val eventsPropagatedNotPersisted = mutable.HashMap[AggregateId, List[AggregateVersion]]()
-  private val publishedEvents = mutable.HashMap[Long, Int]() // AggregateId -> version
-
   private var afterFinishRespondTo: Option[ActorRef] = None
 
-  private var lastLogged = 0
+  import context.dispatcher
+  private val ticks = context.system.scheduler.scheduleWithFixedDelay(options.tickInterval, options.tickInterval, self, Tick)
 
-  override def preStart(): Unit = {
+  override def postStop(): Unit = ticks.cancel()
 
-    context.system.scheduler.schedule(5.seconds, 5.seconds, new Runnable {
-      override def run(): Unit = {
-        inputState.flushUpdates()
+  override def receive: Receive = registering
+
+  // ****************** START-UP (D15)
+
+  private def registering: Receive = {
+    case RegisterSubscribers(subscribers) =>
+      registrationRequested = true
+      awaitingRegistration = subscribers.toSet
+      subscribers.foreach { subscriber =>
+        context.watch(subscriber)
+        subscriber ! GetSubscriptionRequests
       }
-    })(context.dispatcher)
-
-    // FOR DEBUG PURPOSE
-    context.system.scheduler.schedule(120.second, 120.seconds, new Runnable {
-      override def run(): Unit = {
-
-
-        // Old messages
-        val now = Instant.now()
-        val oldMessages = messagesSent.flatMap(m => m._2.map(r => (m._1, r._1, r._2))).count(e => e._2.plusMillis(120000).isBefore(now))
-        if(oldMessages != lastLogged) {
-          if(oldMessages > 0) {
-            log.warning("Messages propagated, not confirmed: " + oldMessages)
-          } else {
-            log.warning("All messages propagated")
-          }
-        }
-        lastLogged = oldMessages
-
-
-        // Producer starving
-
-        if(orderedTotal > 0) {
-          val nowTimestamp = System.nanoTime() / 1_000_000
-
-
-          if (nowTimestamp - orderedMessageTimestamp > 240000) { // did not ordered in 4 minutes
-            log.warning("Did not ordered messages in " + ((nowTimestamp - orderedMessageTimestamp) / 1000) + " seconds. " +
-              "orderedMessages = " + orderedMessages + ", messagesSent=" + messagesSent.size + ", eventsPropagatedNotPersisted=" + eventsPropagatedNotPersisted.size +
-              ", lastMessageAck=" + ((nowTimestamp - lastMessageAck) / 1000)+", lastMessageSent="+(nowTimestamp - lastMessageSent)+", orderedTotal=" + orderedTotal + ", receivedTotal=" + receivedTotal)
-
-            if (backPressureProducerActor.isDefined) {
-              if ((nowTimestamp - lastMessageAck) < 240000) {
-                if (nowTimestamp - orderedMessagePostponedTimestamp > 240000) {
-                  backPressureProducerActor.get ! ConsumerPostponed
-                  orderedMessagePostponedTimestamp = nowTimestamp
-                  log.info("Postponed messages order")
-                }
-              } else {
-
-                val aggregates = messagesSent.groupBy(_._1.aggregateId).map(e => e._1 -> e._2.size)
-                log.warning("No messages acked in " + ((nowTimestamp - lastMessageAck) / 1000) + " seconds. Waiting for " + aggregates.map(e => e._1.asLong + "->" + e._2).mkString(", "))
-              }
-            } else {
-              log.warning("Events producer is not defined")
-            }
-          }
-
-          backPressureProducerActor.foreach(a => {
-            orderMoreMessagesToConsume()
-          })
-
-        }
+      startIfRegistered()
+    case SubscriptionRequests(requests) =>
+      requests.foreach(subscribe)
+      awaitingRegistration -= sender()
+      startIfRegistered()
+    case RegisterPublisher(aggregateType, publisher) => publishers += aggregateType -> publisher
+    case GetDeliveryStatus => sender() ! status
+    case Terminated(subscriber) =>
+      awaitingRegistration -= subscriber
+      subscriberStopped(subscriber)
+      startIfRegistered()
+    case Tick =>
+      if (registrationRequested) {
+        log.warning("Event bus waits for the subscriptions of: " + awaitingRegistration.map(_.path.name).toSeq.sorted.mkString(", "))
+      } else {
+        log.warning("Event bus waits for RegisterSubscribers from the host; nothing is published until then")
       }
-    })(context.dispatcher)
+    case _ => stash()
   }
 
-  private def logDetailedStatus(): Unit = {
-
-    log.warning("EventBus status: " +
-      "backPressureProducerActor="+backPressureProducerActor.isDefined+", " +
-      "receivedTotal="+receivedTotal+", " +
-      "orderedTotal="+orderedTotal+", " +
-      "orderedMessages="+orderedMessages+", " +
-      "orderedMessageTimestamp="+(System.nanoTime() / 1_000_000 - orderedMessageTimestamp)+", " +
-      "orderedMessagePostponedTimestamp="+(System.nanoTime() / 1_000_000 - orderedMessagePostponedTimestamp)+", " +
-      "receivedInProgressMessages="+receivedInProgressMessages+", " +
-      "lastMessageAck="+lastMessageAck+", " +
-      "messagesSent="+messagesSent)
-  }
-
-  override def postRestart(reason: Throwable): Unit = {
-    // do not call preStart
-  }
-
-  private def logMessage(message: String): Unit = {
-    log.info(message)
-  }
-
-  def initSubscriptions(): Unit = {
-
-    implicit val timeout = Timeout(180.seconds)
-
-    Await.result(subscriptionsManager.getSubscriptions.mapTo[List[SubscribeRequest]], timeout.duration).foreach {
-      case SubscribeForEvents(messageId, aggregateType, subscriber, classifier) => handleSubscribeForEvents(messageId, aggregateType, subscriber, classifier)
-      case SubscribeForAggregates(messageId, aggregateType, subscriber, classifier) => handleSubscribeForAggregates(messageId, aggregateType, subscriber, classifier)
-      case SubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, classifier) => handleSubscribeForAggregatesWithEvents(messageId, aggregateType, subscriber, classifier)
+  private def startIfRegistered(): Unit = {
+    if (registrationRequested && awaitingRegistration.isEmpty) {
+      log.info("Event bus started with " + subscriptions.values.map(_.size).sum + " subscriptions")
+      context.become(running)
+      unstashAll()
     }
   }
 
-  context.system.scheduler.scheduleOnce(10 seconds, self, InitEventBus)(context.dispatcher)
-
-  override def receive: Receive = {
-    case anything =>
-      initSubscriptions()
-      context.become(receiveAfterInit)
-      receiveAfterInit(anything)
+  private def subscribe(request: SubscribeRequest): Unit = {
+    context.watch(request.subscriber) // a request may name another actor than the registered subscriber
+    val existing = subscriptions.getOrElse(request.aggregateType, Vector())
+    if (!existing.contains(request)) {
+      subscriptions += request.aggregateType -> (existing :+ request)
+    }
   }
 
-  def receiveAfterInit: Receive = logReceive {
-    case InitEventBus => () // just to perform init
-    case PublishEvents(aggregateType, events, aggregateId, aggregate, _) =>
-      handlePublishEvents(sender(), aggregateType, aggregateId, events, aggregate, replayed = false)
+  // ****************** RUNNING
+
+  // AR7: a message the bus fails on (a classifier that throws) is logged and dropped; its outbox rows stay. A restart
+  // would lose every delivery and the subscriptions, and the bus would wait for a registration that never comes again.
+  private def guarded(handler: Receive): Receive = {
+    case message if handler.isDefinedAt(message) =>
+      try handler(message) catch {
+        case NonFatal(e) => log.error(e, "Event bus dropped " + message.getClass.getSimpleName + " from " + sender().path + ", which failed")
+      }
+  }
+
+  private def running: Receive = guarded {
+    case PublishEvents(aggregateType, events, aggregateId, aggregate, onlyTo) =>
+      publish(sender(), aggregateType, aggregateId, events, aggregate, replayed = false, onlyTo)
     case PublishReplayedEvents(aggregateType, events, aggregateId, aggregate) =>
-      handlePublishEvents(sender(), aggregateType, aggregateId, events, aggregate, replayed = true)
-    case m: MessageAck =>
-      handleMessageAck(m)
+      publish(sender(), aggregateType, aggregateId, events, aggregate, replayed = true, None)
+    case MessageAck(subscriber, aggregateId, versions) => finish(subscriber, aggregateId, versions, failed = None)
+    case MessageFailed(subscriber, aggregateId, versions, error) => finish(subscriber, aggregateId, versions, failed = Some(error))
+    case RequestRepublish(subscriber, aggregateType, aggregateId, from) =>
+      routeToPublisher(aggregateType, RepublishRange(aggregateId, from, subscriber))
+    case Republish(aggregateType, aggregateId) => routeToPublisher(aggregateType, RepublishOutbox(aggregateId))
+    case RegisterPublisher(aggregateType, publisher) => publishers += aggregateType -> publisher
+    case GetDeliveryStatus => sender() ! status
+    case Terminated(subscriber) => subscriberStopped(subscriber)
+    case Tick => checkDeadlines()
     case ConsumerStart =>
       backPressureProducerActor = Some(sender())
-      if(receivedInProgressMessages + orderedMessages < MAX_BUFFER_SIZE) {
-        sender() ! ConsumerAllowedMore(MAX_BUFFER_SIZE - receivedInProgressMessages - orderedMessages)
-        orderedTotal += MAX_BUFFER_SIZE - receivedInProgressMessages - orderedMessages
-        orderedMessages = MAX_BUFFER_SIZE
-        orderedMessageTimestamp = System.nanoTime() / 1_000_000
-        orderedMessagePostponedTimestamp = orderedMessageTimestamp
-      }
+      orderedMessages = 0
+      orderMoreMessagesToConsume()
     case ConsumerStop =>
-      logMessage("EventBus Stop, processing "+receivedInProgressMessages)
-      if(receivedInProgressMessages > 0) {
-        eventsLogger.foreach(_.debug("EventBus Stop, processing "+receivedInProgressMessagesSet))
-      }
+      log.info("EventBus Stop, replayed events in flight: " + replayedInFlight)
       afterFinishRespondTo = Some(sender())
       backPressureProducerActor = None
-      if(receivedInProgressMessages == 0) {
-        afterFinishRespondTo.get ! ConsumerFinished
+      if (replayedInFlight == 0) {
+        sender() ! ConsumerFinished
+        afterFinishRespondTo = None
       }
-    case LogDetailedStatus => logDetailedStatus()
+    case LogDetailedStatus => log.warning("EventBus status: " + status + ", replayed in flight: " + replayedInFlight + ", ordered: " + orderedMessages)
   }
 
+  private def routeToPublisher(aggregateType: AggregateType, message: Any): Unit = publishers.get(aggregateType) match {
+    case Some(publisher) => publisher ! message
+    case None => log.warning("No command bus registered for " + aggregateType.typeName + ", cannot re-publish: " + message)
+  }
 
-  // ****************** SUBSCRIPTION
+  private def publish(publisher: ActorRef, aggregateType: AggregateType, aggregateId: AggregateId,
+                      events: Seq[EventInfo[Any]], aggregateRoot: Option[Any], replayed: Boolean, onlyTo: Option[ActorRef]): Unit = {
+    val now = System.nanoTime()
+    val targets = subscriptions.getOrElse(aggregateType, Vector.empty).filter(s => onlyTo.forall(_ == s.subscriber))
 
-  private def handleSubscribeForEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier): Unit = {
-    val subscriptionId = generateNextSubscriptionId
-    val subscribersForAggregateType = subscriptions.getOrElse(aggregateType, Vector())
-    val subscription = EventSubscription(subscriptionId, aggregateType, subscriber, classifier)
-    if(!subscribersForAggregateType.exists(s => s.isInstanceOf[EventSubscription]
-                                             && s.asInstanceOf[EventSubscription].aggregateType == aggregateType
-                                             && s.asInstanceOf[EventSubscription].subscriber.path.toString == subscriber.path.toString
-                                             && s.asInstanceOf[EventSubscription].classifier == classifier)) {
-      subscriptions += aggregateType -> (subscribersForAggregateType :+ subscription)
-      subscriptionsByIds += subscriptionId -> subscription
+    // A new event goes to every subscriber that accepts it; an event that still waits goes again only to the
+    // subscribers it waits for. A re-publication to one subscriber sends it everything it asked for.
+    def wanted(s: SubscribeRequest, event: EventInfo[Any]): Boolean =
+      accepts(s, aggregateId, event) && (onlyTo.isDefined || deliveries.get(EventKey(aggregateId, event.version)).forall(_.awaiting.contains(s.subscriber)))
+
+    val sends = targets.flatMap { s =>
+      val forSubscriber = events.filter(e => wanted(s, e))
+      if (forSubscriber.isEmpty) None else Some(s -> forSubscriber)
     }
-  }
 
-  private def handleSubscribeForAggregates(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: AggregateSubscriptionClassifier): Unit = {
-    val subscriptionId = generateNextSubscriptionId
-    val subscribersForAggregateType = subscriptions.getOrElse(aggregateType, Vector())
-    val subscription = AggregateSubscription(subscriptionId, aggregateType, subscriber, classifier)
-    if(!subscribersForAggregateType.exists(s => s.isInstanceOf[AggregateSubscription]
-      && s.asInstanceOf[AggregateSubscription].aggregateType == aggregateType
-      && s.asInstanceOf[AggregateSubscription].subscriber.path.toString == subscriber.path.toString
-      && s.asInstanceOf[AggregateSubscription].classifier == classifier)) {
-      subscriptions += aggregateType -> (subscribersForAggregateType :+ subscription)
-      subscriptionsByIds += subscriptionId -> subscription
-    }
-  }
-
-  private def handleSubscribeForAggregatesWithEvents(messageId: String, aggregateType: AggregateType, subscriber: ActorRef, classifier: SubscriptionClassifier): Unit = {
-    val subscriptionId = generateNextSubscriptionId
-    val subscribersForAggregateType = subscriptions.getOrElse(aggregateType, Vector())
-    val subscription = AggregateWithEventSubscription(subscriptionId, aggregateType, subscriber, classifier)
-    if(!subscribersForAggregateType.exists(s => s.isInstanceOf[AggregateWithEventSubscription]
-      && s.asInstanceOf[AggregateWithEventSubscription].aggregateType == aggregateType
-      && s.asInstanceOf[AggregateWithEventSubscription].subscriber.path.toString == subscriber.path.toString
-      && s.asInstanceOf[AggregateWithEventSubscription].classifier == classifier)) {
-      subscriptions += aggregateType -> (subscribersForAggregateType :+ subscription)
-      subscriptionsByIds += subscriptionId -> subscription
-    }
-  }
-
-
-  // ***************** PUBLISHING
-
-  private def handlePublishEvents(respondTo: ActorRef, aggregateType: AggregateType, aggregateId: AggregateId,
-                                  events: Seq[EventInfo[Any]], aggregateRoot: Option[Any], replayed: Boolean): Unit = {
-
-
-
-    receivedTotal += events.size
-
-
-    // TODO filter out events received again if sender resent them
-
-    val lastPublishedVersion = getLastPublishedVersion(aggregateId)
-
-    val (alreadyPublished, eventsToPropagate) = events.span(_.version <= lastPublishedVersion)
-
-    eventsAlreadyPublishedTotal += alreadyPublished.size
-    eventsPublishedTotal += eventsToPropagate.size
-
-
-    val messagesToSend = if (eventsToPropagate.nonEmpty) {
-      subscriptions.getOrElse(aggregateType, Vector.empty).flatMap {
-        case s: EventSubscription =>
-          val eventsForSubscriber = eventsToPropagate.filter(event => s.classifier.accept(aggregateId, EventType(event.event.getClass.getName)))
-          if (eventsForSubscriber.nonEmpty) {
-            Some(MessagesToRoute(s.subscriber, aggregateId, eventsForSubscriber.map(_.version), IdentifiableEvents(aggregateType, aggregateId, eventsForSubscriber, replayed)))
-          } else {
-            None
-          }
-        case s: AggregateSubscription =>
-          if (s.classifier.accept(aggregateId)) {
-            Some(MessagesToRoute(s.subscriber, aggregateId, eventsToPropagate.map(_.version), AggregateWithType(aggregateType, aggregateId, eventsToPropagate.last.version, eventsToPropagate.map(_.version), aggregateRoot, replayed)))
-          } else {
-            None
-          }
-        case s: AggregateWithEventSubscription =>
-          val eventsForSubscriber = eventsToPropagate.filter(event => s.classifier.accept(aggregateId, EventType(event.event.getClass.getName)))
-          if (eventsForSubscriber.nonEmpty) {
-            Some(MessagesToRoute(s.subscriber, aggregateId, eventsForSubscriber.map(_.version),
-              AggregateWithTypeAndEvents(aggregateType, aggregateId, aggregateRoot, eventsForSubscriber, replayed)))
-          } else {
-            None
-          }
+    var finished = Vector[(Delivery, EventKey)]()
+    events.foreach { event =>
+      val key = EventKey(aggregateId, event.version)
+      if (!deliveries.contains(key)) {
+        val awaiting = sends.collect { case (s, forSubscriber) if forSubscriber.exists(_.version == event.version) => s.subscriber }.toSet
+        val delivery = Delivery(aggregateType, if (onlyTo.isEmpty && !replayed) Some(publisher) else None, now, awaiting, replayed,
+          incomplete = false, stallLogged = false)
+        if (replayed) replayedInFlight += 1
+        if (awaiting.isEmpty) finished :+= (delivery -> key) else deliveries += key -> delivery
       }
-    } else {
-      Vector.empty
+    }
+    if (replayed) {
+      orderedMessages -= events.size
     }
 
+    sends.foreach { case (s, forSubscriber) => s.subscriber ! messageFor(s, aggregateType, aggregateId, forSubscriber, aggregateRoot, replayed) }
+    eventsLogger.foreach(_.debug("EventBus publishing " + aggregateId.asLong + ": " + events.map(_.version.asInt).mkString(",") +
+      " to " + sends.map(_._1.subscriber.path.name).mkString(", ")))
 
-
-    eventsToPropagate.foreach(event => {
-      eventSenders += EventIdentifier(aggregateId, event.version) -> respondTo
-    })
-
-    eventsLogger.foreach(_.debug("EventBus propagating events: " + messagesToSend.map(m => m.aggregateId.asLong+": "+ m.versions.map(_.asInt).mkString(", ") + " to " + m.subscriber.path).mkString("|")))
-
-    messagesToSend.foreach(m => {
-       m.subscriber ! m.message
-      messagesSentTotal += m.versions.size
-    })
-
-    if(messagesToSend.nonEmpty) {
-      lastMessageSent = System.nanoTime() / 1_000_000
-    }
-
-    val nowTimestamp = Instant.now()
-    eventsToPropagate.foreach(event => {
-      val receiversForEvent = messagesToSend.filter(m => m.versions.contains(event.version)).map(e => (nowTimestamp, e.subscriber))
-      messagesSent += EventIdentifier(aggregateId, event.version) -> receiversForEvent
-    })
-
-    eventsLogger.foreach(_.debug("Publish events - Propagating events "+aggregateId.asLong+": "+
-      " @eventsToPropagate: " +eventsToPropagate.map(_.version.asInt).mkString(", ")+
-      " @messagesSent: " +messagesSent.filter(_._1.aggregateId == aggregateId).map(a => a._1.version.asInt+" -> "+a._2.map(_._2.path.name).mkString(",")).mkString(";")))
-
-
-
-    orderedMessages -= events.size // it is possible to receive more messages than ordered
-    receivedInProgressMessages += events.size
-    if(eventsLogger.isDefined) {
-      receivedInProgressMessagesSet ++= events.map(e => EventIdentifier(aggregateId, e.version)).toSet
-    }
-
+    completeAll(finished)
     orderMoreMessagesToConsume()
-
-    if(messagesToSend.isEmpty) {
-      // in case there are no listeners for given events we need to trigger confirmation
-      handleMessageAck(MessageAck(self, aggregateId, events.map(_.version)))
-    }
   }
 
-
-  private def getLastPublishedVersion(aggregateId: AggregateId): AggregateVersion = {
-    AggregateVersion(publishedEvents.getOrElse(aggregateId.asLong, {
-      val version = inputState.lastPublishedEventForAggregate(aggregateId)
-      publishedEvents += aggregateId.asLong -> version.asInt
-      version.asInt
-    }))
+  private def accepts(s: SubscribeRequest, aggregateId: AggregateId, event: EventInfo[Any]): Boolean = s match {
+    case e: SubscribeForEvents => e.classifier.accept(aggregateId, EventType(event.event.getClass.getName))
+    case a: SubscribeForAggregates => a.classifier.accept(aggregateId)
+    case ae: SubscribeForAggregatesWithEvents => ae.classifier.accept(aggregateId, EventType(event.event.getClass.getName))
   }
 
+  private def messageFor(s: SubscribeRequest, aggregateType: AggregateType, aggregateId: AggregateId, events: Seq[EventInfo[Any]],
+                         aggregateRoot: Option[Any], replayed: Boolean): AnyRef = s match {
+    case _: SubscribeForEvents => IdentifiableEvents(aggregateType, aggregateId, events, replayed)
+    case _: SubscribeForAggregates => AggregateWithType(aggregateType, aggregateId, events.last.version, events.map(_.version), aggregateRoot, replayed)
+    case _: SubscribeForAggregatesWithEvents => AggregateWithTypeAndEvents(aggregateType, aggregateId, aggregateRoot, events, replayed)
+  }
 
-
-   private def handleMessageAck(ack: MessageAck): Unit = {
-
-     eventsLogger.foreach(_.debug("EventBus MessageAck received "+ack.aggregateId.asLong+": "+ack.versions.map(_.asInt).mkString(", ")+" from "+ ack.subscriber.path+" as "+self.path))
-
-    messageAckTotal += ack.versions.size
-
-    lastMessageAck = System.nanoTime() / 1_000_000
-
-    val aggregateId = ack.aggregateId
-
-    // Look up each acked event directly (O(events in ack)) instead of scanning the whole in-flight
-    // messagesSent map. The previous filterKeys/partition approach forced a full traversal of every
-    // in-flight message on every ack, making the bus O(buffer^2) over a burst and making it unsafe to
-    // grow MAX_BUFFER_SIZE. For each acked event we drop the confirming subscriber; an event whose
-    // receiver set becomes empty is finished and removed from messagesSent.
-    var finishedEvents: List[EventIdentifier] = Nil
-    ack.versions.foreach { version =>
-      val eventId = EventIdentifier(aggregateId, version)
-      messagesSent.get(eventId) match {
-        case None => () // unknown event or already fully confirmed - nothing to do
-        case Some(receivers) =>
-          val remaining = receivers.filterNot(_._2 == ack.subscriber)
-          if (remaining.isEmpty) {
-            messagesSent -= eventId
-            finishedEvents ::= eventId
-          } else {
-            messagesSent += eventId -> remaining
-          }
-      }
-    }
-
-    if(finishedEvents.nonEmpty) {
-
-      receivedInProgressMessages -= finishedEvents.size
-      if(eventsLogger.isDefined) {
-        receivedInProgressMessagesSet --= finishedEvents
-      }
-
-      eventsLogger.foreach(_.debug("EventBus finished processing "+finishedEvents.size+" events: " + aggregateId.asLong + ": " + finishedEvents.map(_.version.asInt).mkString(", ")))
-
-      // Confirm back to the original publishers (grouped by publisher; all events here share aggregateId).
-      finishedEvents.groupBy(eventId => (eventSenders(eventId), eventId.aggregateId)).foreach {
-        case ((sender, aggId), events) =>
-          eventsLogger.foreach(_.debug("EventBus confirming events propagated: " + aggId.asLong + ": " + events.map(_.version.asInt).mkString(",") + " to " + sender.path))
-          sender ! PublishEventsAck(aggId, events.map(_.version).sortBy(_.asInt))
-      }
-
-      eventSenders --= finishedEvents
-
-      val lastPublishedVersion = getLastPublishedVersion(aggregateId)
-
-      val eventsSorted = finishedEvents.sortBy(_.version.asInt)
-
-      if(eventsSorted.head.version.isJustAfter(lastPublishedVersion)) {
-        val notPersistedYet = eventsPropagatedNotPersisted.getOrElse(aggregateId, List.empty)
-        var newVersion = eventsSorted.last.version
-        notPersistedYet.foreach(notPersisted => if(notPersisted.isJustAfter(newVersion)) {
-          newVersion = notPersisted
-        })
-        inputState.eventPublished(aggregateId, lastPublishedVersion, newVersion)
-        publishedEvents += aggregateId.asLong -> newVersion.asInt
-      } else {
-        val newVersions: List[AggregateVersion] = eventsSorted.map(_.version)
-        eventsPropagatedNotPersisted.get(aggregateId) match {
-          case None => eventsPropagatedNotPersisted += aggregateId -> newVersions
-          case Some(versions) => eventsPropagatedNotPersisted += aggregateId -> (newVersions ::: versions).sortBy(_.asInt)
+  private def finish(subscriber: ActorRef, aggregateId: AggregateId, versions: Seq[AggregateVersion], failed: Option[String]): Unit = {
+    failed.foreach(error => log.warning("Subscriber " + subscriber.path.name + " failed on aggregate " + aggregateId.asLong +
+      " versions " + versions.map(_.asInt).mkString(",") + ": " + error))
+    var finished = Vector[(Delivery, EventKey)]()
+    versions.foreach { version =>
+      val key = EventKey(aggregateId, version)
+      deliveries.get(key).foreach { delivery =>
+        val awaiting = delivery.awaiting - subscriber
+        if (awaiting.isEmpty) {
+          deliveries -= key
+          finished :+= (delivery -> key)
+        } else {
+          deliveries += key -> delivery.copy(awaiting = awaiting)
         }
       }
     }
+    completeAll(finished)
+    orderMoreMessagesToConsume()
+  }
 
+  // Acknowledges the owners of the completed deliveries, grouped by owner and aggregate; replayed deliveries only
+  // count down the back-pressure, and incomplete ones keep their outbox rows.
+  private def completeAll(finished: Seq[(Delivery, EventKey)]): Unit = {
+    finished.foreach { case (delivery, _) => if (delivery.replayed) replayedInFlight -= 1 }
+    finished.collect { case (delivery, key) if delivery.publisher.isDefined && !delivery.incomplete => (delivery.publisher.get, key) }
+      .groupBy { case (publisher, key) => (publisher, key.aggregateId) }
+      .foreach { case ((publisher, aggregateId), keys) => publisher ! PublishEventsAck(aggregateId, keys.map(_._2.version).sortBy(_.asInt)) }
+    if (replayedInFlight == 0) {
+      afterFinishRespondTo.foreach(_ ! ConsumerFinished)
+      afterFinishRespondTo = None
+    }
+  }
 
-    if(receivedInProgressMessages == 0 && afterFinishRespondTo.isDefined) {
-      afterFinishRespondTo.get ! ConsumerFinished
-    } else {
-      orderMoreMessagesToConsume()
+  // A subscriber that stops takes no more deliveries: its waiting ones end without an ack, so their outbox rows stay
+  // for the next start, and its subscriptions are dropped so other subscribers keep flowing (D20b).
+  private def subscriberStopped(subscriber: ActorRef): Unit = {
+    log.error("Subscriber " + subscriber.path + " stopped; its waiting deliveries stay in the outbox and its subscriptions are dropped")
+    subscriptions = subscriptions.map { case (aggregateType, subs) => aggregateType -> subs.filterNot(_.subscriber == subscriber) }
+    endDeliveriesTo(Set(subscriber), _ => true)
+  }
+
+  private def checkDeadlines(): Unit = {
+    val now = System.nanoTime()
+    val deadline = options.deadline.toNanos
+    val expired = deliveries.collect { case (key, delivery) if now - delivery.firstSent >= deadline => key }.toSet
+    if (expired.nonEmpty) {
+      deliveries.filter { case (key, _) => expired.contains(key) }.foreach { case (key, delivery) =>
+        delivery.awaiting.foreach { subscriber =>
+          log.error("Undelivered after " + options.deadline + ": " + delivery.aggregateType.simpleName + " " + key.aggregateId.asLong +
+            " version " + key.version.asInt + " to " + subscriber.path.name + "; it stays in the outbox until the next start")
+          undelivered.enqueue(Undelivered(delivery.aggregateType, key.aggregateId, key.version, subscriber.path.name, Instant.now))
+          while (undelivered.size > undeliveredKept) undelivered.dequeue()
+        }
+      }
+      endDeliveriesTo(deliveries.values.flatMap(_.awaiting).toSet, key => expired.contains(key))
     }
 
+    val stallAfter = options.stallAfter.toNanos
+    deliveries.toSeq.foreach { case (key, delivery) =>
+      if (!delivery.stallLogged && now - delivery.firstSent >= stallAfter) {
+        log.warning("Delivery waits for " + options.stallAfter + ": " + delivery.aggregateType.simpleName + " " + key.aggregateId.asLong +
+          " version " + key.version.asInt + " to " + delivery.awaiting.map(_.path.name).mkString(", "))
+        deliveries += key -> delivery.copy(stallLogged = true)
+      }
+    }
+    if (now - lastSummary >= options.summaryInterval.toNanos) {
+      lastSummary = now
+      val stalled = deliveries.values.filter(d => now - d.firstSent >= stallAfter).toSeq
+      if (stalled.nonEmpty) {
+        log.warning(stalled.size + " deliveries wait longer than " + options.stallAfter + ", by subscriber: " +
+          stalled.flatMap(_.awaiting).groupBy(_.path.name).map { case (name, waits) => name + " " + waits.size }.mkString(", "))
+      }
+    }
   }
+
+  private def endDeliveriesTo(subscribers: Set[ActorRef], selected: EventKey => Boolean): Unit = {
+    var finished = Vector[(Delivery, EventKey)]()
+    deliveries.toSeq.foreach { case (key, delivery) =>
+      if (selected(key) && delivery.awaiting.exists(subscribers.contains)) {
+        val awaiting = delivery.awaiting -- subscribers
+        val ended = delivery.copy(awaiting = awaiting, incomplete = true)
+        if (awaiting.isEmpty) {
+          deliveries -= key
+          finished :+= (ended -> key)
+        } else {
+          deliveries += key -> ended
+        }
+      }
+    }
+    completeAll(finished)
+    orderMoreMessagesToConsume()
+  }
+
+  private def status: DeliveryStatus = DeliveryStatus(deliveries.size, undelivered.toList)
 
   private def orderMoreMessagesToConsume(): Unit = {
-    if(backPressureProducerActor.isDefined && receivedInProgressMessages + orderedMessages < MAX_BUFFER_SIZE) {
-      backPressureProducerActor.get ! ConsumerAllowedMore(MAX_BUFFER_SIZE - receivedInProgressMessages - orderedMessages)
-
-      orderedTotal += MAX_BUFFER_SIZE - receivedInProgressMessages - orderedMessages
-
-      orderedMessages = MAX_BUFFER_SIZE - receivedInProgressMessages
-      orderedMessageTimestamp = System.nanoTime() / 1_000_000
-      orderedMessagePostponedTimestamp = orderedMessageTimestamp
+    if (backPressureProducerActor.isDefined && replayedInFlight + orderedMessages < options.maxReplayBuffer) {
+      val allowed = options.maxReplayBuffer - replayedInFlight - orderedMessages
+      backPressureProducerActor.get ! ConsumerAllowedMore(allowed)
+      orderedMessages += allowed
     }
-  }
-  
-  private def generateNextSubscriptionId:String = {
-    var subscriptionId: String = null
-    do {
-      subscriptionId = RandomUtil.generateRandomString(32)
-    } while(subscriptionsByIds.contains(subscriptionId))
-    subscriptionId
   }
 }

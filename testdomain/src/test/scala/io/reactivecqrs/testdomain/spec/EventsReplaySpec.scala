@@ -1,103 +1,116 @@
 package io.reactivecqrs.testdomain.spec
 
-import org.apache.pekko.actor.{ActorRef, ActorSystem, Props}
 import io.mpjsons.MPJsons
-import io.reactivecqrs.api.{AggregateType, AggregateVersion}
+import io.reactivecqrs.api._
+import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
-import io.reactivecqrs.core.documentstore.{MemoryDocumentStore, NoopDocumentStoreCache, PostgresDocumentStore}
-import io.reactivecqrs.core.eventbus._
+import io.reactivecqrs.core.eventbus.EventsBusActor
+import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
 import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, ReplayAllEvents}
 import io.reactivecqrs.core.eventsreplayer.{EventsReplayerActor, ReplayerConfig, ReplayerRepositoryActorFactory}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
-import io.reactivecqrs.core.projection.{PostgresSubscriptionsState, PostgresVersionsState}
+import io.reactivecqrs.core.projection.{MemorySubscriptionsState, ProjectionActor, SubscriptionsState}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
-import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCart, ShoppingCartAggregateContext, ShoppingCartsListProjectionAggregatesBased, ShoppingCartsListProjectionEventsBased}
 import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
+import org.apache.pekko.actor.{ActorRef, Props}
 
 import scala.concurrent.duration._
 
-class EventsReplaySpec extends CommonSpec {
+// A note aggregate that only this spec writes: a replay goes over every aggregate of a type, and the carts the other
+// specs leave behind hold undone events, which a replay leaves out (F58, M4).
+case class ReplayNote(text: String)
+case class ReplayNoteCreated(text: String) extends FirstEvent[ReplayNote] {
+  def spaceId: SpaceId = SpaceId(0)
+}
+case class ReplayNoteChanged(text: String) extends Event[ReplayNote]
 
+case class CreateReplayNote(userId: UserId, text: String) extends FirstCommand[ReplayNote, CustomCommandResponse[_]]
+case class ChangeReplayNote(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, text: String)
+  extends Command[ReplayNote, CustomCommandResponse[_]]
+
+class ReplayNoteContext extends AggregateContext[ReplayNote] {
+  override val version: Int = 1
+  override def initialAggregateRoot: ReplayNote = ReplayNote("")
+  override def commandHandlers = _ => {
+    case c: CreateReplayNote => CommandSuccess(ReplayNoteCreated(c.text))
+    case c: ChangeReplayNote => CommandSuccess(ReplayNoteChanged(c.text))
+  }
+  override def eventHandlers = (_, _, _) => {
+    case e: ReplayNoteCreated => ReplayNote(e.text)
+    case e: ReplayNoteChanged => ReplayNote(e.text)
+  }
+}
+
+case object GetNoteTexts
+
+/** The latest text of every note, in memory. */
+class ReplayNotesProjection(val subscriptionsState: SubscriptionsState) extends ProjectionActor {
+  private var texts = Map[AggregateId, String]()
+
+  protected val listeners = List(AggregateListener.noDBSession[ReplayNote] { (id, _, _, note) =>
+    texts += id -> note.map(_.text).getOrElse("")
+  })
+
+  override protected def receiveQuery: Receive = {
+    case GetNoteTexts => sender() ! texts
+  }
+
+  override protected def onClearProjectionData(): Unit = texts = Map.empty
+  override protected val projectionName: String = "ReplayNotesProjection"
+  override protected val version: Int = 1
+}
+
+class EventsReplaySpec extends CommonSpec {
 
   TestDatabase.init()
 
+  private val mpjsons = new MPJsons
+  private val typesNamesState = new PostgresTypesNamesState().initSchema()
+  private val eventStore = new PostgresEventStoreState(mpjsons, typesNamesState).initSchema()
+  private val uidGenerator = system.actorOf(Props(new UidGeneratorActor(
+    new PostgresUidGenerator("aggregates_uids_seq"), new PostgresUidGenerator("commands_uids_seq"), new PostgresUidGenerator("sagas_uids_seq"))))
 
+  private val userId = UserId(1)
+  private val noteType = AggregateType(classOf[ReplayNote].getName)
 
-  def Fixture = new {
-
-    val system = ActorSystem("main-actor-system")
-
-    val mpjsons = new MPJsons
-    val typesTypesState = new PostgresTypesNamesState().initSchema()
-    val eventStoreState = new PostgresEventStoreState(mpjsons, typesTypesState) // or MemoryEventStore
-    eventStoreState.initSchema()
-
-
-    val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(system.actorOf(Props(new EventBusSubscriptionsManager(0))))
-    val subscriptionState = new PostgresSubscriptionsState(typesTypesState, true)
-    val versionsState = new PostgresVersionsState()
-    subscriptionState.initSchema()
-
-    val inMemory = false
-
-    val typesNamesState = new PostgresTypesNamesState().initSchema()
-
-
-    private val eventBusState = if(inMemory) {
-      new MemoryEventBusState
-    } else {
-      new PostgresEventBusState().initSchema()
-    }
-
-    val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusState, eventBusSubscriptionsManager)), "eventBus")
-
-    val commandResponseState = new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema()
-    val aggregatesUidGenerator = new PostgresUidGenerator("aggregates_uids_seq") // or MemoryUidGenerator
-    val commandsUidGenerator = new PostgresUidGenerator("commands_uids_seq") // or MemoryUidGenerator
-    val sagasUidGenerator = new PostgresUidGenerator("sagas_uids_seq") // or MemoryUidGenerator
-    val uidGenerator = system.actorOf(Props(new UidGeneratorActor(aggregatesUidGenerator, commandsUidGenerator, sagasUidGenerator)), "uidGenerator")
-    val shoppingCartContext = new ShoppingCartAggregateContext
-    val shoppingCartCommandBus: ActorRef = system.actorOf(
-      AggregateCommandBusActor(shoppingCartContext, uidGenerator, eventStoreState, commandResponseState, eventBusActor, false), "ShoppingCartCommandBus")
-
-    private val storeA = if(inMemory) {
-      new MemoryDocumentStore[String]
-    } else {
-      new PostgresDocumentStore[String]("storeA", mpjsons, new NoopDocumentStoreCache)
-    }
-    private val storeB = if(inMemory) {
-      new MemoryDocumentStore[String]
-    } else {
-      new PostgresDocumentStore[String]("storeB", mpjsons, new NoopDocumentStoreCache)
-    }
-
-    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusSubscriptionsManager, subscriptionState, shoppingCartCommandBus, storeA)), "ShoppingCartsListProjectionEventsBased")
-    val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusSubscriptionsManager, subscriptionState, storeB)), "ShoppingCartsListProjectionAggregatesBased")
-
-
-
-    val replayerActor = system.actorOf(Props(new EventsReplayerActor(eventStoreState, eventBusActor, subscriptionState, ReplayerConfig(), List(
-      ReplayerRepositoryActorFactory(new ShoppingCartAggregateContext)
-    ))))
-
-    Thread.sleep(100) // Wait until all subscriptions in place
-
+  /** A bus with one new projection, as a rebuild starts from cleared read models. */
+  private def projectionOnNewBus(): (ActorRef, ActorRef) = {
+    val bus = system.actorOf(Props(new EventsBusActor()))
+    val projection = system.actorOf(Props(new ReplayNotesProjection(new MemorySubscriptionsState)))
+    bus ! RegisterSubscribers(Seq(projection))
+    (bus, projection)
   }
 
-  Feature("System is able to recreate projections from historical events") {
-    Scenario("Ability to replay events") {
+  private def textsIn(projection: ActorRef): Map[AggregateId, String] = projection ?? GetNoteTexts
 
-      val fixture = Fixture
-      import fixture._
+  Feature("Rebuilding a projection from stored events") {
 
-      // Reproduces F4: with events already published through the PostgreSQL bus state (here by the specs that ran
-      // before in the same schema), the replay never finishes. Fixed in M2 (D7); this then fails as a reminder to
-      // remove pendingUntilFixed.
-      pendingUntilFixed {
-        val result: EventsReplayed = replayerActor.askActor[EventsReplayed](ReplayAllEvents(false, Seq(AggregateType(classOf[ShoppingCart].getName)), 50))(50.seconds)
-        result.eventsCount must be > 0L
-      }
+    Scenario("a replay of events that were delivered already ends, and the projection gets every note (F4)") {
+      Given("notes whose events a live projection applied, so their outbox rows are gone")
+      val (liveBus, liveProjection) = projectionOnNewBus()
+      val commandBus = system.actorOf(AggregateCommandBusActor(new ReplayNoteContext, uidGenerator, eventStore,
+        new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema(), liveBus, eventsReplayMode = false))
+      val notes: Map[AggregateId, String] = (1 to 3).map { n =>
+        val created: SuccessResponse = commandBus ?? CreateReplayNote(userId, "draft " + n)
+        val changed: CustomCommandResponse[_] = commandBus ?? ChangeReplayNote(userId, created.aggregateId, AggregateVersion(1), "note " + n)
+        changed mustBe SuccessResponse(created.aggregateId, AggregateVersion(2))
+        created.aggregateId -> ("note " + n)
+      }.toMap
+      awaitAssert({
+        textsIn(liveProjection).filter(note => notes.contains(note._1)) mustBe notes
+        notes.keys.foreach(id => eventStore.oldestVersionToPublish(id) mustBe None)
+      }, 10.seconds, 100.millis)
+
+      When("a new projection replays every stored note event")
+      val (replayBus, rebuilt) = projectionOnNewBus()
+      val replayer = system.actorOf(Props(new EventsReplayerActor(eventStore, replayBus, new MemorySubscriptionsState, ReplayerConfig(),
+        List(ReplayerRepositoryActorFactory(new ReplayNoteContext)))))
+      val replayed: EventsReplayed = replayer.askActor[EventsReplayed](ReplayAllEvents(batchPerAggregate = false, Seq(noteType), 0))(30.seconds)
+
+      Then("the replay ends, and the new projection has the latest text of every note")
+      replayed.eventsCount must be >= 6L
+      textsIn(rebuilt).filter(note => notes.contains(note._1)) mustBe notes
     }
   }
 

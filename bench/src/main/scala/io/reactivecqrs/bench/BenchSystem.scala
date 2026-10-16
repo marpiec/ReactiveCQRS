@@ -60,16 +60,13 @@ class BenchStores {
 /**
   * One running system, wired the way a host application wires it (see `ReactiveTestDomainSpec`): a command bus for
   * counters and, optionally, two projections, one events-based and one aggregate-based. `rebuild` wires a system
-  * whose bus starts without a cursor and whose projections start empty, for replaying stored events into new projection tables.
+  * whose projections start empty, for replaying stored events into new projection tables.
   */
 class BenchSystem(name: String, stores: BenchStores, projections: Boolean, rebuild: Boolean = false) {
 
   val system: ActorSystem = ActorSystem(name)
 
   private val uidGenerator = system.actorOf(Props(new UidGeneratorActor(stores.aggregatesUids, stores.commandsUids, stores.sagasUids)))
-
-  private val subscribers = if (projections) 2 else 0
-  val subscriptionsManager = new EventBusSubscriptionsManagerApi(system.actorOf(Props(new EventBusSubscriptionsManager(subscribers))))
 
   // PostgreSQL in every system: the projections write to PostgreSQL document stores inside its transactions. A rebuild
   // starts empty because its projections have names of their own.
@@ -79,9 +76,7 @@ class BenchSystem(name: String, stores: BenchStores, projections: Boolean, rebui
     state
   }
 
-  private val eventBusState: EventBusState = if (rebuild) new MemoryEventBusState else new PostgresEventBusState().initSchema()
-
-  val eventBus: ActorRef = system.actorOf(Props(new EventsBusActor(eventBusState, subscriptionsManager)), "eventBus")
+  val eventBus: ActorRef = system.actorOf(Props(new EventsBusActor()), "eventBus")
 
   val counters: ActorRef = system.actorOf(AggregateCommandBusActor(new CounterContext, uidGenerator, stores.eventStore,
     stores.commandResponseState, eventBus, eventsReplayMode = rebuild), "counters")
@@ -89,12 +84,13 @@ class BenchSystem(name: String, stores: BenchStores, projections: Boolean, rebui
   /** The table whose increments sum shows how far the events-based projection got. */
   val progressTable: String = "projection_" + name + "_progress"
 
-  if (projections) {
+  private val subscribers = if (projections) {
     val progress = new PostgresDocumentStore[CounterProgress](name + "_progress", stores.mpjsons, new NoopDocumentStoreCache[CounterProgress, AnyRef])
     val state = new PostgresDocumentStore[Counter](name + "_state", stores.mpjsons, new NoopDocumentStoreCache[Counter, AnyRef])
-    system.actorOf(Props(new CountingProjection(subscriptionsManager, subscriptionsState, progress, name + "Progress")), "progressProjection")
-    system.actorOf(Props(new CounterStateProjection(subscriptionsManager, subscriptionsState, state, name + "State")), "stateProjection")
-  }
+    List(system.actorOf(Props(new CountingProjection(subscriptionsState, progress, name + "Progress")), "progressProjection"),
+      system.actorOf(Props(new CounterStateProjection(subscriptionsState, state, name + "State")), "stateProjection"))
+  } else Nil
+  eventBus ! EventsBusActor.RegisterSubscribers(subscribers)
 
   /** Increments the events-based projection has applied so far. */
   def projectedIncrements(): Long = DB.readOnly { implicit session =>

@@ -6,7 +6,8 @@ import java.util.concurrent.atomic.AtomicInteger
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.id.{SagaId, UserId}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
-import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubscriptionsManagerApi, EventsBusActor, MemoryEventBusState}
+import io.reactivecqrs.core.eventbus.EventsBusActor
+import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.saga._
 import io.reactivecqrs.core.types.PostgresTypesNamesState
@@ -62,8 +63,8 @@ class SagaRecoverySpec extends CommonSpec {
 
   private val uidGenerator = system.actorOf(Props(new UidGeneratorActor(
     new PostgresUidGenerator("aggregates_uids_seq"), new PostgresUidGenerator("commands_uids_seq"), new PostgresUidGenerator("sagas_uids_seq"))))
-  private val eventBus = system.actorOf(Props(new EventsBusActor(new MemoryEventBusState,
-    new EventBusSubscriptionsManagerApi(system.actorOf(Props(new EventBusSubscriptionsManager(0)))))))
+  private val eventBus = system.actorOf(Props(new EventsBusActor()))
+  eventBus ! RegisterSubscribers(Nil)
   private val commandBus = system.actorOf(AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStore,
     new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema(), eventBus, eventsReplayMode = false))
 

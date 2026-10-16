@@ -6,7 +6,6 @@ import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.documentstore.{DocumentStore, Document}
-import io.reactivecqrs.core.eventbus.EventBusSubscriptionsManagerApi
 import io.reactivecqrs.core.projection.{ProjectionActor, SubscriptionsState}
 import io.reactivecqrs.testdomain.shoppingcart.ShoppingCartsListProjection.GetAllCartsNames
 import scalikejdbc.DBSession
@@ -20,7 +19,7 @@ object ShoppingCartsListProjection {
   case class GetAllCartsNames()
 }
 
-class ShoppingCartsListProjectionEventsBased(val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi,
+class ShoppingCartsListProjectionEventsBased(
                                              val subscriptionsState: SubscriptionsState,
                                              shoppingCartCommandBus: ActorRef,
                                              documentStore: DocumentStore[String]) extends ProjectionActor {
@@ -74,7 +73,7 @@ class ShoppingCartsListProjectionEventsBased(val eventBusSubscriptionsManager: E
 
 
 
-class ShoppingCartsListProjectionAggregatesBased(val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi,
+class ShoppingCartsListProjectionAggregatesBased(
                                                  val subscriptionsState: SubscriptionsState,
                                                  documentStore: DocumentStore[String]) extends ProjectionActor {
   protected val listeners =  List(AggregateListener(shoppingCartUpdate))

@@ -11,6 +11,7 @@ import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{Ensure
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{EnsureEventsPublished, RemoveExpiredResponses}
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor._
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
+import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterPublisher
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
 import io.reactivecqrs.core.util.{MyActorLogging, RandomUtil}
@@ -105,6 +106,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   }
 
   override def preStart(): Unit = {
+    // The event bus routes re-publish requests for this aggregate type here (D8, D20c).
+    eventBus ! RegisterPublisher(AggregateType(aggregateRootClassTag.toString), self)
     if (!eventsReplayMode) {
       context.system.scheduler.schedule(60.seconds, 60.seconds, self, EnsureEventsPublished(true))(context.dispatcher)
       // Hourly, at a random minute, so the buses of different aggregate types do not all clean up at once.

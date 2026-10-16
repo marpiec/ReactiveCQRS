@@ -3,7 +3,6 @@ package io.reactivecqrs.bench
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 import io.reactivecqrs.core.documentstore.{Document, DocumentStore}
-import io.reactivecqrs.core.eventbus.EventBusSubscriptionsManagerApi
 import io.reactivecqrs.core.projection.{ProjectionActor, SubscriptionsState}
 import scalikejdbc.DBSession
 
@@ -37,7 +36,7 @@ class CounterContext extends AggregateContext[Counter] {
 case class CounterProgress(increments: Long)
 
 /** Counts the increments it received per counter; the benchmark reads the sum to see when it caught up. */
-class CountingProjection(val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi,
+class CountingProjection(
                          val subscriptionsState: SubscriptionsState,
                          documentStore: DocumentStore[CounterProgress],
                          override protected val projectionName: String) extends ProjectionActor {
@@ -61,7 +60,7 @@ class CountingProjection(val eventBusSubscriptionsManager: EventBusSubscriptions
 }
 
 /** Keeps the latest counter value, from the aggregate state the bus sends with the events. */
-class CounterStateProjection(val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi,
+class CounterStateProjection(
                              val subscriptionsState: SubscriptionsState,
                              documentStore: DocumentStore[Counter],
                              override protected val projectionName: String) extends ProjectionActor {

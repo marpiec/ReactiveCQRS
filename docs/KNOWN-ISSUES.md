@@ -193,7 +193,7 @@ implementation plan.
 ### Delivery and subscriptions
 
 #### F1 — In-memory bus cursor never advances for aggregates that existed before the process started
-- **Medium**, likely · Fix in **M2** · Owning module: Delivery (`EventsBusActor`, `EventBusState`)
+- **Medium**, likely · **Fixed in M2** (16/10/2026, bus rewrite: no cursor, D7; `EventsBusActorSpec` "Bookkeeping") · Owning module: Delivery (`EventsBusActor`, `EventBusState`)
 - **Symptom:** memory grows with uptime; per-ack CPU grows; the bus-side duplicate filter does nothing for older aggregates.
 - **Root cause:** `MemoryEventBusState` starts every aggregate at 0 (`EventBusState.scala:22-27`); the first finished version of an older aggregate is never cursor+1, so every acked version is appended to `eventsPropagatedNotPersisted` and re-sorted (`EventsBusActor.scala:435-448`). `publishedEvents` (`:95`) and the state map (`EventBusState.scala:20`) are never evicted either.
 - **Related:** F4, F11, F47; D7. **Accepted production risk until 1.0 (D80).**
@@ -217,8 +217,9 @@ implementation plan.
 - **Fix:** remove the mode (D61).
 
 #### F4 — Already-published events are dropped without an ack; the in-flight counter leaks
-- **Medium**, confirmed · Fix in **M2** · Delivery
+- **Medium**, confirmed · **Fixed in M2** (16/10/2026, bus rewrite: no cursor, D7) · Delivery
 - **Reproduced by:** `EventsReplaySpec` (PostgreSQL bus state) when the schema already holds ShoppingCart events, written by earlier runs or, with per-run schemas, by the specs that run before it: the replay never receives `ConsumerFinished` and times out after 50 s. It passes on a schema without earlier events.
+- **Regression test:** since M2 `EventsReplaySpec` replays notes of its own aggregate type after a live projection applied them and their outbox rows were deleted. Replaying the other specs' carts, as before, stalls on their undone events instead (F58).
 - **Symptom:** outbox rows of re-sent events are never deleted and re-sent every 180 s; back-pressure capacity shrinks; a replay against an advanced cursor never finishes.
 - **Root cause:** events at or below the cursor are filtered (`EventsBusActor.scala:294`) but counted in `receivedInProgressMessages` (`:358`) and never finished; no `PublishEventsAck` is sent (`:365-368`).
 - **Related:** F1; D7.
@@ -240,7 +241,7 @@ implementation plan.
 - **Fix:** clear caches with the rows; shadow rebuild (D57) removes the clear step.
 
 #### F11 — Bus cursor can skip an unfinished version
-- **Low**, likely (needs custom classifiers; Neula has none) · Fix in **M2** (removed with the cursor, D7) · Delivery
+- **Low**, likely (needs custom classifiers; Neula has none) · **Fixed in M2** (16/10/2026, removed with the cursor, D7) · Delivery
 - **Root cause:** one ack finishing a non-contiguous set moves the cursor to its last version (`EventsBusActor.scala:433-441`).
 
 #### F15 — Per-aggregate async queues in parallel mode are never pruned
@@ -285,13 +286,13 @@ implementation plan.
 - **Fix:** one outbox poller for all types (D8; a singleton in the cluster, D46).
 
 #### F41 — Bus initialization blocks and depends on a hand-maintained subscription count
-- **Medium**, likely · Fix in **M2** · `EventsBusActor`, `EventBusSubscriptionsManager`
+- **Medium**, likely · **Fixed in M2** (16/10/2026, D15: `RegisterSubscribers`, no blocking wait, no count) · `EventsBusActor`, `EventBusSubscriptionsManager`
 - **Symptom:** a wrong count stalls the bus at startup (180 s cycles that drop the triggering message) or starts it without the last projections.
 - **Root cause:** `Await` of up to 180 s in `initSubscriptions` (`EventsBusActor.scala:187-205`); Neula hard-codes 106 (H2).
 - **Fix:** D15.
 
 #### F42 — A late subscription crashes the subscriptions manager and wipes its state
-- **Medium**, likely · Fix in **M2** (manager removed by D15) · `EventBusSubscriptionsManager`
+- **Medium**, likely · **Fixed in M2** (16/10/2026, manager removed by D15) · `EventBusSubscriptionsManager`
 - **Root cause:** `throw` at `EventBusSubscriptionsManager.scala:69`; the default restart clears `subscriptionsRequests`.
 
 #### F45 — Unbounded projection delay buffers
@@ -300,7 +301,7 @@ implementation plan.
 - **Fix:** gap fetch from the store (D20c).
 
 #### F47 — `PostgresEventBusState` batch update ignores row counts
-- **Low** (unused by Neula), likely · Fix in **M2** (deleted, D7) · `EventBusState.scala:127-140`
+- **Low** (unused by Neula), likely · **Fixed in M2** (16/10/2026, deleted, D7) · `EventBusState.scala:127-140`
 
 #### F77 — A failed compare-and-set leaves the subscription cache stale
 - **Medium**, likely · Fix in **M2** (subscription cache, work item 8) · `PostgresSubscriptionsState.newEventIdInDB`
@@ -310,7 +311,7 @@ implementation plan.
 - **Fix:** evict the cached entry when the database check fails, so the next attempt reads the stored version.
 
 #### F79 — The event bus's 120-second debug timer changes actor state from another thread
-- **Medium**, likely · Fix in **M2** (bus rewrite) · `EventsBusActor` constructor (`scheduler.schedule(120 s, …, new Runnable …)`)
+- **Medium**, likely · **Fixed in M2** (16/10/2026, bus rewrite: the timer sends the bus a `Tick` message) · `EventsBusActor` constructor (`scheduler.schedule(120 s, …, new Runnable …)`)
 - **Symptom:** the timer iterates `messagesSent` while the actor changes it, updates `lastLogged` and `orderedMessagePostponedTimestamp`, and calls `orderMoreMessagesToConsume()`: data races on the bus's mutable state, possibly `ConcurrentModificationException` or a corrupted map.
 - **Root cause:** the timer runs a `Runnable` on a dispatcher thread instead of sending the actor a message.
 - **Found:** plan review at the M1 close.
@@ -644,8 +645,10 @@ implementation plan.
 - **Medium**, suspected (depends on cross-type Neula projections) · Fix in **M4** · `EventsReplayerActor.scala:118-168`
 - **Fix:** D59.
 
-#### F58 — Rebuild hides undo
-- **Medium**, likely · Fix in **M4** · `PostgresEventStoreState.scala:284`
+#### F58 — Rebuild hides undo, and the hidden versions stall the rebuild
+- **High**, confirmed (raised from Medium in M2, 16/10/2026) · Fix in **M4** · `PostgresEventStoreState.scala:284`
+- **Symptom:** a rebuild leaves out undone events and undo events. A projection that rebuilds from cleared state then sees a gap at those versions (a cart with an undo at version 5: 1–3, then 6), keeps the later event waiting for versions that never come, and never acknowledges it. So the replay does not end: it goes on only when the bus deadline (D20b, 10 minutes) ends the stalled deliveries, which leaves those aggregates behind in the rebuilt projection, or the replayer's own 10-minute timeout exits the JVM first (F82).
+- **Found:** the full test run in M2. The old `EventsReplaySpec` replayed the carts of the other specs, one of them with an undo, and both projections kept version 6 waiting for 4 and 5. (They had also failed on version 1, because the spec reused the other specs' read-model tables; that was a test fault.)
 - **Fix:** D60; see H6.
 
 #### F59 — Rebuild skips events still in the outbox
@@ -667,7 +670,7 @@ implementation plan.
 
 #### F82 — The replayer stops the whole JVM when a replay stalls
 - **Medium**, likely · Fix in **M4** (replaced by the shadow rebuild) · `EventsReplayerActor` (`System.exit(-1)`)
-- **Symptom:** a replay that times out ends the host application's process.
+- **Symptom:** a replay that times out ends the host application's process; a single unreadable stored event makes the replayer throw, so the replay never answers (found with per-run test schemas, where specs damaged events and left them).
 - **Found:** plan review at the M1 close.
 - **Fix:** report the failure to the requester and stop the replay only.
 
@@ -724,7 +727,7 @@ From §7 of Neula's change requests.
 | Milestone | Issues |
 |---|---|
 | M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔, F73 ✔, F74 ✔, F75 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53, F76 (Neula, on a production copy, with `StoredDataCheck` and the F76 query); Neula H3, H4, H5 |
-| M2 | AR6, AR7 (event bus and projections); F1, F2, F4, F5, F6, F11, F15, F26, F28, F29, F33 (part), F37, F41, F42, F45, F47, F72, F77, F79, F80; Neula H2 |
+| M2 | AR6, AR7 (event bus and projections); F1 ✔, F2, F4 ✔, F5, F6, F11 ✔, F15, F26, F28, F29, F33 (part), F37, F41 ✔, F42 ✔, F45, F47 ✔, F72, F77, F79 ✔, F80; Neula H2 |
 | M3 | AR1, AR4, AR7 (owner and command bus); F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33 (rest), F38, F39, F44, F50, F65, F76, F78, F81 |
 | M4 | F3, F43, F49 (backfill), F54, F55, F56, F57, F58, F59, F60, F61, F62, F82; Neula H1, H6 |
 | M5 | AR5; F46, F48, F63, F78 (between nodes) |

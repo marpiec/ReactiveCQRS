@@ -7,7 +7,8 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
-import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubscriptionsManagerApi, EventsBusActor, MemoryEventBusState}
+import io.reactivecqrs.core.eventbus.EventsBusActor
+import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
@@ -30,8 +31,8 @@ class FailedRestoreSpec extends CommonSpec {
 
   private val uidGenerator = system.actorOf(Props(new UidGeneratorActor(
     new PostgresUidGenerator("aggregates_uids_seq"), new PostgresUidGenerator("commands_uids_seq"), new PostgresUidGenerator("sagas_uids_seq"))))
-  private val eventBus = system.actorOf(Props(new EventsBusActor(new MemoryEventBusState,
-    new EventBusSubscriptionsManagerApi(system.actorOf(Props(new EventBusSubscriptionsManager(0)))))))
+  private val eventBus = system.actorOf(Props(new EventsBusActor()))
+  eventBus ! RegisterSubscribers(Nil)
   private val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStore,
     new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema(), eventBus, eventsReplayMode = false,
     failedRestoreRetryAfter = 300.millis))
@@ -48,6 +49,8 @@ class FailedRestoreSpec extends CommonSpec {
     cartId
   }
 
+  private val validCreation = mpjsons.serialize(ShoppingCartCreated("Groceries"), classOf[ShoppingCartCreated].getName)
+
   private def setStoredEvent(cartId: AggregateId, json: String): Unit = DB.autoCommit { implicit session =>
     sql"UPDATE events SET event = $json WHERE aggregate_id = ${cartId.asLong}".update()
   }
@@ -58,23 +61,27 @@ class FailedRestoreSpec extends CommonSpec {
       val cartId = storedCart()
       setStoredEvent(cartId, "not json")
 
-      val commandResponse: CustomCommandResponse[_] = commandBus ?? AddItem(userId, cartId, AggregateVersion(1), "apple")
-      commandResponse mustBe a[CommandHandlingError]
+      try {
+        val commandResponse: CustomCommandResponse[_] = commandBus ?? AddItem(userId, cartId, AggregateVersion(1), "apple")
+        commandResponse mustBe a[CommandHandlingError]
 
-      val query: Try[Aggregate[ShoppingCart]] = commandBus ?? GetAggregate(cartId)
-      query.failed.get mustBe an[AggregateRestoreFailedException]
+        val query: Try[Aggregate[ShoppingCart]] = commandBus ?? GetAggregate(cartId)
+        query.failed.get mustBe an[AggregateRestoreFailedException]
+      } finally {
+        setStoredEvent(cartId, validCreation) // later specs in this schema read every stored event
+      }
     }
 
     Scenario("after the data is repaired, a later command restores the aggregate and succeeds") {
       Given("a cart whose restore failed")
       val cartId = storedCart()
-      val validJson = mpjsons.serialize(ShoppingCartCreated("Groceries"), classOf[ShoppingCartCreated].getName)
+
       setStoredEvent(cartId, "not json")
       val failed: CustomCommandResponse[_] = commandBus ?? AddItem(userId, cartId, AggregateVersion(1), "apple")
       failed mustBe a[CommandHandlingError]
 
       When("the event is repaired and the retry window has passed")
-      setStoredEvent(cartId, validJson)
+      setStoredEvent(cartId, validCreation)
 
       Then("a command succeeds")
       awaitAssert({

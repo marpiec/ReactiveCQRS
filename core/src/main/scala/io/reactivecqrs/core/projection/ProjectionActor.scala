@@ -5,7 +5,7 @@ import java.util.concurrent.{ConcurrentHashMap, Executors, TimeUnit}
 import org.apache.pekko.actor.{Actor, ActorRef, Cancellable, Status}
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.api._
-import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManagerApi, EventsBusActor}
+import io.reactivecqrs.core.eventbus.EventsBusActor
 import EventsBusActor._
 import io.reactivecqrs.core.util.MyActorLogging
 import org.slf4j.{Logger, LoggerFactory}
@@ -30,8 +30,6 @@ case object ProjectionDataCleared
 
 case object GetSubscribedAggregates
 case class SubscribedAggregates(projectionName: String, projectionVersion: Int, aggregates: Set[AggregateType])
-
-case class InitRebuildForTypes(aggregatesTypes: Iterable[AggregateType])
 
 case class TriggerDelayedUpdateAggregate(id: AggregateId, respondTo: ActorRef)
 case class TriggerDelayedUpdateAggregateWithEvents(id: AggregateId, respondTo: ActorRef)
@@ -94,8 +92,6 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
   protected val projectionName: String
   protected val subscriptionsState: SubscriptionsState
-
-  protected val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi
 
   protected val listeners:List[Listener[Any]]
 
@@ -210,7 +206,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   private val delayDuration = scala.concurrent.duration.Duration(options.groupUpdatesDelayMillis, TimeUnit.MILLISECONDS)
 
   protected def receiveUpdate: Receive =  {
-    case q: InitRebuildForTypes => subscribe(Some(q.aggregatesTypes))
+    case GetSubscriptionRequests => sender() ! SubscriptionRequests(subscriptionRequests)
     case GetSubscribedAggregates => sender() ! getSubscribedAggregates
     case q: AsyncDelayedQuery =>
       delayedQueries ::= q
@@ -742,23 +738,11 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
   protected def onClearProjectionData(): Unit
 
-  override def preStart(): Unit = {
-    subscribe(None)
-  }
-
-  private def subscribe(aggregates: Option[Iterable[AggregateType]]): Unit = {
-    eventBusSubscriptionsManager.subscribe(aggregateListenersMap.keySet.toList.filter(t => aggregates.isEmpty || aggregates.get.exists(_ == t)).map { aggregateType =>
-      SubscribeForAggregates("", aggregateType, self)
-    })
-
-    eventBusSubscriptionsManager.subscribe(eventListenersMap.keySet.toList.filter(t => aggregates.isEmpty || aggregates.get.exists(_ == t)).map { aggregateType =>
-      SubscribeForEvents("", aggregateType, self)
-    })
-
-    eventBusSubscriptionsManager.subscribe(aggregateWithEventListenersMap.keySet.toList.filter(t => aggregates.isEmpty || aggregates.get.exists(_ == t)).map { aggregateType =>
-      SubscribeForAggregatesWithEvents("", aggregateType, self)
-    })
-  }
+  // Asked by the event bus at start (D15): one subscription per listener.
+  private def subscriptionRequests: Seq[SubscribeRequest] =
+    aggregateListenersMap.keySet.toSeq.map(aggregateType => SubscribeForAggregates(aggregateType, self)) ++
+      eventListenersMap.keySet.toSeq.map(aggregateType => SubscribeForEvents(aggregateType, self)) ++
+      aggregateWithEventListenersMap.keySet.toSeq.map(aggregateType => SubscribeForAggregatesWithEvents(aggregateType, self))
 
   override def postRestart(reason: Throwable): Unit = {
     // do not call preStart

@@ -7,7 +7,6 @@ import org.apache.pekko.testkit.{TestActorRef, TestProbe}
 import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.api._
-import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubscriptionsManagerApi}
 import io.reactivecqrs.core.projection.SubscribableProjectionActor.{CancelProjectionSubscriptions, ProjectionSubscriptionsCancelled, SubscribedForProjectionUpdates, SubscriptionUpdated}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import org.scalatest.{BeforeAndAfter, GivenWhenThen}
@@ -22,7 +21,7 @@ case class StringEvent(aggregate: String) extends Event[String]
 
 case class SubscribeForAll(subscriptionCode: String, listener: ActorRef)
 
-class SimpleProjection(val eventBusSubscriptionsManager: EventBusSubscriptionsManagerApi, val subscriptionsState: PostgresSubscriptionsState) extends SubscribableProjectionActor {
+class SimpleProjection(val subscriptionsState: PostgresSubscriptionsState) extends SubscribableProjectionActor {
 
   override def receiveSubscriptionRequest: Receive = {
     case SubscribeForAll(code, listener) => handleSubscribe(code, listener, (s: String) => Some(s))
@@ -73,13 +72,12 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
 
   def fixture = new {
 
-    val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(TestActorRef(Props(new EventBusSubscriptionsManager(0))))
 
     val typesNamesState = new PostgresTypesNamesState
     val subscriptionsState = new PostgresSubscriptionsState(typesNamesState, true)
     subscriptionsState.initSchema()
 
-    val simpleProjectionActor = TestActorRef(Props(new SimpleProjection(eventBusSubscriptionsManager, subscriptionsState)))
+    val simpleProjectionActor = TestActorRef(Props(new SimpleProjection(subscriptionsState)))
 
     // use this actor/probe combo - the actor is necessary to store subscription id
     val simpleListenerProbe = TestProbe()

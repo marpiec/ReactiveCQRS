@@ -132,10 +132,15 @@ until the aggregate reaches a version — see `delayedQueries`).
 ```
 AggregateRepositoryActor → EventsBusActor → subscribers (ProjectionActor, sagas,
                                                           AggregateListenerActor)
-  EventsBusActor tracks in-flight messages, waits for MessageAck, then marks the
-  event published in the event_bus table (PostgresEventBusState).
+  At start the host sends the bus RegisterSubscribers; the bus asks each subscriber
+  for its subscriptions (GetSubscriptionRequests) and publishes nothing until all
+  have answered. Command buses register as their type's publishers (RegisterPublisher).
+  EventsBusActor keeps one delivery per event until every subscriber has answered
+  MessageAck or MessageFailed, the deadline passes, or the subscriber stops; then it
+  acks the owner (PublishEventsAck), which deletes the outbox rows. No cursor (D7).
   ProjectionActor updates a DocumentStore and records progress in subscriptions.
 ```
+Design of the delivery work in M2: `docs/design/M2-delivery.md`.
 
 ### Key actors
 - **`AggregateCommandBusActor`** (`core/.../commandhandler/`) — one per aggregate
@@ -148,8 +153,9 @@ AggregateRepositoryActor → EventsBusActor → subscribers (ProjectionActor, sa
   (`restoreState` → `eventStore.readAndProcessEvents`) to rebuild
   `aggregateRoot`/`version` in memory, then keeps them updated. `aggregateVersionLimit`
   defaults to 10 000 events per aggregate.
-- **`EventsBusActor`** — in-memory routing + ack tracking with a DB-backed
-  `event_bus` cursor; implements consumer back-pressure (`MAX_BUFFER_SIZE` 1000).
+- **`EventsBusActor`** — in-memory routing and delivery tracking (deadline, stall
+  logging, `GetDeliveryStatus`); routes re-publish requests to the type's command bus;
+  back-pressure for the replayer (`DeliveryOptions.maxReplayBuffer`, 10 000).
 - **`ProjectionActor` / `SubscribableProjectionActor`** — apply events to read
   models; handle out-of-order delivery via delayed/merge buffers.
 - **`SagaActor`** — process managers; `CONTINUES`/`REVERTING`/`ERROR` phases.
@@ -180,12 +186,10 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
 - **`events_to_publish`** — `event_id PK, aggregate_id, version, user_id,
   event_time`. The outbox consumed by the event bus. Indexed on `(aggregate_id, version)`.
 
-### Event bus (`EventBusState.scala`, `EventBusSchemaInitializer.scala`)
-- **`event_bus`** — `id (event_bus_seq) PK, aggregate_id, aggregate_version` —
-  cursor of "last published version per aggregate". Unique indices on
-  `(aggregate_id)` and `(aggregate_id, aggregate_version)`.
-- **`events_to_route`** — `id PK, aggregate_id, version, message_time, subscriber,
-  message_type, message bytea`. Unique index `(aggregate_id, version, subscriber)`.
+### Event bus tables (unused since 1.0)
+- **`event_bus`** (the 0.12 cursor of the last published version per aggregate) and
+  **`events_to_route`** are no longer read or written: the bus keeps no cursor (D7).
+  Existing databases keep them until a later contract step (D24).
 
 ### Projections / subscriptions / sagas / commands / documents
 - **`subscriptions`** (`SubscriptionsState.scala`) — per (subscriber type,
@@ -252,7 +256,7 @@ planned in a way that the change must follow. Measured performance is in `docs/p
 | How a command becomes events | `core/.../commandhandler/{AggregateCommandBusActor,CommandHandlerActor,CommandExecutorActor}.scala` |
 | Aggregate state & persistence | `core/.../aggregaterepository/AggregateRepositoryActor.scala` |
 | Durable events + optimistic lock SQL | `core/.../eventstore/Postgres*` |
-| Event delivery, acks, back-pressure | `core/.../eventbus/EventsBusActor.scala`, `EventBusState.scala` |
+| Event delivery, acks, back-pressure | `core/.../eventbus/EventsBusActor.scala`, `core/.../delivery/*`, `docs/design/M2-delivery.md` |
 | Read models | `core/.../projection/*`, `core/.../documentstore/*` |
 | Process managers | `core/.../saga/*` |
 | Full wiring of a system | `testdomain/.../spec/ReactiveTestDomainSpec.scala` |

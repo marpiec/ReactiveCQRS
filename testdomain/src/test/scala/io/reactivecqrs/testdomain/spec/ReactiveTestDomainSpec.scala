@@ -44,10 +44,8 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val commandsUidGenerator = new PostgresUidGenerator("commands_uids_seq") // or MemoryUidGenerator
     val sagasUidGenerator = new PostgresUidGenerator("sagas_uids_seq") // or MemoryUidGenerator
     val uidGenerator = system.actorOf(Props(new UidGeneratorActor(aggregatesUidGenerator, commandsUidGenerator, sagasUidGenerator)), "uidGenerator")
-    val eventBusSubscriptionsManager = new EventBusSubscriptionsManagerApi(system.actorOf(Props(new EventBusSubscriptionsManager(2))))
-    private val eventBusState = new PostgresEventBusState().initSchema()
 
-    val eventBusActor = system.actorOf(Props(new EventsBusActor(eventBusState, eventBusSubscriptionsManager)), "eventBus")
+    val eventBusActor = system.actorOf(Props(new EventsBusActor()), "eventBus")
 
     val shoppingCartContext = new ShoppingCartAggregateContext
     val shoppingCartCommandBus: ActorRef = system.actorOf(
@@ -77,10 +75,10 @@ class ReactiveTestDomainSpec extends CommonSpec {
     }
 
 
-    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(eventBusSubscriptionsManager, subscriptionsState, shoppingCartCommandBus, storeA)), "ShoppingCartsListProjectionEventsBased")
-    val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(eventBusSubscriptionsManager, subscriptionsState, storeB)), "ShoppingCartsListProjectionAggregatesBased")
+    val shoppingCartsListProjectionEventsBased = system.actorOf(Props(new ShoppingCartsListProjectionEventsBased(subscriptionsState, shoppingCartCommandBus, storeA)), "ShoppingCartsListProjectionEventsBased")
+    val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(subscriptionsState, storeB)), "ShoppingCartsListProjectionAggregatesBased")
 
-    Thread.sleep(100) // Wait until all subscriptions in place
+    eventBusActor ! EventsBusActor.RegisterSubscribers(List(shoppingCartsListProjectionEventsBased, shoppingCartsListProjectionAggregatesBased))
 
 
     def shoppingCartCommand(command: AnyRef): Aggregate[ShoppingCart]= {

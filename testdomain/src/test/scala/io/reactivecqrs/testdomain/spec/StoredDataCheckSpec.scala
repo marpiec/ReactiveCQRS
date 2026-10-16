@@ -61,7 +61,14 @@ class StoredDataCheckSpec extends CommonSpec {
         sql"UPDATE events SET event = 'not json' WHERE aggregate_id = ${cartId.asLong} AND version = 2".update()
         sql"UPDATE aggregates SET space_id = -1 WHERE id = ${cartId.asLong}".update()
       }
-      val after = check()
+      val after = try check() finally {
+        // Later specs in this schema read every stored event.
+        val itemAdded = mpjsons.serialize(ItemAdded("apple"), classOf[ItemAdded].getName)
+        DB.autoCommit { implicit session =>
+          sql"UPDATE events SET event = $itemAdded WHERE aggregate_id = ${cartId.asLong} AND version = 2".update()
+          sql"UPDATE aggregates SET space_id = 0 WHERE id = ${cartId.asLong}".update()
+        }
+      }
 
       Then("every kind of stored data was read")
       result(after, "events", classOf[ShoppingCartCreated].getName).rows must be >= 1L
