@@ -3,7 +3,7 @@ package io.reactivecqrs.core.projection
 import java.sql.BatchUpdateException
 import java.time.Instant
 
-import io.reactivecqrs.api.AggregateVersion
+import io.reactivecqrs.api.{AggregateType, AggregateVersion}
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.types.TypesNamesState
 import io.reactivecqrs.core.util.AfterCommit
@@ -36,7 +36,8 @@ object SubscriptionType {
 }
 
 /** A subscription that gave up on an aggregate (D20a): the first version it could not apply, why, and since when. */
-case class SubscriptionFailure(subscriptionType: SubscriptionType, aggregateId: AggregateId, version: AggregateVersion, error: String, since: Instant)
+case class SubscriptionFailure(subscriptionType: SubscriptionType, aggregateType: AggregateType, aggregateId: AggregateId, version: AggregateVersion,
+                               error: String, since: Instant)
 
 trait SubscriptionsState {
 
@@ -216,6 +217,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
            subscriber_type_id SMALLINT NOT NULL,
            subscription_type SMALLINT NOT NULL,
            aggregate_id BIGINT NOT NULL,
+           aggregate_type_id SMALLINT NOT NULL,
            failed_version INT NOT NULL,
            error TEXT NOT NULL,
            failed_since TIMESTAMP NOT NULL,
@@ -227,16 +229,18 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
   private val maxErrorLength = 4000
 
   override def recordFailure(subscriberName: String, failure: SubscriptionFailure): Unit = DB.autoCommit { implicit session =>
-    sql"""INSERT INTO subscription_failures (subscriber_type_id, subscription_type, aggregate_id, failed_version, error, failed_since)
+    sql"""INSERT INTO subscription_failures (subscriber_type_id, subscription_type, aggregate_id, aggregate_type_id, failed_version, error, failed_since)
          | VALUES (${typesNamesState.typeIdByClassName(subscriberName)}, ${failure.subscriptionType.id}, ${failure.aggregateId.asLong},
+         |   ${typesNamesState.typeIdByClassName(failure.aggregateType.typeName)},
          |   ${failure.version.asInt}, ${failure.error.take(maxErrorLength)}, ${java.sql.Timestamp.from(failure.since)})
          | ON CONFLICT (subscriber_type_id, subscription_type, aggregate_id)
-         | DO UPDATE SET failed_version = EXCLUDED.failed_version, error = EXCLUDED.error, failed_since = EXCLUDED.failed_since""".stripMargin.update()
+         | DO UPDATE SET aggregate_type_id = EXCLUDED.aggregate_type_id, failed_version = EXCLUDED.failed_version, error = EXCLUDED.error, failed_since = EXCLUDED.failed_since""".stripMargin.update()
   }
 
   override def failures(subscriberName: String): Seq[SubscriptionFailure] = DB.readOnly { implicit session =>
-    sql"""SELECT subscription_type, aggregate_id, failed_version, error, failed_since FROM subscription_failures WHERE subscriber_type_id = ${typesNamesState.typeIdByClassName(subscriberName)}"""
-      .map(rs => SubscriptionFailure(SubscriptionType(rs.short(1)), AggregateId(rs.long(2)), AggregateVersion(rs.int(3)), rs.string(4), rs.timestamp(5).toInstant))
+    sql"""SELECT subscription_type, aggregate_type_id, aggregate_id, failed_version, error, failed_since FROM subscription_failures WHERE subscriber_type_id = ${typesNamesState.typeIdByClassName(subscriberName)}"""
+      .map(rs => SubscriptionFailure(SubscriptionType(rs.short(1)), AggregateType(typesNamesState.classNameById(rs.short(2))), AggregateId(rs.long(3)),
+        AggregateVersion(rs.int(4)), rs.string(5), rs.timestamp(6).toInstant))
       .list()
   }
 

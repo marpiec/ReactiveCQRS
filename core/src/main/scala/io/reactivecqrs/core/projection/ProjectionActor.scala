@@ -1,21 +1,24 @@
 package io.reactivecqrs.core.projection
 
 import java.time.Instant
-import java.util.concurrent.{ConcurrentHashMap, Executors, TimeUnit}
+import java.util.concurrent.{ExecutorService, Executors, TimeUnit}
+
 import org.apache.pekko.actor.{Actor, ActorRef, Cancellable, Status}
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.api._
-import io.reactivecqrs.core.eventbus.EventsBusActor
-import EventsBusActor._
-import io.reactivecqrs.core.util.MyActorLogging
-import org.slf4j.{Logger, LoggerFactory}
+import io.reactivecqrs.core.delivery.SequenceGate
+import io.reactivecqrs.core.delivery.SequenceGate.{AlreadyApplied, Apply, Gap}
+import io.reactivecqrs.core.eventbus.EventsBusActor._
+import io.reactivecqrs.core.util.{Backoff, MyActorLogging}
+import org.slf4j.Logger
 import scalikejdbc.DBSession
 
 import scala.collection.mutable
+import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
 import scala.reflect.runtime.universe._
-import scala.util.{Failure, Success}
-import scala.concurrent.duration.FiniteDuration
+import scala.util.control.NonFatal
+import scala.util.{Failure, Success, Try}
 
 sealed trait DelayedQuery {
   val until: Instant
@@ -31,19 +34,38 @@ case object ProjectionDataCleared
 case object GetSubscribedAggregates
 case class SubscribedAggregates(projectionName: String, projectionVersion: Int, aggregates: Set[AggregateType])
 
-case class TriggerDelayedUpdateAggregate(id: AggregateId, respondTo: ActorRef)
-case class TriggerDelayedUpdateAggregateWithEvents(id: AggregateId, respondTo: ActorRef)
-case class TriggerDelayedUpdateEvents(id: AggregateId, respondTo: ActorRef)
+// D20a: a projection's failed subscriptions, and what an operator can do about them.
+case object GetProjectionStatus
+/** `retrying`: aggregates whose listener failed and is retried now; `waitingForGap`: aggregates waiting for missing
+  * versions to be re-published. */
+case class ProjectionStatus(projectionName: String, failures: Seq[SubscriptionFailure], retrying: Seq[AggregateId], waitingForGap: Seq[AggregateId])
+/** Clears the aggregate's failures and has its events delivered again from each failed version. */
+case class RetryFailedSubscription(aggregateId: AggregateId)
+/** Marks each failed version of the aggregate as applied without applying it, and continues from the version after. */
+case class SkipFailedVersion(aggregateId: AggregateId)
+/** The answer to both: how many failed subscriptions of the aggregate were retried or skipped. */
+case class FailedSubscriptionsHandled(aggregateId: AggregateId, count: Int)
 
 
 object ProjectionActorOptions {
+  /** About two minutes of retries (D20a): 1, 2, 4, 8, 16, 30, 30 and 30 seconds between nine attempts. */
+  val defaultRetries: Backoff = Backoff(1.second, 30.seconds, maxAttempts = 9)
   val DEFAULT = ProjectionActorOptions(0, 1, Set.empty, 0, None)
 }
+
+/**
+  * @param retries how a listener that fails on an aggregate is retried before the failure is recorded (D20a)
+  * @param retryFailuresOnStart retry the failures recorded before the start, one per second (D20a)
+  * @param gapRequestRepeat how long a request for missing versions waits for them before it is sent again (D20c)
+  */
 case class ProjectionActorOptions (groupUpdatesDelayMillis: Long,
                                    minimumDelayVersion: Int,
                                    eventsToProcessImmediately: Set[Class[_]],
                                    parallelUpdateProcessing: Int,
-                                   eventsLogger: Option[Logger]) {
+                                   eventsLogger: Option[Logger],
+                                   retries: Backoff = ProjectionActorOptions.defaultRetries,
+                                   retryFailuresOnStart: Boolean = true,
+                                   gapRequestRepeat: FiniteDuration = 10.seconds) {
 
   def withGroupUpdatesDelayMillis(millis: Long): ProjectionActorOptions = {
     copy(groupUpdatesDelayMillis = millis)
@@ -71,6 +93,8 @@ case class ProjectionActorOptions (groupUpdatesDelayMillis: Long,
     copy(parallelUpdateProcessing = parallel)
   }
 
+  def withRetries(retries: Backoff): ProjectionActorOptions = copy(retries = retries)
+
 }
 
 object ListenerOptions {
@@ -79,16 +103,17 @@ object ListenerOptions {
 }
 case class ListenerOptions(noTransaction: Boolean = false)
 
-case class MessageAggregateProcessed(aggregateId: AggregateId, respondTo: ActorRef)
-case class MessageAggregateWithEventsProcessed(aggregateId: AggregateId, respondTo: ActorRef)
-case class MessageEventsProcessed(aggregateId: AggregateId, respondTo: ActorRef)
-
-// ProcessingState for sequential processing of updates per aggregate
-private case class ProcessingState(queue: mutable.Queue[() => Future[Unit]], var running: Boolean)
-
+/**
+  * A subscriber that keeps a read model (D3). Every delivery goes through the sequence gate (D4) on the subscription's
+  * stored version, one aggregate at a time per listener kind: duplicates are acknowledged, new versions are applied in
+  * one transaction with the new version, and missing versions are asked from the aggregate's owner (D20c). A listener
+  * that fails is retried with back-off; then the failure is recorded and deliveries of that aggregate are answered
+  * `MessageFailed` until it is retried or skipped (D20a). See docs/design/M2-delivery.md.
+  */
 abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActorOptions.DEFAULT) extends Actor with MyActorLogging {
 
   private val className = this.getClass.getSimpleName
+  private val subscriberName = this.getClass.getName
 
   protected val projectionName: String
   protected val subscriptionsState: SubscriptionsState
@@ -97,23 +122,11 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
   protected val version: Int
 
-  // Used for grouping updates
-  private val delayedAggregateUpdates = mutable.Map[AggregateId, List[AggregateWithType[_]]]()
-  private val delayedAggregateWithEventsUpdate = mutable.Map[AggregateId, List[AggregateWithTypeAndEvents[_]]]()
-  private val delayedEventsUpdate = mutable.Map[AggregateId, List[IdentifiableEvents[_]]]()
+  private val executor: Option[ExecutorService] =
+    if (options.parallelUpdateProcessing > 1) Some(Executors.newFixedThreadPool(options.parallelUpdateProcessing)) else None
+  private val executionContext: Option[ExecutionContext] = executor.map(ExecutionContext.fromExecutor)
 
-
-  private val triggerScheduledForAggregate = mutable.Map[AggregateId, Boolean]()
-
-  private val processedAggregates = new ConcurrentHashMap[Long, Boolean]()
-
-
-  private val executionContext: Option[ExecutionContext] = options.parallelUpdateProcessing match {
-    case threads if threads <= 1 => None
-    case threads => Some(ExecutionContext.fromExecutor(Executors.newFixedThreadPool(threads)))
-  }
-
-  private val states = new ConcurrentHashMap[AggregateId, ProcessingState]()
+  override def postStop(): Unit = executor.foreach(_.shutdown())
 
   protected trait Listener[+AGGREGATE_ROOT]  {
     def aggregateRootType: Type
@@ -191,7 +204,18 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       .map(l => (AggregateType(l.aggregateRootType.toString), l.asInstanceOf[AggregateWithEventsListener[Any]])).toMap
   }
 
-  override def receive: Receive = logReceive {receiveUpdate orElse receiveQuery}
+  // AR7, F80: a message that fails, such as a query, is answered with the failure; a throw would restart the actor
+  // and lose the deliveries it holds.
+  override def receive: Receive = {
+    case message if handlers.isDefinedAt(message) =>
+      try handlers(message) catch {
+        case NonFatal(e) =>
+          log.error(e, "Projection " + projectionName + " failed on " + message.getClass.getSimpleName)
+          sender() ! Status.Failure(e)
+      }
+  }
+
+  private lazy val handlers: Receive = receiveUpdate orElse receiveQuery
 
   private def validateListeners() = {
     if(listeners.exists(l => l.aggregateRootType == typeOf[Any] || l.aggregateRootType == typeOf[Nothing])) {
@@ -203,535 +227,329 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     SubscribedAggregates(projectionName, version, aggregateListenersMap.keySet ++ eventListenersMap.keySet ++ aggregateWithEventListenersMap.keySet)
   }
 
-  private val delayDuration = scala.concurrent.duration.Duration(options.groupUpdatesDelayMillis, TimeUnit.MILLISECONDS)
-
-  protected def receiveUpdate: Receive =  {
-    case GetSubscriptionRequests => sender() ! SubscriptionRequests(subscriptionRequests)
+  protected def receiveUpdate: Receive = {
+    case GetSubscriptionRequests =>
+      eventBus = Some(sender())
+      sender() ! SubscriptionRequests(subscriptionRequests)
+      loadFailures()
     case GetSubscribedAggregates => sender() ! getSubscribedAggregates
+    case e: IdentifiableEvents[_] =>
+      receiveDelivery(Key(SubscriptionType.EVENTS, e.aggregateId), e.aggregateType,
+        Pending(e.events.map(_.version), e.events.asInstanceOf[Seq[EventInfo[Any]]], None, e.replayed, sender()))
+    case a: AggregateWithType[_] =>
+      receiveDelivery(Key(SubscriptionType.AGGREGATES, a.id), a.aggregateType, Pending(a.events, Seq.empty, a.aggregateRoot, a.replayed, sender()))
+    case ae: AggregateWithTypeAndEvents[_] =>
+      receiveDelivery(Key(SubscriptionType.AGGREGATES_WITH_EVENTS, ae.id), ae.aggregateType,
+        Pending(ae.events.map(_.version), ae.events.asInstanceOf[Seq[EventInfo[Any]]], ae.aggregateRoot, ae.replayed, sender()))
+    case Drain(key, token) => queues.get(key).foreach(queue => queue.scheduled match {
+      case Some((`token`, reason)) => drain(key, queue, gapRecheck = reason == GapRecheck)
+      case _ => () // replaced by a later schedule
+    })
+    case Applied(key, batch, outcome) => queues.get(key).foreach(queue => afterBatch(key, queue, batch, outcome))
+    case GetProjectionStatus => sender() ! status
+    case RetryFailedSubscription(aggregateId) => sender() ! FailedSubscriptionsHandled(aggregateId, retryFailures(aggregateId))
+    case SkipFailedVersion(aggregateId) => sender() ! FailedSubscriptionsHandled(aggregateId, skipFailedVersions(aggregateId))
+    case RetryNextFailure => retryNextFailureOnStart()
     case q: AsyncDelayedQuery =>
       delayedQueries ::= q
       scheduleNearest()
     case q: AsyncDelayedQueryCustom[Any] =>
       delayedQueries ::= q
       scheduleNearest()
-    case ReplayQueries => replayQueries()
-
-    case TriggerDelayedUpdateAggregate(id, respondTo) =>
-      triggerScheduledForAggregate -= id
-
-      delayedAggregateUpdates.get(id) match {
-        case None => () // do nothing
-        case Some(waiting) =>
-          handleAggregateWithTypeUpdate(self, respondTo, mergeAggregateWithTypeUpdate(self, id, respondTo))
-      }
-
-    case TriggerDelayedUpdateAggregateWithEvents(id, respondTo) =>
-      triggerScheduledForAggregate -= id
-
-      delayedAggregateWithEventsUpdate.get(id) match {
-        case None => () // do nothing
-        case Some(waiting) =>
-          handleAggregateWithTypeAndEventsUpdate(self, respondTo, mergeAggregateWithTypeAndEventsUpdate(self, id, respondTo))
-      }
-
-    case TriggerDelayedUpdateEvents(id, respondTo) =>
-      triggerScheduledForAggregate -= id
-
-      delayedEventsUpdate.get(id) match {
-        case None => () // do nothing
-        case Some(waiting) => handleIdentifiableEventsUpdate(self, respondTo, mergeIdentifiableEventsUpdate(self, id, respondTo))
-      }
-
-    case a: AggregateWithType[_] if !a.replayed && (options.groupUpdatesDelayMillis > 0 && a.events.head.asInt >= options.minimumDelayVersion || processedAggregates.contains(a.id.asLong)) => // do not delay first event
-
-      delayedAggregateUpdates += a.id -> (a :: delayedAggregateUpdates.getOrElse(a.id, List.empty))
-
-      if(options.groupUpdatesDelayMillis > 0 && !triggerScheduledForAggregate.contains(a.id)) {
-        context.system.scheduler.scheduleOnce(delayDuration, self, TriggerDelayedUpdateAggregate(a.id, sender()))(context.dispatcher)
-        triggerScheduledForAggregate += a.id -> true
-      }
-
-    case ae: AggregateWithTypeAndEvents[_] if !ae.replayed && (options.groupUpdatesDelayMillis > 0 && ae.events.head.version.asInt >= options.minimumDelayVersion && !ae.events.exists(e => options.eventsToProcessImmediately.contains(e.event.getClass)) || processedAggregates.contains(ae.id.asLong)) => // do not delay first event nor events of specific type
-
-      delayedAggregateWithEventsUpdate += ae.id -> (ae :: delayedAggregateWithEventsUpdate.getOrElse(ae.id, List.empty))
-
-      if(options.groupUpdatesDelayMillis > 0 && !triggerScheduledForAggregate.contains(ae.id)) {
-        context.system.scheduler.scheduleOnce(delayDuration, self, TriggerDelayedUpdateAggregateWithEvents(ae.id, sender()))(context.dispatcher)
-        triggerScheduledForAggregate += ae.id -> true
-      }
-
-    case e: IdentifiableEvents[_] if !e.replayed && (options.groupUpdatesDelayMillis > 0 && e.events.head.version.asInt >= options.minimumDelayVersion && !e.events.exists(ee => options.eventsToProcessImmediately.contains(ee.event.getClass)) || processedAggregates.contains(e.aggregateId.asLong)) => // do not delay first event nor events of specific type
-
-      delayedEventsUpdate += e.aggregateId -> (e :: delayedEventsUpdate.getOrElse(e.aggregateId, List.empty))
-
-      if(options.groupUpdatesDelayMillis > 0 && !triggerScheduledForAggregate.contains(e.aggregateId)) {
-        context.system.scheduler.scheduleOnce(delayDuration, self, TriggerDelayedUpdateEvents(e.aggregateId, sender()))(context.dispatcher)
-        triggerScheduledForAggregate += e.aggregateId -> true
-      }
-
-    case a: AggregateWithType[_] =>
-      delayedAggregateUpdates.get(a.id) match {
-        case None => handleAggregateWithTypeUpdate(self, sender(), a)
-        case Some(waiting) =>
-          delayedAggregateUpdates += a.id -> (a :: waiting)
-          handleAggregateWithTypeUpdate(self, sender(), mergeAggregateWithTypeUpdate(self, a.id, sender()))
-      }
-    case ae: AggregateWithTypeAndEvents[_] =>
-      delayedAggregateWithEventsUpdate.get(ae.id) match {
-        case None =>
-          handleAggregateWithTypeAndEventsUpdate(self, sender(), ae)
-        case Some(waiting) =>
-          delayedAggregateWithEventsUpdate += ae.id -> (ae :: waiting)
-          handleAggregateWithTypeAndEventsUpdate(self, sender(), mergeAggregateWithTypeAndEventsUpdate(self, ae.id, sender()))
-      }
-
-    case e: IdentifiableEvents[_] =>
-      delayedEventsUpdate.get(e.aggregateId) match {
-        case None => handleIdentifiableEventsUpdate(self, sender(), e)
-        case Some(waiting) =>
-          delayedEventsUpdate += e.aggregateId -> (e :: waiting)
-          handleIdentifiableEventsUpdate(self, sender(), mergeIdentifiableEventsUpdate(self, e.aggregateId, sender()))
-      }
-
-    case e: MessageAggregateProcessed => handleMessageAggregateProcessed(self, e.respondTo, e.aggregateId)
-    case e: MessageAggregateWithEventsProcessed => handleMessageAggregateWithEventsProcessed(self, e.respondTo, e.aggregateId)
-    case e: MessageEventsProcessed => handleMessageEventsProcessed(self, e.respondTo, e.aggregateId)
-
+    case ReplayQueries =>
+      queriesReplayRequested = false
+      replayQueries()
     case ClearProjectionData => clearProjectionData(sender())
   }
 
+  // ************** Deliveries (D3, D4, D20a, D20c)
 
+  /** One subscription of this projection to one aggregate: its listener kind and the aggregate. */
+  private case class Key(subscriptionType: SubscriptionType, aggregateId: AggregateId)
 
-  private def mergeAggregateWithTypeUpdate[A](mySelf: ActorRef, aggregateId: AggregateId, respondTo: ActorRef): AggregateWithType[A] = {
-
-    val reversed = delayedAggregateUpdates.getOrElse(aggregateId, List.empty).reverse.asInstanceOf[List[AggregateWithType[A]]]
-    val ordered = reversed.sortBy(_.events.head.asInt)
-
-
-    var events: AggregateWithType[A] = ordered.headOption.getOrElse(throw new IllegalArgumentException("Empty list of events"))
-    var skipped: List[AggregateWithType[A]] = List.empty
-
-    ordered.tail.foreach { e =>
-      val lastVersion = events.events.last
-      if (e.events.head.isJustAfter(lastVersion)) {
-        events = AggregateWithType(events.aggregateType, events.id, e.version, events.events ++ e.events, e.aggregateRoot, e.replayed)
-      } else if (e.events.last <= lastVersion) {
-        // fully overlapping re-delivery of versions already merged - drop the duplicate
-      } else if (e.events.head <= lastVersion) {
-        // partially overlapping re-delivery - append only the genuinely new tail
-        val newTail = e.events.dropWhile(_ <= lastVersion)
-        events = AggregateWithType(events.aggregateType, events.id, e.version, events.events ++ newTail, e.aggregateRoot, e.replayed)
-      } else {
-        skipped = e :: skipped
-        log.warning("Events are not in order (Aggregate) in projection "+ projectionName+" for aggregate "+aggregateId.asLong+": " + events.events.map(_.asInt).mkString(",") + " -> " + e.events.map(_.asInt).mkString(","))
-      }
-    }
-
-    if(skipped.isEmpty) {
-      delayedAggregateUpdates -= aggregateId
-    } else {
-      delayedAggregateUpdates += aggregateId -> skipped
-      mySelf ! TriggerDelayedUpdateAggregate(aggregateId, respondTo)
-    }
-
-    events
+  /** A delivery waiting in its queue: its versions, its events (none for state-only listeners), the state after its
+    * last version, and the bus to answer. */
+  private case class Pending(versions: Seq[AggregateVersion], events: Seq[EventInfo[Any]], aggregateRoot: Option[Any], replayed: Boolean, respondTo: ActorRef) {
+    def first: AggregateVersion = versions.head
+    def last: AggregateVersion = versions.last
   }
 
-  private def mergeAggregateWithTypeAndEventsUpdate[A](mySelf: ActorRef, aggregateId: AggregateId, respondTo: ActorRef): AggregateWithTypeAndEvents[A] = {
+  /** Versions `from` to `to`, gathered from one or more deliveries, applied in one transaction. */
+  private case class Batch(aggregateType: AggregateType, applied: AggregateVersion, from: AggregateVersion, to: AggregateVersion,
+                           events: Seq[EventInfo[Any]], aggregateRoot: Option[Any], parts: Seq[Pending])
 
-    val reversed = delayedAggregateWithEventsUpdate.getOrElse(aggregateId, List.empty).asInstanceOf[List[AggregateWithTypeAndEvents[A]]]
+  private sealed trait DrainReason
+  private case object GroupingDelay extends DrainReason // ends early when a delivery that must not wait arrives
+  private case object RetryBackOff extends DrainReason
+  private case object GapRecheck extends DrainReason     // ends early when any delivery arrives: it may fill the gap
 
-    val ordered = reversed.sortBy(_.events.head.version.asInt)
+  private case class Drain(key: Key, token: Int)
+  private case class Applied(key: Key, batch: Batch, outcome: Try[Unit])
+  private case object RetryNextFailure
 
-    var accumulator: AggregateWithTypeAndEvents[A] = ordered.headOption.getOrElse(throw new IllegalArgumentException("Empty list of events"))
-    var skipped: List[AggregateWithTypeAndEvents[A]] = List.empty
-
-    ordered.tail.foreach { e =>
-      val lastVersion = accumulator.events.last.version
-      if (e.events.head.version.isJustAfter(lastVersion)) {
-        accumulator = AggregateWithTypeAndEvents(accumulator.aggregateType, accumulator.id, e.aggregateRoot, accumulator.events ++ e.events, e.replayed)
-//        log.debug("Handling delayed aggregate with events update for aggregate " + e.aggregateType.simpleName + ":" + e.id.asLong + ", events: " + events.events.map(_.version.asInt).mkString(","))
-      } else if (e.events.last.version <= lastVersion) {
-        // fully overlapping re-delivery of versions already merged - drop the duplicate
-      } else if (e.events.head.version <= lastVersion) {
-        // partially overlapping re-delivery - append only the genuinely new tail
-        val newTail = e.events.dropWhile(_.version <= lastVersion)
-        accumulator = AggregateWithTypeAndEvents(accumulator.aggregateType, accumulator.id, e.aggregateRoot, accumulator.events ++ newTail, e.replayed)
-      } else {
-        skipped = e :: skipped
-        log.warning("Events are not in order (Aggregate with Events) in projection "+ projectionName+" for aggregate "+aggregateId.asLong+": " + accumulator.events.map(_.version.asInt).mkString(",") + " -> " + e.events.map(_.version.asInt).mkString(","))
-      }
-    }
-
-    if(skipped.isEmpty) {
-      delayedAggregateWithEventsUpdate -= aggregateId
-    } else {
-      delayedAggregateWithEventsUpdate += aggregateId -> skipped
-      triggerScheduledForAggregate += aggregateId -> true
-      mySelf ! TriggerDelayedUpdateAggregateWithEvents(aggregateId, respondTo)
-    }
-
-    accumulator
+  /** The deliveries of one subscription waiting to be applied, and what happens to them now. Removed when idle, so the
+    * queues hold only aggregates with work in progress (F15). */
+  private class Queue(val aggregateType: AggregateType) {
+    var pending = Vector[Pending]()
+    var processing = false
+    var failedAttempts = 0
+    var scheduled: Option[(Int, DrainReason)] = None
+    var gapRequestedFrom: Option[AggregateVersion] = None
+    var gapRequestedAt = 0L // System.nanoTime of the last request
+    def idle: Boolean = pending.isEmpty && !processing && scheduled.isEmpty && gapRequestedFrom.isEmpty
   }
 
-  private def mergeIdentifiableEventsUpdate[A](mySelf: ActorRef, aggregateId: AggregateId, respondTo: ActorRef): IdentifiableEvents[A] = {
+  private val queues = mutable.HashMap[Key, Queue]()
+  private val failed = mutable.LinkedHashMap[Key, SubscriptionFailure]()
+  private var failuresToRetryOnStart = Vector[Key]()
+  private var eventBus: Option[ActorRef] = None
+  private var drainTokens = 0
 
-    val reversed = delayedEventsUpdate.getOrElse(aggregateId, List.empty).reverse.asInstanceOf[List[IdentifiableEvents[A]]]
-
-    val ordered = reversed.sortBy(_.events.head.version.asInt)
-
-//    reverse.tail.foldLeft(reverse.head)((a1, a2) => IdentifiableEvents(a1.aggregateType, a1.aggregateId, a1.events ++ a2.events, a2.replayed))
-
-    var events: IdentifiableEvents[A] = ordered.headOption.getOrElse(throw new IllegalArgumentException("Empty list of events"))
-    var skipped: List[IdentifiableEvents[A]] = List.empty
-
-    ordered.tail.foreach { e =>
-      val lastVersion = events.events.last.version
-      if (e.events.head.version.isJustAfter(lastVersion)) {
-        events = IdentifiableEvents(events.aggregateType, events.aggregateId, events.events ++ e.events, e.replayed)
-      } else if (e.events.last.version <= lastVersion) {
-        // fully overlapping re-delivery of versions already merged - drop the duplicate
-      } else if (e.events.head.version <= lastVersion) {
-        // partially overlapping re-delivery - append only the genuinely new tail
-        val newTail = e.events.dropWhile(_.version <= lastVersion)
-        events = IdentifiableEvents(events.aggregateType, events.aggregateId, events.events ++ newTail, e.replayed)
-      } else {
-        skipped = e :: skipped
-        log.warning("Events are not in order (Events) in projection "+ projectionName+" for aggregate "+aggregateId.asLong+": " + events.events.map(_.version.asInt).mkString(",") + " -> " + e.events.map(_.version.asInt).mkString(","))
+  private def receiveDelivery(key: Key, aggregateType: AggregateType, delivery: Pending): Unit = {
+    if (delivery.versions.isEmpty) {
+      log.warning("Projection " + projectionName + " received a delivery without events for aggregate " + key.aggregateId.asLong)
+    } else if (failed.contains(key)) {
+      delivery.respondTo ! MessageFailed(self, key.aggregateId, delivery.versions, failed(key).error)
+    } else {
+      eventBus = Some(delivery.respondTo)
+      val queue = queues.getOrElseUpdate(key, new Queue(aggregateType))
+      queue.pending :+= delivery
+      options.eventsLogger.foreach(_.debug(s"$className ${key.aggregateId.asLong} received ${delivery.versions.map(_.asInt).mkString(",")}"))
+      if (!queue.processing) queue.scheduled.map(_._2) match {
+        case None => if (mayWait(delivery)) schedule(key, queue, options.groupUpdatesDelayMillis.millis, GroupingDelay) else drain(key, queue)
+        case Some(GroupingDelay) => if (!mayWait(delivery)) drain(key, queue)
+        case Some(GapRecheck) => drain(key, queue)
+        case Some(RetryBackOff) => () // re-deliveries during the retries wait for them (D20a)
       }
     }
-
-    if(skipped.isEmpty) {
-      delayedEventsUpdate -= aggregateId
-    } else {
-      delayedEventsUpdate += aggregateId -> skipped
-      mySelf ! TriggerDelayedUpdateEvents(aggregateId, respondTo)
-    }
-
-    events
   }
 
+  // Grouping (groupUpdatesDelayMillis): live deliveries wait to be applied together, except early versions and
+  // events that must be applied at once.
+  private def mayWait(delivery: Pending): Boolean =
+    options.groupUpdatesDelayMillis > 0 && !delivery.replayed && delivery.first.asInt >= options.minimumDelayVersion &&
+      !delivery.events.exists(e => options.eventsToProcessImmediately.contains(e.event.getClass))
 
-  private def handleIdentifiableEventsUpdate(mySelf: ActorRef, respondTo: ActorRef, e: IdentifiableEvents[_]): Unit = {
-    val lastVersion = subscriptionsState.lastVersionForEventsSubscription(this.getClass.getName, e.aggregateId)
+  private def schedule(key: Key, queue: Queue, after: FiniteDuration, reason: DrainReason): Unit = {
+    drainTokens += 1
+    queue.scheduled = Some((drainTokens, reason))
+    context.system.scheduler.scheduleOnce(after, self, Drain(key, drainTokens))(context.dispatcher)
+  }
 
-    val alreadyProcessed = e.events.takeWhile(e => e.version <= lastVersion)
-    val newEvents = e.events.drop(alreadyProcessed.length)
+  // Runs the gate over the waiting deliveries in the order of their first versions: duplicates are acknowledged, the
+  // versions after the applied one form one batch, and deliveries after a gap wait for the missing versions.
+  private def drain(key: Key, queue: Queue, gapRecheck: Boolean = false): Unit = {
+    queue.scheduled = None
+    Try(appliedVersion(key)) match {
+      case Success(applied) => drainFrom(key, queue, applied, gapRecheck)
+      case Failure(e) =>
+        // The store is unavailable, not the listener at fault: try again later, without counting it as a failure.
+        log.warning("Projection " + projectionName + " could not read its version of aggregate " + key.aggregateId.asLong + ", trying again: " + e)
+        schedule(key, queue, options.retries.max, RetryBackOff)
+    }
+  }
 
-    options.eventsLogger.foreach(_.debug(s"${className} events for aggregate ${e.aggregateId.asLong} recived, events: ${e.events.map(_.version.asInt).mkString(",")}"))
+  private def drainFrom(key: Key, queue: Queue, applied: AggregateVersion, gapRecheck: Boolean): Unit = {
+    var next = applied
+    var parts = Vector[(Pending, AggregateVersion)]() // a delivery and the first version it adds
+    var waiting = Vector[Pending]()
+    var gap: Option[AggregateVersion] = None
 
-    if (newEvents.isEmpty && alreadyProcessed.nonEmpty) {
-      respondTo ! MessageAck(mySelf, e.aggregateId, alreadyProcessed.map(_.version))
-    } else if (newEvents.nonEmpty && newEvents.head.version.isJustAfter(lastVersion)) {
+    queue.pending.sortBy(_.first.asInt).foreach { delivery =>
+      if (gap.isDefined) {
+        waiting :+= delivery
+      } else SequenceGate.decide(next, delivery.first, delivery.last) match {
+        case AlreadyApplied => delivery.respondTo ! MessageAck(self, key.aggregateId, delivery.versions)
+        case Apply(from, to) =>
+          parts :+= (delivery -> from)
+          next = to
+        case Gap(from) =>
+          gap = Some(from)
+          waiting :+= delivery
+      }
+    }
+    queue.pending = waiting
 
+    gap match {
+      case Some(from) => requestMissingVersions(key, queue, from, gapRecheck)
+      case None => queue.gapRequestedFrom = None
+    }
+
+    if (parts.nonEmpty) {
+      val batch = Batch(queue.aggregateType, applied, applied.increment, next,
+        parts.flatMap { case (delivery, from) => delivery.events.dropWhile(_.version < from) },
+        parts.last._1.aggregateRoot, parts.map(_._1))
+      queue.processing = true
       executionContext match {
-        case Some(context) =>
-          options.eventsLogger.foreach(_.debug(s"${className} processing events update for aggregate ${e.aggregateId.asLong} in async mode"))
-          processedAggregates.put(e.aggregateId.asLong, true)
-          runTaskAsyncPerAggregate(e.aggregateId)(context) {
-            try {
-              processEventsUpdate(mySelf, respondTo, e, lastVersion, async = true)
-            } catch {
-              case ex: Exception =>
-                log.debug(s"Error on async events update processing for aggregate ${e.aggregateId.asLong}: ${ex.getMessage}", ex)
-                throw ex
-            }
-          }
-        case None =>
-          processEventsUpdate(mySelf, respondTo, e, lastVersion, async = false)
+        case Some(ec) => Future(applyBatch(key, batch))(ec).onComplete(outcome => self ! Applied(key, batch, outcome))(context.dispatcher)
+        case None => afterBatch(key, queue, batch, Try(applyBatch(key, batch)))
       }
-
-    } else if (newEvents.nonEmpty) { // not just after previous update
-//      log.debug("Delaying events update handling for aggregate " + e.aggregateType.simpleName + ":" + e.aggregateId.asLong + ", got update for version " + toRangeString(e.events.map(_.version.asInt)) + " but only processed version " + lastVersion.asInt)
-      delayedEventsUpdate += e.aggregateId -> (e :: delayedEventsUpdate.getOrElse(e.aggregateId, List.empty))
     } else {
-      throw new IllegalArgumentException("Received empty list of events!")
+      forgetIfIdle(key, queue)
     }
   }
 
-  private def processEventsUpdate(mySelf: ActorRef, respondTo: ActorRef, e: IdentifiableEvents[_], lastVersion: AggregateVersion, async: Boolean): Unit = {
-    val aggregateId = e.aggregateId
-    try {
-      eventListenersMap(e.aggregateType) match {
-        case listener if listener.options.noTransaction => // Process outside transaction, so DB wont be affected too much, should be used when projectionis not storage based
-          listener.listener(aggregateId, e.events.asInstanceOf[Seq[EventInfo[Any]]])(null) // null to be passed as dbsession mock
-          subscriptionsState.autoCommit { session =>
-            subscriptionsState.newVersionForEventsSubscription(this.getClass.getName, aggregateId, lastVersion, e.events.last.version)(session)
-          }
-        case listener =>
-          subscriptionsState.localTx { session =>
-            listener.listener(aggregateId, e.events.asInstanceOf[Seq[EventInfo[Any]]])(session)
-            subscriptionsState.newVersionForEventsSubscription(this.getClass.getName, aggregateId, lastVersion, e.events.last.version)(session)
-          }
-      }
-
-      respondTo ! MessageAck(mySelf, aggregateId, e.events.map(_.version))
-
-      options.eventsLogger.foreach(_.debug(s"${className} aggregate ${e.aggregateId.asLong} events ACK sent: ${e.events.map(_.version.asInt).mkString(",")} to ${respondTo.path}") )
-
-    } catch {
-      case ex: Exception => log.error(ex, "Error handling update " + e.events.head.version.asInt + "-" + e.events.last.version.asInt)
-    } finally {
-
-      if(async) {
-        mySelf ! MessageEventsProcessed(aggregateId, respondTo)
-      } else {
-        handleMessageEventsProcessed(mySelf, respondTo, aggregateId)
-      }
+  // D20c: the owner re-publishes from `from` to this projection only. The request goes once per `gapRequestRepeat`
+  // while the versions stay missing, however many deliveries arrive meanwhile.
+  private def requestMissingVersions(key: Key, queue: Queue, from: AggregateVersion, gapRecheck: Boolean): Unit = {
+    val now = System.nanoTime()
+    val sameGap = queue.gapRequestedFrom.contains(from)
+    if (!sameGap || gapRecheck) {
+      eventBus.foreach(_ ! RequestRepublish(self, queue.aggregateType, key.aggregateId, from))
+      if (!sameGap) log.info("Projection " + projectionName + " asks for versions from " + from.asInt + " of " + queue.aggregateType.simpleName + " " + key.aggregateId.asLong)
+      queue.gapRequestedFrom = Some(from)
+      queue.gapRequestedAt = now
     }
-
+    schedule(key, queue, math.max(options.gapRequestRepeat.toNanos - (now - queue.gapRequestedAt), 0L).nanos, GapRecheck)
   }
 
-  private def handleMessageEventsProcessed(mySelf: ActorRef, respondTo: ActorRef, aggregateId: AggregateId): Unit = {
-    processedAggregates.remove(aggregateId.asLong)
-
-    if (delayedQueries.nonEmpty) {
-      mySelf ! ReplayQueries
-    }
-
-    if (delayedEventsUpdate.contains(aggregateId) && !triggerScheduledForAggregate.contains(aggregateId)) {
-      mySelf ! TriggerDelayedUpdateEvents(aggregateId, respondTo)
-      triggerScheduledForAggregate += aggregateId -> true
+  private def afterBatch(key: Key, queue: Queue, batch: Batch, outcome: Try[Unit]): Unit = {
+    queue.processing = false
+    outcome match {
+      case Success(_) =>
+        batch.parts.foreach(delivery => delivery.respondTo ! MessageAck(self, key.aggregateId, delivery.versions))
+        options.eventsLogger.foreach(_.debug(s"$className ${key.aggregateId.asLong} applied ${batch.from.asInt}-${batch.to.asInt}"))
+        queue.failedAttempts = 0
+        requestQueriesReplay()
+        // Deliveries that arrived meanwhile may fill a gap, so they are looked at now, not at the gap's next check.
+        if (queue.pending.nonEmpty) drain(key, queue) else forgetIfIdle(key, queue)
+      case Failure(e) =>
+        queue.failedAttempts += 1
+        queue.pending = batch.parts.toVector ++ queue.pending
+        if (options.retries.exhausted(queue.failedAttempts)) {
+          giveUp(key, queue, batch, e)
+        } else {
+          log.warning("Projection " + projectionName + " failed on " + batch.aggregateType.simpleName + " " + key.aggregateId.asLong +
+            " versions " + batch.from.asInt + "-" + batch.to.asInt + " (attempt " + queue.failedAttempts + "), retrying: " + e)
+          schedule(key, queue, options.retries.delay(queue.failedAttempts + 1), RetryBackOff)
+        }
     }
   }
 
-  private def handleAggregateWithTypeAndEventsUpdate(mySelf: ActorRef, respondTo: ActorRef, ae: AggregateWithTypeAndEvents[_]): Unit = {
-    val lastVersion = subscriptionsState.lastVersionForAggregatesWithEventsSubscription(this.getClass.getName, ae.id)
-    val alreadyProcessed: Seq[EventInfo[_]] = ae.events.takeWhile(e => e.version <= lastVersion)
-    val newEvents: Seq[EventInfo[_]] = ae.events.drop(alreadyProcessed.length)
+  // D20a: the failure is stored with the first version not applied; the waiting deliveries and every later one of the
+  // aggregate get MessageFailed, so the owner's outbox rows can go, until the failure is retried or skipped.
+  private def giveUp(key: Key, queue: Queue, batch: Batch, e: Throwable): Unit = {
+    val error = e.getClass.getSimpleName + ": " + e.getMessage
+    val failure = SubscriptionFailure(key.subscriptionType, batch.aggregateType, key.aggregateId, batch.from, error, Instant.now)
+    log.error(e, "Projection " + projectionName + " gave up on " + batch.aggregateType.simpleName + " " + key.aggregateId.asLong +
+      " at version " + batch.from.asInt + " after " + queue.failedAttempts + " attempts; deliveries of it fail until it is retried or skipped")
+    Try(subscriptionsState.recordFailure(subscriberName, failure)).failed.foreach(storeError =>
+      log.error(storeError, "Recording the failure of " + projectionName + " on aggregate " + key.aggregateId.asLong + " failed; it is kept in memory only"))
+    failed += key -> failure
+    queue.pending.foreach(delivery => delivery.respondTo ! MessageFailed(self, key.aggregateId, delivery.versions, error))
+    queues -= key
+  }
 
-    options.eventsLogger.foreach(_.debug(s"${className} events with aggregate ${ae.id.asLong} received, events: ${ae.events.map(_.version.asInt).mkString(",")}"))
+  private def forgetIfIdle(key: Key, queue: Queue): Unit = if (queue.idle) queues -= key
 
-    if (newEvents.isEmpty && alreadyProcessed.nonEmpty) {
-      respondTo ! MessageAck(mySelf, ae.id, alreadyProcessed.map(_.version))
-//      log.debug("Sending ACK message for already processed events for aggregate " + ae.id+": "+alreadyProcessed.map(_.version.asInt).mkString(","))
-    } else if (newEvents.nonEmpty && newEvents.head.version.isJustAfter(lastVersion)) {
+  private def appliedVersion(key: Key): AggregateVersion = key.subscriptionType match {
+    case SubscriptionType.EVENTS => subscriptionsState.lastVersionForEventsSubscription(subscriberName, key.aggregateId)
+    case SubscriptionType.AGGREGATES => subscriptionsState.lastVersionForAggregateSubscription(subscriberName, key.aggregateId)
+    case _ => subscriptionsState.lastVersionForAggregatesWithEventsSubscription(subscriberName, key.aggregateId)
+  }
 
+  private def advance(key: Key, from: AggregateVersion, to: AggregateVersion)(session: DBSession): Unit = key.subscriptionType match {
+    case SubscriptionType.EVENTS => subscriptionsState.newVersionForEventsSubscription(subscriberName, key.aggregateId, from, to)(session)
+    case SubscriptionType.AGGREGATES => subscriptionsState.newVersionForAggregatesSubscription(subscriberName, key.aggregateId, from, to)(session)
+    case _ => subscriptionsState.newVersionForAggregatesWithEventsSubscription(subscriberName, key.aggregateId, from, to)(session)
+  }
 
-      executionContext match {
-        case Some(context) =>
-          processedAggregates.put(ae.id.asLong, true)
-          options.eventsLogger.foreach(_.debug(s"${className} will process asynchronously events for aggregate ${ae.id}: ${ae.events.map(_.version.asInt).mkString(",")}"))
-
-
-          runTaskAsyncPerAggregate(ae.id)(context) {
-            try {
-              processAggregateWithEventsUpdate(mySelf, respondTo, ae, newEvents, alreadyProcessed, lastVersion, async = true)
-            } catch {
-              case ex: Exception =>
-                log.error(ex, "Error handling update " + newEvents.head.version.asInt + "-" + ae.events.last.version.asInt)
-                options.eventsLogger.foreach(_.error(s"${className} processing events aggregate exception within future ${ae.id}: ${ae.events.map(_.version.asInt).mkString(",")}: ${ex.getClass.getSimpleName} ${ex.getMessage}"))
-                throw ex
-            }
-          }
-
-
-        case None =>
-          processAggregateWithEventsUpdate(mySelf, respondTo, ae, newEvents, alreadyProcessed, lastVersion, async = false)
-      }
-
-
-    } else if (newEvents.nonEmpty) { // not just after previous update
-//      log.debug("Delaying aggregate with events update handling for aggregate " + ae.aggregateType.simpleName + ":" + ae.id.asLong + ", got update for version " + toRangeString(ae.events.map(_.version.asInt)) + " but only processed version " + lastVersion.asInt)
-      delayedAggregateWithEventsUpdate += ae.id -> (ae :: delayedAggregateWithEventsUpdate.getOrElse(ae.id, List.empty))
+  // The listener and the subscription's new version commit together; a listener without a transaction runs first and
+  // the version is written after it.
+  private def applyBatch(key: Key, batch: Batch): Unit = {
+    val id = key.aggregateId
+    val (noTransaction, work): (Boolean, DBSession => Unit) = key.subscriptionType match {
+      case SubscriptionType.EVENTS =>
+        val listener = eventListenersMap(batch.aggregateType)
+        (listener.options.noTransaction, listener.listener(id, batch.events))
+      case SubscriptionType.AGGREGATES =>
+        val listener = aggregateListenersMap(batch.aggregateType)
+        (listener.options.noTransaction, listener.listener(id, batch.to, batch.from.isOne, batch.aggregateRoot))
+      case _ =>
+        val listener = aggregateWithEventListenersMap(batch.aggregateType)
+        (listener.options.noTransaction, listener.listener(id, batch.to, batch.aggregateRoot, batch.events))
+    }
+    if (noTransaction) {
+      work(null) // no session: the listener does not write to the database
+      subscriptionsState.autoCommit(advance(key, batch.applied, batch.to))
     } else {
-      throw new IllegalArgumentException("Received empty list of events!")
-    }
-  }
-
-  private def toRangeString(nums: Seq[Int]): String = {
-    if (nums.isEmpty) return ""
-
-    nums.sorted
-      .foldLeft(List[(Int, Int)]()) {
-        case (Nil, n) => List((n, n))
-        case (ranges :+ ((start, end)), n) =>
-          if (n == end + 1) ranges :+ (start, n)
-          else ranges :+ (start, end) :+ (n, n)
-      }
-      .map {
-        case (start, end) if start == end => start.toString
-        case (start, end) if end == start + 1 => s"$start,$end"
-        case (start, end) => s"$start-$end"
-      }
-      .mkString(",")
-  }
-
-  def runTaskAsyncPerAggregate(id: AggregateId)(context: ExecutionContext)(task: => Unit): Unit = {
-    // This fragment ensures that updates for the same aggregate are processed sequentially, even in async mode. It does that by maintaining a queue of tasks per aggregate.
-    val state = states.computeIfAbsent(id, _ => ProcessingState(mutable.Queue.empty, running = false))
-
-    val asyncTask: () => Future[Unit] = () => Future {
-        task
-    }(context)
-
-
-    state.synchronized {
-      state.queue.enqueue(asyncTask)
-      if (!state.running) {
-        state.running = true
-        runNextAsyncTask(id, state)(context)
+      subscriptionsState.localTx { session =>
+        work(session)
+        advance(key, batch.applied, batch.to)(session)
       }
     }
   }
 
+  // ************** Failed subscriptions (D20a)
 
-  private def runNextAsyncTask(id: AggregateId, state: ProcessingState)(implicit context: ExecutionContext): Unit = {
-    val next = state.synchronized {
-      if (state.queue.nonEmpty) {
-        Some(state.queue.dequeue())
-      } else {
-        state.running = false
-        None
-      }
-    }
-
-    next.foreach { task =>
-      task().onComplete { _ =>
-        runNextAsyncTask(id, state)
-      }
+  private def loadFailures(): Unit = {
+    Try(subscriptionsState.failures(subscriberName)) match {
+      case Success(stored) =>
+        stored.foreach(failure => failed += Key(failure.subscriptionType, failure.aggregateId) -> failure)
+        if (options.retryFailuresOnStart && stored.nonEmpty) {
+          failuresToRetryOnStart = stored.sortBy(_.since).map(failure => Key(failure.subscriptionType, failure.aggregateId)).toVector
+          log.info("Projection " + projectionName + " retries " + stored.size + " failed subscriptions, one per second")
+          self ! RetryNextFailure
+        }
+      case Failure(e) => log.error(e, "Projection " + projectionName + " could not read its failed subscriptions")
     }
   }
 
-  private def processAggregateWithEventsUpdate(mySelf: ActorRef, respondTo: ActorRef, ae: AggregateWithTypeAndEvents[_], newEvents: Seq[EventInfo[_]], alreadyProcessed: Seq[EventInfo[_]], lastVersion: AggregateVersion, async: Boolean): Unit = {
-    val aggregateId = ae.id
-    options.eventsLogger.foreach(_.debug(s"${className} processing events aggregate ${ae.id}: ${ae.events.map(_.version.asInt).mkString(",")}"))
-    try {
-
-      aggregateWithEventListenersMap(ae.aggregateType) match {
-        case listener if listener.options.noTransaction => // Process outside transaction, so DB wont be affected too much, should be used when projectionis not storage based
-          options.eventsLogger.foreach(_.debug(s"${className} processing events outside transaction for aggregate ${ae.id}: ${ae.events.map(_.version.asInt).mkString(",")}"))
-          listener.listener(aggregateId, newEvents.last.version, ae.aggregateRoot, newEvents.asInstanceOf[Seq[EventInfo[Any]]])(null) // null to be passed as dbsession mock
-          subscriptionsState.autoCommit { session =>
-            subscriptionsState.newVersionForAggregatesWithEventsSubscription(this.getClass.getName, aggregateId, lastVersion, newEvents.last.version)(session)
-          }
-        case listener =>
-          options.eventsLogger.foreach(_.debug(s"${className} processing events for aggregate in transaction ${ae.id}: ${ae.events.map(_.version.asInt).mkString(",")}"))
-          subscriptionsState.localTx { session =>
-            listener.listener(aggregateId, newEvents.last.version, ae.aggregateRoot, newEvents.asInstanceOf[Seq[EventInfo[Any]]])(session)
-            subscriptionsState.newVersionForAggregatesWithEventsSubscription(this.getClass.getName, aggregateId, lastVersion, newEvents.last.version)(session)
-          }
-      }
-
-      respondTo ! MessageAck(mySelf, aggregateId, alreadyProcessed.map(_.version) ++ newEvents.map(_.version))
-
-      options.eventsLogger.foreach(_.debug(s"${className} aggregate ${ae.id.asLong} events ACK sent: ${ae.events.map(_.version.asInt).mkString(",")} to ${respondTo.path}") )
-    } catch {
-      case e: Exception =>
-        options.eventsLogger.foreach(_.error(s"${className} processing events for aggregate error ${ae.id}: ${ae.events.map(_.version.asInt).mkString(",")}: ${e.getClass.getSimpleName} ${e.getMessage}"))
-        log.error(e, "Error handling update " + newEvents.head.version.asInt + "-" + ae.events.last.version.asInt)
-    } finally {
-
-      if(async) {
-        mySelf ! MessageAggregateWithEventsProcessed(aggregateId, respondTo)
-      } else {
-        handleMessageAggregateWithEventsProcessed(mySelf, respondTo, aggregateId)
-      }
-    }
-
-
-  }
-
-  private def handleMessageAggregateWithEventsProcessed(mySelf: ActorRef, respondTo: ActorRef, aggregateId: AggregateId): Unit = {
-    processedAggregates.remove(aggregateId.asLong)
-    if(delayedQueries.nonEmpty) {
-      mySelf ! ReplayQueries
-    }
-
-    options.eventsLogger.foreach(_.error(s"${className} maybe triggering update of delayed events for ${aggregateId.asLong}, delayed: ${delayedAggregateWithEventsUpdate.contains(aggregateId)}, scheduled: ${triggerScheduledForAggregate.contains(aggregateId)}"))
-    if(delayedAggregateWithEventsUpdate.contains(aggregateId) && !triggerScheduledForAggregate.contains(aggregateId)) {
-      mySelf ! TriggerDelayedUpdateAggregateWithEvents(aggregateId, respondTo)
-      triggerScheduledForAggregate += aggregateId -> true
+  // Rate-limited, so a start after many failures does not ask every owner at once.
+  private def retryNextFailureOnStart(): Unit = {
+    failuresToRetryOnStart.headOption.foreach { key =>
+      failuresToRetryOnStart = failuresToRetryOnStart.tail
+      retry(key)
+      if (failuresToRetryOnStart.nonEmpty) context.system.scheduler.scheduleOnce(1.second, self, RetryNextFailure)(context.dispatcher)
     }
   }
 
+  private def retryFailures(aggregateId: AggregateId): Int = failed.keys.filter(_.aggregateId == aggregateId).toSeq.count(retry)
 
-  private def handleAggregateWithTypeUpdate(mySelf: ActorRef, respondTo: ActorRef,a: AggregateWithType[_]): Unit = {
-    val lastVersion = subscriptionsState.lastVersionForAggregateSubscription(this.getClass.getName, a.id)
-    val alreadyProcessed: Seq[AggregateVersion] = a.events.takeWhile(e => e <= lastVersion)
-    val newEvents: Seq[AggregateVersion] = a.events.drop(alreadyProcessed.length)
-
-    options.eventsLogger.foreach(_.debug(s"${className} aggrgeate ${a.id.asLong} recived, events: ${a.events.map(_.asInt).mkString(",")}"))
-
-    if (newEvents.isEmpty && alreadyProcessed.nonEmpty) {
-      respondTo ! MessageAck(mySelf, a.id, alreadyProcessed)
-    } else if (newEvents.nonEmpty && newEvents.head.isJustAfter(lastVersion)) {
-
-      executionContext match {
-        case Some(context) =>
-          processedAggregates.put(a.id.asLong, true)
-          runTaskAsyncPerAggregate(a.id)(context) {
-            try {
-              processAggregateUpdate(mySelf, respondTo, a, newEvents, alreadyProcessed, lastVersion, async = true)
-            } catch {
-              case ex: Exception =>
-                log.debug(s"Error on async aggregate ${a.id.asLong} update processing: ${ex.getMessage}", ex)
-                throw ex
-            }
-          }
-        case None =>
-          processAggregateUpdate(mySelf, respondTo, a, newEvents, alreadyProcessed, lastVersion, async = false)
-      }
-
-    } else if (newEvents.nonEmpty) { // not just after previous update
-//      log.debug("Delaying aggregate update handling for aggregate " + a.aggregateType.simpleName + ":" + a.id.asLong + ", got update for version " + toRangeString(a.events.map(_.asInt)) + " but only processed version " + lastVersion.asInt)
-      delayedAggregateUpdates += a.id -> (a :: delayedAggregateUpdates.getOrElse(a.id, List.empty))
-    } else {
-      throw new IllegalArgumentException("Received empty list of events!")
+  // Clears the failure and asks for the failed version again; the gate drops what was applied meanwhile.
+  private def retry(key: Key): Boolean = failed.get(key).exists { failure =>
+    Try(subscriptionsState.autoCommit(subscriptionsState.clearFailure(subscriberName, key.subscriptionType, key.aggregateId)(_))) match {
+      case Success(_) =>
+        failed -= key
+        requestRepublication(failure, failure.version)
+        true
+      case Failure(e) =>
+        log.error(e, "Projection " + projectionName + " could not clear the failure on aggregate " + key.aggregateId.asLong)
+        false
     }
   }
 
-  private def processAggregateUpdate(mySelf: ActorRef, respondTo: ActorRef, a: AggregateWithType[_], newEvents: Seq[AggregateVersion], alreadyProcessed: Seq[AggregateVersion], lastVersion: AggregateVersion, async: Boolean): Unit = {
-    val aggregateId = a.id
-    try {
-
-      aggregateListenersMap(a.aggregateType) match {
-        case listener if listener.options.noTransaction => // Process outside transaction, so DB wont be affected too much, should be used when projectionis not storage based
-          listener.listener(aggregateId, a.version, newEvents.head.isOne, a.aggregateRoot)(null) // null to be passed as dbsession mock
-          subscriptionsState.autoCommit { session =>
-            subscriptionsState.newVersionForAggregatesSubscription(this.getClass.getName, aggregateId, lastVersion, newEvents.last)(session)
-          }
-        case listener =>
-          subscriptionsState.localTx { session =>
-            listener.listener(aggregateId, a.version, newEvents.head.isOne, a.aggregateRoot)(session)
-            subscriptionsState.newVersionForAggregatesSubscription(this.getClass.getName, aggregateId, lastVersion, newEvents.last)(session)
-          }
-      }
-
-      respondTo ! MessageAck(mySelf, aggregateId, alreadyProcessed ++ newEvents)
-
-      options.eventsLogger.foreach(_.debug(s"${className} aggregate ${a.id.asLong} events ACK sent: ${a.events.map(_.asInt).mkString(",")} to ${respondTo.path}") )
-
-    } catch {
-      case e: Exception => log.error(e, "Error handling update " + newEvents.head.asInt + "-" + a.events.last.asInt)
-    } finally {
-
-      if(async) {
-        mySelf ! MessageAggregateProcessed(aggregateId, respondTo)
-      } else {
-        handleMessageAggregateProcessed(mySelf, respondTo, aggregateId)
-      }
-    }
-
-
-  }
-
-  private def handleMessageAggregateProcessed(mySelf: ActorRef, respondTo: ActorRef, aggregateId: AggregateId): Unit = {
-    processedAggregates.remove(aggregateId.asLong)
-    if(delayedQueries.nonEmpty) {
-      mySelf ! ReplayQueries
-    }
-
-    if(delayedAggregateUpdates.contains(aggregateId) && !triggerScheduledForAggregate.contains(aggregateId)) {
-      mySelf ! TriggerDelayedUpdateAggregate(aggregateId, respondTo)
-      triggerScheduledForAggregate += aggregateId -> true
+  private def skipFailedVersions(aggregateId: AggregateId): Int = failed.keys.filter(_.aggregateId == aggregateId).toSeq.count { key =>
+    val failure = failed(key)
+    Try(subscriptionsState.localTx { session =>
+      advance(key, AggregateVersion(failure.version.asInt - 1), failure.version)(session)
+      subscriptionsState.clearFailure(subscriberName, key.subscriptionType, key.aggregateId)(session)
+    }) match {
+      case Success(_) =>
+        log.warning("Projection " + projectionName + " skipped version " + failure.version.asInt + " of " + failure.aggregateType.simpleName + " " + aggregateId.asLong)
+        failed -= key
+        requestRepublication(failure, failure.version.increment)
+        true
+      case Failure(e) =>
+        log.error(e, "Projection " + projectionName + " could not skip version " + failure.version.asInt + " of aggregate " + aggregateId.asLong)
+        false
     }
   }
+
+  private def requestRepublication(failure: SubscriptionFailure, from: AggregateVersion): Unit =
+    eventBus.foreach(_ ! RequestRepublish(self, failure.aggregateType, failure.aggregateId, from))
+
+  private def status: ProjectionStatus = ProjectionStatus(projectionName, failed.values.toSeq,
+    queues.collect { case (key, queue) if queue.failedAttempts > 0 => key.aggregateId }.toSeq.distinct,
+    queues.collect { case (key, queue) if queue.gapRequestedFrom.isDefined => key.aggregateId }.toSeq.distinct)
 
   protected def receiveQuery: Receive
 
   private def clearProjectionData(replyTo: ActorRef): Unit = {
-    subscriptionsState.clearSubscriptionsInfo(this.getClass.getName)
+    subscriptionsState.clearSubscriptionsInfo(subscriberName)
+    queues.clear()
+    failed.clear()
+    failuresToRetryOnStart = Vector.empty
     replyTo ! ProjectionDataCleared
     onClearProjectionData()
   }
@@ -751,6 +569,15 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   // ************** Queries delay - needed if query is for document that might not been yet updated, but update is in it's way
 
   private var delayedQueries = List[DelayedQuery]()
+  private var queriesReplayRequested = false
+
+  // F28: one replay of the waiting queries for a burst of applied updates, not one per update.
+  private def requestQueriesReplay(): Unit = {
+    if (delayedQueries.nonEmpty && !queriesReplayRequested) {
+      queriesReplayRequested = true
+      self ! ReplayQueries
+    }
+  }
 
   private def replayQueries(): Unit = {
 
@@ -789,19 +616,16 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     delayIfNotAvailableAsyncCustom[T](respondTo, search, found, Instant.now().plusMillis(forMaximumMillis))
   }
 
+  // A search that fails is answered with the failure (F80): rethrowing would restart the actor.
   protected def delayIfNotAvailable[T](respondTo: ActorRef, search: () => Option[T], until: Instant): Unit = {
-    val result: Option[Any] = try {
-      search()
-    } catch {
-      case ex: Exception =>
+    Try(search()) match {
+      case Success(result@Some(_)) => respondTo ! result
+      case Success(None) =>
+        delayedQueries ::= SyncDelayedQuery(until, respondTo, search)
+        scheduleNearest()
+      case Failure(ex) =>
+        log.error(ex, "Query of projection " + projectionName + " failed")
         respondTo ! Status.Failure(ex)
-        throw ex
-    }
-    if (result.isDefined) {
-      respondTo ! result
-    } else {
-      delayedQueries ::= SyncDelayedQuery(until, respondTo, search)
-      scheduleNearest()
     }
   }
 

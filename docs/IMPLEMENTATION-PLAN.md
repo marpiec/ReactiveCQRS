@@ -946,3 +946,31 @@ Open test-infrastructure items:
   false, the owner keeps that event's outbox row, and the next re-publication's ack tries again
   (`PermanentDeleteSpec`, 3 scenarios).
 - Next: the projection actor uses this (failure policy, status, retry, skip).
+
+**16/10/2026: projections over the sequence gate (D4, D20a, D20c; F5, F15, F28 part, F33 part, F45, F80, AR7)**
+- `ProjectionActor` keeps one queue per (listener kind, aggregate), removed when idle (F15).
+  The gate runs over the waiting deliveries in version order: duplicates are acknowledged,
+  the versions after the applied one are applied as one batch with the new subscription
+  version in one transaction, and only the new part of an overlapping delivery reaches the
+  listener (F5). A gap is asked from the owner with `RequestRepublish`, again every 10 s while
+  it lasts; only the deliveries in flight wait (F45). All three listener kinds share this path.
+- A failing batch is retried with `Backoff` (1 s doubling to 30 s, nine attempts, about two
+  minutes); deliveries arriving meanwhile wait. Then the failure is recorded (version, error,
+  since), the waiting deliveries and every later one of that aggregate are answered
+  `MessageFailed`, and other aggregates keep flowing (R1). `GetProjectionStatus` lists the
+  failures, the aggregates under retry and those waiting for a gap; `RetryFailedSubscription`
+  clears a failure and asks for the failed version again; `SkipFailedVersion` marks it applied
+  and asks for the next ones; failures recorded before a start are retried at the start, one
+  per second. A store that cannot be read is retried every 30 s without becoming a failure.
+- Grouping (`groupUpdatesDelayMillis`, `minimumDelayVersion`, `eventsToProcessImmediately`) and
+  parallel processing keep their meaning: grouped deliveries wait for the delay unless one
+  must not wait; in parallel mode one batch per aggregate runs at a time on the pool, which is
+  shut down on stop.
+- AR7, F80: a message the projection fails on, a query included, is answered with
+  `Status.Failure` and never rethrown; `delayIfNotAvailable` no longer rethrows. Waiting queries
+  are replayed once per burst of applied updates (F28, coalesced only).
+- Tests: `ProjectionDeliverySpec` (12 scenarios, in memory, a probe as the bus; three runs in a
+  row). They test new behaviour, so they were not red first; the old code fails them by
+  construction (it passed all delivered events, buffered gaps without asking, and only logged
+  listener failures). `SubscribableSpec` now creates the types table itself: run alone, it
+  failed because only an earlier spec had created it.

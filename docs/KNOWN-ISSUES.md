@@ -226,7 +226,7 @@ implementation plan.
 - **Fix:** removed together with the cursor (D7); keep counters balanced in the new bus.
 
 #### F5 — Event listeners receive already-processed events on a partial overlap
-- **High**, likely · Fix in **M2** · `ProjectionActor` (sequence gate)
+- **High**, likely · **Fixed in M2** (16/10/2026: every listener kind goes through the sequence gate and gets only the versions after its applied one; `ProjectionDeliverySpec`) · `ProjectionActor` (sequence gate)
 - **Symptom:** non-idempotent event listeners apply events twice (wrong read models); a duplicate `insertDocument` throws, the batch is never acked and the aggregate stalls.
 - **Root cause:** `processEventsUpdate` passes `e.events` instead of the new events (`ProjectionActor.scala:437, 445, 461, 467`), unlike the aggregate-with-events path (`:608, 615`). Overlaps happen through re-sends.
 - **Related:** F1, F2; D4.
@@ -245,7 +245,7 @@ implementation plan.
 - **Root cause:** one ack finishing a non-contiguous set moves the cursor to its last version (`EventsBusActor.scala:433-441`).
 
 #### F15 — Per-aggregate async queues in parallel mode are never pruned
-- **Low**, likely · Fix in **M2** · `ProjectionActor`
+- **Low**, likely · **Fixed in M2** (16/10/2026: one queue per aggregate and listener kind, removed when idle; in parallel mode only one batch per aggregate runs at a time) · `ProjectionActor`
 - **Root cause:** `states` grows per aggregate (`ProjectionActor.scala:120, 566`); used by Neula's two parallel listeners.
 - **Fix:** remove a queue when it drains (sequence gate rework).
 
@@ -264,7 +264,7 @@ implementation plan.
 - **Fix:** batched delete (`event_id = ANY(?)`) from one writer with failure handling; consider `(aggregate_id, version)` as the key. A published-version cursor instead of the table is a post-1.0 option (D44).
 
 #### F28 — Every processed update re-runs all pending delayed queries
-- **Low**, likely · Fix in **M2** · `ProjectionActor`
+- **Low**, likely · **Partly fixed in M2** (16/10/2026: one replay per burst of applied updates. Keying the queries by aggregate needs the query to name its aggregate, an API change of little value; left as is) · `ProjectionActor`
 - **Root cause:** `ReplayQueries` after each processed update (`ProjectionActor.scala:492-494, 641-643, 725-727, 771-793`); `scheduleNearest` scans the whole list.
 - **Fix:** keyed delayed queries; coalesce replays (D34).
 
@@ -296,7 +296,7 @@ implementation plan.
 - **Root cause:** `throw` at `EventBusSubscriptionsManager.scala:69`; the default restart clears `subscriptionsRequests`.
 
 #### F45 — Unbounded projection delay buffers
-- **Medium**, likely · Fix in **M2** · `ProjectionActor`
+- **Medium**, likely · **Fixed in M2** (16/10/2026: a gap is asked from the owner, again every 10 s while it lasts; only the deliveries in flight wait; `ProjectionDeliverySpec`) · `ProjectionActor`
 - **Root cause:** `delayed*Update` maps (`ProjectionActor.scala:105-107`) hold messages until a gap fills, which may never happen (F2).
 - **Fix:** gap fetch from the store (D20c).
 
@@ -318,7 +318,7 @@ implementation plan.
 - **Fix:** the rewritten bus sends itself a tick message; statistics are read in `receive` only.
 
 #### F80 — A failing projection query restarts the projection actor
-- **Medium**, likely · Fix in **M2** (projection delivery rework, with AR7) · `ProjectionActor.delayIfNotAvailable` and the "empty list of events" throws
+- **Medium**, likely · **Fixed in M2** (16/10/2026: a failing message or query is answered with `Status.Failure`, never rethrown; the parallel pool is shut down on stop) · `ProjectionActor.delayIfNotAvailable` and the "empty list of events" throws
 - **Symptom:** a query whose search throws is answered with the failure and then thrown again, which restarts the actor: its delay buffers and waiting queries are dropped, and with parallel processing a new thread pool is created while the old one is never shut down.
 - **Root cause:** exceptions leave `receive`; no supervision policy (AR7); the thread pool is created per actor instance.
 - **Found:** plan review at the M1 close.
@@ -523,7 +523,7 @@ implementation plan.
 - **Fix:** drop the pooling (D34).
 
 #### F33 — Small hot-path waste
-- **Low**, likely · Fix in **M2** for `pendingPublish.distinct` (`AggregateRepositoryActor.scala:95, 136`, removed with D8: **fixed** 16/10/2026) and the ERROR-level debug line (`ProjectionActor.scala:645`, rewritten with the sequence gate); in **M3** for the eager log strings
+- **Low**, likely · Fix in **M2** for `pendingPublish.distinct` (`AggregateRepositoryActor.scala:95, 136`, removed with D8: **fixed** 16/10/2026) and the ERROR-level debug line (`ProjectionActor.scala:645`, rewritten with the sequence gate: **fixed** 16/10/2026); in **M3** for the eager log strings
 
 #### F40 — `println` in production paths
 - **Low**, confirmed · **Fixed in M1** (16/10/2026) · `UidGeneratorActor.scala:39, 50, 61` (failures also leave the requester unanswered), `SagaActor.scala:47`, `EventsBusActor.scala:182-185`
@@ -727,7 +727,7 @@ From §7 of Neula's change requests.
 | Milestone | Issues |
 |---|---|
 | M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔, F73 ✔, F74 ✔, F75 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53, F76 (Neula, on a production copy, with `StoredDataCheck` and the F76 query); Neula H3, H4, H5 |
-| M2 | AR6, AR7 (event bus and projections); F1 ✔, F2 ✔, F4 ✔, F5, F6 ✔, F11 ✔, F15, F26 ✔, F28, F29 ✔, F33 (part), F37 ✔, F41 ✔, F42 ✔, F45, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80; Neula H2 |
+| M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔; Neula H2 |
 | M3 | AR1, AR4, AR7 (owner and command bus); F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33 (rest), F38, F39, F44, F50, F65, F76, F78, F81 |
 | M4 | F3, F43, F49 (backfill), F54, F55, F56, F57, F58, F59, F60, F61, F62, F82; Neula H1, H6 |
 | M5 | AR5; F46, F48, F63, F78 (between nodes) |

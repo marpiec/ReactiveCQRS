@@ -162,7 +162,12 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
 - **`OutboxPollerActor`** (`core/.../delivery/`) — the single owner of re-deliveries
   (D8); its timing lives in the pure `RedeliveryPolicy`. The host creates one per system.
 - **`ProjectionActor` / `SubscribableProjectionActor`** — apply events to read
-  models; handle out-of-order delivery via delayed/merge buffers.
+  models. One queue per (listener kind, aggregate) through the `SequenceGate`:
+  duplicates are acked, new versions applied in one transaction with the new
+  subscription version, gaps asked from the owner (`RequestRepublish`). A failing
+  listener is retried about 2 minutes, then recorded in `subscription_failures` and
+  answered `MessageFailed` (D20a); `GetProjectionStatus`, `RetryFailedSubscription`,
+  `SkipFailedVersion`; failures are retried at start, one per second.
 - **`SagaActor`** — process managers; `CONTINUES`/`REVERTING`/`ERROR` phases.
 - **`UidGeneratorActor`** — hands out id pools (`PostgresUidGenerator` reads
   `NEXTVAL`/`increment_by` from a sequence; pool size = sequence step).

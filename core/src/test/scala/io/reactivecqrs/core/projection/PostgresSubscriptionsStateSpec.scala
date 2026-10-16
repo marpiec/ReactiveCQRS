@@ -2,7 +2,7 @@ package io.reactivecqrs.core.projection
 
 import java.time.Instant
 
-import io.reactivecqrs.api.AggregateVersion
+import io.reactivecqrs.api.{AggregateType, AggregateVersion}
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.testutils.TestDatabase
@@ -18,6 +18,7 @@ class PostgresSubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen w
 
   private val typesNamesState = new PostgresTypesNamesState().initSchema()
   private val projection = "PostgresSubscriptionsStateSpecProjection"
+  private val failedType = AggregateType("io.reactivecqrs.core.projection.FailedAggregate")
 
   private def newState(maxCachedAggregates: Int = 10000) =
     new PostgresSubscriptionsState(typesNamesState, keepInMemory = false, maxCachedAggregates = maxCachedAggregates).initSchema()
@@ -82,7 +83,7 @@ class PostgresSubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen w
     Scenario("are recorded, listed for their subscriber, and cleared") {
       val state = newState()
       val id = newAggregateId()
-      val failure = SubscriptionFailure(SubscriptionType.EVENTS, id, AggregateVersion(4), "listener failed", since)
+      val failure = SubscriptionFailure(SubscriptionType.EVENTS, failedType, id, AggregateVersion(4), "listener failed", since)
 
       state.recordFailure(projection, failure)
       state.failures(projection).filter(_.aggregateId == id) mustBe Seq(failure)
@@ -95,8 +96,8 @@ class PostgresSubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen w
     Scenario("a later failure of the same subscription replaces the earlier one") {
       val state = newState()
       val id = newAggregateId()
-      state.recordFailure(projection, SubscriptionFailure(SubscriptionType.AGGREGATES, id, AggregateVersion(4), "first", since))
-      state.recordFailure(projection, SubscriptionFailure(SubscriptionType.AGGREGATES, id, AggregateVersion(6), "second", since.plusSeconds(60)))
+      state.recordFailure(projection, SubscriptionFailure(SubscriptionType.AGGREGATES, failedType, id, AggregateVersion(4), "first", since))
+      state.recordFailure(projection, SubscriptionFailure(SubscriptionType.AGGREGATES, failedType, id, AggregateVersion(6), "second", since.plusSeconds(60)))
 
       state.failures(projection).filter(_.aggregateId == id).map(f => (f.version.asInt, f.error)) mustBe Seq((6, "second"))
     }
@@ -104,7 +105,7 @@ class PostgresSubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen w
     Scenario("clearing a subscriber's subscriptions also clears its failures") {
       val state = newState()
       val cleared = "PostgresSubscriptionsStateSpecClearedFailures"
-      state.recordFailure(cleared, SubscriptionFailure(SubscriptionType.EVENTS, newAggregateId(), AggregateVersion(1), "failed", since))
+      state.recordFailure(cleared, SubscriptionFailure(SubscriptionType.EVENTS, failedType, newAggregateId(), AggregateVersion(1), "failed", since))
 
       state.clearSubscriptionsInfo(cleared)
 

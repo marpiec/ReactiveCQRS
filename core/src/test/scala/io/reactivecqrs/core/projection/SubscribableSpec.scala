@@ -73,7 +73,7 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
   def fixture = new {
 
 
-    val typesNamesState = new PostgresTypesNamesState
+    val typesNamesState = new PostgresTypesNamesState().initSchema() // run alone, no other spec created the table
     val subscriptionsState = new PostgresSubscriptionsState(typesNamesState, true)
     subscriptionsState.initSchema()
 

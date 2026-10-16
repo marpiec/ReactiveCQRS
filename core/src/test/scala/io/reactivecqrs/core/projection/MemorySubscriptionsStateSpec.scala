@@ -2,7 +2,7 @@ package io.reactivecqrs.core.projection
 
 import java.time.Instant
 
-import io.reactivecqrs.api.AggregateVersion
+import io.reactivecqrs.api.{AggregateType, AggregateVersion}
 import io.reactivecqrs.api.id.AggregateId
 import org.scalatest.GivenWhenThen
 import org.scalatest.featurespec.AnyFeatureSpec
@@ -13,6 +13,7 @@ import scalikejdbc.NoSession
 class MemorySubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen with Matchers {
 
   private val aggregateId = AggregateId(1)
+  private val failedType = AggregateType("Failed")
 
   Feature("Clearing one subscriber's progress") {
     Scenario("other subscribers keep their progress") {
@@ -35,11 +36,11 @@ class MemorySubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen wit
     Scenario("are recorded per subscription, replaced by a later one, and cleared") {
       val state = new MemorySubscriptionsState
       val since = Instant.parse("2026-10-16T10:00:00Z")
-      state.recordFailure("Projection", SubscriptionFailure(SubscriptionType.EVENTS, aggregateId, AggregateVersion(4), "first", since))
-      state.recordFailure("Projection", SubscriptionFailure(SubscriptionType.EVENTS, aggregateId, AggregateVersion(5), "second", since))
-      state.recordFailure("Other", SubscriptionFailure(SubscriptionType.EVENTS, aggregateId, AggregateVersion(1), "other", since))
+      state.recordFailure("Projection", SubscriptionFailure(SubscriptionType.EVENTS, failedType, aggregateId, AggregateVersion(4), "first", since))
+      state.recordFailure("Projection", SubscriptionFailure(SubscriptionType.EVENTS, failedType, aggregateId, AggregateVersion(5), "second", since))
+      state.recordFailure("Other", SubscriptionFailure(SubscriptionType.EVENTS, failedType, aggregateId, AggregateVersion(1), "other", since))
 
-      state.failures("Projection") mustBe Seq(SubscriptionFailure(SubscriptionType.EVENTS, aggregateId, AggregateVersion(5), "second", since))
+      state.failures("Projection") mustBe Seq(SubscriptionFailure(SubscriptionType.EVENTS, failedType, aggregateId, AggregateVersion(5), "second", since))
 
       state.clearFailure("Projection", SubscriptionType.EVENTS, aggregateId)(NoSession)
       state.failures("Projection") mustBe empty

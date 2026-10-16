@@ -111,7 +111,7 @@ class PermanentDeleteSpec extends CommonSpec {
       written mustBe SuccessResponse(memoId, AggregateVersion(1))
       f.delivered(memoId) mustBe Seq(1)
       f.ack(memoId, 1)
-      val failure = SubscriptionFailure(SubscriptionType.EVENTS, memoId, AggregateVersion(1), "listener failed", Instant.now)
+      val failure = SubscriptionFailure(SubscriptionType.EVENTS, memoType, memoId, AggregateVersion(1), "listener failed", Instant.now)
       subscriptions.recordFailure("PermanentDeleteSpecProjection", failure)
 
       When("it is erased and the erase is acknowledged")
