@@ -2,7 +2,6 @@ package io.reactivecqrs.api
 
 import io.reactivecqrs.api.id.{CommandId, AggregateId}
 
-import scala.reflect.runtime.universe._
 
 // Command handling default response
 
@@ -11,10 +10,10 @@ object Nothing {
 }
 case class Nothing()
 
-sealed abstract class CustomCommandResponse[INFO: TypeTag]
+sealed abstract class CustomCommandResponse[INFO]
 
 case class SuccessResponse(aggregateId: AggregateId, aggregateVersion: AggregateVersion) extends CommandResponse
-case class CustomSuccessResponse[INFO: TypeTag](aggregateId: AggregateId, aggregateVersion: AggregateVersion, info: INFO) extends CustomCommandResponse[INFO]
+case class CustomSuccessResponse[INFO](aggregateId: AggregateId, aggregateVersion: AggregateVersion, info: INFO) extends CustomCommandResponse[INFO]
 case class FailureResponse(exceptions: List[String]) extends CustomCommandResponse[Nothing]
 case class AggregateConcurrentModificationError(aggregateId: AggregateId,
                                                 aggregateType: AggregateType,

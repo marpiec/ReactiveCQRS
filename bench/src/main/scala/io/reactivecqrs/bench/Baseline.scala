@@ -194,7 +194,7 @@ object Baseline {
     val heapBefore = Heap.usedAfterGc()
     Heap.resetPeak()
     val started = System.nanoTime()
-    val replayed = Try(Await.result((replayer ? ReplayAllEvents(batchPerAggregate = false, Seq(AggregateType(classOf[Counter].getName)), 0))(Timeout(15.minutes)), 16.minutes))
+    val replayed = Try(Await.result((replayer ? ReplayAllEvents(batchPerAggregate = false, Seq(AggregateType.of[Counter]), 0))(Timeout(15.minutes)), 16.minutes))
     val replayNanos = System.nanoTime() - started
     val caughtUp = awaitUntil(10.minutes)(system.projectedIncrements() >= expectedIncrements)
     val totalNanos = System.nanoTime() - started

@@ -97,7 +97,7 @@ class CommandOutcomesSpec extends CommonSpec {
 
       val response: CustomCommandResponse[_] = cartBus ?? AddItem(userId, missing, AggregateVersion(1), "apple")
 
-      response mustBe AggregateConcurrentModificationError(missing, AggregateType(classOf[ShoppingCart].getName), AggregateVersion(1), AggregateVersion.ZERO)
+      response mustBe AggregateConcurrentModificationError(missing, AggregateType.of[ShoppingCart], AggregateVersion(1), AggregateVersion.ZERO)
     }
   }
 

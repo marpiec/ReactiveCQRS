@@ -87,7 +87,7 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
     val secondSimpleListener = actorSystem.actorOf(Props(new SimpleListener(secondSimpleListenerProbe)))
   }
 
-  val stringType = AggregateType(classOf[String].getSimpleName)
+  val stringType = AggregateType.of[String]
 
   feature("Can subscribe to all events") {
 

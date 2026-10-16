@@ -17,7 +17,6 @@ import scala.collection.mutable
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
 import scala.reflect.ClassTag
-import scala.reflect.runtime.universe._
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
@@ -138,20 +137,20 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   override def postStop(): Unit = executor.foreach(_.shutdown())
 
   protected trait Listener[+AGGREGATE_ROOT]  {
-    def aggregateRootType: Type
+    def aggregateType: AggregateType
   }
 
   // ListenerParam and listener are separately so covariant type is allowed
-  protected class EventsListener[+AGGREGATE_ROOT: TypeTag](callback: (AggregateId, Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => Unit, val options: ListenerOptions) extends Listener[AGGREGATE_ROOT] {
+  protected class EventsListener[+AGGREGATE_ROOT: ClassTag](callback: (AggregateId, Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => Unit, val options: ListenerOptions) extends Listener[AGGREGATE_ROOT] {
     def listener = callback.asInstanceOf[(AggregateId, Seq[EventInfo[Any]]) => DBSession => Unit]
-    def aggregateRootType = typeOf[AGGREGATE_ROOT]
+    val aggregateType: AggregateType = AggregateType.of[AGGREGATE_ROOT]
   }
 
   protected object EventsListener {
-    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => Unit): EventsListener[AGGREGATE_ROOT] =
+    def apply[AGGREGATE_ROOT: ClassTag](listener: (AggregateId, Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => Unit): EventsListener[AGGREGATE_ROOT] =
       new EventsListener[AGGREGATE_ROOT](listener, ListenerOptions.DEFAULT)
 
-    def noDBSession[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, Seq[EventInfo[AGGREGATE_ROOT]]) => Unit): EventsListener[AGGREGATE_ROOT] =
+    def noDBSession[AGGREGATE_ROOT: ClassTag](listener: (AggregateId, Seq[EventInfo[AGGREGATE_ROOT]]) => Unit): EventsListener[AGGREGATE_ROOT] =
       new EventsListener[AGGREGATE_ROOT](
         (id: AggregateId, events: Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => listener(id, events),
         ListenerOptions.DISABLED_TRANSACTION)
@@ -159,16 +158,16 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
 
   // ListenerParam and listener are separately so covariant type is allowed
-  protected class AggregateListener[+AGGREGATE_ROOT: TypeTag](callback: (AggregateId, AggregateVersion, Boolean, Option[AGGREGATE_ROOT]) => DBSession => Unit, val options: ListenerOptions) extends Listener[AGGREGATE_ROOT] {
+  protected class AggregateListener[+AGGREGATE_ROOT: ClassTag](callback: (AggregateId, AggregateVersion, Boolean, Option[AGGREGATE_ROOT]) => DBSession => Unit, val options: ListenerOptions) extends Listener[AGGREGATE_ROOT] {
     def listener = callback.asInstanceOf[(AggregateId, AggregateVersion, Boolean, Option[Any]) => DBSession => Unit]
-    def aggregateRootType = typeOf[AGGREGATE_ROOT]
+    val aggregateType: AggregateType = AggregateType.of[AGGREGATE_ROOT]
   }
 
   protected object AggregateListener {
-    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Boolean, Option[AGGREGATE_ROOT]) => DBSession => Unit): AggregateListener[AGGREGATE_ROOT] =
+    def apply[AGGREGATE_ROOT: ClassTag](listener: (AggregateId, AggregateVersion, Boolean, Option[AGGREGATE_ROOT]) => DBSession => Unit): AggregateListener[AGGREGATE_ROOT] =
       new AggregateListener[AGGREGATE_ROOT](listener, ListenerOptions.DEFAULT)
 
-    def noDBSession[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Boolean, Option[AGGREGATE_ROOT]) => Unit): AggregateListener[AGGREGATE_ROOT] =
+    def noDBSession[AGGREGATE_ROOT: ClassTag](listener: (AggregateId, AggregateVersion, Boolean, Option[AGGREGATE_ROOT]) => Unit): AggregateListener[AGGREGATE_ROOT] =
       new AggregateListener[AGGREGATE_ROOT](
         (id: AggregateId, version: AggregateVersion, created: Boolean, root: Option[AGGREGATE_ROOT]) => DBSession => listener(id, version, created, root),
         ListenerOptions.DISABLED_TRANSACTION)
@@ -176,16 +175,16 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
 
   // ListenerParam and listener are separately so covariant type is allowed
-  protected class AggregateWithEventsListener[+AGGREGATE_ROOT: TypeTag](callback: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT], Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => Unit, val options: ListenerOptions) extends Listener[AGGREGATE_ROOT] {
+  protected class AggregateWithEventsListener[+AGGREGATE_ROOT: ClassTag](callback: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT], Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => Unit, val options: ListenerOptions) extends Listener[AGGREGATE_ROOT] {
     def listener = callback.asInstanceOf[(AggregateId, AggregateVersion, Option[Any], Seq[EventInfo[Any]]) => DBSession => Unit]
-    def aggregateRootType = typeOf[AGGREGATE_ROOT]
+    val aggregateType: AggregateType = AggregateType.of[AGGREGATE_ROOT]
   }
 
   protected object AggregateWithEventsListener {
-    def apply[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT], Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => Unit): AggregateWithEventsListener[AGGREGATE_ROOT] =
+    def apply[AGGREGATE_ROOT: ClassTag](listener: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT], Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => Unit): AggregateWithEventsListener[AGGREGATE_ROOT] =
       new AggregateWithEventsListener[AGGREGATE_ROOT](listener, ListenerOptions.DEFAULT)
 
-    def noDBSession[AGGREGATE_ROOT: TypeTag](listener: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT], Seq[EventInfo[AGGREGATE_ROOT]]) => Unit): AggregateWithEventsListener[AGGREGATE_ROOT] =
+    def noDBSession[AGGREGATE_ROOT: ClassTag](listener: (AggregateId, AggregateVersion, Option[AGGREGATE_ROOT], Seq[EventInfo[AGGREGATE_ROOT]]) => Unit): AggregateWithEventsListener[AGGREGATE_ROOT] =
       new AggregateWithEventsListener[AGGREGATE_ROOT](
         (id: AggregateId, version: AggregateVersion, root: Option[AGGREGATE_ROOT], events: Seq[EventInfo[AGGREGATE_ROOT]]) => DBSession => listener(id, version, root, events),
         ListenerOptions.DISABLED_TRANSACTION)
@@ -201,7 +200,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
   private def listenersOfKind[L <: Listener[Any] : ClassTag]: Map[AggregateType, L] = {
     validateListeners()
-    listeners.collect { case l: L => AggregateType(l.aggregateRootType.toString) -> l }.toMap
+    listeners.collect { case l: L => l.aggregateType -> l }.toMap
   }
 
   // AR7, F80: a message that fails, such as a query, is answered with the failure; a throw would restart the actor
@@ -218,8 +217,8 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   private lazy val handlers: Receive = receiveUpdate orElse receiveQuery
 
   private def validateListeners() = {
-    if(listeners.exists(l => l.aggregateRootType == typeOf[Any] || l.aggregateRootType == typeOf[Nothing])) {
-      throw new IllegalArgumentException("Listeners cannot have type defined as Nothing, Any or _ but were: " + listeners.map(l => l.aggregateRootType))
+    if (listeners.exists(l => l.aggregateType == AggregateType.of[Any] || l.aggregateType == AggregateType.of[Nothing])) {
+      throw new IllegalArgumentException("Listeners cannot have type defined as Nothing, Any or _ but were: " + listeners.map(_.aggregateType.typeName))
     }
   }
 
@@ -259,7 +258,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     case q: AsyncDelayedQuery =>
       delayedQueries ::= q
       scheduleNearest()
-    case q: AsyncDelayedQueryCustom[Any] =>
+    case q: AsyncDelayedQueryCustom[_] =>
       delayedQueries ::= q
       scheduleNearest()
     case ReplayQueries =>
@@ -339,7 +338,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       eventBus = Some(delivery.respondTo)
       val queue = queueFor(key, aggregateType)
       queue.pending :+= delivery
-      options.eventsLogger.foreach(_.debug(s"$className ${key.aggregateId.asLong} received ${delivery.versions.map(_.asInt).mkString(",")}"))
+      options.eventsLogger.filter(_.isDebugEnabled).foreach(_.debug(s"$className ${key.aggregateId.asLong} received ${delivery.versions.map(_.asInt).mkString(",")}"))
       if (!queue.processing) queue.scheduled.map(_._2) match {
         case None => if (mayWait(delivery)) schedule(key, queue, options.groupUpdatesDelayMillis.millis, GroupingDelay) else drain(key, queue)
         case Some(GroupingDelay) => if (!mayWait(delivery)) drain(key, queue)
@@ -455,7 +454,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     outcome match {
       case Success(_) =>
         batch.deliveries.foreach(delivery => delivery.respondTo ! MessageAck(self, key.aggregateId, delivery.versions, key.kind))
-        options.eventsLogger.foreach(_.debug(s"$className ${key.aggregateId.asLong} applied ${batch.from.asInt}-${batch.to.asInt}"))
+        options.eventsLogger.filter(_.isDebugEnabled).foreach(_.debug(s"$className ${key.aggregateId.asLong} applied ${batch.from.asInt}-${batch.to.asInt}"))
         queue.failedAttempts = 0
         queue.retryOf.filter(_.version <= batch.to).foreach { failure =>
           queue.retryOf = None

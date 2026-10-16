@@ -115,7 +115,7 @@ class AggregateOwnerSpec extends CommonSpec {
       release("stopping")
       Await.result(running, 10.seconds) mustBe SuccessResponse(id, AggregateVersion(2))
       // It ran after the stopped owner's commit, on a new owner that read version 2.
-      Await.result(sentMeanwhile, 10.seconds) mustBe AggregateConcurrentModificationError(id, AggregateType(classOf[Tally].getName), AggregateVersion(1), AggregateVersion(2))
+      Await.result(sentMeanwhile, 10.seconds) mustBe AggregateConcurrentModificationError(id, AggregateType.of[Tally], AggregateVersion(1), AggregateVersion(2))
       state(id).version mustBe AggregateVersion(2)
     }
   }

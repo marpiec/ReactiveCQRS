@@ -100,13 +100,11 @@ to that model.
 - **It must be immutable.** The same instance is held by the owner, given to command handlers
   that run as futures, and sent inside `PublishEvents` to the bus and every subscriber, on
   other threads (`AggregateOwner.runHandler`, `publish`).
-- **It should be a top-level class (inferred invariant).** The type name is derived in
-  three ways that agree only for top-level classes: `classTag.toString`
-  (`AggregateContext.aggregateType`, gives `Outer$Inner`), `typeOf[R].toString` (projection
-  listener keys, `ProjectionActor.scala:180-196`, gives `Outer.Inner`) and
-  `typeSymbol.fullName` (persist path). A nested class would never be routed to
-  projections.
-- Identifiers (`api/.../id/`): `AggregateId` (Long, LRU-pooled), `AggregateVersion` (Int,
+- **Its type key** is `AggregateType.of[R]` everywhere (since M3, D75, F50): Scala's full name
+  of the class (`Outer.Inner` for a nested one), as the store has always kept it, taken from
+  the class without runtime reflection. Before M3 three derivations agreed only for top-level
+  classes, so a nested root was never routed to projections.
+- Identifiers (`api/.../id/`): `AggregateId` (Long; no instance pool since M3, F32), `AggregateVersion` (Int,
   starts at `ZERO`, +1 per persisted event, pooled below 1000), `SpaceId` (tenant/partition
   id written by the first event), `UserId`, `CommandId`, `SagaId`.
 
@@ -123,8 +121,8 @@ to that model.
 - An ordinary event on an aggregate that has no `aggregates` row fails inside
   `add_event` ("Maybe FirstEvent was not used",
   `PostgresEventStoreSchemaInitializer.scala:154-155`).
-- Events carry a `TypeTag` of their aggregate root (`Event.scala:7-9`); the persist path
-  uses it to resolve the aggregate type id.
+- Events carry a `ClassTag` of their aggregate root (`Event.aggregateRootClass`; a `TypeTag`
+  before M3, D75); the persist path takes the aggregate type key from it.
 - Storage format: JSON text (mpjsons), with the class identified by a `types_names` id;
   `event_type_version` is always 0 (D29).
 - **Metadata envelope** (since M3, D32, R13): a command that mixes in `WithMetadata` gives each

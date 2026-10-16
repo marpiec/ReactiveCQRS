@@ -53,6 +53,8 @@ class ShoppingCartsListProjectionEventsBased(
         documentStore.updateDocument(0, aggregateId.asLong, {
           case Some(doc) => Document(doc.document)
         })
+      case CartSquashed(_, name, _) => // a squash event holds the whole state (D48): the document is made from it
+        documentStore.updateDocument(0, aggregateId.asLong, _ => Document(name))
       case ShoppingCartDeleted() =>
         documentStore.removeDocument(aggregateId.asLong)
       case ShoppingCartChangesUndone(count) => println("Sorry :(")

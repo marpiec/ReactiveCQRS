@@ -5,25 +5,18 @@ import scala.jdk.CollectionConverters._
 import scala.collection.mutable
 import io.reactivecqrs.api.AggregateVersion
 
+@deprecated("Not part of the library; copy it if you use it", "1.0")
 class LRUCache[K, V](maxEntries: Int) extends java.util.LinkedHashMap[K, V](1000, .75f, true) {
   override def removeEldestEntry(eldest: java.util.Map.Entry[K, V]): Boolean = size > maxEntries
 }
+@deprecated("Not part of the library; copy it if you use it", "1.0")
 object LRUCache {
   def apply[K, V](maxEntries: Int): mutable.Map[K, V] = Collections.synchronizedMap[K, V](new LRUCache[K, V](maxEntries)).asScala
 }
 
 object AggregateId {
-  private val pool: java.util.Map[Long, AggregateId] = LRUCache[Long, AggregateId](1000).asJava
-  def apply(asLong: Long): AggregateId = {
-    val fromPool = pool.get(asLong)
-    if(fromPool == null) {
-      val id = new AggregateId(asLong)
-      pool.put(asLong, id)
-      id
-    } else {
-      fromPool
-    }
-  }
+  // F32: no pool of instances any more; it took a global lock on every id made, and ids compare by value.
+  def apply(asLong: Long): AggregateId = new AggregateId(asLong)
 
   def unapply(id: AggregateId): Option[Long] = Some(id.asLong)
 }

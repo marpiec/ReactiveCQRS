@@ -15,7 +15,7 @@ import scala.concurrent.duration._
 // D52: the scheduler, against the in-memory store, with a probe in place of the command bus.
 class SquashSchedulerSpec extends CommonSpec {
 
-  private val aggregateType = AggregateType(classOf[SomeAggregate].getName)
+  private val aggregateType = AggregateType.of[SomeAggregate]
   private val rule = AutomaticSquash(afterEvents = 3, keepLast = 1)
 
   /** Three aggregates in id order: one of 6 events (squashed up to 5), one of 2 (too short), one of 8 (up to 7). */

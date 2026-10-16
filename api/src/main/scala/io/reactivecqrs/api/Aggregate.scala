@@ -4,16 +4,23 @@ import java.time.Instant
 
 import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 
-import scala.reflect.runtime.universe._
+import scala.reflect.{ClassTag, classTag}
 
 
 case class AggregateType(typeName: String) {
   def simpleName = typeName.substring(typeName.lastIndexOf(".") + 1)
 }
 
+object AggregateType {
+  /** The key of an aggregate root class (D75, F50): its name as the store has always kept it, Scala's full name
+    * (`Outer.Inner` for a class nested in another or in an object), taken from the class without runtime reflection. */
+  def of[AGGREGATE_ROOT: ClassTag]: AggregateType = ofClass(classTag[AGGREGATE_ROOT].runtimeClass)
+  def ofClass(rootClass: Class[_]): AggregateType = AggregateType(rootClass.getName.replace('$', '.'))
+}
+
 case class EventType(typeName: String)
 
-case class Aggregate[AGGREGATE_ROOT: TypeTag](id: AggregateId, version: AggregateVersion, aggregateRoot: Option[AGGREGATE_ROOT])
+case class Aggregate[AGGREGATE_ROOT](id: AggregateId, version: AggregateVersion, aggregateRoot: Option[AGGREGATE_ROOT])
 
 
 

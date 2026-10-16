@@ -92,7 +92,8 @@ sbt "project core" "~compile"   # incremental
   `CommandFailure`, `RewriteCommandSuccess`, and `AsyncCommandResult` (wraps a
   `Future`) — async handlers return the latter.
 - **Events** (`api/.../Event.scala`):
-  - `Event[AGGREGATE_ROOT]` — base, `Serializable`, carries a `TypeTag`.
+  - `Event[AGGREGATE_ROOT]` — base, `Serializable`, carries a `ClassTag` of its root (D75);
+    type keys come from `AggregateType.of[R]`.
   - `FirstEvent` — must define `spaceId` (events that create an aggregate).
   - `UndoEvent(eventsCount)` — logically cancels the last N events (see "undo").
   - `DuplicationEvent` — creates a new aggregate as a copy of another at a version

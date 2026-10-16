@@ -71,7 +71,7 @@ class PermanentDeleteSpec extends CommonSpec {
     new PostgresUidGenerator("aggregates_uids_seq"), new PostgresUidGenerator("commands_uids_seq"), new PostgresUidGenerator("sagas_uids_seq"))))
 
   private val userId = UserId(1)
-  private val memoType = AggregateType(classOf[Memo].getName)
+  private val memoType = AggregateType.of[Memo]
 
   private class Fixture(context: MemoContext = new MemoContext) {
     val subscriber = TestProbe()

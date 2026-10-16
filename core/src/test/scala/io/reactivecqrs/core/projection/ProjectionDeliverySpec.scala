@@ -60,7 +60,7 @@ class UnstorableFailures extends MemorySubscriptionsState {
 // and turns a listener that keeps failing into a recorded failure without stopping other aggregates.
 class ProjectionDeliverySpec extends CommonSpec {
 
-  private val noteType = AggregateType(classOf[GateNote].getName)
+  private val noteType = AggregateType.of[GateNote]
   private val quickRetries = Backoff(20.millis, 50.millis, maxAttempts = 3)
 
   private class Fixture(options: ProjectionActorOptions = ProjectionActorOptions.DEFAULT.withRetries(quickRetries),

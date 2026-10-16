@@ -266,7 +266,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     }
 
     sends.foreach { case (s, forSubscription) => s.subscriber ! messageFor(s, aggregateType, aggregateId, forSubscription, aggregateRoot, replayed) }
-    eventsLogger.foreach(_.debug("EventBus publishing " + aggregateId.asLong + ": " + events.map(_.version.asInt).mkString(",") +
+    eventsLogger.filter(_.isDebugEnabled).foreach(_.debug("EventBus publishing " + aggregateId.asLong + ": " + events.map(_.version.asInt).mkString(",") +
       " to " + sends.map(_._1.subscriber.path.name).mkString(", ")))
 
     completeAll(finished)

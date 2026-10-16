@@ -17,7 +17,6 @@ import scala.collection.mutable
 import scala.concurrent.Future
 import scala.concurrent.duration._
 import scala.reflect.{ClassTag, classTag}
-import scala.reflect.runtime.universe._
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
@@ -86,7 +85,7 @@ class OwnerSettings[AGGREGATE_ROOT: ClassTag](context: AggregateContext[AGGREGAT
   * `fresh`: the aggregate id was just taken from the id pool, so there is nothing to restore.
   * See docs/design/M3-aggregates.md.
   */
-class AggregateOwner[AGGREGATE_ROOT: TypeTag](aggregateId: AggregateId, settings: OwnerSettings[AGGREGATE_ROOT], fresh: Boolean = false)
+class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSettings[AGGREGATE_ROOT], fresh: Boolean = false)
   extends Actor with MyActorLogging {
 
   import AggregateOwner._

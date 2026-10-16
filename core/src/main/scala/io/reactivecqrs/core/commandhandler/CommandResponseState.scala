@@ -8,7 +8,6 @@ import io.reactivecqrs.core.types.TypesNamesState
 import scalikejdbc._
 
 import scala.concurrent.duration._
-import scala.reflect.runtime.universe._
 
 /** Another copy of an idempotent command already stored its response under this key. */
 class IdempotencyKeyTakenException(val key: String) extends Exception("Idempotency key already used: " + key) {
@@ -139,7 +138,7 @@ class PostgresCommandResponseState(mpjsons: MPJsons, typesNamesState: TypesNames
     if (className == customSuccessClassName) {
       val success = mpjsons.deserialize[SuccessResponse](json, classOf[SuccessResponse].getName)
       val storedInfo: Any = info.zip(infoTypeId).map { case (i, t) => mpjsons.deserialize[AnyRef](i, typesNamesState.classNameById(t)) }.orNull
-      CustomSuccessResponse[Any](success.aggregateId, success.aggregateVersion, storedInfo)(typeTag[Any])
+      CustomSuccessResponse[Any](success.aggregateId, success.aggregateVersion, storedInfo)
     } else {
       mpjsons.deserialize[CustomCommandResponse[_]](json, className)
     }

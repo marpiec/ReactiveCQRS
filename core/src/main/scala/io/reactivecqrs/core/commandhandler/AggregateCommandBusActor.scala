@@ -21,7 +21,6 @@ import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
 import scala.reflect.ClassTag
 import scala.util.{Failure, Random, Success, Try}
-import scala.reflect.runtime.universe._
 
 object AggregateCommandBusActor {
 
@@ -31,7 +30,7 @@ object AggregateCommandBusActor {
     * new owner. The bus does the same by itself for owners idle for long; this is for operations and tests. */
   case class PassivateAggregate(id: AggregateId)
 
-  def apply[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateContext: AggregateContext[AGGREGATE_ROOT],
+  def apply[AGGREGATE_ROOT: ClassTag](aggregateContext: AggregateContext[AGGREGATE_ROOT],
                                              uidGenerator: ActorRef, eventStoreState: EventStoreState,
                                              commandResponseState: CommandResponseState,
                                              eventBus: ActorRef, eventsReplayMode: Boolean, maxInactivityMillis: Long = 43200000L, keepAliveLimit: Int = 200,
@@ -48,7 +47,7 @@ object AggregateCommandBusActor {
   * stops owners that were idle for long, or deleted: it keeps the messages that arrive for an owner while it stops and
   * gives them to a new one (Cluster Sharding's passivation, so M5 can put a shard in its place).
   */
-class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](aggregateContext: AggregateContext[AGGREGATE_ROOT],
+class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContext[AGGREGATE_ROOT],
                                                        val uidGenerator: ActorRef,
                                                        eventStoreState: EventStoreState,
                                                        commandResponseState: CommandResponseState,
@@ -61,9 +60,9 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](aggregateContext: Aggrega
 
   val minimumInactivityMillis: Long = 120000L // 2 minutes
 
-  val aggregateTypeName: String = aggregateRootClassTag.runtimeClass.getName
+  private val aggregateType = AggregateType.of[AGGREGATE_ROOT]
+  val aggregateTypeName: String = aggregateType.typeName
   val aggregateTypeSimpleName: String = aggregateRootClassTag.runtimeClass.getSimpleName
-  private val aggregateType = AggregateType(aggregateRootClassTag.toString)
 
   private var nextAggregateId = 0L
   private var remainingAggregateIds = 0L
@@ -271,7 +270,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](aggregateContext: Aggrega
       }
 
       childrenActivity.filter(now - _._2 > maxInactivityMillis).keys.foreach { key =>
-        eventsLogger.foreach(_.debug("Stopping aggregate " + key + " because of inactivity"))
+        eventsLogger.filter(_.isDebugEnabled).foreach(_.debug("Stopping aggregate " + key + " because of inactivity"))
         stopOwner(key)
       }
     }

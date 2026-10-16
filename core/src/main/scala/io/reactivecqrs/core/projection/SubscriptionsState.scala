@@ -120,10 +120,10 @@ class MemorySubscriptionsState extends SubscriptionsState {
 
 object SubscriptionCacheKey {
   def get(typesNamesState: TypesNamesState, subscriberName: String, subscriptionType: SubscriptionType): String = {
-    typesNamesState.typeIdByClassName(subscriberName)+"|"+subscriptionType.id
+    s"${typesNamesState.typeIdByClassName(subscriberName)}|${subscriptionType.id}"
   }
   def getById(subscriberNameId: Short, subscriptionTypeId: Short): String = {
-    subscriberNameId+"|"+subscriptionTypeId
+    s"$subscriberNameId|$subscriptionTypeId"
   }
 }
 
@@ -306,7 +306,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
           throw mismatch(current)
         }
       }
-      eventsLogger.foreach(_.debug("Updating subscription state for " + aggregateId.asLong+": " + lastAggregateVersion.asInt+" -> "+aggregateVersion.asInt+" for subscriber "+subscriberName))
+      eventsLogger.filter(_.isDebugEnabled).foreach(_.debug("Updating subscription state for " + aggregateId.asLong+": " + lastAggregateVersion.asInt+" -> "+aggregateVersion.asInt+" for subscriber "+subscriberName))
       try {
         newEventIdInDB(aggregateId, subscriberName, subscriptionType, lastAggregateVersion, aggregateVersion, typesNamesState)
       } catch {
@@ -348,7 +348,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
       sql"""DELETE FROM subscription_failures WHERE subscriber_type_id = $subscriberTypeId""".update()
     }
     // F6: the cached versions of this subscriber go too, also those dump() still has to write.
-    val ofSubscriber = subscriberTypeId + "|"
+    val ofSubscriber = s"$subscriberTypeId|"
     synchronized {
       perAggregate.values().asScala.foreach(_.filterInPlace((key, _) => !key.startsWith(ofSubscriber)))
       dumped.values.foreach(_.filterInPlace((key, _) => !key.startsWith(ofSubscriber)))

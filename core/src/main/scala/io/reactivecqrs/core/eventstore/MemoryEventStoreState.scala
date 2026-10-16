@@ -46,7 +46,7 @@ class MemoryEventStoreState extends EventStoreState {
       eventsForAggregate :+= EventStoreEntry(eventsEnvelope.userId, eventsEnvelope.timestamp, version, event, eventsEnvelope.metadata)
       eventIdSeq += 1
       eventsRows ::= EventRow(eventIdSeq, aggregateId, version,
-                    AggregateType(event.aggregateRootType.toString), event, eventsEnvelope.userId, eventsEnvelope.timestamp, eventsEnvelope.metadata)
+                    AggregateType.ofClass(event.aggregateRootClass), event, eventsEnvelope.userId, eventsEnvelope.timestamp, eventsEnvelope.metadata)
       val key = (aggregateId, version)
 
       val value = (eventsEnvelope.userId, eventsEnvelope.timestamp, event, eventIdSeq)

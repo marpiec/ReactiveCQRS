@@ -37,7 +37,7 @@ class OutboxPollerSpec extends CommonSpec {
     new PostgresUidGenerator("aggregates_uids_seq"), new PostgresUidGenerator("commands_uids_seq"), new PostgresUidGenerator("sagas_uids_seq"))))
 
   private val userId = UserId(1)
-  private val cartType = AggregateType(classOf[ShoppingCart].getName)
+  private val cartType = AggregateType.of[ShoppingCart]
 
   /** A system whose only subscriber is a probe the test answers for, and whose poller polls when the test says so. */
   private class Fixture {

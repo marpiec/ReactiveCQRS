@@ -587,15 +587,17 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Note (16/10/2026):** the command bus carries out permanent deletes on its own thread, and since F76 it first restores each duplicate of the deleted aggregate there; rare, but it holds up every command of the type meanwhile. Step 10 moves that work off the bus.
 
 #### F30 — Reflection per event on hot paths
-- **Low**, likely · Fix in **M3** · `PostgresEventStoreState.scala:69, 82, 96, 109, 127`; `AggregateRepositoryActor.scala:312`
+- **Low**, likely · **Fixed in M3** (16/10/2026) · `PostgresEventStoreState.scala:69, 82, 96, 109, 127`; `AggregateRepositoryActor.scala:312`
 - **Fix:** precompute type ids; cache mpjsons serializers per class (D34).
+- **As fixed:** events carry a `ClassTag` of their root instead of a `TypeTag` (D75), so the persist path takes the aggregate type key from the class once per command, without runtime reflection; mpjsons 0.7 already caches its codecs and type lookups per class in thread-safe maps; type ids come from the cache of F78.
 
 #### F32 — Global synchronized LRU pool for `AggregateId`
-- **Low**, likely · Fix in **M3** · `api/.../id/AggregateId.scala:8-27`
+- **Low**, likely · **Fixed in M3** (16/10/2026) · `api/.../id/AggregateId.scala:8-27`
 - **Fix:** drop the pooling (D34).
+- **As fixed:** `AggregateId(n)` makes a new instance; ids compare by value. The public `LRUCache` it used is deprecated.
 
 #### F33 — Small hot-path waste
-- **Low**, likely · Fix in **M2** for `pendingPublish.distinct` (`AggregateRepositoryActor.scala:95, 136`, removed with D8: **fixed** 16/10/2026) and the ERROR-level debug line (`ProjectionActor.scala:645`, rewritten with the sequence gate: **fixed** 16/10/2026); in **M3** for the eager log strings
+- **Low**, likely · Fix in **M2** for `pendingPublish.distinct` (`AggregateRepositoryActor.scala:95, 136`, removed with D8: **fixed** 16/10/2026) and the ERROR-level debug line (`ProjectionActor.scala:645`, rewritten with the sequence gate: **fixed** 16/10/2026); in **M3** for the eager log strings (**fixed** 16/10/2026: the optional events logger builds its lines only when debug is on)
 
 #### F40 — `println` in production paths
 - **Low**, confirmed · **Fixed in M1** (16/10/2026) · `UidGeneratorActor.scala:39, 50, 61` (failures also leave the requester unanswered), `SagaActor.scala:47`, `EventsBusActor.scala:182-185`
@@ -607,11 +609,12 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Fix:** one writer per projection (D53) keeps its caches valid.
 
 #### F78 — The type-name cache is changed from many threads without a lock; two nodes can race on a new name
-- **Medium**, likely · Fix in **M3** (with F30), the cross-node part in **M5** (with D67) · `PostgresTypesNamesState.typeIdByClassName`, `classNameById`, `insertName`
+- **Medium**, likely · **Fixed in M3** (16/10/2026, both parts) · `PostgresTypesNamesState.typeIdByClassName`, `classNameById`, `insertName`
 - **Symptom:** the first use of a new class from two threads at once updates a plain `HashMap` concurrently (the lock covers only the database read); two nodes storing a new class at the same moment both `INSERT` the name and one persist fails on the unique index.
 - **Root cause:** `cache.getOrElseUpdate` runs outside the monitor; the insert has no conflict handling.
 - **Found:** plan review at the M1 close.
 - **Fix:** a concurrent map, and `INSERT … ON CONFLICT (name) DO NOTHING` followed by a read.
+- **Test:** `PostgresTypesNamesStateSpec` (four instances and forty threads ask for one new name: one id; failed before).
 
 ### Document store
 
@@ -770,8 +773,9 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Test:** `EventStoreStateSpec` "An undo right after another…" (both stores; failed on the in-memory store before).
 
 #### F50 — Type keys disagree for nested classes; runtime reflection blocks Scala 3
-- **Low**, likely · Fix in **M3** (with F30 and D29, which touch the same type keys) · `AggregateContext.scala:54` vs `ProjectionActor.scala:180-196`; also the outbox scan (`AggregateCommandBusActor`: `runtimeClass.getName`) vs persist (`typeSymbol.fullName`), so a nested aggregate class never gets its waiting events re-sent
+- **Low**, likely · **Fixed in M3** (16/10/2026, with F30) · `AggregateContext.scala:54` vs `ProjectionActor.scala:180-196`; also the outbox scan (`AggregateCommandBusActor`: `runtimeClass.getName`) vs persist (`typeSymbol.fullName`), so a nested aggregate class never gets its waiting events re-sent
 - **Fix:** D75.
+- **As fixed:** one key, `AggregateType.of[R]`, for the context, the command bus, the owner, the stores, projection listeners, the replayer and the squash scheduler: Scala's full name of the class, which is what the store has always kept (`typeSymbol.fullName`), taken from the class (`getName` with `$` read as `.`). No stored name changes. Events and listeners take a `ClassTag` instead of a `TypeTag`. Test: `EventStoreStateSpec` (a nested root class, both stores). Left: `SubscribableProjectionActor` keys updates by `TypeTag` (a listener-side key, not stored).
 
 ---
 
@@ -788,7 +792,7 @@ The library cannot fix these; they are listed so the 1.0 migration does not miss
 | H5 | Medium, likely | `PostgresCommandResponseState` is built without `initSchema()` (`Context.scala:483`), so D24's index fix would not run; since the F9 fix every idempotent command then fails (the response insert needs the unique index). | M1 |
 | H6 | Medium, suspected | Event listeners of ScreenRelease and ProcessRelease (the two aggregates with undo) must handle undo, since rebuild will deliver it (D60). | M4 |
 | H7 | Medium, likely | The host wiring changes with M2: create one `OutboxPollerActor`; send the bus `RegisterSubscribers` with every projection and listener (with H2); drop `EventBusSubscriptionsManagerApi` and `PostgresEventBusState`; call `PostgresSubscriptionsState.initSchema()`, which creates `subscription_failures`. Show `GetProjectionStatus` failures and offer `RetryFailedSubscription` and `SkipFailedVersion` in the admin tools (R1, R14). `SubscriptionsState`'s six per-kind version methods became `lastVersion` and `newVersion` with a `SubscriptionType`; `ProcessFlowDetailsProjectionSpec` calls the old ones. | M2 (Neula) |
-| H8 | Low, likely | M3 host steps: run `PostgresEventStoreState.buildIndexesConcurrently()` once after the upgrade, in the background (F38); opt in to snapshots (`AggregateContext.snapshots`) for the contexts with long histories (R10); commands give their events a metadata envelope by mixing in `WithMetadata` (R13); a context writes its own rows with its events by mixing in `WithOutboxWriter` (R12); serial mode is `commandProcessing = Serial(...)` (R8), and `CommandRejected` is a new response; `PassivateAggregate(id)` is available for operations. Squash: a context opts in with a squash event (`squash = Some(SquashPolicy(state => SquashEvent(...)))`, a `FirstEvent` its event handlers and projections handle); `SquashAggregate(id, upTo)` squashes on request, and a `SquashScheduler` started with `SquashTarget.of(context, commandBus)` squashes by `SquashPolicy.automatic`; contexts with audit duties wait for R11 (M6). A type whose aggregates are duplicated and permanently deleted needs a squash event, or those deletes wait (F76). | M3 (Neula) |
+| H8 | Low, likely | M3 host steps: run `PostgresEventStoreState.buildIndexesConcurrently()` once after the upgrade, in the background (F38); opt in to snapshots (`AggregateContext.snapshots`) for the contexts with long histories (R10); commands give their events a metadata envelope by mixing in `WithMetadata` (R13); a context writes its own rows with its events by mixing in `WithOutboxWriter` (R12); serial mode is `commandProcessing = Serial(...)` (R8), and `CommandRejected` is a new response; `PassivateAggregate(id)` is available for operations. Squash: a context opts in with a squash event (`squash = Some(SquashPolicy(state => SquashEvent(...)))`, a `FirstEvent` its event handlers and projections handle); `SquashAggregate(id, upTo)` squashes on request, and a `SquashScheduler` started with `SquashTarget.of(context, commandBus)` squashes by `SquashPolicy.automatic`; contexts with audit duties wait for R11 (M6). A type whose aggregates are duplicated and permanently deleted needs a squash event, or those deletes wait (F76). Type keys (D75): events and projection listeners take a `ClassTag` of the root, so an event class generic in its root needs `[R: ClassTag]` where it had `[R: TypeTag]`; `Event.aggregateRootType` is now `aggregateRootClass`; a key built by hand should be `AggregateType.of[R]` (for a nested root class `Outer.Inner`, as stored); `api.id.LRUCache` is deprecated. | M3 (Neula) |
 
 ---
 
@@ -814,7 +818,7 @@ From §7 of Neula's change requests.
 |---|---|
 | M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔, F73 ✔, F74 ✔, F75 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53, F76 (Neula, on a production copy, with `StoredDataCheck` and the F76 query); Neula H3, H4, H5 |
 | M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔, F95 ✔; Neula H2, H7 |
-| M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8; F8 (contract ✔), F22 ✔, F23, F25 ✔, F27, F30, F31 ✔, F32, F33 (rest), F38 ✔, F39 ✔, F44 ✔, F50, F65 ✔, F76 ✔, F78, F81 ✔, F96 ✔, F97 ✔; Neula H8 |
+| M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8; F8 (contract ✔), F22 ✔, F23, F25 ✔, F27, F30 ✔, F31 ✔, F32 ✔, F33 (rest ✔), F38 ✔, F39 ✔, F44 ✔, F50 ✔, F65 ✔, F76 ✔, F78 ✔, F81 ✔, F96 ✔, F97 ✔; Neula H8 |
 | M4 | F3, F43, F49 (backfill), F54, F55, F56, F57, F58, F59, F60, F61, F62, F82, F93, F94; Neula H1, H6 |
 | M5 | AR5; F46, F48, F63, F78 (between nodes) |
 | M6 | F8 (complete) |

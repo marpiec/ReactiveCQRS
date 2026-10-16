@@ -6,7 +6,7 @@ import io.reactivecqrs.api.id.{AggregateId, UserId}
 
 import scala.concurrent.Future
 import scala.concurrent.duration._
-import scala.reflect.{ClassTag, classTag}
+import scala.reflect.ClassTag
 
 case class GetAggregate(id: AggregateId)
 case class GetAggregateMinVersion(id: AggregateId, version: AggregateVersion, maxMillis: Int)
@@ -118,6 +118,6 @@ abstract class AggregateContext[AGGREGATE_ROOT : ClassTag] {
   /** Opt-in squash of old history into one event (D47–D52); none by default. */
   val squash: Option[SquashPolicy[AGGREGATE_ROOT]] = None
 
-  val aggregateType = AggregateType(classTag[AGGREGATE_ROOT].toString)
+  val aggregateType: AggregateType = AggregateType.of[AGGREGATE_ROOT]
 
 }

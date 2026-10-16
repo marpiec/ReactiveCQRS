@@ -72,7 +72,7 @@ class EventsReplaySpec extends CommonSpec {
     new PostgresUidGenerator("aggregates_uids_seq"), new PostgresUidGenerator("commands_uids_seq"), new PostgresUidGenerator("sagas_uids_seq"))))
 
   private val userId = UserId(1)
-  private val noteType = AggregateType(classOf[ReplayNote].getName)
+  private val noteType = AggregateType.of[ReplayNote]
 
   /** A bus with one new projection, as a rebuild starts from cleared read models. */
   private def projectionOnNewBus(): (ActorRef, ActorRef) = {

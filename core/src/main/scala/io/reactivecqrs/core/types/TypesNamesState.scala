@@ -2,6 +2,7 @@ package io.reactivecqrs.core.types
 
 import scalikejdbc._
 
+import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
 
 trait TypesNamesState {
@@ -29,11 +30,14 @@ class MemoryTypesNamesState extends TypesNamesState {
   }
 }
 
+/** Ids of class names, shared by every node. A name's id never changes once stored, so the cache is never invalidated.
+  * F78: the cache is read from many threads (owners, projections, the outbox poller), and a name new to several nodes at
+  * once is stored once: an insert that loses the race does nothing, and every node reads the winner's id. */
 class PostgresTypesNamesState extends TypesNamesState {
 
-  private var notInitiated = true
-  private val cache = mutable.HashMap[String, Short]()
-  private val cacheReverse = mutable.HashMap[Short, String]()
+  private val ids = TrieMap[String, Short]()
+  private val names = TrieMap[Short, String]()
+  @volatile private var loaded = false
 
   def initSchema(): PostgresTypesNamesState = {
     createTypesNamesTable()
@@ -58,58 +62,41 @@ class PostgresTypesNamesState extends TypesNamesState {
     sql"""CREATE UNIQUE INDEX IF NOT EXISTS types_names_names_idx ON types_names (name)""".execute()
   }
 
-  override def typeIdByClassName(className: String): Short = {
-    cache.getOrElseUpdate(className, getTypeIdFromDB(className))
+  override def typeIdByClassName(className: String): Short = ids.getOrElse(className, idFromDB(className))
+
+  override def classNameById(id: Short): String = names.getOrElse(id, nameFromDB(id))
+
+  private def remember(id: Short, name: String): Unit = {
+    ids.put(name, id)
+    names.put(id, name)
   }
 
-  override def classNameById(id: Short): String = {
-    cacheReverse.getOrElseUpdate(id, getTypeNameFromDB(id))
-  }
-
-  private def getTypeIdFromDB(className: String): Short = synchronized {
-    init()
-    cache.get(className) match {
-      case Some(id) => id
-      case None => DB.localTx { implicit session =>
-        val idOption = sql"""SELECT id FROM types_names WHERE name = ?"""
-          .bind(className).map(_.short(1)).single()
-        idOption match {
-          case Some(id) => id
-          case None => insertName(className)
-        }
+  private def idFromDB(className: String): Short = synchronized {
+    loadAll()
+    ids.getOrElse(className, {
+      val id = DB.localTx { implicit session =>
+        sql"""INSERT INTO types_names (id, name) VALUES (nextval('types_names_seq'), $className) ON CONFLICT (name) DO NOTHING""".update()
+        sql"""SELECT id FROM types_names WHERE name = $className""".map(_.short(1)).single()
+          .getOrElse(throw new IllegalStateException("No entry for type className '" + className + "' in types_names found"))
       }
-    }
+      remember(id, className)
+      id
+    })
   }
 
-  private def getTypeNameFromDB(id: Short): String = synchronized {
-    init()
-    cacheReverse.get(id) match {
-      case Some(className) => className
-      case None => DB.readOnly { implicit session =>
-        sql"""SELECT name FROM types_names WHERE id = ?"""
-          .bind(id).map(_.string(1)).single().getOrElse(throw new IllegalStateException("No entry for type id " + id+" in types_names found"))
-      }
-    }
+  private def nameFromDB(id: Short): String = synchronized {
+    loadAll()
+    names.getOrElse(id, {
+      val name = DB.readOnly(implicit session => sql"""SELECT name FROM types_names WHERE id = $id""".map(_.string(1)).single())
+        .getOrElse(throw new IllegalStateException("No entry for type id " + id + " in types_names found"))
+      remember(id, name)
+      name
+    })
   }
 
-  private def insertName(className: String)(implicit session: DBSession): Short = {
-    sql"""INSERT INTO types_names (id, name) VALUES (nextval('types_names_seq'), ?) RETURNING currval('types_names_seq')"""
-      .bind(className).map(_.short(1)).single().getOrElse(throw new IllegalStateException("No entry for type className '" + className+"' in types_names found"))
-  }
-
-  private def init(): Unit = {
-    if(notInitiated) {
-      DB.readOnly { implicit session =>
-        sql"""SELECT id, name FROM types_names"""
-          .foreach(rs => {
-            val id = rs.short(1)
-            val name = rs.string(2)
-            cache += name -> id
-            cacheReverse += id -> name
-          })
-      }
-      notInitiated = false
-    }
+  private def loadAll(): Unit = if (!loaded) {
+    DB.readOnly(implicit session => sql"""SELECT id, name FROM types_names""".foreach(rs => remember(rs.short(1), rs.string(2))))
+    loaded = true
   }
 
 }

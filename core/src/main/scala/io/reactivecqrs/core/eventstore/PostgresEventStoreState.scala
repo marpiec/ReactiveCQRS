@@ -42,6 +42,9 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
   private def utcTime(rs: java.sql.ResultSet, column: Int): Instant = rs.getTimestamp(column, Calendar.getInstance(Utc)).toInstant
 
+  // D75, F50: the aggregate's type key comes from its root's class, as everywhere else.
+  private def aggregateTypeName(event: Event[_]): String = AggregateType.ofClass(event.aggregateRootClass).typeName
+
   // D32: the metadata envelope of a command's events; a null column means "stored without one".
   private def metadataJson(metadata: Option[EventMetadata]): Option[String] = metadata.map(m => mpjsons.serialize(m, classOf[EventMetadata].getName))
   private def metadataOf(json: String): Option[EventMetadata] = Option(json).map(mpjsons.deserialize[EventMetadata](_, classOf[EventMetadata].getName))
@@ -67,9 +70,9 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     val serialized = mpjsons.serialize(event, event.getClass.getName)
     val limit = eventSizeLimitPerClassName.getOrElse(event.getClass.getName, eventSizeLimit)
     if (serialized.length > limit) {
-      throw new EventTooLargeException(aggregateId, event.aggregateRootType.typeSymbol.fullName, version, event.getClass.getName, serialized.length, limit)
+      throw new EventTooLargeException(aggregateId, aggregateTypeName(event), version, event.getClass.getName, serialized.length, limit)
     } else if (version.asInt > aggregateVersionLimit) {
-      throw new TooManyEventsException(aggregateId, event.aggregateRootType.typeSymbol.fullName, aggregateVersionLimit)
+      throw new TooManyEventsException(aggregateId, aggregateTypeName(event), aggregateVersionLimit)
     }
     serialized
   }
@@ -86,7 +89,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       val sqlArray = session.connection.createArrayOf(elementType, elements.toArray)
       ParameterBinder(sqlArray, (statement, index) => statement.setArray(index, sqlArray))
     }
-    val aggregateTypeId = typesNamesState.typeIdByClassName(events.head.aggregateRootType.typeSymbol.fullName)
+    val aggregateTypeId = typesNamesState.typeIdByClassName(aggregateTypeName(events.head))
     AggregateVersion(sql"""SELECT add_events(${newEvents.userId.asLong}, ${array("bigint", spaceIds)}, ${aggregateId.asLong}, ${expectedVersion.asInt},
                           |  $aggregateTypeId, ${array("smallint", eventTypeIds)}, ${utc(newEvents.timestamp)}, ${array("text", serialized)}, $metadata::jsonb)"""
       .stripMargin.map(_.int(1)).single().get)
@@ -97,13 +100,13 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     case undo: UndoEvent[_] =>
       val serialized = serializedChecked(aggregateId, event, expectedVersion)
       AggregateVersion(sql"""SELECT add_undo_event(${newEvents.userId.asLong}, ${aggregateId.asLong}, ${expectedVersion.asInt},
-                            |  ${typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName)}, ${typesNamesState.typeIdByClassName(event.getClass.getName)},
+                            |  ${typesNamesState.typeIdByClassName(aggregateTypeName(event))}, ${typesNamesState.typeIdByClassName(event.getClass.getName)},
                             |  ${utc(newEvents.timestamp)}, $serialized, ${undo.eventsCount}, $metadata::jsonb)"""
         .stripMargin.map(_.int(1)).single().get)
     case duplication: DuplicationEvent[_] =>
       val serialized = serializedChecked(aggregateId, event, expectedVersion)
       AggregateVersion(sql"""SELECT add_duplication_event(${newEvents.userId.asLong}, ${duplication.spaceId.asLong}, ${aggregateId.asLong}, ${expectedVersion.asInt},
-                            |  ${typesNamesState.typeIdByClassName(event.aggregateRootType.typeSymbol.fullName)}, ${typesNamesState.typeIdByClassName(event.getClass.getName)},
+                            |  ${typesNamesState.typeIdByClassName(aggregateTypeName(event))}, ${typesNamesState.typeIdByClassName(event.getClass.getName)},
                             |  ${utc(newEvents.timestamp)}, $serialized, ${duplication.baseAggregateId.asLong}, ${duplication.baseAggregateVersion.asInt}, $metadata::jsonb)"""
         .stripMargin.map(_.int(1)).single().get)
     case _ =>

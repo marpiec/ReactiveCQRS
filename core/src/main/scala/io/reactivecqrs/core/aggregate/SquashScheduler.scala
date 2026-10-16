@@ -7,7 +7,7 @@ import io.reactivecqrs.core.util.MyActorLogging
 import org.apache.pekko.actor.{Actor, ActorRef, Cancellable}
 
 import scala.concurrent.duration._
-import scala.reflect.{ClassTag, classTag}
+import scala.reflect.ClassTag
 import scala.util.{Failure, Success, Try}
 
 object SquashScheduler {
@@ -23,7 +23,7 @@ object SquashScheduler {
 
   object SquashTarget {
     def of[AGGREGATE_ROOT: ClassTag](context: AggregateContext[AGGREGATE_ROOT], commandBus: ActorRef): SquashTarget = {
-      val aggregateType = AggregateType(classTag[AGGREGATE_ROOT].runtimeClass.getName)
+      val aggregateType = AggregateType.of[AGGREGATE_ROOT]
       SquashTarget(aggregateType, commandBus, context.squash.flatMap(_.automatic).getOrElse(throw new IllegalArgumentException(
         aggregateType.simpleName + " has no automatic squash rule (SquashPolicy.automatic)")))
     }
@@ -79,7 +79,7 @@ class SquashScheduler(eventStore: EventStoreState, targets: Seq[SquashScheduler.
       next()
     case SquashRefused(id, reason) if current.exists(_._1 == id) =>
       refused += 1
-      log.debug("Squash of aggregate " + id.asLong + " refused: " + reason)
+      log.debug("Squash of aggregate {} refused: {}", id.asLong, reason)
       next()
     case NotAnswered(id) if current.exists(_._1 == id) =>
       log.warning("Squash of aggregate " + id.asLong + " not answered in " + options.answerTimeout + "; the scheduler goes on with the next")

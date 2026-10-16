@@ -10,7 +10,7 @@ import io.reactivecqrs.core.util.MyActorLogging
 import io.reactivecqrs.core.eventbus.EventsBusActor.PublishReplayedEvents
 import io.reactivecqrs.core.eventstore.EventStoreState
 
-import scala.reflect.{ClassTag, classTag}
+import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 import scala.concurrent.duration._
 
@@ -27,7 +27,7 @@ class ReplayAggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateI
 
   private var version: AggregateVersion = AggregateVersion.ZERO
   private var aggregateRoot: AGGREGATE_ROOT = initialState()
-  private val aggregateType = AggregateType(classTag[AGGREGATE_ROOT].toString)
+  private val aggregateType = AggregateType.of[AGGREGATE_ROOT]
 
   import context.dispatcher
 

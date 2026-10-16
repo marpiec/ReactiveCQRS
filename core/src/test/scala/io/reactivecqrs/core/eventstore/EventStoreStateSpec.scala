@@ -25,6 +25,14 @@ case class Undo(eventsCount: Int) extends UndoEvent[SomeAggregate]
 case class Copy(spaceId: SpaceId, baseAggregateId: AggregateId, baseAggregateVersion: AggregateVersion)
   extends DuplicationEvent[SomeAggregate]
 
+// F50: an aggregate root class nested in an object.
+object Nesting {
+  case class NestedRoot()
+  case class NestedCreated() extends FirstEvent[NestedRoot] {
+    def spaceId: SpaceId = SpaceId(0)
+  }
+}
+
 
 class TestFixture(val eventStoreState: EventStoreState) {
 
@@ -432,6 +440,17 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     base.getEvents(None, early) mustBe Seq(EventA("early copy"))
   }
 
+  // F50, D75: one key per aggregate type, the one 0.x stored (Scala's full name), also for a nested root class, so the
+  // outbox names it as its command bus and its projections do.
+  Scenario("The outbox names a nested aggregate root class by the key its command bus and projections use") {
+    val id = newId()
+    eventStoreState.localTx(session => eventStoreState.persistEvents(id,
+      NewEvents(UserId(1), AggregateVersion.ZERO, Instant.now, Seq(Nesting.NestedCreated())))(session)).get
+
+    eventStoreState.readWaitingInOutbox().filter(_.aggregateId == id).map(_.aggregateType) mustBe Seq(AggregateType.of[Nesting.NestedRoot])
+    AggregateType.of[Nesting.NestedRoot].typeName mustBe "io.reactivecqrs.core.eventstore.Nesting.NestedRoot"
+  }
+
   // D52: what the squash scheduler reads.
   Scenario("The squash candidates are the aggregates of the type with enough events older than the newest kept ones, in id order") {
     val Seq(a, b, c) = Seq(6, 2, 8).map { events =>
@@ -442,7 +461,7 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     published(c.aggregateId)
     squash(c, 4) mustBe Right(())
     val rule = AutomaticSquash(afterEvents = 3, keepLast = 1)
-    val someAggregate = AggregateType(classOf[SomeAggregate].getName)
+    val someAggregate = AggregateType.of[SomeAggregate]
     val before = AggregateId(a.aggregateId.asLong - 1) // aggregates of other scenarios have lower ids
 
     eventStoreState.squashCandidates(someAggregate, rule, before, 10) mustBe Seq(a.aggregateId -> AggregateVersion(5), c.aggregateId -> AggregateVersion(7))

@@ -20,7 +20,7 @@ case class BusCartErased() extends PermanentDeleteEvent[BusCart]
 // the owner only for events every subscriber took.
 class EventsBusActorSpec extends CommonSpec {
 
-  private val cartType = AggregateType(classOf[BusCart].getName)
+  private val cartType = AggregateType.of[BusCart]
   private val options = DeliveryOptions(deadline = 1.second, stallAfter = 300.millis, tickInterval = 50.millis)
 
   private def newBus(): ActorRef = system.actorOf(Props(new EventsBusActor(options)))
