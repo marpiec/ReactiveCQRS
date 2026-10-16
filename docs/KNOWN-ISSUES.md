@@ -117,14 +117,14 @@ behaviour.
 
 | ID | Decision |
 |---|---|
-| D57 | Shadow rebuild: a new projection version builds into its own tables (`projection_<name>_v<N>`) under its own subscription identity (class + version), reading the event store; the old version keeps serving; when caught up it takes over, old tables are dropped; indexes are built before the switch; a failed rebuild leaves the old version untouched. Replaces clear-then-replay. |
-| D58 | Rebuild reads the store and delivers only to the projection being rebuilt (no bus, no other subscribers). |
+| D57 | Shadow rebuild: a new projection version builds into its own tables (`projection_<name>_v<N>`) under its own subscription identity (class + version), reading the event store; the old version keeps serving; when caught up it takes over, old tables are dropped; indexes are built before the switch; a failed rebuild leaves the old version untouched. Replaces clear-then-replay. **Refined in M4 (17/10/2026):** builds, not versions, own tables (`_v<N>`, then `_v<N>_b<build>` for a later build of the same version, as a context version bump or a repair rebuilds it) and subscriptions (`projection:<name><suffix>`, independent of the class); the switch waits while the new build has failed subscriptions; on one node, the active build keeps applying live events with the current code while a version is built (`ServeLive`, the default) or serves unchanged (`ServeStale`). |
+| D58 | Rebuild reads the store and delivers only to the projection being rebuilt (no bus, no other subscribers). **Refined in M4:** a projection with side effects is not managed, so it is never rebuilt; a managed projection's listeners see `rebuilding` until its build serves. |
 | D59 | Replay follows commit order (`events.id`) across types, grouping consecutive events of one aggregate; replay states live in a bounded cache restored from snapshot + tail when evicted; a duplicate's first event reuses the base's in-memory state when the base is exactly at `base_version`. |
 | D60 | Rebuild delivers exactly the live event sequence, including undone events and undo events, with state as it was at each version. |
-| D61 | Rebuild applies many aggregates per transaction with offsets saved in the same transaction; it is resumable. The in-memory subscription mode and `dump()` are removed (supersedes D14). |
+| D61 | Rebuild applies many aggregates per transaction with offsets saved in the same transaction; it is resumable. The in-memory subscription mode and `dump()` are removed (supersedes D14). **Refined in M4:** the offsets that decide, each aggregate's subscription version, commit with the chunk; the bulk pass's read position is saved after each applied chunk, so a resume repeats at most the chunks in flight, which those versions make harmless. |
 | D62 | Projections whose listeners are all `AggregateListener` are rebuilt with one message per aggregate carrying the final state (snapshot + tail), `created = true`. |
 | D63 | A projection version bump rebuilds that projection only; an aggregate context version bump invalidates its snapshots and rebuilds only projections that receive that type's state; explicit targeted rebuild for one aggregate, one type or one organization (R14). |
-| D70 | A registry row per projection name holds the active version; queries go to the active version; switch-over is one database update; the old version stops after the rollout. |
+| D70 | A registry row per projection name holds the active version; queries go to the active version; switch-over is one database update; the old version stops after the rollout. **Refined in M4:** the row holds the active build and the build in progress; a projection's supervisor, whose `ActorRef` the host uses for queries, routes them to the active build (or a new projection's first build, which serves while built); a projection 0.12 built is adopted as build 0 (D81). |
 | D56 (R14) | Projection status (lag, failed aggregates, position); targeted rebuild; many aggregates per transaction; slices later (after 1.0). |
 | D56 (R19, R20, R21) | A small `Metrics` interface with a no-op default; tracing context carried in metadata (R13). In-memory adapters for every new feature and an event-schema reference test utility (R20). Durable scheduled commands (R21) are not built. |
 | D14 | Superseded by D61. |
@@ -689,7 +689,7 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Fix:** return the row count, evict the cache entry before retrying, limit retries in both stores; D16 for commit-safe caching.
 
 #### F43 — Document-store migration is not one transaction
-- **Low**, likely · Fix in **M4** (where the document-store tables and indexes are reworked) · `PostgresDocumentStore.scala:30-33`
+- **Low**, likely · **Fixed in M4** (17/10/2026: the table and its column changes run in one transaction; the indexes stay apart, as before) · `PostgresDocumentStore.scala:30-33`
 - **Fix:** run the migration steps in one transaction, following D69 for large tables.
 
 ### Sagas
@@ -758,19 +758,19 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 ### Rebuild
 
 #### F54 — Rebuild needs downtime and clears read models first
-- **Medium**, likely · Fix in **M4** · `EventsReplayOrchestrator.scala:79-81`; Neula runs it as a separate run mode
+- **Medium**, likely · **Fixed in M4** (17/10/2026: managed projections build a new version in tables of their own while the active version serves, and switch in one update; `ProjectionsSpec`) · `EventsReplayOrchestrator.scala:79-81`; Neula runs it as a separate run mode
 - **Fix:** D57, D70.
 
 #### F55 — The rebuild clear is not atomic
-- **Medium**, likely · Fix in **M4** · `SubscriptionsState.scala:291-294`; Neula clears documents in a separate auto-commit (e.g. `KanbansProjection.scala:30`)
+- **Medium**, likely · **Fixed in M4** (17/10/2026: a build starts in new tables, so nothing is cleared) · `SubscriptionsState.scala:291-294`; Neula clears documents in a separate auto-commit (e.g. `KanbansProjection.scala:30`)
 - **Fix:** removed by D57.
 
 #### F56 — Replayed events reach every subscriber of the type
-- **Medium**, likely · Fix in **M4** · `EventsBusActor.scala:300-326`
+- **Medium**, likely · **Fixed in M4** (17/10/2026: the builder delivers to the projection it builds only; `ProjectionBuilderSpec`) · `EventsBusActor.scala:300-326`
 - **Fix:** D58.
 
 #### F57 — Rebuild order differs from live order
-- **Medium**, suspected (depends on cross-type Neula projections) · Fix in **M4** · `EventsReplayerActor.scala:118-168`
+- **Medium**, suspected (depends on cross-type Neula projections) · **Fixed in M4** (17/10/2026: the bulk pass reads every type of the projection in commit order; `ProjectionBuilderSpec`) · `EventsReplayerActor.scala:118-168`
 - **Fix:** D59.
 
 #### F98 — A subscriber that never saw an aggregate's squash point cannot start at the squash event
@@ -780,21 +780,21 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Until then (H8):** add a projection before squashing the aggregate types it reads, or expect its failures on squashed aggregates.
 
 #### F58 — Rebuild hides undo, and the hidden versions stall the rebuild
-- **High**, confirmed (raised from Medium in M2, 16/10/2026) · Fix in **M4** · `PostgresEventStoreState.scala:284`
+- **High**, confirmed (raised from Medium in M2, 16/10/2026) · **Fixed in M4** (17/10/2026: the builder delivers every event as live delivery sent it, undone ones and undos too, with each state as it was; `ProjectionBuilderSpec`, red under a mutation that ignores the undo in the replay states) · `PostgresEventStoreState.scala:284`
 - **Symptom:** a rebuild leaves out undone events and undo events. A projection that rebuilds from cleared state then sees a gap at those versions (a cart with an undo at version 5: 1–3, then 6), keeps the later event waiting for versions that never come, and never acknowledges it. So the replay does not end: it goes on only when the bus deadline (D20b, 10 minutes) ends the stalled deliveries, which leaves those aggregates behind in the rebuilt projection, or the replayer's own 10-minute timeout exits the JVM first (F82).
 - **Found:** the full test run in M2. The old `EventsReplaySpec` replayed the carts of the other specs, one of them with an undo, and both projections kept version 6 waiting for 4 and 5. (They had also failed on version 1, because the spec reused the other specs' read-model tables; that was a test fault.)
 - **Fix:** D60; see H6.
 
 #### F59 — Rebuild skips events still in the outbox
-- **Low**, likely · Fix in **M4** · `EventsReplayerActor.scala:155-168`
+- **Low**, likely · **Fixed in M4** (17/10/2026: the builder reads the store, outbox or not; the gate drops what live delivery brings again) · `EventsReplayerActor.scala:155-168`
 - **Fix:** rebuild reads the store directly (D58); live delivery dedups.
 
 #### F60 — Rebuild progress is not durable
-- **Medium**, likely · Fix in **M4** · `EventsReplayerActor.scala:179-182`
+- **Medium**, likely · **Fixed in M4** (17/10/2026: the subscription versions commit with each chunk, and the bulk position is saved after it; a stopped build continues; `ProjectionBuilderSpec`, `ProjectionsSpec`) · `EventsReplayerActor.scala:179-182`
 - **Fix:** D61.
 
 #### F61 — Rebuild triggers are too coarse
-- **Low**, likely · Fix in **M4** · `EventsReplayOrchestrator.scala:51-63`
+- **Low**, likely · **Partly fixed in M4** (17/10/2026: a projection is built when its version changes, when a context whose states it receives changes version, or on request, and only that projection; `ProjectionsSpec`. The targeted rebuild of one aggregate, type or organization follows) · `EventsReplayOrchestrator.scala:51-63`
 - **Fix:** D63.
 
 #### F62 — Rebuild throughput limits
@@ -809,7 +809,7 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Fix:** report the failure to the requester and stop the replay only.
 
 #### F94 — Failure records of a removed projection block permanent deletes
-- **Low**, likely · Fix in **M4** (the projection registry, D57, removes a retired projection's rows) · `PostgresEventStoreState.deleteAggregatePermanently`
+- **Low**, likely · **Fixed in M4** (17/10/2026: a retired build's subscription versions and failures are dropped with its tables, and `Projections.retire(name)` drops every build of a projection removed from the code; `ProjectionsSpec`) · `PostgresEventStoreState.deleteAggregatePermanently`
 - **Symptom:** `subscription_failures` rows of a projection that was removed or renamed are never retried or cleared, and a permanent delete waits while the aggregate has any.
 - **Found:** M2 close (review 4).
 - **Until then:** an operator deletes the rows of the retired projection by its `subscriber_type_id`.
@@ -852,6 +852,7 @@ The library cannot fix these; they are listed so the 1.0 migration does not miss
 | H6 | Medium, suspected | Event listeners of ScreenRelease and ProcessRelease (the two aggregates with undo) must handle undo, since rebuild will deliver it (D60). | M4 |
 | H7 | Medium, likely | The host wiring changes with M2: create one `OutboxPollerActor`; send the bus `RegisterSubscribers` with every projection and listener (with H2); drop `EventBusSubscriptionsManagerApi` and `PostgresEventBusState`; call `PostgresSubscriptionsState.initSchema()`, which creates `subscription_failures`. Show `GetProjectionStatus` failures and offer `RetryFailedSubscription` and `SkipFailedVersion` in the admin tools (R1, R14). `SubscriptionsState`'s six per-kind version methods became `lastVersion` and `newVersion` with a `SubscriptionType`; `ProcessFlowDetailsProjectionSpec` calls the old ones. | M2 (Neula) |
 | H8 | Low, likely | M3 host steps: run `PostgresEventStoreState.buildIndexesConcurrently()` once after the upgrade, in the background (F38); opt in to snapshots (`AggregateContext.snapshots`) for the contexts with long histories (R10); commands give their events a metadata envelope by mixing in `WithMetadata` (R13); a context writes its own rows with its events by mixing in `WithOutboxWriter` (R12); serial mode is `commandProcessing = Serial(...)` (R8), and `CommandRejected` is a new response; `PassivateAggregate(id)` is available for operations. Squash: a context opts in with a squash event (`squash = Some(SquashPolicy(state => SquashEvent(...)))`, a `FirstEvent` its event handlers and projections handle); every squash checks that its event gives the state back exactly (D85), and an event class that leaves data out on purpose mixes in `SquashMayChangeState`; `SquashAggregate(id, upTo)` squashes on request, and a `SquashScheduler` started with `SquashTarget.of(context, commandBus)` squashes by `SquashPolicy.automatic`; contexts with audit duties wait for R11 (M6). A type whose aggregates are duplicated and permanently deleted needs a squash event, or those deletes wait (F76). Dispatcher (F27): create projections with `Props(...).withDispatcher(BlockingDispatcher.id)` and size `reactivecqrs.blocking-dispatcher` near the JDBC pool; the id sequences step by 10 000 from the first start (F23). Subscriptions take no classifier any more (AR8). Until M4, add a projection before squashing the aggregate types it reads (F98). Run the golden event logs with and without snapshots and compare the handlers' results (the plan's M3 check). Type keys (D75): events and projection listeners take a `ClassTag` of the root, so an event class generic in its root needs `[R: ClassTag]` where it had `[R: TypeTag]`; `Event.aggregateRootType` is now `aggregateRootClass`; a key built by hand should be `AggregateType.of[R]` (for a nested root class `Outer.Inner`, as stored); `api.id.LRUCache` is deprecated. | M3 (Neula) |
+| H9 | Medium, likely | M4 host steps: create one `Projections` and start each read model through it (`projections.start[P](name, version, actorName) { build => ... }`), passing the returned supervisor where the projection's `ActorRef` went (query APIs, the REST layer, `RegisterSubscribers`); name every store's table with `build.documentStore(table)` and the state classes' tables and sequences with `build.table`/`build.sequence` (state shared between two projections needs one owner, the other asks it); replace the rebuild-mode constructor flags with `rebuilding` (side effects) and `onActivated()` (state kept in memory while built must not outlive a chunk: a build commits chunk by chunk and resumes); keep the reactors (side effects) unmanaged; drop the offline rebuild run mode, the empty index lists of rebuild mode and the upgrade gate that relied on it; remove `onClearProjectionData` bodies when M4 removes the hook; retire removed projections with `Projections.retire(name)`. Pass the aggregate contexts whose states projections receive. | M4 (Neula) |
 
 ---
 
@@ -878,7 +879,7 @@ From §7 of Neula's change requests.
 | M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔, F73 ✔, F74 ✔, F75 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53, F76 (Neula, on a production copy, with `StoredDataCheck` and the F76 query); Neula H3, H4, H5 |
 | M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔, F95 ✔; Neula H2, H7 |
 | M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8 ✔; F8 (contract ✔), F22 ✔, F23 ✔, F25 ✔, F27 ✔, F30 ✔, F31 ✔, F32 ✔, F33 (rest ✔), F38 ✔, F39 ✔, F44 ✔, F50 ✔, F65 ✔, F76 ✔, F78 ✔, F81 ✔, F96 ✔, F97 ✔, F100–F107 ✔; D85 ✔; Neula H8 |
-| M4 | F3, F43, F49 (backfill), F54, F55, F56, F57, F58, F59, F60, F61, F62, F82, F93, F94, F98; Neula H1, H6 |
+| M4 | F3 ✔, F43 ✔, F49 (backfill), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 (triggers ✔), F62, F82, F93, F94 ✔, F98 ✔; Neula H1, H6, H9 |
 | M5 | AR5; F46, F48, F63, F99 (F78 between nodes ✔ in M3) |
 | M6 | F8 (complete) |
 

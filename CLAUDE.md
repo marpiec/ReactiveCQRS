@@ -182,6 +182,12 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
   listener is retried about 2 minutes, then recorded in `subscription_failures` and
   answered `MessageFailed` (D20a); `GetProjectionStatus`, `RetryFailedSubscription`,
   `SkipFailedVersion`; failures are retried at start, one per second.
+- **`Projections` / `ProjectionSupervisor`** (`core/.../rebuild/`, M4) — managed projections: the host starts
+  each read model through `Projections.start`, whose supervisor (the `ActorRef` the host queries) runs one
+  instance per build (tables named by the build, D57), builds a new version from the store with
+  `ProjectionBuilder` (commit order, replay states, chunks, then GoLive and a reconciliation) while the
+  active build serves, switches in one registry update (D70) and drops the retired build. Projections with
+  side effects stay unmanaged. Design: `docs/design/M4-rebuild.md`.
 - **`SagaActor`** — process managers; `CONTINUES`/`REVERTING`/`ERROR` phases.
 - **`UidGeneratorActor`** — hands out id pools (`PostgresUidGenerator` reads
   `NEXTVAL`/`increment_by` from a sequence; pool size = sequence step).
@@ -235,6 +241,9 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
 - **`commands_responses`** (`CommandResponseState.scala`) — idempotent command
   responses keyed by idempotency key: unique index on `key` (since 1.0, F9), response info
   in `info`/`info_type_id` (F64), rows removed after a retention period.
+- **`projections`, `projection_builds`, `projection_build_objects`** (`ProjectionRegistry.scala`, M4) — per
+  projection name the active build and the build in progress; per build its version, table suffix,
+  subscriber identity, context versions and position; the tables and sequences each build named.
 - **`projection_<name>`** (`PostgresDocumentStore.scala`) — read models stored as
   `JSONB` with `space_id, id PK, version, document`. Supports dynamically created
   GIN/expression indices over JSON paths. Auto-migrates (adds `space_id`, drops
@@ -298,4 +307,4 @@ planned in a way that the change must follow. Measured performance is in `docs/p
 | Read models | `core/.../projection/*`, `core/.../documentstore/*` |
 | Process managers | `core/.../saga/*` |
 | Full wiring of a system | `testdomain/.../spec/ReactiveTestDomainSpec.scala` |
-| Replay / rebuild | `core/.../eventsreplayer/*`, `ReplayAggregateRepositoryActor.scala` |
+| Replay / rebuild | `core/.../rebuild/*` (M4), `docs/design/M4-rebuild.md`; the 0.12 replayer `core/.../eventsreplayer/*` until M4 removes it |

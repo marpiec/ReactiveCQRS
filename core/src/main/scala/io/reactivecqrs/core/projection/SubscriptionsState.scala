@@ -57,6 +57,9 @@ trait SubscriptionsState {
   /** Forgets everything about the subscriber: its versions, cached ones included (F6), and its failures. */
   def clearSubscriptionsInfo(subscriberName: String): Unit
 
+  /** Whether the subscriber applied any version of any aggregate: a projection 0.12 built has (D81). */
+  def hasSubscriptions(subscriberName: String): Boolean
+
   // D20a: a subscriber that gave up on an aggregate records it; it answers deliveries of that aggregate with
   // MessageFailed until the failure is cleared (a retry, or a skip of the failed version), and lists it in its status.
   // A later failure of the same subscription replaces the earlier one.
@@ -101,6 +104,8 @@ class MemorySubscriptionsState extends SubscriptionsState {
     state --= state.keys.filter(_.subscriberName == subscriberName)
     failuresState --= failuresState.keys.filter(_._1 == subscriberName)
   }
+
+  override def hasSubscriptions(subscriberName: String): Boolean = synchronized(state.keys.exists(_.subscriberName == subscriberName))
 
   override def recordFailure(subscriberName: String, failure: SubscriptionFailure): Unit = synchronized {
     failuresState += (subscriberName, failure.subscriptionType, failure.aggregateId) -> failure
@@ -354,6 +359,11 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, eventsLogger:
     synchronized {
       perAggregate.values().asScala.foreach(_.filterInPlace((key, _) => !key.startsWith(ofSubscriber)))
     }
+  }
+
+  override def hasSubscriptions(subscriberName: String): Boolean = DB.readOnly { implicit session =>
+    sql"""SELECT EXISTS (SELECT 1 FROM subscriptions WHERE subscriber_type_id = ${typesNamesState.typeIdByClassName(subscriberName)})"""
+      .map(_.boolean(1)).single().getOrElse(false)
   }
 
   private val INSERT_INTO_SUBSCRIPTIONS = sql"""INSERT INTO subscriptions (id, subscriber_type_id, subscription_type, aggregate_id, aggregate_version) VALUES (nextval('subscriptions_seq'), ?, ?, ?, ?)"""

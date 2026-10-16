@@ -37,7 +37,7 @@ unless the path says `api/` or `testdomain/`).
 | `Backoff.scala` (retry waits, AR6) | `util/` |
 | `ProjectionActor.scala`, `SubscriptionsState.scala`, `SubscribableProjectionActor.scala`, `AggregateListenerActor.scala`, `VersionsState.scala` | `projection/` |
 | `EventsReplayOrchestrator.scala`, `EventsReplayerActor.scala` (the 0.12 replayer, until M4 removes it) | `eventsreplayer/` |
-| `ProjectionBuilder.scala`, `ReplayStates.scala` (with `ReplaySource`) (the M4 builder) | `rebuild/` |
+| `ProjectionBuilder.scala`, `ReplayStates.scala` (with `ReplaySource`), `Projections.scala` (the runtime and `ProjectionSupervisor`), `ProjectionRegistry.scala`, `ProjectionBuild.scala` (M4) | `rebuild/` |
 | `SagaActor.scala`, `PostgresSagaState.scala`, `PostgresSagaSchemaInitializer.scala` | `saga/` |
 | `PostgresDocumentStore.scala`, `DocumentStoreCache.scala` | `documentstore/` |
 | `AfterCommit.scala` (cache updates after commit) | `util/` |
@@ -608,6 +608,12 @@ at once. A delivery waiting longer than a minute is logged once (at most 10 line
 and waiting deliveries are summed up every 5 minutes (F92). Timers are `Tick` messages to the
 bus (F79).
 
+**Subscribers that come and go (M4).** After the start, a projection's supervisor adds the
+subscriptions of a build it starts later (`AddSubscriptions`) and removes those of a build it
+retires (`RemoveSubscriber`, answered with `SubscriberRemoved`): the deliveries that waited for
+a removed subscriber end for it, and one it was the last to answer acknowledges its owner, so no
+outbox row waits for a retired build (unlike a subscriber that stops, whose rows stay).
+
 **Re-publish requests.** `RequestRepublish(subscriber, type, id, from)` from a subscriber
 with a gap or a retry goes to the type's command bus as `RepublishRange(id, from,
 subscriber)`; the owner re-publishes `from` to its current version to that subscriber only
@@ -745,6 +751,15 @@ store can feed it directly, through the same gate, failure records and status:
   missing versions are asked from the builder instead of the owner. `GoLive` ends that, retries
   the failures recorded meanwhile, and is answered with `ProjectionLive`.
 
+**Managed by a supervisor** (M4, §8.2). `BindSubscriber(subscriber)` gives the instance its
+build's subscriber identity (otherwise its class name); `ConnectedTo(bus)` tells it the bus that
+delivers to it (it then retries the failures recorded before, as at a start). `rebuilding` is
+true from `BuildFromStore` until `Activate`, when the built instance starts to serve and
+`onActivated()` runs: a listener with side effects checks it, as the events it is given then are
+history. `Retire(successor)` ends a retired build's instance: `onRetired(successor)` runs (a
+`SubscribableProjectionActor` hands its push subscriptions over, with their filters, which must
+not use the old build's stores), parked queries are answered with `None`, and it stops.
+
 ### 6.4 Options (`ProjectionActorOptions`)
 
 | Option | Default | Effect |
@@ -788,7 +803,10 @@ ack and dedup machinery.
 ### 6.8 Document store (`PostgresDocumentStore.scala`)
 
 Read models are stored as JSONB documents in `projection_<name>` tables (`space_id`, `id`,
-`version`, `document`), with optional indexes on JSON paths created at start-up.
+`version`, `document`), with optional indexes on JSON paths created at start-up. The table and
+its column migrations are made in one transaction (F43). A name whose table or index names
+would pass PostgreSQL's 63 characters (which it would cut silently) is refused at once; a
+managed projection's tables carry their build's suffix (§8.2).
 
 - **Optimistic updates.** `updateDocument` and `updateExistingDocument` read the document
   (from the cache or the table), apply `modify` and write the next version
@@ -847,10 +865,10 @@ aggregate context and projection; it is used only for rebuild decisions.
 
 ## 8. Replay / projection rebuild
 
-M4 replaces the 0.12 replayer below with a builder that feeds one projection directly from
-the event store (design: `docs/design/M4-rebuild.md`). The registry of builds, the projection
-supervisor that runs builds and switches them, and the targeted rebuild follow; until then
-hosts still use the 0.12 replayer.
+M4 replaces the 0.12 replayer (§8.3) with managed projections (§8.2): each runs under a
+supervisor that builds new versions from the event store with a builder that feeds one
+projection directly (§8.1), while the active version serves, and switches in one update
+(design: `docs/design/M4-rebuild.md`). The targeted rebuild follows.
 
 ### 8.1 The builder (`rebuild/ProjectionBuilder.scala`, M4)
 
@@ -902,7 +920,58 @@ projection could not take is sent again. A row that cannot be read, or an aggreg
 cannot be restored, fails its subscription at that version (D20a, visible in the projection's
 status) and the build goes on (F82).
 
-### 8.2 The 0.12 replayer (until M4 removes it)
+### 8.2 Managed projections: the registry and the supervisor (`rebuild/Projections.scala`, M4)
+
+**Wiring.** The host creates one `Projections(actorSystem, ProjectionsSettings(eventStore,
+subscriptionsState, registry, eventBus, contexts))` and starts each managed projection with
+`projections.start[P](name, version, actorName) { build => new P(...) }`. The result is the
+projection's **supervisor**, whose `ActorRef` the host uses where it used the projection's:
+queries, the REST layer, `RegisterSubscribers`. `create` makes an instance of the projection for
+one build; it names the build's tables with `build.documentStore(table)` (the table name of a
+document store), `build.table(name)` and `build.sequence(name)` (the projection's own state).
+`contexts` are the aggregate contexts whose states projections receive. A projection that must
+never be rebuilt from history (a listener with side effects) is not started this way: created
+as before, it behaves as before, and no build delivers to it (D58).
+
+**The registry** (`ProjectionRegistry`, `PostgresProjectionRegistry`, D70): `projections` holds
+per projection name the active build and the build in progress; `projection_builds` holds each
+build's number, version, table suffix (`_v<version>`, then `_v<version>_b<build>` for a later
+build of the same version), subscriber identity (`projection:<name><suffix>`, independent of
+the class), the context versions of the types whose states it receives (D63) and its position
+(D61); `projection_build_objects` holds every table and sequence a build named. The switch is
+one update of the projection's row. Build 0 is a projection 0.12 built, adopted as it is (no
+suffix, its class name as subscriber, D81): at the version `components_versions` recorded (the
+0.12 rebuild's bookkeeping), or at the code's version when only its subscription rows exist.
+
+**The supervisor** (on the blocking dispatcher) reads the registry at start and runs one
+instance (a child) per build it needs: the active build, and the build in progress. A build
+starts when the code's version differs from the active build's, when the version of a context
+whose states the projection receives differs from the one the active build recorded (D63), or
+on `RebuildProjection`; a build of a version the code no longer has is abandoned and dropped.
+It binds each instance to its build (`BindSubscriber`), subscribes the instances that take
+deliveries (`ConnectedTo`, answering the bus's `GetSubscriptionRequests`, or `AddSubscriptions`
+once the bus runs), puts the build in progress into `BuildFromStore`, and runs its
+`ProjectionBuilder` when one of the runtime's build slots is free (`buildsAtOnce`, 2). Every
+other message goes to the instance that **serves**: the active build, or a new projection's
+first build, which serves while it is built. While a new version builds, the active build keeps
+applying live events with the current code (`ServeLive`, so parked queries keep working) or
+serves its tables unchanged (`ServeStale`).
+
+**The switch.** When the builder reports `BuildCaughtUp` and the build has no failed
+subscription (else it is checked again every 30 s; `ToBuildInProgress` reaches its instance for
+a retry or a skip), the registry switches, the new instance gets `Activate` (`rebuilding` ends,
+`onActivated()` runs), and the old instance leaves the bus (`RemoveSubscriber`: no delivery
+waits for it any more, so no outbox row does), is retired (`Retire`: its push subscriptions go
+to the new instance, its parked queries are answered with `None`) and stops; then its tables,
+subscription versions and failures are dropped (F94). `GetBuilds` reports the builds.
+
+**Failures.** A builder that stops before it caught up is started again after `restartAfter`
+(10 s) and continues from the saved position; an instance that stops (its stores could not be
+made) makes the supervisor leave the bus with every instance and start again after
+`restartAfter`. `Projections.retire(name)` drops every build of a projection removed from the
+code.
+
+### 8.3 The 0.12 replayer (until M4 removes it)
 
 `EventsReplayOrchestrator.replay(...)` (`EventsReplayOrchestrator.scala:25-100`):
 

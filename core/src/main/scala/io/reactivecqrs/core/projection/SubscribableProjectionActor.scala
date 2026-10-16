@@ -25,6 +25,10 @@ object SubscribableProjectionActor {
 
   case object ClearIdleSubscriptions
 
+  /** From a retired build to its successor (D57): the push subscriptions it held, which the successor keeps serving.
+    * Their filters move with them, so a filter must not use the old build's stores. */
+  case class SubscriptionsHandedOver(subscriptions: Seq[SubscriptionInfo])
+
   private case class SendUpdate(update: Any, typeName: String)
 }
 
@@ -43,7 +47,14 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
     case RenewSubscription(subscriptionId) => renewSubscription(subscriptionId)
     case ClearIdleSubscriptions => clearIdleSubscriptions()
     case SendUpdate(u, typeName) => deliverUpdate(u, typeName)
+    case SubscriptionsHandedOver(handed) => handed.foreach { subscription =>
+      subscriptions += subscription.subscriptionId -> subscription
+      subscriptionsPerType += subscription.typeName -> (subscription.subscriptionId :: subscriptionsPerType.getOrElse(subscription.typeName, Nil))
+    }
   }
+
+  override protected def onRetired(successor: Option[ActorRef]): Unit =
+    if (subscriptions.nonEmpty) successor.foreach(_ ! SubscriptionsHandedOver(subscriptions.values.toVector))
 
   override protected def receiveUpdate = super.receiveUpdate orElse receiveSubscription
 

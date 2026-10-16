@@ -166,6 +166,44 @@ class EventsBusActorSpec extends CommonSpec {
     }
   }
 
+  Feature("Subscribers added and removed after the start (D57)") {
+
+    Scenario("an added subscription takes the events published after it") {
+      val (a, b, owner) = (TestProbe(), TestProbe(), TestProbe())
+      val bus = busWith(a)
+      val id = newId()
+
+      bus ! AddSubscriptions(Seq(SubscribeForEvents(cartType, b.ref)))
+      publish(bus, owner, id, 1)
+
+      delivered(a) mustBe Seq(1)
+      delivered(b) mustBe Seq(1)
+      ack(bus, a, id, 1)
+      owner.expectNoMessage(200.millis) // it waits for the added subscription too
+      ack(bus, b, id, 1)
+      acked(owner) mustBe Seq(1)
+    }
+
+    Scenario("a removed subscriber no longer keeps deliveries waiting: the owner is acknowledged, and it gets nothing more") {
+      val (a, retired, owner) = (TestProbe(), TestProbe(), TestProbe())
+      val bus = busWith(a, retired)
+      val id = newId()
+      publish(bus, owner, id, 1)
+      delivered(a); delivered(retired)
+      ack(bus, a, id, 1)
+
+      val supervisor = TestProbe()
+      supervisor.send(bus, RemoveSubscriber(retired.ref))
+
+      supervisor.expectMsg(3.seconds, SubscriberRemoved(retired.ref))
+      acked(owner) mustBe Seq(1)
+      publish(bus, owner, id, 2)
+      delivered(a) mustBe Seq(2)
+      retired.expectNoMessage(300.millis)
+      statusOf(bus).stopped mustBe empty
+    }
+  }
+
   Feature("Re-publication while a delivery waits") {
 
     Scenario("sends the event again only to the subscribers that have not acknowledged it") {

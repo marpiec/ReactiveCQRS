@@ -43,6 +43,19 @@ case object GetProjectionStatus
 /** `retrying`: aggregates whose listener failed and is retried now; `waitingForGap`: aggregates waiting for missing
   * versions to be re-published. */
 case class ProjectionStatus(projectionName: String, failures: Seq[SubscriptionFailure], retrying: Seq[AggregateId], waitingForGap: Seq[AggregateId])
+// D57, D70: a managed projection runs one instance per build, under its supervisor.
+
+/** From the supervisor, before anything else: the name the instance's subscriptions are stored under (its build's). */
+case class BindSubscriber(subscriber: String)
+/** From the supervisor, which subscribed the instance to `bus` (D15): missing versions are asked from it, and the
+  * failures recorded before are retried, as at a start (D20a). */
+case class ConnectedTo(bus: ActorRef)
+/** The built instance serves from now on: `rebuilding` ends and `onActivated()` runs. */
+case object Activate
+/** The instance's build is retired (D57): its push subscriptions go to `successor`, its parked queries are answered with
+  * `None`, and it stops. */
+case class Retire(successor: Option[ActorRef])
+
 // D57, D58, D61: a projection being built is fed by a builder that reads the event store.
 
 /** The projection is being built from the store by `builder` (D57): until `GoLive`, deliveries from the bus are
@@ -154,7 +167,19 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
   private val className = this.getClass.getSimpleName
   /** The name its subscription versions and failures are stored under: the class name, unless a build gives another. */
-  protected def subscriberName: String = this.getClass.getName
+  protected def subscriberName: String = boundSubscriber.getOrElse(this.getClass.getName)
+  private var boundSubscriber: Option[String] = None
+
+  /** True while this instance is built from the store and does not serve yet (D57): a listener with side effects (a
+    * message to another actor, a push update, an email) does nothing then, as the events are history. */
+  protected final def rebuilding: Boolean = !activated
+  private var activated = true
+
+  /** Called when a built instance starts to serve; a projection that kept build-time state in memory finishes it here. */
+  protected def onActivated(): Unit = ()
+
+  /** Called when the instance's build is retired, before it stops. */
+  protected def onRetired(successor: Option[ActorRef]): Unit = ()
 
   protected val projectionName: String
   protected val subscriptionsState: SubscriptionsState
@@ -285,7 +310,24 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       receiveDelivery(Key(SubscriptionType.AGGREGATES_WITH_EVENTS, ae.id), ae.aggregateType,
         Pending(ae.events.map(_.version), ae.events.asInstanceOf[Seq[EventInfo[Any]]], ae.aggregateRoot, ae.replayed, sender(), ae.startsAtSquash))
     case chunk: ApplyChunk => applyChunk(chunk, sender())
-    case BuildFromStore(builder) => building = Some(builder)
+    case BindSubscriber(subscriber) => boundSubscriber = Some(subscriber)
+    case ConnectedTo(bus) =>
+      eventBus = Some(bus)
+      loadFailures()
+    case Activate =>
+      if (!activated) {
+        activated = true
+        onActivated()
+      }
+    case Retire(successor) =>
+      log.info("Projection " + projectionName + " (" + subscriberName + ") is retired")
+      onRetired(successor)
+      delayedQueries.foreach(_.respondTo ! None)
+      delayedQueries = Nil
+      context.stop(self)
+    case BuildFromStore(builder) =>
+      building = Some(builder)
+      activated = false
     case GoLive =>
       val wasBuilt = building.isDefined
       building = None

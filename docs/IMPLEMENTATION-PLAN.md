@@ -1373,3 +1373,21 @@ Open test-infrastructure items:
   the reconciliation alone; an unreadable row). Mutation checks: without the run split at a
   missing version, the reconciliation, or the undo in the replay states, a test fails.
 - `sbt test`: core 186, testdomain 103, all pass.
+
+**17/10/2026: builds, the registry and the projection supervisor (D57, D63 triggers, D70; F43, F54, F55, F56, F57, F58, F59, F60, F94)**
+- `Projections` and `ProjectionSupervisor` (`core/rebuild/`): a managed projection runs one instance
+  per build, its tables named by the build (`ProjectionBuild`), under a supervisor whose `ActorRef`
+  the host uses for queries; a new version, a changed context version (D63) or a request starts a
+  build, which the builder feeds while the active build serves (live by default); once caught up and
+  without failed subscriptions the registry switches in one update, push subscriptions move to the new
+  instance, the old one leaves the bus and its tables, subscriptions and failures are dropped. A
+  projection 0.12 built is adopted as build 0 (D81). At most two builds run at once.
+- `ProjectionRegistry` (PostgreSQL and in memory); the bus adds and removes subscriptions after its
+  start (`AddSubscriptions`, `RemoveSubscriber`); the projection takes `BindSubscriber`, `ConnectedTo`,
+  `Activate`, `Retire`, and offers `rebuilding` and `onActivated()`; the document store migrates its
+  table in one transaction (F43) and refuses names PostgreSQL would cut.
+- Tests: `ProjectionsSpec` (a new projection, a version bump served live meanwhile, resume, adoption,
+  push subscriptions across the switch, a context version bump, retirement), `ProjectionRegistrySpec`
+  (both registries), `EventsBusActorSpec`. Mutation checks: without the drop, the context check, the
+  routing to the active build, the adoption or the subscription handover, a test fails.
+- `sbt test`: core 200, testdomain 110, all pass.

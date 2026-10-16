@@ -27,12 +27,22 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
   protected val tableNameSQL = SQLSyntax.createUnsafely(projectionTableName)
 
+  // PostgreSQL cuts longer names silently, so two tables or indices could get one name, and an index id would be lost.
+  private val longestName = projectionTableName + "_idx_" + indicies.map(_.uniqueId).maxOption.getOrElse(0)
+  if (longestName.length > 63) {
+    throw new IllegalArgumentException("Table name " + tableName + " is too long: " + longestName + " has more than 63 characters")
+  }
+
   init()
 
   protected def init(): Unit = {
-    createTableIfNotExists()
-    addSpaceColumn()
-    dropMetadataColumn()
+    // F43: the table and its columns change in one transaction.
+    DB.localTx { implicit session =>
+      createTableIfNotExists()
+      addSpaceColumn()
+      dropMetadataColumn()
+    }
+    createSequenceIfNotExists()
 
     if(indicies.map(_.uniqueId).distinct.size < indicies.size) {
       throw new IllegalStateException("Indices for projection " + tableName+" are not unique")
@@ -58,7 +68,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     indexName.substring(indexName.lastIndexOf("_") + 1).toInt
   }
 
-  protected def createTableIfNotExists(): Unit = DB.autoCommit { implicit session =>
+  private def createTableIfNotExists()(implicit session: DBSession): Unit = {
     sql"""CREATE TABLE IF NOT EXISTS ${tableNameSQL} (
           |space_id BIGINT NOT NULL,
           |id BIGINT NOT NULL PRIMARY KEY,
@@ -67,15 +77,18 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
       .stripMargin.execute()
   }
 
-  protected def addSpaceColumn(): Unit = DB.autoCommit { implicit session =>
+  private def addSpaceColumn()(implicit session: DBSession): Unit = {
     sql"""ALTER TABLE ${tableNameSQL} ADD COLUMN IF NOT EXISTS space_id BIGINT NOT NULL DEFAULT -1"""
       .stripMargin.execute()
   }
 
-  protected def dropMetadataColumn(): Unit = DB.autoCommit { implicit session =>
+  private def dropMetadataColumn()(implicit session: DBSession): Unit = {
     sql"""ALTER TABLE ${tableNameSQL} DROP COLUMN IF EXISTS metadata"""
       .stripMargin.execute()
   }
+
+  /** The auto-id store's sequence. */
+  protected def createSequenceIfNotExists(): Unit = ()
 
 
   private def readExistingIndices(): Iterable[String] = {
@@ -586,8 +599,7 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
   protected final lazy val sequenceNameSQL = SQLSyntax.createUnsafely(sequenceName)
 
 
-  override protected def createTableIfNotExists(): Unit = {
-    super.createTableIfNotExists()
+  override protected def createSequenceIfNotExists(): Unit = {
     try {
       DB.autoCommit { implicit session =>
         sql"CREATE SEQUENCE IF NOT EXISTS ${sequenceNameSQL} START 1"
