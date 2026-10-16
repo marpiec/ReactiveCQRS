@@ -285,7 +285,7 @@ object Baseline {
     val note = "n" * config.noteSize
     val failUntil = new AtomicLong(0L)
     val failing = (id: AggregateId) => id.asLong % 10 == 0 && System.nanoTime() < failUntil.get
-    val system = new BenchSystem("deliverysoak", stores, projections = true, liveSubscriptions = true, failing = failing)
+    val system = new BenchSystem("deliverysoak", stores, projections = true, failing = failing)
     val counters = parallel(config.workers)(_ => (1 to config.soakAggregates / config.workers).map(_ => created(system)))
     val aggregates = counters.map(_.size).sum
     awaitUntil(5.minutes)(rows(system.progressTable) >= aggregates)
@@ -308,7 +308,7 @@ object Baseline {
     system.shutdown()
 
     val heapAfterRestarts = (1 to config.restartCycles).map { cycle =>
-      val again = new BenchSystem("deliverysoak", stores, projections = true, liveSubscriptions = true)
+      val again = new BenchSystem("deliverysoak", stores, projections = true)
       parallel(config.workers)(w => (1 to 10).foreach(_ => send(again.counters, Increment(userId, counters(w).head, note))))
       awaitUntil(60.seconds)(again.projectedIncrements() >= events + cycle * config.workers * 10L)
       again.shutdown()

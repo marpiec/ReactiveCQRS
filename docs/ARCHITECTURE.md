@@ -786,22 +786,20 @@ One projection can therefore keep three independent cursors per aggregate.
 **compare-and-set**: a mismatch throws `OptimisticLockingFailed` and rolls back the
 listener transaction. An unknown subscription is at version zero.
 
-**Two modes**, selected by `PostgresSubscriptionsState(typesNamesState, keepInMemory)` (`:120`):
+**One mode** (since M4, F3): the database is the source of truth. `newVersion` INSERTs when
+`last == 0`, otherwise `UPDATE … WHERE aggregate_version = last` with a rowcount check, in the
+listener's transaction, so the version and the listener's writes commit together; the cache
+advances only after the commit (`AfterCommit`, F18). The 0.12 in-memory mode and its `dump()`
+are gone (D61). One transaction may move a subscription several times (a batch of many
+aggregates in commit order, D61): each move is checked against the version the transaction
+gave it before (`AfterCommit.local`, values that live as long as the transaction), then the
+committed cache.
 
-| | `keepInMemory = false` | `keepInMemory = true` |
-|---|---|---|
-| Source of truth | DB. INSERT when `last == 0`, otherwise `UPDATE … WHERE aggregate_version = last` with a rowcount check (`:397-418`); cache advanced only after the transaction commits (`AfterCommit`, since 1.0) | in-memory map; DB written only by `dump()` (`:303-350`) |
-| Atomic with the listener's writes | yes (same `localTx`) | no |
-| Intended for | normal operation | bulk replay (the replayer calls `dump()` periodically, `EventsReplayerActor.scala:179-182, 198`) |
-| Risk | one DB round trip per update | progress lost on crash or restart unless the host calls `dump()` (F3); the test wiring uses `true` |
-
-**Caches and concurrency.** `perAggregate` (and `dumped` in memory mode) cache one map per
-touched aggregate. Cache misses load from the DB outside the main monitor, with 64 striped
-single-flight locks. In DB mode the cache is an LRU of at most `maxCachedAggregates`
-(10 000) aggregates (F29); the database stays the source of truth, and a failed
-compare-and-set in the database evicts the aggregate's entry, so the next attempt starts
-from the stored version (F77). In memory mode nothing is evicted except by `dump()`, which
-drops entries left unchanged during the write; `dump()` is meaningful only in memory mode.
+**Caches and concurrency.** `perAggregate` caches one map per touched aggregate. Cache misses
+load from the DB outside the main monitor, with 64 striped single-flight locks. The cache is
+an LRU of at most `maxCachedAggregates` (10 000) aggregates (F29); the database stays the
+source of truth, and a failed compare-and-set in the database evicts the aggregate's entry,
+so the next attempt starts from the stored version (F77).
 
 **Clearing.** `clearSubscriptionsInfo(subscriber)` deletes that subscriber's version rows and
 failures and removes its cached versions (F6). `MemorySubscriptionsState` is a test double

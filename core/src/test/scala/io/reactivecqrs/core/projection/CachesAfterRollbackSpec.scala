@@ -17,7 +17,7 @@ class CachesAfterRollbackSpec extends AnyFeatureSpec with GivenWhenThen with Mat
 
   private val mpjsons = new MPJsons
   private val typesNamesState = new PostgresTypesNamesState().initSchema()
-  private val subscriptionsState = new PostgresSubscriptionsState(typesNamesState, keepInMemory = false).initSchema()
+  private val subscriptionsState = new PostgresSubscriptionsState(typesNamesState).initSchema()
 
   private def newAggregateId() = AggregateId(System.nanoTime())
 
@@ -49,7 +49,7 @@ class CachesAfterRollbackSpec extends AnyFeatureSpec with GivenWhenThen with Mat
         subscriptionsState.newVersion("CachesAfterRollbackProjection", SubscriptionType.EVENTS, aggregateId, AggregateVersion.ZERO, AggregateVersion(3))
       }
       subscriptionsState.lastVersion("CachesAfterRollbackProjection", SubscriptionType.EVENTS, aggregateId) mustBe AggregateVersion(3)
-      new PostgresSubscriptionsState(typesNamesState, keepInMemory = false)
+      new PostgresSubscriptionsState(typesNamesState)
         .lastVersion("CachesAfterRollbackProjection", SubscriptionType.EVENTS, aggregateId) mustBe AggregateVersion(3)
     }
   }

@@ -1,6 +1,5 @@
 package io.reactivecqrs.core.projection
 
-import java.sql.BatchUpdateException
 import java.time.Instant
 
 import io.reactivecqrs.api.{AggregateType, AggregateVersion}
@@ -46,7 +45,8 @@ trait SubscriptionsState {
 
   /** Compare-and-set in the caller's transaction: moves the subscription from `lastAggregateVersion` to
     * `aggregateVersion`, or throws `OptimisticLockingFailed` when it is not at `lastAggregateVersion`, so the caller
-    * rolls back the listener's work. */
+    * rolls back the listener's work. One transaction may move a subscription several times (D61: a batch of many
+    * aggregates in commit order); each move starts where the one before it in the transaction ended. */
   def newVersion(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId,
                  lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit
 
@@ -63,8 +63,6 @@ trait SubscriptionsState {
   def readOnly[A](block: DBSession => A): A
   def localTx[A](block: DBSession => A): A
   def autoCommit[A](block: DBSession => A): A
-
-  def dump(): String
 }
 
 class MemorySubscriptionsState extends SubscriptionsState {
@@ -113,8 +111,6 @@ class MemorySubscriptionsState extends SubscriptionsState {
   override def localTx[A](block: DBSession => A): A = block(NoSession)
   override def autoCommit[A](block: DBSession => A): A = block(NoSession)
 
-  override def dump(): String = ""
-
 }
 
 
@@ -128,12 +124,12 @@ object SubscriptionCacheKey {
 }
 
 /**
-  * @param keepInMemory replay mode (until M4): versions live in memory and `dump()` writes them; otherwise every
-  *                     update is written in the listener's transaction and the database is the source of truth
-  * @param maxCachedAggregates live mode only: the versions of at most this many aggregates are cached, the least
-  *                            recently used are dropped and read from the database again when needed (F29)
+  * Every update is written in the listener's transaction; the database is the source of truth (F3: the in-memory mode
+  * of the 0.12 replayer is gone, D61).
+  * @param maxCachedAggregates the versions of at most this many aggregates are cached, the least recently used are
+  *                            dropped and read from the database again when needed (F29)
   */
-class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory: Boolean, eventsLogger: Option[Logger] = None,
+class PostgresSubscriptionsState(typesNamesState: TypesNamesState, eventsLogger: Option[Logger] = None,
                                  maxCachedAggregates: Int = 10000) extends SubscriptionsState {
 
   def initSchema(): PostgresSubscriptionsState = {
@@ -146,11 +142,10 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
   }
 
 
-  private var dumped = Map[AggregateId, mutable.HashMap[String, AggregateVersion]]() //which subscriptions info has already been dumped
   // String is subscriber | subscriptionType. Guarded by the instance monitor; access order, for the LRU bound.
   private val perAggregate = new java.util.LinkedHashMap[AggregateId, mutable.HashMap[String, AggregateVersion]](16, 0.75f, true) {
     override def removeEldestEntry(eldest: java.util.Map.Entry[AggregateId, mutable.HashMap[String, AggregateVersion]]): Boolean =
-      !keepInMemory && size() > maxCachedAggregates
+      size() > maxCachedAggregates
   }
 
   private[projection] def cachedAggregates: Int = synchronized(perAggregate.size())
@@ -191,7 +186,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
   }
 
   // D20a. A table of its own rather than columns of `subscriptions`: failures are rare, read whole at a projection's
-  // start, and stay apart from the version rows that the cache and dump() manage.
+  // start, and stay apart from the version rows that the cache manages.
   private def createFailuresTable() = DB.autoCommit { implicit session =>
     sql"""
          CREATE TABLE IF NOT EXISTS subscription_failures (
@@ -265,9 +260,6 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
                   case Some(existing) => existing
                   case None =>
                     perAggregate.put(aggregateId, loaded)
-                    if (keepInMemory) {
-                      dumped += aggregateId -> mutable.HashMap[String, AggregateVersion](loaded.toList: _*)
-                    }
                     loaded
                 }
               }
@@ -286,41 +278,32 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
     def mismatch(current: AggregateVersion): OptimisticLockingFailed =
       new OptimisticLockingFailed(getClass.getSimpleName+": Subscription state update failed last version mismatch for subscriber "+subscriberName+" and aggregate "+aggregateId.asLong+" expected version "+lastAggregateVersion.asInt+" but was "+current.asInt)
 
-    if (keepInMemory) {
-      // In-memory is the source of truth (flushed later by dump()): compare-and-advance atomically under the monitor.
+    // The database is the source of truth: validate against the cache early (cheap reject), then persist. The UPDATE
+    // re-checks the version, so it is the real arbiter. The cache advances only once the transaction commits, so a
+    // rolled-back write can never leave it ahead of the stored state (F18); until then a later move of the same
+    // subscription in the transaction starts from this one's version (D61).
+    val moved = AfterCommit.local(session, this)(mutable.HashMap[(AggregateId, String), AggregateVersion]())
+    synchronized {
+      val current = moved.flatMap(_.get((aggregateId, key))).getOrElse(versions.getOrElse(key, AggregateVersion.ZERO))
+      if (lastAggregateVersion != current) {
+        throw mismatch(current)
+      }
+    }
+    eventsLogger.filter(_.isDebugEnabled).foreach(_.debug("Updating subscription state for " + aggregateId.asLong+": " + lastAggregateVersion.asInt+" -> "+aggregateVersion.asInt+" for subscriber "+subscriberName))
+    try {
+      newEventIdInDB(aggregateId, subscriberName, subscriptionType, lastAggregateVersion, aggregateVersion, typesNamesState)
+    } catch {
+      case e: Exception =>
+        // The stored version is not the cached one (another writer, a repair): read it again next time (F77).
+        synchronized(perAggregate.remove(aggregateId))
+        throw e
+    }
+    moved.foreach(_ += (aggregateId, key) -> aggregateVersion)
+    // Into the aggregate's cached versions as they are now: if they were dropped meanwhile, the next read loads the
+    // committed version anyway.
+    AfterCommit(session) {
       synchronized {
-        val current = versions.getOrElse(key, AggregateVersion.ZERO)
-        if (lastAggregateVersion == current) {
-          versions += key -> aggregateVersion
-        } else {
-          throw mismatch(current)
-        }
-      }
-    } else {
-      // DB is the source of truth: validate against the cache early (cheap reject), then persist. The DB
-      // UPDATE re-checks the version, so it is the real arbiter. The in-memory cache advances only once the
-      // transaction commits, so a rolled-back write can never leave it ahead of the persisted state (F18).
-      synchronized {
-        val current = versions.getOrElse(key, AggregateVersion.ZERO)
-        if (lastAggregateVersion != current) {
-          throw mismatch(current)
-        }
-      }
-      eventsLogger.filter(_.isDebugEnabled).foreach(_.debug("Updating subscription state for " + aggregateId.asLong+": " + lastAggregateVersion.asInt+" -> "+aggregateVersion.asInt+" for subscriber "+subscriberName))
-      try {
-        newEventIdInDB(aggregateId, subscriberName, subscriptionType, lastAggregateVersion, aggregateVersion, typesNamesState)
-      } catch {
-        case e: Exception =>
-          // The stored version is not the cached one (another writer, a repair): read it again next time (F77).
-          synchronized(perAggregate.remove(aggregateId))
-          throw e
-      }
-      // Into the aggregate's cached versions as they are now: if they were dropped meanwhile, the next read loads the
-      // committed version anyway.
-      AfterCommit(session) {
-        synchronized {
-          Option(perAggregate.get(aggregateId)).foreach(_ += key -> aggregateVersion)
-        }
+        Option(perAggregate.get(aggregateId)).foreach(_ += key -> aggregateVersion)
       }
     }
   }
@@ -347,93 +330,15 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
       sql"""DELETE FROM subscriptions WHERE subscriber_type_id = $subscriberTypeId""".update()
       sql"""DELETE FROM subscription_failures WHERE subscriber_type_id = $subscriberTypeId""".update()
     }
-    // F6: the cached versions of this subscriber go too, also those dump() still has to write.
+    // F6: the cached versions of this subscriber go too.
     val ofSubscriber = s"$subscriberTypeId|"
     synchronized {
       perAggregate.values().asScala.foreach(_.filterInPlace((key, _) => !key.startsWith(ofSubscriber)))
-      dumped.values.foreach(_.filterInPlace((key, _) => !key.startsWith(ofSubscriber)))
     }
   }
 
   private val INSERT_INTO_SUBSCRIPTIONS = sql"""INSERT INTO subscriptions (id, subscriber_type_id, subscription_type, aggregate_id, aggregate_version) VALUES (nextval('subscriptions_seq'), ?, ?, ?, ?)"""
   private val UPDATE_SUBSCRIPTIONS = sql"""UPDATE subscriptions SET aggregate_version = ? WHERE subscriber_type_id = ? AND subscription_type = ? AND aggregate_id = ? AND aggregate_version = ?"""
-
-  // Serializes concurrent dump() calls (so two dumps can't compute and write the same INSERTs). This is a
-  // distinct monitor from `this`, so it does NOT block the read / CAS hot path while the DB write runs.
-  private val dumpLock = new AnyRef
-
-  override def dump(): String = dumpLock.synchronized {
-    val start = System.nanoTime() / 1_000_000
-
-    // Phase 1 (locked): compute the batch params and snapshot the exact versions we are about to persist,
-    // from a consistent view of the in-memory state. We do NOT clear the cache here, so concurrent reads /
-    // CAS updates keep hitting the live maps (no stale DB reload window) while the DB write runs unlocked.
-    val (toInsert, toUpdate, persistedVersions) = synchronized {
-      val ins: Seq[Seq[Any]] = perAggregate.asScala.flatMap(a => batchParams(a._1, a._2, dumpedOnly = false)).toSeq
-      val upd: Seq[Seq[Any]] = perAggregate.asScala.flatMap(a => batchParams(a._1, a._2, dumpedOnly = true)).toSeq
-      val snapshot: Map[AggregateId, Map[String, AggregateVersion]] =
-        perAggregate.asScala.map { case (aggId, versions) => aggId -> versions.toMap }.toMap
-      (ins, upd, snapshot)
-    }
-
-    // Phase 2 (unlocked): the actual DB round-trips. The instance monitor is free during this, so the
-    // subscription read/CAS hot path does not stall on the dump.
-    DB.autoCommit { implicit session =>
-      try {
-        INSERT_INTO_SUBSCRIPTIONS
-          .batch(toInsert: _*).apply()
-        UPDATE_SUBSCRIPTIONS
-          .batch(toUpdate: _*).apply()
-      } catch {
-        case e: BatchUpdateException => throw e.getNextException
-      }
-    }
-
-    // Phase 3 (locked): now that the snapshot is durably persisted, evict the entries that were untouched
-    // during the write (bounds memory; a later cache-miss reload then sees the committed state). Entries
-    // that were mutated mid-write are kept in the cache, with `dumped` advanced to the persisted versions
-    // so the next dump writes only the delta.
-    synchronized {
-      persistedVersions.foreach { case (aggId, persistedForAgg) =>
-        Option(perAggregate.get(aggId)).foreach { currentVersions =>
-          if (currentVersions.toMap == persistedForAgg) {
-            perAggregate.remove(aggId)
-            dumped -= aggId
-          } else {
-            val alreadyDumped = dumped.getOrElse(aggId, new mutable.HashMap[String, AggregateVersion])
-            persistedForAgg.foreach { case (k, v) => alreadyDumped += k -> v }
-            dumped += aggId -> alreadyDumped
-          }
-        }
-      }
-    }
-
-    "Subscriptions dump: inserted = "+toInsert.size+", updated = "+toUpdate.size+" in "+(System.nanoTime() / 1_000_000 - start)+" ms"
-  }
-
-  private def batchParams(aggregateId: AggregateId, aggregateVersions: mutable.HashMap[String, AggregateVersion], dumpedOnly: Boolean): Seq[Seq[Any]] = {
-    val dumpedInfo = dumped.getOrElse(aggregateId, new mutable.HashMap[String, AggregateVersion])
-    aggregateVersions.filter(entry => {
-      if(dumpedOnly) {
-        dumpedInfo.get(entry._1) match {
-          case Some(version) => version < entry._2
-          case None => false
-        }
-      } else {
-        !dumpedInfo.contains(entry._1)
-      }
-    }).map {
-      case (key, value) =>
-        val splitted = key.split("\\|")
-        val subscriberNameId = splitted(0).toShort
-        val subscriptionTypeId = splitted(1).toShort
-        if(dumpedOnly) {
-          Seq(value.asInt, subscriberNameId, subscriptionTypeId, aggregateId.asLong, dumpedInfo(key).asInt)
-        } else {
-          Seq(subscriberNameId, subscriptionTypeId, aggregateId.asLong, value.asInt)
-        }
-    } toSeq
-  }
 
 
   private val AGGREGATE_VERSIONS_QUERY = sql"""SELECT aggregate_version, subscriber_type_id, subscription_type FROM subscriptions WHERE aggregate_id = ?"""
@@ -468,7 +373,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
         try {
           subscriptionState += AGGREGATE_VERSIONS_QUERY.bind(aggregateId.asLong)
           .map(rs => {
-            "version: "+rs.short(1)+", subscriber: "+ rs.short(2)+", subscription: "+ rs.int(3)
+            "version: "+rs.int(1)+", subscriber: "+ rs.short(2)+", subscription: "+ rs.short(3)
           }).list().mkString("; ")
         } catch {
           case e: Exception => subscriptionState += " (error reading current state: "+e.getMessage+")"

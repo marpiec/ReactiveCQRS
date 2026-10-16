@@ -17,6 +17,8 @@ object AfterCommit {
 
   // Keyed by session identity: two transactions on the same pooled connection are equal as values.
   private val queued = new java.util.IdentityHashMap[DBSession, List[() => Unit]]()
+  // Values kept for one transaction while it runs (`local`), by session and then by key.
+  private val locals = new java.util.IdentityHashMap[DBSession, java.util.IdentityHashMap[AnyRef, Any]]()
 
   /** A local transaction whose `AfterCommit` actions run after it commits. */
   def localTx[A](block: DBSession => A): A = {
@@ -24,16 +26,32 @@ object AfterCommit {
     try {
       val result = DB.localTx { session =>
         transaction = session
-        queued.synchronized(queued.put(session, Nil))
+        queued.synchronized {
+          queued.put(session, Nil)
+          locals.put(session, new java.util.IdentityHashMap[AnyRef, Any]())
+        }
         block(session)
       }
       runQueued(transaction)
       result
     } finally {
       if (transaction != null) {
-        queued.synchronized(queued.remove(transaction))
+        queued.synchronized {
+          queued.remove(transaction)
+          locals.remove(transaction)
+        }
       }
     }
+  }
+
+  /** A value of `owner`'s that lives as long as the session's transaction (made by `create` on first use), for what the
+    * transaction changed but its caches show only after the commit; `None` when the session is not such a transaction. */
+  def local[T](session: DBSession, owner: AnyRef)(create: => T): Option[T] = queued.synchronized {
+    Option(locals.get(session)).map(values => Option(values.get(owner)).getOrElse {
+      val value = create
+      values.put(owner, value)
+      value
+    }.asInstanceOf[T])
   }
 
   /** Runs `action` after the session's transaction commits, or now if the session is not such a transaction. */

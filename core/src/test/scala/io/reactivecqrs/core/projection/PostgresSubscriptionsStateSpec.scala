@@ -11,7 +11,8 @@ import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.must.Matchers
 import scalikejdbc._
 
-// F29, F6, F77: in live mode the subscription versions are cached, but the database decides. D20a: failures.
+// F29, F6, F77: the subscription versions are cached, but the database decides. D20a: failures. D61: batches of many
+// aggregates.
 class PostgresSubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen with Matchers {
 
   TestDatabase.init()
@@ -21,14 +22,14 @@ class PostgresSubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen w
   private val failedType = AggregateType("io.reactivecqrs.core.projection.FailedAggregate")
 
   private def newState(maxCachedAggregates: Int = 10000) =
-    new PostgresSubscriptionsState(typesNamesState, keepInMemory = false, maxCachedAggregates = maxCachedAggregates).initSchema()
+    new PostgresSubscriptionsState(typesNamesState, maxCachedAggregates = maxCachedAggregates).initSchema()
 
   private def newAggregateId() = AggregateId(System.nanoTime())
 
   private def advance(state: PostgresSubscriptionsState, subscriber: String, id: AggregateId, from: Int, to: Int): Unit =
     state.localTx { implicit session => state.newVersion(subscriber, SubscriptionType.EVENTS, id, AggregateVersion(from), AggregateVersion(to)) }
 
-  Feature("The version cache in live mode") {
+  Feature("The version cache") {
 
     Scenario("keeps at most the configured number of aggregates (F29)") {
       val state = newState(maxCachedAggregates = 3)
@@ -73,6 +74,45 @@ class PostgresSubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen w
       state.lastVersion(projection, SubscriptionType.EVENTS, id) mustBe AggregateVersion(5)
       advance(state, projection, id, 5, 6)
       state.lastVersion(projection, SubscriptionType.EVENTS, id) mustBe AggregateVersion(6)
+    }
+  }
+
+  Feature("Several moves of one subscription in one transaction (D61)") {
+
+    def moves(state: PostgresSubscriptionsState, id: AggregateId, versions: (Int, Int)*)(implicit session: DBSession): Unit =
+      versions.foreach { case (from, to) => state.newVersion(projection, SubscriptionType.EVENTS, id, AggregateVersion(from), AggregateVersion(to)) }
+
+    Scenario("each move starts where the one before it ended, and the cache shows the last after the commit") {
+      val state = newState()
+      val id = newAggregateId()
+      state.lastVersion(projection, SubscriptionType.EVENTS, id) mustBe AggregateVersion.ZERO // cached at zero
+
+      state.localTx(implicit session => moves(state, id, 0 -> 1, 1 -> 3, 3 -> 4))
+
+      state.lastVersion(projection, SubscriptionType.EVENTS, id) mustBe AggregateVersion(4)
+      newState().lastVersion(projection, SubscriptionType.EVENTS, id) mustBe AggregateVersion(4)
+    }
+
+    Scenario("a move that does not start where the one before it ended fails") {
+      val state = newState()
+      val id = newAggregateId()
+      an[OptimisticLockingFailed] must be thrownBy state.localTx(implicit session => moves(state, id, 0 -> 2, 0 -> 1))
+      state.lastVersion(projection, SubscriptionType.EVENTS, id) mustBe AggregateVersion.ZERO
+    }
+
+    Scenario("a rolled-back transaction leaves the versions as they were, and the next one starts from them") {
+      val state = newState()
+      val id = newAggregateId()
+      advance(state, projection, id, 0, 2)
+
+      an[IllegalStateException] must be thrownBy state.localTx { implicit session =>
+        moves(state, id, 2 -> 3, 3 -> 5)
+        throw new IllegalStateException("the listener failed")
+      }
+
+      state.lastVersion(projection, SubscriptionType.EVENTS, id) mustBe AggregateVersion(2)
+      state.localTx(implicit session => moves(state, id, 2 -> 3, 3 -> 4))
+      state.lastVersion(projection, SubscriptionType.EVENTS, id) mustBe AggregateVersion(4)
     }
   }
 

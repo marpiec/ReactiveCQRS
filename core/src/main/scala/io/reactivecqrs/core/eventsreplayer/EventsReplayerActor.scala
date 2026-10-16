@@ -160,16 +160,10 @@ class EventsReplayerActor(eventStore: EventStoreState,
 
 
         allEventsSent += events.size
-        lastDumpEventsSent += events.size
         val now = System.nanoTime() / 1_000_000
         if(now - lastUpdate > 5000) {
           logMessage("Replayed " + allEventsSent + "/" + allAggregatesEvents + " events")
           lastUpdate = System.nanoTime() / 1_000_000
-        }
-
-        if(allEventsSent < 1000 && lastDumpEventsSent >= 100 || allEventsSent < 10000 && lastDumpEventsSent >= 1000 || lastDumpEventsSent >= 10000) {
-          logMessage(subscriptionsState.dump())
-          lastDumpEventsSent = 0
         }
 
       })
@@ -184,10 +178,6 @@ class EventsReplayerActor(eventStore: EventStoreState,
     Await.result(backPressureActor ? Stop, timeoutDuration) match {
       case Finished =>
         logMessage("Replayed "+allEventsSent+"/"+allAggregatesEvents+" events")
-        print("Dumping rest of subscriptions state...")
-        log.info("Dumping rest of subscriptions state...")
-        logMessage(subscriptionsState.dump())
-        logMessage("DONE")
         respondTo ! EventsReplayed(allEventsSent)
     }
   }

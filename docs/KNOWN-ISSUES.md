@@ -212,7 +212,7 @@ implementation plan.
 - **Invariants:** I3.
 
 #### F3 — In-memory subscription mode loses progress unless `dump()` is called
-- **Low**, likely (Neula uses it only in its rebuild process) · Fix in **M4** · `SubscriptionsState`
+- **Low**, likely (Neula uses it only in its rebuild process) · **Fixed in M4** (17/10/2026: the mode and `dump()` are removed; the database is the only source of truth, and one transaction may move a subscription several times, D61; `PostgresSubscriptionsStateSpec`, red under a mutation that drops the transaction's own versions) · `SubscriptionsState`
 - **Symptom:** a live node built with `keepInMemory = true` stalls projections after a restart.
 - **Root cause:** progress is written only by `dump()` (`SubscriptionsState.scala:246-255, 303-350`), called only by the replayer (`EventsReplayerActor.scala:179-182, 198`).
 - **Fix:** remove the mode (D61).

@@ -62,12 +62,11 @@ class BenchStores {
 /**
   * One running system, wired the way a host application wires it (see `ReactiveTestDomainSpec`): a command bus for
   * counters and, optionally, two projections, one events-based and one aggregate-based. `rebuild` wires a system
-  * whose projections start empty, for replaying stored events into new projection tables. `liveSubscriptions` keeps the
-  * subscription versions in the database, as live nodes do (the default in-memory mode is the one the M1 baseline used).
-  * `failing` makes the events-based projection fail for a counter; `context` sets the counters' command processing
-  * and snapshots.
+  * whose projections start empty, for replaying stored events into new projection tables. Subscription versions live
+  * in the database, as on live nodes (since M4 there is no other mode, F3). `failing` makes the events-based projection
+  * fail for a counter; `context` sets the counters' command processing and snapshots.
   */
-class BenchSystem(name: String, stores: BenchStores, projections: Boolean, rebuild: Boolean = false, liveSubscriptions: Boolean = false,
+class BenchSystem(name: String, stores: BenchStores, projections: Boolean, rebuild: Boolean = false,
                   failing: io.reactivecqrs.api.id.AggregateId => Boolean = _ => false, context: CounterContext = new CounterContext) {
 
   val system: ActorSystem = ActorSystem(name)
@@ -77,7 +76,7 @@ class BenchSystem(name: String, stores: BenchStores, projections: Boolean, rebui
   // PostgreSQL in every system: the projections write to PostgreSQL document stores inside its transactions. A rebuild
   // starts empty because its projections have names of their own.
   val subscriptionsState: SubscriptionsState = {
-    val state = new PostgresSubscriptionsState(stores.typesNamesState, keepInMemory = !liveSubscriptions)
+    val state = new PostgresSubscriptionsState(stores.typesNamesState)
     state.initSchema()
     state
   }

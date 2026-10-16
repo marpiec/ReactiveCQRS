@@ -74,7 +74,7 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
 
 
     val typesNamesState = new PostgresTypesNamesState().initSchema() // run alone, no other spec created the table
-    val subscriptionsState = new PostgresSubscriptionsState(typesNamesState, true)
+    val subscriptionsState = new PostgresSubscriptionsState(typesNamesState)
     subscriptionsState.initSchema()
 
     val simpleProjectionActor = TestActorRef(Props(new SimpleProjection(subscriptionsState)))
@@ -85,6 +85,9 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
 
     val secondSimpleListenerProbe = TestProbe()
     val secondSimpleListener = actorSystem.actorOf(Props(new SimpleListener(secondSimpleListenerProbe)))
+
+    // Subscription versions are stored, so each scenario updates an aggregate of its own.
+    val aggregateId = AggregateId(System.nanoTime())
   }
 
   val stringType = AggregateType.of[String]
@@ -110,7 +113,7 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
 
       When("projection is updated")
 
-      f.simpleProjectionActor ! IdentifiableEvents(stringType, AggregateId(0), Seq(EventInfo(AggregateVersion(1), StringEvent("some string"), UserId(1), Instant.now)), replayed = false)
+      f.simpleProjectionActor ! IdentifiableEvents(stringType, f.aggregateId, Seq(EventInfo(AggregateVersion(1), StringEvent("some string"), UserId(1), Instant.now)), replayed = false)
 
       Then("listener receives update")
 
@@ -132,7 +135,7 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
 
       When("projection is updated")
 
-      f.simpleProjectionActor ! IdentifiableEvents(stringType, AggregateId(0), Seq(EventInfo(AggregateVersion(1), StringEvent("another string"), UserId(1), Instant.now)), replayed = false)
+      f.simpleProjectionActor ! IdentifiableEvents(stringType, f.aggregateId, Seq(EventInfo(AggregateVersion(1), StringEvent("another string"), UserId(1), Instant.now)), replayed = false)
 
       Then("listener receives nothing")
 
@@ -154,7 +157,7 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
 
       When("projection is updated")
 
-      f.simpleProjectionActor ! IdentifiableEvents(stringType, AggregateId(0), Seq(EventInfo(AggregateVersion(1), StringEvent("some string"), UserId(1), Instant.now)), replayed = false)
+      f.simpleProjectionActor ! IdentifiableEvents(stringType, f.aggregateId, Seq(EventInfo(AggregateVersion(1), StringEvent("some string"), UserId(1), Instant.now)), replayed = false)
 
       Then("only listener one receives update")
 
@@ -171,7 +174,7 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
 
       When("projection is updated")
 
-      f.simpleProjectionActor ! IdentifiableEvents(stringType, AggregateId(0), Seq(EventInfo(AggregateVersion(2), StringEvent("another string"), UserId(1), Instant.now)), replayed = false)
+      f.simpleProjectionActor ! IdentifiableEvents(stringType, f.aggregateId, Seq(EventInfo(AggregateVersion(2), StringEvent("another string"), UserId(1), Instant.now)), replayed = false)
 
       Then("both listeners receive update")
 
@@ -207,7 +210,7 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
 
       When("projection is updated")
 
-      f.simpleProjectionActor ! IdentifiableEvents(stringType, AggregateId(0), Seq(EventInfo(AggregateVersion(1), StringEvent("another string"), UserId(1), Instant.now)), replayed = false)
+      f.simpleProjectionActor ! IdentifiableEvents(stringType, f.aggregateId, Seq(EventInfo(AggregateVersion(1), StringEvent("another string"), UserId(1), Instant.now)), replayed = false)
 
       Then("only listener two receives update")
 

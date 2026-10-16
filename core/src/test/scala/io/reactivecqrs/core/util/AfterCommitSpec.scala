@@ -41,4 +41,31 @@ class AfterCommitSpec extends AnyFeatureSpec with Matchers {
       ran mustBe 3
     }
   }
+
+  Feature("Values kept for one transaction (local)") {
+
+    Scenario("are made once per transaction and owner, and start afresh in the next transaction") {
+      val owner, other = new Object
+      var made = 0
+      def counter(session: scalikejdbc.DBSession) = AfterCommit.local(session, owner) { made += 1; new java.util.concurrent.atomic.AtomicInteger }
+
+      AfterCommit.localTx { session =>
+        counter(session).get.incrementAndGet()
+        counter(session).get.incrementAndGet() mustBe 2
+        AfterCommit.local(session, other)("another owner's") mustBe Some("another owner's")
+      }
+      AfterCommit.localTx(session => counter(session).get.get() mustBe 0)
+      an[IllegalStateException] must be thrownBy AfterCommit.localTx { session =>
+        counter(session).get.incrementAndGet()
+        throw new IllegalStateException("rollback")
+      }
+      AfterCommit.localTx(session => counter(session).get.get() mustBe 0)
+      made mustBe 4
+    }
+
+    Scenario("do not exist outside such a transaction") {
+      AfterCommit.local(NoSession, this)("value") mustBe None
+      DB.autoCommit(session => AfterCommit.local(session, this)("value") mustBe None)
+    }
+  }
 }

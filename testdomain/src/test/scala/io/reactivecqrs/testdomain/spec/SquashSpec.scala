@@ -80,7 +80,7 @@ class SquashSpec extends CommonSpec {
   private val typesNamesState = new PostgresTypesNamesState().initSchema()
   private val eventStore = new PostgresEventStoreState(mpjsons, typesNamesState).initSchema()
   private val responses = new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema()
-  new PostgresSubscriptionsState(typesNamesState, keepInMemory = false).initSchema() // the subscription_failures table
+  new PostgresSubscriptionsState(typesNamesState).initSchema() // the subscription_failures table
   private val uidGenerator = system.actorOf(Props(new UidGeneratorActor(
     new PostgresUidGenerator("aggregates_uids_seq"), new PostgresUidGenerator("commands_uids_seq"), new PostgresUidGenerator("sagas_uids_seq"))))
   private val eventBus = system.actorOf(Props(new EventsBusActor()))

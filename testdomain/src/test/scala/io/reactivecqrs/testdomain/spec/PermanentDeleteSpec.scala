@@ -72,7 +72,7 @@ class PermanentDeleteSpec extends CommonSpec {
   private val mpjsons = new MPJsons
   private val typesNamesState = new PostgresTypesNamesState().initSchema()
   private val eventStore = new PostgresEventStoreState(mpjsons, typesNamesState).initSchema()
-  private val subscriptions = new PostgresSubscriptionsState(typesNamesState, keepInMemory = false).initSchema()
+  private val subscriptions = new PostgresSubscriptionsState(typesNamesState).initSchema()
   private val uidGenerator = system.actorOf(Props(new UidGeneratorActor(
     new PostgresUidGenerator("aggregates_uids_seq"), new PostgresUidGenerator("commands_uids_seq"), new PostgresUidGenerator("sagas_uids_seq"))))
 
