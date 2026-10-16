@@ -5,7 +5,7 @@ import java.time.temporal.ChronoUnit
 import org.apache.pekko.actor.{Actor, ActorRef}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.api._
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRootCurrentVersion, IdempotentCommandInfo, OverrideAndPersistEvents, PersistEvents}
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRootCurrentVersion, GetAggregateRootWithEventsCurrentVersion, IdempotentCommandInfo, OverrideAndPersistEvents, PersistEvents}
 import io.reactivecqrs.core.commandhandler.CommandExecutorActor.{AggregateModified, CommandTimedOut, IdempotencyKeyTaken}
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor.{InternalCommandEnvelope, InternalConcurrentCommandEnvelope, InternalFirstCommandEnvelope, InternalFollowingCommandEnvelope, InternalRewriteHistoryCommandEnvelope, InternalRewriteHistoryConcurrentCommandEnvelope}
 import io.reactivecqrs.core.util.MyActorLogging
@@ -259,14 +259,23 @@ class CommandExecutorActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Aggrega
   private def onConflict(error: AggregateConcurrentModificationError): Unit = {
     idempotency.storedResponse(commandEnvelope.command) match {
       case Some(stored) => finish(stored)
-      case None => commandEnvelope match {
-        case _: InternalConcurrentCommandEnvelope[_, _] | _: InternalRewriteHistoryConcurrentCommandEnvelope[_, _] if concurrentAttempt < MaxConcurrentAttempts =>
+      case None => retryRequest match {
+        case Some(request) if concurrentAttempt < MaxConcurrentAttempts =>
           concurrentAttempt += 1
           context.become(whileWaiting(receiveAggregate))
-          context.system.scheduler.scheduleOnce(retryDelay(concurrentAttempt), repositoryActor, GetAggregateRootCurrentVersion(self))
+          context.system.scheduler.scheduleOnce(retryDelay(concurrentAttempt), repositoryActor, request)
         case _ => finish(error)
       }
     }
+  }
+
+  /** What a concurrent command asks the repository for when it is re-run; other commands are not re-run. */
+  private def retryRequest: Option[Any] = commandEnvelope match {
+    case _: InternalConcurrentCommandEnvelope[_, _] => Some(GetAggregateRootCurrentVersion(self))
+    // A rewrite needs the events it rewrites again, not only the state (F73).
+    case InternalRewriteHistoryConcurrentCommandEnvelope(_, _, command) =>
+      Some(GetAggregateRootWithEventsCurrentVersion(self, command.eventsTypes.map(_.getName)))
+    case _ => None
   }
 
   private def handleCommandHandlingExceptionAndStop(exception: Throwable): Unit = {

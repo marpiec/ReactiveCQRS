@@ -382,6 +382,30 @@ implementation plan.
 - **Test:** `CommandOutcomesSpec` "A message the command bus does not understand" (no reply, and the in-flight command's executor was stopped, before the fix).
 - **Fix:** the bus logs a warning and answers `Status.Failure(IllegalArgumentException)`.
 
+#### F73 — A concurrent history rewrite re-run after a conflict rewrites nothing
+- **Medium**, confirmed · **Fixed in M1** (16/10/2026) · `CommandExecutorActor.onConflict`; present since 0.12
+- **Symptom:** a `RewriteHistoryConcurrentCommand` (Neula's anonymization path) that meets a version conflict is re-run with no events: the retry stores its new event but rewrites none of the history, and the caller gets success.
+- **Root cause:** the retry asked the repository for the current state only (`GetAggregateRootCurrentVersion`), while the first attempt asks for the state with the events to rewrite.
+- **Found:** documentation audit at the M1 review (§7, review 3).
+- **Test:** `ConcurrentModificationSpec` "re-run after a conflict, it still rewrites the history" (the creation event kept its old name before the fix).
+- **Fix:** a retry asks for the same data as the first attempt.
+
+#### F74 — Each events query for an earlier version leaves an actor behind
+- **Medium**, confirmed · **Fixed in M1** (16/10/2026) · `AggregateRepositoryActor.receiveReturnEvents`; present since 0.12
+- **Symptom:** every `GetEventsForAggregateForVersion` starts a temporary repository actor that never stops and is never reaped: memory grows with every call.
+- **Root cause:** the other single-read answers stop the actor; this one did not.
+- **Found:** documentation audit and plan review at the M1 review.
+- **Test:** `CommandOutcomesSpec` "Queries for an earlier version leave no temporary actor behind" (three actors were left before the fix).
+- **Fix:** one `stopIfSingleRead()` after every single-read answer.
+
+#### F75 — A failing id generator restarts the command bus or the saga actor
+- **Medium**, confirmed · **Fixed in M1** (16/10/2026) · `AggregateCommandBusActor` routing, `SagaActor`
+- **Symptom:** when the uid generator fails, the command that needed an id gets no reply, and the bus restarts, which stops its children and every command in flight for that aggregate type. The saga actor restarts too and, because a restart ran `preStart` again, loaded its pending sagas a second time while the running ones went on: steps ran twice.
+- **Root cause:** the blocking id wait (F23) throws inside `receive`; since F40 it does so at once instead of after 60 s. No supervision policy (AR7), and `SagaActor` did not override `postRestart`.
+- **Found:** documentation audit and plan review at the M1 review.
+- **Test:** `CommandOutcomesSpec` "A command bus whose id generator fails" (no reply, in-flight command lost, before the fix; also `ReserveAggregateId`), `SagaRecoverySpec` "A saga order when no saga id can be had" (no reply and a second load before the fix).
+- **Fix:** the bus answers a command it cannot route with `CommandHandlingError` (and `ReserveAggregateId` with `Status.Failure`); the saga actor refuses the order with `SagaFailureResponse`; `SagaActor.postRestart` no longer reloads (not separately tested: no remaining path makes it throw). Other throws inside the bus's `receive` (the outbox scan query) remain for AR7.
+
 #### F72 — Every reload starts another re-send timer chain
 - **Low**, likely · Fix in **M2** (removed with the in-memory re-send, D8) · `AggregateRepositoryActor.assureRestoredState`, `resendEventsToPublish`
 - **Symptom:** while a subscriber does not ack, an aggregate that was reloaded N times re-sends its waiting events N times every 180 s. Subscribers drop the duplicates by version (I4), so the cost is load and log noise.
@@ -447,7 +471,7 @@ implementation plan.
 #### F23 — Id pools of 100 and a blocking wait on refill
 - **Medium**, likely · Fix in **M3** · `UidGeneratorSchemaInitializer.scala:18-28`, `AggregateCommandBusActor.scala:315-348`, `SagaActor.scala:136-152`
 - **Fix:** pools of 10 000 (`ALTER SEQUENCE … INCREMENT BY`), asynchronous prefetch at a low-water mark (D34).
-- **Note (16/10/2026):** since F40 a failing id store fails the `Await` at once instead of after 60 s; the exception still escapes the command bus's `receive`, so the bus restarts and stops its children, and the commands they were running get no reply (the caller's own ask timeout ends them). The asynchronous prefetch removes that path.
+- **Note (16/10/2026):** since F40 a failing id store fails the `Await` at once instead of after 60 s; F75 makes the bus and the saga actor answer that failure instead of restarting. The `Await` itself (the bus blocks while a pool is fetched) goes with the asynchronous prefetch.
 
 #### F27 — Blocking JDBC runs on the default dispatcher
 - **Medium**, likely · Fix in **M3** · persist, restore, projections, futures
@@ -650,7 +674,7 @@ From §7 of Neula's change requests.
 
 | Milestone | Issues |
 |---|---|
-| M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
+| M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔, F73 ✔, F74 ✔, F75 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
 | M2 | AR6; F72; F1, F2, F4, F5, F6, F11, F15, F26, F28, F29, F37, F41, F42, F45, F47; Neula H2 |
 | M3 | AR1, AR4, AR7; F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33, F38, F39, F43, F44, F65 |
 | M4 | F3, F54, F55, F56, F57, F58, F59, F60, F61, F62; Neula H1, H6 |

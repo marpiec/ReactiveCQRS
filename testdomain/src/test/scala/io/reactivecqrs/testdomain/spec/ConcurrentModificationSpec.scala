@@ -16,7 +16,7 @@ import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
-import scalikejdbc.{DB, DBSession}
+import scalikejdbc._
 
 import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
@@ -26,10 +26,12 @@ import scala.util.Try
 class InterferingEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNamesState) extends PostgresEventStoreState(mpjsons, typesNamesState) {
 
   @volatile var interfereWith: Option[AggregateId] = None
+  /** How many more persists of `interfereWith` meet a write from elsewhere. */
+  val interferencesLeft = new java.util.concurrent.atomic.AtomicInteger(Int.MaxValue)
 
   override def persistEvents[AGGREGATE_ROOT](eventsVersionsMapReverse: Map[String, EventTypeVersion], aggregateId: AggregateId,
                                              eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = {
-    if (interfereWith.contains(aggregateId)) {
+    if (interfereWith.contains(aggregateId) && interferencesLeft.getAndDecrement() > 0) {
       writeFromElsewhere(aggregateId, eventsEnvelope.expectedVersion, ItemAdded("from elsewhere"))
     }
     super.persistEvents(eventsVersionsMapReverse, aggregateId, eventsEnvelope)
@@ -45,7 +47,7 @@ class InterferingEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesName
 }
 
 // F19, F24, F69: an aggregate written by someone else must reload instead of failing, conflicts must end in bounded time,
-// and a reload must never make the actor apply events twice.
+// a reload must never make the actor apply events twice, and a retried rewrite must rewrite (F73).
 class ConcurrentModificationSpec extends CommonSpec {
 
   TestDatabase.init()
@@ -136,6 +138,31 @@ class ConcurrentModificationSpec extends CommonSpec {
       And("a command expecting version 2 succeeds")
       val next: CustomCommandResponse[_] = commandBus ?? AddItem(userId, cartId, AggregateVersion(2), "after the race")
       next mustBe SuccessResponse(cartId, AggregateVersion(3))
+    }
+  }
+
+  Feature("A history rewrite on the current version") {
+
+    Scenario("re-run after a conflict, it still rewrites the history (F73)") {
+      Given("a cart that another writer changes right before the first attempt to persist")
+      val cartId = loadedCart()
+      eventStore.interferencesLeft.set(1)
+      eventStore.interfereWith = Some(cartId)
+
+      try {
+        When("its name is rewritten throughout its history")
+        val response: CustomCommandResponse[_] = commandBus ?? RewriteCartNameConcurrently(userId, cartId, "Renamed")
+
+        Then("the retry rewrote the creation event too")
+        response mustBe SuccessResponse(cartId, AggregateVersion(3))
+        val created = DB.readOnly { implicit session =>
+          sql"SELECT event FROM events WHERE aggregate_id = ${cartId.asLong} AND version = 1".map(_.string(1)).single().get
+        }
+        created must include("Renamed")
+      } finally {
+        eventStore.interfereWith = None
+        eventStore.interferencesLeft.set(Int.MaxValue)
+      }
     }
   }
 }

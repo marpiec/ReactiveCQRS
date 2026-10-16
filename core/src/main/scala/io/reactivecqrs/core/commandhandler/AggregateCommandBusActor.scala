@@ -12,14 +12,14 @@ import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{EnsureEvent
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor._
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
-import io.reactivecqrs.core.util.MyActorLogging
+import io.reactivecqrs.core.util.{MyActorLogging, RandomUtil}
 import org.slf4j.Logger
 
 import scala.collection.mutable
 import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
 import scala.reflect.ClassTag
-import scala.util.{Failure, Random, Success}
+import scala.util.{Failure, Random, Success, Try}
 import scala.reflect.runtime.universe._
 
 object AggregateCommandBusActor {
@@ -134,11 +134,11 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   }
 
   override def receive: Receive = logReceive {
-    case fce: FirstCommand[_,_] => routeFirstCommand(fce.asInstanceOf[FirstCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]])
-    case cce: ConcurrentCommand[_,_] => routeConcurrentCommand(cce.asInstanceOf[ConcurrentCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]])
-    case cce: RewriteHistoryCommand[_,_] => routeRewriteHistoryCommand(cce.asInstanceOf[RewriteHistoryCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]])
-    case cce: RewriteHistoryConcurrentCommand[_,_] => routeRewriteHistoryConcurrentCommand(cce.asInstanceOf[RewriteHistoryConcurrentCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]])
-    case ce: Command[_,_] => routeCommand(ce.asInstanceOf[Command[AGGREGATE_ROOT, CustomCommandResponse[_]]])
+    case fce: FirstCommand[_,_] => answeringFailures(fce)(routeFirstCommand(fce.asInstanceOf[FirstCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]]))
+    case cce: ConcurrentCommand[_,_] => answeringFailures(cce)(routeConcurrentCommand(cce.asInstanceOf[ConcurrentCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]]))
+    case cce: RewriteHistoryCommand[_,_] => answeringFailures(cce)(routeRewriteHistoryCommand(cce.asInstanceOf[RewriteHistoryCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]]))
+    case cce: RewriteHistoryConcurrentCommand[_,_] => answeringFailures(cce)(routeRewriteHistoryConcurrentCommand(cce.asInstanceOf[RewriteHistoryConcurrentCommand[AGGREGATE_ROOT, CustomCommandResponse[_]]]))
+    case ce: Command[_,_] => answeringFailures(ce)(routeCommand(ce.asInstanceOf[Command[AGGREGATE_ROOT, CustomCommandResponse[_]]]))
     case GetAggregate(id) => routeGetAggregateRoot(id)
     case GetAggregateMinVersion(id, version, maxMillis) => routeGetAggregateRootMinVersion(id, version, maxMillis)
     case GetAggregateForVersion(id, version) => routeGetAggregateRootForVersion(id, version)
@@ -146,7 +146,12 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     case GetEventsForAggregate(id) => routeGetEvents(id)
     case GetEventsForAggregateForVersion(id, version) => routeGetEventsForVersion(id, version)
     case EnsureEventsPublished(oldOnly) => ensureEventsPublished(oldOnly)
-    case ReserveAggregateId => sender() ! takeNextAggregateId
+    case ReserveAggregateId =>
+      val respondTo = sender()
+      Try(takeNextAggregateId) match {
+        case Success(id) => respondTo ! id
+        case Failure(e) => respondTo ! Status.Failure(e)
+      }
     case RemoveExpiredResponses => removeExpiredResponses()
     case Terminated(ref) => forgetRepositoryActor(ref)
     case m =>
@@ -154,6 +159,18 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
       // command in flight for this aggregate type (F70).
       log.warning("Cannot handle this kind of message: " + m.getClass.getName)
       sender() ! Status.Failure(new IllegalArgumentException("Cannot handle this kind of message: " + m + " class: " + m.getClass+". Maybe it should extend Command trait."))
+  }
+
+  // A failure while routing one command, such as the uid generator failing, is answered, not thrown: a throw would
+  // restart the bus, which stops its children and every command in flight (F75, AR7).
+  private def answeringFailures(command: Any)(route: => Unit): Unit = {
+    val respondTo = sender()
+    try route catch {
+      case e: Exception =>
+        val errorId = RandomUtil.generateRandomString(16)
+        log.error(e, "Cannot route command " + command.getClass.getSimpleName + ", errorId: [" + errorId + "]")
+        respondTo ! CommandHandlingError(command.getClass.getSimpleName, errorId, CommandId(0)) // no command id was assigned
+    }
   }
 
   private def ensureEventsPublished(oldOnly: Boolean): Unit = {

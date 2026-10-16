@@ -92,16 +92,32 @@ abstract class SagaActor extends Actor with MyActorLogging {
     self ! LoadPendingSagas
   }
 
+  // After a restart the running sagas still send their results to this actor; loading the stored ones again would
+  // start them a second time (F75).
+  override def postRestart(reason: Throwable): Unit = {
+    log.warning("Saga actor " + name + " restarted after: " + reason.getMessage)
+  }
+
   override def receive: Receive = {
     case LoadPendingSagas => loadPendingSagas(1)
     case LoadPendingSagasAttempt(attempt) => loadPendingSagas(attempt)
-    case m: SagaOrder => write(CreateSaga(RunningSaga(takeNextSagaId, sender().path.toString, m, CONTINUES, 0)))
+    case m: SagaOrder => startSaga(m, sender())
     case m: SagaPersisted => runStep(RunningSaga(m.sagaId, m.respondTo, m.order, m.phase, m.step))
     case StepCompleted(saga, result) => handleStepResult(saga, result)
     case RevertStepCompleted(saga, result) => handleRevertStepResult(saga, result)
     case WriteCompleted(pending, attempt, result) => handleWriteResult(pending, attempt, result)
     case RetryWrite(pending, attempt) => write(pending, attempt)
     case m => log.warning("Received incorrect message of type: [" + m.getClass.getName +"] "+m)
+  }
+
+  // Without a saga id the order is refused, not thrown: a throw would restart this actor (F75).
+  private def startSaga(order: SagaOrder, respondTo: ActorRef): Unit = {
+    Try(takeNextSagaId) match {
+      case Success(sagaId) => write(CreateSaga(RunningSaga(sagaId, respondTo.path.toString, order, CONTINUES, 0)))
+      case Failure(e) =>
+        log.error(e, "No saga id for an order of saga " + name + ", the order is refused")
+        respondTo ! SagaFailureResponse(List("No saga id: " + e.getMessage))
+    }
   }
 
   private def runStep(saga: RunningSaga): Unit = saga.phase match {

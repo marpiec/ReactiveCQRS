@@ -50,15 +50,12 @@ object CommandsHandlers {
     CommandSuccess(ShoppingCartChangesUndone(command.stepsToUndo))
   }
 
-  def rewriteCartName(command: RewriteCartName, events: Iterable[EventWithVersion[ShoppingCart]], shoppingCart: ShoppingCart) = {
+  def rewriteCartName(name: String, events: Iterable[EventWithVersion[ShoppingCart]]) = {
     val rewritten: Iterable[EventWithVersion[ShoppingCart]] = events.map(ev => ev.event match {
-      case e: ShoppingCartCreated =>
-        println(e)
-        EventWithVersion(ev.version, e.copy(name = command.name))
-      case e => println(e)
-        ev
+      case e: ShoppingCartCreated => EventWithVersion(ev.version, e.copy(name = name))
+      case _ => ev
     })
-    RewriteCommandSuccess(rewritten.toSeq, CartNameRewritten(command.name))
+    RewriteCommandSuccess(rewritten.toSeq, CartNameRewritten(name))
   }
 
 }

@@ -7,7 +7,7 @@ import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCo
 import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubscriptionsManagerApi, EventsBusActor, MemoryEventBusState}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
-import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
+import io.reactivecqrs.core.uid.{IdsPool, PostgresUidGenerator, UidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
 import org.apache.pekko.actor.{ActorIdentity, ActorRef, Identify, Props}
@@ -17,6 +17,7 @@ import org.apache.pekko.util.Timeout
 
 import scala.concurrent.{Await, Promise}
 import scala.concurrent.duration._
+import scala.util.Try
 
 case class Sluggish()
 
@@ -35,7 +36,7 @@ class SluggishAggregateContext extends AggregateContext[Sluggish] {
   }
 }
 
-// F13, F20, F67, F70: every command execution ends with a reply to the caller, and its executor stops.
+// F13, F20, F67, F70, F74, F75: every command execution ends with a reply to the caller, and its executor stops.
 class CommandOutcomesSpec extends CommonSpec {
 
   TestDatabase.init()
@@ -55,12 +56,19 @@ class CommandOutcomesSpec extends CommonSpec {
   private val sluggishBus: ActorRef = system.actorOf(AggregateCommandBusActor(new SluggishAggregateContext, uidGenerator, eventStore,
     commandResponseState, eventBus, eventsReplayMode = false), "CommandOutcomesSluggishBus")
 
+  // Its aggregate and command ids run out after one command, and the generators then fail.
+  private val idlessBus: ActorRef = system.actorOf(AggregateCommandBusActor(new SluggishAggregateContext,
+    system.actorOf(Props(new UidGeneratorActor(new OnePoolUidGenerator(1), new OnePoolUidGenerator(1), new PostgresUidGenerator("sagas_uids_seq")))),
+    eventStore, commandResponseState, eventBus, eventsReplayMode = false), "CommandOutcomesIdlessBus")
+
   private val userId = UserId(1)
 
   /** Live command executors: children of the command handlers under a command bus. */
-  private def liveExecutors(busName: String): Int = {
+  private def liveExecutors(busName: String): Int = liveActors(s"/user/$busName/*/*")
+
+  private def liveActors(path: String): Int = {
     val probe = TestProbe()
-    system.actorSelection(s"/user/$busName/*/*").tell(Identify(busName), probe.ref)
+    system.actorSelection(path).tell(Identify(path), probe.ref)
     probe.receiveWhile(500.millis) { case ActorIdentity(_, Some(ref)) => ref }.size
   }
 
@@ -108,4 +116,46 @@ class CommandOutcomesSpec extends CommonSpec {
       Await.result(inFlight, 10.seconds) mustBe a[CommandHandlingError]
     }
   }
+
+  Feature("Queries for an earlier version") {
+    Scenario("leave no temporary actor behind (F74)") {
+      val created: SuccessResponse = cartBus ?? CreateShoppingCart(None, userId, "Cart with history")
+
+      (1 to 3).foreach { _ =>
+        val events: Try[List[EventInfo[ShoppingCart]]] = cartBus ?? GetEventsForAggregateForVersion(created.aggregateId, AggregateVersion(1))
+        events.get.size mustBe 1
+      }
+      val aggregate: Try[Aggregate[ShoppingCart]] = cartBus ?? GetAggregateForVersion(created.aggregateId, AggregateVersion(1))
+      aggregate.get.version mustBe AggregateVersion(1)
+
+      awaitAssert(liveActors("/user/CommandOutcomesCartBus/*_ARV_*") mustBe 0, 3.seconds, 100.millis)
+    }
+  }
+
+  Feature("A command bus whose id generator fails") {
+    Scenario("answers the command with an error, and commands in flight are not affected (F75)") {
+      implicit val timeout: Timeout = Timeout(5.seconds)
+      Given("a command in flight, which took the last command id of the pool")
+      val inFlight = idlessBus ? StartSluggish(userId)
+
+      When("the next command needs a new pool and the generator fails")
+      val next: CustomCommandResponse[_] = idlessBus ?? StartSluggish(userId)
+
+      Then("it gets an error at once")
+      next mustBe a[CommandHandlingError]
+
+      And("the command in flight still ends with its own reply")
+      Await.result(inFlight, 10.seconds) mustBe a[CommandHandlingError]
+
+      And("reserving an aggregate id fails at once too")
+      Await.ready(idlessBus ? ReserveAggregateId, 10.seconds).value.get.failed.get.getMessage mustBe "sequence unavailable"
+    }
+  }
+}
+
+/** Hands out one pool of ids, then fails, like a sequence that became unavailable. */
+class OnePoolUidGenerator(size: Long) extends UidGenerator {
+  private val handedOut = new java.util.concurrent.atomic.AtomicBoolean(false)
+  override def nextIdsPool: IdsPool =
+    if (handedOut.compareAndSet(false, true)) IdsPool(System.nanoTime(), size) else throw new IllegalStateException("sequence unavailable")
 }

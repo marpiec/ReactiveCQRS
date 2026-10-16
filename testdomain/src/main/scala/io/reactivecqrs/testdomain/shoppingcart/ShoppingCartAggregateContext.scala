@@ -24,7 +24,8 @@ class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
   }
 
   override def rewriteHistoryCommandHandlers = (events, shoppingCart) => {
-    case c: RewriteCartName => rewriteCartName(c, events, shoppingCart)
+    case c: RewriteCartName => rewriteCartName(c.name, events)
+    case c: RewriteCartNameConcurrently => rewriteCartName(c.name, events)
   }
 
   override def eventHandlers = (userId, timestamp, shoppingCart) => {

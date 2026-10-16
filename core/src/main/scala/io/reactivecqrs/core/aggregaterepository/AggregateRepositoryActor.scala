@@ -161,9 +161,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   private def answerRestoreFailed(respondTo: ActorRef, failure: AggregateRestoreFailedException): Unit = {
     respondTo ! Failure(failure)
-    if (singleReadForVersionOnly.isDefined) {
-      self ! PoisonPill
-    }
+    stopIfSingleRead()
   }
 
   private lazy val restored: Receive = logReceive {
@@ -275,9 +273,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
     }
 
-    if(singleReadForVersionOnly.isDefined) {
-      self ! PoisonPill
-    }
+    stopIfSingleRead()
 
   }
 
@@ -299,7 +295,11 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
         }
       }
     }
+    stopIfSingleRead()
   }
+
+  // An actor made for one historical read answers once and stops (the events read did not, F74).
+  private def stopIfSingleRead(): Unit = if (singleReadForVersionOnly.isDefined) self ! PoisonPill
 
   private def replayDelayedQueries(): Unit = {
     if(delayedQueries.nonEmpty) {
@@ -345,9 +345,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
     }
 
-    if(singleReadForVersionOnly.isDefined) {
-      self ! PoisonPill
-    }
+    stopIfSingleRead()
 
   }
   private def persist(eventsEnvelope: PersistEvents[AGGREGATE_ROOT], overwrite: Iterable[EventWithVersion[AGGREGATE_ROOT]]): Unit = {

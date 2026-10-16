@@ -10,7 +10,7 @@ import io.reactivecqrs.core.eventbus.{EventBusSubscriptionsManager, EventBusSubs
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.saga._
 import io.reactivecqrs.core.types.PostgresTypesNamesState
-import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
+import io.reactivecqrs.core.uid.{IdsPool, PostgresUidGenerator, UidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.{CartsCreated, CreateMultipleCarts}
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
@@ -24,8 +24,10 @@ import scala.concurrent.duration._
 class FlakySagaState(underlying: SagaState, createFailures: Int, updateFailures: Int) extends SagaState {
   private val creates = new AtomicInteger(0)
   private val updates = new AtomicInteger(0)
+  private val loads = new AtomicInteger(0)
 
   def updateAttempts: Int = updates.get
+  def loadsOfPendingSagas: Int = loads.get
 
   override def createSaga(name: String, sagaId: SagaId, respondTo: String, order: SagaInternalOrder) = {
     if (creates.incrementAndGet() <= createFailures) throw new IllegalStateException("database unavailable")
@@ -39,11 +41,13 @@ class FlakySagaState(underlying: SagaState, createFailures: Int, updateFailures:
 
   override def deleteSaga(name: String, sagaId: SagaId) = underlying.deleteSaga(name, sagaId)
 
-  override def loadAllSagas(name: String, handler: (SagaId, UserId, String, SagaPhase, Int, SagaInternalOrder) => Unit): Unit =
+  override def loadAllSagas(name: String, handler: (SagaId, UserId, String, SagaPhase, Int, SagaInternalOrder) => Unit): Unit = {
+    loads.incrementAndGet()
     underlying.loadAllSagas(name, handler)
+  }
 }
 
-// F35, F17: a saga survives failing writes of its progress: they are retried, and a saga whose progress cannot be
+// F35, F17, F75: a saga survives failing writes of its progress: they are retried, and a saga whose progress cannot be
 // stored resumes from its last stored step after a restart (its steps are idempotent commands, H3).
 class SagaRecoverySpec extends CommonSpec {
 
@@ -65,7 +69,7 @@ class SagaRecoverySpec extends CommonSpec {
   private val userId = UserId(1)
 
   /** A cart-creating saga under its own name, so it never resumes sagas left by other specs. */
-  private def newSaga(sagaName: String, state: SagaState): ActorRef = system.actorOf(Props(new MultipleCartCreatorSaga(state, uidGenerator, commandBus) {
+  private def newSaga(sagaName: String, state: SagaState, uids: ActorRef = uidGenerator): ActorRef = system.actorOf(Props(new MultipleCartCreatorSaga(state, uids, commandBus) {
     override val name: String = sagaName
     override protected val maxPersistAttempts: Int = 3
     override protected def persistRetryDelay(attempt: Int): FiniteDuration = 20.millis
@@ -126,6 +130,25 @@ class SagaRecoverySpec extends CommonSpec {
       caller.expectMsgType[CartsCreated](15.seconds).carts.size mustBe 3
       (1 to 3).map(i => eventsNamed(cartName + " " + i)) mustBe Seq(1, 1, 1)
       awaitAssert(storedSagas(sagaName) mustBe 0, 3.seconds, 100.millis)
+    }
+  }
+
+  Feature("A saga order when no saga id can be had") {
+
+    Scenario("is answered with a failure, and the saga actor keeps running without reloading its sagas (F75)") {
+      val sagaName = unique("Saga")
+      val state = new FlakySagaState(sagaState, createFailures = 0, updateFailures = 0)
+      val failingSagaIds = system.actorOf(Props(new UidGeneratorActor(new PostgresUidGenerator("aggregates_uids_seq"),
+        new PostgresUidGenerator("commands_uids_seq"), new UidGenerator {
+        override def nextIdsPool: IdsPool = throw new IllegalStateException("sequence unavailable")
+      })))
+      val saga = newSaga(sagaName, state, failingSagaIds)
+      awaitAssert(state.loadsOfPendingSagas mustBe 1, 3.seconds, 50.millis)
+
+      val response: SagaResponse = saga ?? CreateMultipleCarts(userId, unique("Cart"), 1)
+
+      response mustBe a[SagaFailureResponse]
+      state.loadsOfPendingSagas mustBe 1
     }
   }
 }
