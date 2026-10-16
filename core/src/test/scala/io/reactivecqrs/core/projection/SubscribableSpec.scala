@@ -110,7 +110,7 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
 
       When("projection is updated")
 
-      f.simpleProjectionActor ! IdentifiableEvents(stringType, AggregateId(0), Seq(EventInfo(AggregateVersion(1), StringEvent("some string"), UserId(1), Instant.now)))
+      f.simpleProjectionActor ! IdentifiableEvents(stringType, AggregateId(0), Seq(EventInfo(AggregateVersion(1), StringEvent("some string"), UserId(1), Instant.now)), replayed = false)
 
       Then("listener receives update")
 
@@ -132,7 +132,7 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
 
       When("projection is updated")
 
-      f.simpleProjectionActor ! IdentifiableEvents(stringType, AggregateId(0), Seq(EventInfo(AggregateVersion(1), StringEvent("another string"), UserId(1), Instant.now)))
+      f.simpleProjectionActor ! IdentifiableEvents(stringType, AggregateId(0), Seq(EventInfo(AggregateVersion(1), StringEvent("another string"), UserId(1), Instant.now)), replayed = false)
 
       Then("listener receives nothing")
 
@@ -154,7 +154,7 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
 
       When("projection is updated")
 
-      f.simpleProjectionActor ! IdentifiableEvents(stringType, AggregateId(0), Seq(EventInfo(AggregateVersion(1), StringEvent("some string"), UserId(1), Instant.now)))
+      f.simpleProjectionActor ! IdentifiableEvents(stringType, AggregateId(0), Seq(EventInfo(AggregateVersion(1), StringEvent("some string"), UserId(1), Instant.now)), replayed = false)
 
       Then("only listener one receives update")
 
@@ -171,7 +171,7 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
 
       When("projection is updated")
 
-      f.simpleProjectionActor ! IdentifiableEvents(stringType, AggregateId(0), Seq(EventInfo(AggregateVersion(1), StringEvent("another string"), UserId(1), Instant.now)))
+      f.simpleProjectionActor ! IdentifiableEvents(stringType, AggregateId(0), Seq(EventInfo(AggregateVersion(1), StringEvent("another string"), UserId(1), Instant.now)), replayed = false)
 
       Then("both listeners receive update")
 
@@ -207,7 +207,7 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
 
       When("projection is updated")
 
-      f.simpleProjectionActor ! IdentifiableEvents(stringType, AggregateId(0), Seq(EventInfo(AggregateVersion(1), StringEvent("another string"), UserId(1), Instant.now)))
+      f.simpleProjectionActor ! IdentifiableEvents(stringType, AggregateId(0), Seq(EventInfo(AggregateVersion(1), StringEvent("another string"), UserId(1), Instant.now)), replayed = false)
 
       Then("only listener two receives update")
 
