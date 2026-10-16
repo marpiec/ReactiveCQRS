@@ -3,7 +3,7 @@ package io.reactivecqrs.core.eventstore
 import java.time.Instant
 
 import org.apache.pekko.actor.ActorRef
-import io.reactivecqrs.api.{AggregateVersion, DuplicationEvent, Event, FirstEvent, UndoEvent}
+import io.reactivecqrs.api.{AggregateVersion, DuplicationEvent, Event, EventWithIdentifier, FirstEvent, UndoEvent}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, SpaceId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.testutils.CommonSpec
@@ -196,6 +196,32 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     var timestamps = Vector[Instant]()
     eventStoreState.readAndProcessEvents[SomeAggregate](Map.empty, aggregateId, None)((_, eventTime, _, _, _, _) => timestamps :+= eventTime)
     timestamps mustBe Vector(batchTime, batchTime, singleTime)
+  }
+
+  // D60, D8: a re-publication sends a range of the aggregate's own events exactly as live delivery sent them.
+  Scenario("A range of an aggregate's own events is read with the undone ones") {
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one")))
+    f.storeEvents(Seq(EventB(2)))
+    f.storeEvents(Seq(EventC(true)))
+    f.storeEvents(Seq(Undo(1))) // undoes EventC
+    f.storeEvents(Seq(EventB(5)))
+
+    val range = eventStoreState.readEventsRange[SomeAggregate](Map.empty, f.aggregateId, AggregateVersion(2), AggregateVersion(4))
+
+    range.map(_.version.asInt) mustBe Seq(2, 3, 4)
+    range.map(_.event) mustBe Seq(EventB(2), EventC(true), Undo(1))
+    range.map(_.userId).distinct mustBe Seq(f.userId)
+  }
+
+  Scenario("The oldest version waiting in the outbox is found") {
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one"), EventB(2), EventC(false)))
+
+    eventStoreState.oldestVersionToPublish(f.aggregateId) mustBe Some(AggregateVersion(1))
+    eventStoreState.deletePublishedEventsToPublish(f.aggregateId, Seq(EventWithIdentifier(f.aggregateId, AggregateVersion(1), EventA("one"))))
+    eventStoreState.oldestVersionToPublish(f.aggregateId) mustBe Some(AggregateVersion(2))
+    eventStoreState.oldestVersionToPublish(AggregateId(f.aggregateId.asLong + 1)) mustBe None
   }
 
 }

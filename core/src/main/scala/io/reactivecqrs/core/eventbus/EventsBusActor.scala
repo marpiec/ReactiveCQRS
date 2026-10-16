@@ -17,8 +17,9 @@ import scala.concurrent.duration._
 
 object EventsBusActor {
 
+  /** Events of one aggregate, committed or re-published; `onlyTo` limits a re-publication to one subscriber. */
   case class PublishEvents[AGGREGATE_ROOT](aggregateType: AggregateType, events: Seq[EventInfo[AGGREGATE_ROOT]],
-                                            aggregateId: AggregateId, aggregate: Option[AGGREGATE_ROOT])
+                                            aggregateId: AggregateId, aggregate: Option[AGGREGATE_ROOT], onlyTo: Option[ActorRef] = None)
   case class PublishEventsAck(aggregateId: AggregateId, versions: Seq[AggregateVersion])
 
   case class PublishReplayedEvents[AGGREGATE_ROOT](aggregateType: AggregateType, events: Seq[EventInfo[AGGREGATE_ROOT]],
@@ -205,7 +206,7 @@ class EventsBusActor(val inputState: EventBusState, val subscriptionsManager: Ev
 
   def receiveAfterInit: Receive = logReceive {
     case InitEventBus => () // just to perform init
-    case PublishEvents(aggregateType, events, aggregateId, aggregate) =>
+    case PublishEvents(aggregateType, events, aggregateId, aggregate, _) =>
       handlePublishEvents(sender(), aggregateType, aggregateId, events, aggregate, replayed = false)
     case PublishReplayedEvents(aggregateType, events, aggregateId, aggregate) =>
       handlePublishEvents(sender(), aggregateType, aggregateId, events, aggregate, replayed = true)

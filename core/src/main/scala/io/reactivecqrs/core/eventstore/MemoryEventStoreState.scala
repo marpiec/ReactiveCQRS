@@ -107,6 +107,18 @@ class MemoryEventStoreState extends EventStoreState {
       .foreach(aggregateHandler)
   }
 
+  override def readEventsRange[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId,
+                                               from: AggregateVersion, to: AggregateVersion): Seq[EventInfo[AGGREGATE_ROOT]] = {
+    eventStore.getOrElse(aggregateId, Vector.empty)
+      .filter(entry => entry.version >= from && entry.version <= to)
+      .map(entry => EventInfo[AGGREGATE_ROOT](entry.version, entry.event.asInstanceOf[Event[AGGREGATE_ROOT]], entry.userId, entry.timestamp))
+  }
+
+  override def oldestVersionToPublish(aggregateId: AggregateId): Option[AggregateVersion] = {
+    val versions = eventsToPublish.keys.collect { case (eventAggregateId, version) if eventAggregateId == aggregateId => version.asInt }
+    if (versions.isEmpty) None else Some(AggregateVersion(versions.min))
+  }
+
   override def readEventsToPublishForAggregate[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]] = {
     eventsToPublish.toList
       .filter { case ((eventAggregateId, _), _) => eventAggregateId == aggregateId }

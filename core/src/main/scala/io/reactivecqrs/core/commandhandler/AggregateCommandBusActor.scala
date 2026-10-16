@@ -10,6 +10,7 @@ import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{EnsureRestored, GetAggregateRootCurrentMinVersion, GetAggregateRootCurrentVersion, GetEventsCurrentVersion}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{EnsureEventsPublished, RemoveExpiredResponses}
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor._
+import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventstore.EventStoreState
 import io.reactivecqrs.core.uid.{NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
 import io.reactivecqrs.core.util.{MyActorLogging, RandomUtil}
@@ -146,6 +147,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     case GetEventsForAggregate(id) => routeGetEvents(id)
     case GetEventsForAggregateForVersion(id, version) => routeGetEventsForVersion(id, version)
     case EnsureEventsPublished(oldOnly) => ensureEventsPublished(oldOnly)
+    case m: RepublishOutbox => getOrCreateAggregateRepositoryActor(m.aggregateId) ! m
+    case m: RepublishRange => getOrCreateAggregateRepositoryActor(m.aggregateId) ! m
     case ReserveAggregateId =>
       val respondTo = sender()
       Try(takeNextAggregateId) match {

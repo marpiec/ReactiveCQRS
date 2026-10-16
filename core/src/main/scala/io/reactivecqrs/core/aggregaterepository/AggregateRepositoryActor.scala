@@ -9,6 +9,7 @@ import org.apache.pekko.actor.{Actor, ActorRef, PoisonPill}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
 import io.reactivecqrs.core.commandhandler.{CommandExecutorActor, Idempotency, IdempotencyKeyTakenException}
+import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.util.RandomUtil
 import org.postgresql.util.PSQLException
 
@@ -177,6 +178,8 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     case GetAggregateRootWithEventsExactVersion(respondTo, version, eventTypes) => // for following command
       whenUpToDate(version, respondTo)(receiveReturnAggregateRootWithEvents(respondTo, Some(version), eventTypes))
     case PublishEventsAck(aggId, versions) => markPublishedEvents(aggregateId, versions)
+    case RepublishOutbox(_) => eventStore.oldestVersionToPublish(aggregateId).foreach(from => republish(from, None))
+    case RepublishRange(_, from, subscriber) => republish(from, Some(subscriber))
     case ResendPersistedMessages => resendEventsToPublish()
   }
 
@@ -191,6 +194,17 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     } else {
       events.foreach(e => handleEvent(e.userId, e.timestamp, e.event, aggregateId, e.version.asInt, noopEvent = false))
       publish(events)
+    }
+  }
+
+  // Re-publishes `from` up to the current version with the current state, so a subscriber that receives state gets a
+  // consistent range; subscribers drop what they applied before (D8, D20c).
+  private def republish(from: AggregateVersion, onlyTo: Option[ActorRef]): Unit = {
+    if (from <= version) {
+      val events = eventStore.readEventsRange[AGGREGATE_ROOT](eventsVersionsMap, aggregateId, from, version)
+      if (events.nonEmpty) {
+        eventsBus ! PublishEvents(aggregateType, events, aggregateId, Option(aggregateRoot), onlyTo)
+      }
     }
   }
 

@@ -22,6 +22,14 @@ abstract class EventStoreState {
   def readAggregatesWithEventsToPublish(aggregateTypeName: String, oldOnly: Boolean)(aggregateHandler: AggregateId => Unit): Unit
   def readEventsToPublishForAggregate[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]]
 
+  /** The aggregate's own events with versions `from` to `to`, in order, undone ones included, as live delivery sent
+    * them (D60): what a re-publication sends. */
+  def readEventsRange[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId,
+                                      from: AggregateVersion, to: AggregateVersion): Seq[EventInfo[AGGREGATE_ROOT]]
+
+  /** The oldest version of the aggregate still waiting in the outbox, if any. */
+  def oldestVersionToPublish(aggregateId: AggregateId): Option[AggregateVersion]
+
   def localTx[A](block: DBSession => A): A
 
   def readNotYetPublishedEvents(): Map[AggregateId, AggregateVersion]

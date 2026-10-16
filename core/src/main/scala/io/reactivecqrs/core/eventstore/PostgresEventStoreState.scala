@@ -387,6 +387,26 @@ ORDER BY events.id""")
     }
   }
 
+  override def readEventsRange[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId,
+                                               from: AggregateVersion, to: AggregateVersion): Seq[EventInfo[AGGREGATE_ROOT]] = {
+    DB.readOnly { implicit session =>
+      sql"""SELECT version, event_type_id, event_type_version, event, user_id, event_time
+           | FROM events
+           | WHERE aggregate_id = ? AND version BETWEEN ? AND ?
+           | ORDER BY version""".stripMargin.bind(aggregateId.asLong, from.asInt, to.asInt).map { rs =>
+        val eventBaseType = typesNamesState.classNameById(rs.short(2))
+        val eventType = eventsVersionsMap.getOrElse(EventTypeVersion(eventBaseType, rs.short(3)), eventBaseType)
+        EventInfo[AGGREGATE_ROOT](AggregateVersion(rs.int(1)), mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(4), eventType),
+          UserId(rs.long(5)), rs.timestamp(6).toInstant)
+      }.list()
+    }
+  }
+
+  override def oldestVersionToPublish(aggregateId: AggregateId): Option[AggregateVersion] = DB.readOnly { implicit session =>
+    sql"""SELECT min(version) FROM events_to_publish WHERE aggregate_id = ?""".bind(aggregateId.asLong)
+      .map(_.intOpt(1).map(AggregateVersion(_))).single().flatten
+  }
+
   override def readEventsToPublishForAggregate[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String],
                                                                aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]] = {
     var result = List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]]()
