@@ -218,7 +218,7 @@ implementation plan.
 
 #### F4 — Already-published events are dropped without an ack; the in-flight counter leaks
 - **Medium**, confirmed · Fix in **M2** · Delivery
-- **Reproduced by:** `EventsReplaySpec` (PostgreSQL bus state) when the database already holds ShoppingCart events from earlier runs: the replay never receives `ConsumerFinished` and times out after 50 s. It passes on a database without earlier events.
+- **Reproduced by:** `EventsReplaySpec` (PostgreSQL bus state) when the schema already holds ShoppingCart events, written by earlier runs or, with per-run schemas, by the specs that run before it: the replay never receives `ConsumerFinished` and times out after 50 s. It passes on a schema without earlier events.
 - **Symptom:** outbox rows of re-sent events are never deleted and re-sent every 180 s; back-pressure capacity shrinks; a replay against an advanced cursor never finishes.
 - **Root cause:** events at or below the cursor are filtered (`EventsBusActor.scala:294`) but counted in `receivedInProgressMessages` (`:358`) and never finished; no `PublishEventsAck` is sent (`:365-368`).
 - **Related:** F1; D7.
@@ -544,6 +544,14 @@ implementation plan.
 - **Root cause:** `CREATE OR REPLACE FUNCTION` and the other initialization statements run without any lock.
 - **Fix:** run migrations once, under a PostgreSQL advisory lock, outside node startup (D69). Tests now run one suite at a time.
 
+#### F71 — Catalog lookups ignore the schema
+- **Medium**, confirmed · **Fixed in M1** (16/10/2026) · `PostgresUidGenerator.readSequenceStep`, `PostgresDocumentStore.readExistingIndices`, `PostgresEventStoreState.countAllEvents`, `PostgresSagaSchemaInitializer` (the F34 index check, new code of the same day)
+- **Symptom:** in a database where another schema holds objects of the same names (a second installation, a copy, earlier test runs), the uid generator fails to start (`TooManyRowsException` from `pg_sequences`), a projection's indices or the saga key index are not created because the other schema's are seen, and the event count reads `public.events` whatever the current schema is.
+- **Root cause:** catalog queries filtered by object name only, and one hard-coded `public`.
+- **Found:** per-run test schemas (below): every testdomain spec failed at start.
+- **Test:** `SchemaAwareCatalogSpec` (all three scenarios failed before the fix), and the whole suite now runs in a fresh schema per run.
+- **Fix:** `schemaname = current_schema()`, `to_regclass(…)` and `'events'::regclass`, so the library works in whatever schema the connection's `search_path` selects. Also `countAllEvents` treats the `-1` estimate of a never-analyzed table (PostgreSQL 14+) like 0 and counts exactly.
+
 ### Rebuild
 
 #### F54 — Rebuild needs downtime and clears read models first
@@ -635,7 +643,7 @@ From §7 of Neula's change requests.
 
 | Milestone | Issues |
 |---|---|
-| M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
+| M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
 | M2 | AR6; F1, F2, F4, F5, F6, F11, F15, F26, F28, F29, F37, F41, F42, F45, F47; Neula H2 |
 | M3 | AR1, AR4, AR7; F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33, F38, F39, F43, F44, F65 |
 | M4 | F3, F54, F55, F56, F57, F58, F59, F60, F61, F62; Neula H1, H6 |

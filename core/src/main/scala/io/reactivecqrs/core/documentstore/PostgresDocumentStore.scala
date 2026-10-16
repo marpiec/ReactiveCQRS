@@ -79,7 +79,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
   private def readExistingIndices(): Iterable[String] = {
     DB.readOnly { implicit session =>
-      SQL(s"SELECT indexname FROM pg_indexes WHERE tablename = '${projectionTableName}' and indexname like '%_idx_%'")
+      SQL(s"SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() AND tablename = '${projectionTableName}' and indexname like '%_idx_%'")
         .map(rs => rs.string(1)).list()
     }
   }

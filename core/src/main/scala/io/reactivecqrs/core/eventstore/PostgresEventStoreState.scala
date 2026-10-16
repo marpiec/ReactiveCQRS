@@ -377,11 +377,11 @@ ORDER BY events.id""")
 
   override def countAllEvents(): Int =  DB.readOnly { implicit session =>
 
-    // much faster, although might be not exact
-    val count = sql"""SELECT reltuples::bigint AS count FROM pg_class WHERE oid = 'public.events'::regclass"""
+    // much faster, although might be not exact; the events table of the current schema (F71)
+    val count = sql"""SELECT reltuples::bigint AS count FROM pg_class WHERE oid = 'events'::regclass"""
       .map(rs => rs.int(1)).single().get
 
-    if(count == 0) {
+    if(count <= 0) { // -1 until the table was first vacuumed or analyzed (PostgreSQL 14+)
       sql"""SELECT COUNT(*) FROM events""".map(rs => rs.int(1)).single().get
     } else {
       count

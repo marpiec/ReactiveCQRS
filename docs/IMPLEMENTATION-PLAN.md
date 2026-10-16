@@ -743,3 +743,14 @@ Open test-infrastructure items:
 - F70 found by the review and fixed: an unknown message restarted the command bus, which
   stopped every command in flight for that aggregate type. Test in `CommandOutcomesSpec`.
 - `sbt test`: 89 of 90 pass; the failure is still the F4 reproduction.
+
+**16/10/2026: per-run test schemas; F71**
+- `TestDatabase` gives each test run (per module) a new schema `test_run_<epoch>_<n>` through
+  the JDBC `currentSchema` parameter; run schemas older than six hours are dropped;
+  `-Dreactivecqrs.test.schema=<name>` keeps a fixed one for debugging. Every run now also
+  creates the whole schema from scratch.
+- That exposed F71: catalog lookups by name only (uid generator, projection indices, event
+  count, and the saga index check added the same day). Fixed with `current_schema()` and
+  `to_regclass`; test `SchemaAwareCatalogSpec`.
+- `sbt test`: 92 of 93 pass. The failure is still the F4 reproduction: within one run, the
+  specs before `EventsReplaySpec` write ShoppingCart events into the run schema.

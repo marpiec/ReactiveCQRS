@@ -272,6 +272,11 @@ check. The SQL lock (§4.2) still catches writers outside this actor.
 
 ## 4. Aggregate persistence (PostgreSQL)
 
+Every table, sequence and function lives in the schema the connection's `search_path`
+selects, and catalog lookups are limited to `current_schema()` (fixed F71), so one database
+can hold several installations or copies in separate schemas. The test suite uses this: each
+run works in a new schema (`TestDatabase`).
+
 ### 4.1 Event-store tables (`PostgresEventStoreSchemaInitializer.scala`)
 
 | Table | Columns / keys | Role |

@@ -27,8 +27,9 @@ class PostgresSagaSchemaInitializer {
 
   // One row per (name, saga_id) (F34); the index also serves loading the sagas of one name. It is built
   // CONCURRENTLY, so a large table stays writable, and an invalid index left by an interrupted build is rebuilt.
+  // to_regclass looks the index up in the current schema only (F71).
   private def createSagaKeyIndex(): Unit = DB.autoCommit { implicit session =>
-    val valid = sql"""SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = 'sagas_name_saga_id_idx'"""
+    val valid = sql"""SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass('sagas_name_saga_id_idx')"""
       .map(_.boolean(1)).single()
     if (valid.contains(false)) {
       sql"""DROP INDEX CONCURRENTLY IF EXISTS sagas_name_saga_id_idx""".execute()
