@@ -323,15 +323,19 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
 ### 4.4 Repository-actor lifecycle
 
 - Created lazily by `AggregateCommandBusActor` on the first command or query for an id
-  (`:198-207`). The constructor runs `assureRestoredState()` (`AggregateRepositoryActor.scala:101`),
-  which also loads that aggregate's outbox rows (`:84`).
+  (`:198-207`). The first message runs `assureRestoredState()`, which also loads that
+  aggregate's outbox rows (`:84`); the outbox scan sends `EnsureRestored` so the re-send starts.
+- **Failed restore** (fixed F10): the actor answers queries with
+  `Failure(AggregateRestoreFailedException)` and persists with `EventHandlingError`, then stops
+  after `failedRestoreRetryAfter` (5 s). The command bus watches its repository actors and on
+  `Terminated` drops the actor and its command handler, so the next request restores again.
 - **Reaping** (`AggregateCommandBusActor.scala:168-195`): at most every 5 minutes, and only
   when a command or query arrives. When more than `keepAliveLimit` (200) actors are tracked, the
   least-recently used ones idle for more than 2 minutes are killed; any actor idle for more
   than `maxInactivityMillis` (12 h) is killed too. Kill = `PoisonPill` plus removal from the
   maps; a replacement may start while the old one drains (`spawnedCount` keeps names unique).
-- No `supervisorStrategy` and no `DeathWatch` anywhere in `core`: Pekko defaults apply
-  (see F10).
+- No `supervisorStrategy` in `core`: Pekko defaults apply. The command bus's watch on its
+  repository actors is the only `DeathWatch`.
 
 ### 4.5 History rewrite and permanent delete
 

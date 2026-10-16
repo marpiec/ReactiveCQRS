@@ -679,3 +679,13 @@ Open test-infrastructure items:
   `CommandHandlingError`; the executor stops after failures and timeouts. Test:
   `CommandOutcomesSpec`.
 - `sbt test`: 57 of 58 pass; the failure is still the F4 reproduction.
+
+**16/10/2026: F10**
+- The repository actor restores on its first message instead of in its constructor. A failed
+  restore answers queries with `AggregateRestoreFailedException` and commands with
+  `CommandHandlingError` at once, and the actor stops after `failedRestoreRetryAfter` (5 s);
+  the command bus watches its repository actors and forgets stopped ones together with their
+  command handler, so the next request restores again. Command-handler names now carry the
+  spawn counter, like repository names, so a replacement never clashes with a stopping one.
+  Test: `FailedRestoreSpec` (no reply at all before the fix).
+- `sbt test`: 59 of 60 pass; the failure is still the F4 reproduction.

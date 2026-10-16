@@ -4,6 +4,10 @@ import io.reactivecqrs.api.id.AggregateId
 
 class NoEventsForAggregateException(val aggregateId: AggregateId, val aggregateType: AggregateType) extends Exception("No events for aggregate " + aggregateId.asLong)
 
+/** The aggregate's stored events could not be restored; requests fail at once until a later retry succeeds. */
+class AggregateRestoreFailedException(val aggregateId: AggregateId, val aggregateType: AggregateType, cause: Throwable)
+  extends Exception("Restoring aggregate " + aggregateId.asLong + " of type " + aggregateType.typeName + " failed: " + cause.getMessage, cause)
+
 class AggregateInIncorrectVersionException(val aggregateId: AggregateId,
                                            val aggregateType: AggregateType,
                                            val currentVersion: AggregateVersion,

@@ -45,6 +45,9 @@ object AggregateRepositoryActor {
 
   case object ResendPersistedMessages
 
+  /** Makes a new actor restore its state (and re-send what is waiting for publication) now; a no-op afterwards. */
+  case object EnsureRestored
+
 
   case class AggregateWithSelectedEvents[AGGREGATE_ROOT](aggregate: Aggregate[AGGREGATE_ROOT], events: Iterable[EventWithVersion[AGGREGATE_ROOT]])
 }
@@ -59,7 +62,8 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
                                                                 initialState: () => AGGREGATE_ROOT,
                                                                 singleReadForVersionOnly: Option[Either[AggregateVersion, Instant]],
                                                                 eventsVersionsMap: Map[EventTypeVersion, String],
-                                                                eventsVersionsMapReverse: Map[String, EventTypeVersion]) extends Actor with MyActorLogging {
+                                                                eventsVersionsMapReverse: Map[String, EventTypeVersion],
+                                                                failedRestoreRetryAfter: FiniteDuration) extends Actor with MyActorLogging {
 
   import AggregateRepositoryActor._
 
@@ -98,8 +102,6 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     }
   }
 
-  assureRestoredState()
-
   override def preStart(): Unit = {
     // empty
   }
@@ -108,7 +110,63 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     // do not call preStart
   }
 
-  override def receive = logReceive {
+  // State is restored on the first message, not in the constructor, so a failing restore can be answered
+  // instead of stopping the actor silently (F10).
+  override def receive: Receive = {
+    case message =>
+      restoreOnFirstMessage() match {
+        case None =>
+          context.become(restored)
+          restored.applyOrElse(message, unhandled)
+        case Some(failure) =>
+          context.become(failedRestore(failure))
+          failedRestore(failure)(message)
+      }
+  }
+
+  private def restoreOnFirstMessage(): Option[AggregateRestoreFailedException] = {
+    try {
+      assureRestoredState()
+      None
+    } catch {
+      case e: Exception =>
+        log.error(e, "Restoring aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " failed, retry after " + failedRestoreRetryAfter)
+        if (singleReadForVersionOnly.isEmpty) {
+          context.system.scheduler.scheduleOnce(failedRestoreRetryAfter, self, PoisonPill)(context.dispatcher)
+        }
+        Some(new AggregateRestoreFailedException(aggregateId, aggregateType, e))
+    }
+  }
+
+  // Until this actor stops, every request gets the restore failure at once; the command bus then creates a
+  // new actor for the next request, which tries the restore again.
+  private def failedRestore(failure: AggregateRestoreFailedException): Receive = {
+    case GetAggregateRootCurrentVersion(respondTo) => answerRestoreFailed(respondTo, failure)
+    case GetEventsCurrentVersion(respondTo) => answerRestoreFailed(respondTo, failure)
+    case GetAggregateRootCurrentMinVersion(respondTo, _, _) => answerRestoreFailed(respondTo, failure)
+    case GetAggregateRootExactVersion(respondTo, _) => answerRestoreFailed(respondTo, failure)
+    case GetAggregateRootWithEventsCurrentVersion(respondTo, _) => answerRestoreFailed(respondTo, failure)
+    case GetAggregateRootWithEventsExactVersion(respondTo, _, _) => answerRestoreFailed(respondTo, failure)
+    case ee: PersistEvents[_] => refusePersist(ee)
+    case ee: OverrideAndPersistEvents[_] => refusePersist(ee.persist)
+    case _ => () // nothing to publish without a restored state
+  }
+
+  private def refusePersist(ee: PersistEvents[_]): Unit = {
+    val errorId = RandomUtil.generateRandomString(16)
+    ee.respondTo ! EventHandlingError(ee.events.head.getClass.getSimpleName, errorId, ee.commandId)
+    log.error("Cannot persist events, aggregate restore failed, errorId: [" + errorId + "]")
+  }
+
+  private def answerRestoreFailed(respondTo: ActorRef, failure: AggregateRestoreFailedException): Unit = {
+    respondTo ! Failure(failure)
+    if (singleReadForVersionOnly.isDefined) {
+      self ! PoisonPill
+    }
+  }
+
+  private lazy val restored: Receive = logReceive {
+    case EnsureRestored => ()
     case ee: PersistEvents[_] => handlePersistEvents(ee)
     case ee: OverrideAndPersistEvents[_] => handleOverrideAndPersistEvents(ee)
     case ep: EventsPersisted[_] => handleEventsPersisted(ep)

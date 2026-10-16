@@ -326,10 +326,11 @@ implementation plan.
 - **Fix:** D12, D24.
 
 #### F10 — A failed restore leaves a dead actor reference cached
-- **Medium**, likely · Fix in **M1** · `AggregateCommandBusActor`, `AggregateRepositoryActor`
+- **Medium**, confirmed · **Fixed in M1** (16/10/2026) · `AggregateCommandBusActor`, `AggregateRepositoryActor`
 - **Symptom:** commands for that aggregate time out (60 s) until reaping.
 - **Root cause:** restore in the constructor (`AggregateRepositoryActor.scala:101`) → `ActorInitializationException` → default Stop; refs stay in maps (`AggregateCommandBusActor.scala:84-85, 198-207`); no `watch`.
-- **Fix:** D11.
+- **Test:** `FailedRestoreSpec` (before the fix, both the command and the query got no reply and the 10 s ask timed out).
+- **Fix:** D11. The repository actor restores on its first message. After a failure it answers every query with `Failure(AggregateRestoreFailedException)` (the command executor turns that into `CommandHandlingError`) and refuses persists with `EventHandlingError`; after `failedRestoreRetryAfter` (default 5 s, an `AggregateCommandBusActor.apply` parameter) it stops. The command bus watches its repository actors and on `Terminated` forgets the actor and its command handler, so the next request tries the restore again. The "remember the failure briefly" part of D11 is the failed actor itself staying alive for that window. A request routed in the moment between the stop and the `Terminated` message still waits for the command timeout.
 
 #### F12 — Aggregate ids read as `Int`
 - **Medium**, confirmed · **Fixed in M1** (16/10/2026) · `PostgresEventStoreState`
@@ -592,7 +593,7 @@ From §7 of Neula's change requests.
 
 | Milestone | Issues |
 |---|---|
-| M1 | F7 ✔, F9, F10, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34, F35, F36, F40, F64, F66 ✔; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
+| M1 | F7 ✔, F9, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34, F35, F36, F40, F64, F66 ✔; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
 | M2 | F1, F2, F4, F5, F6, F11, F15, F26, F28, F29, F37, F41, F42, F45, F47; Neula H2 |
 | M3 | F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33, F38, F39, F43, F44, F65 |
 | M4 | F3, F54, F55, F56, F57, F58, F59, F60, F61, F62; Neula H1, H6 |
