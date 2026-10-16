@@ -4,7 +4,7 @@ import java.time.Instant
 import java.util.concurrent.{ExecutorService, Executors, TimeUnit}
 
 import org.apache.pekko.actor.{Actor, ActorRef, Cancellable, Status}
-import io.reactivecqrs.api.id.AggregateId
+import io.reactivecqrs.api.id.{AggregateId, SpaceId}
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.delivery.SequenceGate
 import io.reactivecqrs.core.delivery.SequenceGate.{AlreadyApplied, Apply, Gap}
@@ -55,6 +55,20 @@ case object Activate
 /** The instance's build is retired (D57): its push subscriptions go to `successor`, its parked queries are answered with
   * `None`, and it stops. */
 case class Retire(successor: Option[ActorRef])
+
+/** What a targeted rebuild covers (D63, R14): one aggregate, one aggregate type, or one organization's aggregates. */
+sealed trait RebuildTarget
+object RebuildTarget {
+  case class OneAggregate(aggregateId: AggregateId) extends RebuildTarget
+  case class OneType(aggregateType: AggregateType) extends RebuildTarget
+  case class OneSpace(spaceId: SpaceId) extends RebuildTarget
+}
+/** From the supervisor, before a targeted rebuild: in one transaction the projection clears what it derived from the
+  * target (`clearForRebuild`) and forgets its versions of `aggregateIds` (and their failures), so the builder's
+  * deliveries apply anew. Answered with `ResetForRebuildDone`, or `Status.Failure` when the projection does not
+  * implement `clearForRebuild`. */
+case class ResetForRebuild(target: RebuildTarget, aggregateIds: Seq[AggregateId])
+case object ResetForRebuildDone
 
 // D57, D58, D61: a projection being built is fed by a builder that reads the event store.
 
@@ -180,6 +194,12 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
   /** Called when the instance's build is retired, before it stops. */
   protected def onRetired(successor: Option[ActorRef]): Unit = ()
+
+  /** Removes, in the given transaction, what the projection derived from the target of a targeted rebuild (D63), whose
+    * events it is then given again from their first: a document per aggregate, a space's documents (`clearSpace`).
+    * A projection that does not implement it refuses targeted rebuilds. */
+  protected def clearForRebuild(target: RebuildTarget)(implicit session: DBSession): Unit =
+    throw new UnsupportedOperationException("Projection " + projectionName + " does not implement clearForRebuild, so it cannot rebuild " + target)
 
   protected val projectionName: String
   protected val subscriptionsState: SubscriptionsState
@@ -319,6 +339,16 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         activated = true
         onActivated()
       }
+    case ResetForRebuild(target, aggregateIds) =>
+      subscriptionsState.localTx { session =>
+        clearForRebuild(target)(session)
+        subscriptionsState.resetVersions(subscriberName, aggregateIds)(session)
+      }
+      val reset = aggregateIds.toSet
+      queues --= queues.keys.filter(key => reset.contains(key.aggregateId))
+      failed --= failed.keys.filter(key => reset.contains(key.aggregateId))
+      failuresToRetry = failuresToRetry.filterNot(key => reset.contains(key.aggregateId))
+      sender() ! ResetForRebuildDone
     case Retire(successor) =>
       log.info("Projection " + projectionName + " (" + subscriberName + ") is retired")
       onRetired(successor)

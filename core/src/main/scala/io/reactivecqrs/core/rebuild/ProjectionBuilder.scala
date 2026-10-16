@@ -3,7 +3,7 @@ package io.reactivecqrs.core.rebuild
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.eventbus.EventsBusActor.{MessageAck, MessageFailed, RequestRepublish}
-import io.reactivecqrs.core.eventstore.{CommittedEvent, EventStoreState, StoredAggregate}
+import io.reactivecqrs.core.eventstore.{AggregateScope, CommittedEvent, EventStoreState, StoredAggregate}
 import io.reactivecqrs.core.projection._
 import io.reactivecqrs.core.rebuild.ProjectionBuilder._
 import io.reactivecqrs.core.util.MyActorLogging
@@ -73,7 +73,12 @@ object ProjectionBuilder {
   */
 class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPlan, eventStore: EventStoreState,
                         subscriptionsState: SubscriptionsState, sources: Map[AggregateType, ReplaySource], positions: BuildPositions,
-                        reportTo: ActorRef, settings: BuilderSettings = BuilderSettings()) extends Actor with MyActorLogging {
+                        reportTo: ActorRef, settings: BuilderSettings = BuilderSettings(), targeted: Option[AggregateScope] = None)
+  extends Actor with MyActorLogging {
+
+  // A targeted rebuild (D63) delivers the aggregates in scope to a projection that is live already: no BuildFromStore,
+  // no GoLive.
+  private val scope = targeted.getOrElse(AggregateScope.All)
 
   private sealed trait Phase
   private case object Bulk extends Phase
@@ -105,8 +110,9 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
       goLive()
     } else {
       position = start.position
-      target ! BuildFromStore(self)
-      log.info("Building " + subscriberName + (if (position > 0) " from position " + position else "") +
+      if (targeted.isEmpty) target ! BuildFromStore(self)
+      log.info((if (targeted.isDefined) "Rebuilding " + scope + " of " else "Building ") + subscriberName +
+        (if (position > 0) " from position " + position else "") +
         (if (plan.finalStates) " from the final states of its aggregates (D62)" else " from the events in commit order (D59)"))
       pump()
     }
@@ -129,10 +135,7 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
       pump()
     case ProjectionLive if phase == GoingLive =>
       log.info("Projection " + subscriberName + " is live; reconciling it with the store")
-      phase = Reconciling
-      position = 0L
-      readAll = false
-      pump()
+      reconcile()
     case Status.Failure(e) =>
       // The projection could not take a chunk (its store is down): the chunks in flight are sent again, after a wait.
       log.warning("Projection " + subscriberName + " failed on a chunk, sending it again in " + settings.retryAfter + ": " + e)
@@ -177,16 +180,25 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
 
   private def goLive(): Unit = {
     save(BuildPosition(bulkDone = true, 0L))
-    phase = GoingLive
-    target ! GoLive
+    if (targeted.isDefined) reconcile() else {
+      phase = GoingLive
+      target ! GoLive
+    }
+  }
+
+  private def reconcile(): Unit = {
+    phase = Reconciling
+    position = 0L
+    readAll = false
+    pump()
   }
 
   // Reads one page of the current pass into `ready`; false when the store failed, to be tried again later.
   private def readNextPage(): Boolean = try {
     val (items, reached, count) = phase match {
-      case Bulk if plan.finalStates => finalStates(eventStore.aggregatesOf(plan.types, AggregateId(position), settings.pageSize))
-      case Bulk => committed(eventStore.readCommitted(plan.types, position, settings.pageSize))
-      case _ => behind(eventStore.aggregatesOf(plan.types, AggregateId(position), settings.pageSize))
+      case Bulk if plan.finalStates => finalStates(eventStore.aggregatesOf(plan.types, AggregateId(position), settings.pageSize, scope))
+      case Bulk => committed(eventStore.readCommitted(plan.types, position, settings.pageSize, scope))
+      case _ => behind(eventStore.aggregatesOf(plan.types, AggregateId(position), settings.pageSize, scope))
     }
     readAll = count < settings.pageSize
     position = reached

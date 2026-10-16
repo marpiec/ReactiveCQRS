@@ -5,7 +5,7 @@ import java.time.Instant
 import java.util.{Calendar, TimeZone}
 
 import io.mpjsons.MPJsons
-import io.reactivecqrs.api.id.{AggregateId, UserId}
+import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.types.TypesNamesState
 import io.reactivecqrs.core.util.AfterCommit
@@ -13,6 +13,10 @@ import scalikejdbc._
 
 import scala.concurrent.duration._
 import scala.util.Try
+
+/** What the space backfill did (F49): aggregates given a space, and those neither their first event nor the function
+  * gave one. */
+case class SpaceBackfill(filled: Int, left: Seq[AggregateId])
 
 /** @param outboxDeleteDelay how long delivered outbox rows wait, at most, to be deleted together with others (F26) */
 class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState, fetchSize: Int = 1000,
@@ -291,12 +295,12 @@ ORDER BY events.id""")
   }
 
   // The aggregate's own row of its chain gives the type: a duplicate's events are read under it, not its base.
-  override def readCommitted(types: Seq[AggregateType], after: Long, limit: Int): Seq[CommittedEvent] =
+  override def readCommitted(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[CommittedEvent] =
     if (types.isEmpty) Seq.empty else DB.readOnly { implicit session =>
       sql"""SELECT e.id, a.type_id, e.aggregate_id, e.version, e.event_type_id, e.event_type_version, e.event, e.user_id, e.event_time,
            |   e.metadata::text, a.squashed_version
            | FROM events e JOIN aggregates a ON a.id = e.aggregate_id AND a.base_id = e.aggregate_id
-           | WHERE e.id > $after AND a.type_id IN (${typeIds(types)})
+           | WHERE e.id > $after AND a.type_id IN (${typeIds(types)}) ${scoped(scope)}
            | ORDER BY e.id LIMIT $limit""".stripMargin.map { rs =>
         val (aggregateId, version) = (AggregateId(rs.long(3)), AggregateVersion(rs.int(4)))
         val event = Try(EventInfo[Any](version, mpjsons.deserialize[Event[Any]](rs.string(7), eventClass(rs.short(5), rs.short(6), aggregateId.asLong, version.asInt)),
@@ -305,16 +309,60 @@ ORDER BY events.id""")
       }.list()
     }
 
-  override def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int): Seq[StoredAggregate] =
+  override def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[StoredAggregate] =
     if (types.isEmpty) Seq.empty else DB.readOnly { implicit session =>
-      sql"""SELECT type_id, id, base_version, squashed_version FROM aggregates
-           | WHERE base_id = id AND id > ${after.asLong} AND type_id IN (${typeIds(types)})
-           | ORDER BY id LIMIT $limit""".stripMargin
+      sql"""SELECT a.type_id, a.id, a.base_version, a.squashed_version FROM aggregates a
+           | WHERE a.base_id = a.id AND a.id > ${after.asLong} AND a.type_id IN (${typeIds(types)}) ${scoped(scope)}
+           | ORDER BY a.id LIMIT $limit""".stripMargin
         .map(rs => StoredAggregate(AggregateType(typesNamesState.classNameById(rs.short(1))), AggregateId(rs.long(2)), AggregateVersion(rs.int(3)),
           rs.intOpt(4).map(AggregateVersion(_)))).list()
     }
 
   private def typeIds(types: Seq[AggregateType]): Seq[Short] = types.map(t => typesNamesState.typeIdByClassName(t.typeName)).distinct
+
+  // On the aggregate's own row, `a`.
+  private def scoped(scope: AggregateScope): SQLSyntax = scope match {
+    case AggregateScope.All => sqls""
+    case AggregateScope.Only(ids) if ids.isEmpty => sqls"AND false"
+    case AggregateScope.Only(ids) => sqls"AND a.id IN (${ids.toSeq.map(_.asLong)})"
+    case AggregateScope.InSpace(spaceId) => sqls"AND a.space_id = ${spaceId.asLong}"
+  }
+
+  /**
+    * F49, D38: gives the aggregates stored without a space (`space_id = -1`: rows from before the column) the space of
+    * their first event (the squash event of a squashed one), or, when that event does not know it (a deprecated event
+    * with `SpaceId.unknown`), the one `spaceOf` gives. Online and in batches of `batchSize` aggregates, one transaction
+    * each (D69). Returns how many it gave a space, and those it could not.
+    */
+  def backfillSpaces(spaceOf: (AggregateType, AggregateId, Event[_]) => Option[SpaceId] = (_, _, _) => None, batchSize: Int = 1000): SpaceBackfill = {
+    var after = Long.MinValue
+    var filled = 0
+    var left = Vector[AggregateId]()
+    var more = true
+    while (more) {
+      val batch = DB.readOnly { implicit session =>
+        sql"""SELECT id, type_id, coalesce(squashed_version, 1) FROM aggregates WHERE base_id = id AND space_id = -1 AND id > $after ORDER BY id LIMIT $batchSize"""
+          .map(rs => (AggregateId(rs.long(1)), AggregateType(typesNamesState.classNameById(rs.short(2))), AggregateVersion(rs.int(3)))).list()
+      }
+      val spaces = batch.map { case (id, aggregateType, first) =>
+        id -> Try(readEventsRange[Any](id, first, first).headOption.map(_.event)).toOption.flatten.flatMap {
+          case event: FirstEvent[_] if event.spaceId.asLong >= 0 => Some(event.spaceId)
+          case event => spaceOf(aggregateType, id, event)
+        }
+      }
+      DB.localTx { implicit session =>
+        spaces.foreach {
+          case (id, Some(space)) => sql"""UPDATE aggregates SET space_id = ${space.asLong} WHERE id = ${id.asLong} AND space_id = -1""".update()
+          case _ => ()
+        }
+      }
+      filled += spaces.count(_._2.isDefined)
+      left ++= spaces.collect { case (id, None) => id }
+      after = batch.lastOption.map(_._1.asLong).getOrElse(after)
+      more = batch.size == batchSize
+    }
+    SpaceBackfill(filled, left)
+  }
 
   // F26: one statement deletes the delivered rows of many acknowledgements.
   // The rows travel as two arrays, so one statement deletes thousands of them.

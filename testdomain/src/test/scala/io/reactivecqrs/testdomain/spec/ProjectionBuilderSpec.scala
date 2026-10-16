@@ -9,7 +9,7 @@ import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCo
 import io.reactivecqrs.core.documentstore.{Document, DocumentStore, NoopDocumentStoreCache, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
-import io.reactivecqrs.core.eventstore.{CommittedEvent, EventStoreState, PostgresEventStoreState}
+import io.reactivecqrs.core.eventstore.{AggregateScope, CommittedEvent, EventStoreState, PostgresEventStoreState}
 import io.reactivecqrs.core.projection._
 import io.reactivecqrs.core.rebuild.ProjectionBuilder._
 import io.reactivecqrs.core.rebuild.{ProjectionBuilder, ReplaySource}
@@ -26,10 +26,10 @@ import scala.concurrent.duration._
 // An aggregate of this spec only, so a build reads nothing of the other specs: a note with lines, with undo,
 // duplication, deletion and squash.
 
-case class BuildNote(title: String, lines: Vector[String])
+case class BuildNote(title: String, lines: Vector[String], space: Long = 0)
 
-case class BuildNoteCreated(title: String) extends FirstEvent[BuildNote] {
-  def spaceId: SpaceId = SpaceId(0)
+case class BuildNoteCreated(title: String, space: Long = 0) extends FirstEvent[BuildNote] {
+  def spaceId: SpaceId = SpaceId(space)
 }
 case class BuildNoteLineAdded(line: String) extends Event[BuildNote]
 case class BuildNoteUndone(eventsCount: Int) extends UndoEvent[BuildNote]
@@ -37,7 +37,7 @@ case class BuildNoteDuplicated(spaceId: SpaceId, baseAggregateId: AggregateId, b
 case class BuildNoteDeleted() extends Event[BuildNote]
 case class BuildNoteSquashed(spaceId: SpaceId, title: String, lines: Vector[String]) extends FirstEvent[BuildNote]
 
-case class CreateBuildNote(userId: UserId, title: String) extends FirstCommand[BuildNote, CustomCommandResponse[_]]
+case class CreateBuildNote(userId: UserId, title: String, space: Long = 0) extends FirstCommand[BuildNote, CustomCommandResponse[_]]
 case class AddBuildNoteLine(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, line: String)
   extends Command[BuildNote, CustomCommandResponse[_]]
 case class UndoBuildNote(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, count: Int)
@@ -49,21 +49,21 @@ class BuildNoteContext extends AggregateContext[BuildNote] {
   override val version: Int = 1
   override def initialAggregateRoot: BuildNote = BuildNote("", Vector())
   override def commandHandlers = _ => {
-    case c: CreateBuildNote => CommandSuccess(BuildNoteCreated(c.title))
+    case c: CreateBuildNote => CommandSuccess(BuildNoteCreated(c.title, c.space))
     case c: AddBuildNoteLine => CommandSuccess(BuildNoteLineAdded(c.line))
     case c: UndoBuildNote => CommandSuccess(BuildNoteUndone(c.count))
     case c: DuplicateBuildNote => CommandSuccess(BuildNoteDuplicated(SpaceId(0), c.baseId, c.baseVersion))
     case _: DeleteBuildNote => CommandSuccess(BuildNoteDeleted())
   }
   override def eventHandlers = (_, _, note) => {
-    case e: BuildNoteCreated => BuildNote(e.title, Vector())
+    case e: BuildNoteCreated => BuildNote(e.title, Vector(), e.space)
     case e: BuildNoteLineAdded => note.copy(lines = note.lines :+ e.line)
     case _: BuildNoteUndone => note
     case _: BuildNoteDuplicated => note
     case _: BuildNoteDeleted => null
-    case e: BuildNoteSquashed => BuildNote(e.title, e.lines)
+    case e: BuildNoteSquashed => BuildNote(e.title, e.lines, e.spaceId.asLong)
   }
-  override val squash: Option[SquashPolicy[BuildNote]] = Some(SquashPolicy(note => BuildNoteSquashed(SpaceId(0), note.title, note.lines)))
+  override val squash: Option[SquashPolicy[BuildNote]] = Some(SquashPolicy(note => BuildNoteSquashed(SpaceId(note.space), note.title, note.lines)))
 }
 
 // Projections that record what they are given, under the identity they are created with, to compare one built live
@@ -120,8 +120,8 @@ class MemoryBuildPositions(onSave: BuildPosition => Unit = _ => ()) extends Buil
 /** The store, but its first read of the row `hidden` leaves that row out, as if its transaction committed late. */
 class LateRowEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNamesState, hidden: Long) extends PostgresEventStoreState(mpjsons, typesNamesState) {
   private val hiddenOnce = new AtomicInteger(1)
-  override def readCommitted(types: Seq[AggregateType], after: Long, limit: Int): Seq[CommittedEvent] = {
-    val rows = super.readCommitted(types, after, limit)
+  override def readCommitted(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope): Seq[CommittedEvent] = {
+    val rows = super.readCommitted(types, after, limit, scope)
     if (rows.exists(_.id == hidden) && hiddenOnce.getAndDecrement() > 0) rows.filterNot(_.id == hidden) else rows
   }
 }

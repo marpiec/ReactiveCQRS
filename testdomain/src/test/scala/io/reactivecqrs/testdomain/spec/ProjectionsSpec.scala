@@ -34,11 +34,18 @@ class ManagedNotes(val subscriptionsState: SubscriptionsState, store: DocumentSt
     note match {
       case Some(n) =>
         val lines = NoteLines(n.title, if (shout) n.lines.map(_.toUpperCase) else n.lines)
-        if (created) store.insertDocument(0, id.asLong, lines) else store.overwriteDocument(id.asLong, lines)
+        if (created) store.insertDocument(n.space, id.asLong, lines) else store.overwriteDocument(id.asLong, lines)
         if (!rebuilding) sendUpdate[NoteLines](lines)
       case None => store.removeDocument(id.asLong)
     }
   })
+
+  // D63: what a targeted rebuild clears before the events come again.
+  override protected def clearForRebuild(target: RebuildTarget)(implicit session: DBSession): Unit = target match {
+    case RebuildTarget.OneAggregate(id) => store.removeDocument(id.asLong)
+    case RebuildTarget.OneSpace(space) => store.clearSpace(space.asLong)
+    case RebuildTarget.OneType(_) => store.clearAllData()
+  }
   override protected def receiveQuery: Receive = {
     case GetNoteLines(id) => sender() ! store.getDocument(id.asLong).map(_.document)
     case GetAllNoteLines => sender() ! store.findAll().map { case (id, doc) => AggregateId(id) -> doc.document }
@@ -100,8 +107,9 @@ class ProjectionsSpec extends CommonSpec {
       case success: SuccessResponse => success
       case other => fail("command failed: " + other)
     }
-    def create(title: String, lines: String*): AggregateId = {
-      val id = send(CreateBuildNote(userId, title)).aggregateId
+    def create(title: String, lines: String*): AggregateId = createIn(0, title, lines: _*)
+    def createIn(space: Long, title: String, lines: String*): AggregateId = {
+      val id = send(CreateBuildNote(userId, title, space)).aggregateId
       lines.zipWithIndex.foreach { case (line, i) => send(AddBuildNoteLine(userId, id, AggregateVersion(i + 1), line)) }
       id
     }
@@ -272,6 +280,80 @@ class ProjectionsSpec extends CommonSpec {
       registry.projection("m4p-states").get.active.map(b => (b.version, b.contexts.get(classOf[BuildNote].getName.replace('$', '.')))) mustBe Some((1, Some(2)))
       builds(second(1)).active.map(_.number) mustBe Some(1)
       two.stop()
+    }
+
+    Scenario("a targeted rebuild of one aggregate changes its document only (D63)") {
+      Given("two notes whose documents were damaged")
+      var supervisor: ActorRef = null
+      val node = new Node()(projections => { supervisor = notesProjection(projections, "m4p-target", 1, "m4p_target"); Seq(supervisor) })
+      val (repaired, untouched) = (node.create("repaired", "a"), node.create("untouched", "b"))
+      switchedTo(supervisor, 1)
+      awaitAssert(linesOf(supervisor, untouched).isDefined mustBe true, 10.seconds)
+      DB.autoCommit(implicit s => sql"""UPDATE projection_m4p_target_v1 SET document = '{"title":"damaged","lines":[]}'""".update())
+
+      When("one of them is rebuilt")
+      supervisor.askActor[AggregatesRebuilt](RebuildAggregates(RebuildTarget.OneAggregate(repaired)))(30.seconds) mustBe
+        AggregatesRebuilt(RebuildTarget.OneAggregate(repaired), 1)
+
+      Then("its document is right again, and the other one is as it was")
+      linesOf(supervisor, repaired) mustBe Some(NoteLines("repaired", Vector("a")))
+      linesOf(supervisor, untouched) mustBe Some(NoteLines("damaged", Vector()))
+      registry.projection("m4p-target").flatMap(_.pendingTarget) mustBe None
+      node.stop()
+    }
+
+    Scenario("a targeted rebuild of one organization rebuilds its aggregates only, after the space backfill (F49)") {
+      Given("notes of two organizations, stored before aggregates had a space")
+      var supervisor: ActorRef = null
+      val node = new Node()(projections => { supervisor = notesProjection(projections, "m4p-space", 1, "m4p_space"); Seq(supervisor) })
+      val (seven, eight) = (node.createIn(7, "seven", "x"), node.createIn(8, "eight", "y"))
+      switchedTo(supervisor, 1)
+      awaitAssert(linesOf(supervisor, eight).isDefined mustBe true, 10.seconds)
+      DB.autoCommit { implicit s =>
+        sql"UPDATE aggregates SET space_id = -1 WHERE id IN (${seven.asLong}, ${eight.asLong})".update()
+        sql"""UPDATE projection_m4p_space_v1 SET document = '{"title":"damaged","lines":[]}'""".update()
+      }
+
+      When("the backfill gives them their spaces, and organization 7 is rebuilt")
+      val backfill = eventStore.backfillSpaces()
+      backfill.filled must be >= 2
+      DB.readOnly(implicit s => sql"SELECT space_id FROM aggregates WHERE id = ${seven.asLong}".map(_.long(1)).single()) mustBe Some(7L)
+      supervisor.askActor[AggregatesRebuilt](RebuildAggregates(RebuildTarget.OneSpace(io.reactivecqrs.api.id.SpaceId(7))))(30.seconds).aggregates mustBe 1
+
+      Then("only organization 7's document is rebuilt")
+      linesOf(supervisor, seven) mustBe Some(NoteLines("seven", Vector("x")))
+      linesOf(supervisor, eight) mustBe Some(NoteLines("damaged", Vector()))
+      node.stop()
+    }
+
+    Scenario("the space backfill asks the host for an aggregate whose first event does not know its space") {
+      val node = new Node()(_ => Nil)
+      val note = node.create("unknown space", "x")
+      DB.autoCommit { implicit s =>
+        sql"UPDATE aggregates SET space_id = -1 WHERE id = ${note.asLong}".update()
+        sql"""UPDATE events SET event = '{"title":"unknown space","space":-1}' WHERE aggregate_id = ${note.asLong} AND version = 1""".update()
+      }
+
+      eventStore.backfillSpaces((_, id, _) => if (id == note) Some(io.reactivecqrs.api.id.SpaceId(42)) else None)
+
+      DB.readOnly(implicit s => sql"SELECT space_id FROM aggregates WHERE id = ${note.asLong}".map(_.long(1)).single()) mustBe Some(42L)
+      node.stop()
+    }
+
+    Scenario("a projection that does not clear for a targeted rebuild refuses it") {
+      var events: ActorRef = null
+      val node = new Node()(projections => {
+        events = projections.start[ManagedNoteEvents]("m4p-no-target", 1, "m4p-no-target-" + systems) { build =>
+          new ManagedNoteEvents(subscriptions, new PostgresDocumentStore[NoteLog](build.documentStore("m4p_no_target"), mpjsons, new NoopDocumentStoreCache))
+        }
+        Seq(events)
+      })
+      val note = node.create("note", "x")
+      switchedTo(events, 1)
+
+      events.askActor[RebuildRefused](RebuildAggregates(RebuildTarget.OneAggregate(note)))(10.seconds).reason must include("clearForRebuild")
+      registry.projection("m4p-no-target").flatMap(_.pendingTarget) mustBe None
+      node.stop()
     }
 
     Scenario("retiring a projection removed from the code drops its builds and failure records (F94)") {

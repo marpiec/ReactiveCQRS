@@ -1391,3 +1391,16 @@ Open test-infrastructure items:
   (both registries), `EventsBusActorSpec`. Mutation checks: without the drop, the context check, the
   routing to the active build, the adoption or the subscription handover, a test fails.
 - `sbt test`: core 200, testdomain 110, all pass.
+
+**17/10/2026: targeted rebuild and the space backfill (D63, R14; F49, F61)**
+- `RebuildAggregates(target)` on a projection's supervisor rebuilds one aggregate, one type or one
+  organization in place: the projection's `clearForRebuild` and the reset of its versions run in one
+  transaction (`ResetForRebuild`), then a builder scoped to the target (`AggregateScope`) delivers
+  their events in commit order and reconciles them; the target waits in the registry, so a stop does
+  not leave it half done. A projection without `clearForRebuild` refuses.
+- F49: `PostgresEventStoreState.backfillSpaces(spaceOf)` gives legacy aggregates the space of their
+  first event, or the host's for one that does not know it, online in batches (D69).
+- Tests: `ProjectionsSpec` (one aggregate, one organization after the backfill, the host's space
+  function, a refusal). Mutation checks: without the version reset, or with a space target read as
+  everything, a test fails.
+- `sbt test`: core 200, testdomain 114, all pass.

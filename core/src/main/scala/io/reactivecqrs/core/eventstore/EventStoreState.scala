@@ -3,7 +3,7 @@ package io.reactivecqrs.core.eventstore
 import java.time.Instant
 
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.{AggregateId, UserId}
+import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 import scalikejdbc.DBSession
 
 import scala.util.Try
@@ -27,6 +27,14 @@ case class CommittedEvent(id: Long, aggregateType: AggregateType, aggregateId: A
 
 /** A stored aggregate: its type, current version and squash point. */
 case class StoredAggregate(aggregateType: AggregateType, aggregateId: AggregateId, version: AggregateVersion, squashedUpTo: Option[AggregateVersion])
+
+/** Which aggregates of the types a read covers: all, the ones given, or those of one organization (D38, D63). */
+sealed trait AggregateScope
+object AggregateScope {
+  case object All extends AggregateScope
+  case class Only(aggregateIds: Set[AggregateId]) extends AggregateScope
+  case class InSpace(spaceId: SpaceId) extends AggregateScope
+}
 
 abstract class EventStoreState {
   def countAllEvents(): Int
@@ -59,10 +67,10 @@ abstract class EventStoreState {
   /** Up to `limit` events of the aggregates of `types` with row ids above `after`, in commit order (row id), each under
   * its own aggregate (a duplicate's own events, not its base's). Undone events and undo events too, as live delivery
   * sent them (D60). A row that cannot be read is returned with the reason, so one bad row does not stop a rebuild. */
-  def readCommitted(types: Seq[AggregateType], after: Long, limit: Int): Seq[CommittedEvent]
+  def readCommitted(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[CommittedEvent]
 
   /** Up to `limit` aggregates of `types` with ids above `after`, in id order. */
-  def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int): Seq[StoredAggregate]
+  def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[StoredAggregate]
 
   /** Removes delivered versions from the outbox. It may return before the rows are gone (the PostgreSQL store batches
     * these deletes, F26); a delete that fails only leaves rows that the outbox poller re-publishes later. */

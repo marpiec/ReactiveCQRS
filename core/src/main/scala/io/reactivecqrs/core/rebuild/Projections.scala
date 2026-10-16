@@ -1,13 +1,14 @@
 package io.reactivecqrs.core.rebuild
 
 import io.reactivecqrs.api.{AggregateContext, AggregateType}
+import io.reactivecqrs.api.id.{AggregateId, SpaceId}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
-import io.reactivecqrs.core.eventstore.EventStoreState
+import io.reactivecqrs.core.eventstore.{AggregateScope, EventStoreState}
 import io.reactivecqrs.core.projection._
 import io.reactivecqrs.core.rebuild.ProjectionBuilder._
 import io.reactivecqrs.core.rebuild.ProjectionSupervisor._
 import io.reactivecqrs.core.util.{BlockingDispatcher, MyActorLogging}
-import org.apache.pekko.actor.{Actor, ActorRef, ActorRefFactory, OneForOneStrategy, Props, Stash, SupervisorStrategy, Terminated}
+import org.apache.pekko.actor.{Actor, ActorRef, ActorRefFactory, OneForOneStrategy, Props, Stash, Status, SupervisorStrategy, Terminated}
 
 import scala.collection.mutable
 import scala.concurrent.duration._
@@ -72,6 +73,13 @@ object ProjectionSupervisor {
   case class RebuildStarted(build: Int)
   case class RebuildRefused(reason: String)
 
+  /** Rebuilds, in place, what the active build derived from the target (D63, R14): the projection clears it
+    * (`clearForRebuild`) and forgets its versions of the target's aggregates in one transaction, then gets their events
+    * again from the store, in commit order. Answered with `AggregatesRebuilt`, or `RebuildRefused`; one that a stop
+    * interrupted runs again at the next start. An organization's aggregates need their space (F49's backfill). */
+  case class RebuildAggregates(target: RebuildTarget)
+  case class AggregatesRebuilt(target: RebuildTarget, aggregates: Int)
+
   /** Forwards `message` to the instance of the build in progress, such as `RetryAllFailedSubscriptions` for failures
     * that keep the build from replacing the active one. */
   case class ToBuildInProgress(message: Any)
@@ -86,6 +94,26 @@ object ProjectionSupervisor {
 
   private case object Start
   private case object CheckSwitch
+  private case object RunTargetedBuilder
+
+  private[rebuild] def encode(target: RebuildTarget): String = target match {
+    case RebuildTarget.OneAggregate(id) => "aggregate:" + id.asLong
+    case RebuildTarget.OneType(aggregateType) => "type:" + aggregateType.typeName
+    case RebuildTarget.OneSpace(spaceId) => "space:" + spaceId.asLong
+  }
+
+  private[rebuild] def decode(text: String): Option[RebuildTarget] = text.split(":", 2) match {
+    case Array("aggregate", id) => Some(RebuildTarget.OneAggregate(AggregateId(id.toLong)))
+    case Array("type", name) => Some(RebuildTarget.OneType(AggregateType(name)))
+    case Array("space", id) => Some(RebuildTarget.OneSpace(SpaceId(id.toLong)))
+    case _ => None
+  }
+}
+
+/** A targeted rebuild's builder reads nothing back after a stop: the rebuild runs again whole. */
+private[rebuild] object NoPositions extends BuildPositions {
+  override def read(): BuildPosition = BuildPosition.Start
+  override def save(position: BuildPosition): Unit = ()
 }
 
 /** At most `slots` builds at once, granted in the order they were asked for. */
@@ -134,6 +162,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   private val registry = settings.registry
 
   private case class Instance(record: BuildRecord, ref: ActorRef, subscribed: Boolean)
+  private case class Targeted(target: RebuildTarget, requester: ActorRef, types: Seq[AggregateType], aggregates: Seq[AggregateId], builder: Option[ActorRef])
 
   private var active: Option[Instance] = None
   private var building: Option[Instance] = None // the same instance as `active` while a new projection is built first
@@ -143,6 +172,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   private var builder: Option[ActorRef] = None
   private var caughtUp = false
   private val retiring = mutable.Map[ActorRef, BuildRecord]()
+  private var targeted: Option[Targeted] = None
 
   // AR7: an instance that fails to start (its stores cannot be made) is stopped, not restarted, and the projection
   // starts again after a wait.
@@ -169,6 +199,8 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       connect()
       context.become(running)
       unstashAll()
+      // A targeted rebuild a stop interrupted runs again (a build in progress includes its target anyway).
+      if (building.isEmpty) registry.projection(spec.name).flatMap(_.pendingTarget).flatMap(decode).foreach(target => rebuildTarget(target, context.system.deadLetters))
     case GetSubscriptionRequests =>
       bus = Some(sender())
     case Terminated(ref) => terminated(ref)
@@ -268,10 +300,19 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       bus = Some(sender())
       subscribeTakers()
     case BuildSlotGranted => startBuilder()
+    case BuildCaughtUp if targeted.exists(_.builder.contains(sender())) => targetRebuilt()
     case BuildCaughtUp =>
       caughtUp = true
       runtime.slots ! ReleaseBuildSlot
       trySwitch()
+    case RebuildAggregates(target) => rebuildTarget(target, sender())
+    case ResetForRebuildDone if targeted.isDefined => startTargetedBuilder()
+    case RunTargetedBuilder => startTargetedBuilder()
+    case Status.Failure(e) if targeted.exists(_.builder.isEmpty) && active.exists(_.ref == sender()) =>
+      log.error("Projection " + spec.name + " cannot rebuild " + targeted.get.target + ": " + e.getMessage)
+      registry.setPendingTarget(spec.name, None)
+      targeted.get.requester ! RebuildRefused(e.getMessage)
+      targeted = None
     case CheckSwitch => trySwitch()
     case status: ProjectionStatus if building.exists(_.ref == sender()) =>
       if (status.failures.isEmpty && status.retrying.isEmpty) switchNow() else {
@@ -327,9 +368,53 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   // The bus no longer waits for the old instance: it hands its push subscriptions to the new one and stops.
   private def retiringActive(old: ActorRef): Unit = if (retiring.contains(old)) old ! Retire(active.map(_.ref))
 
-  private def rebuild(): Unit = building match {
-    case Some(b) => sender() ! RebuildRefused("build " + b.record.number + " is in progress")
-    case None =>
+  // ************** Targeted rebuild (D63, R14)
+
+  private def rebuildTarget(target: RebuildTarget, requester: ActorRef): Unit = {
+    val types = listeners.map(_._1).distinct.filter(t => target match {
+      case RebuildTarget.OneType(aggregateType) => aggregateType == t
+      case _ => true
+    })
+    (building, targeted, active) match {
+      case (Some(b), _, _) => requester ! RebuildRefused("build " + b.record.number + " is in progress, and replaces the active one whole")
+      case (_, Some(t), _) => requester ! RebuildRefused("the rebuild of " + t.target + " is in progress")
+      case (_, _, Some(a)) if types.nonEmpty =>
+        val aggregates = Iterator.unfold(AggregateId(Long.MinValue)) { after =>
+          val page = settings.eventStore.aggregatesOf(types, after, 1000, scopeOf(target))
+          page.lastOption.map(last => (page.map(_.aggregateId), last.aggregateId))
+        }.flatten.toVector
+        registry.setPendingTarget(spec.name, Some(encode(target)))
+        targeted = Some(Targeted(target, requester, types, aggregates, None))
+        log.info("Projection " + spec.name + " rebuilds " + target + ": " + aggregates.size + " aggregates")
+        a.ref ! ResetForRebuild(target, aggregates)
+      case _ => requester ! RebuildRefused(s"$target is not of an aggregate type the projection receives")
+    }
+  }
+
+  private def scopeOf(target: RebuildTarget): AggregateScope = target match {
+    case RebuildTarget.OneAggregate(id) => AggregateScope.Only(Set(id))
+    case RebuildTarget.OneType(_) => AggregateScope.All
+    case RebuildTarget.OneSpace(spaceId) => AggregateScope.InSpace(spaceId)
+  }
+
+  private def startTargetedBuilder(): Unit = for (t <- targeted; a <- active) {
+    val plan = BuildPlan(listeners.filter { case (aggregateType, _) => t.types.contains(aggregateType) })
+    val builder = context.watch(context.actorOf(Props(new ProjectionBuilder(a.ref, a.record.subscriber, plan, settings.eventStore,
+      settings.subscriptionsState, runtime.sources, NoPositions, self, settings.builder, Some(scopeOf(t.target)))).withDispatcher(BlockingDispatcher.id)))
+    targeted = Some(t.copy(builder = Some(builder)))
+  }
+
+  private def targetRebuilt(): Unit = targeted.foreach { t =>
+    registry.setPendingTarget(spec.name, None)
+    log.info("Projection " + spec.name + " rebuilt " + t.target)
+    t.requester ! AggregatesRebuilt(t.target, t.aggregates.size)
+    targeted = None
+  }
+
+  private def rebuild(): Unit = (building, targeted) match {
+    case (Some(b), _) => sender() ! RebuildRefused("build " + b.record.number + " is in progress")
+    case (_, Some(t)) => sender() ! RebuildRefused("the rebuild of " + t.target + " is in progress")
+    case _ =>
       val b = instanceOf(registry.startBuild(spec.name, spec.version, runtime.contextVersions))
       building = Some(b)
       log.info("Projection " + spec.name + " is built again on request (build " + b.record.number + ")")
@@ -340,6 +425,10 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   private def terminated(ref: ActorRef): Unit = {
     retiring.remove(ref) match {
       case Some(retired) => drop(retired)
+      case None if targeted.exists(_.builder.contains(ref)) =>
+        log.warning("Projection " + spec.name + ": the rebuild of " + targeted.get.target + " stopped; it runs again in " + settings.restartAfter)
+        targeted = targeted.map(_.copy(builder = None))
+        context.system.scheduler.scheduleOnce(settings.restartAfter, self, RunTargetedBuilder)(context.dispatcher)
       case None if builder.contains(ref) =>
         builder = None
         if (!caughtUp) {

@@ -254,19 +254,29 @@ class MemoryEventStoreState extends EventStoreState {
     })
   }
 
-  override def readCommitted(types: Seq[AggregateType], after: Long, limit: Int): Seq[CommittedEvent] = synchronized {
+  override def readCommitted(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[CommittedEvent] = synchronized {
     val wanted = types.toSet
-    eventsRows.reverseIterator.filter(row => row.eventId > after && wanted.contains(row.aggregateType)).take(limit).map { row =>
+    eventsRows.reverseIterator.filter(row => row.eventId > after && wanted.contains(row.aggregateType) && inScope(row.aggregateId, scope)).take(limit).map { row =>
       CommittedEvent(row.eventId, row.aggregateType, row.aggregateId, row.aggregateVersion, squashedVersions.get(row.aggregateId),
         Right(EventInfo[Any](row.aggregateVersion, row.event.asInstanceOf[Event[Any]], row.userId, row.timestamp, row.metadata)))
     }.toVector
   }
 
-  override def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int): Seq[StoredAggregate] = synchronized {
+  override def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[StoredAggregate] = synchronized {
     val wanted = types.toSet
     eventsRows.reverseIterator.filter(row => row.aggregateId.asLong > after.asLong && wanted.contains(row.aggregateType))
-      .map(row => row.aggregateId -> row.aggregateType).toVector.distinct.sortBy(_._1.asLong).take(limit)
+      .map(row => row.aggregateId -> row.aggregateType).toVector.distinct.filter(a => inScope(a._1, scope)).sortBy(_._1.asLong).take(limit)
       .map { case (id, aggregateType) => StoredAggregate(aggregateType, id, eventStore(id).last.version, squashedVersions.get(id)) }
+  }
+
+  // The space is the first event's, as PostgreSQL keeps it with the aggregate (D38).
+  private def inScope(id: AggregateId, scope: AggregateScope): Boolean = scope match {
+    case AggregateScope.All => true
+    case AggregateScope.Only(ids) => ids.contains(id)
+    case AggregateScope.InSpace(spaceId) => eventStore.get(id).flatMap(_.headOption).exists(_.event match {
+      case first: FirstEvent[_] => first.spaceId == spaceId
+      case _ => false
+    })
   }
 
   // Like the SQL DELETE: deleting an event that is no longer waiting is a no-op.

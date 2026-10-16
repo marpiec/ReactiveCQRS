@@ -60,6 +60,10 @@ trait SubscriptionsState {
   /** Whether the subscriber applied any version of any aggregate: a projection 0.12 built has (D81). */
   def hasSubscriptions(subscriberName: String): Boolean
 
+  /** In the caller's transaction, forgets the subscriber's versions of these aggregates, of every kind, and their
+    * failures: a targeted rebuild delivers them anew (D63). */
+  def resetVersions(subscriberName: String, aggregateIds: Seq[AggregateId])(implicit session: DBSession): Unit
+
   // D20a: a subscriber that gave up on an aggregate records it; it answers deliveries of that aggregate with
   // MessageFailed until the failure is cleared (a retry, or a skip of the failed version), and lists it in its status.
   // A later failure of the same subscription replaces the earlier one.
@@ -106,6 +110,12 @@ class MemorySubscriptionsState extends SubscriptionsState {
   }
 
   override def hasSubscriptions(subscriberName: String): Boolean = synchronized(state.keys.exists(_.subscriberName == subscriberName))
+
+  override def resetVersions(subscriberName: String, aggregateIds: Seq[AggregateId])(implicit session: DBSession): Unit = synchronized {
+    val reset = aggregateIds.toSet
+    state --= state.keys.filter(key => key.subscriberName == subscriberName && reset.contains(key.aggregateId))
+    failuresState --= failuresState.keys.filter { case (subscriber, _, id) => subscriber == subscriberName && reset.contains(id) }
+  }
 
   override def recordFailure(subscriberName: String, failure: SubscriptionFailure): Unit = synchronized {
     failuresState += (subscriberName, failure.subscriptionType, failure.aggregateId) -> failure
@@ -364,6 +374,17 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, eventsLogger:
   override def hasSubscriptions(subscriberName: String): Boolean = DB.readOnly { implicit session =>
     sql"""SELECT EXISTS (SELECT 1 FROM subscriptions WHERE subscriber_type_id = ${typesNamesState.typeIdByClassName(subscriberName)})"""
       .map(_.boolean(1)).single().getOrElse(false)
+  }
+
+  // The cache keeps every subscriber's versions of an aggregate: the aggregates are read again after the commit.
+  override def resetVersions(subscriberName: String, aggregateIds: Seq[AggregateId])(implicit session: DBSession): Unit = if (aggregateIds.nonEmpty) {
+    val subscriber = typesNamesState.typeIdByClassName(subscriberName)
+    aggregateIds.grouped(10000).foreach { ids =>
+      val longs = ids.map(_.asLong)
+      sql"""DELETE FROM subscriptions WHERE subscriber_type_id = $subscriber AND aggregate_id IN ($longs)""".update()
+      sql"""DELETE FROM subscription_failures WHERE subscriber_type_id = $subscriber AND aggregate_id IN ($longs)""".update()
+    }
+    AfterCommit(session)(synchronized(aggregateIds.foreach(perAggregate.remove)))
   }
 
   private val INSERT_INTO_SUBSCRIPTIONS = sql"""INSERT INTO subscriptions (id, subscriber_type_id, subscription_type, aggregate_id, aggregate_version) VALUES (nextval('subscriptions_seq'), ?, ?, ?, ?)"""

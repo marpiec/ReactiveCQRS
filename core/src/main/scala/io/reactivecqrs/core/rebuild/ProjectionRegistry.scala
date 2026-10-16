@@ -11,8 +11,9 @@ import scala.collection.mutable
 case class BuildRecord(name: String, number: Int, version: Int, suffix: String, subscriber: String, contexts: Map[String, Int],
                        position: BuildPosition)
 
-/** A projection as the registry knows it: the build that serves and the one in progress, if any. */
-case class RegisteredProjection(name: String, active: Option[BuildRecord], building: Option[BuildRecord])
+/** A projection as the registry knows it: the build that serves and the one in progress, if any, and a targeted
+  * rebuild of the active build that has not ended (D63). */
+case class RegisteredProjection(name: String, active: Option[BuildRecord], building: Option[BuildRecord], pendingTarget: Option[String] = None)
 
 /** What 0.12's rebuild recorded (`components_versions`): the version of each projection by name and of each aggregate
   * context by type, as last built. */
@@ -41,6 +42,9 @@ trait ProjectionRegistry {
   def abandon(name: String, build: Int): Unit
 
   def savePosition(name: String, build: Int, position: BuildPosition): Unit
+
+  /** A targeted rebuild of the active build begins (`Some`) or ends (`None`); one begun and not ended runs again at start. */
+  def setPendingTarget(name: String, target: Option[String]): Unit
 
   /** A table (or a sequence, `sequence = true`) a build created, dropped with the build. */
   def recordObject(name: String, build: Int, objectName: String, sequence: Boolean): Unit
@@ -76,7 +80,9 @@ class PostgresProjectionRegistry extends ProjectionRegistry {
            |  active_build INT,
            |  building_build INT,
            |  last_build INT NOT NULL,
-           |  switched TIMESTAMP)""".stripMargin.execute()
+           |  switched TIMESTAMP,
+           |  pending_target TEXT)""".stripMargin.execute()
+      sql"""ALTER TABLE projections ADD COLUMN IF NOT EXISTS pending_target TEXT""".execute()
       sql"""CREATE TABLE IF NOT EXISTS projection_builds (
            |  name VARCHAR(255) NOT NULL,
            |  build INT NOT NULL,
@@ -105,9 +111,10 @@ class PostgresProjectionRegistry extends ProjectionRegistry {
     sql"""SELECT * FROM projection_builds WHERE name = $name AND build = $number""".map(build).single()
 
   override def projection(name: String): Option[RegisteredProjection] = DB.readOnly { implicit session =>
-    sql"""SELECT active_build, building_build FROM projections WHERE name = $name""".map(rs => (rs.intOpt(1), rs.intOpt(2))).single().map {
-      case (active, building) => RegisteredProjection(name, active.flatMap(buildOf(name, _)), building.flatMap(buildOf(name, _)))
-    }
+    sql"""SELECT active_build, building_build, pending_target FROM projections WHERE name = $name""".map(rs => (rs.intOpt(1), rs.intOpt(2), rs.stringOpt(3)))
+      .single().map { case (active, building, pending) =>
+        RegisteredProjection(name, active.flatMap(buildOf(name, _)), building.flatMap(buildOf(name, _)), pending)
+      }
   }
 
   override def adopt(name: String, version: Int, subscriber: String, contexts: Map[String, Int]): BuildRecord = DB.localTx { implicit session =>
@@ -151,6 +158,10 @@ class PostgresProjectionRegistry extends ProjectionRegistry {
     sql"""UPDATE projection_builds SET bulk_done = ${position.bulkDone}, position = ${position.position} WHERE name = $name AND build = $build""".update()
   }
 
+  override def setPendingTarget(name: String, target: Option[String]): Unit = DB.autoCommit { implicit session =>
+    sql"""UPDATE projections SET pending_target = $target WHERE name = $name""".update()
+  }
+
   override def recordObject(name: String, build: Int, objectName: String, sequence: Boolean): Unit = DB.autoCommit { implicit session =>
     sql"""INSERT INTO projection_build_objects (name, build, object_name, is_sequence) VALUES ($name, $build, $objectName, $sequence)
          | ON CONFLICT DO NOTHING""".stripMargin.update()
@@ -183,7 +194,7 @@ class PostgresProjectionRegistry extends ProjectionRegistry {
 /** The registry in memory, for tests; dropping only forgets. */
 class MemoryProjectionRegistry extends ProjectionRegistry {
 
-  private case class Row(active: Option[Int], building: Option[Int], last: Int)
+  private case class Row(active: Option[Int], building: Option[Int], last: Int, pendingTarget: Option[String] = None)
   private val rows = mutable.Map[String, Row]()
   private val builds = mutable.Map[(String, Int), BuildRecord]()
   private val objects = mutable.Map[(String, Int), Set[(String, Boolean)]]()
@@ -192,7 +203,12 @@ class MemoryProjectionRegistry extends ProjectionRegistry {
   def objectsOf(name: String, build: Int): Set[(String, Boolean)] = synchronized(objects.getOrElse((name, build), Set.empty))
 
   override def projection(name: String): Option[RegisteredProjection] = synchronized {
-    rows.get(name).map(row => RegisteredProjection(name, row.active.flatMap(b => builds.get((name, b))), row.building.flatMap(b => builds.get((name, b)))))
+    rows.get(name).map(row => RegisteredProjection(name, row.active.flatMap(b => builds.get((name, b))), row.building.flatMap(b => builds.get((name, b))),
+      row.pendingTarget))
+  }
+
+  override def setPendingTarget(name: String, target: Option[String]): Unit = synchronized {
+    rows.get(name).foreach(row => rows(name) = row.copy(pendingTarget = target))
   }
 
   override def adopt(name: String, version: Int, subscriber: String, contexts: Map[String, Int]): BuildRecord = synchronized {

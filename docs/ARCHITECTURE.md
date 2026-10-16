@@ -971,6 +971,27 @@ made) makes the supervisor leave the bus with every instance and start again aft
 `restartAfter`. `Projections.retire(name)` drops every build of a projection removed from the
 code.
 
+**Targeted rebuild** (D63, R14). `RebuildAggregates(target)` rebuilds in place, on the active
+build, what the projection derived from one aggregate (`OneAggregate`), one of its aggregate types
+(`OneType`) or one organization (`OneSpace`, by `aggregates.space_id`). The supervisor lists the
+target's aggregates, records the target in the registry (a rebuild a stop interrupted runs again
+at the next start), and sends the active instance `ResetForRebuild`: in one transaction the
+projection's `clearForRebuild(target)` removes what it derived (a document, a space's documents)
+and its versions and failures of those aggregates are reset (`SubscriptionsState.resetVersions`).
+A builder scoped to the target (`AggregateScope.Only` or `InSpace`; no `BuildFromStore`, no
+`GoLive`, as the instance stays live) then delivers their events in commit order and reconciles
+them; live events of those aggregates meanwhile find a gap and are asked from their owners, and
+the gate drops what comes twice. The answer is `AggregatesRebuilt(target, count)`. A projection
+that does not implement `clearForRebuild` refuses (`RebuildRefused`), as does one with a build in
+progress.
+
+**Spaces of legacy aggregates** (F49, D38). Rows of `aggregates` from before the `space_id`
+column have `-1`. `PostgresEventStoreState.backfillSpaces(spaceOf)` gives them the space of their
+first event (the squash event of a squashed one), or, when that event does not know it, the one
+the host's `spaceOf` gives; it runs online, in batches of 1 000 aggregates, one transaction each
+(D69), and reports the aggregates it could not place. A targeted rebuild of an organization needs
+it first.
+
 ### 8.3 The 0.12 replayer (until M4 removes it)
 
 `EventsReplayOrchestrator.replay(...)` (`EventsReplayOrchestrator.scala:25-100`):
