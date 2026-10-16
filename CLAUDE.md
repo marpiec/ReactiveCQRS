@@ -138,6 +138,9 @@ AggregateRepositoryActor → EventsBusActor → subscribers (ProjectionActor, sa
   EventsBusActor keeps one delivery per event until every subscriber has answered
   MessageAck or MessageFailed, the deadline passes, or the subscriber stops; then it
   acks the owner (PublishEventsAck), which deletes the outbox rows. No cursor (D7).
+  OutboxPollerActor (one per system) alone re-delivers: every 30 s it reads the
+  outbox and has owners re-publish (Republish via the bus) at 3 and 6 minutes, then
+  reports "undelivered" at 10; rows from before the start go out at the first poll.
   ProjectionActor updates a DocumentStore and records progress in subscriptions.
 ```
 Design of the delivery work in M2: `docs/design/M2-delivery.md`.
@@ -156,6 +159,8 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
 - **`EventsBusActor`** — in-memory routing and delivery tracking (deadline, stall
   logging, `GetDeliveryStatus`); routes re-publish requests to the type's command bus;
   back-pressure for the replayer (`DeliveryOptions.maxReplayBuffer`, 10 000).
+- **`OutboxPollerActor`** (`core/.../delivery/`) — the single owner of re-deliveries
+  (D8); its timing lives in the pure `RedeliveryPolicy`. The host creates one per system.
 - **`ProjectionActor` / `SubscribableProjectionActor`** — apply events to read
   models; handle out-of-order delivery via delayed/merge buffers.
 - **`SagaActor`** — process managers; `CONTINUES`/`REVERTING`/`ERROR` phases.
@@ -184,7 +189,9 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
 - **`noop_events`** — `id (→events.id) PK, from_version`. Marks events that became
   no-ops (e.g. due to undo) from a given version.
 - **`events_to_publish`** — `event_id PK, aggregate_id, version, user_id,
-  event_time`. The outbox consumed by the event bus. Indexed on `(aggregate_id, version)`.
+  event_time`. The outbox: owners publish what they committed, delivered rows are
+  deleted in batches (F26), the outbox poller re-publishes waiting ones. Indexed on
+  `(aggregate_id, version)`.
 
 ### Event bus tables (unused since 1.0)
 - **`event_bus`** (the 0.12 cursor of the last published version per aggregate) and

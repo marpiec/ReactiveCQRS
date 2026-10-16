@@ -3,7 +3,7 @@ package io.reactivecqrs.core.eventstore
 import java.time.Instant
 
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
-import io.reactivecqrs.api.{AggregateVersion, Event, EventWithIdentifier, EventWithVersion}
+import io.reactivecqrs.api.{AggregateVersion, Event, EventWithVersion}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import org.apache.pekko.actor.ActorRef
 import org.scalatest.GivenWhenThen
@@ -19,10 +19,9 @@ case class OtherEvent(text: String) extends Event[OtherAggregate]
 class MemoryEventStoreStateTestDoubleSpec extends AnyFeatureSpec with GivenWhenThen with Matchers {
 
   private val aggregateA = AggregateId(1)
-  private val aggregateB = AggregateId(2)
   private val aggregateC = AggregateId(3)
 
-  // Older than the 10 s / 60 s thresholds used when looking for events to re-publish.
+  // Long before the test, like rows a restart finds in the outbox.
   private val longAgo = Instant.now.minusSeconds(120)
 
   private def persist[R](store: MemoryEventStoreState, aggregateId: AggregateId, expectedVersion: Int, events: Event[R]*): Unit = {
@@ -37,36 +36,25 @@ class MemoryEventStoreStateTestDoubleSpec extends AnyFeatureSpec with GivenWhenT
   }
 
   Feature("Events waiting for publication") {
-    Scenario("are read per aggregate, in version order") {
+    Scenario("are listed per aggregate with the oldest waiting version and the aggregate type") {
       val store = new MemoryEventStoreState
       persist(store, aggregateA, 0, EventA("a1"), EventB(2))
-      persist(store, aggregateB, 0, EventA("b1"))
+      persist(store, aggregateC, 0, OtherEvent("c1"))
       persist(store, aggregateA, 2, EventC(predicate = true))
 
-      store.readEventsToPublishForAggregate[SomeAggregate](Map.empty, aggregateA).map(e => (e.aggregateId, e.version.asInt)) mustBe List((aggregateA, 1), (aggregateA, 2), (aggregateA, 3))
-      store.readEventsToPublishForAggregate[SomeAggregate](Map.empty, aggregateB).map(e => (e.aggregateId, e.version.asInt)) mustBe List((aggregateB, 1))
+      store.readWaitingInOutbox().map(w => (w.aggregateId, w.aggregateType.typeName, w.oldestVersion.asInt)).toSet mustBe
+        Set((aggregateA, classOf[SomeAggregate].getName, 1), (aggregateC, classOf[OtherAggregate].getName, 1))
     }
 
     Scenario("deleting published events removes only those and tolerates a repeated delete") {
       val store = new MemoryEventStoreState
       persist(store, aggregateA, 0, EventA("a1"), EventB(2), EventC(predicate = true))
-      val published = Seq(EventWithIdentifier[SomeAggregate](aggregateA, AggregateVersion(1), EventA("a1")), EventWithIdentifier[SomeAggregate](aggregateA, AggregateVersion(2), EventB(2)))
+      val published = Seq(AggregateVersion(1), AggregateVersion(2))
 
-      store.deletePublishedEventsToPublish(aggregateA, published)
-      store.deletePublishedEventsToPublish(aggregateA, published)
+      store.deletePublished(aggregateA, published)
+      store.deletePublished(aggregateA, published)
 
-      store.readEventsToPublishForAggregate[SomeAggregate](Map.empty, aggregateA).map(_.version.asInt) mustBe List(3)
-    }
-
-    Scenario("aggregates with events to publish are filtered by aggregate type") {
-      val store = new MemoryEventStoreState
-      persist(store, aggregateA, 0, EventA("a1"))
-      persist(store, aggregateC, 0, OtherEvent("c1"))
-
-      var found = List[AggregateId]()
-      store.readAggregatesWithEventsToPublish(classOf[SomeAggregate].getName, oldOnly = true)(id => found ::= id)
-
-      found mustBe List(aggregateA)
+      store.readWaitingInOutbox().map(w => (w.aggregateId, w.oldestVersion.asInt)) mustBe Seq((aggregateA, 3))
     }
   }
 
@@ -79,9 +67,9 @@ class MemoryEventStoreStateTestDoubleSpec extends AnyFeatureSpec with GivenWhenT
       When("the first event is rewritten")
       store.overwriteEvents(aggregateA, Seq(EventWithVersion[SomeAggregate](AggregateVersion(1), EventA("rewritten"))))(NoSession)
 
-      Then("restore and the outbox both return the rewritten event")
+      Then("restore and re-publication both read the rewritten event")
       eventsOf(store, aggregateA) mustBe Vector(EventA("rewritten"), EventB(2))
-      store.readEventsToPublishForAggregate[SomeAggregate](Map.empty, aggregateA).map(_.event) mustBe List(EventA("rewritten"), EventB(2))
+      store.readEventsRange[SomeAggregate](Map.empty, aggregateA, AggregateVersion(1), AggregateVersion(2)).map(_.event) mustBe Seq(EventA("rewritten"), EventB(2))
     }
   }
 

@@ -902,3 +902,30 @@ Open test-infrastructure items:
 - `FailedRestoreSpec` and `StoredDataCheckSpec` repair the events they damage, so later
   specs in the run schema can read every stored event.
 - `sbt test`: core 87, testdomain 41, all pass.
+
+**16/10/2026: outbox poller, the single retry owner (D8; F2, F26, F33 part, F37, F72)**
+- `OutboxPollerActor` (one per system, created by the host) reads every aggregate waiting in
+  the outbox with one query for all types every 30 s (F37) and sends `Republish` through the
+  bus. The pure `RedeliveryPolicy` decides: re-publish at 3 and 6 minutes after the live
+  publication, report "undelivered" once at 10 minutes (the rows stay for the next start),
+  and give rows from before the start a fresh set of attempts, the first at the first poll.
+  At most 1 000 aggregates are re-published per poll, the longest waiting first, so a backlog
+  after an outage does not start every owner at once (found in this step's review); the
+  command buses count re-publications as activity, so those owners are reaped when idle.
+- Owners no longer keep `eventsToPublish`/`pendingPublish` or re-send timers, and a restore
+  only reads the state (F2, F72, F33 part); the command buses' outbox scans are gone. A
+  permanent delete is triggered by a marker the owner sets when it applies or restores a
+  `PermanentDeleteEvent`, carried out when the bus acks that version (`PermanentDeleteSpec`,
+  red with the marker disabled). The store's permanent delete skips `subscriptions` when the
+  table does not exist (a system without projections failed the whole delete before).
+- The PostgreSQL store deletes delivered outbox rows in batches on one thread, at most 20 ms
+  late (F26); a failed batch is logged with its cause and only means a later re-publication.
+  `MemoryEventStoreState` now changes its state under a lock, since the poller reads it from
+  another thread.
+- Controllable time: the policy takes the time as a parameter and the poller a `Clock`
+  (`TestClock` in testutils); tests send `Poll` themselves. The other timers keep short real
+  durations in tests. A Pekko scheduler that tests drive is not needed for M2.
+- Tests: `RedeliveryPolicySpec` (6), `OutboxPollerSpec` (restart, the F2 lost delivery, silence
+  until "undelivered"), `PermanentDeleteSpec` (2), event store outbox scenarios.
+- Still to come with the subscription failure state (next steps): a permanent delete must wait
+  while a subscription of the aggregate is failed (F76 note, D20a).

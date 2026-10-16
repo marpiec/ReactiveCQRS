@@ -3,11 +3,12 @@ package io.reactivecqrs.core.eventstore
 import java.time.Instant
 
 import org.apache.pekko.actor.ActorRef
-import io.reactivecqrs.api.{AggregateVersion, DuplicationEvent, Event, EventWithIdentifier, FirstEvent, UndoEvent}
+import io.reactivecqrs.api.{AggregateVersion, DuplicationEvent, Event, FirstEvent, UndoEvent}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, SpaceId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
 import io.reactivecqrs.testutils.CommonSpec
-import scalikejdbc.NoSession
+
+import scala.concurrent.duration._
 
 case class SomeAggregate()
 
@@ -172,9 +173,45 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
         PersistEvents(ActorRef.noSender, CommandId(1), UserId(1), AggregateVersion.ZERO, Instant.now.minusSeconds(120), Seq(EventA("one")), None))(session)
     }.get
 
-    var found = Set[AggregateId]()
-    eventStoreState.readAggregatesWithEventsToPublish(classOf[SomeAggregate].getName, oldOnly = true)(id => found += id)
-    found must contain(aggregateId)
+    eventStoreState.readWaitingInOutbox().filter(_.aggregateId == aggregateId).map(w => (w.aggregateType.typeName, w.oldestVersion)) mustBe
+      Seq((classOf[SomeAggregate].getName, AggregateVersion(1)))
+  }
+
+  // D8, F37: the outbox poller reads every waiting aggregate of every type in one query.
+  Scenario("Every aggregate waiting in the outbox is listed once, with its oldest waiting version") {
+    val a = new TestFixture(eventStoreState)
+    val b = new TestFixture(eventStoreState)
+    a.storeEvents(Seq(EventA("one"), EventB(2)))
+    a.storeEvents(Seq(EventC(true)))
+    b.storeEvents(Seq(EventA("other")))
+
+    eventStoreState.deletePublished(a.aggregateId, Seq(AggregateVersion(1)))
+
+    awaitAssert({
+      val waiting = eventStoreState.readWaitingInOutbox().filter(w => w.aggregateId == a.aggregateId || w.aggregateId == b.aggregateId)
+      waiting.map(w => (w.aggregateId, w.oldestVersion)).toSet mustBe Set((a.aggregateId, AggregateVersion(2)), (b.aggregateId, AggregateVersion(1)))
+    }, 3.seconds, 20.millis)
+  }
+
+  // F26: deletes from many owners are batched; each one still removes exactly its own rows.
+  Scenario("Deleting delivered versions of many aggregates removes exactly those rows") {
+    val fixtures = (1 to 20).map(_ => new TestFixture(eventStoreState))
+    fixtures.foreach(_.storeEvents(Seq(EventA("one"), EventB(2), EventC(true))))
+
+    fixtures.foreach(f => eventStoreState.deletePublished(f.aggregateId, Seq(AggregateVersion(1), AggregateVersion(2))))
+
+    awaitAssert(fixtures.foreach(f => eventStoreState.oldestVersionToPublish(f.aggregateId) mustBe Some(AggregateVersion(3))), 3.seconds, 20.millis)
+  }
+
+  Scenario("A permanent delete removes the aggregate's events and outbox rows") {
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one"), EventB(2)))
+
+    eventStoreState.deleteAggregatePermanently(f.aggregateId)
+
+    f.getEvents() mustBe empty
+    eventStoreState.oldestVersionToPublish(f.aggregateId) mustBe None
+    eventStoreState.readWaitingInOutbox().map(_.aggregateId) must not contain f.aggregateId
   }
 
   // F7: restore must see the timestamp the live path used, which is the one given with the events.
@@ -219,8 +256,8 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     f.storeEvents(Seq(EventA("one"), EventB(2), EventC(false)))
 
     eventStoreState.oldestVersionToPublish(f.aggregateId) mustBe Some(AggregateVersion(1))
-    eventStoreState.deletePublishedEventsToPublish(f.aggregateId, Seq(EventWithIdentifier(f.aggregateId, AggregateVersion(1), EventA("one"))))
-    eventStoreState.oldestVersionToPublish(f.aggregateId) mustBe Some(AggregateVersion(2))
+    eventStoreState.deletePublished(f.aggregateId, Seq(AggregateVersion(1)))
+    awaitAssert(eventStoreState.oldestVersionToPublish(f.aggregateId) mustBe Some(AggregateVersion(2)), 3.seconds, 20.millis)
     eventStoreState.oldestVersionToPublish(AggregateId(f.aggregateId.asLong + 1)) mustBe None
   }
 

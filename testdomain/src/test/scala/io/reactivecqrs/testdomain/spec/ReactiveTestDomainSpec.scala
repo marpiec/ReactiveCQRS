@@ -6,6 +6,7 @@ import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
+import io.reactivecqrs.core.delivery.OutboxPollerActor
 import io.reactivecqrs.core.documentstore.{MemoryDocumentStore, NoopDocumentStoreCache, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus._
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
@@ -79,6 +80,9 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val shoppingCartsListProjectionAggregatesBased = system.actorOf(Props(new ShoppingCartsListProjectionAggregatesBased(subscriptionsState, storeB)), "ShoppingCartsListProjectionAggregatesBased")
 
     eventBusActor ! EventsBusActor.RegisterSubscribers(List(shoppingCartsListProjectionEventsBased, shoppingCartsListProjectionAggregatesBased))
+
+    // One per system: asks owners to re-publish what waits in the outbox (D8).
+    val outboxPoller = system.actorOf(Props(new OutboxPollerActor(eventStoreState, eventBusActor)), "outboxPoller")
 
 
     def shoppingCartCommand(command: AnyRef): Aggregate[ShoppingCart]= {

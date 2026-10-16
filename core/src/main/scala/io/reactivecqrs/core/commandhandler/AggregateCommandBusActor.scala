@@ -7,8 +7,8 @@ import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor
-import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{EnsureRestored, GetAggregateRootCurrentMinVersion, GetAggregateRootCurrentVersion, GetEventsCurrentVersion}
-import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{EnsureEventsPublished, RemoveExpiredResponses}
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.{GetAggregateRootCurrentMinVersion, GetAggregateRootCurrentVersion, GetEventsCurrentVersion}
+import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.RemoveExpiredResponses
 import io.reactivecqrs.core.commandhandler.CommandHandlerActor._
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterPublisher
@@ -26,7 +26,6 @@ import scala.reflect.runtime.universe._
 
 object AggregateCommandBusActor {
 
-  private case class EnsureEventsPublished(oldOnly: Boolean)
   private case object RemoveExpiredResponses
 
   def apply[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateContext: AggregateContext[AGGREGATE_ROOT],
@@ -101,15 +100,10 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
   private val idempotency = new Idempotency(commandResponseState)
 
 
-  if (!eventsReplayMode) {
-    context.system.scheduler.scheduleOnce(30.second, self, EnsureEventsPublished(false))(context.dispatcher)
-  }
-
   override def preStart(): Unit = {
     // The event bus routes re-publish requests for this aggregate type here (D8, D20c).
     eventBus ! RegisterPublisher(AggregateType(aggregateRootClassTag.toString), self)
     if (!eventsReplayMode) {
-      context.system.scheduler.schedule(60.seconds, 60.seconds, self, EnsureEventsPublished(true))(context.dispatcher)
       // Hourly, at a random minute, so the buses of different aggregate types do not all clean up at once.
       val firstCleanUp = (60 + Random.nextInt(3600)).seconds
       context.system.scheduler.scheduleWithFixedDelay(firstCleanUp, 1.hour, self, RemoveExpiredResponses)(context.dispatcher)
@@ -149,9 +143,13 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
     case GetAggregateAtInstant(id, instant) => routeGetAggregateRootAtInstant(id, instant)
     case GetEventsForAggregate(id) => routeGetEvents(id)
     case GetEventsForAggregateForVersion(id, version) => routeGetEventsForVersion(id, version)
-    case EnsureEventsPublished(oldOnly) => ensureEventsPublished(oldOnly)
-    case m: RepublishOutbox => getOrCreateAggregateRepositoryActor(m.aggregateId) ! m
-    case m: RepublishRange => getOrCreateAggregateRepositoryActor(m.aggregateId) ! m
+    // Re-publications count as activity, so the owners they start are reaped like others when idle.
+    case m: RepublishOutbox =>
+      getOrCreateAggregateRepositoryActor(m.aggregateId) ! m
+      maintenance(m.aggregateId)
+    case m: RepublishRange =>
+      getOrCreateAggregateRepositoryActor(m.aggregateId) ! m
+      maintenance(m.aggregateId)
     case ReserveAggregateId =>
       val respondTo = sender()
       Try(takeNextAggregateId) match {
@@ -177,14 +175,6 @@ class AggregateCommandBusActor[AGGREGATE_ROOT:TypeTag](val uidGenerator: ActorRe
         log.error(e, "Cannot route command " + command.getClass.getSimpleName + ", errorId: [" + errorId + "]")
         respondTo ! CommandHandlingError(command.getClass.getSimpleName, errorId, CommandId(0)) // no command id was assigned
     }
-  }
-
-  private def ensureEventsPublished(oldOnly: Boolean): Unit = {
-    eventStoreState.readAggregatesWithEventsToPublish(aggregateTypeName, oldOnly)(aggregateId => {
-      log.info("Initializing Aggregate to resend events (oldOnly="+oldOnly+") " + aggregateId)
-      createCommandHandlerActorIfNeeded(aggregateId)
-      getOrCreateAggregateRepositoryActor(aggregateId) ! EnsureRestored // restore is lazy, and it schedules the re-send
-    })
   }
 
   // A repository actor stops after a failed restore (F10) or when reaped; its command handler holds the stopped

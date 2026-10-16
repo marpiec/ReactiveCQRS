@@ -9,6 +9,9 @@ import scalikejdbc.DBSession
 
 import scala.util.Try
 
+/** An aggregate with rows waiting in the outbox: its oldest waiting version, and when that event was written. */
+case class WaitingInOutbox(aggregateType: AggregateType, aggregateId: AggregateId, oldestVersion: AggregateVersion, since: Instant)
+
 abstract class EventStoreState {
   def countAllEvents(): Int
   def countEventsForAggregateTypes(strings: Seq[String]): Int
@@ -17,10 +20,17 @@ abstract class EventStoreState {
   def readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId, version: Option[Either[AggregateVersion, Instant]])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit
   def readAndProcessAllEvents(eventsVersionsMap: Map[EventTypeVersion, String], aggregateType: String,
                               batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit
-  def deletePublishedEventsToPublish(aggregateId: AggregateId, eventsIds: Seq[EventWithIdentifier[_]]): Unit
 
-  def readAggregatesWithEventsToPublish(aggregateTypeName: String, oldOnly: Boolean)(aggregateHandler: AggregateId => Unit): Unit
-  def readEventsToPublishForAggregate[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]]
+  /** Removes delivered versions from the outbox. It may return before the rows are gone (the PostgreSQL store batches
+    * these deletes, F26); a delete that fails only leaves rows that the outbox poller re-publishes later. */
+  def deletePublished(aggregateId: AggregateId, versions: Seq[AggregateVersion]): Unit
+
+  /** Carries out a `PermanentDeleteEvent` once it is delivered: removes the aggregate, its events, its outbox rows and
+    * its subscriptions in one transaction. */
+  def deleteAggregatePermanently(aggregateId: AggregateId): Unit
+
+  /** Every aggregate with rows waiting in the outbox, for the outbox poller (D8). */
+  def readWaitingInOutbox(): Seq[WaitingInOutbox]
 
   /** The aggregate's own events with versions `from` to `to`, in order, undone ones included, as live delivery sent
     * them (D60): what a re-publication sends. */
@@ -34,5 +44,3 @@ abstract class EventStoreState {
 
   def readNotYetPublishedEvents(): Map[AggregateId, AggregateVersion]
 }
-
-

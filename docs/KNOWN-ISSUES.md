@@ -202,7 +202,7 @@ implementation plan.
 - **Invariants:** I3, I4.
 
 #### F2 — Unacknowledged events are not re-sent while their repository actor is alive
-- **High**, likely · Fix in **M2** · Delivery, `AggregateRepositoryActor`, `AggregateCommandBusActor`
+- **High**, likely · **Fixed in M2** (16/10/2026, outbox poller, D8; `OutboxPollerSpec`) · Delivery, `AggregateRepositoryActor`, `AggregateCommandBusActor`
 - **Symptom:** a projection that once failed on an event (transient error) stays behind for that aggregate; later events are buffered as gaps until the actor is reaped (12 h idle, or never for a busy aggregate).
 - **Root cause:** the re-send list is loaded only at restore (`AggregateRepositoryActor.scala:77-99`); `pendingPublish` is never re-sent; `EnsureEventsPublished` skips existing actors (`AggregateCommandBusActor.scala:132-153`); listener exceptions are only logged (`ProjectionActor.scala:476-477, 623-626, 709-710`).
 - **Related:** F45, J3, R3; D8, D20a–c.
@@ -259,7 +259,7 @@ implementation plan.
 - **Invariants:** I5.
 
 #### F26 — Outbox write amplification; one DELETE per ack, fire-and-forget
-- **Medium**, likely · Fix in **M2** · Delivery, `PostgresEventStoreState`
+- **Medium**, likely · **Fixed in M2** (16/10/2026: the PostgreSQL store deletes delivered rows in batches on one thread, at most 20 ms late, and logs a failed batch with its cause; the old error log dropped the exception) · Delivery, `PostgresEventStoreState`
 - **Root cause:** every event is inserted into and deleted from `events_to_publish`; the delete runs in an unsupervised `Future` per ack (`AggregateRepositoryActor.scala:377-382`).
 - **Fix:** batched delete (`event_id = ANY(?)`) from one writer with failure handling; consider `(aggregate_id, version)` as the key. A published-version cursor instead of the table is a post-1.0 option (D44).
 
@@ -281,7 +281,7 @@ implementation plan.
 - **Fix:** build the query, then bind and run it. Test: `EventStoreStateSpec` "… ids beyond 32 bits" (uses `oldOnly = true`).
 
 #### F37 — Outbox scan query per aggregate type every minute
-- **Low**, likely · Fix in **M2** · `AggregateCommandBusActor`, `PostgresEventStoreState`
+- **Low**, likely · **Fixed in M2** (16/10/2026: one outbox poller query for all types every 30 s) · `AggregateCommandBusActor`, `PostgresEventStoreState`
 - **Root cause:** each command bus runs its own scan (`PostgresEventStoreState.scala:352-374`), 51 per minute in Neula.
 - **Fix:** one outbox poller for all types (D8; a singleton in the cluster, D46).
 
@@ -429,7 +429,7 @@ implementation plan.
 - **Fix:** the bus answers a command it cannot route with `CommandHandlingError` (and `ReserveAggregateId` with `Status.Failure`); the saga actor refuses the order with `SagaFailureResponse`; `SagaActor.postRestart` no longer reloads (not separately tested: no remaining path makes it throw). Other throws inside the bus's `receive` (the outbox scan query) remain for AR7.
 
 #### F72 — Every reload starts another re-send timer chain
-- **Low**, likely · Fix in **M2** (removed with the in-memory re-send, D8) · `AggregateRepositoryActor.assureRestoredState`, `resendEventsToPublish`
+- **Low**, likely · **Fixed in M2** (16/10/2026, removed with the in-memory re-send, D8) · `AggregateRepositoryActor.assureRestoredState`, `resendEventsToPublish`
 - **Symptom:** while a subscriber does not ack, an aggregate that was reloaded N times re-sends its waiting events N times every 180 s. Subscribers drop the duplicates by version (I4), so the cost is load and log noise.
 - **Root cause:** each restore schedules `ResendPersistedMessages`, and each such message schedules the next one while events wait. Since M1 restores also happen on reloads (F19), after undo and duplication events, and after failed persists.
 - **Found:** M1 code review (review 3, §7).
@@ -523,7 +523,7 @@ implementation plan.
 - **Fix:** drop the pooling (D34).
 
 #### F33 — Small hot-path waste
-- **Low**, likely · Fix in **M2** for `pendingPublish.distinct` (`AggregateRepositoryActor.scala:95, 136`, removed with D8) and the ERROR-level debug line (`ProjectionActor.scala:645`, rewritten with the sequence gate); in **M3** for the eager log strings
+- **Low**, likely · Fix in **M2** for `pendingPublish.distinct` (`AggregateRepositoryActor.scala:95, 136`, removed with D8: **fixed** 16/10/2026) and the ERROR-level debug line (`ProjectionActor.scala:645`, rewritten with the sequence gate); in **M3** for the eager log strings
 
 #### F40 — `println` in production paths
 - **Low**, confirmed · **Fixed in M1** (16/10/2026) · `UidGeneratorActor.scala:39, 50, 61` (failures also leave the requester unanswered), `SagaActor.scala:47`, `EventsBusActor.scala:182-185`
@@ -727,7 +727,7 @@ From §7 of Neula's change requests.
 | Milestone | Issues |
 |---|---|
 | M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔, F73 ✔, F74 ✔, F75 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53, F76 (Neula, on a production copy, with `StoredDataCheck` and the F76 query); Neula H3, H4, H5 |
-| M2 | AR6, AR7 (event bus and projections); F1 ✔, F2, F4 ✔, F5, F6, F11 ✔, F15, F26, F28, F29, F33 (part), F37, F41 ✔, F42 ✔, F45, F47 ✔, F72, F77, F79 ✔, F80; Neula H2 |
+| M2 | AR6, AR7 (event bus and projections); F1 ✔, F2 ✔, F4 ✔, F5, F6, F11 ✔, F15, F26 ✔, F28, F29, F33 (part), F37 ✔, F41 ✔, F42 ✔, F45, F47 ✔, F72 ✔, F77, F79 ✔, F80; Neula H2 |
 | M3 | AR1, AR4, AR7 (owner and command bus); F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33 (rest), F38, F39, F44, F50, F65, F76, F78, F81 |
 | M4 | F3, F43, F49 (backfill), F54, F55, F56, F57, F58, F59, F60, F61, F62, F82; Neula H1, H6 |
 | M5 | AR5; F46, F48, F63, F78 (between nodes) |

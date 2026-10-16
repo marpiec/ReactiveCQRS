@@ -4,6 +4,7 @@ import java.sql.DriverManager
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
+import io.reactivecqrs.core.delivery.OutboxPollerActor
 import io.reactivecqrs.core.documentstore.{NoopDocumentStoreCache, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus._
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
@@ -91,6 +92,9 @@ class BenchSystem(name: String, stores: BenchStores, projections: Boolean, rebui
       system.actorOf(Props(new CounterStateProjection(subscriptionsState, state, name + "State")), "stateProjection"))
   } else Nil
   eventBus ! EventsBusActor.RegisterSubscribers(subscribers)
+
+  // Re-delivers what waits in the outbox (D8); a rebuild system publishes nothing of its own.
+  if (!rebuild) system.actorOf(Props(new OutboxPollerActor(stores.eventStore, eventBus)), "outboxPoller")
 
   /** Increments the events-based projection has applied so far. */
   def projectedIncrements(): Long = DB.readOnly { implicit session =>

@@ -10,11 +10,14 @@ import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.Persist
 import io.reactivecqrs.core.types.TypesNamesState
 import scalikejdbc._
 
+import scala.concurrent.duration._
 import scala.util.Try
 
+/** @param outboxDeleteDelay how long delivered outbox rows wait, at most, to be deleted together with others (F26) */
 class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState, fetchSize: Int = 1000,
                               eventSizeLimit: Int = 100000, aggregateVersionLimit: Int = 10000,
-                              eventSizeLimitPerClassName: Map[String, Int] = Map.empty) extends EventStoreState {
+                              eventSizeLimitPerClassName: Map[String, Int] = Map.empty,
+                              outboxDeleteDelay: FiniteDuration = 20.millis) extends EventStoreState {
 
   val doubleNone: (Option[AggregateVersion], Option[Instant]) = (None, None)
 
@@ -309,35 +312,27 @@ ORDER BY events.id""")
     }
   }
 
-  private val DELETE_EVENT_QUERY = sql"""DELETE FROM events_to_publish WHERE aggregate_id = ? AND version = ?"""
+  // F26: one statement deletes the delivered rows of many acknowledgements.
+  private val outboxDeletes = new OutboxDeletes(outboxDeleteDelay, maxRows = 500)(rows => DB.autoCommit { implicit session =>
+    SQL("DELETE FROM events_to_publish WHERE (aggregate_id, version) IN (" + rows.map(_ => "(?, ?)").mkString(", ") + ")")
+      .bind(rows.flatMap { case (aggregateId, version) => Seq(aggregateId, version) }: _*)
+      .update()
+  })
 
-  override def deletePublishedEventsToPublish(aggregateId: AggregateId, events: Seq[EventWithIdentifier[_]]): Unit = {
+  override def deletePublished(aggregateId: AggregateId, versions: Seq[AggregateVersion]): Unit =
+    outboxDeletes.add(aggregateId.asLong, versions.map(_.asInt))
 
-    if(events.exists(e => e.event.isInstanceOf[PermanentDeleteEvent[_]])) {
-      DB.localTx { implicit session =>
-        sql"""DELETE FROM aggregates WHERE id = ?""".bind(aggregateId.asLong).update()
-        // noop_events must be deleted BEFORE events: it is resolved via a subquery over events,
-        // so deleting events first would make the subquery match nothing and leak noop_events rows.
-        sql"""DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = ?)""".bind(aggregateId.asLong).update()
-        sql"""DELETE FROM events WHERE aggregate_id = ?""".bind(aggregateId.asLong).update()
-        sql"""DELETE FROM events_to_publish WHERE aggregate_id = ?""".bind(aggregateId.asLong).update()
-        sql"""DELETE FROM subscriptions WHERE aggregate_id = ?""".bind(aggregateId.asLong).update()
-      }
-    } else if(events.length == 1) {
-      val event = events.head
-      DB.autoCommit { implicit session =>
-        DELETE_EVENT_QUERY
-            .bind(event.aggregateId.asLong, event.version.asInt)
-            .update()
-      }
-    } else {
-      val versions = events.map(_.version.asInt)
-      val params = versions.map(_ => "?").mkString(",")
-      DB.autoCommit { implicit session =>
-        SQL(s"""DELETE FROM events_to_publish WHERE aggregate_id = ? AND version IN ($params)""")
-          .bind(aggregateId.asLong +: versions: _*)
-          .update()
-      }
+  override def deleteAggregatePermanently(aggregateId: AggregateId): Unit = DB.localTx { implicit session =>
+    val id = aggregateId.asLong
+    sql"""DELETE FROM aggregates WHERE id = $id""".update()
+    // noop_events must be deleted BEFORE events: it is resolved via a subquery over events,
+    // so deleting events first would make the subquery match nothing and leak noop_events rows.
+    sql"""DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = $id)""".update()
+    sql"""DELETE FROM events WHERE aggregate_id = $id""".update()
+    sql"""DELETE FROM events_to_publish WHERE aggregate_id = $id""".update()
+    // A system without projections has no subscriptions table.
+    if (sql"""SELECT to_regclass('subscriptions') IS NOT NULL""".map(_.boolean(1)).single().getOrElse(false)) {
+      sql"""DELETE FROM subscriptions WHERE aggregate_id = $id""".update()
     }
   }
 
@@ -348,20 +343,15 @@ ORDER BY events.id""")
     }
   }
 
-  override def readAggregatesWithEventsToPublish(aggregateTypeName: String, oldOnly: Boolean)(aggregateHandler: AggregateId => Unit): Unit = {
-    // The periodic check (oldOnly) looks only at rows that have waited for a minute (F66).
-    val minimumAgeSeconds = if (oldOnly) 60 else 10
-    DB.readOnly { implicit session =>
-      sql"""SELECT DISTINCT aggregate_id
-            | FROM events_to_publish
-            | JOIN aggregates
-            | ON events_to_publish.aggregate_id = aggregates.id
-            | WHERE aggregates.type_id = ?
-            | AND event_time < NOW() - (? * INTERVAL '1 second')
-         """.stripMargin
-        .bind(typesNamesState.typeIdByClassName(aggregateTypeName), minimumAgeSeconds)
-        .foreach(rs => aggregateHandler(AggregateId(rs.long(1))))
-    }
+  // One query for all aggregate types (F37); the aggregate's own row of its chain gives the type.
+  override def readWaitingInOutbox(): Seq[WaitingInOutbox] = DB.readOnly { implicit session =>
+    sql"""SELECT aggregates.type_id, events_to_publish.aggregate_id, MIN(events_to_publish.version), MIN(events_to_publish.event_time)
+         | FROM events_to_publish
+         | JOIN aggregates ON aggregates.id = events_to_publish.aggregate_id AND aggregates.base_id = aggregates.id
+         | GROUP BY aggregates.type_id, events_to_publish.aggregate_id""".stripMargin
+      .map(rs => WaitingInOutbox(AggregateType(typesNamesState.classNameById(rs.short(1))), AggregateId(rs.long(2)),
+        AggregateVersion(rs.int(3)), rs.timestamp(4).toInstant))
+      .list()
   }
 
   override def countAllEvents(): Int =  DB.readOnly { implicit session =>
@@ -405,29 +395,6 @@ ORDER BY events.id""")
   override def oldestVersionToPublish(aggregateId: AggregateId): Option[AggregateVersion] = DB.readOnly { implicit session =>
     sql"""SELECT min(version) FROM events_to_publish WHERE aggregate_id = ?""".bind(aggregateId.asLong)
       .map(_.intOpt(1).map(AggregateVersion(_))).single().flatten
-  }
-
-  override def readEventsToPublishForAggregate[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String],
-                                                               aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]] = {
-    var result = List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]]()
-    DB.readOnly { implicit session =>
-      sql"""SELECT events_to_publish.version, events.event_type_id, event_type_version, events.event, events.user_id, events.event_time
-           | FROM events_to_publish
-           | JOIN events on events_to_publish.event_id = events.id
-           | WHERE events_to_publish.aggregate_id = ?
-           | ORDER BY events_to_publish.version""".stripMargin.bind(aggregateId.asLong).foreach { rs =>
-
-        val eventBaseType = typesNamesState.classNameById(rs.short(2))
-        val eventTypeVersion = rs.short(3)
-        val eventType = eventsVersionsMap.getOrElse(EventTypeVersion(eventBaseType, eventTypeVersion), eventBaseType)
-
-        val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(4), eventType)
-
-        result ::= IdentifiableEventNoAggregateType[AGGREGATE_ROOT](aggregateId, AggregateVersion(rs.int(1)), event, UserId(rs.long(5)), rs.timestamp(6).toInstant)
-
-      }
-    }
-    result.reverse
   }
 
   override def localTx[A](block: (DBSession) => A): A = DB.localTx { session =>

@@ -1,0 +1,120 @@
+package io.reactivecqrs.testdomain.spec
+
+import java.time.Instant
+
+import io.mpjsons.MPJsons
+import io.reactivecqrs.api._
+import io.reactivecqrs.api.id.{AggregateId, CommandId, SpaceId, UserId}
+import io.reactivecqrs.core.aggregaterepository.AggregateRepositoryActor.PersistEvents
+import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
+import io.reactivecqrs.core.delivery.OutboxPollerActor.Poll
+import io.reactivecqrs.core.delivery.{OutboxPollerActor, OutboxPollerOptions}
+import io.reactivecqrs.core.eventbus.EventsBusActor
+import io.reactivecqrs.core.eventbus.EventsBusActor._
+import io.reactivecqrs.core.eventstore.PostgresEventStoreState
+import io.reactivecqrs.core.types.PostgresTypesNamesState
+import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
+import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
+import org.apache.pekko.actor.{ActorRef, Props}
+import org.apache.pekko.testkit.TestProbe
+
+import scala.concurrent.duration._
+
+case class Memo(text: String)
+case class MemoWritten(text: String) extends FirstEvent[Memo] {
+  def spaceId: SpaceId = SpaceId(0)
+}
+case class MemoErased() extends PermanentDeleteEvent[Memo]
+
+case class WriteMemo(userId: UserId, memoId: AggregateId, text: String) extends FirstCommand[Memo, CustomCommandResponse[_]] {
+  override def chosenAggregateId: Option[AggregateId] = Some(memoId)
+}
+case class EraseMemo(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion) extends Command[Memo, CustomCommandResponse[_]]
+
+class MemoContext extends AggregateContext[Memo] {
+  override val version: Int = 1
+  override def initialAggregateRoot: Memo = Memo("")
+  override def commandHandlers = _ => {
+    case c: WriteMemo => CommandSuccess(MemoWritten(c.text))
+    case _: EraseMemo => CommandSuccess(MemoErased())
+  }
+  override def eventHandlers = (_, _, memo) => {
+    case e: MemoWritten => Memo(e.text)
+    case _: MemoErased => memo
+  }
+}
+
+// A PermanentDeleteEvent deletes the aggregate for good, but only once every subscriber has it, so read models can
+// remove their copies first. The owner carries out the delete when the bus acknowledges that event.
+class PermanentDeleteSpec extends CommonSpec {
+
+  TestDatabase.init()
+
+  private val mpjsons = new MPJsons
+  private val typesNamesState = new PostgresTypesNamesState().initSchema()
+  private val eventStore = new PostgresEventStoreState(mpjsons, typesNamesState).initSchema()
+  private val uidGenerator = system.actorOf(Props(new UidGeneratorActor(
+    new PostgresUidGenerator("aggregates_uids_seq"), new PostgresUidGenerator("commands_uids_seq"), new PostgresUidGenerator("sagas_uids_seq"))))
+
+  private val userId = UserId(1)
+  private val memoType = AggregateType(classOf[Memo].getName)
+
+  private class Fixture {
+    val subscriber = TestProbe()
+    val bus: ActorRef = system.actorOf(Props(new EventsBusActor()))
+    bus ! RegisterSubscribers(Seq(subscriber.ref))
+    subscriber.expectMsg(GetSubscriptionRequests)
+    subscriber.reply(SubscriptionRequests(Seq(SubscribeForEvents(memoType, subscriber.ref))))
+    val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(new MemoContext, uidGenerator, eventStore,
+      new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema(), bus, eventsReplayMode = false))
+
+    def delivered(memoId: AggregateId): Seq[Int] =
+      subscriber.fishForSpecificMessage(10.seconds) { case e: IdentifiableEvents[_] if e.aggregateId == memoId => e.events.map(_.version.asInt) }
+
+    def ack(memoId: AggregateId, versions: Int*): Unit = bus ! MessageAck(subscriber.ref, memoId, versions.map(AggregateVersion(_)))
+  }
+
+  private def storedVersions(memoId: AggregateId): Seq[Int] =
+    eventStore.readEventsRange[Memo](Map.empty, memoId, AggregateVersion(1), AggregateVersion(100)).map(_.version.asInt)
+
+  private def deletedForGood(memoId: AggregateId): Unit = awaitAssert({
+    storedVersions(memoId) mustBe empty
+    eventStore.oldestVersionToPublish(memoId) mustBe None
+  }, 5.seconds, 50.millis)
+
+  Feature("Deleting an aggregate for good") {
+
+    Scenario("happens once every subscriber has acknowledged the permanent delete event") {
+      val f = new Fixture
+      val memoId = AggregateId(System.nanoTime())
+      val written: CustomCommandResponse[_] = f.commandBus ?? WriteMemo(userId, memoId, "note")
+      written mustBe SuccessResponse(memoId, AggregateVersion(1))
+      f.delivered(memoId) mustBe Seq(1)
+      f.ack(memoId, 1)
+
+      val erased: CustomCommandResponse[_] = f.commandBus ?? EraseMemo(userId, memoId, AggregateVersion(1))
+      erased mustBe SuccessResponse(memoId, AggregateVersion(2))
+      f.delivered(memoId) mustBe Seq(2)
+      storedVersions(memoId) mustBe Seq(1, 2)
+
+      f.ack(memoId, 2)
+      deletedForGood(memoId)
+    }
+
+    Scenario("still waiting in the outbox after a restart, it is carried out when delivered again") {
+      val memoId = AggregateId(System.nanoTime())
+      eventStore.localTx { session =>
+        eventStore.persistEvents(Map.empty, memoId, PersistEvents[Memo](ActorRef.noSender, CommandId(0), userId, AggregateVersion.ZERO,
+          Instant.now, Seq(MemoWritten("note"), MemoErased()), None))(session)
+      }.get
+      val f = new Fixture
+      val poller = system.actorOf(Props(new OutboxPollerActor(eventStore, f.bus, OutboxPollerOptions(firstPollAfter = 1.hour, pollInterval = 1.hour))))
+
+      poller ! Poll
+      f.delivered(memoId) mustBe Seq(1, 2)
+      f.ack(memoId, 1, 2)
+
+      deletedForGood(memoId)
+    }
+  }
+}

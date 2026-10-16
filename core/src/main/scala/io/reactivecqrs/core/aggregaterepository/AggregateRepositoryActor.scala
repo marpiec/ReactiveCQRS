@@ -13,7 +13,6 @@ import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.util.RandomUtil
 import org.postgresql.util.PSQLException
 
-import scala.concurrent.Future
 import scala.concurrent.duration._
 import scala.reflect._
 import scala.reflect.runtime.universe._
@@ -42,12 +41,6 @@ object AggregateRepositoryActor {
 
 
 
-  case object ResendPersistedMessages
-
-  /** Makes a new actor restore its state (and re-send what is waiting for publication) now; a no-op afterwards. */
-  case object EnsureRestored
-
-
   case class AggregateWithSelectedEvents[AGGREGATE_ROOT](aggregate: Aggregate[AGGREGATE_ROOT], events: Iterable[EventWithVersion[AGGREGATE_ROOT]])
 }
 
@@ -71,34 +64,18 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   private var aggregateRoot: AGGREGATE_ROOT = initialState()
   private val aggregateType = AggregateType(classTag[AGGREGATE_ROOT].toString)
 
-  private var eventsToPublish = List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]]()
-
-  private var pendingPublish = List[EventWithIdentifier[AGGREGATE_ROOT]]()
+  // The version of a PermanentDeleteEvent: once the bus acks it, the aggregate is deleted for good.
+  private var permanentDeleteAt: Option[AggregateVersion] = None
 
   private var delayedQueries = List[DelayedMinVersionQuery]()
 
+  // Restoring only reads the state; what waits in the outbox is re-published when the outbox poller asks (D8, F72).
   private def assureRestoredState(): Unit = {
     //TODO make it future
     version = AggregateVersion.ZERO
     aggregateRoot = initialState()
+    permanentDeleteAt = None
     eventStore.readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap, aggregateId, singleReadForVersionOnly)(handleEvent)
-
-    if(singleReadForVersionOnly.isEmpty) {
-      eventsToPublish = eventStore.readEventsToPublishForAggregate[AGGREGATE_ROOT](eventsVersionsMap, aggregateId)
-
-      context.system.scheduler.scheduleOnce(10.seconds, self, ResendPersistedMessages)(context.dispatcher)
-    }
-  }
-
-  private def resendEventsToPublish(): Unit = {
-    if(eventsToPublish.nonEmpty) {
-      log.info("Resending messages for " + aggregateType.typeName+" "+aggregateId+": " + eventsToPublish.head.version.asInt + (if(eventsToPublish.length > 1) " -> " +eventsToPublish.last.version.asInt else ""))
-      eventsBus ! PublishEvents(aggregateType, eventsToPublish.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
-
-      pendingPublish = (eventsToPublish.map(e => EventWithIdentifier[AGGREGATE_ROOT](e.aggregateId, e.version, e.event)) ::: pendingPublish).distinct
-
-      context.system.scheduler.scheduleOnce(180.seconds, self, ResendPersistedMessages)(context.dispatcher)
-    }
   }
 
   override def preStart(): Unit = {
@@ -166,7 +143,6 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   }
 
   private lazy val restored: Receive = logReceive {
-    case EnsureRestored => ()
     case ee: PersistEvents[_] => handlePersistEvents(ee)
     case ee: OverrideAndPersistEvents[_] => handleOverrideAndPersistEvents(ee)
     case GetAggregateRootCurrentVersion(respondTo) => receiveReturnAggregateRoot(respondTo, None)
@@ -177,10 +153,9 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
     case GetAggregateRootWithEventsCurrentVersion(respondTo, eventTypes) => receiveReturnAggregateRootWithEvents(respondTo, None, eventTypes) // for following command
     case GetAggregateRootWithEventsExactVersion(respondTo, version, eventTypes) => // for following command
       whenUpToDate(version, respondTo)(receiveReturnAggregateRootWithEvents(respondTo, Some(version), eventTypes))
-    case PublishEventsAck(aggId, versions) => markPublishedEvents(aggregateId, versions)
+    case PublishEventsAck(_, versions) => delivered(versions)
     case RepublishOutbox(_) => eventStore.oldestVersionToPublish(aggregateId).foreach(from => republish(from, None))
     case RepublishRange(_, from, subscriber) => republish(from, Some(subscriber))
-    case ResendPersistedMessages => resendEventsToPublish()
   }
 
 
@@ -189,7 +164,7 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
   private def applyPersisted(events: Seq[IdentifiableEvent[AGGREGATE_ROOT]]): Unit = {
     if (events.exists(e => e.event.isInstanceOf[UndoEvent[_]] || e.event.isInstanceOf[DuplicationEvent[_]])) {
       // In case of those events it's easier to re read past events. If that fails the state is unknown, so nothing
-      // is published now: the next actor's restore re-sends what waits in the outbox.
+      // is published now: the outbox poller has the owner re-publish what waits in the outbox.
       if (restore().isEmpty) publish(events)
     } else {
       events.foreach(e => handleEvent(e.userId, e.timestamp, e.event, aggregateId, e.version.asInt, noopEvent = false))
@@ -210,7 +185,6 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
   private def publish(events: Seq[IdentifiableEvent[AGGREGATE_ROOT]]): Unit = {
     eventsBus ! PublishEvents(aggregateType, events.map(e => EventInfo(e.version, e.event, e.userId, e.timestamp)), aggregateId, Option(aggregateRoot))
-    pendingPublish = (events.map(e => EventWithIdentifier[AGGREGATE_ROOT](e.aggregateId, e.version, e.event)).toList ::: pendingPublish).distinct
     replayDelayedQueries()
   }
 
@@ -423,23 +397,17 @@ class AggregateRepositoryActor[AGGREGATE_ROOT:ClassTag:TypeTag](aggregateId: Agg
 
     if(aggregateId == aggId) { // otherwise it's event from base aggregate we don't want to count
       version = version.increment
+      if (!noopEvent && event.isInstanceOf[PermanentDeleteEvent[_]]) permanentDeleteAt = Some(version)
     }
   }
 
-  def markPublishedEvents(aggregateId: AggregateId, versions: Seq[AggregateVersion]): Unit = {
-    import context.dispatcher
-    eventsToPublish = eventsToPublish.filterNot(e => e.aggregateId == aggregateId && versions.contains(e.version))
-
-    val (published, remaining) = pendingPublish.partition(e => e.aggregateId == aggregateId && versions.contains(e.version))
-
-    pendingPublish = remaining
-
-    Future { // Fire and forget
-      eventStore.deletePublishedEventsToPublish(aggregateId, published.map(v => EventWithIdentifier(aggregateId, v.version, v.event)))
-    } onComplete {
-      case Failure(e) => log.error("Error while deleting events to publish", e)
-      case _ => ()
-    }
+  // The bus acked these versions: every subscriber took or failed them, so their outbox rows go. A failed delete only
+  // leaves rows that the outbox poller re-publishes later.
+  private def delivered(versions: Seq[AggregateVersion]): Unit = {
+    Try {
+      if (permanentDeleteAt.exists(versions.contains)) eventStore.deleteAggregatePermanently(aggregateId)
+      else eventStore.deletePublished(aggregateId, versions)
+    }.failed.foreach(e => log.error(e, "Removing delivered events of aggregate " + aggregateId.asLong + " from the outbox failed"))
   }
 
 

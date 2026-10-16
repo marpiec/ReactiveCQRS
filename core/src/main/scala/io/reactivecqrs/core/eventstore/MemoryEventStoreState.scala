@@ -17,6 +17,8 @@ object MemoryEventStoreState {
 
 case class EventStoreEntry[AGGREGATE_ROOT](userId: UserId, timestamp: Instant, version: AggregateVersion, event: Event[AGGREGATE_ROOT])
 
+// State is read and changed under the object's lock: owners, the outbox poller and the replayer call the store from
+// their own threads. Callbacks run outside the lock, on a snapshot.
 class MemoryEventStoreState extends EventStoreState {
 
   private var eventsRows: List[EventRow] = List.empty
@@ -25,7 +27,7 @@ class MemoryEventStoreState extends EventStoreState {
   private var eventIdSeq: Long = 0
 
 
-  override def persistEvents[AGGREGATE_ROOT](eventsVersionsMapReverse: Map[String, EventTypeVersion], aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = Try {
+  override def persistEvents[AGGREGATE_ROOT](eventsVersionsMapReverse: Map[String, EventTypeVersion], aggregateId: AggregateId, eventsEnvelope: PersistEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = Try { synchronized {
 
     var eventsForAggregate: Vector[EventStoreEntry[_]] = eventStore.getOrElse(aggregateId, Vector())
 
@@ -47,11 +49,11 @@ class MemoryEventStoreState extends EventStoreState {
 
     eventStore += aggregateId -> eventsForAggregate
     eventsWithVersions
-  }
+  }}
 
 
   override def readAndProcessEvents[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId, upToVersion: Option[Either[AggregateVersion, Instant]])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit = {
-    var eventsForAggregate: Vector[EventStoreEntry[AGGREGATE_ROOT]] = eventStore.getOrElse(aggregateId, Vector()).asInstanceOf[Vector[EventStoreEntry[AGGREGATE_ROOT]]]
+    var eventsForAggregate: Vector[EventStoreEntry[AGGREGATE_ROOT]] = synchronized(eventStore.getOrElse(aggregateId, Vector())).asInstanceOf[Vector[EventStoreEntry[AGGREGATE_ROOT]]]
 
     if(upToVersion.isDefined) {
       upToVersion.get match {
@@ -88,49 +90,45 @@ class MemoryEventStoreState extends EventStoreState {
   }
 
   override def readAndProcessAllEvents(eventsVersionsMap: Map[EventTypeVersion, String], aggregateType: String, batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit = {
-    eventsRows.filter(_.aggregateType.typeName == aggregateType).foreach(row => {
+    synchronized(eventsRows).filter(_.aggregateType.typeName == aggregateType).foreach(row => {
       eventHandler(Seq(EventInfo(row.aggregateVersion, row.event, row.userId, row.timestamp)), row.aggregateId, row.aggregateType)
     })
   }
 
   // Like the SQL DELETE: deleting an event that is no longer waiting is a no-op.
-  override def deletePublishedEventsToPublish(aggregateId: AggregateId, eventsIds: Seq[EventWithIdentifier[_]]): Unit = {
-    eventsToPublish --= eventsIds.map(eventId => (eventId.aggregateId, eventId.version))
+  override def deletePublished(aggregateId: AggregateId, versions: Seq[AggregateVersion]): Unit = synchronized {
+    eventsToPublish --= versions.map(version => (aggregateId, version))
   }
 
-  override def readAggregatesWithEventsToPublish(aggregateTypeName: String, oldOnly: Boolean)(aggregateHandler: (AggregateId) => Unit): Unit = {
-    val olderThan = Instant.now().minusSeconds(if (oldOnly) 60 else 10)
-    val aggregatesOfType = eventsRows.filter(_.aggregateType.typeName == aggregateTypeName).map(_.aggregateId).toSet
-    eventsToPublish
-      .filter { case ((aggregateId, _), (_, timestamp, _, _)) => aggregatesOfType.contains(aggregateId) && timestamp.isBefore(olderThan) }
-      .keys.map(_._1).toSet
-      .foreach(aggregateHandler)
+  override def deleteAggregatePermanently(aggregateId: AggregateId): Unit = synchronized {
+    eventsRows = eventsRows.filterNot(_.aggregateId == aggregateId)
+    eventStore -= aggregateId
+    eventsToPublish = eventsToPublish.filterNot { case ((eventAggregateId, _), _) => eventAggregateId == aggregateId }
+  }
+
+  override def readWaitingInOutbox(): Seq[WaitingInOutbox] = synchronized {
+    val typeOf = eventsRows.map(row => row.aggregateId -> row.aggregateType).toMap
+    eventsToPublish.toSeq.groupBy { case ((aggregateId, _), _) => aggregateId }.toSeq.map { case (aggregateId, rows) =>
+      val oldest = rows.minBy { case ((_, version), _) => version.asInt }
+      WaitingInOutbox(typeOf(aggregateId), aggregateId, oldest._1._2, rows.map { case (_, (_, timestamp, _, _)) => timestamp }.min)
+    }
   }
 
   override def readEventsRange[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId,
                                                from: AggregateVersion, to: AggregateVersion): Seq[EventInfo[AGGREGATE_ROOT]] = {
-    eventStore.getOrElse(aggregateId, Vector.empty)
+    synchronized(eventStore.getOrElse(aggregateId, Vector.empty))
       .filter(entry => entry.version >= from && entry.version <= to)
       .map(entry => EventInfo[AGGREGATE_ROOT](entry.version, entry.event.asInstanceOf[Event[AGGREGATE_ROOT]], entry.userId, entry.timestamp))
   }
 
-  override def oldestVersionToPublish(aggregateId: AggregateId): Option[AggregateVersion] = {
+  override def oldestVersionToPublish(aggregateId: AggregateId): Option[AggregateVersion] = synchronized {
     val versions = eventsToPublish.keys.collect { case (eventAggregateId, version) if eventAggregateId == aggregateId => version.asInt }
     if (versions.isEmpty) None else Some(AggregateVersion(versions.min))
   }
 
-  override def readEventsToPublishForAggregate[AGGREGATE_ROOT](eventsVersionsMap: Map[EventTypeVersion, String], aggregateId: AggregateId): List[IdentifiableEventNoAggregateType[AGGREGATE_ROOT]] = {
-    eventsToPublish.toList
-      .filter { case ((eventAggregateId, _), _) => eventAggregateId == aggregateId }
-      .sortBy { case ((_, version), _) => version.asInt }
-      .map { case ((eventAggregateId, version), (userId, timestamp, event, _)) =>
-        IdentifiableEventNoAggregateType[AGGREGATE_ROOT](eventAggregateId, version, event.asInstanceOf[Event[AGGREGATE_ROOT]], userId, timestamp)
-      }
-  }
+  override def countAllEvents(): Int = synchronized(eventsRows.size)
 
-  override def countAllEvents(): Int = eventsRows.size
-
-  override def countEventsForAggregateTypes(aggregateTypes: Seq[String]): Int = {
+  override def countEventsForAggregateTypes(aggregateTypes: Seq[String]): Int = synchronized {
     val types = aggregateTypes.toSet
     eventsRows.count(row => types.contains(row.aggregateType.typeName))
   }
@@ -139,12 +137,12 @@ class MemoryEventStoreState extends EventStoreState {
     block(NoSession)
   }
 
-  override def readNotYetPublishedEvents(): Map[AggregateId, AggregateVersion] = {
+  override def readNotYetPublishedEvents(): Map[AggregateId, AggregateVersion] = synchronized {
     eventsToPublish.keys.groupBy(_._1).map(a => a._1 -> AggregateVersion(a._2.map(_._2.asInt).min))
   }
 
   // The SQL version updates the stored event in place; restore and re-publication then read the new one.
-  override def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit = {
+  override def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit = synchronized {
     events.foreach { rewritten =>
       eventStore += aggregateId -> eventStore.getOrElse(aggregateId, Vector()).map(entry =>
         if (entry.version == rewritten.version) entry.asInstanceOf[EventStoreEntry[AGGREGATE_ROOT]].copy(event = rewritten.event) else entry)
