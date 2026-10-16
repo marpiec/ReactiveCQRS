@@ -899,6 +899,10 @@ pool does not come. The saga state's JDBC calls run on the blocking dispatcher (
    old history (restore, undo, duplication, re-publication, a chain row of a duplicate)
    either starts at the squash event or is refused; a squash or a permanent delete detaches
    the duplicates that read below it first, under the chain lock that duplication also takes.
+11. **A running owner never outlives a change of its stored history it cannot see.** A
+   permanent delete, a detach, and a rewrite or a state-changing squash of its base stop it
+   with `StopOwnerStale`, which writes no snapshot; snapshots are written only while their
+   aggregate is stored at their version (F100, F101).
 
 ---
 

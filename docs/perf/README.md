@@ -46,6 +46,9 @@ events carry a 200-character note, so the numbers show the library's costs, not 
 
 ## Reading the numbers
 
+- Later scenarios run in a database the earlier ones filled: the full replay of 500 000 events
+  took 3.3 s in the full M3 run and 1.95 s run alone (`scenarios=restore`). Compare a scenario
+  with itself run the same way.
 - All numbers come from one run on one machine (named in the report). They are for comparing
   runs on the same machine, not absolute figures; run the bench twice when a difference is
   close to the noise.

@@ -877,7 +877,7 @@ From §7 of Neula's change requests.
 |---|---|
 | M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔, F73 ✔, F74 ✔, F75 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53, F76 (Neula, on a production copy, with `StoredDataCheck` and the F76 query); Neula H3, H4, H5 |
 | M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔, F95 ✔; Neula H2, H7 |
-| M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8 ✔; F8 (contract ✔), F22 ✔, F23 ✔, F25 ✔, F27 ✔, F30 ✔, F31 ✔, F32 ✔, F33 (rest ✔), F38 ✔, F39 ✔, F44 ✔, F50 ✔, F65 ✔, F76 ✔, F78 ✔, F81 ✔, F96 ✔, F97 ✔; Neula H8 |
+| M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8 ✔; F8 (contract ✔), F22 ✔, F23 ✔, F25 ✔, F27 ✔, F30 ✔, F31 ✔, F32 ✔, F33 (rest ✔), F38 ✔, F39 ✔, F44 ✔, F50 ✔, F65 ✔, F76 ✔, F78 ✔, F81 ✔, F96 ✔, F97 ✔, F100–F107 ✔; D85 ✔; Neula H8 |
 | M4 | F3, F43, F49 (backfill), F54, F55, F56, F57, F58, F59, F60, F61, F62, F82, F93, F94, F98; Neula H1, H6 |
 | M5 | AR5; F46, F48, F63, F99 (F78 between nodes ✔ in M3) |
 | M6 | F8 (complete) |
@@ -1123,3 +1123,89 @@ Neula's requests will bring, and shape the code so they are easy):
   the numbers; a metrics interface reads them rather than threading counters through the code.
 - *Watch*: classifiers (AR8) are the one feature that conflicts with the gate; the bus's
   bookkeeping is per event in flight, which flow control would turn into per aggregate.
+
+### Review 5, 16/10/2026: closing M3 (architecture description, plan and code)
+
+Scope: the aggregate owner and its features as built (AR1; snapshots D30, serial mode R8, the
+metadata envelope D32, the outbox hook D33, the rewrite contract D17, squash D47–D52 with its
+check D85 and scheduler), the type keys (D75), the id pools (F23), the blocking dispatcher
+(F27), `docs/ARCHITECTURE.md` §2–§4 and §10, and the remaining milestones. Inputs: the bench
+(`baseline-M3.md` against `baseline-M2.md`, plus a restore-only run), a read-only audit of the
+M3 code by a separate agent, and our own reading; every finding was checked in the code, and
+every fix has a test that failed against the code before it.
+
+**Outcome.** The M3 decisions hold (D17, D29–D35, D47–D52, D75); D85 was added at the user's
+request: a squash event must give back exactly the state it replaces, unless its class says
+it may differ (`SquashMayChangeState`). Refinements: D51's preconditions also cover the
+duplicates a squash detaches (their first event neither undone nor waiting, no failed
+subscription) and run again under the chain lock; the chain lock covers every row a detach
+changes. Two problems stay open: F98 (a subscriber that never saw a squash point cannot start
+at the squash event, M4) and F99 (contended concurrent commands wait a back-off, M5; serial
+mode is the remedy).
+
+**Fixed now:** F100–F107, found by the audit; earlier in the milestone F96 and F97, found with
+the squash work.
+
+**New open issues:** F98, F99.
+
+**Measured** (`baseline-M3.md`; single runs on one machine, against `baseline-M2.md`):
+- Commands on many aggregates without subscribers: 11 151 commands/s (M2: 9 738), p99 3.9 ms
+  (7.7 ms), one SQL statement per command; with two projections 6 112 commands/s (6 024).
+- Serial mode (R8): 12 793 commands/s on many aggregates, not below concurrent mode; on one
+  contended aggregate 2 501 commands/s, p99 11 ms, no conflict. Concurrent mode on that
+  aggregate: 738 commands/s, p99 380 ms (M2: 1 166, p99 197 ms), see F99.
+- Restore (R10): from a snapshot 2–7 ms at every size up to 500 000 events. A full replay of
+  500 000 events takes 1.95 s with a peak heap of 142 MB in a restore-only run (M2: 2.16 s,
+  450 MB), 3.3 s in the full run after the earlier scenarios had filled the database; a fetch
+  size of 10 000 instead of 1 000 changed nothing.
+- Writes straight through the store: 33 814 events/s (M2: 21 924; the set-based `add_events`,
+  F31).
+- Soaks: the idle heap is back at 20 MB after the memory soak; the delivery soak of 1 000 000
+  events ends with no delivery waiting, an empty outbox and no failure, 21 MB after each of 5
+  restarts, every event projected 663 s after the load started (M2: 603 s).
+- Startup 787/822 ms in the full run (M2: 525/560 ms); a short run of the same code measured
+  511/546 ms, so this is the run's noise, to be watched in the M4 baseline.
+
+**Observations:**
+- The audit's findings sit at the seams M3 added: what the store changes under a running owner
+  (a permanent delete, a detach, a rewrite of a base) and what readers of old history see (an
+  instant before the squash point, a duplicate's rewrite reaching its base). The rule now
+  (`ARCHITECTURE.md` §10, invariants 10 and 11): a change of stored history that a running
+  owner cannot see stops that owner without a snapshot, and snapshots are written only while
+  their aggregate is stored at their version.
+- A squash and a permanent delete take every row they may change in one ordered statement, and
+  a duplication takes its base's chain in the same order; their later statements touch only
+  rows already held.
+- The in-memory store is a test double, but its divergences hid real semantics: an undo of an
+  undo (F97), a command's undos (F106) and undone first events (F105) differed from
+  PostgreSQL. `EventStoreStateSpec` runs every new store behaviour on both.
+- The type key (`AggregateType.of`) equals the stored name of every Neula aggregate root (all
+  top-level classes, checked by the audit in Neula's sources), so no stored name changes.
+- Test hygiene: the test helper `??` gives a "dead code" warning at every call, as its type
+  parameter is taken as `Nothing` while the call is typed (an implicit `ClassTag` does not
+  help: it is resolved first). Harmless, but it buries real warnings; typed asks can replace
+  it when M4 touches the specs.
+
+**Plan refinements** (recorded in the implementation plan): M4: F98 (a delivery that starts
+with a squash event starts the gate's sequence; the rebuild reads each aggregate from its
+squash event); the restore module is the source of replay states; the new projection runtime
+puts its actors on the blocking dispatcher itself. M5: item 7 (Scala 3 groundwork) is mostly
+done and F78's cross-node part is done; the squash scheduler joins the singletons; id pools of
+10 000 per node; F99. M6: export, import and the complete rewrite use the squash event factory
+and take the chain lock; the retention squash builds on the scheduler. M7: the runbook carries
+M3's host steps (H8) and squash's operations notes.
+
+**Looking ahead:**
+- *M4 rebuild*: the restore module gives states at any version from a snapshot plus a tail
+  and refuses reads below a squash point; a rebuild reads each aggregate from its squash event,
+  which the gate must accept as a start (F98). Squash events are ordinary events of their
+  contexts, so projections handle them like any other.
+- *M5 cluster*: the owner's stop protocol (`StopOwner`, `StopOwnerStale`, the kept messages) is
+  passivation; `HistoryChanged` and the delete notice go to the command bus, which forwards the
+  stops to wherever the owners run. The id pools are per node; the squash scheduler and the
+  outbox poller become singletons; the blocking dispatcher is configured per node.
+- *M6*: the squash event factory (`SquashPolicy.toEvent`, checked by D85) is what export,
+  import and the complete rewrite reuse; any operation that changes a base's history takes the
+  chain lock and tells running owners (`HistoryChanged`).
+- *Watch*: `SquashMayChangeState` is the one way stored history can give a different state; it
+  reaches live owners and snapshots, not projections (D51), which only a rebuild repairs.

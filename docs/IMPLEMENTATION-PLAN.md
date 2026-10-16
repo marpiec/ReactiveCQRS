@@ -1328,3 +1328,18 @@ Open test-infrastructure items:
 - Also simplified: one query for the squash point in the PostgreSQL store, the in-memory store's
   versions, the command bus's unused type name.
 - `sbt test`: core 164, testdomain 93, all pass.
+
+**16/10/2026: M3 closed (review 5, `baseline-M3`, tag `v1.0.0-M3`)**
+- The plan's M3 verification: the snapshot property test and R10 (`SnapshotSpec`); R8
+  (`SerialCommandsSpec`: 1 000 commands, 1 000 versions in a row; the bench: serial mode not
+  below concurrent mode); R12 (`OutboxHookSpec`); R13 (`MetadataSpec`, `SquashSpec`); squash
+  (`SquashSpec`, `EventStoreStateSpec`, with the random-history equivalence test); the
+  versioning removal (`PostgresEventStoreStateSpec`); the benchmark (`baseline-M3.md`). Left
+  to Neula: its golden event logs with and without snapshots (H8).
+- Review 5 (KNOWN-ISSUES §7): a read-only audit found F100–F107, all fixed with tests that failed
+  before; new open issues F98 (M4) and F99 (M5); refinements for M4–M7 recorded above.
+- `baseline-M3.md`: 11 151 commands/s without subscribers (M2: 9 738); serial mode 12 793 on
+  many aggregates and 2 501 on one contended aggregate; restores from a snapshot in 2–7 ms up
+  to 500 000 events; clean soaks. Concurrent commands on one contended aggregate are slower
+  than in M2 (F99).
+- `sbt test`: core 170, testdomain 97, all pass.
