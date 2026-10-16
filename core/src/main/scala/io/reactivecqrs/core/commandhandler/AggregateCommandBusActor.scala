@@ -26,7 +26,9 @@ object AggregateCommandBusActor {
 
   private case object RemoveExpiredResponses
   private case class IdsNotReceived(ofAggregates: Boolean, error: Throwable)
-  private case class DeletedPermanently(id: AggregateId)
+  /** The aggregate is gone; the owners of the duplicates detached with a squash event that may change the state read
+    * theirs again (D85). */
+  private case class DeletedPermanently(id: AggregateId, changed: Seq[AggregateId])
 
   /** Stops the aggregate's owner once the commands it started are answered; the next message for the aggregate starts a
     * new owner. The bus does the same by itself for owners idle for long; this is for operations and tests. */
@@ -63,7 +65,6 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   val minimumInactivityMillis: Long = 120000L // 2 minutes
 
   private val aggregateType = AggregateType.of[AGGREGATE_ROOT]
-  val aggregateTypeName: String = aggregateType.typeName
   val aggregateTypeSimpleName: String = aggregateRootClassTag.runtimeClass.getSimpleName
 
   // F23: ids come from pools fetched ahead. While a command (or an id reservation) waits for a pool, the ones that arrive
@@ -131,7 +132,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
     case request: SquashAggregate => toOwner(request.id, Squash(sender(), request))
     case RemoveExpiredResponses => removeExpiredResponses()
     case PassivateAggregate(id) => stopOwner(id.asLong)
-    case DeletedPermanently(id) => stopOwner(id.asLong) // its state is gone
+    case DeletedPermanently(id, changed) => (id +: changed).foreach(aggregate => stopOwner(aggregate.asLong)) // its state is gone
+    case HistoryChanged(changed) => changed.foreach(aggregate => stopOwner(aggregate.asLong))
     case OwnerPassivate => ownerIds.get(sender()).foreach(stopOwner)
     case Terminated(ref) => ownerTerminated(ref)
     case m =>
@@ -276,30 +278,30 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   private def deletePermanently(id: AggregateId, otherVersions: Seq[AggregateVersion]): Unit = {
     implicit val blocking: ExecutionContext = BlockingDispatcher(context.system)
     Future {
-      val deleted = detachingDuplicates(id).left.map(reason => (reason, true))
-        .flatMap(detach => eventStoreState.deleteAggregatePermanently(id, detach).left.map(reason => (reason, false)))
+      val deleted = detachingDuplicates(id).left.map(reason => (reason, true)).flatMap(detach =>
+        eventStoreState.deleteAggregatePermanently(id, detach).left.map(reason => (reason, false))
+          .map(_ => detach.collect { case (duplicate, _: SquashMayChangeState) => duplicate }))
       deleted.left.foreach { case (reason, forGood) =>
         if (forGood) log.error("Aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " is not deleted: " + reason)
         else log.warning("Aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " is not deleted yet: " + reason)
         eventStoreState.deletePublished(id, otherVersions)
       }
-      deleted.isRight
+      deleted.toOption
     }.onComplete {
-      case Success(true) => self ! DeletedPermanently(id)
-      case Success(false) => ()
+      case Success(Some(changed)) => self ! DeletedPermanently(id, changed)
+      case Success(None) => ()
       case Failure(e) => log.error(e, "Deleting aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " failed; it is tried again when its event is delivered again")
     }
   }
 
   // F76: duplicates that read the aggregate's history would lose it with the delete, so each is detached first, with a
-  // squash event of its state at version 1 (D50). A type without squash events cannot do that: its aggregate with
-  // duplicates is not deleted, and the event stays in the outbox.
+  // checked squash event of its state at version 1 (D50, D85). A type without squash events, or one whose squash event
+  // does not give a duplicate's state back, cannot do that: the aggregate is not deleted, and the event stays in the outbox.
   private def detachingDuplicates(id: AggregateId): Either[String, Seq[(AggregateId, FirstEvent[_])]] = {
     val duplicates = eventStoreState.duplicatesReading(id, None)
     settings.squash match {
       case _ if duplicates.isEmpty => Right(Nil)
-      case Some(policy) => Right(duplicates.map(duplicate =>
-        duplicate -> policy.toEvent(settings.restorer.restore(duplicate, Some(Left(AggregateVersion(1)))).root)))
+      case Some(policy) => settings.restorer.detachEvents(duplicates, policy)
       case None => Left("aggregates " + duplicates.map(_.asLong).mkString(", ") + " were duplicated from it, and the type has no squash " +
         "event to detach them (F76)")
     }

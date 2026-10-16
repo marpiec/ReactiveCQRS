@@ -407,6 +407,15 @@ resumable after a crash, and faster than today.
 - Item 1 (projection registry) removes a retired projection's `subscription_failures` rows
   (F94).
 
+**Refined at the M3 review** (KNOWN-ISSUES §7, review 5):
+- Item 4: a delivery that starts with an aggregate's squash event starts the gate's sequence there
+  (F98), and the rebuild reads each aggregate from its squash event (D51); projections handle
+  their contexts' squash events (D48), as the test domain's does.
+- Item 3: the restore module (`AggregateRestorer`: snapshot plus tail) is the source of replay
+  states; it refuses reads below a squash point, so the rebuild never asks for them.
+- The new projection runtime puts its actors on the blocking dispatcher itself; today F27
+  relies on the host's `Props(...).withDispatcher(...)`.
+
 **Verification**
 
 - Equivalence property test: for random multi-aggregate logs (testdomain gains a
@@ -475,6 +484,16 @@ rolling upgrades from 1.0 on, and a cluster of one that behaves like today's sin
 - Item 8: the metrics interface reads `GetDeliveryStatus`, `GetOutboxStatus` and
   `GetProjectionStatus`; that is R1's metric part.
 
+**Refined at the M3 review** (KNOWN-ISSUES §7, review 5):
+- Item 7 is mostly done: events and listeners carry `ClassTag`s and every type key comes from
+  `AggregateType.of` (D75, F50). Left: `SubscribableProjectionActor`'s `TypeTag` keys, the
+  document store's `TypeTag` reads, and mpjsons itself, which is reflection-based (porting or
+  replacing it is a step of its own). F78's cross-node part is done (`ON CONFLICT`).
+- Item 3: the shard entity keeps the owner's dispatcher (`withDispatcher`). Item 5: ids come
+  from pools of 10 000 per node now; the range check counts the faster use of the sequences.
+- Item 4: the squash scheduler (per system since M3, D52) joins the singletons; it already
+  reads in futures and asks one squash at a time. Item 8 reads `GetSquashStatus` too.
+
 **Verification**
 
 - In-JVM multi-node tests: a command sent on node A to an aggregate owned by node B
@@ -530,6 +549,12 @@ history rewrites are complete; ephemeral aggregates and retention squash are ava
   double (no synchronization, no rollback).
 - The import round trip can use two schemas of one database (F71).
 - The F49 backfill moved to M4.
+
+**Refined at the M3 review** (KNOWN-ISSUES §7, review 5):
+- Export, import (D40) and the complete rewrite (D76) use the context's squash event factory
+  (`SquashPolicy.toEvent`) and take the chain lock of F96 whenever they change a base's history.
+- Retention squash (R11) builds on `SquashScheduler` and `squashCandidates` (per-run limit,
+  cursor); its audit archive is written in the squash transaction.
 
 **Verification**
 
@@ -627,6 +652,11 @@ imports run while the aggregate's owner is stopped (queries do not reload).
 changes (H7: the subscriber list, one outbox poller, the new `subscription_failures` table);
 the operator guide explains failed subscriptions (status, retry, retry all, skip), the
 "undelivered" logs of the bus and the poller, and stopped subscribers.
+
+**Refined at the M3 review** (KNOWN-ISSUES §7, review 5): the runbook carries M3's host steps (H8:
+the dispatcher for projections, the id sequences, squash and its scheduler, snapshots, serial
+mode, metadata, the outbox writer, type keys) and squash's operations notes (VACUUM, D51's
+refusals and what clears them, F98 until M4).
 
 **Verification**
 
@@ -1280,3 +1310,21 @@ Open test-infrastructure items:
   (a nested root class), `CommandOutcomesSpec` (a query answered while a command waits for a
   slow pool, red against the old bus; where owners and handlers run, red without the change).
 - `sbt test`: core 159, testdomain 90, all pass.
+
+**16/10/2026: the squash check (D85, at the user's request)**
+- Every squash event, and every event that detaches a duplicate (on a squash or a permanent
+  delete), is built and checked by the restore module: the event handlers apply it to the
+  initial state as a restore will (by the user it is stored by, at the time of the event it
+  replaces), and the result must equal the state it replaces; otherwise the squash is refused
+  and a permanent delete waits. A squash event class that mixes in `SquashMayChangeState` may
+  differ on purpose: it is only applied; it takes every snapshot of its aggregate, the owner
+  reads its state again, and the command bus stops the owners of the duplicates it detached
+  (`HistoryChanged`) so they read theirs again.
+- Tests: `SquashEventCheckSpec` (the check, the user and time it applies the event with,
+  failing handlers, duplicates), `SquashSpec` (a refused squash changes nothing; an allowed
+  difference reaches the live owners, the snapshot and a detached duplicate), `PermanentDeleteSpec`
+  (a detach that would lose data makes the delete wait). Mutation checks: without the
+  comparison, the reload, the snapshot deletion or the owners' stop, the new tests fail.
+- Also simplified: one query for the squash point in the PostgreSQL store, the in-memory store's
+  versions, the command bus's unused type name.
+- `sbt test`: core 164, testdomain 93, all pass.

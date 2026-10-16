@@ -41,6 +41,9 @@ object AggregateOwner {
 
   /** A squash request (D47) and the caller to answer with a `SquashResponse`. */
   case class Squash(respondTo: ActorRef, request: SquashAggregate)
+  /** To the command bus: the histories of these aggregates now give other states (a squash that may change the state
+    * detached them, D85); their owners, if running, must stop and read them again. */
+  case class HistoryChanged(aggregateIds: Seq[AggregateId])
 
   /** D37: a concurrent command is run again on the latest state after a conflict, at most 10 times, waiting 10 ms
     * doubling to 500 ms, jittered so that competing commands spread out. */
@@ -491,8 +494,10 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
   // ************** Squash (D47–D52)
 
   // On this owner's thread, between commands: the version and the state stay as they are, so commands in flight are not
-  // affected. The squash event is the context's, made from the state at `upTo`; the duplicates that read this
-  // aggregate below `upTo` are detached first, each with a squash event of its own state at version 1 (D50).
+  // affected. The squash event is the context's, made from the state at `upTo` and checked against it (D85); the
+  // duplicates that read this aggregate below `upTo` are detached first, each with a checked squash event of its own
+  // state at version 1 (D50). A squash event that may change the state changes what the history gives: this owner reads
+  // its state again, and the command bus stops the owners of the duplicates detached so, to read theirs again.
   private def squashHistory(request: SquashAggregate): SquashResponse = squash match {
     case None => SquashRefused(aggregateId, "squash is not enabled for " + aggregateType.simpleName)
     case Some(_) if request.upTo <= AggregateVersion.ZERO || request.upTo > version =>
@@ -502,16 +507,17 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
       // The blocker is checked first, before the states to squash are restored; the store checks it again.
       Try(for {
         _ <- eventStore.squashBlocker(aggregateId, upTo).toLeft(())
-        state <- Option(if (upTo == version) root else restorer.restore(aggregateId, Some(Left(upTo))).root)
-          .toRight("the aggregate is deleted at version " + upTo.asInt)
-        detach = eventStore.duplicatesReading(aggregateId, Some(upTo)).map(duplicate =>
-          duplicate -> policy.toEvent(restorer.restore(duplicate, Some(Left(AggregateVersion(1)))).root))
-        _ <- eventStore.squash(aggregateId, upTo, policy.toEvent(state), request.userId, request.metadata, detach)
-      } yield detach) match {
-        case Success(Right(detach)) =>
-          if (snapshotVersion <= upTo) snapshotVersion = AggregateVersion.ZERO
+        event <- restorer.squashEvent(aggregateId, upTo, policy, Some(request.userId), if (upTo == version) Some(root) else None)
+        detach <- restorer.detachEvents(eventStore.duplicatesReading(aggregateId, Some(upTo)), policy)
+        _ <- eventStore.squash(aggregateId, upTo, event, request.userId, request.metadata, detach)
+      } yield (event, detach)) match {
+        case Success(Right((event, detach))) =>
           log.info("Aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " squashed up to version " + upTo.asInt +
             (if (detach.isEmpty) "" else ", detaching " + detach.map(_._1.asLong).mkString(", ")))
+          val changed = detach.collect { case (duplicate, _: SquashMayChangeState) => duplicate }
+          if (changed.nonEmpty) context.parent ! HistoryChanged(changed)
+          if (event.isInstanceOf[SquashMayChangeState]) restore()
+          else if (snapshotVersion <= upTo) snapshotVersion = AggregateVersion.ZERO
           AggregateSquashed(aggregateId, upTo)
         case Success(Left(reason)) => SquashRefused(aggregateId, reason)
         case Failure(e) =>

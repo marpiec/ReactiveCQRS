@@ -84,6 +84,34 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
     }
   }
 
+  /**
+    * The context's squash event to replace the aggregate's own events up to `version` (D47), checked (D85): the event
+    * handlers apply it to the initial state as a restore will, by `userId` (for a detach, by the user of the event it
+    * replaces) at the time of the event it replaces, and the result must equal the aggregate's state at `version`,
+    * unless the event is a `SquashMayChangeState`. `state`: that state when the caller has it; otherwise it is restored.
+    * Left: why the event cannot be used.
+    */
+  def squashEvent(aggregateId: AggregateId, version: AggregateVersion, policy: SquashPolicy[AGGREGATE_ROOT], userId: Option[UserId],
+                  state: Option[AGGREGATE_ROOT] = None): Either[String, FirstEvent[AGGREGATE_ROOT]] = for {
+    replaced <- eventStore.readEventsRange[AGGREGATE_ROOT](aggregateId, version, version).headOption.toRight("no event at version " + version.asInt)
+    expected <- Option(state.getOrElse(restore(aggregateId, Some(Left(version))).root)).toRight("the aggregate is deleted at version " + version.asInt)
+    event <- Try(policy.toEvent(expected)).toEither.left.map(e => "making the squash event failed: " + e)
+    restored <- Try(eventHandlers(userId.getOrElse(replaced.userId), replaced.timestamp, initialState())(event)).toEither
+      .left.map(e => "the event handlers fail on the squash event " + event.getClass.getSimpleName + ": " + e)
+    _ <- Either.cond(restored == expected || event.isInstanceOf[SquashMayChangeState], (),
+      "the squash event " + event.getClass.getSimpleName + " does not give back the state it replaces (D85)")
+  } yield event
+
+  /** For each duplicate, the checked squash event of its state at version 1 that detaches it (D50, F76); Left: why the
+    * first one that cannot be detached cannot. */
+  def detachEvents(duplicates: Seq[AggregateId], policy: SquashPolicy[AGGREGATE_ROOT]): Either[String, Seq[(AggregateId, FirstEvent[AGGREGATE_ROOT])]] =
+    duplicates.foldLeft[Either[String, Vector[(AggregateId, FirstEvent[AGGREGATE_ROOT])]]](Right(Vector.empty)) { (detached, duplicate) =>
+      for {
+        done <- detached
+        event <- squashEvent(duplicate, AggregateVersion(1), policy, None).left.map("duplicate " + duplicate.asLong + ": " + _)
+      } yield done :+ (duplicate -> event)
+    }
+
   /** Every event of the aggregate up to its newest version or `at`, its base's included, undone ones too, in order,
     * with their metadata envelopes (D32). */
   def events(aggregateId: AggregateId, at: Option[Either[AggregateVersion, Instant]] = None): List[EventInfo[AGGREGATE_ROOT]] = {

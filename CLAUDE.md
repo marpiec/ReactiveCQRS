@@ -78,7 +78,9 @@ sbt "project core" "~compile"   # incremental
   - `version` (no event versioning since 1.0, D29: a changed event shape is a new class).
   - Optional features: `snapshots` (D30), `commandProcessing` (R8), `squash` (D47: a squash
     event that replaces events 1..N at version N, on request with `SquashAggregate` or by the
-    `SquashScheduler`; reads, undos and duplications below the squash point are refused).
+    `SquashScheduler`; reads, undos and duplications below the squash point are refused). A squash
+    event must give back exactly the state it replaces, or the squash is refused (D85), unless
+    its class mixes in `SquashMayChangeState`.
   - See `testdomain/.../ShoppingCartAggregateContext.scala` for the pattern.
 - **Commands** (`api/.../Command.scala`) come in flavors that drive routing:
   - `FirstCommand` — creates a new aggregate (no id yet).

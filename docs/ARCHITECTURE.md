@@ -470,6 +470,15 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
 - **Request:** `SquashAggregate(id, upTo, userId, metadata)` to the command bus, which passes
   it to the owner; the answer is `AggregateSquashed` or `SquashRefused(reason)`. The owner runs
   it on its thread between commands; its version and state stay as they are.
+- **The check (D85):** the squash event, and each event that detaches a duplicate, is built
+  and checked by the restore module (`AggregateRestorer.squashEvent`, `detachEvents`): the
+  event handlers apply it to the initial state as a restore will (by the user it is stored by,
+  at the time of the event it replaces), and the result must equal (`==`) the state it
+  replaces, or the squash is refused (a permanent delete waits, F76). A class that mixes in
+  `SquashMayChangeState` may differ on purpose: it is only applied, not compared; the store
+  then deletes every snapshot of that aggregate, the owner reads its state again, and it asks
+  the command bus (`HistoryChanged`) to stop the owners of the duplicates detached so, which
+  read theirs again. Projections are not told (D51).
 - **Preconditions (D51)**, checked by the owner first and again in the transaction
   (`squashBlocker`): not squashed that far already; no outbox rows at or below `upTo`; no
   failed subscription; no undo after `upTo` that undid events at or below it; and, for each

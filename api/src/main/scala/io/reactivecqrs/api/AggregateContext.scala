@@ -28,17 +28,30 @@ case class SquashAggregate(id: AggregateId, upTo: AggregateVersion, userId: User
 sealed trait SquashResponse
 case class AggregateSquashed(id: AggregateId, upTo: AggregateVersion) extends SquashResponse
 /** Nothing was changed, for `reason`: squash is not enabled for the type; the version is out of range, squashed
-  * already, or deleted; a precondition of D51 does not hold now (rows still wait in the outbox, a subscription is
-  * failed, a later undo reaches the squash point); or a duplicate was made meanwhile. The last two may pass later. */
+  * already, or deleted; a squash event, the aggregate's or one that detaches a duplicate, does not give back the state
+  * it replaces, or its event handler fails (D85); a precondition of D51 does not hold now (rows still wait in the
+  * outbox, a subscription is failed, a later undo reaches the squash point); or a duplicate was made meanwhile. The last
+  * two may pass later. */
 case class SquashRefused(id: AggregateId, reason: String) extends SquashResponse
 
 /**
   * Squash (D47, D48), opt-in per context: `toEvent` makes the context's squash event from the aggregate's state at the
   * squash point. It is an ordinary event class of the context, a `FirstEvent` whose event handler gives that state back,
-  * evolved like any other (D29); the history never holds raw state. `automatic`: the squash scheduler squashes the
-  * context's aggregates by this rule (D52).
+  * evolved like any other (D29); the history never holds raw state. Every squash checks it (D85): the event handlers
+  * apply the event to the initial state, as a restore will, and the result must equal (`==`) the state it replaces, or
+  * the squash is refused; see `SquashMayChangeState` for an event that may differ on purpose. `automatic`: the squash
+  * scheduler squashes the context's aggregates by this rule (D52).
   */
 case class SquashPolicy[AGGREGATE_ROOT](toEvent: AGGREGATE_ROOT => FirstEvent[AGGREGATE_ROOT], automatic: Option[AutomaticSquash] = None)
+
+/**
+  * Mixed into a squash event class whose state may differ from the state it replaces, on purpose (D85): for example one
+  * that leaves out data the aggregate no longer needs. Such a squash is not compared (its event handler must still
+  * apply it), and since the history then gives another state than before: every snapshot of the aggregate goes, its
+  * owner reads its state again, and so do the owners of the duplicates it detaches. Projections are not told (D51):
+  * they keep what they made from the events it replaced, and only a rebuild sees the new state.
+  */
+trait SquashMayChangeState
 
 /** An aggregate is squashed once at least `afterEvents` of its events are older than its newest `keepLast` and not
   * squashed yet; it is squashed up to the version before those `keepLast`. */

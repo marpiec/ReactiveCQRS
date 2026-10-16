@@ -154,8 +154,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       }
       // D51: the history below the squash point is gone; reading it fails instead of giving a wrong state.
       version.filter(_ > AggregateVersion.ZERO).foreach { v =>
-        sql"""SELECT squashed_version FROM aggregates WHERE id = ${aggregateId.asLong} AND base_id = ${aggregateId.asLong}"""
-          .map(_.intOpt(1)).single().flatten.filter(_ > v.asInt)
+        squashedPoint(aggregateId.asLong).filter(_ > v.asInt)
           .foreach(squashed => throw new AggregateSquashedException(aggregateId, AggregateVersion(squashed), v))
       }
       val query = version match {
@@ -344,10 +343,11 @@ ORDER BY events.id""")
 
   // ************** Squash (D47–D52)
 
-  override def squashedVersion(aggregateId: AggregateId): Option[AggregateVersion] = DB.readOnly { implicit session =>
-    sql"""SELECT squashed_version FROM aggregates WHERE id = ${aggregateId.asLong} AND base_id = ${aggregateId.asLong}"""
-      .map(_.intOpt(1)).single().flatten.map(AggregateVersion(_))
-  }
+  override def squashedVersion(aggregateId: AggregateId): Option[AggregateVersion] =
+    DB.readOnly(implicit session => squashedPoint(aggregateId.asLong).map(AggregateVersion(_)))
+
+  private def squashedPoint(id: Long)(implicit session: DBSession): Option[Int] =
+    sql"""SELECT squashed_version FROM aggregates WHERE id = $id AND base_id = $id""".map(_.intOpt(1)).single().flatten
 
   override def squashBlocker(aggregateId: AggregateId, upTo: AggregateVersion): Option[String] =
     DB.readOnly(implicit session => blocker(aggregateId.asLong, upTo.asInt))
@@ -356,7 +356,7 @@ ORDER BY events.id""")
   private def blocker(id: Long, n: Int)(implicit session: DBSession): Option[String] = {
     def detachedOne(joined: SQLSyntax): Option[Long] =
       sql"""SELECT a.id FROM aggregates a $joined WHERE a.base_id = $id AND a.id <> $id AND a.base_version < $n LIMIT 1""".map(_.long(1)).single()
-    val squashed = sql"""SELECT squashed_version FROM aggregates WHERE id = $id AND base_id = $id""".map(_.intOpt(1)).single().flatten
+    val squashed = squashedPoint(id)
     if (squashed.exists(_ >= n)) {
       Some("already squashed up to version " + squashed.get)
     } else if (exists(sql"""SELECT EXISTS (SELECT 1 FROM events_to_publish WHERE aggregate_id = $id AND version <= $n)""")) {
@@ -386,6 +386,7 @@ ORDER BY events.id""")
     val updated = sql"""UPDATE events SET event = ${mpjsons.serialize(firstEvent, className)}, event_type_id = ${typesNamesState.typeIdByClassName(className)}
                        | WHERE aggregate_id = $id AND version = 1""".stripMargin.update()
     if (updated != 1) throw new IllegalStateException("Duplicate " + id + " has no event at version 1 to detach")
+    if (firstEvent.isInstanceOf[SquashMayChangeState]) sql"""DELETE FROM snapshots WHERE aggregate_id = $id""".update() // D85
     sql"""DELETE FROM aggregates WHERE id = $id AND base_id <> $id""".update()
     sql"""UPDATE aggregates SET base_order = 1 WHERE id = $id AND base_id = $id""".update()
   }
@@ -409,7 +410,10 @@ ORDER BY events.id""")
                          | WHERE aggregate_id = $id AND version = $n""".stripMargin.update()
       if (updated != 1) throw new IllegalStateException("Aggregate " + id + " has no event at version " + n + " to squash into")
       sql"""DELETE FROM events_to_publish WHERE aggregate_id = $id AND version <= $n""".update()
-      sql"""DELETE FROM snapshots WHERE aggregate_id = $id AND version <= $n""".update()
+      // A squash event that may change the state makes every snapshot of the aggregate wrong (D85); one that gives the
+      // state back, only those it replaces.
+      if (squashEvent.isInstanceOf[SquashMayChangeState]) sql"""DELETE FROM snapshots WHERE aggregate_id = $id""".update()
+      else sql"""DELETE FROM snapshots WHERE aggregate_id = $id AND version <= $n""".update()
       sql"""DELETE FROM aggregates WHERE id = $id AND base_id <> $id""".update()
       sql"""UPDATE aggregates SET base_order = 1, squashed_version = $n WHERE id = $id AND base_id = $id""".update()
     }

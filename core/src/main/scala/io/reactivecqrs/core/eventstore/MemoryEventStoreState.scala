@@ -41,8 +41,8 @@ class MemoryEventStoreState extends EventStoreState {
       case duplication: DuplicationEvent[_] => refuseDuplicationOfSquashed(duplication)
       case _ => ()
     }
-    val eventsWithVersions = eventsEnvelope.events.map(event => {
-      val version = AggregateVersion(eventsForAggregate.lastOption.map(_.version.asInt).getOrElse(0) + 1)
+    val eventsWithVersions = eventsEnvelope.events.zipWithIndex.map { case (event, i) =>
+      val version = AggregateVersion(currentVersion + i + 1)
       eventsForAggregate :+= EventStoreEntry(eventsEnvelope.userId, eventsEnvelope.timestamp, version, event, eventsEnvelope.metadata)
       eventIdSeq += 1
       eventsRows ::= EventRow(eventIdSeq, aggregateId, version,
@@ -51,8 +51,8 @@ class MemoryEventStoreState extends EventStoreState {
 
       val value = (eventsEnvelope.userId, eventsEnvelope.timestamp, event, eventIdSeq)
       eventsToPublish += key -> value
-      (event, key._2)
-    })
+      (event, version)
+    }
 
     eventStore += aggregateId -> eventsForAggregate
     if (eventsEnvelope.events.exists(_.isInstanceOf[UndoEvent[_]])) snapshots -= aggregateId // as in PostgreSQL (D30)
@@ -195,14 +195,21 @@ class MemoryEventStoreState extends EventStoreState {
       _ <- squashBlocker(aggregateId, upTo).toLeft(())
       _ <- detachingAll(duplicatesReading(aggregateId, Some(upTo)), detach)
     } yield {
-      detach.foreach { case (duplicateId, firstEvent) => replaceEvent(duplicateId, AggregateVersion(1), firstEvent, None, None) }
+      detach.foreach(detachDuplicate)
       eventStore += aggregateId -> eventStore.getOrElse(aggregateId, Vector()).filterNot(_.version < upTo)
       eventsRows = eventsRows.filterNot(row => row.aggregateId == aggregateId && row.aggregateVersion < upTo)
       replaceEvent(aggregateId, upTo, squashEvent, Some(userId), Some(metadata))
       eventsToPublish = eventsToPublish.filterNot { case ((id, version), _) => id == aggregateId && version <= upTo }
-      if (snapshots.get(aggregateId).exists(_.version <= upTo)) snapshots -= aggregateId
+      if (squashEvent.isInstanceOf[SquashMayChangeState] || snapshots.get(aggregateId).exists(_.version <= upTo)) snapshots -= aggregateId // D85
       squashedVersions += aggregateId -> upTo
     }
+  }
+
+  // As in PostgreSQL: the duplicate's first event becomes `firstEvent`; one that may change the state takes its snapshot (D85).
+  private def detachDuplicate(duplicate: (AggregateId, FirstEvent[_])): Unit = {
+    val (duplicateId, firstEvent) = duplicate
+    replaceEvent(duplicateId, AggregateVersion(1), firstEvent, None, None)
+    if (firstEvent.isInstanceOf[SquashMayChangeState]) snapshots -= duplicateId
   }
 
   // The event at `version` becomes `event`, keeping its place and time; the user and metadata change when given.
@@ -229,7 +236,7 @@ class MemoryEventStoreState extends EventStoreState {
   // Subscription failures live in the subscriptions state, which this store does not see: it always deletes.
   override def deleteAggregatePermanently(aggregateId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])]): Either[String, Unit] = synchronized {
     detachingAll(duplicatesReading(aggregateId, None), detach).map { _ =>
-      detach.foreach { case (duplicateId, firstEvent) => replaceEvent(duplicateId, AggregateVersion(1), firstEvent, None, None) }
+      detach.foreach(detachDuplicate)
       snapshots -= aggregateId
       eventsRows = eventsRows.filterNot(_.aggregateId == aggregateId)
       eventStore -= aggregateId

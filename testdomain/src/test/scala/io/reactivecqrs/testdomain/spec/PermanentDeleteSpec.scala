@@ -32,6 +32,10 @@ case class MemoCopied(spaceId: SpaceId, baseAggregateId: AggregateId, baseAggreg
 case class MemoRestated(text: String) extends FirstEvent[Memo] {
   def spaceId: SpaceId = SpaceId(0)
 }
+/** Leaves the text out: it does not give a memo's state back (D85). */
+case class MemoBlanked() extends FirstEvent[Memo] {
+  def spaceId: SpaceId = SpaceId(0)
+}
 
 case class WriteMemo(userId: UserId, memoId: AggregateId, text: String) extends FirstCommand[Memo, CustomCommandResponse[_]] {
   override def chosenAggregateId: Option[AggregateId] = Some(memoId)
@@ -39,8 +43,8 @@ case class WriteMemo(userId: UserId, memoId: AggregateId, text: String) extends 
 case class EraseMemo(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion) extends Command[Memo, CustomCommandResponse[_]]
 case class CopyMemo(userId: UserId, baseId: AggregateId, baseVersion: AggregateVersion) extends FirstCommand[Memo, CustomCommandResponse[_]]
 
-// With `squashable`, a memo duplicated from one that is deleted for good keeps its text (F76).
-class MemoContext(squashable: Boolean = true) extends AggregateContext[Memo] {
+// With a squash event that gives the state back, a memo duplicated from one that is deleted for good keeps its text (F76).
+class MemoContext(squashWith: Option[Memo => FirstEvent[Memo]] = Some(memo => MemoRestated(memo.text))) extends AggregateContext[Memo] {
   override val version: Int = 1
   override def initialAggregateRoot: Memo = Memo("")
   override def commandHandlers = _ => {
@@ -53,8 +57,9 @@ class MemoContext(squashable: Boolean = true) extends AggregateContext[Memo] {
     case _: MemoErased => memo
     case _: MemoCopied => memo
     case e: MemoRestated => Memo(e.text)
+    case _: MemoBlanked => Memo("")
   }
-  override val squash: Option[SquashPolicy[Memo]] = if (squashable) Some(SquashPolicy(memo => MemoRestated(memo.text))) else None
+  override val squash: Option[SquashPolicy[Memo]] = squashWith.map(SquashPolicy(_))
 }
 
 // A PermanentDeleteEvent deletes the aggregate for good, but only once every subscriber has it, so read models can
@@ -200,13 +205,25 @@ class PermanentDeleteSpec extends CommonSpec {
     }
 
     Scenario("is not carried out for a type without a squash event: the event waits in the outbox, the duplicates keep reading") {
-      val f = new Fixture(new MemoContext(squashable = false))
+      val f = new Fixture(new MemoContext(squashWith = None))
       val (memoId, copyId) = erasedWithCopy(f)
 
       f.ack(memoId, 2)
 
       awaitAssert(eventStore.oldestVersionToPublish(memoId) mustBe Some(AggregateVersion(2)), 5.seconds, 50.millis)
       storedVersions(memoId) mustBe Seq(1, 2)
+      storedText(f, copyId) mustBe "note"
+    }
+
+    Scenario("is not carried out when the squash event would not give a duplicate's state back (D85)") {
+      val f = new Fixture(new MemoContext(squashWith = Some(_ => MemoBlanked())))
+      val (memoId, copyId) = erasedWithCopy(f)
+
+      f.ack(memoId, 2)
+
+      awaitAssert(eventStore.oldestVersionToPublish(memoId) mustBe Some(AggregateVersion(2)), 5.seconds, 50.millis)
+      storedVersions(memoId) mustBe Seq(1, 2)
+      eventStore.readEventsRange[Memo](copyId, AggregateVersion(1), AggregateVersion(1)).map(_.event) mustBe Seq(MemoCopied(SpaceId(0), memoId, AggregateVersion(1)))
       storedText(f, copyId) mustBe "note"
     }
   }

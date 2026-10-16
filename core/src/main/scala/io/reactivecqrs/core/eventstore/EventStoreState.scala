@@ -75,7 +75,8 @@ abstract class EventStoreState {
     * holding its state at version 1, and its chain rows to other aggregates go); then the event at `upTo` becomes
     * `squashEvent` (keeping its id and time, so commit order holds), the events before it and the noop rows at or
     * below it go, as do the snapshot at or below it, the aggregate's own chain rows to other aggregates and its outbox
-    * rows at or below it; the squash point is recorded. Changes nothing, giving the reason, when `squashBlocker` finds
+    * rows at or below it; the squash point is recorded. The events are checked by the caller (D85); one that may change
+    * the state (`SquashMayChangeState`) takes every snapshot of its aggregate, or of the duplicate it detaches. Changes nothing, giving the reason, when `squashBlocker` finds
     * one, or when the duplicates given are not all those that read the aggregate below `upTo` (one was made
     * meanwhile): the caller may try again. A duplication of the aggregate made at the same time waits for the
     * transaction and is then refused below the squash point. */

@@ -55,6 +55,20 @@ class GaugeContext extends AggregateContext[Gauge] {
   override val squash: Option[SquashPolicy[Gauge]] = Some(SquashPolicy(gauge => GaugeRestated(gauge.level), Some(AutomaticSquash(afterEvents = 3, keepLast = 1))))
 }
 
+case class CartNameKept(spaceId: SpaceId, name: String) extends FirstEvent[ShoppingCart]
+case class CartArchived(spaceId: SpaceId, name: String) extends FirstEvent[ShoppingCart] with SquashMayChangeState
+
+/** Squashes a cart into its name only, leaving the items out: a squash the check refuses (D85), unless the event says
+  * it may change the state (`onPurpose`). */
+class NameOnlyCarts(onPurpose: Boolean) extends ShoppingCartAggregateContext {
+  override def eventHandlers = (userId, time, cart) => super.eventHandlers(userId, time, cart).orElse[Any, ShoppingCart] {
+    case e: CartNameKept => ShoppingCart(e.name, Vector.empty)
+    case e: CartArchived => ShoppingCart(e.name, Vector.empty)
+  }
+  override val squash: Option[SquashPolicy[ShoppingCart]] =
+    Some(SquashPolicy(cart => if (onPurpose) CartArchived(SpaceId(0), cart.name) else CartNameKept(SpaceId(0), cart.name)))
+}
+
 // D47–D52: squashing old history into one event.
 class SquashSpec extends CommonSpec {
 
@@ -81,15 +95,21 @@ class SquashSpec extends CommonSpec {
     response
   }
 
-  private def created(items: String*): AggregateId = {
-    val cartId = Await.result((commandBus ? ReserveAggregateId).mapTo[AggregateId], 5.seconds)
-    send(CreateShoppingCartWithId(None, userId, cartId, "Groceries")) mustBe SuccessResponse(cartId, AggregateVersion(1))
-    items.zipWithIndex.foreach { case (item, i) => send(AddItem(userId, cartId, AggregateVersion(i + 1), item)) mustBe SuccessResponse(cartId, AggregateVersion(i + 2)) }
+  private def created(items: String*): AggregateId = createdOn(commandBus, items: _*)
+
+  private def createdOn(bus: ActorRef, items: String*): AggregateId = {
+    def sent(command: AnyRef): CustomCommandResponse[_] = {
+      val response: CustomCommandResponse[_] = bus ?? command
+      response
+    }
+    val cartId = Await.result((bus ? ReserveAggregateId).mapTo[AggregateId], 5.seconds)
+    sent(CreateShoppingCartWithId(None, userId, cartId, "Groceries")) mustBe SuccessResponse(cartId, AggregateVersion(1))
+    items.zipWithIndex.foreach { case (item, i) => sent(AddItem(userId, cartId, AggregateVersion(i + 1), item)) mustBe SuccessResponse(cartId, AggregateVersion(i + 2)) }
     cartId
   }
 
-  private def squash(id: AggregateId, upTo: Int, metadata: Option[EventMetadata] = None): SquashResponse =
-    Await.result((commandBus ? SquashAggregate(id, AggregateVersion(upTo), userId, metadata)).mapTo[SquashResponse], 10.seconds)
+  private def squash(id: AggregateId, upTo: Int, metadata: Option[EventMetadata] = None, bus: ActorRef = commandBus): SquashResponse =
+    Await.result((bus ? SquashAggregate(id, AggregateVersion(upTo), userId, metadata)).mapTo[SquashResponse], 10.seconds)
 
   private def refusal(id: AggregateId, upTo: Int): String = squash(id, upTo) match {
     case SquashRefused(_, reason) => reason
@@ -287,6 +307,55 @@ class SquashSpec extends CommonSpec {
       squash(cartId, 2) mustBe AggregateSquashed(cartId, AggregateVersion(2))
       refusal(cartId, 2) must include("already squashed up to version 2")
       refusal(cartId, 1) must include("already squashed up to version 2")
+    }
+  }
+
+  Feature("The squash event must give back the state it replaces (D85)") {
+
+    Scenario("a squash whose event does not is refused, and nothing changes") {
+      val bus = system.actorOf(AggregateCommandBusActor(new NameOnlyCarts(onPurpose = false), uidGenerator, eventStore, responses, eventBus, eventsReplayMode = false))
+      val cartId = createdOn(bus, "apple", "pear")
+      outboxEmpty(cartId)
+
+      squash(cartId, 3, bus = bus) match {
+        case SquashRefused(_, reason) => reason must include("CartNameKept does not give back the state it replaces")
+        case other => fail("Expected a refusal, got " + other)
+      }
+      count("events", cartId) mustBe 3
+      eventStore.squashedVersion(cartId) mustBe None
+    }
+
+    Scenario("one whose event may change the state changes it on purpose: the owners read the new states, the snapshot goes") {
+      val carts = new NameOnlyCarts(onPurpose = true)
+      val bus = system.actorOf(AggregateCommandBusActor(carts, uidGenerator, eventStore, responses, eventBus, eventsReplayMode = false))
+      val cartsRestorer = new AggregateRestorer[ShoppingCart](eventStore, carts.eventHandlers, () => carts.initialAggregateRoot)
+      def sent(command: AnyRef): CustomCommandResponse[_] = {
+        val response: CustomCommandResponse[_] = bus ?? command
+        response
+      }
+      def itemsOf(id: AggregateId): Vector[String] = {
+        val cart: Try[Aggregate[ShoppingCart]] = bus ?? GetAggregate(id)
+        cart.get.aggregateRoot.get.items.map(_.name)
+      }
+      val cartId = createdOn(bus, "apple", "pear", "plum")
+      val copyId = sent(DuplicateShoppingCart(userId, cartId, AggregateVersion(2))).asInstanceOf[SuccessResponse].aggregateId
+      sent(AddItem(userId, copyId, AggregateVersion(1), "fig")) mustBe SuccessResponse(copyId, AggregateVersion(2))
+      itemsOf(copyId) mustBe Vector("apple", "fig") // its owner runs, with the state of before
+      val stateClass = classOf[ShoppingCart].getName
+      eventStore.writeSnapshot(cartId, Snapshot(AggregateVersion(4), carts.version, 1, cartsRestorer.restore(cartId).root), stateClass)
+      outboxEmpty(cartId, copyId)
+
+      squash(cartId, 3, bus = bus) mustBe AggregateSquashed(cartId, AggregateVersion(3))
+
+      Then("the history now gives the cart without the items squashed away, and its live owner shows that")
+      itemsOf(cartId) mustBe Vector("plum")
+      cartsRestorer.restore(cartId).root.items.map(_.name) mustBe Vector("plum")
+      eventStore.readSnapshot[ShoppingCart](cartId, stateClass) mustBe None // it was made from the history of before
+      And("the copy, detached with its own state left out the same way, is read again by a new owner")
+      itemsOf(copyId) mustBe Vector("fig")
+      And("commands go on from the new states")
+      sent(AddItem(userId, cartId, AggregateVersion(4), "kiwi")) mustBe SuccessResponse(cartId, AggregateVersion(5))
+      itemsOf(cartId) mustBe Vector("plum", "kiwi")
     }
   }
 
