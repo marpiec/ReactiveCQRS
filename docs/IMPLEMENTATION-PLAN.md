@@ -754,3 +754,17 @@ Open test-infrastructure items:
   `to_regclass`; test `SchemaAwareCatalogSpec`.
 - `sbt test`: 92 of 93 pass. The failure is still the F4 reproduction: within one run, the
   specs before `EventsReplaySpec` write ShoppingCart events into the run schema.
+
+**16/10/2026: performance baseline, simplification pass, R9, stored-data check**
+- `bench` module and `docs/perf/baseline-M1.md` (§7 metrics, measured): 5.5k commands/s with two
+  projections (8.5–9k without), p99 about 7 ms; 2 SQL statements per command plus 2 per
+  subscriber; projections are the bottleneck (about 1.7k events/s, 1.3 s behind after the
+  load); contended aggregate p99 190–320 ms from retries; restore about 210k events/s with
+  peak heap growing with history (452 MB at 500k events); the 0.12 replayer about 3.1k
+  events/s; no heap growth over a 60-second soak. Startup: first command in under 0.5 s.
+- Simplification pass over the M1 code (no behaviour change): one retry loop in the document
+  stores, the reload as a dispatch guard, `finish()` in the executor, named stored values.
+- R9 acceptance test `CommandsWithoutEventsSpec` (10 000 no-event commands: no statement
+  about the aggregate).
+- D78 dry-run tool `StoredDataCheck` (with the F49 and D29 pre-check counts), for Neula to
+  run on a production copy; test `StoredDataCheckSpec`.

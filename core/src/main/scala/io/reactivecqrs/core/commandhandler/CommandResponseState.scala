@@ -133,7 +133,8 @@ class PostgresCommandResponseState(mpjsons: MPJsons, typesNamesState: TypesNames
     }
   }
 
-  private def readResponse(json: String, typeId: Short, info: Option[String], infoTypeId: Option[Short]): CustomCommandResponse[_] = {
+  /** Reads one stored row; also used by the stored-data check. */
+  private[core] def readResponse(json: String, typeId: Short, info: Option[String], infoTypeId: Option[Short]): CustomCommandResponse[_] = {
     val className = typesNamesState.classNameById(typeId)
     if (className == customSuccessClassName) {
       val success = mpjsons.deserialize[SuccessResponse](json, classOf[SuccessResponse].getName)

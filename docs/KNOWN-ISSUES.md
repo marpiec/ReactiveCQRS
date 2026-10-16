@@ -382,6 +382,12 @@ implementation plan.
 - **Test:** `CommandOutcomesSpec` "A message the command bus does not understand" (no reply, and the in-flight command's executor was stopped, before the fix).
 - **Fix:** the bus logs a warning and answers `Status.Failure(IllegalArgumentException)`.
 
+#### F72 — Every reload starts another re-send timer chain
+- **Low**, likely · Fix in **M2** (removed with the in-memory re-send, D8) · `AggregateRepositoryActor.assureRestoredState`, `resendEventsToPublish`
+- **Symptom:** while a subscriber does not ack, an aggregate that was reloaded N times re-sends its waiting events N times every 180 s. Subscribers drop the duplicates by version (I4), so the cost is load and log noise.
+- **Root cause:** each restore schedules `ResendPersistedMessages`, and each such message schedules the next one while events wait. Since M1 restores also happen on reloads (F19), after undo and duplication events, and after failed persists.
+- **Found:** M1 code review (review 3, §7).
+
 #### F67 — A command for an aggregate that does not exist gets no reply until the timeout
 - **Medium**, confirmed · **Fixed in M1** (16/10/2026, with F9) · `CommandExecutorActor.scala` `handleFollowingCommand`, `handleRewriteHistoryCommand`
 - **Symptom:** a `Command` or `RewriteHistoryCommand` whose expected version does not match an aggregate at version 0 (it does not exist, or the id is wrong) is answered only by the command timeout (`CommandHandlingError` after 60 s) instead of `AggregateConcurrentModificationError`.
@@ -525,6 +531,7 @@ implementation plan.
 - **High** if present, suspected · Check in **M1** (dry run, D78)
 - **Root cause:** mpjsons `docs/upgrading.md:30`; Neula's 2022 release may have run on JDK 8.
 - **Fix:** register converters reading the old form, if the dry run finds such rows.
+- **Tool (16/10/2026):** `io.reactivecqrs.core.tools.StoredDataCheck.run(mpjsons, typesNamesState, contexts, projectionTables)` reads every stored JSON value (events, sagas, idempotent responses, the projection tables given) with the mpjsons on the classpath and reports rows and unreadable rows per table and class, with the first failures; it also reports the F49 count and the D29 distribution. Neula runs it from its application against a production copy. Test: `StoredDataCheckSpec`.
 
 #### F53 — An absent `Option` field reads as `None` instead of `null`
 - **Medium**, suspected · Check in **M1** · mpjsons `docs/upgrading.md:31`; see H4.
@@ -644,7 +651,7 @@ From §7 of Neula's change requests.
 | Milestone | Issues |
 |---|---|
 | M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
-| M2 | AR6; F1, F2, F4, F5, F6, F11, F15, F26, F28, F29, F37, F41, F42, F45, F47; Neula H2 |
+| M2 | AR6; F72; F1, F2, F4, F5, F6, F11, F15, F26, F28, F29, F37, F41, F42, F45, F47; Neula H2 |
 | M3 | AR1, AR4, AR7; F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33, F38, F39, F43, F44, F65 |
 | M4 | F3, F54, F55, F56, F57, F58, F59, F60, F61, F62; Neula H1, H6 |
 | M5 | AR5; F46, F48, F50, F63 |
