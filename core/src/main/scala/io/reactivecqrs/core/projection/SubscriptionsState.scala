@@ -4,6 +4,7 @@ import java.sql.BatchUpdateException
 import io.reactivecqrs.api.AggregateVersion
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.types.TypesNamesState
+import io.reactivecqrs.core.util.AfterCommit
 import org.slf4j.Logger
 import scalikejdbc._
 
@@ -256,8 +257,8 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
       }
     } else {
       // DB is the source of truth: validate against the cache early (cheap reject), then persist. The DB
-      // UPDATE re-checks the version, so it is the real arbiter. Advance the in-memory cache only AFTER the
-      // write succeeds, so a failed/rolled-back write can never leave the cache ahead of the persisted state.
+      // UPDATE re-checks the version, so it is the real arbiter. The in-memory cache advances only once the
+      // transaction commits, so a rolled-back write can never leave it ahead of the persisted state (F18).
       synchronized {
         val current = versions.getOrElse(key, AggregateVersion.ZERO)
         if (lastAggregateVersion != current) {
@@ -266,8 +267,10 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
       }
       eventsLogger.foreach(_.debug("Updating subscription state for " + aggregateId.asLong+": " + lastAggregateVersion.asInt+" -> "+aggregateVersion.asInt+" for subscriber "+subscriberName))
       newEventIdInDB(aggregateId, subscriberName, subscriptionType, lastAggregateVersion, aggregateVersion, typesNamesState)
-      synchronized {
-        versions += key -> aggregateVersion
+      AfterCommit(session) {
+        synchronized {
+          versions += key -> aggregateVersion
+        }
       }
     }
   }
@@ -277,10 +280,9 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, keepInMemory:
       block(session)
     }
 
+  // Caches written inside a projection update (subscription versions, document stores) change only after commit.
   override def localTx[A](block: DBSession => A): A =
-    DB.localTx { session =>
-      block(session)
-    }
+    AfterCommit.localTx(block)
 
   override def autoCommit[A](block: DBSession => A): A =
     DB.autoCommit { session =>

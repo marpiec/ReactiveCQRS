@@ -6,6 +6,7 @@ import scalikejdbc.{DB, DBSession}
 
 import scala.reflect.runtime.universe._
 import scalikejdbc._
+import io.reactivecqrs.core.util.AfterCommit
 
 sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
@@ -160,7 +161,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
         }
       }
 
-      cache.put(key, Some(VersionedDocument(newVersion, document)))
+      cacheAfterCommit(key, Some(VersionedDocument(newVersion, document)))
     }
   }
 
@@ -178,10 +179,10 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
           }).single()
           loaded match {
             case Some(doc) =>
-              cache.put(key, Some(doc))
+              cacheAfterCommit(key, Some(doc))
               Some(Document(doc.document))
             case None =>
-              cache.put(key, None)
+              cacheAfterCommit(key, None)
               None
           }
         }
@@ -193,7 +194,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     inSession { implicit session =>
       sql"DELETE FROM ${tableNameSQL} WHERE id = ?"
         .bind(key).update()
-      cache.put(key, None)
+      cacheAfterCommit(key, None)
     }
 
   }
@@ -244,7 +245,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
       val loaded = query
         .bind(getAllValues(searchParams.where): _*).map(rs => rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3))))
         .list()
-      loaded.foreach(t => cache.put(t._1, Some(t._2)))
+      loaded.foreach(t => cacheAfterCommit(t._1, Some(t._2)))
       loaded.map({case (key, value) => (key, Document[T](value.document))})
     }
   }
@@ -257,7 +258,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
         val id = rs.long(1)
         val version = rs.int(2)
         val beforeTransform = mpjsons.deserialize[T](rs.string(3))
-        cache.put(id, Some(VersionedDocument[T](version, beforeTransform)))
+        cacheAfterCommit(id, Some(VersionedDocument[T](version, beforeTransform)))
         id -> VersionedDocument[TT](version, transform(beforeTransform))
       }).list()
       loaded.map({case (key, value) => (key, Document[TT](value.document))})
@@ -374,7 +375,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
         .map(rs => rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3))))
         .list()
 
-      loaded.foreach(t => cache.put(t._1, Some(t._2)))
+      loaded.foreach(t => cacheAfterCommit(t._1, Some(t._2)))
       loaded.map({case (key, v) => (key, Document[T](v.document))}).toMap
     }
   }
@@ -386,7 +387,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
           .map(rs => rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3))))
         .list()
     }
-    loaded.foreach(t => cache.put(t._1, Some(t._2)))
+    loaded.foreach(t => cacheAfterCommit(t._1, Some(t._2)))
     loaded.map(v => (v._1, Document(v._2.document))).toMap
   }
 
@@ -426,7 +427,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
       }
       val loadedById = loaded.toMap
       toLoad.foreach(id => {
-        cache.put(id, loadedById.get(id))
+        cacheAfterCommit(id, loadedById.get(id))
       })
       fromCacheFoundValues ++ loaded.map(v => (v._1, Document(v._2.document))).toMap
     }
@@ -450,6 +451,24 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     }).single())
   }
 
+  /**
+   * Caches a document read or written through `session`. Inside an [[AfterCommit.localTx]] the entry is
+   * dropped now and stored only after the commit, so a rollback can never leave the cache ahead of the
+   * database (F16). An older version never replaces a newer one stored meanwhile by another transaction.
+   */
+  protected def cacheAfterCommit(key: Long, value: Option[VersionedDocument[T]])(implicit session: DBSession): Unit = {
+    cache.remove(key)
+    AfterCommit(session) {
+      val newerCached = (cache.get(key), value) match {
+        case (InCache(cached), Some(document)) => cached.version > document.version
+        case _ => false
+      }
+      if (!newerCached) {
+        cache.put(key, value)
+      }
+    }
+  }
+
   protected val maxUpdateAttempts = 10
 
   /**
@@ -467,7 +486,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
         .update()
     }
     if (updated == 1) {
-      cache.put(key, Some(VersionedDocument(previous.version + 1, modified)))
+      cacheAfterCommit(key, Some(VersionedDocument(previous.version + 1, modified)))
       true
     } else {
       cache.remove(key)
@@ -500,7 +519,7 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
       sql"INSERT INTO ${tableNameSQL} (space_id, id, version, document) VALUES (?, ?, 1, ?::jsonb)"
         .bind(spaceId, key, mpjsons.serialize(document))
         .update()
-      cache.put(key, Some(VersionedDocument(1, document)))
+      cacheAfterCommit(key, Some(VersionedDocument(1, document)))
     }
   }
 
@@ -509,7 +528,7 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
       val batchParams = documents.map(d => Seq(spaceId, d.key, mpjsons.serialize(d.document)))
       sql"INSERT INTO ${tableNameSQL} (space_id, id, version, document) VALUES (?, ?, 1, ?::jsonb)"
         .batch(batchParams: _*).apply()
-      documents.foreach(d => cache.put(d.key, Some(VersionedDocument(1, d.document))))
+      documents.foreach(d => cacheAfterCommit(d.key, Some(VersionedDocument(1, d.document))))
     }
   }
 
@@ -606,7 +625,7 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
       val key = sql"INSERT INTO ${tableNameSQL} (space_id, id, version, document) VALUES (?, nextval('${sequenceNameSQL}'), 1, ?::jsonb) RETURNING currval('${sequenceNameSQL}')"
           .bind(spaceId, mpjsons.serialize(document))
           .map(_.long(1)).single().get
-      cache.put(key, Some(VersionedDocument(1, document)))
+      cacheAfterCommit(key, Some(VersionedDocument(1, document)))
       key
     }
   }

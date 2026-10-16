@@ -532,7 +532,7 @@ listener transaction.
 
 | | `keepInMemory = false` | `keepInMemory = true` |
 |---|---|---|
-| Source of truth | DB. INSERT when `last == 0`, otherwise `UPDATE … WHERE aggregate_version = last` with a rowcount check (`:397-418`); cache advanced only after success | in-memory map; DB written only by `dump()` (`:303-350`) |
+| Source of truth | DB. INSERT when `last == 0`, otherwise `UPDATE … WHERE aggregate_version = last` with a rowcount check (`:397-418`); cache advanced only after the transaction commits (`AfterCommit`, since 1.0) | in-memory map; DB written only by `dump()` (`:303-350`) |
 | Atomic with the listener's writes | yes (same `localTx`) | no |
 | Intended for | normal operation | bulk replay (the replayer calls `dump()` periodically, `EventsReplayerActor.scala:179-182, 198`) |
 | Risk | one DB round trip per update | progress lost on crash or restart unless the host calls `dump()` (F3); the test wiring uses `true` |

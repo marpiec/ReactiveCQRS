@@ -652,3 +652,9 @@ Open test-infrastructure items:
   depend on earlier runs (`EventsReplaySpec`). Per-run isolation (a fresh schema per run) is
   planned with the next PostgreSQL-heavy work.
 - Older specs use deprecated ScalaTest and Pekko TestKit methods (warnings only).
+
+**16/10/2026: F16 and F18**
+- New module `AfterCommit` (`core/util`): actions registered for a transaction run after it
+  commits and are dropped on rollback; `PostgresSubscriptionsState.localTx`, used by every
+  projection update, is such a transaction. Subscription versions and document-store cache
+  entries now change only after commit. Tests: `CachesAfterRollbackSpec`, `AfterCommitSpec`.

@@ -248,7 +248,8 @@ implementation plan.
 - **Fix:** remove a queue when it drains (sequence gate rework).
 
 #### F18 — Subscription cache advanced before the transaction commits
-- **Medium**, likely · Fix in **M1** · `SubscriptionsState`
+- **Medium**, confirmed · **Fixed in M1** (16/10/2026) · `SubscriptionsState`
+- **Fix:** `PostgresSubscriptionsState.localTx` is an `AfterCommit.localTx`; the cache update is registered with `AfterCommit` and runs only after the commit. Test: `CachesAfterRollbackSpec` (subscription scenarios; the rollback one failed before the fix).
 - **Symptom:** if the commit itself fails, later deliveries count as already processed and are skipped (Neula J2).
 - **Root cause:** in DB mode the cache update runs inside the transaction block (`SubscriptionsState.scala:256-271`), before commit.
 - **Test:** listener transaction whose commit fails; assert the same events are delivered again (Neula R2 acceptance).
@@ -415,7 +416,8 @@ implementation plan.
 ### Document store
 
 #### F16 — Document cache can be ahead of the database after a rollback
-- **High**, likely · Fix in **M1** · `PostgresDocumentStore`, `ProjectionActor`
+- **High**, confirmed · **Fixed in M1** (16/10/2026) · `PostgresDocumentStore`
+- **Fix:** every cache write goes through `cacheAfterCommit`: inside an `AfterCommit.localTx` (which every projection update is) the entry is dropped at once and stored after the commit; an older version never replaces a newer one. Outside such a transaction caching is immediate, as before. Test: `CachesAfterRollbackSpec` (document scenarios; both rollback ones failed before the fix).
 - **Symptom:** after a rolled-back listener transaction, reads serve documents the database does not have; later updates conflict.
 - **Root cause:** cache writes inside the listener transaction (`insertDocument`, `updateDocument` in `PostgresDocumentStore.scala`; transaction at `ProjectionActor.scala:466-469`).
 - **Fix:** D16.
@@ -425,7 +427,7 @@ implementation plan.
 - **High**, confirmed · **Fixed in M1** (16/10/2026) · `PostgresDocumentStore`
 - **Fix:** one versioned write (`writeNextVersion`) used by all four update paths: it reports a conflict, evicts the stale cache entry so the retry reads fresh data, and every path retries at most 10 times. `overwriteDocument` skips the JSON write only when a version check proves the cached copy is current; before, a stale cached copy equal to the new document left the database unchanged.
 - **Tests:** `PostgresDocumentStoreConflictSpec` (failed before the fix: lost update `ac` instead of `bc`, "Too many tries" on a stale cache entry, `StackOverflowError` in the auto-id store). The overwrite case did not run before the fix (the suite aborted); its failure on the old code is inferred from reading.
-- **Not yet fixed:** cache writes still happen before commit (F16).
+- **Related:** cache writes before commit were fixed separately (F16).
 - **Symptom:** a read-model change that meets a version conflict is silently dropped and the cache holds a document the database does not have; the auto-id store can loop forever. Probably happening in Neula today (about 60 cached stores, parallel listeners). **Accepted production risk until 1.0 (D80).**
 - **Root cause:** in `updateDocumentRecur` the changed-document branch ends with `val updated = …` (`PostgresDocumentStore.scala:543-546`), so the block returns `Unit` and `updated == 0` is never true; retries re-read the same stale cache entry; the auto-id variant recurses without a limit (`:665-666`).
 - **Test:** force a version conflict on a changed document; assert a retry against fresh data, or an error after the limit, never a silent success.
@@ -574,7 +576,7 @@ From §7 of Neula's change requests.
 
 | Milestone | Issues |
 |---|---|
-| M1 | F7, F9, F10, F12, F13, F14 ✔, F16, F17, F18, F19, F20, F21 ✔, F24, F34, F35, F36, F40, F64; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
+| M1 | F7, F9, F10, F12, F13, F14 ✔, F16 ✔, F17, F18 ✔, F19, F20, F21 ✔, F24, F34, F35, F36, F40, F64; checks F49, F51 ✔ (not a problem), F52, F53; Neula H3, H4, H5 |
 | M2 | F1, F2, F4, F5, F6, F11, F15, F26, F28, F29, F37, F41, F42, F45, F47; Neula H2 |
 | M3 | F8 (contract), F22, F23, F25, F27, F30, F31, F32, F33, F38, F39, F43, F44 |
 | M4 | F3, F54, F55, F56, F57, F58, F59, F60, F61, F62; Neula H1, H6 |
