@@ -188,6 +188,11 @@ class MemoryEventStoreState extends EventStoreState {
 
   // The SQL version updates the stored event in place; restore and re-publication then read the new one.
   override def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit = synchronized {
+    // D17, as in PostgreSQL: a rewritten event keeps its class. Checked first: there is no transaction to roll back.
+    events.find(rewritten => !eventStore.getOrElse(aggregateId, Vector()).exists(entry =>
+      entry.version == rewritten.version && entry.event.getClass == rewritten.event.getClass)).foreach { rewritten =>
+      throw new RewriteChangesClassException(aggregateId, rewritten.version, rewritten.event.getClass.getName)
+    }
     snapshots --= duplicatesOf(aggregateId) + aggregateId // as in PostgreSQL (D30)
     events.foreach { rewritten =>
       eventStore += aggregateId -> eventStore.getOrElse(aggregateId, Vector()).map(entry =>

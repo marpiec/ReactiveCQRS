@@ -1,0 +1,104 @@
+package io.reactivecqrs.testdomain.spec
+
+import java.time.Instant
+
+import io.mpjsons.MPJsons
+import io.reactivecqrs.api._
+import io.reactivecqrs.api.id.{AggregateId, UserId}
+import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
+import io.reactivecqrs.core.eventbus.EventsBusActor
+import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
+import io.reactivecqrs.core.eventstore.{NewEvents, PostgresEventStoreState}
+import io.reactivecqrs.core.types.PostgresTypesNamesState
+import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
+import io.reactivecqrs.testdomain.shoppingcart._
+import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
+import org.apache.pekko.actor.{ActorRef, Props}
+import scalikejdbc._
+
+import scala.util.Try
+
+/** Renames the cart throughout its history without a compensating event: only the rebuilt state shows the new name. */
+case class RenameQuietly(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, name: String)
+  extends RewriteHistoryCommand[ShoppingCart, CustomCommandResponse[_]] {
+  override def eventsTypes: Set[Class[_]] = Set(classOf[ShoppingCartCreated])
+}
+
+/** Tries to rewrite the creation as an event of another class. */
+case class RewriteCreationAsItem(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion)
+  extends RewriteHistoryCommand[ShoppingCart, CustomCommandResponse[_]] {
+  override def eventsTypes: Set[Class[_]] = Set(classOf[ShoppingCartCreated])
+}
+
+class RewritingCarts extends ShoppingCartAggregateContext {
+  override def rewriteHistoryCommandHandlers: RewriteHistoryCommandHandler = (events, cart) => {
+    case c: RenameQuietly => RewriteCommandSuccess(events.map(ev => ev.event match {
+      case created: ShoppingCartCreated => EventWithVersion(ev.version, created.copy(name = c.name))
+      case _ => ev
+    }).toSeq, ItemAdded("audit"))
+    case _: RewriteCreationAsItem => RewriteCommandSuccess(events.map(ev => EventWithVersion[ShoppingCart](ev.version, ItemAdded("not a creation"))).toSeq, ItemAdded("audit"))
+    case other => super.rewriteHistoryCommandHandlers(events, cart)(other)
+  }
+}
+
+// D17, F8: the history rewrite contract.
+class HistoryRewriteSpec extends CommonSpec {
+
+  TestDatabase.init()
+
+  private val mpjsons = new MPJsons
+  private val typesNamesState = new PostgresTypesNamesState().initSchema()
+  private val eventStore = new PostgresEventStoreState(mpjsons, typesNamesState).initSchema()
+  private val uidGenerator = system.actorOf(Props(new UidGeneratorActor(
+    new PostgresUidGenerator("aggregates_uids_seq"), new PostgresUidGenerator("commands_uids_seq"), new PostgresUidGenerator("sagas_uids_seq"))))
+  private val eventBus = system.actorOf(Props(new EventsBusActor()))
+  eventBus ! RegisterSubscribers(Nil)
+  private val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(new RewritingCarts, uidGenerator, eventStore,
+    new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema(), eventBus, eventsReplayMode = false))
+
+  private val userId = UserId(1)
+
+  private def cartWithAnItem(): AggregateId = {
+    val cartId = AggregateId(System.nanoTime())
+    eventStore.localTx(session => eventStore.persistEvents(cartId,
+      NewEvents[ShoppingCart](userId, AggregateVersion.ZERO, Instant.now, Seq(ShoppingCartCreated("Groceries"))))(session)).get
+    val added: CustomCommandResponse[_] = commandBus ?? AddItem(userId, cartId, AggregateVersion(1), "apple")
+    added mustBe SuccessResponse(cartId, AggregateVersion(2))
+    cartId
+  }
+
+  private def cart(cartId: AggregateId): Aggregate[ShoppingCart] = {
+    val aggregate: Try[Aggregate[ShoppingCart]] = commandBus ?? GetAggregate(cartId)
+    aggregate.get
+  }
+
+  Feature("A history rewrite (D17)") {
+
+    Scenario("leaves the live aggregate as the rewritten history makes it") {
+      val cartId = cartWithAnItem()
+      cart(cartId).aggregateRoot.get.name mustBe "Groceries"
+
+      val renamed: CustomCommandResponse[_] = commandBus ?? RenameQuietly(userId, cartId, AggregateVersion(2), "Renamed")
+      renamed mustBe SuccessResponse(cartId, AggregateVersion(3))
+
+      val rewritten = cart(cartId)
+      rewritten.version mustBe AggregateVersion(3)
+      rewritten.aggregateRoot.get.name mustBe "Renamed"
+      rewritten.aggregateRoot.get.items.map(_.name) mustBe Vector("apple", "audit")
+    }
+
+    Scenario("that would change an event's class is refused, and nothing of the command is stored") {
+      val cartId = cartWithAnItem()
+
+      val refused: CustomCommandResponse[_] = commandBus ?? RewriteCreationAsItem(userId, cartId, AggregateVersion(2))
+      refused mustBe an[EventHandlingError]
+
+      DB.readOnly { implicit session =>
+        sql"SELECT count(*) FROM events WHERE aggregate_id = ${cartId.asLong}".map(_.int(1)).single()
+      } mustBe Some(2)
+      val events: Try[List[EventInfo[ShoppingCart]]] = commandBus ?? GetEventsForAggregate(cartId)
+      events.get.map(_.event) mustBe List(ShoppingCartCreated("Groceries"), ItemAdded("apple"))
+      cart(cartId).version mustBe AggregateVersion(2)
+    }
+  }
+}

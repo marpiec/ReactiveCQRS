@@ -431,9 +431,9 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
 ### 4.5 History rewrite and permanent delete
 
 - **Rewrite** (`RewriteCommandSuccess`): `overwriteEvents` runs `UPDATE events SET event = ?`
-  per `(aggregate_id, version)` in the same transaction (`overwriteEvents`). Only new events
-  are published; after the commit the owner reads its state again from the store (D17). A
-  rewrite to another event class is not rejected yet (F8, M3's rewrite step). The test domain
+  per `(aggregate_id, version)` in the same transaction (`overwriteEvents`), and only where the
+  stored event has the same class: a rewrite to another class is refused (D17, F8). Only new
+  events are published; after the commit the owner reads its state again from the store. The test domain
   pairs each rewrite with a compensating event (`CartNameRewritten`).
 - **Permanent delete**: the bus names the version of a `PermanentDeleteEvent` in its
   acknowledgement (`permanentDeleteAt`); the command bus then calls

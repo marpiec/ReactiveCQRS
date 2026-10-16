@@ -398,10 +398,10 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Invariants:** I6.
 
 #### F8 — History rewrite is half-applied
-- **Medium**, likely · Fix in **M3** (contract, D17) and **M6** (complete rewrite, D76) · `PostgresEventStoreState`, `AggregateRepositoryActor`
+- **Medium**, confirmed · **Contract part fixed in M3** (16/10/2026), complete rewrite in **M6** (D76) · `PostgresEventStoreState.overwriteEvents`, `AggregateOwner`
 - **Symptom:** a rewrite to a different class corrupts history; the live root keeps old values; projections are not told; duplicates and snapshots keep old values (GDPR).
 - **Root cause:** `overwriteEvents` updates only the JSON (`PostgresEventStoreState.scala:180-186`); no rebuild after rewrite (`AggregateRepositoryActor.scala:128-134`).
-- **Fix:** D17, then D76.
+- **Fix (M3, D17):** the store refuses a rewritten event of another class than the stored one (`RewriteChangesClassException`; the command gets `EventHandlingError` and nothing is stored); the owner reads its state again after a rewrite; the snapshots of the aggregate and of its duplicates are deleted. Still open for M6 (D76): projections are told only through a compensating event, and the live owners of duplicates keep their state until they are reloaded. Tests: `HistoryRewriteSpec`, `EventStoreStateSpec` (both stores).
 
 #### F9 — Idempotent command responses: broken index, ambiguous lookup, race
 - **Medium**, confirmed · **Fixed in M1** (16/10/2026) · `CommandResponseState`, `Idempotency`
@@ -800,7 +800,7 @@ From §7 of Neula's change requests.
 |---|---|
 | M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔, F73 ✔, F74 ✔, F75 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53, F76 (Neula, on a production copy, with `StoredDataCheck` and the F76 query); Neula H3, H4, H5 |
 | M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔, F95 ✔; Neula H2, H7 |
-| M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8; F8 (contract), F22 ✔, F23, F25 ✔, F27, F30, F31 ✔, F32, F33 (rest), F38 ✔, F39 ✔, F44 ✔, F50, F65 ✔, F76, F78, F81 ✔; Neula H8 |
+| M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8; F8 (contract ✔), F22 ✔, F23, F25 ✔, F27, F30, F31 ✔, F32, F33 (rest), F38 ✔, F39 ✔, F44 ✔, F50, F65 ✔, F76, F78, F81 ✔; Neula H8 |
 | M4 | F3, F43, F49 (backfill), F54, F55, F56, F57, F58, F59, F60, F61, F62, F82, F93, F94; Neula H1, H6 |
 | M5 | AR5; F46, F48, F63, F78 (between nodes) |
 | M6 | F8 (complete) |

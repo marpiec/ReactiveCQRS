@@ -1212,3 +1212,15 @@ Open test-infrastructure items:
 - Tests: `OutboxHookSpec` (rows written with the events; a failing writer rolls them back and the
   aggregate carries on; an idempotent copy writes nothing).
 - `sbt test`: core 136, testdomain 73, all pass.
+
+**16/10/2026: the history rewrite contract (D17; F8 first part)**
+- The store rewrites an event only where the stored one has the same class; otherwise it throws
+  `RewriteChangesClassException` inside the persist transaction, so the command gets
+  `EventHandlingError` and nothing of it is stored (the memory store checks before changing
+  anything). With the owner (re-read after a rewrite) and snapshots (deleted for the aggregate
+  and its duplicates), D17 is complete. Left for M6 (D76): the live owners of duplicates keep
+  their state until reloaded; projections learn of a rewrite only through a compensating event.
+- Tests: `HistoryRewriteSpec` (the live aggregate shows the rewritten history without a
+  compensating event; a class-changing rewrite stores nothing), `EventStoreStateSpec` (both
+  stores).
+- `sbt test`: core 138, testdomain 75, all pass.

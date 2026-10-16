@@ -114,11 +114,14 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   override def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit = {
     // The snapshots of the aggregate and of its duplicates may hold the old values (D30).
     sql"""DELETE FROM snapshots WHERE aggregate_id IN (SELECT id FROM aggregates WHERE base_id = ${aggregateId.asLong})""".update()
-    events.foreach(e => {
-      sql"""
-           |UPDATE events SET event = ? WHERE aggregate_id = ? AND version = ?
-      """.stripMargin.bind(mpjsons.serialize(e.event, e.event.getClass.getName), aggregateId.asLong, e.version.asInt).update()
-    })
+    // D17: a rewritten event keeps its class, so the history means what it meant; only the stored values change.
+    events.foreach { e =>
+      val className = e.event.getClass.getName
+      val updated = sql"""UPDATE events SET event = ${mpjsons.serialize(e.event, className)}
+                         | WHERE aggregate_id = ${aggregateId.asLong} AND version = ${e.version.asInt} AND event_type_id = ${typesNamesState.typeIdByClassName(className)}"""
+        .stripMargin.update()
+      if (updated != 1) throw new RewriteChangesClassException(aggregateId, e.version, className)
+    }
   }
 
 

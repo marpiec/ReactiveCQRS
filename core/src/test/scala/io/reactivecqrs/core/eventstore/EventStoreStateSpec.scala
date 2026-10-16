@@ -9,6 +9,7 @@ import io.reactivecqrs.core.eventstore.NewEvents
 import io.reactivecqrs.testutils.CommonSpec
 
 import scala.concurrent.duration._
+import scala.util.Try
 
 case class SomeAggregate()
 
@@ -313,6 +314,20 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     eventStoreState.readAndProcessAllEvents(classOf[SomeAggregate].getName, batchPerAggregate = false, (events, aggregateId, _) =>
       if (aggregateId == f.aggregateId) replayed ++= events.map(_.storedMetadata))
     replayed mustBe Vector(Some(metadata), Some(metadata), None)
+  }
+
+  // D17, F8: a rewrite may change an event's values, never its class.
+  Scenario("A rewrite that would change an event's class is refused, and nothing is rewritten") {
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one"), EventB(2)))
+
+    val refused = Try(eventStoreState.localTx(session => eventStoreState.overwriteEvents(f.aggregateId,
+      Seq(EventWithVersion(AggregateVersion(1), EventA("rewritten")), EventWithVersion(AggregateVersion(2), EventC(true))))(session)))
+    refused.failed.get mustBe a[RewriteChangesClassException]
+    f.getEvents() mustBe Seq(EventA("one"), EventB(2))
+
+    eventStoreState.localTx(session => eventStoreState.overwriteEvents(f.aggregateId, Seq(EventWithVersion(AggregateVersion(2), EventB(20))))(session))
+    f.getEvents() mustBe Seq(EventA("one"), EventB(20))
   }
 
   Scenario("The oldest version waiting in the outbox is found") {
