@@ -1189,6 +1189,12 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 
 ### Code structure
 
+#### F174 — The published license differed from the repository's
+- **Low**, confirmed · **Fixed in M6** (17/10/2026; the owner chose MIT) · `LICENSE`, `project/Common.scala` (`licenses`)
+- **Symptom:** the repository's `LICENSE` file was the Apache License 2.0 (its template, with no copyright line filled in), which GitHub shows, while the build published every artifact's POM with the MIT license (`licenses += ("MIT", ...)`). Users of the artifacts and of the repository were told different terms.
+- **Fix:** the owner chose MIT: `LICENSE` is the MIT license, as the POMs say, and the README states it.
+- **Found:** writing the README (M6, 17/10/2026).
+
 #### F14 — In-memory test doubles are wrong or incomplete
 - **Low**, confirmed · **Fixed in M1, step 0** (16/10/2026) · in-memory adapters
 - **Found and fixed:**
@@ -1261,7 +1267,7 @@ From §7 of Neula's change requests.
 | M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8 ✔; F8 (contract ✔), F22 ✔, F23 ✔, F25 ✔, F27 ✔, F30 ✔, F31 ✔, F32 ✔, F33 (rest ✔), F38 ✔, F39 ✔, F44 ✔, F50 ✔, F65 ✔, F76 ✔, F78 ✔, F81 ✔, F96 ✔, F97 ✔, F100–F107 ✔; D85 ✔; Neula H8 |
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
-| M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F155 (decide at review 8), F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔ |
+| M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F155 (decide at review 8), F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔, F174 ✔ |
 | M7 | AR5 (moved from M5 at review 7); F148, F152, F153, F156, F157, F160, F161, F162, F163, F164, F165, F166, F169 (found writing the book), F170, F171, F173 |
 
 ---

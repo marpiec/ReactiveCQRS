@@ -57,7 +57,8 @@ Each goal is an observable outcome with the check that proves it.
 - Each milestone keeps `ARCHITECTURE.md` accurate. Each work item that changes what a user writes
   or runs (a new option, message, default or host step) updates its chapter of the book
   (`docs/book/`, written by `docs/book/STYLE.md`) in the same commit, so M7 polishes rather than
-  writes from scratch.
+  writes from scratch; and `README.md` when what it says (features, requirements, coordinates,
+  status, the quick start) changes.
 - A milestone is done when its exit criteria hold; it is then tagged `v1.0.0-Mn`.
 
 ---
@@ -563,6 +564,11 @@ one space.
    "For Dummies" books. Written now for what M1–M5 and the first M6 steps built (19 chapters and
    three appendices); each later step updates its chapters (organizations: purge, export and
    import; the complete rewrite; a chapter of its own for ephemeral aggregates).
+8. **The README (added 17/10/2026, at the user's request):** `README.md`, the GitHub landing
+   page: what the library is, its features, requirements, installation, a quick start from the
+   book's first chapters, the modules, building and testing, the project status, the license, and
+   links to the book and the documentation. `ReadmeQuickStartSpec` compiles and runs its quick
+   start, so it cannot drift from the code. M7's README item brings it to the release.
 
 **Refined at the M1 review** (KNOWN-ISSUES §7, review 3):
 - Purge and complete rewrite need `commands_responses` rows tied to their aggregate (add the
@@ -622,9 +628,9 @@ GitHub documentation alone; the 0.12.47 → 1.0 migration is rehearsed on produc
 
 **Work items**
 
-1. **README** (GitHub landing page): what the library is and when to use it, features,
-   requirements (Scala 2.13, Java 21, PostgreSQL, Pekko), installation coordinates, a
-   five-minute quick start (basic setup), links to the guide.
+1. **README** (GitHub landing page, written in M6): brought to the release: when to use the
+   library, requirements as released (Java 21), the release's coordinates and repository, the
+   quick start checked again.
 2. **The book** (`docs/book/`, begun in M6), completed and polished; each topic below has a
    chapter or a section:
    - getting started;
@@ -2007,3 +2013,10 @@ Open test-infrastructure items:
 - Docs: ARCHITECTURE §4.9 (and §4.1, §4.5, §4.8), the book's chapter 15 (the complete rewrite), its
   chapter 2 and appendices A and B, KNOWN-ISSUES (D76, F8, F146, H11), SCALING, the design note,
   CLAUDE.md. Cleaned on the way: `SpaceImport` took an `ActorSystem` it never used.
+
+**17/10/2026: the README (at the user's request) and the license**
+- `README.md` presents the library on GitHub: what it is, its features, requirements, installation,
+  a quick start from the book's first chapters, the modules, building and testing, the status, and
+  links to the book and the documentation. `ReadmeQuickStartSpec` compiles and runs its quick start.
+- Writing it found F174: `LICENSE` was the Apache License 2.0 while the POMs said MIT. The user
+  chose MIT; `LICENSE` is now the MIT license.
