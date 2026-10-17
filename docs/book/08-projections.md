@@ -158,6 +158,7 @@ The operations you will use most:
 | `findAll()` | every document, as a `Map[Long, Document[T]]` |
 | `countAll()` | how many there are |
 | `findDocumentByPath(path, value)` | the documents whose text at `path` equals `value` |
+| `findDocumentByPaths(conditions*)` | the documents that meet every condition, such as `ExpectedSingleLongValue(Seq("shop"), 7)` |
 | `findDocument(query)` | a search with conditions, sorting and paging (later in this chapter) |
 | `clearSpace(spaceId)`, `clearAllData()` | deletes one organization's documents, or all of them |
 
@@ -197,7 +198,9 @@ AggregateListener[ShoppingCart] { (cartId, version, created, cart) => implicit s
 
 Outside a listener (in a script, a test or a repair job) you open the session yourself, for example
 with ScalikeJDBC's `DB.localTx { implicit session => ... }`. Reads such as `getDocument` and
-`findAll` need no session: without one, they open a read-only session of their own.
+`findAll` need no session: without one, they open a read-only session of their own. Inside a
+listener every read runs in the listener's session too, so it sees what the listener wrote a moment
+before, and takes no second connection from the pool.
 
 > **Under the hood:** the transaction comes from `SubscriptionsState.localTx`, and the projection's
 > version moves with a compare-and-set, so two writers can never both move it. Grouping and its

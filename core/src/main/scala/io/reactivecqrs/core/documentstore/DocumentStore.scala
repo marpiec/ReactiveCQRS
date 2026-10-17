@@ -108,15 +108,28 @@ case class DocumentStoreQuery(where: Seq[ExpectedValue],
                               offset: Int,
                               limit: Int)
 
+/** The transaction a finder reads in, for the one that cannot take `(implicit session: DBSession = null)` as the others
+  * do, since only one alternative of an overloaded method may have default arguments (F160): the caller's implicit
+  * `DBSession`, such as a listener's, or without one none, and the store reads on a connection of its own. */
+final class CallerSession private[documentstore] (val session: DBSession)
+
+object CallerSession extends NoCallerSession {
+  implicit def callers(implicit session: DBSession): CallerSession = new CallerSession(session)
+}
+
+sealed trait NoCallerSession {
+  implicit val none: CallerSession = new CallerSession(null)
+}
+
 sealed abstract class AbstractDocumentStore[T <: AnyRef] {
 
   def findDocumentByPath(path: Seq[String], value: String)(implicit session: DBSession = null): Map[Long, Document[T]] =
     findDocument(DocumentStoreQuery.basic(Seq(ExpectedSingleTextValue(path, value)))).toMap
 
-  def findDocumentByPath(value: ExpectedValue): Map[Long, Document[T]] =
-    findDocument(DocumentStoreQuery.basic(Seq(value))).toMap
+  def findDocumentByPath(value: ExpectedValue)(implicit caller: CallerSession): Map[Long, Document[T]] =
+    findDocument(DocumentStoreQuery.basic(Seq(value)))(caller.session).toMap
 
-  def findDocumentByPaths(values: ExpectedValue*): Map[Long, Document[T]] =
+  def findDocumentByPaths(values: ExpectedValue*)(implicit session: DBSession = null): Map[Long, Document[T]] =
     findDocument(DocumentStoreQuery.basic(values)).toMap
 
   def findDocument(query: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, Document[T])]

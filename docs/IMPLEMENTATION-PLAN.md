@@ -2101,3 +2101,12 @@ Open test-infrastructure items:
   `reactivecqrs.outbox.waiting` gauge is; it was the poller's tracked aggregates, which leave out new
   ones postponed beyond `maxRepublishPerPoll`. `OutboxPollerActorSpec` (new, against a stub outbox),
   red before the fix. Book: appendix B.
+
+**17/10/2026: F160, the finders read in the listener's transaction**
+- `findDocumentByPaths` takes `(implicit session: DBSession = null)` as the other finders do;
+  `findDocumentByPath(value: ExpectedValue)` takes an implicit `CallerSession` (the caller's implicit
+  session, or none), as only one alternative of the overloaded method may have a default argument.
+  Callers compile unchanged. Inside a listener both read in its transaction, and take no second
+  connection. `PostgresDocumentStoreSpec` "F160", red before the fix. Book: chapter 8.
+- KNOWN-ISSUES H12 collects M7's host steps for Neula: F148, F160, F162, F164 (a scan of Neula's
+  code found no projection with two listeners of one kind for one type), F166.

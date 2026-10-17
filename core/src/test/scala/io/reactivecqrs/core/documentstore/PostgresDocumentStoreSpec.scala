@@ -149,4 +149,34 @@ class PostgresDocumentStoreSpec extends AnyFeatureSpec with GivenWhenThen with B
     }
   }
 
+
+  Feature("Finders read in the caller's transaction (F160)") {
+    Scenario("a document written in a listener's transaction is found by the finders that take expected values") {
+      val documentStore = new PostgresDocumentStore[OptionIntType](testTable, mpjsons, new NoopDocumentStoreCache)
+      try {
+        DB.localTx { implicit session =>
+          documentStore.insertDocument(0, 1, OptionIntType(Some(13)))
+          val thirteen = ExpectedSingleTextValue(Seq("option", "value"), "13")
+
+          documentStore.findDocumentByPath(thirteen).keySet mustBe Set(1)
+          documentStore.findDocumentByPaths(thirteen).keySet mustBe Set(1)
+        }
+      } finally {
+        documentStore.dropTable()
+      }
+    }
+
+    Scenario("outside a transaction they read on their own") {
+      val documentStore = new PostgresDocumentStore[OptionIntType](testTable, mpjsons, new NoopDocumentStoreCache)
+      try {
+        DB.localTx { implicit session => documentStore.insertDocument(0, 1, OptionIntType(Some(13))) }
+        val thirteen = ExpectedSingleTextValue(Seq("option", "value"), "13")
+
+        documentStore.findDocumentByPath(thirteen).keySet mustBe Set(1)
+        documentStore.findDocumentByPaths(thirteen).keySet mustBe Set(1)
+      } finally {
+        documentStore.dropTable()
+      }
+    }
+  }
 }
