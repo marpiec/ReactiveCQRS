@@ -195,7 +195,7 @@ line. Only the dictionary has to come first; after it, the order does not matter
 | Call | Creates | Needed for |
 |---|---|---|
 | `PostgresTypesNamesState.initSchema()` | `types_names` | everything: the class-name dictionary |
-| `PostgresEventStoreState.initSchema()` | `events`, `aggregates`, `events_to_publish` (the outbox), `noop_events`, `snapshots`, `event_keys`, `events_archive`, `schema_steps`, and the stored procedures that write events | everything: this is the event store |
+| `PostgresEventStoreState.initSchema()` | `events`, `aggregates`, `events_to_publish` (the outbox), `noop_events`, `snapshots`, `event_keys`, `events_archive`, `schema_steps`, `aggregate_lineage`, `history_rewrites`, and the stored procedures that write events | everything: this is the event store |
 | `PostgresCommandResponseState.initSchema()` | `commands_responses` | every command bus; idempotent commands ([chapter 5](05-command-flavors.md)) |
 | `PostgresSagaState.initSchema()` | `sagas` | sagas ([chapter 12](12-sagas.md)) |
 | `PostgresSubscriptionsState.initSchema()` | `subscriptions`, `subscription_failures` | projections ([chapter 8](08-projections.md)) |

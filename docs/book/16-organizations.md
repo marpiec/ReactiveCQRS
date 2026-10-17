@@ -485,7 +485,7 @@ from its own state, just as the purge does, so it keeps exactly what it had. Wit
 ```scala
 import io.reactivecqrs.core.space.SpaceImport
 
-val imported = new SpaceImport(eventStore, uidGenerator)(system).read(Paths.get("shop-42.jsonl"), into = SpaceId(7))
+val imported = new SpaceImport(eventStore, uidGenerator).read(Paths.get("shop-42.jsonl"), into = SpaceId(7))
 // ImportReport(space, aggregates, events, archived, remapped, unknownReferences, someUnknown, refused)
 ```
 

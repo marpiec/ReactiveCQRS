@@ -32,7 +32,7 @@ class SpaceExport(eventStore: PostgresEventStoreState, contexts: Seq[AggregateCo
 
   def write(space: SpaceId, out: Writer): ExportReport = {
     val s = space.asLong
-    val (chains, outside) = chainsOf(s)
+    val (chains, outside, inside) = chainsOf(s)
     val constants = DB.readOnly { implicit session =>
       sql"SELECT id FROM aggregates WHERE space_id = $s AND base_id = id AND id < 1001 ORDER BY id LIMIT 10".map(_.long(1)).list()
     }
@@ -53,7 +53,7 @@ class SpaceExport(eventStore: PostgresEventStoreState, contexts: Seq[AggregateCo
         out.write('\n')
       }
       line(Line(header = Some(ExportHeader(Version, installation, s, Instant.now.toString))))
-      val aggregates = writeAggregates(s, chains, detached.keySet, a => line(Line(aggregate = Some(a))))
+      val aggregates = writeAggregates(s, chains, detached.keySet, lineagesOf(s, inside, detached.keySet), a => line(Line(aggregate = Some(a))))
       val events = writeEvents(s, detached, e => line(Line(event = Some(e))))
       val archived = writeArchived(s, a => line(Line(archived = Some(a))))
       out.flush()
@@ -65,14 +65,28 @@ class SpaceExport(eventStore: PostgresEventStoreState, contexts: Seq[AggregateCo
     }
   }
 
-  // The chain rows of the space's copies, and the copies whose chain reaches a base of another space.
-  private def chainsOf(space: Long): (Map[Long, Seq[ExportedChainRow]], Seq[Long]) = DB.readOnly { implicit session =>
+  // The chain rows of the space's copies, the copies whose chain reaches a base of another space, and the chain rows
+  // whose base is in the space.
+  private def chainsOf(space: Long): (Map[Long, Seq[ExportedChainRow]], Seq[Long], Map[Long, Seq[ExportedChainRow]]) = DB.readOnly { implicit session =>
     val rows = sql"""SELECT a.id, a.base_id, a.base_order, a.base_version, b.space_id FROM aggregates a
                     | JOIN aggregates b ON b.id = a.base_id AND b.base_id = b.id
                     | WHERE a.space_id = $space AND a.base_id <> a.id ORDER BY a.id, a.base_order""".stripMargin
       .map(rs => (rs.long(1), ExportedChainRow(rs.long(2), rs.int(3), rs.int(4)), rs.long(5))).list()
     val outside = rows.collect { case (id, _, baseSpace) if baseSpace != space => id }.distinct
-    (rows.groupBy(_._1).map { case (id, chain) => id -> chain.map(_._2) }, outside)
+    def byCopy(of: Seq[(Long, ExportedChainRow, Long)]) = of.groupBy(_._1).map { case (id, chain) => id -> chain.map(_._2) }
+    (byCopy(rows), outside, byCopy(rows.filter(_._3 == space)))
+  }
+
+  // D76: the bases of the space each copy holds values of: those recorded when it was detached, and, for a copy this
+  // export detaches, the bases of the space in its chain.
+  private def lineagesOf(space: Long, inside: Map[Long, Seq[ExportedChainRow]], detached: Set[Long]): Map[Long, Seq[ExportedLineage]] = {
+    val recorded = DB.readOnly { implicit session =>
+      sql"""SELECT l.aggregate_id, l.copied_from, l.at_version FROM aggregate_lineage l
+           | JOIN aggregates a ON a.id = l.aggregate_id AND a.base_id = a.id JOIN aggregates b ON b.id = l.copied_from AND b.base_id = b.id
+           | WHERE a.space_id = $space AND b.space_id = $space""".stripMargin.map(rs => rs.long(1) -> ExportedLineage(rs.long(2), rs.int(3))).list()
+    }
+    val now = detached.toSeq.flatMap(id => inside.getOrElse(id, Nil).map(row => id -> ExportedLineage(row.base, row.version)))
+    (recorded ++ now).groupBy(_._1).map { case (id, rows) => id -> rows.map(_._2).distinct.sortBy(_.base) }
   }
 
   // D50, D85: the squash event of the copy's state at version 1, built and checked as a detach builds it.
@@ -90,7 +104,8 @@ class SpaceExport(eventStore: PostgresEventStoreState, contexts: Seq[AggregateCo
         .map(_.head._2).left.map(reason => "aggregate " + id.asLong + " cannot be detached: " + reason)
   }
 
-  private def writeAggregates(space: Long, chains: Map[Long, Seq[ExportedChainRow]], detached: Set[Long], write: ExportedAggregate => Unit): Int =
+  private def writeAggregates(space: Long, chains: Map[Long, Seq[ExportedChainRow]], detached: Set[Long], lineages: Map[Long, Seq[ExportedLineage]],
+                              write: ExportedAggregate => Unit): Int =
     DB.localTx { implicit session =>
       var count = 0
       sql"""SELECT a.id, t.name, a.base_version, a.squashed_version, a.creation_time FROM aggregates a JOIN types_names t ON t.id = a.type_id
@@ -98,7 +113,7 @@ class SpaceExport(eventStore: PostgresEventStoreState, contexts: Seq[AggregateCo
         val id = rs.long(1)
         val isDetached = detached.contains(id)
         write(ExportedAggregate(id, rs.string(2), rs.int(3), rs.intOpt(4), utcTime(rs.underlying, 5).toString,
-          if (isDetached) Nil else chains.getOrElse(id, Nil), isDetached))
+          if (isDetached) Nil else chains.getOrElse(id, Nil), isDetached, lineages.getOrElse(id, Nil)))
         count += 1
       }
       count

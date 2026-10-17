@@ -42,6 +42,22 @@ case class AggregateSquashed(id: AggregateId, upTo: AggregateVersion) extends Sq
   * two may pass later. */
 case class SquashRefused(id: AggregateId, reason: String) extends SquashResponse
 
+/** A change of what an aggregate's history holds (D76), as data: for example `EraseCustomer(customerId)`. The contexts
+  * say what it does to their events (`historyChanges`, `metadataChanges`). */
+trait HistoryChange extends Serializable
+
+/** Applies `change` to every stored event of the aggregate, its archived events included, in its owner, between commands
+  * (D76): the events the change alters are written again, the version stays and nothing is published. The aggregate's
+  * copies and the projections are the host's to follow, with `HistoryRewriter`. Answered with `HistoryRewritten` or
+  * `RewriteRefused`; a second request with the same change finds nothing to change. */
+case class RewriteEverywhere(id: AggregateId, change: HistoryChange, userId: UserId)
+sealed trait RewriteResponse
+/** `events` and `archived` events were written again; `fields`: the names of the fields the change altered. */
+case class HistoryRewritten(id: AggregateId, events: Int, archived: Int, fields: Set[String]) extends RewriteResponse
+/** Nothing was written, for `reason`: the change alters an event's class, an undo or a duplication event, throws, or
+  * makes an event larger than the store allows; or the aggregate cannot be read. */
+case class RewriteRefused(id: AggregateId, reason: String) extends RewriteResponse
+
 /**
   * Squash (D47, D48), opt-in per context: `toEvent` makes the context's squash event from the aggregate's state at the
   * squash point. It is an ordinary event class of the context, a `FirstEvent` whose event handler gives that state back,
@@ -158,6 +174,15 @@ abstract class AggregateContext[AGGREGATE_ROOT : ClassTag] {
 
   /** Opt-in squash of old history into one event (D47–D52); none by default. */
   val squash: Option[SquashPolicy[AGGREGATE_ROOT]] = None
+
+  /** What a `HistoryChange` does to this type's events (D76, `RewriteEverywhere`): each event it matches is written again
+    * as it returns it, of the same class (D17); undo and duplication events must not change. It must be idempotent: run
+    * twice, it changes nothing the second time. None by default. */
+  def historyChanges: HistoryChange => PartialFunction[Event[AGGREGATE_ROOT], Event[AGGREGATE_ROOT]] = _ => PartialFunction.empty
+
+  /** What a `HistoryChange` does to the metadata stored with this type's events (D32), when its `actor` or `custom` values
+    * may hold what the change removes. None by default. */
+  def metadataChanges: HistoryChange => PartialFunction[EventMetadata, EventMetadata] = _ => PartialFunction.empty
 
   /** Owners on each node (`Local`, the default) or one owner per aggregate in the cluster (`Sharded`, D43). */
   val placement: Placement = Placement.Local

@@ -28,6 +28,7 @@ class PostgresEventStoreSchemaInitializer  {
     createAggregatesSpaceIndexWhenSmall()
     createEventKeysTable()
     createEventsArchiveTable()
+    createLineageAndRewritesTables()
     dropOldFunctions()
     createAddEventsFunction()
     createAddEventFunction()
@@ -200,6 +201,18 @@ class PostgresEventStoreSchemaInitializer  {
          |  event_type_id SMALLINT NOT NULL, event_type_version SMALLINT NOT NULL, event TEXT NOT NULL, user_id BIGINT NOT NULL, event_time TIMESTAMP NOT NULL, metadata JSONB,
          |  undone_from INT, archived TIMESTAMP NOT NULL)""".stripMargin.execute()
     sql"""CREATE INDEX IF NOT EXISTS events_archive_aggregate_idx ON events_archive (aggregate_id, version)""".execute()
+  }
+
+  // D76: a detached copy holds a copy of its bases' state, so a complete rewrite of a base must find it: every detach
+  // records the bases the copy read, at which version. And each complete rewrite leaves an audit row, never a value.
+  private def createLineageAndRewritesTables(): Unit = DB.autoCommit { implicit session =>
+    sql"""CREATE TABLE IF NOT EXISTS aggregate_lineage (aggregate_id BIGINT NOT NULL, copied_from BIGINT NOT NULL, at_version INT NOT NULL,
+         |  detached TIMESTAMP NOT NULL, PRIMARY KEY (aggregate_id, copied_from))""".stripMargin.execute()
+    sql"""CREATE INDEX IF NOT EXISTS aggregate_lineage_copied_from_idx ON aggregate_lineage (copied_from)""".execute()
+    sql"""CREATE TABLE IF NOT EXISTS history_rewrites (id BIGSERIAL PRIMARY KEY, aggregate_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
+         |  at TIMESTAMP NOT NULL, change_class VARCHAR(512) NOT NULL, classes TEXT NOT NULL, fields TEXT NOT NULL, events INT NOT NULL,
+         |  archived INT NOT NULL)""".stripMargin.execute()
+    sql"""CREATE INDEX IF NOT EXISTS history_rewrites_aggregate_idx ON history_rewrites (aggregate_id)""".execute()
   }
 
   // An installation without events has none to backfill. Checked once the procedures write keys, so an event written

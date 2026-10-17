@@ -58,6 +58,8 @@ object AggregateOwner {
 
   /** A squash request (D47) and the caller to answer with a `SquashResponse`. */
   case class Squash(respondTo: ActorRef, request: SquashAggregate)
+  /** A complete rewrite of the aggregate's history (D76) and the caller to answer with a `RewriteResponse`. */
+  case class Rewrite(respondTo: ActorRef, request: RewriteEverywhere)
   /** To the command bus: the histories of these aggregates changed under their owners (a squash or a rewrite of their
     * base, a detach, D85): the owners, if running, stop without a snapshot, and new ones read the histories again. */
   case class HistoryChanged(aggregateIds: Seq[AggregateId])
@@ -89,6 +91,9 @@ class OwnerSettings[AGGREGATE_ROOT: ClassTag](context: AggregateContext[AGGREGAT
   val snapshots: Option[SnapshotPolicy] = context.snapshots
   val commandProcessing: CommandProcessing = context.commandProcessing
   val squash: Option[SquashPolicy[AGGREGATE_ROOT]] = context.squash
+  /** D76: what a history change does to the type's events and to their envelopes. */
+  val historyChanges: HistoryChange => PartialFunction[Event[AGGREGATE_ROOT], Event[AGGREGATE_ROOT]] = context.historyChanges
+  val metadataChanges: HistoryChange => PartialFunction[EventMetadata, EventMetadata] = context.metadataChanges
   val sharded: Boolean = context.placement.isInstanceOf[Placement.Sharded]
   /** Why one of these events may not be written yet: its class is newer than a node of the cluster (D67). */
   def notWrittenYet(events: Seq[Any]): Option[String] = events.view.flatMap(context.notWrittenYet).headOption
@@ -223,6 +228,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     case GetState(respondTo) => respondTo ! Failure(failure)
     case GetStateMinVersion(respondTo, _, _) => respondTo ! Failure(failure)
     case Squash(respondTo, request) => respondTo ! SquashRefused(request.id, "the aggregate cannot be restored: " + failure.getMessage)
+    case Rewrite(respondTo, request) => respondTo ! RewriteRefused(request.id, "the aggregate cannot be restored: " + failure.getMessage)
     case MinVersionDeadline => answerExpiredMinVersionQueries()
     case AskToStop | PassivateOwner(_) => askToStop()
     case StopOwner | StopOwnerStale => stopNow(withSnapshot = false)
@@ -246,6 +252,8 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     case RepublishRange(_, from, subscriber) => if (caughtUp().isEmpty) republish(from, Some(subscriber))
     case Squash(respondTo, request) =>
       respondTo ! caughtUp().fold(squashHistory(request))(failure => SquashRefused(request.id, "the aggregate cannot be restored: " + failure.getMessage))
+    case Rewrite(respondTo, request) =>
+      respondTo ! caughtUp().fold(rewriteHistory(request))(failure => RewriteRefused(request.id, "the aggregate cannot be restored: " + failure.getMessage))
     case StopOwner =>
       stopping = true
       stopIfDone()
@@ -420,11 +428,11 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
   // R9: a command without events writes nothing and changes nothing. D38: a new aggregate belongs to an organization,
   // the space of its first event (0 for the platform); one without a space could be neither purged nor moved with it.
   private def persistOrAnswer(command: Pending, events: Seq[Event[AGGREGATE_ROOT]], rewritten: Iterable[EventWithVersion[AGGREGATE_ROOT]], info: AnyRef): Unit = {
-    if (events.isEmpty) {
+    if (events.isEmpty && rewritten.isEmpty) {
       finish(command.envelope.commandId, successResponse(command.baseVersion, info))
     } else if (command.baseVersion != version) {
       ownConflict(command, AggregateConcurrentModificationError(aggregateId, aggregateType, command.baseVersion, version))
-    } else if (version == AggregateVersion.ZERO && events.head.isInstanceOf[FirstEvent[_]] && events.head.asInstanceOf[FirstEvent[_]].spaceId.asLong < 0) {
+    } else if (version == AggregateVersion.ZERO && events.headOption.exists(_.isInstanceOf[FirstEvent[_]]) && events.head.asInstanceOf[FirstEvent[_]].spaceId.asLong < 0) {
       finish(command.envelope.commandId, FailureResponse(List("A new aggregate needs a space: " + events.head.getClass.getSimpleName +
         " gives " + events.head.asInstanceOf[FirstEvent[_]].spaceId + "; use SpaceId(0) for the platform")))
     } else notWrittenYet(events) match {
@@ -452,11 +460,12 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
         val outcome = Try {
           eventStore.localTx { implicit session =>
             if (rewritten.nonEmpty) eventStore.overwriteEvents(aggregateId, rewritten)
-            val persisted = eventStore.persist(aggregateId, NewEvents(userId, version, timestamp, events, metadata)).get
+            // F146: a rewrite may add no event; then it is stored alone and the version stays.
+            val persisted = if (events.isEmpty) Seq.empty else eventStore.persist(aggregateId, NewEvents(userId, version, timestamp, events, metadata)).get
             val stored = persisted.map(e => EventInfo(e.version, e.event, userId, timestamp, metadata))
             if (idempotency.isIdempotent(envelope.command)) idempotency.record(envelope.command, response, aggregateId)
             // R12, D33: after the idempotency record, so a copy whose key is taken rolls back before writing anything.
-            outboxWriter.foreach(_.write(aggregateId, stored.last.version, stored))
+            if (stored.nonEmpty) outboxWriter.foreach(_.write(aggregateId, stored.last.version, stored))
             (stored, persisted.map(_.size))
           }
         }
@@ -469,7 +478,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
               if (rewritten.nonEmpty) historyChangedForDuplicates()
               // If the state cannot be read, nothing is published now: the outbox poller has it re-published later.
               if (restore().isEmpty) {
-                publish(published, sizes)
+                if (published.nonEmpty) publish(published, sizes)
                 snapshotIfDue(command.baseVersion)
               }
             } else {
@@ -680,6 +689,36 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
           log.error(e, "Squashing aggregate " + aggregateId.asLong + " up to version " + upTo.asInt + " failed")
           SquashRefused(aggregateId, "the squash failed: " + e.getMessage)
       }
+  }
+
+  // ************** Complete rewrite (D76)
+
+  // On this owner's thread, between commands, as a squash: the version stays and nothing is published. The change reaches
+  // the aggregate's own stored and archived events (not its bases', nor its copies': the host follows those with
+  // `HistoryRewriter`); then this owner, and the owners of the duplicates that read its events, read their states again.
+  private def rewriteHistory(request: RewriteEverywhere): RewriteResponse = {
+    val (events, envelopes) = (historyChanges(request.change), metadataChanges(request.change))
+    def alter(event: Event[AGGREGATE_ROOT], metadata: Option[EventMetadata]): (Event[AGGREGATE_ROOT], Option[EventMetadata]) =
+      (events.applyOrElse(event, identity[Event[AGGREGATE_ROOT]]), metadata.map(m => envelopes.applyOrElse(m, identity[EventMetadata])))
+    Try(eventStore.localTx { implicit session =>
+      eventStore.rewriteEverywhere[AGGREGATE_ROOT](aggregateId, request.userId, request.change, alter).map { count =>
+        outboxWriter.foreach(_.rewrite(aggregateId, request.change)) // the host's rows, in the same transaction
+        count
+      }
+    }) match {
+      case Success(Right(count)) =>
+        if (count.events + count.archived > 0) {
+          log.info("Aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " rewritten by " + request.change.getClass.getSimpleName +
+            ": " + count.events + " events, " + count.archived + " archived, fields " + count.fields.toSeq.sorted.mkString(", "))
+          historyChangedForDuplicates()
+          restore()
+        }
+        HistoryRewritten(aggregateId, count.events, count.archived, count.fields)
+      case Success(Left(reason)) => RewriteRefused(aggregateId, reason)
+      case Failure(e) =>
+        log.error(e, "Rewriting aggregate " + aggregateId.asLong + " failed")
+        RewriteRefused(aggregateId, "the rewrite failed: " + e.getMessage)
+    }
   }
 
   // The duplicates' owners hold states made from the history of before; the command bus stops them without a snapshot.

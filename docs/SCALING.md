@@ -211,6 +211,12 @@ Estimated from the measured numbers. None of this was run at this scale.
   about 4 GB for 10 million events, estimated). The import reads the file twice and holds the
   aggregates' ids and the remapped ones; it writes in transactions of at most 10 000 events. Its
   duration grows with the events (not measured).
+- **Erasure, the complete rewrite** (D76, since M6). One aggregate's rewrite reads its events and
+  archive once and writes the changed ones in one transaction, in its owner, which holds its
+  commands meanwhile (seconds for 50 000 events, estimated). Copies are rewritten one at a time, and
+  each projection named rebuilds the changed aggregates one after another, so a template copied
+  10 000 times takes minutes (not measured); the report says where a stopped run ended, and a run
+  again does the rest.
 - **The outbox.** `events_to_publish` takes an insert and a delete per event. Autovacuum must keep
   up with it, or the table and its index bloat. The outbox poller still groups the whole outbox
   every 30 s, which is cheap while the outbox is near empty (normal running) and grows with a

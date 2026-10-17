@@ -93,6 +93,9 @@ that entry has the full story.
   ([chapter 5](05-command-flavors.md))
 - **Compensating event**: a new event you record next to a history rewrite, such as
   `CartNameRewritten`, so that projections hear about the change. ([chapter 15](15-rewriting-history.md))
+- **Complete rewrite** (`HistoryRewriter`, `RewriteEverywhere`): erasure. A `HistoryChange` applied to
+  every stored and archived event of an aggregate and of all its copies, followed by a rebuild of the
+  projections you name, with an audit row that never holds the values. ([chapter 15](15-rewriting-history.md))
 - **Concurrent command** (`ConcurrentCommand`): a command without an expected version. It runs on
   whatever version the aggregate has, and after a clash the library runs it again, at most 10
   attempts in all. ([chapter 5](05-command-flavors.md))
@@ -180,6 +183,9 @@ that entry has the full story.
 - **History rewrite** (`RewriteHistoryCommand`, `RewriteHistoryConcurrentCommand`): a command that
   changes values inside past events, each keeping its class, for example to remove personal data.
   Its handler returns `RewriteCommandSuccess`. ([chapter 15](15-rewriting-history.md))
+- **History change** (`HistoryChange`): what a complete rewrite should do, as a case class
+  (`EraseCustomer(id)`); each context says what it does to its events in `historyChanges`.
+  ([chapter 15](15-rewriting-history.md))
 - **Host**: your application, which creates the library's stores and actors and wires them
   together. ([chapter 4](04-first-command.md))
 
@@ -209,6 +215,9 @@ that entry has the full story.
   ([chapter 8](08-projections.md))
 - **Listener actor** (`AggregateListenerActor`): a projection without queries, for side effects
   such as notifications. It gets the same deliveries and guarantees. ([chapter 8](08-projections.md))
+- **Lineage**: the library's record of the aggregates a detached copy was copied from
+  (`aggregate_lineage`), so that a complete rewrite of the original still finds the copy.
+  ([chapter 15](15-rewriting-history.md))
 - **Local type** (`Placement.Local`): the default placement. Every node keeps owners of its own,
   and the database's version check decides when two nodes write the same aggregate.
   ([chapter 17](17-cluster.md))

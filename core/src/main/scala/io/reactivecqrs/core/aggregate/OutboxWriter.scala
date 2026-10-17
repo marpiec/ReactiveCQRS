@@ -1,7 +1,7 @@
 package io.reactivecqrs.core.aggregate
 
 import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.api.{AggregateContext, AggregateVersion, EventInfo}
+import io.reactivecqrs.api.{AggregateContext, AggregateVersion, EventInfo, HistoryChange}
 import scalikejdbc.DBSession
 
 /**
@@ -12,6 +12,10 @@ import scalikejdbc.DBSession
 trait OutboxWriter[AGGREGATE_ROOT] {
   /** `version`: the aggregate's version after these events. */
   def write(aggregateId: AggregateId, version: AggregateVersion, events: Seq[EventInfo[AGGREGATE_ROOT]])(implicit session: DBSession): Unit
+
+  /** D76: changes the rows this writer wrote for the aggregate as `change` asks (an erasure), in the transaction of the
+    * aggregate's complete rewrite. It may run more than once for one change. Nothing by default. */
+  def rewrite(aggregateId: AggregateId, change: HistoryChange)(implicit session: DBSession): Unit = ()
 }
 
 /** Mixed into the `AggregateContext` of a type whose commands write such rows. */

@@ -20,10 +20,14 @@ object SpaceFormat {
   /** A copy's chain row within the space: the base it reads, its order in the chain, the version it reads it up to. */
   case class ExportedChainRow(base: Long, order: Int, version: Int)
 
+  /** A base of the space that a detached copy read, at `version`, when it was detached (D76: the copy holds its values). */
+  case class ExportedLineage(base: Long, version: Int)
+
   /** `detached`: the aggregate's chain reached outside the space, so its version-1 event in this export is the type's
-    * squash event of its state at version 1, and it has no chain. */
+    * squash event of its state at version 1, and it has no chain. `lineage`: the bases of the space it was detached
+    * from, earlier or by this export. */
   case class ExportedAggregate(id: Long, rootClass: String, version: Int, squashedVersion: Option[Int], created: String,
-                               chain: Seq[ExportedChainRow], detached: Boolean)
+                               chain: Seq[ExportedChainRow], detached: Boolean, lineage: Seq[ExportedLineage])
 
   /** An event as stored: its JSON, its user and time, its metadata JSON, and the version of the undo that cancelled it. */
   case class ExportedEvent(aggregate: Long, version: Int, eventClass: String, json: String, user: Long, time: String,

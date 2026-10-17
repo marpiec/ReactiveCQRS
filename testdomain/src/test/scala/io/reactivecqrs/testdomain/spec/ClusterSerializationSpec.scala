@@ -93,7 +93,8 @@ class ClusterSerializationSpec extends AnyFeatureSpec with Matchers with Eventua
         AggregateConcurrentModificationError(id, cart, v3, AggregateVersion(4)), CommandHandlingError("AddItem", "e-1", CommandId(5)),
         EventHandlingError("ItemAdded", "e-2", CommandId(5)), CommandRejected(id, "full"),
         Success(Aggregate[ShoppingCart](id, v3, Some(state))), Success(events.toList),
-        AggregateSquashed(id, v3), SquashRefused(id, "waiting")
+        AggregateSquashed(id, v3), SquashRefused(id, "waiting"),
+        Rewrite(ref, RewriteEverywhere(id, EraseNote("secret"), UserId(1))), HistoryRewritten(id, 2, 1, Set("notes", "text")), RewriteRefused(id, "D17")
       ).foreach(message => roundTrip(message) mustBe message)
     }
 

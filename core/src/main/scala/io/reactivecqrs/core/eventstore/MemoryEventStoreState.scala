@@ -29,6 +29,7 @@ class MemoryEventStoreState extends EventStoreState {
   private var squashedVersions: Map[AggregateId, AggregateVersion] = Map.empty
   private var generations: Map[AggregateId, Int] = Map.empty
   private var archives: Map[AggregateId, Vector[ArchivedEvent[_]]] = Map.empty
+  private var lineage: Map[AggregateId, Set[AggregateId]] = Map.empty // D76: a detached copy and the bases it read
 
   // The memory store keeps objects, not JSON: the sizes are not known (0).
   override def persist[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[StoredEvent[AGGREGATE_ROOT]]] = Try { synchronized {
@@ -255,11 +256,19 @@ class MemoryEventStoreState extends EventStoreState {
   }
 
   // As in PostgreSQL: the duplicate's first event becomes `firstEvent`; one that may change the state takes its snapshot (D85).
+  // The bases it read are recorded first (D76).
   private def detachDuplicate(duplicate: (AggregateId, FirstEvent[_]), archive: Set[String]): Unit = {
     val (duplicateId, firstEvent) = duplicate
+    lineage += duplicateId -> (lineage.getOrElse(duplicateId, Set.empty) ++ chainOf(duplicateId).toSet)
     archived(duplicateId, AggregateVersion(1), AggregateVersion(1), archive)
     replaceEvent(duplicateId, AggregateVersion(1), firstEvent, None, None)
     if (firstEvent.isInstanceOf[SquashMayChangeState]) historyChangedFor(Set(duplicateId))
+  }
+
+  // The bases a duplicate reads, nearest first, through the first events of its chain.
+  private def chainOf(aggregateId: AggregateId): List[AggregateId] = eventStore.get(aggregateId).flatMap(_.headOption).map(_.event) match {
+    case Some(duplication: DuplicationEvent[_]) => duplication.baseAggregateId :: chainOf(duplication.baseAggregateId)
+    case _ => Nil
   }
 
   // The event at `version` becomes `event`, keeping its place and time; the user and metadata change when given.
@@ -334,6 +343,44 @@ class MemoryEventStoreState extends EventStoreState {
     archives.getOrElse(aggregateId, Vector()).asInstanceOf[Vector[ArchivedEvent[AGGREGATE_ROOT]]]
   }
 
+  // ************** Complete rewrite (D76), as in PostgreSQL; the audit rows are not kept here.
+
+  override def rewriteEverywhere[AGGREGATE_ROOT](aggregateId: AggregateId, userId: UserId, change: HistoryChange,
+                                                alter: (Event[AGGREGATE_ROOT], Option[EventMetadata]) => (Event[AGGREGATE_ROOT], Option[EventMetadata]))
+                                               (implicit session: DBSession): Either[String, RewriteCount] = synchronized {
+    val entries = eventStore.getOrElse(aggregateId, Vector()).asInstanceOf[Vector[EventStoreEntry[AGGREGATE_ROOT]]]
+    val archived = archives.getOrElse(aggregateId, Vector()).asInstanceOf[Vector[ArchivedEvent[AGGREGATE_ROOT]]]
+    // (archived, version, before, after)
+    val altered = entries.map(e => (false, e.version, (e.event, e.metadata), alter(e.event, e.metadata))) ++
+      archived.map(a => (true, a.info.version, (a.info.event, a.info.storedMetadata), alter(a.info.event, a.info.storedMetadata)))
+    val changed = altered.filter { case (_, _, before, after) => before != after }
+    changed.collectFirst {
+      case (inArchive, version, (before, _), (after, _)) if after.getClass != before.getClass =>
+        "the change makes " + (if (inArchive) "archived event " else "event ") + version.asInt + " of aggregate " + aggregateId.asLong + " a " + after.getClass.getName + " (D17)"
+      case (inArchive, version, (before, _), (after, _)) if after != before && (before.isInstanceOf[UndoEvent[_]] || before.isInstanceOf[DuplicationEvent[_]]) =>
+        "the change alters " + (if (inArchive) "archived event " else "event ") + version.asInt + " of aggregate " + aggregateId.asLong +
+          ", an undo or a duplication, whose meaning the store keeps elsewhere"
+    }.toLeft(()).map { _ =>
+      changed.foreach {
+        case (false, version, _, (event, metadata)) => replaceEvent(aggregateId, version, event, None, Some(metadata))
+        case (true, version, _, (event, metadata)) => archives += aggregateId -> archives(aggregateId).map(a =>
+          if (a.info.version == version) a.asInstanceOf[ArchivedEvent[AGGREGATE_ROOT]].copy(info = a.info.asInstanceOf[EventInfo[AGGREGATE_ROOT]]
+            .copy(event = event, storedMetadata = metadata)) else a)
+      }
+      if (changed.nonEmpty) historyChangedFor(duplicatesOf(aggregateId) + aggregateId)
+      RewriteCount(changed.count(!_._1), changed.count(_._1), changed.map(_._3._1.getClass.getName).toSet,
+        changed.flatMap { case (_, _, (before, beforeMetadata), (after, afterMetadata)) =>
+          RewriteCount.fieldsChanged(before, after) ++ RewriteCount.fieldsChanged(beforeMetadata.orNull, afterMetadata.orNull, "metadata.")
+        }.toSet)
+    }
+  }
+
+  override def copiesOf(aggregateId: AggregateId): Seq[AggregateId] = synchronized {
+    (duplicatesOf(aggregateId) ++ lineage.collect { case (copy, bases) if bases.contains(aggregateId) => copy }).toSeq.sortBy(_.asLong)
+  }
+
+  override def basesOf(aggregateId: AggregateId): Seq[AggregateId] = synchronized(chainOf(aggregateId))
+
   // As in PostgreSQL: only the duplicates given, each of which must still read the aggregate.
   override def detachDuplicates(baseId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])], archive: Set[String]): Either[String, Unit] = synchronized {
     val detached = detach.map(_._1)
@@ -357,6 +404,7 @@ class MemoryEventStoreState extends EventStoreState {
       eventStore -= aggregateId
       eventsToPublish = eventsToPublish.filterNot { case ((eventAggregateId, _), _) => eventAggregateId == aggregateId }
       squashedVersions -= aggregateId
+      lineage = (lineage - aggregateId).map { case (copy, bases) => copy -> (bases - aggregateId) }.filter(_._2.nonEmpty) // D76
     }
   }
 

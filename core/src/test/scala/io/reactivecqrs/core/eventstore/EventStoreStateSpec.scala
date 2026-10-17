@@ -3,7 +3,7 @@ package io.reactivecqrs.core.eventstore
 import java.time.Instant
 
 import org.apache.pekko.actor.ActorRef
-import io.reactivecqrs.api.{AggregateSquashedException, AggregateType, AggregateVersion, AutomaticSquash, DuplicationEvent, Event, EventMetadata, EventWithVersion, FirstEvent, UndoEvent}
+import io.reactivecqrs.api.{AggregateSquashedException, AggregateType, AggregateVersion, AutomaticSquash, DuplicationEvent, Event, EventMetadata, EventWithVersion, FirstEvent, HistoryChange, UndoEvent}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, SpaceId, UserId}
 import io.reactivecqrs.core.eventstore.NewEvents
 import io.reactivecqrs.testutils.{CommonSpec, TestIds}
@@ -24,6 +24,9 @@ case class Undo(eventsCount: Int) extends UndoEvent[SomeAggregate]
 
 case class Copy(spaceId: SpaceId, baseAggregateId: AggregateId, baseAggregateVersion: AggregateVersion)
   extends DuplicationEvent[SomeAggregate]
+
+// D76: a request to erase a number from a history.
+case class EraseNumber(number: Int) extends HistoryChange
 
 // F50: an aggregate root class nested in an object.
 object Nesting {
@@ -637,6 +640,73 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     Try(f.storeEvents(Seq(EventB(6), Undo(1), Undo(1)))).isFailure mustBe true // the second undo would reach the squash event
     f.getEvents() mustBe Seq(EventA("squashed"))
     eventStoreState.readEventsRange[SomeAggregate](f.aggregateId, AggregateVersion(1), AggregateVersion(10)).map(_.version.asInt) mustBe Seq(3, 4, 5)
+  }
+
+
+  // ************** Complete rewrite (D76)
+
+  private def rewrite(id: AggregateId, alter: (Event[SomeAggregate], Option[EventMetadata]) => (Event[SomeAggregate], Option[EventMetadata])) =
+    eventStoreState.localTx(session => eventStoreState.rewriteEverywhere[SomeAggregate](id, UserId(7), EraseNumber(2), alter)(session))
+
+  Scenario("D76 a complete rewrite writes again the stored and archived events a change alters, with their envelopes, and keeps the version") {
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one"), EventB(2), EventC(true)))
+    eventStoreState.localTx(session => eventStoreState.persistEvents(f.aggregateId,
+      NewEvents(f.userId, AggregateVersion(3), Instant.now, Seq(EventB(2)), Some(EventMetadata("alice"))))(session)).get
+    published(f.aggregateId)
+    squash(f, 3, archive = Set(classOf[EventB].getName)) mustBe Right(()) // EventB(2) at version 2 goes to the archive
+    val generation = eventStoreState.historyGeneration(f.aggregateId)
+    val erase: (Event[SomeAggregate], Option[EventMetadata]) => (Event[SomeAggregate], Option[EventMetadata]) = {
+      case (EventB(2), metadata) => (EventB(0), metadata.map(_.copy(actor = "erased")))
+      case other => other
+    }
+
+    rewrite(f.aggregateId, erase) mustBe Right(RewriteCount(1, 1, Set(classOf[EventB].getName), Set("number", "metadata.actor")))
+
+    eventStoreState.readEventsRange[SomeAggregate](f.aggregateId, AggregateVersion(1), AggregateVersion(4)).map(e => (e.version.asInt, e.event, e.storedMetadata)) mustBe
+      Seq((3, EventA("squashed"), None), (4, EventB(0), Some(EventMetadata("erased"))))
+    eventStoreState.readArchive[SomeAggregate](f.aggregateId).map(a => (a.info.version.asInt, a.info.event)) mustBe Seq(2 -> EventB(0))
+    eventStoreState.storedVersion(f.aggregateId).map(_._1) mustBe Some(AggregateVersion(4))
+    eventStoreState.historyGeneration(f.aggregateId) must be > generation // the snapshots held the value
+
+    // Applied again, the change finds nothing to change.
+    val after = eventStoreState.historyGeneration(f.aggregateId)
+    rewrite(f.aggregateId, erase) mustBe Right(RewriteCount(0, 0, Set.empty, Set.empty))
+    eventStoreState.historyGeneration(f.aggregateId) mustBe after
+  }
+
+  Scenario("D76 a complete rewrite that alters an event's class, or an undo, is refused and writes nothing") {
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one"), EventB(2), Undo(1)))
+    def stored = eventStoreState.readEventsRange[SomeAggregate](f.aggregateId, AggregateVersion(1), AggregateVersion(3)).map(_.event)
+
+    rewrite(f.aggregateId, { case (EventB(2), m) => (EventC(true), m); case other => other }).left.toOption.get must include("D17")
+    rewrite(f.aggregateId, { case (EventB(2), m) => (EventB(0), m); case (Undo(1), m) => (Undo(2), m); case other => other })
+      .left.toOption.get must include("an undo or a duplication")
+    stored mustBe Seq(EventA("one"), EventB(2), Undo(1))
+  }
+
+  Scenario("D76 an aggregate's copies are found, those reading it and those detached from it, and so are the bases a copy reads") {
+    val base = new TestFixture(eventStoreState)
+    base.storeEvents(Seq(EventA("one"), EventB(2), EventC(true)))
+    val (attached, detached, copyOfDetached) = (newId(), newId(), newId())
+    base.storeEvents(Seq(Copy(SpaceId(1), base.aggregateId, AggregateVersion(3))), attached, AggregateVersion.ZERO)
+    base.storeEvents(Seq(Copy(SpaceId(1), base.aggregateId, AggregateVersion(2))), detached, AggregateVersion.ZERO)
+    published(base.aggregateId, attached, detached)
+    eventStoreState.detachDuplicates(base.aggregateId, Seq(detached -> EventA("copy"))) mustBe Right(())
+    base.storeEvents(Seq(Copy(SpaceId(1), detached, AggregateVersion(1))), copyOfDetached, AggregateVersion.ZERO)
+
+    eventStoreState.copiesOf(base.aggregateId) mustBe Seq(attached, detached).sortBy(_.asLong)
+    eventStoreState.copiesOf(detached) mustBe Seq(copyOfDetached)
+    eventStoreState.basesOf(attached) mustBe Seq(base.aggregateId)
+    eventStoreState.basesOf(copyOfDetached) mustBe Seq(detached)
+    eventStoreState.basesOf(detached) mustBe empty
+
+    // A permanent delete takes what was copied from it along: nothing is left to follow from it.
+    published(copyOfDetached)
+    eventStoreState.deleteAggregatePermanently(base.aggregateId, Seq(attached -> EventA("kept"))) mustBe Right(())
+    eventStoreState.copiesOf(base.aggregateId) mustBe empty
+    eventStoreState.copiesOf(detached) mustBe Seq(copyOfDetached)
   }
 
 }

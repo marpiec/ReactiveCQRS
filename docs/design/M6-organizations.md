@@ -333,7 +333,7 @@ The interface, as a host sees it:
 
 ```scala
 val exported: ExportReport = new SpaceExport(eventStore, contexts = Seq(cartContext, ...)).write(SpaceId(42), writer)
-val imported: ImportReport = new SpaceImport(eventStore, uidGenerator, rewriters = Map(...))(system).read(path, into = SpaceId(7))
+val imported: ImportReport = new SpaceImport(eventStore, uidGenerator, rewriters = Map(...)).read(path, into = SpaceId(7))
 ```
 
 - **Format**, JSON lines written by mpjsons: an `ExportHeader` (format version, source installation,
@@ -415,6 +415,71 @@ archive, the host's rows, rebuilds and an audit trail, and drops a rewrite witho
 | The value is in metadata | events keep their envelopes | the change gets the metadata too (optional) |
 | The value is in a saga order or a response | rows the library cannot read for meaning | documented: responses expire; sagas end; Neula erases on its side |
 | Many copies (a template duplicated thousands of times) | a long fan-out | one owner at a time, resumable from the report |
+
+### Refined before building (17/10/2026)
+
+The interface, as a host sees it:
+
+```scala
+case class EraseCustomer(customer: CustomerId) extends HistoryChange          // the change is data
+// in the context: which events it alters, and how (the others stay)
+override def historyChanges = {
+  case EraseCustomer(c) => { case e: OrderPlaced if e.customer == c => e.copy(customerName = "erased", email = None) }
+}
+val report: RewriteReport = new HistoryRewriter(commandBus, eventStore, projections).rewrite(orderId, EraseCustomer(c), userId)
+```
+
+- **One aggregate, in its owner**: `RewriteEverywhere(userId, aggregateId, change)`, a library message
+  to the command bus routed like `SquashAggregate`, runs in the aggregate's owner between commands.
+  The owner reads the aggregate's own events and its archived ones, applies `historyChanges(change)`
+  (and `metadataChanges(change)` to their envelopes: `actor` and `custom` may hold what the change
+  removes), and keeps what the change altered (`!=`). Refused, with nothing written, when the change
+  alters an event's class (D17), alters an undo or a duplication event, throws, or makes an event
+  too large. Otherwise, in one transaction under the chain lock: the changed events and archived
+  events written again in batches; the history generation of the aggregate and of the duplicates
+  reading it raised (their snapshots are dropped, F119); the host's rows (`OutboxWriter.rewrite`,
+  nothing by default); an audit row. After the commit the owner reads its state again and has the
+  bus stop the duplicates' owners, as a rewrite does today. The version does not change and nothing
+  is published. Answered `HistoryRewritten(aggregateId, events, archived)` or
+  `RewriteRefused(aggregateId, reason)`.
+- **F146**: a `RewriteHistoryCommand` whose handler rewrites events and adds none stores the
+  rewrites, keeps the version, and is answered with it.
+- **Copies**: `HistoryRewriter` walks from the aggregate to its attached duplicates
+  (`aggregates.base_id`) and its detached copies (a new table `aggregate_lineage (aggregate_id,
+  copied_from, at_version, detached)`, written by every detach: a squash's, a permanent delete's,
+  a purge's), and on to theirs, breadth first, each once, and sends `RewriteEverywhere` to each,
+  one at a time: a copy's own events may hold the value too. The bases the aggregate reads are not
+  changed; the report names them (the value may have come from there, and the host decides).
+- **Projections**: then each managed projection given rebuilds the aggregates that changed, one
+  `RebuildAggregates(OneAggregate(id))` after another (D63), one projection at a time. A new target
+  for many aggregates would need a new case in every host's `clearForRebuild`, so none is added. A
+  projection that refuses (no `clearForRebuild`, or a build in progress) is named in the report.
+- **Audit**: `history_rewrites (id, aggregate_id, user_id, at, change_class, classes, fields,
+  events, archived)`: who, when, which change, the event classes and the fields it altered (the
+  case class fields whose values differ), how many rows; never a value.
+- **`RewriteReport`**: the aggregates changed (with counts), those the change left as they were,
+  refusals with their reasons, bases not followed, projections rebuilt and not, and where it
+  stopped. A second run does the rest: changes are idempotent, so it finds nothing to change where
+  the first run changed it.
+
+| Circumstance | What happens | Handled by |
+|---|---|---|
+| An aggregate of 50 000 events | read, changed and written in one transaction | batched writes; the owner holds its commands meanwhile (seconds); the rewriter's ask timeout (5 minutes by default) |
+| A template copied 10 000 times | 10 000 owners, then the projections | one owner at a time, resumable from the report; each projection rebuilds them one after another (tens of milliseconds each, estimated) |
+| A copy detached before the lineage table existed | not found | none in practice: detaching (D50) is new in 1.0; documented |
+| An old event still in a projection's mailbox | applied with the old value | the rebuild comes after every rewrite; the old delivery, if later, is a duplicate and acknowledged without applying |
+| An event waiting in the outbox | delivered from the store | it reads the new value |
+| A command on the aggregate meanwhile | — | the owner runs the rewrite between commands |
+| A squash, a detach or a purge on the chain meanwhile | — | the chain lock |
+| A `Local` owner on another node, a sharded owner | holds the old state | the history generation (F131); the bus stops the duplicates' owners, a shard passivates them |
+| The change throws, or makes an event too large | that aggregate's rewrite fails | refused, nothing written; the report names it and the rewriter goes on |
+| User ids (`events.user_id`) | identifiers, not personal data | not changed; documented (personal data lives in the user's own aggregate, which its own change erases) |
+| Saga orders, command responses, exported files | rows the library cannot read for meaning | documented: responses expire, sagas end, files are the host's |
+
+Built as refined (17/10/2026), with two additions: an export carries a detached copy's lineage when
+its base is in the organization (and the base of a copy the export detaches), so an erasure after a
+move still finds the copy; and a permanent delete removes the lineage rows of the aggregate, as copy
+and as base, keeping its audit rows.
 
 ## Ephemeral aggregates (R16, D77)
 

@@ -147,6 +147,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
     // Re-publications count as activity, so the owners they start are stopped like others when idle.
     case m: RepublishRequest => owners.send(m.aggregateId, m)
     case request: SquashAggregate => owners.send(request.id, Squash(sender(), request))
+    case request: RewriteEverywhere => owners.send(request.id, Rewrite(sender(), request)) // D76
     case RemoveExpiredResponses => removeExpiredResponses()
     case PassivateAggregate(id) => owners.stop(id, stale = false)
     case DeletedPermanently(id, changed) => (id +: changed).foreach(owners.stop(_, stale = true)) // its state is gone

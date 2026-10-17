@@ -36,6 +36,21 @@ case class StoredEvent[AGGREGATE_ROOT](event: Event[AGGREGATE_ROOT], version: Ag
 /** A stored aggregate: its type, current version and squash point. */
 case class StoredAggregate(aggregateType: AggregateType, aggregateId: AggregateId, version: AggregateVersion, squashedUpTo: Option[AggregateVersion])
 
+/** What a complete rewrite wrote again (D76): the events and the archived events, their classes, and the fields that
+  * changed (case class field names; `metadata.` and the envelope's field for a changed envelope). */
+case class RewriteCount(events: Int, archived: Int, classes: Set[String], fields: Set[String])
+
+object RewriteCount {
+  /** The fields whose values differ between two events (or envelopes, with the prefix `metadata.`) of one case class;
+    * the whole value's name when they are not of one case class (an envelope added or removed). */
+  def fieldsChanged(before: Any, after: Any, prefix: String = ""): Set[String] = (before, after) match {
+    case _ if before == after => Set.empty
+    case (b: Product, a: Product) if b.getClass == a.getClass =>
+      b.productElementNames.zip(b.productIterator.zip(a.productIterator)).collect { case (name, (x, y)) if x != y => prefix + name }.toSet
+    case _ => Set(if (prefix.isEmpty) "event" else prefix.stripSuffix("."))
+  }
+}
+
 /** Which aggregates of the types a read covers: all, the ones given, or those of one organization (D38, D63). */
 sealed trait AggregateScope
 object AggregateScope {
@@ -142,6 +157,24 @@ abstract class EventStoreState {
 
   /** The aggregate's archived events (R11), oldest first. */
   def readArchive[AGGREGATE_ROOT](aggregateId: AggregateId): Seq[ArchivedEvent[AGGREGATE_ROOT]]
+
+  // ************** Complete rewrite (D76)
+
+  /** In the session's transaction, under the chain lock: applies `alter` to each of the aggregate's own events and
+    * archived events (not its bases'), with its metadata envelope, and writes again those it changes, checked for size
+    * (D76); raises the history generation of the aggregate and of the duplicates reading it, whose snapshots go; records
+    * an audit row of the request. Writes nothing, giving the reason, when `alter` changes an event's class, or changes an
+    * undo or a duplication event. */
+  def rewriteEverywhere[AGGREGATE_ROOT](aggregateId: AggregateId, userId: UserId, change: HistoryChange,
+                                       alter: (Event[AGGREGATE_ROOT], Option[EventMetadata]) => (Event[AGGREGATE_ROOT], Option[EventMetadata]))
+                                      (implicit session: DBSession): Either[String, RewriteCount]
+
+  /** The aggregates copied from this one, at any depth: the duplicates reading its events, and those detached from it,
+    * which hold a copy of its state (the lineage every detach records, D76). */
+  def copiesOf(aggregateId: AggregateId): Seq[AggregateId]
+
+  /** The aggregates whose events this one reads: the bases of its duplication chain, the nearest first. */
+  def basesOf(aggregateId: AggregateId): Seq[AggregateId]
 
   /** For the squash scheduler (D52): up to `limit` aggregates of the type with ids above `after`, in id order, that
     * `policy` says to squash at `now`, each with the version to squash it up to. */

@@ -337,6 +337,8 @@ run works in a new schema (`TestDatabase`).
 | `noop_events` (`:75-81`) | `id` (= `events.id`) PK, `from_version` | events cancelled by an undo, effective from that version |
 | `snapshots` (since M3) | `aggregate_id` PK, `version`, `context_version`, `schema_version`, `state TEXT`, `created` | the latest performance snapshot of an aggregate (D30, §4.3); disposable |
 | `events_archive` (since M6) | `id` PK (the event's own), `aggregate_id`, `version`, `event_type_id`, `event_type_version`, `event TEXT`, `user_id`, `event_time`, `metadata JSONB`, `undone_from` (its undo mark), `archived`; index `(aggregate_id, version)` | the audit events squashes kept (R11, §4.6): read only by `GetArchivedEvents` and the stored-data checks, never by restores, re-publications or rebuilds |
+| `aggregate_lineage` (since M6) | PK `(aggregate_id, copied_from)`, `at_version`, `detached`; index `(copied_from)` | the bases a detached copy read when it was detached (every detach writes them, D76): a complete rewrite of a base follows them to the copies that hold its values (§4.9) |
+| `history_rewrites` (since M6) | `id` PK, `aggregate_id` (indexed), `user_id`, `at`, `change_class`, `classes`, `fields`, `events`, `archived` | one audit row per complete rewrite of an aggregate (D76): who, when, which change, the event classes and fields it altered, how many rows; never a value |
 | `events_to_publish` (`:83-101`) | `event_id` PK, `aggregate_id`, `version`, `user_id`, `event_time`; index `(aggregate_id, version)` | **outbox**: events not yet confirmed by every subscriber |
 | `event_keys` (since M6) | `id` PK (→ `events.id`, deleted with it), `type_id`, `space_id` of the event's aggregate; indexes `(type_id, id)`, `(space_id, type_id, id)` | the commit-order pass by type and organization (F124): written by the three procedures with each event; the rows from before by `backfillEventKeys()` |
 | `schema_steps` (since M6) | `name` PK, `completed` | online steps that have completed (D69): `event_keys` once every event has a key |
@@ -476,7 +478,9 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   gets only the aggregate's own events, never its base's (F103). Only new events are published;
   after the commit the owner reads its state again from the store, and the owners of its
   duplicates are stopped to read theirs again (`HistoryChanged`, F100). The test domain pairs
-  each rewrite with a compensating event (`CartNameRewritten`).
+  each rewrite with a compensating event (`CartNameRewritten`); one without a new event is
+  stored too, keeping the version and publishing nothing (F146, since M6). The complete rewrite,
+  for erasure, is §4.9.
 - **Permanent delete**: the bus names the version of a `PermanentDeleteEvent` in its
   acknowledgement (`permanentDeleteAt`); the command bus then calls
   `EventStoreState.deleteAggregatePermanently` and stops the owner, whose state is gone. In one transaction it locks
@@ -484,7 +488,8 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   each one's first event becomes the type's squash event of its state at version 1, the
   replaced event archived first when its class is kept, R11), and
   deletes the `aggregates`, `events_archive`, `commands_responses` (by `aggregate_id`, F167), `noop_events` (before `events`, so its sub-select still matches),
-  `events`, `events_to_publish`, `snapshots` and `subscriptions` rows. It deletes nothing and
+  `events`, `events_to_publish`, `snapshots`, `subscriptions` and `aggregate_lineage` rows (as copy or
+  as base; the `history_rewrites` audit stays). It deletes nothing and
   gives the reason while a subscription of the aggregate is failed (`subscription_failures`,
   D20a) or when a duplicate was made after the command bus listed them; the event's outbox
   row stays and the next re-publication's ack tries again. A type with duplicates and no
@@ -613,7 +618,7 @@ state at version 1, built and checked as a detach builds it (D50, D85), and it h
 without a squash event, or whose context is not given, refuses the export, as does an id below
 1001 in the space. The `ExportReport` counts the space's outbox rows (export a quiet organization).
 
-`new SpaceImport(eventStore, uidGenerator, rewriters)(system).read(file, into)` writes it into
+`new SpaceImport(eventStore, uidGenerator, rewriters).read(file, into)` writes it into
 another installation's empty space `into`, in two passes over the file:
 
 1. **Check**, writing nothing: the format, an empty target space, every class present, every event
@@ -631,6 +636,35 @@ another installation's empty space `into`, in two passes over the file:
 The `ImportReport` gives the counts, the ids remapped, the references to aggregates neither exported
 nor in the target, and the reasons it refused or where it stopped (then the host purges `into` and
 imports again). Snapshots, outbox rows, subscriptions, command responses and sagas do not move.
+A detached copy's lineage moves with it when its base is in the space too, and so does the base of
+a copy the export detaches (D76).
+
+### 4.9 The complete rewrite (D76, R15, M6)
+
+For erasure: a change applied everywhere the library keeps an aggregate's values.
+
+- **The change is data**, a `HistoryChange` (`EraseCustomer(id)`); the context says what it does
+  with `historyChanges: HistoryChange => PartialFunction[Event[R], Event[R]]` (the events it does not
+  match stay) and, for envelopes, `metadataChanges`. A change must be idempotent.
+- **One aggregate, in its owner**: `RewriteEverywhere(id, change, userId)` to the command bus runs in
+  the owner between commands, like a squash (§4.6). `EventStoreState.rewriteEverywhere` reads the
+  aggregate's own events and archived events (streamed, the changed ones held), applies the change,
+  and refuses, writing nothing, when it makes an event another class (D17) or alters an undo or a
+  duplication event; otherwise, in one transaction under the chain lock, it writes the changed rows
+  again in batches (size checked), raises the history generation of the aggregate and of the
+  duplicates reading it (their snapshots go, F119), and inserts the audit row; the owner calls the
+  host's `OutboxWriter.rewrite` in the same transaction. After the commit the owner reads its
+  state again and has the bus stop the duplicates' owners. The version does not change and nothing
+  is published. Answered `HistoryRewritten(id, events, archived, fields)` or `RewriteRefused`.
+- **Copies**: `HistoryRewriter.rewrite(id, change, userId)` (`core/rewrite`) walks breadth first
+  from the aggregate to `EventStoreState.copiesOf` (the duplicates reading it, from the chain rows,
+  and the copies detached from it, from `aggregate_lineage`), each once, one owner at a time, then
+  has each projection given rebuild each changed aggregate with `RebuildAggregates(OneAggregate(id))`.
+  Its `RewriteReport` names the aggregates rewritten, unchanged and refused, the bases the first
+  one reads (`basesOf`, left alone: the value may come from there), and the projections rebuilt or
+  not. Run again, it does the rest.
+- **Not reached**: other aggregates' events that copied the value, saga orders, stored responses
+  (they expire), projections not named, `events.user_id` (identifiers), exported files.
 
 ---
 

@@ -488,6 +488,8 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       sql"""DELETE FROM events WHERE aggregate_id = $id""".update()
       sql"""DELETE FROM events_to_publish WHERE aggregate_id = $id""".update()
       sql"""DELETE FROM snapshots WHERE aggregate_id = $id""".update()
+      // D76: what was copied from it, or what it copied, has nothing left to follow; the audit of its rewrites stays.
+      sql"""DELETE FROM aggregate_lineage WHERE aggregate_id = $id OR copied_from = $id""".update()
       if (tableExists("subscriptions")) {
         sql"""DELETE FROM subscriptions WHERE aggregate_id = $id""".update()
       }
@@ -578,6 +580,8 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       if (tableExists("subscriptions")) deleted("subscriptions", sqls"aggregate_id IN ($longs)") else None,
       if (tableExists("subscription_failures")) deleted("subscription_failures", sqls"aggregate_id IN ($longs)") else None,
       if (columnExists("commands_responses", "aggregate_id")) deleted("commands_responses", sqls"aggregate_id IN ($longs)") else None,
+      deleted("aggregate_lineage", sqls"aggregate_id IN ($longs) OR copied_from IN ($longs)"), // D76
+      deleted("history_rewrites", sqls"aggregate_id IN ($longs)"),
       deleted("aggregates", sqls"id IN ($longs)")
     ).flatten.toMap
   }
@@ -645,8 +649,68 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     }.list()
   }
 
+  // ************** Complete rewrite (D76)
+
+  // Every row is read and checked before any is written, so a refusal writes nothing. The rows are streamed, and only
+  // the changed ones are held, so an aggregate of 50 000 events that the change leaves alone costs one read.
+  override def rewriteEverywhere[AGGREGATE_ROOT](aggregateId: AggregateId, userId: UserId, change: HistoryChange,
+                                                alter: (Event[AGGREGATE_ROOT], Option[EventMetadata]) => (Event[AGGREGATE_ROOT], Option[EventMetadata]))
+                                               (implicit session: DBSession): Either[String, RewriteCount] = {
+    val id = aggregateId.asLong
+    lockChain(id)
+    case class Changed(archived: Boolean, rowId: Long, version: Int, event: Event[AGGREGATE_ROOT], metadata: Option[EventMetadata])
+    val changed = scala.collection.mutable.ListBuffer[Changed]()
+    var (refusal, classes, fields) = (Option.empty[String], Set.empty[String], Set.empty[String])
+    def check(archived: Boolean)(rs: WrappedResultSet): Unit = if (refusal.isEmpty) {
+      val version = rs.int(2)
+      val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(5), eventClass(rs.short(3), rs.short(4), id, version))
+      val metadata = metadataOf(rs.string(6))
+      val (newEvent, newMetadata) = alter(event, metadata)
+      if (newEvent != event || newMetadata != metadata) {
+        val where = (if (archived) "archived event " else "event ") + version + " of aggregate " + id
+        if (newEvent.getClass != event.getClass) refusal = Some("the change makes " + where + " a " + newEvent.getClass.getName + " (D17)")
+        else if (newEvent != event && (event.isInstanceOf[UndoEvent[_]] || event.isInstanceOf[DuplicationEvent[_]]))
+          refusal = Some("the change alters " + where + ", an undo or a duplication, whose meaning the store keeps elsewhere")
+        else {
+          changed += Changed(archived, rs.long(1), version, newEvent, newMetadata)
+          classes += event.getClass.getName
+          fields ++= RewriteCount.fieldsChanged(event, newEvent) ++ RewriteCount.fieldsChanged(metadata.orNull, newMetadata.orNull, "metadata.")
+        }
+      }
+    }
+    sql"""SELECT id, version, event_type_id, event_type_version, event, metadata::text FROM events WHERE aggregate_id = $id ORDER BY version"""
+      .fetchSize(fetchSize).foreach(check(archived = false))
+    sql"""SELECT id, version, event_type_id, event_type_version, event, metadata::text FROM events_archive WHERE aggregate_id = $id ORDER BY version"""
+      .fetchSize(fetchSize).foreach(check(archived = true))
+    refusal.toLeft(()).map { _ =>
+      Seq(false -> sqls"events", true -> sqls"events_archive").foreach { case (archived, table) =>
+        val rows = changed.filter(_.archived == archived).map(c => Seq[Any](serializedChecked(aggregateId, c.event, AggregateVersion(c.version - 1)),
+          metadataJson(c.metadata).orNull, c.rowId))
+        if (rows.nonEmpty) sql"""UPDATE $table SET event = ?, metadata = ?::jsonb WHERE id = ?""".batch(rows.toSeq: _*).apply()
+      }
+      // The snapshots of the aggregate and of its duplicates were made from the values of before.
+      if (changed.nonEmpty) historyChangedFor(sqls"""SELECT id FROM aggregates WHERE base_id = $id""")
+      val count = RewriteCount(changed.count(!_.archived), changed.count(_.archived), classes, fields)
+      sql"""INSERT INTO history_rewrites (aggregate_id, user_id, at, change_class, classes, fields, events, archived)
+           | VALUES ($id, ${userId.asLong}, current_timestamp, ${change.getClass.getName}, ${classes.toSeq.sorted.mkString(",")},
+           |  ${fields.toSeq.sorted.mkString(",")}, ${count.events}, ${count.archived})""".stripMargin.update()
+      count
+    }
+  }
+
+  override def copiesOf(aggregateId: AggregateId): Seq[AggregateId] = DB.readOnly { implicit session =>
+    val id = aggregateId.asLong
+    sql"""SELECT id FROM aggregates WHERE base_id = $id AND id <> $id UNION SELECT aggregate_id FROM aggregate_lineage WHERE copied_from = $id
+         | ORDER BY 1""".stripMargin.map(rs => AggregateId(rs.long(1))).list()
+  }
+
+  override def basesOf(aggregateId: AggregateId): Seq[AggregateId] = DB.readOnly { implicit session =>
+    val id = aggregateId.asLong
+    sql"""SELECT base_id FROM aggregates WHERE id = $id AND base_id <> $id ORDER BY base_order DESC""".map(rs => AggregateId(rs.long(1))).list()
+  }
+
   // A duplicate of the aggregate, reading it below `below` if given, that `joined` finds.
-  private def duplicateWith(id: Long, below: Option[Int], joined: SQLSyntax, only: Seq[Long] = Nil)(implicit session: DBSession): Option[Long] = {
+  private def duplicateWith(id: Long, below: Option[Int], joined: SQLSyntax, only: Seq[Long])(implicit session: DBSession): Option[Long] = {
     val reading = below.fold(sqls"")(n => sqls"AND a.base_version < $n")
     val some = if (only.isEmpty) sqls"" else sqls"AND a.id IN ($only)"
     sql"""SELECT a.id FROM aggregates a $joined WHERE a.base_id = $id AND a.id <> $id $reading $some LIMIT 1""".map(_.long(1)).single()
@@ -669,6 +733,10 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
                        | WHERE aggregate_id = $id AND version = 1""".stripMargin.update()
     if (updated != 1) throw new IllegalStateException("Duplicate " + id + " has no event at version 1 to detach")
     if (firstEvent.isInstanceOf[SquashMayChangeState]) historyChangedFor(sqls"""$id""") // D85
+    // D76: the copy now holds what it read of its bases; a complete rewrite of one of them must find it.
+    sql"""INSERT INTO aggregate_lineage (aggregate_id, copied_from, at_version, detached)
+         | SELECT id, base_id, base_version, current_timestamp FROM aggregates WHERE id = $id AND base_id <> $id
+         | ON CONFLICT (aggregate_id, copied_from) DO NOTHING""".stripMargin.update()
     sql"""DELETE FROM aggregates WHERE id = $id AND base_id <> $id""".update()
     sql"""UPDATE aggregates SET base_order = 1 WHERE id = $id AND base_id = $id""".update()
   }

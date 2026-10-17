@@ -1987,3 +1987,23 @@ Open test-infrastructure items:
   volume, in one release with a full stop and new projection versions, after the delivery envelope
   (F170), which costs about 275 bytes per event between nodes, more than short keys save.
 - Found while measuring: F172 (fixed the same day), F170, F171 and F173 (M7).
+
+**17/10/2026: the complete rewrite (D76, R15; F8, F146)**
+- A `HistoryChange` (data) and the context's `historyChanges` and `metadataChanges`; `RewriteEverywhere`
+  to the command bus runs in the owner between commands: `EventStoreState.rewriteEverywhere` reads
+  the aggregate's own events and archived events, refuses (writing nothing) a change of class or of
+  an undo or a duplication, writes the changed rows in batches under the chain lock, raises the
+  history generation of the aggregate and of the duplicates reading it, and inserts an audit row
+  (`history_rewrites`: classes and fields, never values); the host's `OutboxWriter.rewrite` runs in
+  the same transaction. `HistoryRewriter` walks the copies (chain rows, and `aggregate_lineage`,
+  which every detach now writes, a permanent delete clears and an export carries), then has each
+  projection given rebuild the changed aggregates one by one (`OneAggregate`, so hosts'
+  `clearForRebuild` needs no new case). F146: a rewrite without a new event is stored.
+- Tests: `EventStoreStateSpec` "D76" (both stores: rows, archive, envelopes, generation, a second
+  run, refusals, copies and bases, the delete), `CompleteRewriteSpec` (a folder, its archive, an
+  attached and a detached copy, a managed projection, the audit rows, a second run; a refusal),
+  `HistoryRewriteSpec` "F146" (red before), `ExportImportSpec` (a detached copy's lineage moves),
+  `ClusterSerializationSpec` (the new messages). Eleven mutations, each caught.
+- Docs: ARCHITECTURE §4.9 (and §4.1, §4.5, §4.8), the book's chapter 15 (the complete rewrite), its
+  chapter 2 and appendices A and B, KNOWN-ISSUES (D76, F8, F146, H11), SCALING, the design note,
+  CLAUDE.md. Cleaned on the way: `SpaceImport` took an `ActorSystem` it never used.

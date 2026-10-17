@@ -11,7 +11,7 @@ import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.space.SpaceFormat._
 import io.reactivecqrs.core.uid.NewAggregatesIdsPool
 import io.reactivecqrs.core.uid.UidGeneratorActor.GetNewAggregatesIdsPool
-import org.apache.pekko.actor.{ActorRef, ActorSystem}
+import org.apache.pekko.actor.ActorRef
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
 import org.slf4j.LoggerFactory
@@ -20,7 +20,6 @@ import scalikejdbc._
 import scala.collection.mutable
 import scala.concurrent.Await
 import scala.concurrent.duration._
-import scala.util.control.NonFatal
 import scala.util.{Try, Using}
 
 /** D40: maps the references an import's codec cannot see, held as numbers or text (a `Long` id, an actor "user:5" in the
@@ -50,7 +49,7 @@ case class ImportReport(space: SpaceId, aggregates: Int, events: Long, archived:
   * Design: docs/design/M6-organizations.md, "Export and import".
   */
 class SpaceImport(eventStore: PostgresEventStoreState, uidGenerator: ActorRef, rewriters: Map[AggregateType, ImportRewriter] = Map.empty,
-                  newMPJsons: () => MPJsons = () => new MPJsons, eventsPerTransaction: Int = 10000)(implicit system: ActorSystem) {
+                  newMPJsons: () => MPJsons = () => new MPJsons, eventsPerTransaction: Int = 10000) {
 
   private val log = LoggerFactory.getLogger(classOf[SpaceImport])
   private val lines = new MPJsons
@@ -167,14 +166,18 @@ class SpaceImport(eventStore: PostgresEventStoreState, uidGenerator: ActorRef, r
     }
 
     val aggregateRows = mutable.ArrayBuffer[Seq[Any]]()
+    val lineageRows = mutable.ArrayBuffer[Seq[Any]]()
     val eventRows = mutable.ArrayBuffer[Seq[Any]]()
     val archivedRows = mutable.ArrayBuffer[Seq[Any]]()
     def flushAggregates(): Unit = if (aggregateRows.nonEmpty) {
       DB.localTx { implicit session =>
         sql"""INSERT INTO aggregates (space_id, id, creation_time, type_id, base_order, base_id, base_version, squashed_version)
              | VALUES (?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin.batch(aggregateRows.toSeq: _*).apply[Seq]()
+        if (lineageRows.nonEmpty) sql"""INSERT INTO aggregate_lineage (aggregate_id, copied_from, at_version, detached)
+             | VALUES (?, ?, ?, current_timestamp) ON CONFLICT (aggregate_id, copied_from) DO NOTHING""".stripMargin.batch(lineageRows.toSeq: _*).apply[Seq]()
       }
       aggregateRows.clear()
+      lineageRows.clear()
     }
     def flushEvents(): Unit = if (eventRows.nonEmpty) {
       DB.localTx { implicit session =>
@@ -202,6 +205,7 @@ class SpaceImport(eventStore: PostgresEventStoreState, uidGenerator: ActorRef, r
           val created = utc(Instant.parse(a.created))
           aggregateRows += Seq(into.asLong, id, created, typeId, a.chain.size + 1, id, a.version, a.squashedVersion.map(Integer.valueOf).orNull)
           a.chain.foreach(row => aggregateRows += Seq(into.asLong, id, created, typeId, row.order, mapped(row.base), row.version, null))
+          Option(a.lineage).getOrElse(Nil).foreach(l => lineageRows += Seq(id, mapped(l.base), l.version)) // D76
           aggregates += 1
           if (aggregateRows.size >= 1000) flushAggregates()
         }

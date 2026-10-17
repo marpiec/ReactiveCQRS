@@ -24,6 +24,12 @@ case class RenameQuietly(userId: UserId, aggregateId: AggregateId, expectedVersi
   override def eventsTypes: Set[Class[_]] = Set(classOf[ShoppingCartCreated])
 }
 
+/** Renames the cart throughout its history and adds no event (F146). */
+case class RenameSilently(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, name: String)
+  extends RewriteHistoryCommand[ShoppingCart, CustomCommandResponse[_]] {
+  override def eventsTypes: Set[Class[_]] = Set(classOf[ShoppingCartCreated])
+}
+
 /** Tries to rewrite the creation as an event of another class. */
 case class RewriteCreationAsItem(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion)
   extends RewriteHistoryCommand[ShoppingCart, CustomCommandResponse[_]] {
@@ -36,6 +42,10 @@ class RewritingCarts extends ShoppingCartAggregateContext {
       case created: ShoppingCartCreated => EventWithVersion(ev.version, created.copy(name = c.name))
       case _ => ev
     }).toSeq, ItemAdded("audit"))
+    case c: RenameSilently => RewriteCommandSuccess(events.map(ev => ev.event match {
+      case created: ShoppingCartCreated => EventWithVersion(ev.version, created.copy(name = c.name))
+      case _ => ev
+    }).toSeq, Seq.empty[Event[ShoppingCart]])
     case _: RewriteCreationAsItem => RewriteCommandSuccess(events.map(ev => EventWithVersion[ShoppingCart](ev.version, ItemAdded("not a creation"))).toSeq, ItemAdded("audit"))
     case other => super.rewriteHistoryCommandHandlers(events, cart)(other)
   }
@@ -85,6 +95,18 @@ class HistoryRewriteSpec extends CommonSpec {
       rewritten.version mustBe AggregateVersion(3)
       rewritten.aggregateRoot.get.name mustBe "Renamed"
       rewritten.aggregateRoot.get.items.map(_.name) mustBe Vector("apple", "audit")
+    }
+
+    Scenario("F146 that adds no event is stored too, and keeps the version") {
+      val cartId = cartWithAnItem()
+
+      val renamed: CustomCommandResponse[_] = commandBus ?? RenameSilently(userId, cartId, AggregateVersion(2), "Silent")
+      renamed mustBe SuccessResponse(cartId, AggregateVersion(2))
+
+      cart(cartId).version mustBe AggregateVersion(2)
+      cart(cartId).aggregateRoot.get.name mustBe "Silent"
+      eventStore.readEventsRange[ShoppingCart](cartId, AggregateVersion(1), AggregateVersion(2)).map(_.event) mustBe
+        Seq(ShoppingCartCreated("Silent"), ItemAdded("apple"))
     }
 
     Scenario("of a base reaches its duplicates: their running owners read the rewritten history again") {

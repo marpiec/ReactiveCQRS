@@ -2,10 +2,9 @@
 
 Chapter 1 made a promise: events are facts, and a removal is a new event, not an eraser. This
 chapter is about the one tool that breaks that promise. By the end of it you will be able to change
-events that are already stored (fix a name everywhere it was ever written, or wipe a customer's
-personal data), make your read models hear about the change, and you will know exactly which places
-a rewrite does not reach yet. Handle it like a sharp knife: rarely, deliberately, and with both eyes
-open.
+events that are already stored (fix a name everywhere it was ever written), make your read models
+hear about the change, and wipe a value from everywhere the library keeps it with the *complete
+rewrite*. Handle it like a sharp knife: rarely, deliberately, and with both eyes open.
 
 ---
 
@@ -157,17 +156,18 @@ What the library did, in order:
    longer count.
 3. **Return the events you changed, with their versions.** Unchanged ones may come back as they are;
    they are simply written back unchanged.
-4. **Always add at least one new event.** See the warning below.
+4. **Add a new event, as a rule.** A rewrite without one is stored too, but it publishes nothing:
+   see the warning below.
 5. **The metadata envelope stays.** A rewrite changes the event, not the envelope stored with it
    ([chapter 6](06-events.md)). Keep values you may one day have to erase out of metadata.
 6. **The new events are ordinary events.** They are stored with the user of the rewrite command, so
    they double as a record of who corrected the history, and when. Mix `WithMetadata` into the
    rewrite command to record why, for example the number of the erasure request.
 
-> **Warning:** today, a rewrite whose result has no new event is answered `SuccessResponse` and
-> *nothing is stored*, not even the rewritten events. Always return at least one new event, such as
-> `CartNameRewritten`. The fix is planned for 1.0, together with the complete rewrite described at
-> the end of this chapter.
+> **Warning:** a rewrite whose result has no new event rewrites the events, keeps the version, and
+> publishes nothing, so your projections hear nothing and go on showing the old value. Add a
+> compensating event, or rebuild the projections afterwards. (Before 1.0 such a rewrite was answered
+> `SuccessResponse` and *nothing at all was stored*, issue F146.)
 
 ## Telling the read models: the compensating event
 
@@ -196,10 +196,10 @@ from the store, so it never sees the old value at all.
 > aggregate), its handler for the compensating event must clean that up too, or you rebuild the
 > projection from the corrected history ([chapter 10](10-rebuilding-projections.md)).
 
-## What a rewrite does not reach yet
+## What a plain rewrite does not reach
 
-A rewrite changes the stored events of one aggregate, of the classes you name, and the states and
-snapshots built from them. Here is where an old value can still hide:
+A rewrite command changes the stored events of one aggregate, of the classes you name, and the
+states and snapshots built from them. Here is where an old value can still hide:
 
 - **Squash events.** After a squash ([chapter 14](14-squash.md)) the old name may sit inside the
   squash event: `CartSquashed` holds the cart's name too, and `RewriteCartName` lists only
@@ -216,32 +216,106 @@ snapshots built from them. Here is where an old value can still hide:
 - **Everything else that copied the value**: events of other aggregates, stored responses of
   idempotent commands, saga data, metadata envelopes, logs.
 
-> **Tip:** before your first erasure, make a list per aggregate type: which event classes (and which
-> squash event class) hold personal data, which projections show it, and which of your own tables
-> copy it. That list becomes your rewrite command's `eventsTypes`, the handlers of your compensating
-> event, and your rebuild plan.
+That is fine for fixing a typo. For erasing a value that must not survive anywhere, there is a
+bigger tool.
 
-### Coming in 1.0: the complete rewrite
+## The complete rewrite: erasing everywhere
 
-A *complete* rewrite is being built for 1.0. It is meant to replace a value wherever the library
-stored it, follow an aggregate's copies, rebuild the read models that hold the value, and record who
-asked and when, without recording the values themselves. Its API is not settled yet, and this
-chapter will describe it once it lands. Until then, use the rewrite above, with the step-by-step
-below.
+Back to the diary. The family made photocopies of it: one cousin's copy is stapled to the original
+and still reads its first pages from it; another cousin copied the first pages by hand into a
+notebook of her own. Old pages were also moved into a box in the attic (the archive). Erasing a name
+properly means the original, the box in the attic, both copies, and every summary written from
+them. That is the **complete rewrite**.
+
+### Step 1: describe the change as data
+
+A change is a small case class that says what to erase. It extends `HistoryChange`:
+
+```scala
+import io.reactivecqrs.api.HistoryChange
+
+case class EraseCustomer(customer: CustomerId) extends HistoryChange
+```
+
+### Step 2: teach each context what the change does
+
+The context gets `historyChanges`: for a change, a partial function from an event to the event it
+becomes. Events it does not match stay as they are.
+
+```scala
+override def historyChanges: HistoryChange => PartialFunction[Event[Order], Event[Order]] = {
+  case EraseCustomer(c) => {
+    case e: OrderPlaced if e.customer == c => e.copy(customerName = "erased", email = None)
+    case s: OrderSquashed if s.customer == c => s.copy(customerName = "erased", email = None)
+  }
+  case _ => PartialFunction.empty
+}
+```
+
+Notice the second line: it handles the squash event too, because after a squash
+([chapter 14](14-squash.md)) the name may live in there. If the metadata envelopes of your events
+can hold the value (an `actor` or a `custom` entry, [chapter 6](06-events.md)), override
+`metadataChanges` the same way.
+
+> **Remember:** a change must be *idempotent*: run it twice and the second run finds nothing to
+> change. Replacing the name with "erased" is idempotent; appending " (erased)" to it is not.
+
+### Step 3: run it
+
+```scala
+import io.reactivecqrs.core.rewrite.HistoryRewriter
+
+val report: Future[RewriteReport] =
+  new HistoryRewriter(orders, eventStore, projections = Map("orders" -> ordersProjection))
+    .rewrite(orderId, EraseCustomer(customerId), operator)
+```
+
+`orders` is the type's command bus; `projections` are the managed projections
+([chapter 10](10-rebuilding-projections.md)) that show the value, by name. What happens:
+
+1. **The aggregate first.** Its owner, between commands, applies the change to every stored event of
+   the aggregate (squash events included) and to its archived events, in one transaction. The
+   version does not change, and nothing is published. Snapshots made from the old values are
+   dropped, and the owner reads its state again.
+2. **Then every copy.** Copies that still read the aggregate, copies that were detached from it (the
+   library remembers each detach in a *lineage*), and copies of those, one at a time. Each copy's
+   own events may hold the value too.
+3. **Then the read models.** Each projection you named rebuilds every aggregate that changed, in
+   place ([chapter 10](10-rebuilding-projections.md)). It needs `clearForRebuild`.
+4. **And a note in the logbook.** Each aggregate's rewrite leaves a row in `history_rewrites`: who,
+   when, which change, which event classes and fields. Never the values.
+
+Rows of your own that an outbox writer wrote with the events (`WithOutboxWriter`) can be cleaned
+in the same transaction: override `OutboxWriter.rewrite(aggregateId, change)`.
+
+### Step 4: read the report
+
+`RewriteReport` lists the aggregates rewritten (with how many events and archived events), those
+the change left alone, those refused (with why: the change made an event another class, or touched
+an undo or a duplication event), the projections rebuilt and those that failed, and `bases`: the
+aggregates that the first one reads, which the rewrite does not change, since the value may have
+come from there and only you can decide. `report.complete` is true when nothing was refused and
+every projection rebuilt. When it is not, fix the cause and run it again: the change finds nothing
+to change where it already did its work.
+
+> **Warning:** the complete rewrite covers what the library stores for the aggregate and its copies.
+> It does not reach other aggregates that copied the value into their own events, saga data, stored
+> responses of idempotent commands (they expire), projections you did not name, logs, or exported
+> files. User ids (`events.user_id`) are identifiers, not personal data, and stay; erase the person
+> in their own user aggregate.
 
 ## Erasing a customer's name, step by step
 
-1. **Find where the value lives**: the event classes that hold it (and the squash event class, if
-   the type squashes), the projections that show or copy it, and your own tables.
-2. **Write a rewrite command** that lists those classes in `eventsTypes`, and a handler that
-   replaces the value and adds a compensating event.
-3. **Teach your projections** the compensating event, and plan a rebuild for those that keep copies
-   of the value elsewhere.
-4. **Send the rewrite.** When you do not know the current version, use the concurrent flavor, such
-   as `RewriteCartNameConcurrently(userId, cartId, "(erased)")`.
-5. **Check the result.** `GetEventsForAggregate(cartId)` ([chapter 7](07-reading-the-past.md))
-   returns the stored events, now holding the new value, and the cart itself shows it.
-6. **Clean up what the rewrite does not reach yet**: the archive, detached copies, your own tables.
+1. **Find where the value lives**: the event classes that hold it (squash event class included),
+   their metadata, the projections that show it, your own tables, and other aggregates that copied
+   it.
+2. **Write the change** (`EraseCustomer`) and each context's `historyChanges` (and
+   `metadataChanges` if needed); override `OutboxWriter.rewrite` for your own rows.
+3. **Run `HistoryRewriter.rewrite`** for each aggregate that holds the value, naming the
+   projections that show it.
+4. **Read the report.** Run it again if it is not `complete`; look at the `bases` it names.
+5. **Check the result**: `GetEventsForAggregate` ([chapter 7](07-reading-the-past.md)) and
+   `GetArchivedEvents` return the erased values, and so do the projections.
 
 ## What you learned
 
@@ -252,10 +326,11 @@ below.
   those events and the state, and answers `RewriteCommandSuccess(rewritten, newEvents)`.
 - A rewritten event keeps its class and its version; afterwards the aggregate and the copies that
   read its history read their states again, and their snapshots are deleted.
-- Only the new events are published, so every rewrite comes with a compensating event that your
-  projections handle; never send a rewrite without a new event.
-- Squash events (unless you list them), the archive, detached copies, read models and your own
-  tables are not reached yet; a complete rewrite is coming in 1.0.
+- Only the new events are published, so a rewrite comes with a compensating event that your
+  projections handle; a rewrite without one is stored but tells nobody.
+- The complete rewrite (`HistoryChange`, the context's `historyChanges`, `HistoryRewriter`)
+  erases a value from an aggregate's events, squash events and archive, from every copy, attached
+  or detached, and from the projections you name, and leaves an audit row without the values.
 
 Next: [chapter 16](16-organizations.md) opens Part VI with organizations: many customers sharing one
 installation.
