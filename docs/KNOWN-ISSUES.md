@@ -976,9 +976,9 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Found:** writing the book (M6, 17/10/2026).
 
 #### F171 — A document index whose path changes keeps its old definition
-- **Low**, confirmed (by reading) · **Fix in M7** · `PostgresDocumentStore.init`
+- **Low**, confirmed (red first) · **Fixed in M7** (17/10/2026; `PostgresDocumentStoreSpec` "F171") · `PostgresDocumentStore.init`
 - **Symptom:** the store matches the indexes it declares with those in the database by their `uniqueId` only. An index declared with the same id and a new path (a renamed field, or a field given a short JSON name) is neither dropped nor created again: the old index stays on the old path, and queries on the new path read the whole table, without a warning.
-- **Fix:** compare each index's definition (`pg_indexes.indexdef`) with the declared one and build it again when they differ (concurrently on a large table, D69). Until then, a changed path needs a new `uniqueId`.
+- **Fix:** `init` compares each index's definition (`pg_indexes.indexdef`) with the declared one, both reduced to uniqueness, method and expressions (PostgreSQL prints `'{a}'::text[]`, `integer` and more parentheses), and builds a changed one again, with a warning. Not concurrently, as planned: the table's only writer is its projection, which waits for its store anyway, and reads go on meanwhile; on a large table the projection's start waits for the build, so the book recommends a new projection version (new tables) for a large table. The shapes of the statements are those of 0.10.12 and 0.11.46, so Neula's indexes match and none is built again at the upgrade. Also: indexes are found by the exact name pattern, where `'%_idx_%'` took the primary key of a table whose name holds "idx".
 - **Found:** planning the short JSON keys measurement (IMPLEMENTATION-PLAN §7.1, M6, 17/10/2026).
 
 ### Sagas
@@ -1286,7 +1286,7 @@ From §7 of Neula's change requests.
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔, F174 ✔; F155 decided (review 8) |
-| M7 | AR5 (moved from M5 at review 7); F148 ✔, F152 ✔, F153 ✔, F156, F157, F160 ✔, F161 ✔, F162 ✔, F163 ✔, F164 ✔, F165, F166 ✔, F169 ✔ (found writing the book), F170, F171, F173, F175 |
+| M7 | AR5 (moved from M5 at review 7); F148 ✔, F152 ✔, F153 ✔, F156, F157, F160 ✔, F161 ✔, F162 ✔, F163 ✔, F164 ✔, F165, F166 ✔, F169 ✔ (found writing the book), F170, F171 ✔, F173, F175 |
 
 ---
 

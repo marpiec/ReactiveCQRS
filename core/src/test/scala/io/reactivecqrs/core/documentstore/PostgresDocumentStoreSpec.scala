@@ -5,7 +5,7 @@ import org.scalatest._
 import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.must.Matchers
 import io.reactivecqrs.testutils.TestDatabase
-import scalikejdbc.DB
+import scalikejdbc._
 
 case class Label(name: String)
 case class Labels(labels: List[Label])
@@ -176,6 +176,33 @@ class PostgresDocumentStoreSpec extends AnyFeatureSpec with GivenWhenThen with B
         documentStore.findDocumentByPaths(thirteen).keySet mustBe Set(1)
       } finally {
         documentStore.dropTable()
+      }
+    }
+  }
+
+  Feature("Indexes whose definition changed (F171)") {
+    def definitionOf(index: String): Option[String] = DB.readOnly { implicit session =>
+      SQL(s"SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = '$index'").map(_.string(1)).single()
+    }
+    def oidOf(index: String): Option[Long] = DB.readOnly { implicit session =>
+      SQL(s"SELECT '$index'::regclass::oid::bigint").map(_.long(1)).single()
+    }
+
+    Scenario("an index declared with the same id and a new path is built again on the new path; an unchanged one is kept") {
+      val first = new PostgresDocumentStore[OptionIntType](testTable, mpjsons, new NoopDocumentStoreCache,
+        Seq(MultipleTextIndex(1, Seq("option", "value")), UniqueLongIndex(2, Seq("number")), MultipleCombinedIndex(3, Seq(TextIndexPath(Seq("a")), IntIndexPath(Seq("b"))))))
+      try {
+        definitionOf("projection_test_table_idx_1").get must include ("'{option,value}'")
+        val (kept, combined) = (oidOf("projection_test_table_idx_2"), oidOf("projection_test_table_idx_3"))
+
+        new PostgresDocumentStore[OptionIntType](testTable, mpjsons, new NoopDocumentStoreCache,
+          Seq(MultipleTextIndex(1, Seq("renamed")), UniqueLongIndex(2, Seq("number")), MultipleCombinedIndex(3, Seq(TextIndexPath(Seq("a")), IntIndexPath(Seq("b"))))))
+
+        definitionOf("projection_test_table_idx_1").get must include ("'{renamed}'")
+        oidOf("projection_test_table_idx_2") mustBe kept
+        oidOf("projection_test_table_idx_3") mustBe combined
+      } finally {
+        first.dropTable()
       }
     }
   }

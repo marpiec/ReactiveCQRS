@@ -139,10 +139,13 @@ val cartsStore = new PostgresDocumentStore[CartSummary](
   `MultipleIntIndex`, `UniqueIntIndex`, `MultipleLongIndex`, `UniqueLongIndex`,
   `MultipleTextArrayIndex`, and `MultipleCombinedIndex` or `UniqueCombinedIndex` over several
   paths. The number (here `1`) names the index. At start, the store creates the indexes it does not
-  have yet and drops those that are no longer on the list.
+  have yet, drops those that are no longer on the list, and builds again one whose definition
+  changed (another path or kind under the same number), with a warning in the log.
 
-> **Warning:** the store recognises an index by its number alone. Change the path of index 1 but
-> keep the number, and the old index stays as it was. Give a changed index a new number.
+> **Warning:** building an index again blocks the projection's writes while it runs, and the
+> projection starts once it is done: on a table of millions of documents that can take minutes.
+> For a large table, change the index together with a new version of a managed projection
+> (chapter 10): the new build gets new tables, built while the old ones serve.
 
 The operations you will use most:
 

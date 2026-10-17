@@ -124,7 +124,8 @@ At Neula's scale the storage part is the one that pays (for 100 000 000 such eve
   becomes `Seq("n")`), so every query and index on them changes, and documents written before keep
   the long paths, which the new queries do not find. Give such a projection a new version in the
   same release, so it is rebuilt into new tables (D57), and give each changed index a new
-  `uniqueId` (F171: the store keeps an index whose path changed under the same id).
+  `uniqueId` (F171: the store keeps an index whose path changed under the same id; fixed in M7,
+  where the store builds such an index again at start).
 - **Readability.** Support and operators read stored JSON less easily; the annotated classes are
   the dictionary. Keep keys unique within a class.
 

@@ -2135,3 +2135,11 @@ Open test-infrastructure items:
   applied runs again instead of being parked. At its deadline every delayed query gets a last
   search, and the custom variant answers its `T` rather than `None`. `ProjectionDeliverySpec`
   "F163" (two scenarios), red before the fix. Book: chapter 8 and appendix B.
+
+**17/10/2026: F171, a changed document index is built again**
+- `PostgresDocumentStore.init` compares each declared index with `pg_indexes.indexdef`, both
+  reduced to uniqueness, method and expressions, and builds a changed one again with a warning.
+  Plainly, not concurrently as the design planned: the projection is the table's only writer and
+  waits for its store, while reads go on. The statements' shapes date from 0.10.12 and 0.11.46, so
+  existing indexes match. Indexes are found by their exact name (`'%_idx_%'` also matched a primary
+  key). `PostgresDocumentStoreSpec` "F171", red before the fix. Book: chapter 8.

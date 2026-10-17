@@ -9,6 +9,10 @@ import scala.reflect.runtime.universe._
 import scalikejdbc._
 import io.reactivecqrs.core.util.{AfterCommit, SchemaLock}
 
+object PostgresDocumentStoreTrait {
+  private[documentstore] val log = org.slf4j.LoggerFactory.getLogger(classOf[PostgresDocumentStore[_]])
+}
+
 sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
   implicit val t: TypeTag[T]
@@ -48,25 +52,23 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
       throw new IllegalStateException("Indices for projection " + tableName+" are not unique")
     }
 
-    val exisitingIndicesNames = readExistingIndices()
-
-    val indicesToDrop = exisitingIndicesNames.filterNot(ei => {
-      val existingId = existingIndexUniqueId(ei)
-      indicies.exists(i => i.uniqueId == existingId)
-    })
-
-    indicesToDrop.foreach(index => dropIndex(index))
-
-    val indicesToCreate = indicies.filterNot(i => {
-      exisitingIndicesNames.exists(ei => existingIndexUniqueId(ei) == i.uniqueId)
-    })
-
-    indicesToCreate.foreach(index => createIndex(index))
+    val existing = readExistingIndices()
+    existing.keys.filterNot(id => indicies.exists(_.uniqueId == id)).foreach(id => dropIndex(indexName(id)))
+    indicies.foreach { index =>
+      existing.get(index.uniqueId) match {
+        case None => createIndex(index)
+        case Some(definition) if sameDefinition(definition, index) => ()
+        case Some(definition) =>
+          // F171: declared with the same id and another path (a field renamed, or given a short JSON name).
+          PostgresDocumentStoreTrait.log.warn("Index " + indexName(index.uniqueId) + " of " + projectionTableName + " is built again, " +
+            "as its definition changed; it was: " + definition)
+          dropIndex(indexName(index.uniqueId))
+          createIndex(index)
+      }
+    }
   }
 
-  private def existingIndexUniqueId(indexName: String): Int = {
-    indexName.substring(indexName.lastIndexOf("_") + 1).toInt
-  }
+  private def indexName(uniqueId: Int): String = projectionTableName + "_idx_" + uniqueId
 
   private def createTableIfNotExists()(implicit session: DBSession): Unit = {
     sql"""CREATE TABLE IF NOT EXISTS ${tableNameSQL} (
@@ -91,11 +93,23 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
   protected def createSequenceIfNotExists(): Unit = ()
 
 
-  private def readExistingIndices(): Iterable[String] = {
+  // The table's indexes named as this store names them, by id, with their definitions. F171: the pattern '%_idx_%' also
+  // took the primary key of a table whose name holds "idx".
+  private def readExistingIndices(): Map[Int, String] = {
+    val named = (java.util.regex.Pattern.quote(projectionTableName) + "_idx_(\\d+)").r
     DB.readOnly { implicit session =>
-      SQL(s"SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() AND tablename = '${projectionTableName}' and indexname like '%_idx_%'")
-        .map(rs => rs.string(1)).list()
-    }
+      SQL(s"SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = current_schema() AND tablename = '${projectionTableName}'")
+        .map(rs => (rs.string(1), rs.string(2))).list()
+    }.collect { case (named(id), definition) => id.toInt -> definition }.toMap
+  }
+
+  // F171: the database's definition against the declared one, both reduced to what tells this store's indexes apart:
+  // uniqueness, method and expressions. PostgreSQL writes a path as '{a,b}'::text[], int as integer, and more parentheses.
+  private def sameDefinition(definition: String, index: Index): Boolean = {
+    val (unique, method, columns) = indexSql(index)
+    def reduced(text: String) = text.replace("::text[]", "").replace("::integer", "::int").replaceAll("[\\s()]", "")
+    val methodAt = definition.indexOf(" USING ")
+    methodAt >= 0 && definition.startsWith("CREATE UNIQUE INDEX") == unique && reduced(definition.substring(methodAt + 7)) == reduced(method + columns)
   }
 
   private def dropIndex(indexName: String): Unit = DB.autoCommit { implicit session =>
@@ -103,34 +117,24 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
   }
 
   private def createIndex(index: Index): Unit = DB.autoCommit { implicit session =>
+    val (unique, method, columns) = indexSql(index)
+    SQL(s"CREATE ${if (unique) "UNIQUE " else ""}INDEX ${indexName(index.uniqueId)} ON ${projectionTableName} USING $method ($columns)").execute()
+  }
+
+  /** Whether the index is unique, its method, and its expressions, as created. */
+  private def indexSql(index: Index): (Boolean, String, String) = {
+    def text(path: Seq[String]) = s"(document #>> '{${path.mkString(",")}}')"
+    def typed(path: Seq[String], cast: String) = s"((document #> '{${path.mkString(",")}}')::$cast)"
     index match {
-      case MultipleCombinedIndex(uniqueId, paths) =>
-        val pathsQuery = pathsToQuery(paths)
-        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (${pathsQuery})").execute()
-      case UniqueCombinedIndex(uniqueId, paths) =>
-        val pathsQuery = pathsToQuery(paths)
-        SQL(s"CREATE UNIQUE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (${pathsQuery})").execute()
-      case MultipleTextIndex(uniqueId, path) =>
-        val p = path.mkString(",")
-        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} ((document #>> '{$p}'))").execute()
-      case UniqueTextIndex(uniqueId, path) =>
-        val p = path.mkString(",")
-        SQL(s"CREATE UNIQUE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} ((document #>> '{$p}'))").execute()
-      case MultipleLongIndex(uniqueId, path) =>
-        val p = path.mkString(",")
-        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (((document #> '{$p}')::bigint))").execute()
-      case UniqueLongIndex(uniqueId, path) =>
-        val p = path.mkString(",")
-        SQL(s"CREATE UNIQUE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (((document #> '{$p}')::bigint))").execute()
-      case MultipleIntIndex(uniqueId, path) =>
-        val p = path.mkString(",")
-        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (((document #> '{$p}')::int))").execute()
-      case UniqueIntIndex(uniqueId, path) =>
-        val p = path.mkString(",")
-        SQL(s"CREATE UNIQUE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} (((document #> '{$p}')::int))").execute()
-      case MultipleTextArrayIndex(uniqueId, path) =>
-        val p = path.mkString(",")
-        SQL(s"CREATE INDEX ${projectionTableName}_idx_${uniqueId} ON ${projectionTableName} USING GIN ((document #> '{$p}'))").execute()
+      case MultipleCombinedIndex(_, paths) => (false, "btree", pathsToQuery(paths))
+      case UniqueCombinedIndex(_, paths) => (true, "btree", pathsToQuery(paths))
+      case MultipleTextIndex(_, path) => (false, "btree", text(path))
+      case UniqueTextIndex(_, path) => (true, "btree", text(path))
+      case MultipleLongIndex(_, path) => (false, "btree", typed(path, "bigint"))
+      case UniqueLongIndex(_, path) => (true, "btree", typed(path, "bigint"))
+      case MultipleIntIndex(_, path) => (false, "btree", typed(path, "int"))
+      case UniqueIntIndex(_, path) => (true, "btree", typed(path, "int"))
+      case MultipleTextArrayIndex(_, path) => (false, "gin", s"(document #> '{${path.mkString(",")}}')")
     }
   }
 
