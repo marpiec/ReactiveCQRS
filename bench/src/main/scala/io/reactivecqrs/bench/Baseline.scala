@@ -47,7 +47,13 @@ object Baseline {
                     largeSize: Int = 5000000,
                     largeCommands: Int = 20,
                     heavyMillis: Int = 5000,
-                    scenarios: Set[String] = Set.empty)
+                    scenarios: Set[String] = Set.empty,
+                    jsonRuns: Int = 3,
+                    jsonCalls: Int = 1000000,
+                    jsonCommands: Int = 100000,
+                    jsonRestoreEvents: Int = 50000,
+                    jsonRebuildEvents: Int = 1000000,
+                    jsonDocuments: Int = 100000)
 
   private def configFrom(arguments: Seq[String]): Config = {
     val named = arguments.map(_.split("=", 2)).collect { case Array(key, value) => key -> value }.toMap
@@ -62,7 +68,10 @@ object Baseline {
       int("restartCycles", defaults.restartCycles), int("burstCommands", defaults.burstCommands),
       int("longAggregateEvents", defaults.longAggregateEvents), int("largeSize", defaults.largeSize), int("largeCommands", defaults.largeCommands),
       int("heavyMillis", defaults.heavyMillis),
-      named.get("scenarios").map(_.split(",").map(_.trim).toSet).getOrElse(defaults.scenarios))
+      named.get("scenarios").map(_.split(",").map(_.trim).toSet).getOrElse(defaults.scenarios),
+      int("jsonRuns", defaults.jsonRuns), int("jsonCalls", defaults.jsonCalls), int("jsonCommands", defaults.jsonCommands),
+      int("jsonRestoreEvents", defaults.jsonRestoreEvents), int("jsonRebuildEvents", defaults.jsonRebuildEvents),
+      int("jsonDocuments", defaults.jsonDocuments))
   }
 
   private val userId = UserId(1)
@@ -72,7 +81,7 @@ object Baseline {
     java.util.Locale.setDefault(java.util.Locale.ROOT) // decimal points in the report, whatever the machine's locale
     val reportName = args.headOption.getOrElse("run-" + LocalDate.now)
     val config = configFrom(args.toSeq.drop(1))
-    val report = new Report(reportName, config)
+    val report = new Report(reportName, config, args.toSeq.drop(1))
     BenchDatabase.init()
     StatementCounter.install()
     try {
@@ -108,6 +117,8 @@ object Baseline {
       if (runs("long")) longAggregate(stores, config, report)
       if (runs("large")) large(stores, config, report)
       if (runs("heavy")) heavy(stores, config, report)
+      // Short JSON keys (§7.1): a comparison with a report of its own, so only when listed.
+      if (config.scenarios.contains("jsonNames")) JsonNames.run(stores, config, report)
     } finally {
       BenchDatabase.drop()
     }
@@ -648,7 +659,7 @@ object Baseline {
     case other => throw new IllegalStateException("Could not create a counter: " + other)
   }
 
-  private def send(bus: ActorRef, command: AnyRef): CustomCommandResponse[_] =
+  private[bench] def send(bus: ActorRef, command: AnyRef): CustomCommandResponse[_] =
     Await.result((bus ? command)(askTimeout), 130.seconds).asInstanceOf[CustomCommandResponse[_]]
 
   private def awaitProjection(system: BenchSystem, projections: Boolean, increments: Long): Option[Long] =
@@ -657,7 +668,7 @@ object Baseline {
   private def rows(table: String): Long = Try(DB.readOnly { implicit session => SQL(s"SELECT count(*) FROM $table").map(_.long(1)).single().get }).getOrElse(0L)
 
   /** Runs one task per worker on its own thread and returns their results in worker order. */
-  private def parallel[A](workers: Int)(task: Int => A): IndexedSeq[A] = {
+  private[bench] def parallel[A](workers: Int)(task: Int => A): IndexedSeq[A] = {
     val pool = Executors.newFixedThreadPool(workers)
     try {
       (0 until workers).map(w => pool.submit(new java.util.concurrent.Callable[A] { def call(): A = task(w) })).map(_.get())
@@ -666,7 +677,7 @@ object Baseline {
     }
   }
 
-  private def awaitUntil(timeout: FiniteDuration)(condition: => Boolean): Option[Long] = {
+  private[bench] def awaitUntil(timeout: FiniteDuration)(condition: => Boolean): Option[Long] = {
     val started = System.nanoTime()
     val deadline = started + timeout.toNanos
     while (!condition) {
@@ -676,12 +687,12 @@ object Baseline {
     Some(System.nanoTime() - started)
   }
 
-  private def seconds(nanos: Long): Double = nanos / 1e9
-  private def millis(nanos: Long): String = f"${nanos / 1e6}%.0f ms"
+  private[bench] def seconds(nanos: Long): Double = nanos / 1e9
+  private[bench] def millis(nanos: Long): String = f"${nanos / 1e6}%.0f ms"
   private def latencySummary(l: Latencies): String =
     f"${l.percentileMillis(50)}%.1f / ${l.percentileMillis(95)}%.1f / ${l.percentileMillis(99)}%.1f / ${l.percentileMillis(100)}%.1f ms"
 
-  private class Outcomes {
+  private[bench] class Outcomes {
     private val counts = new ConcurrentHashMap[String, AtomicLong]()
     def add(response: CustomCommandResponse[_]): Unit = addName(response.getClass.getSimpleName)
     def addName(name: String): Unit = counts.computeIfAbsent(name, _ => new AtomicLong()).incrementAndGet()
@@ -690,20 +701,23 @@ object Baseline {
 
   // ---- report ----
 
-  private class Report(name: String, config: Config) {
+  private[bench] class Report(name: String, config: Config, arguments: Seq[String]) {
     private val parts = ListBuffer[String]()
 
     def environment(postgresVersion: String): Unit = {
       val runtime = Runtime.getRuntime
-      parts += s"# Performance: $name\n\nMeasured on ${LocalDate.now} with `sbt \"bench/run $name\"` (bench module, docs/IMPLEMENTATION-PLAN.md §7). " +
-        "All numbers are measured, from a single run on the machine below; they are a baseline for comparing later runs on the same machine, not absolute figures.\n"
+      parts += s"# Performance: $name\n\nMeasured on ${LocalDate.now} with `sbt \"bench/run ${(name +: arguments).mkString(" ")}\"` (bench module, docs/IMPLEMENTATION-PLAN.md §7). " +
+        "All numbers are measured, in one run of the bench on the machine below; they are a baseline for comparing later runs on the same machine, not absolute figures.\n"
       parts += table(Seq("Environment", "Value"), Seq(
         Seq("commit", sys.props.getOrElse("bench.commit", "unknown")),
         Seq("OS", System.getProperty("os.name") + " " + System.getProperty("os.version") + ", " + System.getProperty("os.arch")),
         Seq("CPU threads", runtime.availableProcessors.toString),
         Seq("JVM", System.getProperty("java.vm.name") + " " + System.getProperty("java.version") + f", max heap ${runtime.maxMemory / 1024.0 / 1024.0}%.0f MB"),
         Seq("PostgreSQL", postgresVersion + ", same machine (" + BenchDatabase.url + ")"),
-        Seq("sizes", s"${config.workers} callers; ${config.commandsPerWorker} commands each on many aggregates, ${config.contendedCommandsPerWorker} each on one; " +
+        Seq("sizes", if (config.scenarios == Set("jsonNames")) s"${config.workers} callers; ${config.jsonRuns} runs of each form; " +
+          s"${config.jsonCalls} calls per CPU measure; ${config.jsonCommands} commands; restore of ${config.jsonRestoreEvents} events; " +
+          s"rebuild over ${config.jsonRebuildEvents} events; ${config.jsonDocuments} documents" else
+          s"${config.workers} callers; ${config.commandsPerWorker} commands each on many aggregates, ${config.contendedCommandsPerWorker} each on one; " +
           s"notes of ${config.noteSize} characters; rebuild data ${config.rebuildAggregates} x ${config.rebuildEventsPerAggregate} events; " +
           s"restore sizes ${config.restoreSizes.mkString(", ")}; soak ${config.soakSeconds} s; " +
           s"delivery soak ${config.soakAggregates} x ${config.soakEventsPerAggregate} events, failing ${config.soakFailingSeconds} s, ${config.restartCycles} restarts; " +
