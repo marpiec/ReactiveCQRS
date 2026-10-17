@@ -227,6 +227,60 @@ New links, written from now on:
 | The purge stops midway | some rows gone, some not | it is run again: each step is idempotent |
 | Legacy rows without a space (-1) | they belong to no organization | not purged; `StoredDataCheck` reports them |
 
+### Refined before building (17/10/2026)
+
+The interface, as a host sees it:
+
+```scala
+val purge = new SpacePurge(eventStore, commandBuses = Map(AggregateType.of[Cart] -> cartBus, ...),
+  projections = Seq(cartsList, ...), hooks = Seq(myOutboxRowsHook))(system)
+purge.purge(SpaceId(42)): Future[PurgeReport]
+```
+
+- **Plan** reads the space's aggregates by type and the duplicates of other spaces that read them
+  (each chain row carries its aggregate's own space, so one query finds them), and refuses, before a
+  row changes, when: a type of the space has no command bus given (its owners could not be stopped);
+  a projection answers `PurgeCheck` with a refusal (it does not implement `clearForRebuild`, or a
+  managed one is building or rebuilding a target).
+- **Detach** sends `DetachDuplicates(base, duplicates)` to the base's command bus, which builds the
+  detach events as a permanent delete does (`detachEvents`, D85, `notWrittenYet`) and calls
+  `EventStoreState.detachDuplicates`: under the chain lock, only those duplicates, F143's checks for
+  them; answered `DuplicatesDetached` or `DetachRefused(reason)`. One refusal ends the purge before a
+  row is deleted (the detaches done stay: a detached copy is whole on its own).
+- **Delete**, in batches of at most 1 000 aggregates and 100 000 events (by `base_version`; a larger
+  aggregate alone), in descending id order (a copy usually goes before its base): one transaction
+  locks the batch's chains, leaves out the aggregates a copy of another space reads (a duplication
+  made after the plan: the next pass detaches it), runs the hooks, and deletes the rows
+  (`PostgresEventStoreState.purgeAggregates`: `noop_events`, `events` with their keys,
+  `events_archive`, `events_to_publish`, `snapshots`, `subscriptions`, `subscription_failures`,
+  `commands_responses` by `aggregate_id`, `aggregates`). After each batch, each type's bus gets
+  `ForgetAggregates(ids)` (owners stop without a snapshot) and each projection
+  `PurgedAggregates(space, ids)`; both answer, which paces the batches.
+- **Sagas** of the space go (`DELETE FROM sagas WHERE space_id = ?`).
+- **Passes** repeat while a pass found aggregates, at most three; the report says what remains.
+- **Projections** then get `PurgeSpace(space)`: `clearForRebuild(OneSpace(space))` in one
+  transaction, answered `SpacePurged` (or a failure, reported). Run again, a purge that finds nothing
+  still clears the projections, so a failed clear is repeated by running the purge again.
+- **A projection after `PurgedAggregates`** forgets the aggregates (versions, queues, failures) and,
+  for a window (`purgedDropWindow`, 30 minutes by default), acknowledges deliveries of them without
+  applying them: deliveries already on their way (in a mailbox, or sent by another node's bus) cannot
+  write a document again. The ids are kept as one sorted array of longs (8 bytes each); a targeted
+  rebuild takes the aggregates it resets out of it.
+- **`PurgeReport(space, passes, aggregates, rows, detached, projections, failed, refused, remaining)`**,
+  `complete` when nothing was refused, failed or left.
+- **`StoredDataCheck.spaceRows(space)`** counts what a space still has (aggregates, event keys,
+  projection tables, sagas) and the rows whose aggregate is gone, to verify a purge.
+
+| Circumstance | What happens | Handled by |
+|---|---|---|
+| A sharded type's owners | `ForgetAggregates` reaches each purged aggregate's shard, which starts an owner only to stop it (no restore) | batches pace it; documented |
+| Deliveries already on their way when the rows go | a delivery applied after the clear would write a document again | the drop window; `StoredDataCheck.spaceRows` to verify; a second run clears again |
+| A purge of a large organization | the drop window holds the purged ids in each projection | 8 bytes per aggregate per projection, for the window only (1 million aggregates: 8 MB, estimated) |
+| A managed projection starts a build during the purge | the build may read events of the space before they go | refused at the plan; a build started later is documented: do not rebuild during a purge |
+| The purge stops between batches | some aggregates gone; a copy in the space may read a base already gone | run it again: every step is idempotent, and the copy goes in the next run |
+| Responses stored before M6, sagas started before M6 | no `aggregate_id`, no `space_id` | responses expire with the retention (30 days by default); untagged sagas are not purged (documented) |
+| A host table with rows of the space | the library does not know it | a `PurgeHook`, in the batch's transaction |
+
 ## Export and import (D40)
 
 `SpaceExport.write(space, out)` writes one organization as JSON lines; `SpaceImport.read(in, settings)`
