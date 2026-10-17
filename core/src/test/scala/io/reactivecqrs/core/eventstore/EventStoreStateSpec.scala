@@ -377,6 +377,28 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     eventStoreState.aggregatesOf(Seq(someType), AggregateId(Long.MinValue), 10, AggregateScope.InSpace(SpaceId(77))) mustBe empty
   }
 
+  // F173: a builder walks the aggregates of a projection's types in id order, a page at a time.
+  Scenario("A page of several types' aggregates is in id order across the types, after an id, at most a limit long") {
+    val a = new TestFixture(eventStoreState)
+    val nested = AggregateId(TestIds.aggregate()) // between the two of the other type
+    val b = new TestFixture(eventStoreState)
+    a.storeEvents(Seq(EventA("a")))
+    eventStoreState.localTx(session => eventStoreState.persistEvents(nested,
+      NewEvents[Nesting.NestedRoot](UserId(1), AggregateVersion.ZERO, Instant.now, Seq(Nesting.NestedCreated())))(session)).get
+    b.storeEvents(Seq(EventA("b")))
+    val ids = Seq(a.aggregateId, nested, b.aggregateId)
+    val types = Seq(AggregateType.of[SomeAggregate], AggregateType.of[Nesting.NestedRoot])
+    def page(after: AggregateId, limit: Int): Seq[AggregateId] =
+      eventStoreState.aggregatesOf(types, after, limit, AggregateScope.Only(ids.toSet)).map(_.aggregateId)
+
+    ids mustBe ids.sortBy(_.asLong)
+    page(AggregateId(Long.MinValue), 10) mustBe ids
+    page(AggregateId(Long.MinValue), 2) mustBe ids.take(2)
+    page(ids.head, 10) mustBe ids.tail
+    eventStoreState.aggregatesOf(types.take(1), AggregateId(Long.MinValue), 10, AggregateScope.Only(ids.toSet)).map(_.aggregateId) mustBe
+      Seq(a.aggregateId, b.aggregateId)
+  }
+
   // D17, F8: a rewrite may change an event's values, never its class.
   Scenario("A rewrite that would change an event's class is refused, and nothing is rewritten") {
     val f = new TestFixture(eventStoreState)

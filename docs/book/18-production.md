@@ -166,8 +166,10 @@ val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, mis
 ```
 
 - `buildIndexesConcurrently()` builds the indexes that a large table cannot get in a start-up
-  transaction (`events (aggregate_id, version)` and `aggregates (space_id, id)`), with PostgreSQL's
-  `CREATE INDEX CONCURRENTLY`. It does nothing when they exist.
+  transaction (`events (aggregate_id, version)`, `aggregates (space_id, id)` and, since 1.0's last
+  steps, the aggregates' own rows by type), with PostgreSQL's `CREATE INDEX CONCURRENTLY`. It does
+  nothing when they exist. Until the last one exists, a projection build on a large installation
+  reads a page of aggregates in about 100 ms instead of 1 ms.
 - `backfillSpaces(spaceOf)` gives aggregates stored without an organization the space of their first
   event; for old first events that do not know theirs, you pass a function that does
   ([chapter 16](16-organizations.md)). Run it before you rebuild a projection for one organization.

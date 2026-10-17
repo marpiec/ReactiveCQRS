@@ -232,7 +232,8 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
   columns implement **duplication chains**: a duplicated aggregate shares history
   with its base up to a version, then diverges. `base_version` is the current
   version and is what the stored procedures compare for optimistic locking.
-  Indices: `aggregates(type_id)`, `aggregates(base_id)`.
+  Indices: `aggregates(type_id)`, `aggregates(base_id)`, `aggregates(space_id, id)`, and the own rows'
+  `aggregates(type_id, id) WHERE id = base_id` (F173).
 - **`noop_events`** — `id (→events.id) PK, from_version`. Marks events that became
   no-ops (e.g. due to undo) from a given version.
 - **`snapshots`** (M3, D30) — `aggregate_id PK, version, context_version, schema_version,

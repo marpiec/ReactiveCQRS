@@ -26,6 +26,7 @@ class PostgresEventStoreSchemaInitializer  {
     addAggregatesHistoryGenerationColumn()
     createEventsAggregateVersionIndexWhenSmall()
     createAggregatesSpaceIndexWhenSmall()
+    createAggregatesOwnTypeIndexWhenSmall()
     createEventKeysTable()
     createEventsArchiveTable()
     createLineageAndRewritesTables()
@@ -180,6 +181,15 @@ class PostgresEventStoreSchemaInitializer  {
     if (estimatedRows < 100000L) {
       sql"""CREATE INDEX IF NOT EXISTS aggregates_space_id_idx ON aggregates (space_id, id)""".execute()
       sql"""DROP INDEX IF EXISTS aggregates_space_idx""".execute() // the first M6 steps' index, on the space alone
+    }
+  }
+
+  // F173: a type's aggregates, their own rows, in id order: the walks of builds and targeted rebuilds read them a page at a
+  // time. Built online on a large installation (D69).
+  private def createAggregatesOwnTypeIndexWhenSmall(): Unit = DB.autoCommit { implicit session =>
+    val estimatedRows = sql"""SELECT reltuples::bigint FROM pg_class WHERE oid = 'aggregates'::regclass""".map(_.long(1)).single().getOrElse(0L)
+    if (estimatedRows < 100000L) {
+      sql"""CREATE INDEX IF NOT EXISTS aggregates_own_type_idx ON aggregates (type_id, id) WHERE id = base_id""".execute()
     }
   }
 

@@ -2143,3 +2143,12 @@ Open test-infrastructure items:
   waits for its store, while reads go on. The statements' shapes date from 0.10.12 and 0.11.46, so
   existing indexes match. Indexes are found by their exact name (`'%_idx_%'` also matched a primary
   key). `PostgresDocumentStoreSpec` "F171", red before the fix. Book: chapter 8.
+
+**17/10/2026: F173, the walk over a type's aggregates**
+- A partial index `aggregates (type_id, id) WHERE id = base_id`, at start on a small installation and
+  by `buildIndexesConcurrently()` on a large one, and a page read per type (`LATERAL`) then merged:
+  an `IN` over the types gave no order and read all their rows. Measured with `EXPLAIN ANALYZE` on
+  2 000 000 aggregates (single runs, this machine): one type 110.8 → 0.28 ms a page, two types 174
+  → 0.94 ms, one space 94 → 10 ms. `buildIndexesConcurrently` now builds each index through one
+  helper. `PostgresEventStoreStateSpec` "F173" (the index, at start and online), red before the fix;
+  `EventStoreStateSpec` checks a page of several types in id order. Book: chapter 18; H12.

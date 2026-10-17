@@ -251,25 +251,27 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     sql"""UPDATE aggregates SET history_generation = history_generation + 1 WHERE id = base_id AND id IN ($aggregateIds)""".update()
   }
 
-  /** Builds the index of F38, `events(aggregate_id, version)`, without blocking writes to `events` (D69): run it once in
-    * the background after the upgrade; it does nothing when the index exists. An index an interrupted build left
-    * invalid is dropped and built again. */
+  /** Builds the indexes a large installation does not get at start without blocking writes (D69): F38's
+    * `events (aggregate_id, version)`, M6's `aggregates (space_id, id)` and F173's `aggregates (type_id, id)` of the
+    * aggregates' own rows. Run it once in the background after the upgrade; it does nothing for an index that exists.
+    * An index an interrupted build left invalid is dropped and built again. */
   def buildIndexesConcurrently(): Unit = DB.autoCommit { implicit session =>
-    val invalid = sql"""SELECT NOT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
-                       | JOIN pg_namespace n ON n.oid = c.relnamespace
-                       | WHERE c.relname = 'events_aggregate_version_idx' AND n.nspname = current_schema()""".stripMargin
-      .map(_.boolean(1)).single().getOrElse(false)
-    if (invalid) sql"""DROP INDEX CONCURRENTLY IF EXISTS events_aggregate_version_idx""".execute()
-    sql"""CREATE INDEX CONCURRENTLY IF NOT EXISTS events_aggregate_version_idx ON events (aggregate_id, version)""".execute()
+    buildConcurrently("events_aggregate_version_idx", sqls"events (aggregate_id, version)")
     // M6: an organization's aggregates in id order, for its purge, export and rebuild (D38). The index of the first M6
     // steps, on the space alone, goes once this one is built.
-    val spaceIndexInvalid = sql"""SELECT NOT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
-                                 | JOIN pg_namespace n ON n.oid = c.relnamespace
-                                 | WHERE c.relname = 'aggregates_space_id_idx' AND n.nspname = current_schema()""".stripMargin
-      .map(_.boolean(1)).single().getOrElse(false)
-    if (spaceIndexInvalid) sql"""DROP INDEX CONCURRENTLY IF EXISTS aggregates_space_id_idx""".execute()
-    sql"""CREATE INDEX CONCURRENTLY IF NOT EXISTS aggregates_space_id_idx ON aggregates (space_id, id)""".execute()
+    buildConcurrently("aggregates_space_id_idx", sqls"aggregates (space_id, id)")
     sql"""DROP INDEX CONCURRENTLY IF EXISTS aggregates_space_idx""".execute()
+    buildConcurrently("aggregates_own_type_idx", sqls"aggregates (type_id, id) WHERE id = base_id")
+  }
+
+  private def buildConcurrently(name: String, on: SQLSyntax)(implicit session: DBSession): Unit = {
+    val index = SQLSyntax.createUnsafely(name)
+    val invalid = sql"""SELECT NOT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                       | JOIN pg_namespace n ON n.oid = c.relnamespace
+                       | WHERE c.relname = $name AND n.nspname = current_schema()""".stripMargin
+      .map(_.boolean(1)).single().getOrElse(false)
+    if (invalid) sql"""DROP INDEX CONCURRENTLY IF EXISTS $index""".execute()
+    sql"""CREATE INDEX CONCURRENTLY IF NOT EXISTS $index ON $on""".execute()
   }
 
   /**
@@ -369,11 +371,16 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
             | ORDER BY e.id LIMIT $limit""".stripMargin
   }
 
+  // F173: a page of each type through aggregates (type_id, id) of the own rows, then the first `limit` of them: an IN over
+  // the types reads every row of them to sort them.
   override def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[StoredAggregate] =
     if (types.isEmpty) Seq.empty else DB.readOnly { implicit session =>
-      sql"""SELECT a.type_id, a.id, a.base_version, a.squashed_version FROM aggregates a
-           | WHERE a.base_id = a.id AND a.id > ${after.asLong} AND a.type_id IN (${typeIds(types)}) ${scoped(scope)}
-           | ORDER BY a.id LIMIT $limit""".stripMargin
+      sql"""SELECT p.type_id, p.id, p.base_version, p.squashed_version
+           |  FROM unnest(ARRAY[${typeIds(types)}]::smallint[]) t(type_id) CROSS JOIN LATERAL (
+           |    SELECT a.type_id, a.id, a.base_version, a.squashed_version FROM aggregates a
+           |     WHERE a.base_id = a.id AND a.id > ${after.asLong} AND a.type_id = t.type_id ${scoped(scope)}
+           |     ORDER BY a.id LIMIT $limit) p
+           | ORDER BY p.id LIMIT $limit""".stripMargin
         .map(rs => StoredAggregate(AggregateType(typesNamesState.classNameById(rs.short(1))), AggregateId(rs.long(2)), AggregateVersion(rs.int(3)),
           rs.intOpt(4).map(AggregateVersion(_)))).list()
     }

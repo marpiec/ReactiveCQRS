@@ -153,6 +153,20 @@ class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStore
     } mustBe List(true)
   }
 
+  // F173: a page of a type's aggregates reads their own rows through an index of its own: at a million aggregates of a
+  // type, the planner took aggregates (base_id) and read about 80 ms a page. A small store gets it at start, a large one
+  // from buildIndexesConcurrently.
+  Scenario("the aggregates' own rows are indexed by type and id, at start or online (F173)") {
+    def definition(): Option[String] = DB.readOnly { implicit session =>
+      sql"""SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'aggregates_own_type_idx'""".map(_.string(1)).single()
+    }
+    definition().getOrElse("") must include ("(type_id, id) WHERE (id = base_id)")
+
+    DB.autoCommit(implicit session => sql"""DROP INDEX aggregates_own_type_idx""".execute())
+    eventStoreState.asInstanceOf[PostgresEventStoreState].buildIndexesConcurrently()
+    definition().getOrElse("") must include ("(type_id, id) WHERE (id = base_id)")
+  }
+
   // D29: event versioning is gone. Rows of version 0 read as before; a row written with a type version names a class
   // that cannot be known any more, so reading it fails with a message naming the row.
   Scenario("an event stored with a non-zero event type version fails to read, with a message naming it") {
