@@ -1692,3 +1692,8 @@ Open test-infrastructure items:
   be pulled again every minute, as the parts go out through the other node's bus; one held since
   the deadline is dropped (its held deliveries ended then; gap requests and the poller deliver it).
 - Tests and mutations as listed in the design; `sbt test`: core 260, testdomain 155.
+- Measured with flow control (`docs/perf/flow-M5.md`, commit 5541e9a): a 60 s soak committed
+  671 768 commands (475 403 in baseline-M4), the projections caught up 89 s after the load (201 s),
+  and the heap held 128 MB after GC right after it (177 MB); a delivery soak of 200 000 events was
+  projected 54 s after the load started, with nothing waiting or undelivered and the outbox empty.
+  Single runs on one machine.

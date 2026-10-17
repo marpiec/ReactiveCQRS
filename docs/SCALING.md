@@ -7,8 +7,8 @@ writes that outrun the projections, and commands and events of 5 MB (section 7).
 the messages between the nodes of a cluster.
 
 **How to read the numbers.**
-- **Measured** numbers come from the bench reports [docs/perf/load-M5.md](perf/load-M5.md)
-  (commit cd23537), [docs/perf/large-M5.md](perf/large-M5.md) (commit ee1b140) and
+- **Measured** numbers come from the bench reports [docs/perf/load-M5.md](perf/load-M5.md),
+  [docs/perf/large-M5.md](perf/large-M5.md), [docs/perf/flow-M5.md](perf/flow-M5.md) and
   [docs/perf/baseline-M4.md](perf/baseline-M4.md). Each is a single run on one
   machine: Windows 10, 12 CPU threads, OpenJDK 17, a 2 GB heap, PostgreSQL 17.4 on the same machine,
   and a JDBC pool of 40 connections. They are good for comparing runs. They are not capacity figures
@@ -212,32 +212,44 @@ Estimated from the measured numbers. None of this was run at this scale.
 
 ## 5. Writes faster than the projections
 
-Measured (baseline-M4):
-- Commands reached 4 780/s with two projections, while a projection applied 2 732 events/s.
-- In a 60 s soak of 475 403 commands, the projections caught up 201 s after the load ended. The heap
-  held 177 MB after GC right after the load, against 15 MB before.
-- 1 000 000 events at 11 348 commands/s were all projected 330 s after the load started.
+Measured before flow control ([baseline-M4](perf/baseline-M4.md)) and with it
+([flow-M5](perf/flow-M5.md), commit 5541e9a), single runs on the same machine:
 
-**How it behaves.** The lag lives in memory. The bus keeps one delivery per event in flight, and
-each projection's mailbox holds the events themselves. There is no flow control yet (F93, planned
-in M5). The soak's numbers give a few hundred bytes per event behind (estimated: 162 MB for several
-hundred thousand events), so 10 million events behind would take several GB.
+| Measure | baseline-M4 | flow-M5 |
+| --- | --- | --- |
+| commands in a 60 s soak, 16 callers, two projections | 475 403 | 671 768 |
+| projections caught up after the load | 201 s | 89 s |
+| heap after GC right after the load (before it) | 177 MB (15 MB) | 128 MB (16 MB) |
+| delivery soak: events, and every one projected after the load started | 1 000 000, 330 s | 200 000, 54 s |
+
+The flow-M5 soak committed 41% more commands and still held less heap right after the load.
+Two single runs on one machine, so take the comparison as indicative.
+
+**How it behaves (since M5, F93).** A projection's mailbox holds at most its window: 10 000 events
+and 64 MB of their stored sizes not yet answered (`DeliveryOptions.window`, `windowBytes`). The
+bus holds what does not fit: the events wait in the store, and the bus keeps a delivery (keys
+only) per event held. Once the projection has answered half its window, the bus asks the owners
+of the held aggregates to re-publish them to it, oldest first, at most 100 at once. A fast
+projection next to a slow one is not held back. When the slow one has a held event, the owner is
+acknowledged and the outbox row goes, as for any delivery.
 
 **How it fails.**
-- Without flow control, memory grows until the lag ends or the heap runs out.
-- At the 10-minute deadline, the bus ends a delivery as undelivered and leaves its outbox row. The
-  projection still applies the event from its mailbox, but its acknowledgement then arrives too late
-  to delete the row.
-- The outbox poller re-publishes such rows at 3 and 6 minutes, gives up at 10, and logs
-  "Undelivered" until its next start (F123).
+- The bus's keys for held events grow with the lag until the deadline: at most the commit rate
+  times 10 minutes, about 200 bytes each (estimated: 10 000 events/s × 600 s × 200 bytes ≈ 1.2 GB).
+- At the deadline, held deliveries end like others: their rows stay in the outbox, the bus forgets
+  them, and the outbox poller re-publishes them (3 and 6 minutes after the commit, then every
+  30 minutes, F123). The projection's gap requests fill any aggregate that gets new events.
+- A projection that never catches up keeps its backlog in the store and the outbox, on disk.
 
 **Recommendations.**
-- **Watch the lag:** `GetDeliveryStatus.waiting` on each node's bus and `GetProjectionStatus` on
-  each projection.
+- **Watch the lag:** `GetDeliveryStatus.held` and `.behind` on each node's bus, `.waiting`, and
+  `GetProjectionStatus` on each projection. The bus's summary line names the subscribers behind.
 - **Keep projections cheap per event.** They apply up to 100 aggregates per transaction; listeners
   that call slow external services belong in sagas or in projections of their own.
 - **Leave headroom between the command rate and the slowest projection's rate.**
 - **For a projection far behind, rebuild it** rather than letting it catch up through the bus.
+- **Size the window for the projection:** a larger one lets a projection take more at once (larger
+  groups) at the cost of mailbox memory; a smaller one keeps memory low.
 
 ## 6. Messages between nodes
 
@@ -355,14 +367,15 @@ host that needs larger events raises `eventSizeLimitPerClassName` for those clas
 | Outbox poller | one entry per waiting aggregate, at most 100 000 | `OutboxPollerOptions.maxTracked` |
 | Artery buffers (direct memory) | up to 128 × the frame size, and 32 × the large frame size | Pekko's buffer pools |
 
-Measured for orientation: 15 to 35 MB of heap after GC at rest, 177 MB right after the 60 s soak,
-and 168 MB at the peak of a 50 000-event read. A heap of a few GB leaves room for bursts and lag;
-the owners' states set the rest (estimated).
+Measured for orientation: 15 to 35 MB of heap after GC at rest, 128 MB right after the 60 s soak
+(177 MB before flow control), and 168 MB at the peak of a 50 000-event read. A heap of a few GB
+leaves room for bursts and lag; the owners' states set the rest (estimated).
 
 ## 9. Signals
 
 - **`GetDeliveryStatus`** (each node's bus): deliveries waiting, the latest undelivered ones,
-  and stopped subscribers.
+  stopped subscribers, and the deliveries held for subscribers behind their window, with the
+  aggregates held per subscriber (F93).
 - **`GetOutboxStatus`** (outbox poller): aggregates waiting in the outbox, and those given up.
 - **`GetProjectionStatus`** (each projection): failures, aggregates being retried, and gaps.
   `GetBuildStatus` reports a build.
