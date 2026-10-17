@@ -1058,7 +1058,8 @@ handlers. It runs on the blocking dispatcher and reads synchronously on its own 
    index scan per type (in an organization, by its space), once every event has a key, and named
    aggregates through `events (aggregate_id, id)`. Before the keys' backfill completed, it walks
    `events` up to the page's last row, as before; undone events and undo events included (D60), with the aggregate's
-   squash point. Consecutive rows of one aggregate with consecutive versions form a run; each
+   squash point. Each event finds its aggregate's own row by key, one lookup per event (F172): a join
+   lets the planner, misjudging `id = base_id`, read every event of the store for each page. Consecutive rows of one aggregate with consecutive versions form a run; each
    run becomes one `ChunkItem` per listener kind, with the state after its last version for
    state listeners. `ReplayStates` keeps those states for at most `maxReplayStates` (10 000)
    aggregates, least recently used out: a run continues the state it holds, an evicted or

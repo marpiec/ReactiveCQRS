@@ -288,9 +288,9 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     var after = first.map(_ - 1).getOrElse(last)
     while (after < last) {
       val upTo = math.min(after + batchSize, last)
-      written += DB.localTx { implicit session =>
+      written += DB.localTx { implicit session => // each event finds its own aggregate row by key (F172)
         sql"""INSERT INTO event_keys (id, type_id, space_id)
-             | SELECT e.id, a.type_id, a.space_id FROM events e JOIN aggregates a ON a.id = e.aggregate_id AND a.base_id = e.aggregate_id
+             | SELECT e.id, a.type_id, a.space_id FROM events e CROSS JOIN LATERAL $ownRow a
              | WHERE e.id > $after AND e.id <= $upTo ON CONFLICT (id) DO NOTHING""".stripMargin.update()
       }
       after = upTo
@@ -328,7 +328,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
            |     WHERE up_to <= $maxBytes OR n = 1)
            |SELECT e.id, a.type_id, e.aggregate_id, e.version, e.event_type_id, e.event_type_version, e.event, e.user_id, e.event_time,
            |   e.metadata::text, a.squashed_version, k.size, (SELECT count(*) FROM page)
-           | FROM kept k JOIN events e ON e.id = k.id JOIN aggregates a ON a.id = e.aggregate_id AND a.base_id = e.aggregate_id
+           | FROM kept k JOIN events e ON e.id = k.id CROSS JOIN LATERAL $ownRow a
            | ORDER BY e.id""".stripMargin.map { rs =>
         val (aggregateId, version) = (AggregateId(rs.long(3)), AggregateVersion(rs.int(4)))
         val event = Try(EventInfo[Any](version, mpjsons.deserialize[Event[Any]](rs.string(7), eventClass(rs.short(5), rs.short(6), aggregateId.asLong, version.asInt)),
@@ -339,13 +339,20 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       CommittedPage(rows.map(_._1), cut = rows.headOption.exists { case (_, pageRows) => pageRows > rows.size })
     }
 
+  // F172: each event's own aggregate row, looked up by its key for that one event. A join on `a.id = e.aggregate_id AND
+  // a.base_id = e.aggregate_id` lets the planner estimate `id = base_id` at 0.5 % of the rows (it is nearly all), and once
+  // the tables are analyzed it scanned every event of every aggregate for each page: 0.8 s a page over 2 000 000 events.
+  // The LIMIT keeps the subquery from being flattened into such a join.
+  private val ownRow = sqls"""(SELECT id, type_id, space_id, squashed_version FROM aggregates
+                             |  WHERE id = e.aggregate_id AND base_id = e.aggregate_id LIMIT 1)""".stripMargin
+
   // The ids and sizes of the next `limit` events of `types` in `scope` after `after`, in commit order. F124: named
   // aggregates are read through `events (aggregate_id, id)`; once every event has a key, the others through
   // `event_keys`, one subquery per type (each at most a page, by `(type_id, id)` or `(space_id, type_id, id)`), merged
   // by id. Before that, `events` is walked up to the page's last row.
   private def pageOf(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope)(implicit session: DBSession): SQLSyntax = scope match {
     case AggregateScope.Only(ids) if ids.nonEmpty =>
-      sqls"""SELECT e.id, octet_length(e.event) AS size FROM events e JOIN aggregates a ON a.id = e.aggregate_id AND a.base_id = e.aggregate_id
+      sqls"""SELECT e.id, octet_length(e.event) AS size FROM events e CROSS JOIN LATERAL $ownRow a
             | WHERE e.aggregate_id IN (${ids.toSeq.map(_.asLong)}) AND e.id > $after AND a.type_id IN (${typeIds(types)})
             | ORDER BY e.id LIMIT $limit""".stripMargin
     case AggregateScope.All | AggregateScope.InSpace(_) if eventKeysReady() =>
@@ -357,8 +364,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       sqls"""SELECT k.id, octet_length(e.event) AS size FROM (SELECT id FROM (${sqls.join(perType, sqls"UNION ALL")}) u ORDER BY id LIMIT $limit) k
             | JOIN events e ON e.id = k.id""".stripMargin
     case _ =>
-      sqls"""SELECT e.id, octet_length(e.event) AS size
-            | FROM events e JOIN aggregates a ON a.id = e.aggregate_id AND a.base_id = e.aggregate_id
+      sqls"""SELECT e.id, octet_length(e.event) AS size FROM events e CROSS JOIN LATERAL $ownRow a
             | WHERE e.id > $after AND a.type_id IN (${typeIds(types)}) ${scoped(scope)}
             | ORDER BY e.id LIMIT $limit""".stripMargin
   }

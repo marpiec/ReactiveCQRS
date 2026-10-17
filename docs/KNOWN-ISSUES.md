@@ -826,6 +826,20 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 
 ### Performance and runtime
 
+#### F172 — A builder's page of events read every event of the store once the tables were analyzed
+- **High** (performance at scale), confirmed (measured) · **Fixed in M6** (17/10/2026) · `PostgresEventStoreState.readCommittedPage`, `pageOf`, `backfillEventKeys`
+- **Symptom:** in the short JSON keys bench (IMPLEMENTATION-PLAN §7.1), a managed rebuild over 1 000 000 events ran at about 4 400 events/s, then at about 2 500 once PostgreSQL's autoanalyze had run on the tables. `EXPLAIN ANALYZE` of one page over 2 000 000 events of 2 000 aggregates: 786 ms, 643 ms of them reading all 2 000 000 events through `events (aggregate_id)`. Every page did so, so a rebuild's reading grew with the store's size times its pages.
+- **Root cause:** the page joined each event to its aggregate's own row with `a.id = e.aggregate_id AND a.base_id = e.aggregate_id`. The planner takes the implied `id = base_id` at its default selectivity of 0.5 % (it holds for nearly every row), so it expected 10 aggregates and drove the join from `aggregates`, reading all their events, instead of looking up the page's 1 000 events and their rows.
+- **Fix:** each event's own row is looked up by its key in a `LATERAL` subquery, whose `LIMIT 1` keeps the planner from flattening it into such a join: 5 ms for the same page. The same for the page of named aggregates, the walk before the event keys exist (43 ms → 0.6 ms on the same data) and the event-key backfill (F124).
+- **Verified:** `EXPLAIN ANALYZE` on the bench's data before and after; the specs pass unchanged (the plans changed, not the rows); the rebuild of `docs/perf/jsonnames-M6.md` ran with the fix.
+- **Found:** the short JSON keys bench (M6, 17/10/2026).
+
+#### F173 — A page of a type's aggregates costs about 80 ms at a million aggregates of the type
+- **Low** (performance at scale), measured · **Fix in M7** · `PostgresEventStoreState.aggregatesOf`
+- **Symptom:** the builder's final-state pass (D62), its reconciliation and the targeted rebuild of a type walk the type's aggregates 1 000 at a time. With 1 000 000 aggregates of one type, a page in the middle took 70 to 100 ms (`EXPLAIN ANALYZE`, PostgreSQL 17.4): misjudging `id = base_id` at 0.5 % again, the planner scans `aggregates (base_id)` in parallel, and leaves an added index on `(type_id, id)` unused. About 80 s for the whole walk (estimated from the page).
+- **Fix idea:** a partial index `ON aggregates (type_id, id) WHERE id = base_id` (built concurrently on a large table, D69), which gives the planner both the order and the right count.
+- **Found:** checking the queries like F172's (M6, 17/10/2026).
+
 #### F127 — Command handlers ran on Pekko's default dispatcher
 - **Medium**, confirmed (measured) · **Fixed in M5** (17/10/2026) · `AggregateOwner` (`handlersContext`)
 - **Symptom:** a command handler that holds its thread for long (computing, or waiting for I/O) held one of the default dispatcher's threads, which the command buses, the event bus, projections and sagas run on too. Measured (docs/perf/heavy-before-F127.md): 16 handlers of 5 s on 12 threads held a light command on another aggregate for 4.9 s; handlers of minutes would stall the node's delivery for minutes.
@@ -1233,8 +1247,8 @@ From §7 of Neula's change requests.
 | M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8 ✔; F8 (contract ✔), F22 ✔, F23 ✔, F25 ✔, F27 ✔, F30 ✔, F31 ✔, F32 ✔, F33 (rest ✔), F38 ✔, F39 ✔, F44 ✔, F50 ✔, F65 ✔, F76 ✔, F78 ✔, F81 ✔, F96 ✔, F97 ✔, F100–F107 ✔; D85 ✔; Neula H8 |
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
-| M6 | F8 (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F155 (decide at review 8), F158 ✔, F159 ✔, F167 ✔, F168 ✔ |
-| M7 | AR5 (moved from M5 at review 7); F148, F152, F153, F156, F157, F160, F161, F162, F163, F164, F165, F166, F169 (found writing the book) |
+| M6 | F8 (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F155 (decide at review 8), F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔ |
+| M7 | AR5 (moved from M5 at review 7); F148, F152, F153, F156, F157, F160, F161, F162, F163, F164, F165, F166, F169 (found writing the book), F173 |
 
 ---
 

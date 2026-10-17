@@ -187,7 +187,10 @@ Estimated from the measured numbers. None of this was run at this scale.
 **What grows with the store:**
 - **Rebuilds.** They take hours: the builder reads every event of the projection's types in commit
   order. The active build keeps serving while the new one builds (M4), so a rebuild costs time and
-  database load, not downtime. Two problems appear only at this scale:
+  database load, not downtime. Until M6 (F172) each page of a build also read every event of its
+  types' aggregates once PostgreSQL had analyzed the tables: 786 ms a page over 2 000 000 events,
+  5 ms since (measured), so the time no longer grows with the store's size per page. Two problems
+  appear only at this scale:
   - A state-listening projection replayed in commit order keeps at most 10 000 aggregate states. An
     evicted state is read again from its snapshot and the events after it, so when far more
     aggregates interleave, the build slows down by one restore per miss (not measured). Projections

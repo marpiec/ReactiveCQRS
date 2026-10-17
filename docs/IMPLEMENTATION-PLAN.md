@@ -1965,3 +1965,12 @@ Open test-infrastructure items:
   organization, a copy of another organization's folder, a taken id and a reference outside;
   refusals of the export and of the import. Six mutations, each caught (one first survived: the
   detached copy's chain row; the test now checks the rows).
+
+**17/10/2026: a rebuild's pages read the whole store (F172)**
+- Found while measuring short JSON keys (§7.1): once PostgreSQL had analyzed the tables, the
+  builder's page query joined events to their aggregates' rows in a plan that read every event of
+  the store for each page (786 ms a page over 2 000 000 events). Each event's row is now looked up
+  by key in a `LATERAL` subquery (5 ms a page); the same in the named-aggregates page, the walk
+  before event keys and the key backfill. Verified with `EXPLAIN ANALYZE` on the bench's data; the
+  specs pass unchanged. A like problem in the walk over a type's aggregates is smaller (about 80 ms
+  a page at a million aggregates) and recorded for M7 (F173).
