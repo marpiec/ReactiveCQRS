@@ -43,9 +43,10 @@ trait SubscriptionsState {
   /** The last version of the aggregate that the subscriber applied in this kind of subscription; zero when none. */
   def lastVersion(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId): AggregateVersion
 
-  /** `lastVersion` of many aggregates at once, in one read of the store for those not cached, which it does not cache:
-    * for a builder's batches of many aggregates (D61). */
-  def lastVersions(subscriberName: String, subscriptionType: SubscriptionType, aggregateIds: Seq[AggregateId]): Map[AggregateId, AggregateVersion]
+  /** `lastVersion` of many aggregates at once, in one read of the store for those not cached (D61). `cache`: the
+    * aggregates read are cached, as `lastVersion` caches them (live deliveries); otherwise the cache stays as it is (a
+    * builder's batches, which would push out what live deliveries need). */
+  def lastVersions(subscriberName: String, subscriptionType: SubscriptionType, aggregateIds: Seq[AggregateId], cache: Boolean = false): Map[AggregateId, AggregateVersion]
 
   /** Compare-and-set in the caller's transaction: moves the subscription from `lastAggregateVersion` to
     * `aggregateVersion`, or throws `OptimisticLockingFailed` when it is not at `lastAggregateVersion`, so the caller
@@ -87,7 +88,7 @@ class MemorySubscriptionsState extends SubscriptionsState {
     state.getOrElse(SubscriptionsKey(subscriberName, subscriptionType, aggregateId), AggregateVersion.ZERO)
   }
 
-  override def lastVersions(subscriberName: String, subscriptionType: SubscriptionType, aggregateIds: Seq[AggregateId]): Map[AggregateId, AggregateVersion] =
+  override def lastVersions(subscriberName: String, subscriptionType: SubscriptionType, aggregateIds: Seq[AggregateId], cache: Boolean): Map[AggregateId, AggregateVersion] =
     aggregateIds.map(id => id -> lastVersion(subscriberName, subscriptionType, id)).toMap
 
   // Same contract as PostgresSubscriptionsState.
@@ -256,13 +257,28 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, eventsLogger:
     }
   }
 
-  // The cache holds every subscriber's versions of an aggregate; this reads one subscriber's only, so it does not fill it.
-  override def lastVersions(subscriberName: String, subscriptionType: SubscriptionType, aggregateIds: Seq[AggregateId]): Map[AggregateId, AggregateVersion] = {
+  // The cache holds every subscriber's versions of an aggregate, so filling it reads every subscriber's rows of the
+  // aggregates missing; without filling, only this subscriber's are read.
+  override def lastVersions(subscriberName: String, subscriptionType: SubscriptionType, aggregateIds: Seq[AggregateId], cache: Boolean): Map[AggregateId, AggregateVersion] = {
     val key = SubscriptionCacheKey.get(typesNamesState, subscriberName, subscriptionType)
     val (cached, missing) = synchronized {
       aggregateIds.distinct.partitionMap(id => Option(perAggregate.get(id)).map(versions => id -> versions.getOrElse(key, AggregateVersion.ZERO)).toLeft(id))
     }
-    val stored = if (missing.isEmpty) Map.empty[AggregateId, AggregateVersion] else DB.readOnly { implicit session =>
+    val stored = if (missing.isEmpty) {
+      Map.empty[AggregateId, AggregateVersion]
+    } else if (cache) {
+      val loaded = DB.readOnly { implicit session =>
+        sql"""SELECT aggregate_id, aggregate_version, subscriber_type_id, subscription_type FROM subscriptions WHERE aggregate_id IN (${missing.map(_.asLong)})"""
+          .map(rs => (AggregateId(rs.long(1)), SubscriptionCacheKey.getById(rs.short(3), rs.short(4)), AggregateVersion(rs.int(2)))).list()
+      }.groupBy(_._1)
+      // As `getVersionsForAggregate`: an aggregate cached meanwhile keeps the entry it has.
+      synchronized {
+        missing.foreach(id => if (!perAggregate.containsKey(id)) {
+          perAggregate.put(id, mutable.HashMap(loaded.getOrElse(id, Nil).map { case (_, k, version) => k -> version }: _*))
+        })
+      }
+      loaded.flatMap { case (id, rows) => rows.collectFirst { case (_, `key`, version) => id -> version } }
+    } else DB.readOnly { implicit session =>
       sql"""SELECT aggregate_id, aggregate_version FROM subscriptions
            | WHERE subscriber_type_id = ${typesNamesState.typeIdByClassName(subscriberName)} AND subscription_type = ${subscriptionType.id}
            |   AND aggregate_id IN (${missing.map(_.asLong)})""".stripMargin.map(rs => AggregateId(rs.long(1)) -> AggregateVersion(rs.int(2))).list().toMap

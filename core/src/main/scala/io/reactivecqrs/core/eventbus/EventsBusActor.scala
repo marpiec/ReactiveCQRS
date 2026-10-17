@@ -5,7 +5,6 @@ import java.time.Instant
 import org.apache.pekko.actor.{Actor, ActorRef, Stash, Terminated}
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.core.backpressure.BackPressureActor._
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.core.util.MyActorLogging
@@ -28,8 +27,6 @@ object EventsBusActor {
     * `permanentDeleteAt` is the version of a `PermanentDeleteEvent` among them: the aggregate is to be deleted for good. */
   case class PublishEventsAck(aggregateId: AggregateId, versions: Seq[AggregateVersion], permanentDeleteAt: Option[AggregateVersion] = None)
 
-  case class PublishReplayedEvents[AGGREGATE_ROOT](aggregateType: AggregateType, events: Seq[EventInfo[AGGREGATE_ROOT]],
-                                                   aggregateId: AggregateId, aggregate: Option[AGGREGATE_ROOT])
 
   /** What a subscription delivers. A subscriber answers per kind: each kind keeps a version of its own, so one kind's
     * acknowledgement says nothing about another kind of the same subscriber. */
@@ -86,8 +83,6 @@ object EventsBusActor {
   case class DeliveryStatus(waiting: Int, undelivered: Seq[Undelivered], stopped: Seq[String])
   case class Undelivered(aggregateType: AggregateType, aggregateId: AggregateId, version: AggregateVersion, subscriber: String, kind: DeliveryKind, at: Instant)
 
-  object LogDetailedStatus
-
   private case object Tick
 }
 
@@ -95,13 +90,11 @@ object EventsBusActor {
   * Timing of the bus. A delivery that is neither acknowledged nor failed by `deadline` ends as undelivered (its outbox
   * row stays, so a restart delivers it again, D20b); one that waits `stallAfter` is logged once (at most
   * `stallLinesPerTick` lines per tick), and stalled deliveries are summed up every `summaryInterval`.
-  * `maxReplayBuffer` bounds the replayed events in flight (back-pressure).
   */
 case class DeliveryOptions(deadline: FiniteDuration = 10.minutes,
                            stallAfter: FiniteDuration = 1.minute,
                            summaryInterval: FiniteDuration = 5.minutes,
                            tickInterval: FiniteDuration = 5.seconds,
-                           maxReplayBuffer: Int = 10000,
                            stallLinesPerTick: Int = 10)
 
 /**
@@ -121,7 +114,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     * subscriber never acknowledges the owner, so it cannot delete outbox rows others still wait for. `incomplete`
     * marks a delivery that some subscription did not take (deadline, a stopped subscriber): its outbox row must stay. */
   private case class Delivery(aggregateType: AggregateType, publisher: Option[ActorRef], firstSent: Long, awaiting: Set[Target],
-                              replayed: Boolean, incomplete: Boolean, stallLogged: Boolean, permanentDelete: Boolean)
+                              incomplete: Boolean, stallLogged: Boolean, permanentDelete: Boolean)
 
   private val deliveries = mutable.HashMap[EventKey, Delivery]()
   private var subscriptions = Map[AggregateType, Vector[SubscribeRequest]]()
@@ -134,12 +127,6 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
 
   private val undelivered = mutable.Queue[Undelivered]()
   private val undeliveredKept = 1000
-
-  // Back-pressure for the replayer (until M4 replaces it): replayed events in flight.
-  private var backPressureProducerActor: Option[ActorRef] = None
-  private var replayedInFlight = 0
-  private var orderedMessages = 0
-  private var afterFinishRespondTo: Option[ActorRef] = None
 
   import context.dispatcher
   private val ticks = context.system.scheduler.scheduleWithFixedDelay(options.tickInterval, options.tickInterval, self, Tick)
@@ -212,9 +199,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
 
   private def running: Receive = guarded {
     case PublishEvents(aggregateType, events, aggregateId, aggregate, onlyTo, startsAtSquash) =>
-      publish(sender(), aggregateType, aggregateId, events, aggregate, replayed = false, onlyTo, startsAtSquash)
-    case PublishReplayedEvents(aggregateType, events, aggregateId, aggregate) =>
-      publish(sender(), aggregateType, aggregateId, events, aggregate, replayed = true, None, startsAtSquash = false)
+      publish(sender(), aggregateType, aggregateId, events, aggregate, onlyTo, startsAtSquash)
     case MessageAck(subscriber, aggregateId, versions, kind) => finish(Target(subscriber, kind), aggregateId, versions, failed = None)
     case MessageFailed(subscriber, aggregateId, versions, error, kind) => finish(Target(subscriber, kind), aggregateId, versions, failed = Some(error))
     case RequestRepublish(subscriber, aggregateType, aggregateId, from) =>
@@ -226,19 +211,6 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     case GetDeliveryStatus => sender() ! status
     case Terminated(subscriber) => subscriberStopped(subscriber)
     case Tick => checkDeadlines()
-    case ConsumerStart =>
-      backPressureProducerActor = Some(sender())
-      orderedMessages = 0
-      orderMoreMessagesToConsume()
-    case ConsumerStop =>
-      log.info("EventBus Stop, replayed events in flight: " + replayedInFlight)
-      afterFinishRespondTo = Some(sender())
-      backPressureProducerActor = None
-      if (replayedInFlight == 0) {
-        sender() ! ConsumerFinished
-        afterFinishRespondTo = None
-      }
-    case LogDetailedStatus => log.warning("EventBus status: " + status + ", replayed in flight: " + replayedInFlight + ", ordered: " + orderedMessages)
   }
 
   private def routeToPublisher(aggregateType: AggregateType, message: Any): Unit = publishers.get(aggregateType) match {
@@ -247,8 +219,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   }
 
   private def publish(publisher: ActorRef, aggregateType: AggregateType, aggregateId: AggregateId,
-                      events: Seq[EventInfo[Any]], aggregateRoot: Option[Any], replayed: Boolean, onlyTo: Option[ActorRef],
-                      startsAtSquash: Boolean): Unit = {
+                      events: Seq[EventInfo[Any]], aggregateRoot: Option[Any], onlyTo: Option[ActorRef], startsAtSquash: Boolean): Unit = {
     val now = System.nanoTime()
     val targets = subscriptions.getOrElse(aggregateType, Vector.empty).filter(s => onlyTo.forall(_ == s.subscriber))
     val (live, ofStopped) = targets.partition(s => !stopped.contains(s.subscriber))
@@ -272,33 +243,27 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
         // events stay in the outbox until it is back after a restart.
         val awaiting = everyLive
         val missedByStopped = ofStopped.nonEmpty
-        val delivery = Delivery(aggregateType, if (onlyTo.isEmpty && !replayed) Some(publisher) else None, now, awaiting, replayed,
+        val delivery = Delivery(aggregateType, if (onlyTo.isEmpty) Some(publisher) else None, now, awaiting,
           incomplete = missedByStopped, stallLogged = false, permanentDelete = event.event.isInstanceOf[PermanentDeleteEvent[_]])
-        if (replayed) replayedInFlight += 1
         if (awaiting.isEmpty) finished :+= (delivery -> key) else deliveries += key -> delivery
       }
-    }
-    if (replayed) {
-      orderedMessages -= events.size
     }
 
     // A subscription that is sent a later part of the events than the first does not start at the squash event.
     sends.foreach { case (s, forSubscription) =>
-      s.subscriber ! messageFor(s, aggregateType, aggregateId, forSubscription, aggregateRoot, replayed,
-        startsAtSquash && forSubscription.head.version == events.head.version)
+      s.subscriber ! messageFor(s, aggregateType, aggregateId, forSubscription, aggregateRoot, startsAtSquash && forSubscription.head.version == events.head.version)
     }
     eventsLogger.filter(_.isDebugEnabled).foreach(_.debug("EventBus publishing " + aggregateId.asLong + ": " + events.map(_.version.asInt).mkString(",") +
       " to " + sends.map(_._1.subscriber.path.name).mkString(", ")))
 
     completeAll(finished)
-    orderMoreMessagesToConsume()
   }
 
   private def messageFor(s: SubscribeRequest, aggregateType: AggregateType, aggregateId: AggregateId, events: Seq[EventInfo[Any]],
-                         aggregateRoot: Option[Any], replayed: Boolean, startsAtSquash: Boolean): AnyRef = s match {
-    case _: SubscribeForEvents => IdentifiableEvents(aggregateType, aggregateId, events, replayed, startsAtSquash)
-    case _: SubscribeForAggregates => AggregateWithType(aggregateType, aggregateId, events.last.version, events.map(_.version), aggregateRoot, replayed, startsAtSquash)
-    case _: SubscribeForAggregatesWithEvents => AggregateWithTypeAndEvents(aggregateType, aggregateId, aggregateRoot, events, replayed, startsAtSquash)
+                         aggregateRoot: Option[Any], startsAtSquash: Boolean): AnyRef = s match {
+    case _: SubscribeForEvents => IdentifiableEvents(aggregateType, aggregateId, events, startsAtSquash)
+    case _: SubscribeForAggregates => AggregateWithType(aggregateType, aggregateId, events.last.version, events.map(_.version), aggregateRoot, startsAtSquash)
+    case _: SubscribeForAggregatesWithEvents => AggregateWithTypeAndEvents(aggregateType, aggregateId, aggregateRoot, events, startsAtSquash)
   }
 
   private def finish(target: Target, aggregateId: AggregateId, versions: Seq[AggregateVersion], failed: Option[String]): Unit = {
@@ -318,24 +283,17 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       }
     }
     completeAll(finished)
-    orderMoreMessagesToConsume()
   }
 
-  // Acknowledges the owners of the completed deliveries, grouped by owner and aggregate; replayed deliveries only
-  // count down the back-pressure, and incomplete ones keep their outbox rows.
-  private def completeAll(finished: Seq[(Delivery, EventKey)]): Unit = {
-    finished.foreach { case (delivery, _) => if (delivery.replayed) replayedInFlight -= 1 }
+  // Acknowledges the owners of the completed deliveries, grouped by owner and aggregate; incomplete ones keep their
+  // outbox rows.
+  private def completeAll(finished: Seq[(Delivery, EventKey)]): Unit =
     finished.collect { case (delivery, key) if delivery.publisher.isDefined && !delivery.incomplete => (delivery.publisher.get, delivery, key) }
       .groupBy { case (publisher, _, key) => (publisher, key.aggregateId) }
       .foreach { case ((publisher, aggregateId), acked) =>
         publisher ! PublishEventsAck(aggregateId, acked.map(_._3.version).sortBy(_.asInt),
           acked.collectFirst { case (_, delivery, key) if delivery.permanentDelete => key.version })
       }
-    if (replayedInFlight == 0) {
-      afterFinishRespondTo.foreach(_ ! ConsumerFinished)
-      afterFinishRespondTo = None
-    }
-  }
 
   // A subscriber that stops takes no more deliveries: its waiting ones end without an ack, and so do later ones of
   // its aggregate types, so their outbox rows stay for the next start while the other subscribers keep flowing (D20b).
@@ -366,7 +324,6 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       }
     }
     completeAll(finished)
-    orderMoreMessagesToConsume()
     sender() ! SubscriberRemoved(subscriber)
   }
 
@@ -426,16 +383,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       }
     }
     completeAll(finished)
-    orderMoreMessagesToConsume()
   }
 
   private def status: DeliveryStatus = DeliveryStatus(deliveries.size, undelivered.toList, stopped.toSeq.map(_.path.name).sorted)
-
-  private def orderMoreMessagesToConsume(): Unit = {
-    if (backPressureProducerActor.isDefined && replayedInFlight + orderedMessages < options.maxReplayBuffer) {
-      val allowed = options.maxReplayBuffer - replayedInFlight - orderedMessages
-      backPressureProducerActor.get ! ConsumerAllowedMore(allowed)
-      orderedMessages += allowed
-    }
-  }
 }

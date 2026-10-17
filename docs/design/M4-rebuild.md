@@ -41,7 +41,8 @@ interfaces below:
 5. **Targeted rebuild (D63, R14) and the space backfill (F49).**
 6. **Throughput (F62, F93, H1):** many aggregates per transaction on the live path too; the
    bench's scenarios on stored subscriptions and the new rebuild; the old replayer removed
-   (F82, `VersionsState` kept only for adoption).
+   (F82; `VersionsState` went too, as the registry reads `components_versions` itself to
+   adopt). Done. See "Live groups" below.
 
 Each step ends with `sbt test` green, the docs updated and a commit; the plan's M4
 verification follows.
@@ -158,6 +159,30 @@ subscription rows of those aggregates are reset in the same transaction, and the
 delivers their events from the store, in commit order. Organizations need `aggregates.space_id`:
 the backfill (F49) reads each legacy aggregate's first event (or asks a per-context function)
 in batches, online (D69).
+
+## Live groups (D61 on the live path, F93)
+
+A projection applied each live batch in a transaction of its own, after reading its version
+alone: one commit and one read per aggregate per delivery. Without parallel processing it now
+groups them. A queue that gets a delivery is marked due; a `FlushGroup` message sent after the
+deliveries already in the mailbox, or `maxBatchesPerTransaction` (100) due queues, or any
+message other than a delivery, drains the due queues together: their versions in one read per
+listener kind (cached, as single reads cache them), their batches in transactions of up to
+100. Under no load a group is one batch, so nothing waits; under load the groups grow with the
+backlog.
+
+- *Order and isolation:* a batch stays its queue's batch at work until its group commits, so a
+  queue applies one batch at a time as before; other messages are handled after the group,
+  so a query sees what was delivered before it.
+- *Failures:* a group that fails runs again one batch at a time (each in its own
+  transaction), so only the failing aggregate retries and is recorded (D20a); the others are
+  applied once, as the group's writes were rolled back. A `noDBSession` listener runs alone:
+  another aggregate's failure must not repeat its side effects.
+- *Listeners:* a listener's session may now carry other aggregates' writes, so it must never
+  commit or roll it back (H9).
+- *Not done:* flow control (a window per subscription, F93). Groups raise the rate at which a
+  projection keeps up; a projection slower than the commands still lets the bus's deliveries
+  and its mailbox grow.
 
 ## Refinements of the decisions
 

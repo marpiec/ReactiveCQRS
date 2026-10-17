@@ -38,7 +38,7 @@ class IdempotentCommandsSpec extends CommonSpec {
 
   /** A command bus with its own actors and response state, as after a restart. */
   private def newCommandBus(): ActorRef = system.actorOf(AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStore,
-    new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema(), eventBus, eventsReplayMode = false))
+    new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema(), eventBus))
 
   private val commandBus = newCommandBus()
 

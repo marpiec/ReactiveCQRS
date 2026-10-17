@@ -44,9 +44,7 @@ class RecordingProjection(val subscriptionsState: SubscriptionsState, options: P
     case FailingQuery => throw new IllegalStateException("query failed")
   }
 
-  override protected def onClearProjectionData(): Unit = ()
   override protected val projectionName: String = "RecordingProjection"
-  override protected val version: Int = 1
 }
 
 /** A store whose failure records fail until `storable`, as during a database outage. */
@@ -77,10 +75,10 @@ class ProjectionDeliverySpec extends CommonSpec {
 
     def events(id: AggregateId, versions: Int*): Unit =
       bus.send(projection, IdentifiableEvents[GateNote](noteType, id, versions.map(v =>
-        EventInfo[GateNote](AggregateVersion(v), GateNoteChanged(v), UserId(1), Instant.now)), replayed = false))
+        EventInfo[GateNote](AggregateVersion(v), GateNoteChanged(v), UserId(1), Instant.now))))
 
     def stateAt(id: AggregateId, text: String, versions: Int*): Unit =
-      bus.send(projection, AggregateWithType[GateNote](noteType, id, AggregateVersion(versions.last), versions.map(AggregateVersion(_)), Some(GateNote(text)), replayed = false))
+      bus.send(projection, AggregateWithType[GateNote](noteType, id, AggregateVersion(versions.last), versions.map(AggregateVersion(_)), Some(GateNote(text))))
 
     // A builder (D58) feeding the projection from the store.
     val builder = TestProbe()
@@ -154,9 +152,9 @@ class ProjectionDeliverySpec extends CommonSpec {
       val id = newId()
 
       f.bus.send(f.projection, IdentifiableEvents[GateNote](noteType, id, Seq(7, 8).map(v =>
-        EventInfo[GateNote](AggregateVersion(v), GateNoteChanged(v), UserId(1), Instant.now)), replayed = false, startsAtSquash = true))
+        EventInfo[GateNote](AggregateVersion(v), GateNoteChanged(v), UserId(1), Instant.now)), startsAtSquash = true))
       f.bus.send(f.projection, AggregateWithType[GateNote](noteType, id, AggregateVersion(8), Seq(AggregateVersion(7), AggregateVersion(8)),
-        Some(GateNote("ab")), replayed = false, startsAtSquash = true))
+        Some(GateNote("ab")), startsAtSquash = true))
 
       f.acked(id) mustBe Seq(7, 8)
       f.acked(id) mustBe Seq(7, 8)

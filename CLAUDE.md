@@ -169,7 +169,7 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
   10 000 events per aggregate. Design: `docs/design/M3-aggregates.md`.
 - **`EventsBusActor`** — in-memory routing and delivery tracking (deadline, stall
   logging, `GetDeliveryStatus`); routes re-publish requests to the type's command bus;
-  back-pressure for the replayer (`DeliveryOptions.maxReplayBuffer`, 10 000).
+  adds and removes the subscriptions of managed builds (M4). No flow control yet (F93).
 - **`OutboxPollerActor`** (`core/.../delivery/`) — the single owner of re-deliveries
   (D8); its timing lives in the pure `RedeliveryPolicy`. The host creates one per system.
 - **`SquashScheduler`** (`core/.../aggregate/`) — squashes aggregates by their contexts'
@@ -178,10 +178,11 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
 - **`ProjectionActor` / `SubscribableProjectionActor`** — apply events to read
   models. One queue per (listener kind, aggregate) through the `SequenceGate`:
   duplicates are acked, new versions applied in one transaction with the new
-  subscription version, gaps asked from the owner (`RequestRepublish`). A failing
+  subscription version (deliveries that keep arriving: up to 100 aggregates per transaction,
+  D61), gaps asked from the owner (`RequestRepublish`). A failing
   listener is retried about 2 minutes, then recorded in `subscription_failures` and
   answered `MessageFailed` (D20a); `GetProjectionStatus`, `RetryFailedSubscription`,
-  `SkipFailedVersion`; failures are retried at start, one per second.
+  `SkipFailedVersion`; failures are retried at start, twenty per second.
 - **`Projections` / `ProjectionSupervisor`** (`core/.../rebuild/`, M4) — managed projections: the host starts
   each read model through `Projections.start`, whose supervisor (the `ActorRef` the host queries) runs one
   instance per build (tables named by the build, D57), builds a new version from the store with
@@ -307,4 +308,4 @@ planned in a way that the change must follow. Measured performance is in `docs/p
 | Read models | `core/.../projection/*`, `core/.../documentstore/*` |
 | Process managers | `core/.../saga/*` |
 | Full wiring of a system | `testdomain/.../spec/ReactiveTestDomainSpec.scala` |
-| Replay / rebuild | `core/.../rebuild/*` (M4), `docs/design/M4-rebuild.md`; the 0.12 replayer `core/.../eventsreplayer/*` until M4 removes it |
+| Replay / rebuild | `core/.../rebuild/*` (M4), `docs/design/M4-rebuild.md` |

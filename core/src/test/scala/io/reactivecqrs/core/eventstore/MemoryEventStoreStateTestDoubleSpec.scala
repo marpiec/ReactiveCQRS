@@ -2,10 +2,9 @@ package io.reactivecqrs.core.eventstore
 
 import java.time.Instant
 
-import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
+import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.api.{AggregateVersion, Event, EventWithVersion}
 import io.reactivecqrs.core.eventstore.NewEvents
-import org.apache.pekko.actor.ActorRef
 import org.scalatest.GivenWhenThen
 import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.must.Matchers
@@ -70,18 +69,6 @@ class MemoryEventStoreStateTestDoubleSpec extends AnyFeatureSpec with GivenWhenT
       Then("restore and re-publication both read the rewritten event")
       eventsOf(store, aggregateA) mustBe Vector(EventA("rewritten"), EventB(2))
       store.readEventsRange[SomeAggregate](aggregateA, AggregateVersion(1), AggregateVersion(2)).map(_.event) mustBe Seq(EventA("rewritten"), EventB(2))
-    }
-  }
-
-  Feature("Counting events") {
-    Scenario("events are counted for the given aggregate types only") {
-      val store = new MemoryEventStoreState
-      persist(store, aggregateA, 0, EventA("a1"), EventB(2))
-      persist(store, aggregateC, 0, OtherEvent("c1"))
-
-      store.countEventsForAggregateTypes(Seq(classOf[SomeAggregate].getName)) mustBe 2
-      store.countEventsForAggregateTypes(Seq(classOf[SomeAggregate].getName, classOf[OtherAggregate].getName)) mustBe 3
-      store.countEventsForAggregateTypes(Seq.empty) mustBe 0
     }
   }
 }

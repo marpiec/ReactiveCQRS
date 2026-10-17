@@ -28,12 +28,6 @@ private case class SyncDelayedQuery(until: Instant, respondTo: ActorRef, search:
 private case class AsyncDelayedQuery(until: Instant, respondTo: ActorRef, search: () => Future[Option[Any]]) extends DelayedQuery
 private case class AsyncDelayedQueryCustom[T](until: Instant, respondTo: ActorRef, search: () => Future[T], found: T => Boolean) extends DelayedQuery
 
-case object ClearProjectionData
-case object ProjectionDataCleared
-
-case object GetSubscribedAggregates
-case class SubscribedAggregates(projectionName: String, projectionVersion: Int, aggregates: Set[AggregateType])
-
 /** The aggregate types and listener kinds of a projection, one per listener: what a build delivers (D58). */
 case object GetListeners
 case class Listeners(subscriptions: Seq[(AggregateType, SubscriptionType)])
@@ -122,6 +116,9 @@ object ProjectionActorOptions {
   *                         minutes (D20c)
   * @param gapGiveUpAfter how long missing versions are asked for before the gap is recorded as a failure
   * @param failureRetryInterval the pace of retrying many failures (at start, `RetryAllFailedSubscriptions`)
+  * @param maxBatchesPerTransaction how many aggregates' batches one transaction applies at most when deliveries arrive
+  *                                 faster than they are applied (D61, F93); 1 applies each alone. Not with
+  *                                 `parallelUpdateProcessing`.
   */
 case class ProjectionActorOptions (groupUpdatesDelayMillis: Long,
                                    minimumDelayVersion: Int,
@@ -132,7 +129,8 @@ case class ProjectionActorOptions (groupUpdatesDelayMillis: Long,
                                    retryFailuresOnStart: Boolean = true,
                                    gapRequestRepeat: FiniteDuration = 10.seconds,
                                    gapGiveUpAfter: FiniteDuration = 10.minutes,
-                                   failureRetryInterval: FiniteDuration = 50.millis) {
+                                   failureRetryInterval: FiniteDuration = 50.millis,
+                                   maxBatchesPerTransaction: Int = 100) {
 
   def withGroupUpdatesDelayMillis(millis: Long): ProjectionActorOptions = {
     copy(groupUpdatesDelayMillis = millis)
@@ -173,7 +171,8 @@ case class ListenerOptions(noTransaction: Boolean = false)
 /**
   * A subscriber that keeps a read model (D3). Every delivery goes through the sequence gate (D4) on the subscription's
   * stored version, one aggregate at a time per listener kind: duplicates are acknowledged, new versions are applied in
-  * one transaction with the new version, and missing versions are asked from the aggregate's owner (D20c). A listener
+  * one transaction with the new version (with other aggregates' while deliveries keep arriving, D61), and missing
+  * versions are asked from the aggregate's owner (D20c). A listener
   * that fails is retried with back-off; then the failure is recorded and deliveries of that aggregate are answered
   * `MessageFailed` until it is retried or skipped (D20a). See docs/design/M2-delivery.md.
   */
@@ -205,8 +204,6 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   protected val subscriptionsState: SubscriptionsState
 
   protected val listeners:List[Listener[Any]]
-
-  protected val version: Int
 
   private val executor: Option[ExecutorService] =
     if (options.parallelUpdateProcessing > 1) Some(Executors.newFixedThreadPool(options.parallelUpdateProcessing)) else None
@@ -289,10 +286,14 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   }
 
   // AR7, F80: a message that fails, such as a query, is answered with the failure; a throw would restart the actor
-  // and lose the deliveries it holds.
+  // and lose the deliveries it holds. The batches grouped while deliveries arrive are applied before any other
+  // message, so a query, a reset or a retirement sees every delivery taken before it.
   override def receive: Receive = {
     case message if handlers.isDefinedAt(message) =>
-      try handlers(message) catch {
+      try {
+        if (!takenWhileGrouping(message)) flushGroup()
+        handlers(message)
+      } catch {
         case NonFatal(e) =>
           log.error(e, "Projection " + projectionName + " failed on " + message.getClass.getSimpleName)
           sender() ! Status.Failure(e)
@@ -307,28 +308,23 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     }
   }
 
-  def getSubscribedAggregates: SubscribedAggregates = {
-    SubscribedAggregates(projectionName, version, aggregateListenersMap.keySet ++ eventListenersMap.keySet ++ aggregateWithEventListenersMap.keySet)
-  }
-
   protected def receiveUpdate: Receive = {
     case GetSubscriptionRequests =>
       eventBus = Some(sender())
       sender() ! SubscriptionRequests(subscriptionRequests)
       loadFailures()
-    case GetSubscribedAggregates => sender() ! getSubscribedAggregates
     case GetListeners => sender() ! Listeners(
       aggregateListenersMap.keys.toSeq.map(_ -> SubscriptionType.AGGREGATES) ++
         eventListenersMap.keys.toSeq.map(_ -> SubscriptionType.EVENTS) ++
         aggregateWithEventListenersMap.keys.toSeq.map(_ -> SubscriptionType.AGGREGATES_WITH_EVENTS))
     case e: IdentifiableEvents[_] =>
       receiveDelivery(Key(SubscriptionType.EVENTS, e.aggregateId), e.aggregateType,
-        Pending(e.events.map(_.version), e.events.asInstanceOf[Seq[EventInfo[Any]]], None, e.replayed, sender(), e.startsAtSquash))
+        Pending(e.events.map(_.version), e.events.asInstanceOf[Seq[EventInfo[Any]]], None, sender(), e.startsAtSquash))
     case a: AggregateWithType[_] =>
-      receiveDelivery(Key(SubscriptionType.AGGREGATES, a.id), a.aggregateType, Pending(a.events, Seq.empty, a.aggregateRoot, a.replayed, sender(), a.startsAtSquash))
+      receiveDelivery(Key(SubscriptionType.AGGREGATES, a.id), a.aggregateType, Pending(a.events, Seq.empty, a.aggregateRoot, sender(), a.startsAtSquash))
     case ae: AggregateWithTypeAndEvents[_] =>
       receiveDelivery(Key(SubscriptionType.AGGREGATES_WITH_EVENTS, ae.id), ae.aggregateType,
-        Pending(ae.events.map(_.version), ae.events.asInstanceOf[Seq[EventInfo[Any]]], ae.aggregateRoot, ae.replayed, sender(), ae.startsAtSquash))
+        Pending(ae.events.map(_.version), ae.events.asInstanceOf[Seq[EventInfo[Any]]], ae.aggregateRoot, sender(), ae.startsAtSquash))
     case chunk: ApplyChunk => applyChunk(chunk, sender())
     case BindSubscriber(subscriber) => boundSubscriber = Some(subscriber)
     case ConnectedTo(bus) =>
@@ -373,6 +369,9 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       case _ => () // replaced by a later schedule
     })
     case Applied(key, queueId, batch, outcome) => queues.get(key).filter(_.id == queueId).foreach(queue => afterBatch(key, queue, batch, outcome))
+    case FlushGroup =>
+      flushRequested = false
+      flushGroup()
     case GetProjectionStatus => sender() ! status
     case RetryFailedSubscription(aggregateId) => sender() ! FailedSubscriptionsHandled(aggregateId, retryFailures(aggregateId))
     case RetryAllFailedSubscriptions =>
@@ -390,7 +389,6 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     case ReplayQueries =>
       queriesReplayRequested = false
       replayQueries()
-    case ClearProjectionData => clearProjectionData(sender())
   }
 
   // ************** Deliveries (D3, D4, D20a, D20c)
@@ -406,8 +404,8 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
   /** A delivery waiting in its queue: its versions, its events (none for state-only listeners), the state after its
     * last version, and the bus (or builder) to answer. `startsAtSquash`: see `SequenceGate` (F98). */
-  private case class Pending(versions: Seq[AggregateVersion], events: Seq[EventInfo[Any]], aggregateRoot: Option[Any], replayed: Boolean,
-                             respondTo: ActorRef, startsAtSquash: Boolean) {
+  private case class Pending(versions: Seq[AggregateVersion], events: Seq[EventInfo[Any]], aggregateRoot: Option[Any],
+                             respondTo: ActorRef, startsAtSquash: Boolean, fromBuilder: Boolean = false) {
     def first: AggregateVersion = versions.head
     def last: AggregateVersion = versions.last
   }
@@ -478,7 +476,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     val queue = queueFor(key, aggregateType)
     queue.pending :+= delivery
     options.eventsLogger.filter(_.isDebugEnabled).foreach(_.debug(s"$className ${key.aggregateId.asLong} received ${delivery.versions.map(_.asInt).mkString(",")}"))
-    if (!queue.processing) queue.scheduled.map(_._2) match {
+    if (!queue.processing && !due.contains(key)) queue.scheduled.map(_._2) match {
       case None => if (mayWait(delivery)) schedule(key, queue, options.groupUpdatesDelayMillis.millis, GroupingDelay) else drain(key, queue)
       case Some(GroupingDelay) => if (!mayWait(delivery)) drain(key, queue)
       case Some(GapRecheck) => drain(key, queue)
@@ -489,7 +487,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   // Grouping (groupUpdatesDelayMillis): live deliveries wait to be applied together, except early versions and
   // events that must be applied at once.
   private def mayWait(delivery: Pending): Boolean =
-    options.groupUpdatesDelayMillis > 0 && !delivery.replayed && delivery.first.asInt >= options.minimumDelayVersion &&
+    options.groupUpdatesDelayMillis > 0 && !delivery.fromBuilder && delivery.first.asInt >= options.minimumDelayVersion &&
       !delivery.events.exists(e => options.eventsToProcessImmediately.contains(e.event.getClass))
 
   private def schedule(key: Key, queue: Queue, after: FiniteDuration, reason: DrainReason): Unit = {
@@ -498,12 +496,17 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     context.system.scheduler.scheduleOnce(after, self, Drain(key, drainTokens))(context.dispatcher)
   }
 
+  // With groups the queue is drained at the next flush, its version read with the others' (D61); a gap check reads it
+  // at once, as it may ask for the missing versions again. A version that cannot be read is the store's fault, not the
+  // listener's: it is read again later, without counting as a failure.
   private def drain(key: Key, queue: Queue, gapRecheck: Boolean = false): Unit = {
     queue.scheduled = None
-    Try(appliedVersion(key)) match {
+    if (grouping && !gapRecheck) {
+      due += key
+      if (due.size >= options.maxBatchesPerTransaction) flushGroup() else requestFlush()
+    } else Try(appliedVersion(key)) match {
       case Success(applied) => drainFrom(key, queue, applied, gapRecheck)
       case Failure(e) =>
-        // The store is unavailable, not the listener at fault: try again later, without counting it as a failure.
         log.warning("Projection " + projectionName + " could not read its version of aggregate " + key.aggregateId.asLong + ", trying again: " + e)
         schedule(key, queue, options.retries.max, RetryBackOff)
     }
@@ -551,8 +554,8 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       executionContext match {
         case Some(ec) =>
           val queueId = queue.id
-          Future(applyBatch(key, batch))(ec).onComplete(outcome => self ! Applied(key, queueId, batch, outcome))(context.dispatcher)
-        case None => afterBatch(key, queue, batch, Try(applyBatch(key, batch)))
+          Future(run(workOf(key, batch)))(ec).onComplete(outcome => self ! Applied(key, queueId, batch, outcome))(context.dispatcher)
+        case None => addToGroup(key, queue, batch)
       }
     } else {
       forgetIfIdle(key, queue)
@@ -651,35 +654,117 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   private def advance(key: Key, from: AggregateVersion, to: AggregateVersion)(session: DBSession): Unit =
     subscriptionsState.newVersion(subscriberName, key.subscriptionType, key.aggregateId, from, to)(session)
 
-  // The listener and the subscription's new version commit together; a listener without a transaction runs first and
-  // the version is written after it, so such a listener may see a batch again if that write fails (at least once).
-  private def applyBatch(key: Key, batch: Batch): Unit = {
-    val (noTransaction, work) = listenerWork(key, batch)
-    if (noTransaction) {
-      work(null) // no session: the listener does not write to the database
-      subscriptionsState.autoCommit(advance(key, batch.applied, batch.to))
-    } else {
-      subscriptionsState.localTx { session =>
-        work(session)
-        advance(key, batch.applied, batch.to)(session)
-      }
-    }
-  }
+  /** A batch with its listener's work. */
+  private case class Work(key: Key, batch: Batch, noTransaction: Boolean, apply: DBSession => Unit)
 
   // A state listener is told the aggregate is created when the subscription starts with this batch: at version 1, at
   // the squash event (F98) or with a whole state (D62).
-  private def listenerWork(key: Key, batch: Batch): (Boolean, DBSession => Unit) = {
+  private def workOf(key: Key, batch: Batch): Work = {
     val id = key.aggregateId
     key.subscriptionType match {
       case SubscriptionType.EVENTS =>
         val listener = eventListenersMap(batch.aggregateType)
-        (listener.options.noTransaction, listener.listener(id, batch.events))
+        Work(key, batch, listener.options.noTransaction, listener.listener(id, batch.events))
       case SubscriptionType.AGGREGATES =>
         val listener = aggregateListenersMap(batch.aggregateType)
-        (listener.options.noTransaction, listener.listener(id, batch.to, batch.applied == AggregateVersion.ZERO, batch.aggregateRoot))
+        Work(key, batch, listener.options.noTransaction, listener.listener(id, batch.to, batch.applied == AggregateVersion.ZERO, batch.aggregateRoot))
       case _ =>
         val listener = aggregateWithEventListenersMap(batch.aggregateType)
-        (listener.options.noTransaction, listener.listener(id, batch.to, batch.aggregateRoot, batch.events))
+        Work(key, batch, listener.options.noTransaction, listener.listener(id, batch.to, batch.aggregateRoot, batch.events))
+    }
+  }
+
+  // The listener and the subscription's new version commit together; a listener without a transaction runs first and
+  // the version is written after it, so such a listener may see a batch again if that write fails (at least once).
+  private def run(work: Work): Unit = if (work.noTransaction) {
+    work.apply(null) // no session: the listener does not write to the database
+    subscriptionsState.autoCommit(advance(work.key, work.batch.applied, work.batch.to))
+  } else {
+    runTogether(Seq(work))
+  }
+
+  // Many batches in one transaction (D61): each listener, then its subscription's new version.
+  private def runTogether(works: Seq[Work]): Unit = subscriptionsState.localTx { session =>
+    works.foreach { work =>
+      work.apply(if (work.noTransaction) null else session)
+      advance(work.key, work.batch.applied, work.batch.to)(session)
+    }
+  }
+
+  // ************** Groups of batches (D61, F93)
+
+  // Without parallel processing, the queues that get deliveries while deliveries keep arriving are drained together:
+  // once the deliveries already in the mailbox are taken (a FlushGroup sent after them), before any other message, or
+  // when `maxBatchesPerTransaction` queues are due. Their versions are read at once, one read per listener kind, and
+  // their batches run in transactions of up to `maxBatchesPerTransaction`. A batch stays its queue's batch at work until
+  // then, so a queue still applies one batch at a time. A group that fails runs again one batch at a time, so each batch
+  // keeps its own retries and failure (D20a). A listener without a transaction runs alone: another aggregate's failure
+  // must not repeat its side effects.
+  private case object FlushGroup
+  private case class Grouped(queue: Queue, work: Work)
+  private val grouping = executionContext.isEmpty && options.maxBatchesPerTransaction > 1
+  private val due = mutable.LinkedHashSet[Key]() // queues to drain at the next flush
+  private var group = Vector[Grouped]()
+  private var flushRequested = false
+  private var flushing = false
+
+  private def takenWhileGrouping(message: Any): Boolean = message match {
+    case _: IdentifiableEvents[_] | _: AggregateWithType[_] | _: AggregateWithTypeAndEvents[_] | _: Drain | RetryNextFailure | FlushGroup => true
+    case _ => false
+  }
+
+  private def requestFlush(): Unit = if (!flushRequested && !flushing) {
+    flushRequested = true
+    self ! FlushGroup
+  }
+
+  private def addToGroup(key: Key, queue: Queue, batch: Batch): Unit = {
+    val work = workOf(key, batch)
+    if (work.noTransaction || !grouping) {
+      afterBatch(key, queue, batch, Try(run(work)))
+    } else {
+      group :+= Grouped(queue, work)
+      if (group.size >= options.maxBatchesPerTransaction) flushGroup() else requestFlush()
+    }
+  }
+
+  // Applying a batch may make its queue due again (deliveries that waited behind it), so this goes on until nothing is
+  // left; no message arrives meanwhile.
+  private def flushGroup(): Unit = if (!flushing) {
+    flushing = true
+    try {
+      while (due.nonEmpty || group.nonEmpty) {
+        drainDue()
+        applyGroup()
+      }
+    } finally {
+      flushing = false
+    }
+  }
+
+  private def drainDue(): Unit = if (due.nonEmpty) {
+    val waiting = due.toVector.flatMap(key => queues.get(key).filterNot(_.processing).map(key -> _))
+    due.clear()
+    Try(waiting.groupBy(_._1.subscriptionType).flatMap { case (subscriptionType, ofKind) =>
+      subscriptionsState.lastVersions(subscriberName, subscriptionType, ofKind.map(_._1.aggregateId), cache = true)
+        .map { case (id, version) => Key(subscriptionType, id) -> version }
+    }) match {
+      case Success(applied) => waiting.foreach { case (key, queue) => drainFrom(key, queue, applied(key), gapRecheck = false) }
+      case Failure(e) =>
+        log.warning("Projection " + projectionName + " could not read its versions of " + waiting.size + " aggregates, trying again: " + e)
+        waiting.foreach { case (key, queue) => schedule(key, queue, options.retries.max, RetryBackOff) }
+    }
+  }
+
+  private def applyGroup(): Unit = while (group.nonEmpty) {
+    val (grouped, rest) = group.splitAt(options.maxBatchesPerTransaction)
+    group = rest
+    Try(runTogether(grouped.map(_.work))) match {
+      case Success(_) => grouped.foreach(g => afterBatch(g.work.key, g.queue, g.work.batch, Success(())))
+      case Failure(e) if grouped.size > 1 =>
+        log.debug("Projection " + projectionName + " failed on a group of " + grouped.size + " batches; they are applied one at a time: " + e)
+        grouped.foreach(g => afterBatch(g.work.key, g.queue, g.work.batch, Try(run(workOf(g.work.key, g.work.batch)))))
+      case failure => grouped.foreach(g => afterBatch(g.work.key, g.queue, g.work.batch, failure))
     }
   }
 
@@ -725,13 +810,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         }
       }
     }
-    val committed = batches.isEmpty || Try(subscriptionsState.localTx { session =>
-      batches.foreach { case (key, _, batch) =>
-        val (noTransaction, work) = listenerWork(key, batch)
-        work(if (noTransaction) null else session)
-        advance(key, batch.applied, batch.to)(session)
-      }
-    }).fold(e => {
+    val committed = batches.isEmpty || Try(runTogether(batches.map { case (key, _, batch) => workOf(key, batch) })).fold(e => {
       log.warning("Projection " + projectionName + " failed on a chunk of " + batches.size + " batches; they are applied one aggregate at a time: " + e)
       false
     }, _ => true)
@@ -740,7 +819,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     builder ! ChunkApplied(chunk.id, gaps, toQueues.size)
     toQueues.foreach { case (key, item) =>
       val versions = if (item.events.nonEmpty) item.events.map(_.version) else (item.first.asInt to item.last.asInt).map(AggregateVersion(_))
-      enqueue(key, item.aggregateType, Pending(versions, item.events, item.aggregateRoot, replayed = true, builder, item.startsSequence))
+      enqueue(key, item.aggregateType, Pending(versions, item.events, item.aggregateRoot, builder, item.startsSequence, fromBuilder = true))
     }
   }
 
@@ -808,17 +887,6 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     queues.collect { case (key, queue) if queue.gapRequestedFrom.isDefined && queue.retryOf.isEmpty => key.aggregateId }.toSeq.distinct)
 
   protected def receiveQuery: Receive
-
-  private def clearProjectionData(replyTo: ActorRef): Unit = {
-    subscriptionsState.clearSubscriptionsInfo(subscriberName)
-    queues.clear()
-    failed.clear()
-    failuresToRetry = Vector.empty
-    replyTo ! ProjectionDataCleared
-    onClearProjectionData()
-  }
-
-  protected def onClearProjectionData(): Unit
 
   // Asked by the event bus at start (D15): one subscription per listener.
   private def subscriptionRequests: Seq[SubscribeRequest] =

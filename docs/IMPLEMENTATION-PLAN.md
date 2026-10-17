@@ -1404,3 +1404,26 @@ Open test-infrastructure items:
   function, a refusal). Mutation checks: without the version reset, or with a space target read as
   everything, a test fails.
 - `sbt test`: core 200, testdomain 114, all pass.
+
+**17/10/2026: live groups and the old replayer out (D61 on the live path; F62, F82, F93 throughput)**
+- Without parallel processing, a projection drains the queues that get deliveries while deliveries
+  keep arriving together: their versions in one read per listener kind (`lastVersions(..., cache =
+  true)`), their batches up to 100 per transaction (`ProjectionActorOptions.maxBatchesPerTransaction`).
+  A group runs once the mailbox's deliveries are taken, when full, or before any other message; a
+  group that fails runs again one batch at a time; a `noDBSession` listener runs alone.
+- Measured on one machine (bench, same scenarios before and after, one run each): 200 000 events of
+  20 000 counters, every tenth listener failing for the first 30 s, all projected after 62 s instead
+  of 96 s; 3 200 commands on 16 counters projected at 2 600 to 2 900 instead of 1 500 events/s, with
+  3.4 instead of 7.0 statements per command. Flow control on the live path (F93) stays open.
+- The 0.12 replayer is gone with what only it used: `EventsReplayOrchestrator`,
+  `EventsReplayerActor`, `ReplayAggregateRepositoryActor`, `BackPressureActor`, `VersionsState`, the
+  bus's replay back-pressure (`PublishReplayedEvents`, `DeliveryOptions.maxReplayBuffer`), the command
+  bus's `eventsReplayMode`, the projections' `version`, `ClearProjectionData` and
+  `GetSubscribedAggregates`, the `replayed` flag of the delivery messages and the store's replay
+  reads. The bench's rebuild scenario starts two managed projections over the stored history.
+- Tests: `ProjectionGroupsSpec` (one transaction for a burst, a failing group applied one batch at a
+  time with the others written once, a query after the burst sees it, a `noDBSession` listener run
+  once), `PostgresSubscriptionsStateSpec` (a cached many-aggregate read). Mutation checks: without
+  groups, the one-at-a-time fallback, the flush before other messages, the separate `noDBSession`
+  runs, the batched reads, or the cache fill of every subscriber's versions, a test fails.
+- `sbt test`: core 205, testdomain 113, all pass.

@@ -48,13 +48,13 @@ case class EventInfo[AGGREGATE_ROOT](version: AggregateVersion, event: Event[AGG
 // The delivery messages of a subscription (one per listener kind). `startsAtSquash`: the first version delivered is the
 // aggregate's squash event, so a subscriber behind it starts there, as nothing before it exists any more (F98, D51).
 
-case class AggregateWithType[AGGREGATE_ROOT](aggregateType: AggregateType, id: AggregateId, version: AggregateVersion, events: Seq[AggregateVersion], aggregateRoot: Option[AGGREGATE_ROOT], replayed: Boolean,
+case class AggregateWithType[AGGREGATE_ROOT](aggregateType: AggregateType, id: AggregateId, version: AggregateVersion, events: Seq[AggregateVersion], aggregateRoot: Option[AGGREGATE_ROOT],
                                              startsAtSquash: Boolean = false)
 
-case class AggregateWithTypeAndEvents[AGGREGATE_ROOT](aggregateType: AggregateType, id: AggregateId, aggregateRoot: Option[AGGREGATE_ROOT], events: Seq[EventInfo[AGGREGATE_ROOT]], replayed: Boolean,
+case class AggregateWithTypeAndEvents[AGGREGATE_ROOT](aggregateType: AggregateType, id: AggregateId, aggregateRoot: Option[AGGREGATE_ROOT], events: Seq[EventInfo[AGGREGATE_ROOT]],
                                                       startsAtSquash: Boolean = false)
 
-case class IdentifiableEvents[AGGREGATE_ROOT](aggregateType: AggregateType, aggregateId: AggregateId, events: Seq[EventInfo[AGGREGATE_ROOT]], replayed: Boolean,
+case class IdentifiableEvents[AGGREGATE_ROOT](aggregateType: AggregateType, aggregateId: AggregateId, events: Seq[EventInfo[AGGREGATE_ROOT]],
                                               startsAtSquash: Boolean = false)
 
 

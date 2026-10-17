@@ -53,9 +53,7 @@ class ManagedNotes(val subscriptionsState: SubscriptionsState, store: DocumentSt
   override protected def receiveSubscriptionRequest: Receive = {
     case SubscribeToNotes(subscriptionId, listener) => handleSubscribe[NoteLines, NoteLines](subscriptionId, listener, lines => Some(lines))
   }
-  override protected def onClearProjectionData(): Unit = ()
   override protected val projectionName: String = "ManagedNotes"
-  override protected val version: Int = 1
 }
 
 /** Every event of each note, from the events only: its builds take no state, so a context version leaves it alone. */
@@ -64,9 +62,7 @@ class ManagedNoteEvents(val subscriptionsState: SubscriptionsState, store: Docum
     store.updateDocument(0, id.asLong, existing => Document(NoteLog(existing.map(_.document.entries).getOrElse(Vector()) ++ events.map(_.version.asInt.toString))))
   })
   override protected def receiveQuery: Receive = PartialFunction.empty
-  override protected def onClearProjectionData(): Unit = ()
   override protected val projectionName: String = "ManagedNoteEvents"
-  override protected val version: Int = 1
 }
 
 /** The same projection, of a class of its own: the class names the subscriptions of a projection 0.12 built. */
@@ -97,7 +93,7 @@ class ProjectionsSpec extends CommonSpec {
                     (start: Projections => Seq[ActorRef]) {
     systems += 1
     val bus: ActorRef = system.actorOf(Props(new EventsBusActor()), "m4p-bus-" + systems)
-    val notes: ActorRef = system.actorOf(AggregateCommandBusActor(context, uidGenerator, eventStore, responses, bus, eventsReplayMode = false))
+    val notes: ActorRef = system.actorOf(AggregateCommandBusActor(context, uidGenerator, eventStore, responses, bus))
     val projections = new ProjectionsOf(new Projections(system, ProjectionsSettings(eventStore, subscriptions, registry, bus, Seq(context), settings,
       restartAfter = 1.second)), systems)
     val supervisors: Seq[ActorRef] = start(projections.runtime)
@@ -219,7 +215,10 @@ class ProjectionsSpec extends CommonSpec {
       awaitAssert(legacyStore.getDocument(note.asLong).map(_.document) mustBe Some(NoteLines("legacy", Vector("kept"))), 10.seconds)
       old.stop()
       system.stop(unmanaged)
-      new PostgresVersionsState().initSchema().saveVersionForProjection("m4p-legacy", 1)
+      DB.autoCommit { implicit s => // as the 0.12 rebuild recorded the versions it built
+        sql"CREATE TABLE IF NOT EXISTS components_versions (component_name VARCHAR(255) NOT NULL, component_type SMALLINT NOT NULL, component_version INT NOT NULL)".execute()
+        sql"INSERT INTO components_versions VALUES ('m4p-legacy', 2, 1)".update()
+      }
 
       When("it starts managed, at the same version")
       var adopted: ActorRef = null

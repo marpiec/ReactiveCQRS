@@ -66,7 +66,7 @@ class SagaRecoverySpec extends CommonSpec {
   private val eventBus = system.actorOf(Props(new EventsBusActor()))
   eventBus ! RegisterSubscribers(Nil)
   private val commandBus = system.actorOf(AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStore,
-    new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema(), eventBus, eventsReplayMode = false))
+    new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema(), eventBus))
 
   private val userId = UserId(1)
 

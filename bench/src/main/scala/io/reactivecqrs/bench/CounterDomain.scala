@@ -68,8 +68,6 @@ class CountingProjection(
   }
 
   override protected def receiveQuery: Receive = PartialFunction.empty
-  override protected def onClearProjectionData(): Unit = ()
-  override protected val version: Int = 1
 }
 
 /** Keeps the latest counter value, from the aggregate state the bus sends with the events. */
@@ -89,6 +87,4 @@ class CounterStateProjection(
   }
 
   override protected def receiveQuery: Receive = PartialFunction.empty
-  override protected def onClearProjectionData(): Unit = ()
-  override protected val version: Int = 1
 }

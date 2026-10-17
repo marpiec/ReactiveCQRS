@@ -86,7 +86,7 @@ class PermanentDeleteSpec extends CommonSpec {
     subscriber.expectMsg(GetSubscriptionRequests)
     subscriber.reply(SubscriptionRequests(Seq(SubscribeForEvents(memoType, subscriber.ref))))
     val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(context, uidGenerator, eventStore,
-      new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema(), bus, eventsReplayMode = false))
+      new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema(), bus))
 
     def delivered(memoId: AggregateId): Seq[Int] =
       subscriber.fishForSpecificMessage(10.seconds) { case e: IdentifiableEvents[_] if e.aggregateId == memoId => e.events.map(_.version.asInt) }

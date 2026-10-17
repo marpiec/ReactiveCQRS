@@ -34,9 +34,7 @@ class CartsMetadataProjection(val subscriptionsState: SubscriptionsState) extend
     case GetCartsMetadata => sender() ! seen
   }
 
-  override protected def onClearProjectionData(): Unit = seen = Map.empty
   override protected val projectionName: String = "CartsMetadataProjection"
-  override protected val version: Int = 1
 }
 
 // D32, R13: the metadata envelope travels from the command to the store, the live delivery, the re-publication that
@@ -60,7 +58,7 @@ class MetadataSpec extends CommonSpec {
     val eventBus: ActorRef = system.actorOf(Props(new EventsBusActor()))
     val projection: ActorRef = system.actorOf(Props(new CartsMetadataProjection(new MemorySubscriptionsState)).withDispatcher(BlockingDispatcher.id))
     eventBus ! RegisterSubscribers(Seq(projection))
-    val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStore, responses, eventBus, eventsReplayMode = false))
+    val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStore, responses, eventBus))
 
     def seen: Map[(AggregateId, Int), EventMetadata] = {
       val recorded: Map[(AggregateId, Int), EventMetadata] = projection ?? GetCartsMetadata

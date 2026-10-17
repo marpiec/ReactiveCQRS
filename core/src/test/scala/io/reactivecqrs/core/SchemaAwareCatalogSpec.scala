@@ -2,8 +2,6 @@ package io.reactivecqrs.core
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.core.documentstore.{MultipleLongIndex, NoopDocumentStoreCache, PostgresDocumentStore}
-import io.reactivecqrs.core.eventstore.PostgresEventStoreState
-import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.PostgresUidGenerator
 import io.reactivecqrs.testutils.TestDatabase
 import org.scalatest.featurespec.AnyFeatureSpec
@@ -48,16 +46,6 @@ class SchemaAwareCatalogSpec extends AnyFeatureSpec with Matchers {
         Seq(MultipleLongIndex(1, Seq("value"))))
 
       indexesInCurrentSchema("projection_catalog_spec") mustBe List("projection_catalog_spec_idx_1")
-    }
-
-    Scenario("the event count reads this schema's events table") {
-      val eventStore = new PostgresEventStoreState(new MPJsons, new PostgresTypesNamesState().initSchema()).initSchema()
-      val exact = DB.autoCommit { implicit session =>
-        SQL("ANALYZE events").execute()
-        sql"SELECT count(*) FROM events".map(_.int(1)).single().get
-      }
-
-      eventStore.countAllEvents() mustBe exact
     }
   }
 }

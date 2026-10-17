@@ -39,10 +39,10 @@ events carry a 200-character note, so the numbers show the library's costs, not 
 | Commands on many aggregates | 16 callers, each sending commands one at a time to its own aggregate; latency percentiles, throughput, SQL statements and committed transactions per command (with two projections, and with no subscribers) |
 | Concurrent commands on one aggregate | 16 callers at once on one aggregate (`ConcurrentCommand`): retries, latency tail, throughput |
 | Serial mode (M3, R8) | The two command measures again with `CommandProcessing.Serial`: commands of one aggregate wait for each other instead of conflicting |
-| Projection rebuild | The 0.12 replayer into two new projections: time, throughput, peak heap |
+| Projection rebuild | Since M4, two new managed projections built from the store when the system starts (the builder, D57–D62): time until every event is projected and until both are built and switched, throughput, peak heap. Before M4, the 0.12 replayer |
 | Aggregate restore | A new owner reading 1 000 to 500 000 events: time, peak heap, statements; since M3 also the restore from the snapshot the owner writes when it stops (D30) |
 | Memory over a soak run | Heap after GC before, right after a 60-second load (with the projections' backlog), and once the projections caught up and 20 s idle. The load itself varies widely between runs (it depends on how far the projections fall behind early, F93), so it is not a throughput measure |
-| Delivery soak (M2) | Many counters, a tenth of whose events-based listener fails for a while and recovers within its retries; subscriptions in the database (live mode). When every event is projected; the bus deliveries, outbox rows and recorded failures left (all zero when healthy); heap after GC before, after the load, after 20 s idle and after each of several restarts |
+| Delivery soak (M2) | Many counters, a tenth of whose events-based listener fails for a while and recovers within its retries. When every event is projected; the bus deliveries, outbox rows and recorded failures left (all zero when healthy); heap after GC before, after the load, after 20 s idle and after each of several restarts |
 
 ## Reading the numbers
 

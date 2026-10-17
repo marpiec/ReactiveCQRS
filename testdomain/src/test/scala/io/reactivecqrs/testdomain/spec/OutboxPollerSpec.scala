@@ -48,7 +48,7 @@ class OutboxPollerSpec extends CommonSpec {
     subscriber.expectMsg(GetSubscriptionRequests)
     subscriber.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, subscriber.ref))))
     val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStore,
-      responses, bus, eventsReplayMode = false))
+      responses, bus))
     val poller: ActorRef = system.actorOf(Props(new OutboxPollerActor(eventStore, bus,
       OutboxPollerOptions(firstPollAfter = 1.hour, pollInterval = 1.hour), clock)))
 

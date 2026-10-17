@@ -54,7 +54,7 @@ class HistoryRewriteSpec extends CommonSpec {
   private val eventBus = system.actorOf(Props(new EventsBusActor()))
   eventBus ! RegisterSubscribers(Nil)
   private val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(new RewritingCarts, uidGenerator, eventStore,
-    new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema(), eventBus, eventsReplayMode = false))
+    new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema(), eventBus))
 
   private val userId = UserId(1)
 

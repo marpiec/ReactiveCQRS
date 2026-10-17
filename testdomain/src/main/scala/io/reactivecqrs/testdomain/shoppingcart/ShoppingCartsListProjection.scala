@@ -65,12 +65,7 @@ class ShoppingCartsListProjectionEventsBased(
     case GetAllCartsNames() => sender() ! documentStore.findAll().values.map(_.document).toVector
   }
 
-  override protected def onClearProjectionData(): Unit = {
-    // do nothing
-  }
-
   override protected val projectionName: String = "ShoppingCartsListProjectionEventsBased"
-  override protected val version: Int = 1
 }
 
 
@@ -80,7 +75,6 @@ class ShoppingCartsListProjectionAggregatesBased(
                                                  documentStore: DocumentStore[String]) extends ProjectionActor {
   protected val listeners =  List(AggregateListener(shoppingCartUpdate))
   override protected val projectionName: String = "ShoppingCartsListProjectionAggregatesBased"
-  override protected val version: Int = 1
 
   private def shoppingCartUpdate(aggregateId: AggregateId, version: AggregateVersion, created: Boolean, aggregateRoot: Option[ShoppingCart]) = { implicit session: DBSession =>
     aggregateRoot match {
@@ -97,9 +91,5 @@ class ShoppingCartsListProjectionAggregatesBased(
 
   override protected def receiveQuery: Receive = {
     case GetAllCartsNames() => sender() ! documentStore.findAll().values.map(_.document).toVector
-  }
-
-  override protected def onClearProjectionData(): Unit = {
-    // do nothing
   }
 }

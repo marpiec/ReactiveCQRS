@@ -6,8 +6,4 @@ abstract class AggregateListenerActor(options: ProjectionActorOptions = Projecti
     case m => ()
   }
 
-  protected override def onClearProjectionData(): Unit = {
-    // override by child if needed
-  }
-
 }

@@ -86,7 +86,7 @@ class SquashSpec extends CommonSpec {
   private val eventBus = system.actorOf(Props(new EventsBusActor()))
   eventBus ! RegisterSubscribers(Nil)
   private val context = new ShoppingCartAggregateContext
-  private val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(context, uidGenerator, eventStore, responses, eventBus, eventsReplayMode = false))
+  private val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(context, uidGenerator, eventStore, responses, eventBus))
   private val restorer = new AggregateRestorer[ShoppingCart](eventStore, context.eventHandlers, () => context.initialAggregateRoot)
 
   private val userId = UserId(1)
@@ -301,7 +301,7 @@ class SquashSpec extends CommonSpec {
 
     Scenario("for a type that does not enable squash, a version out of range, or one squashed already") {
       val withoutSquash = new ShoppingCartAggregateContext { override val squash: Option[SquashPolicy[ShoppingCart]] = None }
-      val bus = system.actorOf(AggregateCommandBusActor(withoutSquash, uidGenerator, eventStore, responses, eventBus, eventsReplayMode = false))
+      val bus = system.actorOf(AggregateCommandBusActor(withoutSquash, uidGenerator, eventStore, responses, eventBus))
       val cartId = created("apple", "pear")
       Await.result((bus ? SquashAggregate(cartId, AggregateVersion(1))).mapTo[SquashResponse], 5.seconds) mustBe a[SquashRefused]
       refusal(cartId, 4) must include("not between 1 and 3")
@@ -315,7 +315,7 @@ class SquashSpec extends CommonSpec {
   Feature("The squash event must give back the state it replaces (D85)") {
 
     Scenario("a squash whose event does not is refused, and nothing changes") {
-      val bus = system.actorOf(AggregateCommandBusActor(new NameOnlyCarts(onPurpose = false), uidGenerator, eventStore, responses, eventBus, eventsReplayMode = false))
+      val bus = system.actorOf(AggregateCommandBusActor(new NameOnlyCarts(onPurpose = false), uidGenerator, eventStore, responses, eventBus))
       val cartId = createdOn(bus, "apple", "pear")
       outboxEmpty(cartId)
 
@@ -329,7 +329,7 @@ class SquashSpec extends CommonSpec {
 
     Scenario("one whose event may change the state changes it on purpose: the owners read the new states, the snapshot goes") {
       val carts = new NameOnlyCarts(onPurpose = true)
-      val bus = system.actorOf(AggregateCommandBusActor(carts, uidGenerator, eventStore, responses, eventBus, eventsReplayMode = false))
+      val bus = system.actorOf(AggregateCommandBusActor(carts, uidGenerator, eventStore, responses, eventBus))
       val cartsRestorer = new AggregateRestorer[ShoppingCart](eventStore, carts.eventHandlers, () => carts.initialAggregateRoot)
       def sent(command: AnyRef): CustomCommandResponse[_] = {
         val response: CustomCommandResponse[_] = bus ?? command
@@ -373,7 +373,7 @@ class SquashSpec extends CommonSpec {
 
     Scenario("squashes, through their owners, the aggregates its rule selects, keeping the newest events") {
       val gauges = new GaugeContext
-      val bus = system.actorOf(AggregateCommandBusActor(gauges, uidGenerator, eventStore, responses, eventBus, eventsReplayMode = false))
+      val bus = system.actorOf(AggregateCommandBusActor(gauges, uidGenerator, eventStore, responses, eventBus))
       def gauge(moves: Int): AggregateId = {
         val gaugeId = Await.result((bus ? ReserveAggregateId).mapTo[AggregateId], 5.seconds)
         val set: CustomCommandResponse[_] = bus ?? SetGauge(userId, gaugeId, 10)

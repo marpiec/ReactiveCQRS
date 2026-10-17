@@ -77,14 +77,14 @@ class CommandOutcomesSpec extends CommonSpec {
   eventBus ! RegisterSubscribers(Nil)
 
   private val cartBus: ActorRef = system.actorOf(AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStore,
-    commandResponseState, eventBus, eventsReplayMode = false), "CommandOutcomesCartBus")
+    commandResponseState, eventBus), "CommandOutcomesCartBus")
   private val sluggishBus: ActorRef = system.actorOf(AggregateCommandBusActor(new SluggishAggregateContext, uidGenerator, eventStore,
-    commandResponseState, eventBus, eventsReplayMode = false), "CommandOutcomesSluggishBus")
+    commandResponseState, eventBus), "CommandOutcomesSluggishBus")
 
   // Its aggregate and command ids run out after one command, and the generators then fail.
   private val idlessBus: ActorRef = system.actorOf(AggregateCommandBusActor(new SluggishAggregateContext,
     system.actorOf(Props(new UidGeneratorActor(new OnePoolUidGenerator(1), new OnePoolUidGenerator(1), new PostgresUidGenerator("sagas_uids_seq")))),
-    eventStore, commandResponseState, eventBus, eventsReplayMode = false), "CommandOutcomesIdlessBus")
+    eventStore, commandResponseState, eventBus), "CommandOutcomesIdlessBus")
 
   private val userId = UserId(1)
 
@@ -180,7 +180,7 @@ class CommandOutcomesSpec extends CommonSpec {
   Feature("Where the work runs (F27)") {
     Scenario("an owner persists, and applies events, on the blocking dispatcher; command handlers run on the default one") {
       val probe = new ThreadsProbeContext
-      val bus = system.actorOf(AggregateCommandBusActor(probe, uidGenerator, eventStore, commandResponseState, eventBus, eventsReplayMode = false))
+      val bus = system.actorOf(AggregateCommandBusActor(probe, uidGenerator, eventStore, commandResponseState, eventBus))
       val started: CustomCommandResponse[_] = bus ?? StartThreadsProbe(userId)
       started mustBe a[SuccessResponse]
 
@@ -195,7 +195,7 @@ class CommandOutcomesSpec extends CommonSpec {
       val commandIds = new GatedUidGenerator(poolSize = 2)
       val bus = system.actorOf(AggregateCommandBusActor(new ShoppingCartAggregateContext,
         system.actorOf(Props(new UidGeneratorActor(new PostgresUidGenerator("aggregates_uids_seq"), commandIds, new PostgresUidGenerator("sagas_uids_seq")))),
-        eventStore, commandResponseState, eventBus, eventsReplayMode = false))
+        eventStore, commandResponseState, eventBus))
       val cartId = Await.result((bus ? ReserveAggregateId).mapTo[AggregateId], 5.seconds)
 
       Given("a cart made with the two ids of the first pool; the next pool is held back")
@@ -219,7 +219,7 @@ class CommandOutcomesSpec extends CommonSpec {
       val aggregateIds = new GatedUidGenerator(poolSize = 1)
       val bus = system.actorOf(AggregateCommandBusActor(new ShoppingCartAggregateContext,
         system.actorOf(Props(new UidGeneratorActor(aggregateIds, new OnePoolUidGenerator(10), new PostgresUidGenerator("sagas_uids_seq")))),
-        eventStore, commandResponseState, eventBus, eventsReplayMode = false))
+        eventStore, commandResponseState, eventBus))
 
       Given("a cart made with the only aggregate id at hand, and commands that leave two of the ten command ids")
       val cartId = Await.result(bus ? CreateShoppingCart(None, userId, "Groceries"), 5.seconds).asInstanceOf[SuccessResponse].aggregateId

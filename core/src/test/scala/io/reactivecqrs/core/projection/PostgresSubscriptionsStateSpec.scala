@@ -54,6 +54,19 @@ class PostgresSubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen w
       state.cachedAggregates mustBe 1 // only the one read before: a batch read fills nothing
     }
 
+    Scenario("versions of many aggregates read for live deliveries are cached, with every subscriber's") {
+      val state = newState()
+      val (a, b) = (newAggregateId(), newAggregateId())
+      advance(state, projection, a, 0, 2)
+      advance(state, "PostgresSubscriptionsStateSpecOther", a, 0, 5)
+
+      state.lastVersions(projection, SubscriptionType.EVENTS, Seq(a, b), cache = true) mustBe Map(a -> AggregateVersion(2), b -> AggregateVersion.ZERO)
+      state.cachedAggregates mustBe 2
+
+      DB.autoCommit { implicit session => sql"DELETE FROM subscriptions WHERE aggregate_id = ${a.asLong}".update() }
+      state.lastVersion("PostgresSubscriptionsStateSpecOther", SubscriptionType.EVENTS, a) mustBe AggregateVersion(5) // from the cache
+    }
+
     Scenario("an aggregate dropped from the cache is read from the database again") {
       val state = newState(maxCachedAggregates = 1)
       val (a, b) = (newAggregateId(), newAggregateId())

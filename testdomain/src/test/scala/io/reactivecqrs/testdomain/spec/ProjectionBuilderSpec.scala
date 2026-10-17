@@ -76,9 +76,7 @@ case class NoteView(title: String, lines: Vector[String], version: Int)
 abstract class RecordingNotes(identity: String, val subscriptionsState: SubscriptionsState) extends ProjectionActor {
   override protected def subscriberName: String = identity
   override protected def receiveQuery: Receive = PartialFunction.empty
-  override protected def onClearProjectionData(): Unit = ()
   override protected val projectionName: String = identity
-  override protected val version: Int = 1
 }
 
 /** Every event of each note, as "version:EventClass" (D60: the sequence live delivery sent). */
@@ -152,7 +150,7 @@ class ProjectionBuilderSpec extends CommonSpec {
   private class Live(projections: Seq[ActorRef]) {
     val bus: ActorRef = system.actorOf(Props(new EventsBusActor()))
     bus ! RegisterSubscribers(projections)
-    val notes: ActorRef = system.actorOf(AggregateCommandBusActor(noteContext, uidGenerator, eventStore, responses, bus, eventsReplayMode = false))
+    val notes: ActorRef = system.actorOf(AggregateCommandBusActor(noteContext, uidGenerator, eventStore, responses, bus))
 
     def send(command: AnyRef): SuccessResponse = notes.askActor[CustomCommandResponse[_]](command)(10.seconds) match {
       case success: SuccessResponse => success

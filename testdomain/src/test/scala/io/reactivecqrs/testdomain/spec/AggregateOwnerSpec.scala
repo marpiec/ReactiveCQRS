@@ -69,7 +69,7 @@ class AggregateOwnerSpec extends CommonSpec {
   private val eventBus = system.actorOf(Props(new EventsBusActor()))
   eventBus ! RegisterSubscribers(Nil)
   private val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(new TallyContext, uidGenerator, new MemoryEventStoreState,
-    new MemoryCommandResponseState, eventBus, eventsReplayMode = false))
+    new MemoryCommandResponseState, eventBus))
 
   private val userId = UserId(1)
 

@@ -11,8 +11,6 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.PassivateAggregate
 import io.reactivecqrs.core.eventstore.NewEvents
-import io.reactivecqrs.core.eventsreplayer.EventsReplayerActor.{EventsReplayed, ReplayAllEvents}
-import io.reactivecqrs.core.eventsreplayer.{EventsReplayerActor, ReplayerConfig, ReplayerRepositoryActorFactory}
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
@@ -196,30 +194,26 @@ object Baseline {
     }
     val allEvents = DB.readOnly { implicit session => sql"SELECT count(*) FROM events".map(_.long(1)).single().get }
 
-    val system = new BenchSystem("rebuild", stores, projections = true, rebuild = true)
-    val replayer = system.system.actorOf(Props(new EventsReplayerActor(stores.eventStore, system.eventBus, system.subscriptionsState,
-      ReplayerConfig(), List(new ReplayerRepositoryActorFactory(new CounterContext)))))
-    Thread.sleep(500)
+    System.gc()
     val heapBefore = Heap.usedAfterGc()
     Heap.resetPeak()
     val started = System.nanoTime()
-    val replayed = Try(Await.result((replayer ? ReplayAllEvents(batchPerAggregate = false, Seq(AggregateType.of[Counter]), 0))(Timeout(15.minutes)), 16.minutes))
-    val replayNanos = System.nanoTime() - started
-    val caughtUp = awaitUntil(10.minutes)(system.projectedIncrements() >= expectedIncrements)
-    val totalNanos = System.nanoTime() - started
+    val system = new BenchSystem("rebuild", stores, projections = true, managed = true)
+    val incrementsNanos = awaitUntil(20.minutes)(system.projectedIncrements() >= expectedIncrements).map(_ => System.nanoTime() - started)
+    val builtNanos = awaitUntil(20.minutes)(system.built()).map(_ => System.nanoTime() - started)
     val peak = Heap.peak()
     system.shutdown()
 
-    report.section("Projection rebuild (replay of all events)", Seq("Measure", "Value"), Seq(
-      Seq("events replayed", replayed.map { case EventsReplayed(count) => count.toString; case other => other.toString }.getOrElse("failed: " + replayed.failed.get)),
+    report.section("Projection rebuild (the M4 builder)", Seq("Measure", "Value"), Seq(
       Seq("events in the store", s"$allEvents (${config.rebuildAggregates} aggregates of ${config.rebuildEventsPerAggregate} events written for this, plus the earlier scenarios' events)"),
-      Seq("replay time", millis(replayNanos)),
-      Seq("until the events-based projection caught up", caughtUp.map(_ => millis(totalNanos)).getOrElse("not within 10 minutes")),
-      Seq("rebuild throughput", caughtUp.map(_ => f"${allEvents / seconds(totalNanos)}%.0f events/s").getOrElse("-")),
+      Seq("until the events-based projection had every event", incrementsNanos.map(millis).getOrElse("not within 20 minutes")),
+      Seq("until both projections were built and switched", builtNanos.map(millis).getOrElse("not within 20 minutes")),
+      Seq("rebuild throughput (events-based projection)", incrementsNanos.map(nanos => f"${allEvents / seconds(nanos)}%.0f events/s").getOrElse("-")),
       Seq("heap before / peak during", s"${Heap.mb(heapBefore)} / ${Heap.mb(peak)}"),
       Seq("writing the history directly through the event store", f"${config.rebuildAggregates.toLong * config.rebuildEventsPerAggregate / seconds(writeNanos)}%.0f events/s (batches of up to 1000 events per transaction)")),
-      "The 0.12 replayer (replaced in M4), into two new projections that keep their subscriptions in memory until the " +
-        "replayer dumps them; since M2 the bus keeps no cursor that could stall it (F4).")
+      "Two new managed projections of the counters, built from the store when they start (D57–D62): the events-based one " +
+        "in commit order, in chunks of 1 000 events applied in one transaction each; the state-only one from each counter's " +
+        "final state (D62). Times count from the start of the system.")
   }
 
   private def restore(stores: BenchStores, config: Config, report: Report): Unit = {
@@ -325,7 +319,7 @@ object Baseline {
       Seq("recorded subscription failures", failures.toString + " (the failures lasted less than the retries)"),
       Seq("heap after GC: before / after the load / after 20 s idle", s"${Heap.mb(heapStart)} / ${Heap.mb(heapAfterLoad)} / ${Heap.mb(heapIdle)}"),
       Seq(s"heap after GC after each of ${config.restartCycles} restarts", heapAfterRestarts.mkString(", "))),
-      "Subscriptions in the database (live mode, F29's bounded cache); the other scenarios keep the in-memory mode of the M1 baseline.")
+      "Subscriptions in the database, as in every scenario since M4 (F3), with F29's bounded cache of 10 000 aggregates.")
   }
 
   // ---- helpers ----

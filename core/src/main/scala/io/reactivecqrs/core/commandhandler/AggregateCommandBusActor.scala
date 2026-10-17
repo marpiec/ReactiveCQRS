@@ -37,10 +37,10 @@ object AggregateCommandBusActor {
   def apply[AGGREGATE_ROOT: ClassTag](aggregateContext: AggregateContext[AGGREGATE_ROOT],
                                              uidGenerator: ActorRef, eventStoreState: EventStoreState,
                                              commandResponseState: CommandResponseState,
-                                             eventBus: ActorRef, eventsReplayMode: Boolean, maxInactivityMillis: Long = 43200000L, keepAliveLimit: Int = 200,
+                                             eventBus: ActorRef, maxInactivityMillis: Long = 43200000L, keepAliveLimit: Int = 200,
                                              failedRestoreRetryAfter: FiniteDuration = 5.seconds): Props = { // 43200000 - 12 hours
     Props(new AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext, uidGenerator, eventStoreState, commandResponseState, eventBus,
-      eventsReplayMode, keepAliveLimit, maxInactivityMillis, None, failedRestoreRetryAfter))
+      keepAliveLimit, maxInactivityMillis, None, failedRestoreRetryAfter))
   }
 
 }
@@ -56,7 +56,6 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
                                                        eventStoreState: EventStoreState,
                                                        commandResponseState: CommandResponseState,
                                                        val eventBus: ActorRef,
-                                                       val eventsReplayMode: Boolean,
                                                        val keepAliveLimit: Int, val maxInactivityMillis: Long,
                                                        val eventsLogger: Option[Logger],
                                                        val failedRestoreRetryAfter: FiniteDuration)
@@ -95,11 +94,9 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
     // The event bus routes re-publish requests for this aggregate type here (D8, D20c).
     eventBus ! RegisterPublisher(aggregateType, self)
     askForIds()
-    if (!eventsReplayMode) {
-      // Hourly, at a random minute, so the buses of different aggregate types do not all clean up at once.
-      val firstCleanUp = (60 + Random.nextInt(3600)).seconds
-      context.system.scheduler.scheduleWithFixedDelay(firstCleanUp, 1.hour, self, RemoveExpiredResponses)(context.dispatcher)
-    }
+    // Hourly, at a random minute, so the buses of different aggregate types do not all clean up at once.
+    val firstCleanUp = (60 + Random.nextInt(3600)).seconds
+    context.system.scheduler.scheduleWithFixedDelay(firstCleanUp, 1.hour, self, RemoveExpiredResponses)(context.dispatcher)
   }
 
   private def removeExpiredResponses(): Unit = {

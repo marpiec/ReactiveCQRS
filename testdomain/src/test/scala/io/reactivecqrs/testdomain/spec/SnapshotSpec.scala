@@ -41,7 +41,7 @@ class SnapshotSpec extends CommonSpec {
     override val snapshots: Option[SnapshotPolicy] = Some(SnapshotPolicy(every = every))
   }
   private val everyThird = new SnapshottingCarts(3)
-  private val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(everyThird, uidGenerator, eventStore, responses, eventBus, eventsReplayMode = false))
+  private val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(everyThird, uidGenerator, eventStore, responses, eventBus))
 
   private val userId = UserId(1)
 
@@ -110,7 +110,7 @@ class SnapshotSpec extends CommonSpec {
 
     Scenario("an aggregate with 100 000 events is restored from one snapshot plus at most `every` events") {
       val every200 = new SnapshottingCarts(200)
-      val bus = system.actorOf(AggregateCommandBusActor(every200, uidGenerator, eventStore, responses, eventBus, eventsReplayMode = false))
+      val bus = system.actorOf(AggregateCommandBusActor(every200, uidGenerator, eventStore, responses, eventBus))
       Given("a cart with 100 000 events, written straight to the store")
       val cartId = storedCart()
       def renamed(count: Int, from: Int): Unit = (0 until count by 1000).foreach { offset =>

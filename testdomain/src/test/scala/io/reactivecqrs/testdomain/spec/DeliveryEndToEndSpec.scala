@@ -33,9 +33,7 @@ class DeliveredCartsProjection(val subscriptionsState: SubscriptionsState) exten
     case GetDeliveredCarts => sender() ! delivered
   }
 
-  override protected def onClearProjectionData(): Unit = delivered = Map.empty
   override protected val projectionName: String = "DeliveredCartsProjection"
-  override protected val version: Int = 1
 }
 
 // D3, D20c, R6: through the real bus and owner, a projection that starts behind fills its gap from the store and sees
@@ -53,7 +51,7 @@ class DeliveryEndToEndSpec extends CommonSpec {
   private val userId = UserId(1)
 
   private def commandBusOn(bus: ActorRef): ActorRef =
-    system.actorOf(AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStore, responses, bus, eventsReplayMode = false))
+    system.actorOf(AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStore, responses, bus))
 
   Feature("Delivery through the bus and the owner") {
 

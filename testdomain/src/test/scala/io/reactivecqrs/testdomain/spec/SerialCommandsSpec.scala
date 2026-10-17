@@ -28,9 +28,9 @@ class SerialCommandsSpec extends CommonSpec {
 
   private def busOf(context: AggregateContext[_]): ActorRef = context match {
     case carts: ShoppingCartAggregateContext => system.actorOf(AggregateCommandBusActor(carts, uidGenerator, new MemoryEventStoreState,
-      new MemoryCommandResponseState, eventBus, eventsReplayMode = false))
+      new MemoryCommandResponseState, eventBus))
     case tallies: TallyContext => system.actorOf(AggregateCommandBusActor(tallies, uidGenerator, new MemoryEventStoreState,
-      new MemoryCommandResponseState, eventBus, eventsReplayMode = false))
+      new MemoryCommandResponseState, eventBus))
   }
 
   private class SerialCarts extends ShoppingCartAggregateContext {

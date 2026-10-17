@@ -235,65 +235,6 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     sql"""CREATE INDEX CONCURRENTLY IF NOT EXISTS events_aggregate_version_idx ON events (aggregate_id, version)""".execute()
   }
 
-  override def readAndProcessAllEvents(aggregateTypeName: String,
-                                       batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit = {
-
-    val aggregateTypeId = typesNamesState.typeIdByClassName(aggregateTypeName)
-    val aggregateType = AggregateType(aggregateTypeName)
-
-    var buffer = List[EventInfo[Any]]()
-    var lastAggregateId = AggregateId(-1)
-    DB.readOnlyWithConnection { connection =>
-
-      connection.setAutoCommit(false)
-
-      val statement = if(batchPerAggregate) {
-        connection.prepareStatement("""SELECT event_type_id, event_type_version, event, events.version, events.aggregate_id, user_id, event_time, events.metadata::text,
-       noop_events.id IS NOT NULL AND noop_events.from_version <= aggregates.base_version as noop
-FROM events
-         JOIN aggregates ON aggregates.type_id = ? AND events.aggregate_id = aggregates.base_id AND events.aggregate_id = aggregates.id
-         LEFT JOIN noop_events ON events.id = noop_events.id AND noop_events.from_version <= aggregates.base_version
-ORDER BY events.aggregate_id, events.id""".stripMargin, java.sql.ResultSet.TYPE_FORWARD_ONLY, java.sql.ResultSet.CONCUR_READ_ONLY)
-      } else {
-        connection.prepareStatement("""SELECT event_type_id, event_type_version, event, events.version, events.aggregate_id, user_id, event_time, events.metadata::text,
-       noop_events.id IS NOT NULL AND noop_events.from_version <= aggregates.base_version as noop
-FROM events
-         JOIN aggregates ON aggregates.type_id = ? AND events.aggregate_id = aggregates.base_id AND events.aggregate_id = aggregates.id
-         LEFT JOIN noop_events ON events.id = noop_events.id AND noop_events.from_version <= aggregates.base_version
-ORDER BY events.id""")
-      }
-
-      statement.setFetchSize(fetchSize)
-      statement.setInt(1, aggregateTypeId)
-      val rs = statement.executeQuery()
-
-      while(rs.next()) {
-        if(!rs.getBoolean(9)) { // ignore noop
-          val eventType = eventClass(rs.getShort(1), rs.getShort(2), rs.getLong(5), rs.getInt(4))
-
-          val event = mpjsons.deserialize[Event[_]](rs.getString(3), eventType)
-          val aggregateId = AggregateId(rs.getLong(5))
-          val version = AggregateVersion(rs.getInt(4))
-          val eventInfo: EventInfo[Any] = EventInfo[Any](version, event.asInstanceOf[Event[Any]], UserId(rs.getLong(6)), utcTime(rs, 7), metadataOf(rs.getString(8)))
-
-          if (!batchPerAggregate || lastAggregateId != aggregateId) {
-            if (buffer.nonEmpty) {
-              eventHandler(buffer.reverse, lastAggregateId, aggregateType)
-            }
-            buffer = List(eventInfo)
-            lastAggregateId = aggregateId
-          } else {
-            buffer ::= eventInfo
-          }
-        }
-      }
-
-      if(buffer.nonEmpty) {
-        eventHandler(buffer.reverse, lastAggregateId, aggregateType)
-      }
-    }
-  }
-
   // The aggregate's own row of its chain gives the type: a duplicate's events are read under it, not its base.
   override def readCommitted(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[CommittedEvent] =
     if (types.isEmpty) Seq.empty else DB.readOnly { implicit session =>
@@ -519,13 +460,6 @@ ORDER BY events.id""")
            | ORDER BY id LIMIT $limit""".stripMargin.map(rs => (AggregateId(rs.long(1)), AggregateVersion(rs.int(2)))).list()
     }
 
-  override def readNotYetPublishedEvents(): Map[AggregateId, AggregateVersion] = {
-    DB.readOnly { implicit session =>
-      sql"""SELECT aggregate_id, MIN(version) FROM events_to_publish GROUP BY aggregate_id"""
-        .map(rs => (AggregateId(rs.long(1)), AggregateVersion(rs.int(2)))).list().toMap
-    }
-  }
-
   // One query for all aggregate types (F37); the aggregate's own row of its chain gives the type.
   override def readWaitingInOutbox(): Seq[WaitingInOutbox] = DB.readOnly { implicit session =>
     sql"""SELECT aggregates.type_id, events_to_publish.aggregate_id, MIN(events_to_publish.version), MIN(events_to_publish.event_time)
@@ -535,29 +469,6 @@ ORDER BY events.id""")
       .map(rs => WaitingInOutbox(AggregateType(typesNamesState.classNameById(rs.short(1))), AggregateId(rs.long(2)),
         AggregateVersion(rs.int(3)), utcTime(rs.underlying, 4)))
       .list()
-  }
-
-  override def countAllEvents(): Int =  DB.readOnly { implicit session =>
-
-    // much faster, although might be not exact; the events table of the current schema (F71)
-    val count = sql"""SELECT reltuples::bigint AS count FROM pg_class WHERE oid = 'events'::regclass"""
-      .map(rs => rs.int(1)).single().get
-
-    if(count <= 0) { // -1 until the table was first vacuumed or analyzed (PostgreSQL 14+)
-      sql"""SELECT COUNT(*) FROM events""".map(rs => rs.int(1)).single().get
-    } else {
-      count
-    }
-
-  }
-
-  override def countEventsForAggregateTypes(aggregateTypes: Seq[String]): Int = DB.readOnly { implicit session =>
-    if(aggregateTypes.isEmpty) {
-      0
-    } else {
-      val typesIds = aggregateTypes.map(t => typesNamesState.typeIdByClassName(t)).distinct
-      sql"""SELECT COUNT(*) FROM events JOIN aggregates ON events.aggregate_id = aggregates.id WHERE aggregates.type_id in ($typesIds) and aggregates.base_order = 1""".map(rs => rs.int(1)).single().get
-    }
   }
 
   override def readEventsRange[AGGREGATE_ROOT](aggregateId: AggregateId,

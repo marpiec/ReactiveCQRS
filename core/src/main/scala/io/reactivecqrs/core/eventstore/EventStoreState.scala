@@ -37,8 +37,6 @@ object AggregateScope {
 }
 
 abstract class EventStoreState {
-  def countAllEvents(): Int
-  def countEventsForAggregateTypes(strings: Seq[String]): Int
   def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]]
   def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit
   def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, version: Option[Either[AggregateVersion, Instant]])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit
@@ -58,9 +56,6 @@ abstract class EventStoreState {
   /** Stores the aggregate's snapshot in a transaction of its own, in place of the one it had; only while the aggregate
     * is stored at that version or later, so nothing is written for an aggregate deleted for good. */
   def writeSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, snapshot: Snapshot[AGGREGATE_ROOT], stateClassName: String): Unit
-
-  def readAndProcessAllEvents(aggregateType: String,
-                              batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit
 
   // ************** Rebuild (D58, D59)
 
@@ -103,10 +98,10 @@ abstract class EventStoreState {
     * `squashEvent` (keeping its id and time, so commit order holds), the events before it and the noop rows at or
     * below it go, as do the snapshot at or below it, the aggregate's own chain rows to other aggregates and its outbox
     * rows at or below it; the squash point is recorded. The events are checked by the caller (D85); one that may change
-    * the state (`SquashMayChangeState`) takes every snapshot of its aggregate, or of the duplicate it detaches. Changes nothing, giving the reason, when `squashBlocker` finds
-    * one, or when the duplicates given are not all those that read the aggregate below `upTo` (one was made
-    * meanwhile): the caller may try again. A duplication of the aggregate made at the same time waits for the
-    * transaction and is then refused below the squash point. */
+    * the state (`SquashMayChangeState`) takes every snapshot of its aggregate, or of the duplicate it detaches. Changes
+    * nothing, giving the reason, when `squashBlocker` finds one, or when the duplicates given are not all those that
+    * read the aggregate below `upTo` (one was made meanwhile): the caller may try again. A duplication of the aggregate
+    * made at the same time waits for the transaction and is then refused below the squash point. */
   def squash[AGGREGATE_ROOT](aggregateId: AggregateId, upTo: AggregateVersion, squashEvent: FirstEvent[AGGREGATE_ROOT], userId: UserId,
                              metadata: Option[EventMetadata], detach: Seq[(AggregateId, FirstEvent[_])]): Either[String, Unit]
 
@@ -126,6 +121,4 @@ abstract class EventStoreState {
   def oldestVersionToPublish(aggregateId: AggregateId): Option[AggregateVersion]
 
   def localTx[A](block: DBSession => A): A
-
-  def readNotYetPublishedEvents(): Map[AggregateId, AggregateVersion]
 }

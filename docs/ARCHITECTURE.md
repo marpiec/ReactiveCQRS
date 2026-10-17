@@ -5,9 +5,10 @@ events and feeds projections/listeners. It is meant as the baseline for future c
 to the library's behaviour.
 
 > **Provenance.** Static read of `master` @ `4b5060f` (version 0.12.47), 16/10/2026, updated for
-> the changes of milestones M1 (to `cc8925c`), M2 (the delivery module, to `v1.0.0-M2`) and M3 as
-> it goes (the aggregate owner), and checked against that code at each milestone review. Where a milestone changed the code,
-> references name methods; the remaining line numbers are from `4b5060f` and may have drifted
+> the changes of milestones M1 (to `cc8925c`), M2 (the delivery module, to `v1.0.0-M2`), M3 (the
+> aggregate owner, to `v1.0.0-M3`) and M4 as it goes (projection builds), and checked against
+> that code at each milestone review. Where a milestone changed the code, references name
+> methods; the remaining line numbers are from `4b5060f` and may have drifted
 > by a few lines. Defaults and limits quoted below are the literal values in the code;
 > measured performance is in `docs/perf/`.
 >
@@ -27,7 +28,6 @@ unless the path says `api/` or `testdomain/`).
 | `AggregateContext.scala`, `Command.scala`, `Event.scala`, `CommandResult.scala`, `CustomCommandResponse.scala`, `Aggregate.scala` | `api/src/main/scala/io/reactivecqrs/api/` |
 | `AggregateCommandBusActor.scala`, `CommandResponseState.scala`, `Idempotency.scala` | `commandhandler/` |
 | `AggregateOwner.scala` (with `OwnerSettings`), `AggregateRestorer.scala`, `OutboxWriter.scala`, `SquashScheduler.scala` (M3) | `aggregate/` |
-| `ReplayAggregateRepositoryActor.scala` (the 0.12 replayer's, until M4) | `aggregaterepository/` |
 | `PostgresEventStoreState.scala`, `PostgresEventStoreSchemaInitializer.scala`, `EventStoreState.scala` | `eventstore/` |
 | `EventsBusActor.scala` | `eventbus/` |
 | `UidGeneratorActor.scala`, `IdPool.scala` (ids from pools fetched ahead, M3) | `uid/` |
@@ -35,8 +35,7 @@ unless the path says `api/` or `testdomain/`).
 | `SequenceGate.scala`, `RedeliveryPolicy.scala`, `OutboxPollerActor.scala`, `Republish.scala` (the delivery module, M2) | `delivery/` |
 | `OutboxDeletes.scala` (batched outbox deletes) | `eventstore/` |
 | `Backoff.scala` (retry waits, AR6) | `util/` |
-| `ProjectionActor.scala`, `SubscriptionsState.scala`, `SubscribableProjectionActor.scala`, `AggregateListenerActor.scala`, `VersionsState.scala` | `projection/` |
-| `EventsReplayOrchestrator.scala`, `EventsReplayerActor.scala` (the 0.12 replayer, until M4 removes it) | `eventsreplayer/` |
+| `ProjectionActor.scala`, `SubscriptionsState.scala`, `SubscribableProjectionActor.scala`, `AggregateListenerActor.scala` | `projection/` |
 | `ProjectionBuilder.scala`, `ReplayStates.scala` (with `ReplaySource`), `Projections.scala` (the runtime and `ProjectionSupervisor`), `ProjectionRegistry.scala`, `ProjectionBuild.scala` (M4) | `rebuild/` |
 | `SagaActor.scala`, `PostgresSagaState.scala`, `PostgresSagaSchemaInitializer.scala` | `saga/` |
 | `PostgresDocumentStore.scala`, `DocumentStoreCache.scala` | `documentstore/` |
@@ -209,7 +208,8 @@ They run in three places:
 2. **Restore** on the owner's first message, and again on every reload: after an SQL
    conflict, when a command expects a newer version than the owner holds (F19), and after an
    undo, a duplication event or a rewrite (`AggregateRestorer.restore`).
-3. **Replay** during projection rebuilds (`ReplayAggregateRepositoryActor.scala:45-59`).
+3. **Replay** during projection builds: the builder's replay states restore an aggregate
+   from its snapshot or history and apply the events after it (`ReplayStates`, §8.1).
 
 Rules that follow:
 
@@ -243,10 +243,10 @@ abstract class AggregateContext[R : ClassTag] {           // AggregateContext.sc
 
 - `aggregateType` keys the bus subscriptions and the `types_names` row. Renaming or moving
   the root class creates a **new** aggregate type; existing rows stay keyed by the old id.
-- `version` is used only by `EventsReplayOrchestrator` and `VersionsState` to decide which
-  projections to rebuild (§8).
+- `version` decides which managed projections are built again: one that receives the
+  context's states is rebuilt when it changes (D63, §8.2).
 - The context is turned into a running component with
-  `AggregateCommandBusActor(context, uidGenerator, eventStoreState, commandResponseState, eventBus, eventsReplayMode, maxInactivityMillis = 12 h, keepAliveLimit = 200, failedRestoreRetryAfter = 5 s)`
+  `AggregateCommandBusActor(context, uidGenerator, eventStoreState, commandResponseState, eventBus, maxInactivityMillis = 12 h, keepAliveLimit = 200, failedRestoreRetryAfter = 5 s)`
   (`AggregateCommandBusActor.apply`).
 - Example: `ShoppingCartAggregateContext.scala` (commands in `Commands.scala`, events in
   `Events.scala`, pure handler functions in `CommandsHandlers.scala` / `EventsHandlers.scala`).
@@ -582,9 +582,9 @@ subscription classifiers, AR8: the sequence gate needs every version):
 
 | Subscription request | Message sent | Listener kind (§6.2) |
 |---|---|---|
-| `SubscribeForEvents` | `IdentifiableEvents(type, id, events, replayed, startsAtSquash)` | `EventsListener` |
-| `SubscribeForAggregates` | `AggregateWithType(type, id, lastVersion, versions, root, replayed, startsAtSquash)` | `AggregateListener` |
-| `SubscribeForAggregatesWithEvents` | `AggregateWithTypeAndEvents(type, id, root, events, replayed, startsAtSquash)` | `AggregateWithEventsListener` |
+| `SubscribeForEvents` | `IdentifiableEvents(type, id, events, startsAtSquash)` | `EventsListener` |
+| `SubscribeForAggregates` | `AggregateWithType(type, id, lastVersion, versions, root, startsAtSquash)` | `AggregateListener` |
+| `SubscribeForAggregatesWithEvents` | `AggregateWithTypeAndEvents(type, id, root, events, startsAtSquash)` | `AggregateWithEventsListener` |
 
 `root` is the aggregate state after the delivered batch. `startsAtSquash` is set when an
 owner re-publishes from the aggregate's squash point (`PublishEvents(startsAtSquash = true)`)
@@ -622,10 +622,6 @@ subscriber)`; the owner re-publishes `from` to its current version to that subsc
 **Failures inside the bus (AR7).** A message the bus fails on (a malformed one) is logged and
 dropped. A restart would lose every delivery and the subscriptions.
 
-**Back-pressure.** Only for the replayer (until M4): `ConsumerStart`/`ConsumerStop` and
-`ConsumerAllowedMore`, bounded by `DeliveryOptions.maxReplayBuffer` (10 000) replayed events
-in flight.
-
 ### 5.3 What subscribers can rely on
 
 - **At least once**, through the outbox, the live publication and the poller's
@@ -635,8 +631,9 @@ in flight.
 - **Applied exactly once** by `ProjectionActor`, through the sequence gate on the stored
   subscription version (§6.3); a gap is asked from the owner. A `noDBSession` listener runs
   before its version is written, so it sees a batch again if that write fails: at least once.
-- **No back-pressure on the live path** (F93): when commands come faster than a projection
-  applies them, its mailbox and the bus's deliveries grow with the lag.
+- **No flow control on the live path** (F93): groups (§6.3) raise how fast a projection keeps
+  up, but when commands come faster than it applies them, its mailbox and the bus's
+  deliveries still grow with the lag.
 - A delivery that nobody answers ends at the deadline; the poller tries again at the next
   start.
 
@@ -649,18 +646,18 @@ in flight.
 ```scala
 class MyProjection(val subscriptionsState: SubscriptionsState, store: DocumentStore[Doc])
     extends ProjectionActor(ProjectionActorOptions.DEFAULT) {
-  protected val projectionName = "MyProjection"   // used by VersionsState (rebuild decisions)
-  protected val version = 1                       // bump to force rebuild
+  protected val projectionName = "MyProjection"   // in logs and the status
   protected val listeners = List(EventsListener(onEvents), AggregateListener(onAggregate))
   protected def receiveQuery: Receive = { case MyQuery(..) => sender() ! ... }
-  protected def onClearProjectionData(): Unit = ()   // called on ClearProjectionData (rebuild)
 }
 ```
 
 The projection is passed to the bus in the host's `RegisterSubscribers` list; it answers the
 bus's `GetSubscriptionRequests` with one request per listener (D15). Progress in
-`SubscriptionsState` is keyed by **`this.getClass.getName`**, not `projectionName`.
-Renaming or moving the class resets the projection's progress.
+`SubscriptionsState` is keyed by **`this.getClass.getName`**, not `projectionName`, so
+renaming or moving the class resets an unmanaged projection's progress. A managed projection
+(§8.2) is keyed by its build instead, and the version given to `Projections.start`
+decides when it is built again.
 
 ### 6.2 Listener kinds
 
@@ -673,9 +670,9 @@ Renaming or moving the class resets the projection's progress.
 
 - Keys are the aggregate root type; **one listener per kind per aggregate type** (`toMap`
   silently keeps the last, `:180-196`). `Any`/`Nothing` types are rejected (`:200-204`).
-- The callback's `DBSession` is the transaction that also writes the subscription version.
-  Pass it to the document store so the read model and progress commit atomically
-  (only when `keepInMemory = false`, §7).
+- The callback's `DBSession` is the transaction that also writes the subscription version,
+  and other aggregates' batches with it (§6.3). Pass it to the document store so the read
+  model and progress commit atomically.
 - Event listeners receive `UndoEvent`s like any other event; undoing is the projection's
   job (the test domain does not, `ShoppingCartsListProjection.scala:59`). Aggregate
   listeners get the corrected state automatically.
@@ -695,13 +692,24 @@ Draining a queue, with `applied` the subscription's stored version:
    it wait. A delivery that starts at the aggregate's squash event (`startsAtSquash`) is no gap
    for a subscription below it: nothing before it exists any more, so the subscription starts
    there (F98).
-2. The batch runs `listener(...)` and `newVersion(className, kind, id, applied, to)` in one
+2. The batch runs `listener(...)` and `newVersion(subscriber, kind, id, applied, to)` in one
    `localTx` (a `noDBSession` listener runs first, then the version is written in
    `autoCommit`). State-receiving listeners get the state of the delivery holding the last
    version, and `created` when the subscription starts with the batch (at version 1, or at a
    squash event). On success every delivery of the batch is acknowledged with all its versions.
    One batch per queue runs at a time; in parallel mode a scheduled drain during a batch is
    left to the batch's end (F89).
+   **Groups** (D61, F93): without parallel processing, the queues that get deliveries while
+   deliveries keep arriving are drained together: once the deliveries already in the mailbox
+   are taken (a `FlushGroup` sent after them), when `maxBatchesPerTransaction` (100) queues
+   are due, or before any other message, so a query, a chunk, a reset or a retirement sees
+   every delivery taken before it. Their applied versions are read at once, one read per
+   listener kind (`lastVersions(..., cache = true)`, which caches them as `lastVersion`
+   does), and their batches run in transactions of up to `maxBatchesPerTransaction`. A batch
+   stays its queue's batch at work until its group runs. A group that fails runs again one
+   batch at a time, so only the failing aggregate retries and fails (step 4). A `noDBSession`
+   listener's batch runs alone: another aggregate's failure must not repeat its side effects.
+   A gap check reads its version at once.
 3. A gap is asked from the owner: `RequestRepublish(self, type, id, from)` to the bus. An
    unanswered request is repeated after `gapRequestRepeat` (10 s), doubling up to 5 minutes,
    however many deliveries arrive meanwhile (F83); a long gap comes in parts of 1 000 events,
@@ -831,6 +839,10 @@ One projection can therefore keep three independent cursors per aggregate.
 `newVersion(subscriber, subscriptionType, id, expectedLast, newVersion)(session)`, which is a
 **compare-and-set**: a mismatch throws `OptimisticLockingFailed` and rolls back the
 listener transaction. An unknown subscription is at version zero.
+`lastVersions(subscriber, subscriptionType, ids, cache)` reads many aggregates' versions in
+one query for those not cached: a group of live deliveries caches them (`cache = true`, with
+every subscriber's versions of each aggregate, as `lastVersion` does); a builder's chunks and
+pages leave the cache alone, so a build does not push out what live delivery needs.
 
 **One mode** (since M4, F3): the database is the source of truth. `newVersion` INSERTs when
 `last == 0`, otherwise `UPDATE … WHERE aggregate_version = last` with a rowcount check, in the
@@ -858,17 +870,17 @@ replaced by a later failure of the same subscription. `recordFailure`, `failures
 and `clearFailure(...)(session)`; a permanent delete waits while the aggregate has a row
 here (§4.5).
 
-**Related.** `VersionsState` (`components_versions`) stores the last-built `version` of each
-aggregate context and projection; it is used only for rebuild decisions.
+**Related.** `components_versions`, the 0.12 rebuild's record of the versions it built, is only
+read, to adopt the projections 0.12 built (§8.2).
 
 ---
 
 ## 8. Replay / projection rebuild
 
-M4 replaces the 0.12 replayer (§8.3) with managed projections (§8.2): each runs under a
+M4 replaced the 0.12 replayer with managed projections (§8.2): each runs under a
 supervisor that builds new versions from the event store with a builder that feeds one
 projection directly (§8.1), while the active version serves, and switches in one update
-(design: `docs/design/M4-rebuild.md`). The targeted rebuild follows.
+(design: `docs/design/M4-rebuild.md`). One aggregate, type or organization is rebuilt in place.
 
 ### 8.1 The builder (`rebuild/ProjectionBuilder.scala`, M4)
 
@@ -992,30 +1004,6 @@ the host's `spaceOf` gives; it runs online, in batches of 1 000 aggregates, one 
 (D69), and reports the aggregates it could not place. A targeted rebuild of an organization needs
 it first.
 
-### 8.3 The 0.12 replayer (until M4 removes it)
-
-`EventsReplayOrchestrator.replay(...)` (`EventsReplayOrchestrator.scala:25-100`):
-
-1. Asks every projection for `SubscribedAggregates(name, version, aggregate types)`.
-2. Compares them with `VersionsState`. Rebuilds the projections whose version changed and
-   the projections that consume a changed aggregate type, and replays the aggregate types
-   those projections need (`forceAll` bypasses this).
-3. Sends `ClearProjectionData` (clears subscription rows, then calls `onClearProjectionData`).
-4. Asks `EventsReplayerActor` to `ReplayAllEvents`. The replayer streams the events of each
-   aggregate type (`readAndProcessAllEvents`, ordered by aggregate, noop events skipped),
-   honours back-pressure through `BackPressureActor`, skips versions still in the outbox
-   (`readNotYetPublishedEvents`), and feeds one `ReplayAggregateRepositoryActor` per
-   aggregate. That actor rebuilds state, handles duplication by reading the base, and
-   sends `PublishReplayedEvents(..., replayed = true)` (`ReplayAggregateRepositoryActor.scala:68-97`).
-5. Saves the new versions to `VersionsState`.
-
-Replayed messages go through the same bus routing; since M2 the bus keeps no cursor, so
-events delivered before do not stall a replay (F4). A replay leaves out undone events, so a
-projection rebuilding from cleared state sees gaps at those versions (F58, High, M4): it asks
-the owner for them, which works only when a command bus of the type is registered on the
-replay bus; otherwise the replay waits until the bus deadline ends those deliveries. M4
-replaces this replayer.
-
 ---
 
 ## 9. Sagas (brief)
@@ -1087,11 +1075,9 @@ Problems found in this read, and every decision about fixing them, are tracked i
 this read (lost document updates, caches ahead of the database, timestamps, lost sagas,
 partial persists, idempotency); M2 rebuilt delivery (no cursor, a single owner of
 re-deliveries, the sequence gate, gap requests, failure records); M3 detaches duplicates
-before a permanent delete (F76). The most serious ones still open:
-
-- **F58:** a rebuild leaves out undone events, and the gaps stall it unless the owner can be
-  asked for them (High; M4 replaces the replayer).
-- **F82:** the replayer stops the JVM when a replay stalls (M4).
+before a permanent delete (F76); M4 replaced the 0.12 replayer, which left out undone events
+(F58) and could stop the JVM (F82), with builds from the event store. Still open: flow control
+on the live path (F93), so a projection that cannot keep up lets its backlog grow in memory.
 
 ---
 
@@ -1106,9 +1092,9 @@ before a permanent delete (F76). The most serious ones still open:
 | Non-blocking persistence | `AggregateOwner.persist` → a dedicated dispatcher, re-entering via message | keep one in-flight persist per aggregate; apply the events before the next message is handled (F69: persist synchronously or stash); the in-memory version check |
 | Re-delivery timing | `delivery/RedeliveryPolicy` (pure), `OutboxPollerActor`, `EventStoreState.readWaitingInOutbox` | one owner of retries (D8); the attempts at 3 and 6 minutes come after a subscriber's own retries (about 2 minutes, D20a); the per-poll limit |
 | Outbox deletes | `AggregateCommandBusActor.delivered`, `EventStoreState.deletePublished` / `deleteAggregatePermanently`, `OutboxDeletes` | only acked (or failed) versions; the acknowledgement goes to the command bus, never only to the owner, which may be reaped (F91); a permanent delete waits while a subscription of the aggregate is failed, or when duplicates changed after they were listed |
-| Delivery tracking | `EventsBusActor` (`publish`, `finish`, `checkDeadlines`, `subscriberStopped`) | a delivery that ends without every ack or failure must not ack the owner; re-publications to one subscriber never do; back-pressure counters stay balanced; AR7 (no throws) |
-| New listener kind | `ProjectionActor` (listener class, map, `subscriptionRequests`, the delivery case in `receiveUpdate`, `appliedVersion`, `advance`, `applyBatch`), `EventsBusActor` (request + message type), `SubscriptionType` | a new `subscription_type` id; everything else goes through the one gate path |
-| Projection progress storage | `SubscriptionsState` | CAS semantics; same-session atomicity; the bounded cache and its eviction on a failed CAS (F29, F77); `dump()` lifecycle (F3); failures (D20a) |
-| Rebuild logic | `EventsReplayOrchestrator`, `EventsReplayerActor`, `ReplayAggregateRepositoryActor`, `VersionsState` | undone events left out (F58); back-pressure accounting; replaced in M4 |
+| Delivery tracking | `EventsBusActor` (`publish`, `finish`, `checkDeadlines`, `subscriberStopped`) | a delivery that ends without every ack or failure must not ack the owner; re-publications to one subscriber never do; AR7 (no throws) |
+| New listener kind | `ProjectionActor` (listener class, map, `subscriptionRequests`, the delivery case in `receiveUpdate`, `appliedVersion`, `advance`, `workOf`), `EventsBusActor` (request + message type), `SubscriptionType` | a new `subscription_type` id; everything else goes through the one gate path |
+| Projection progress storage | `SubscriptionsState` | CAS semantics; same-session atomicity; the bounded cache and its eviction on a failed CAS (F29, F77); one transaction may move a subscription several times (D61); failures (D20a) |
+| Rebuild logic | `rebuild/ProjectionBuilder` (phases, chunks, reconciliation), `ReplayStates`, `Projections` (`ProjectionSupervisor`, `BuildSlots`), `ProjectionRegistry` | a build must deliver what live delivery delivers (undone events and undos included, D60); the switch is one update; a retired build's tables, versions and failures go together (F94) |
 | Idempotency rules | `commandhandler/Idempotency.scala`, `CommandResponseState` | the response is written in the persist transaction (I2); a taken key and a version conflict both answer with the stored response |
 | Retries and timeouts | `util/Backoff`; `AggregateOwner` (concurrent retries, command timeout), `SagaActor` (write retries), `ProjectionActor` (listener retries), `RedeliveryPolicy`, `PostgresDocumentStore.updateWithRetries` | bounded everywhere; the document-store retry runs inside the listener transaction and must stay immediate (AR6) |

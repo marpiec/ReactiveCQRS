@@ -9,6 +9,8 @@ import io.reactivecqrs.core.documentstore.{NoopDocumentStoreCache, PostgresDocum
 import io.reactivecqrs.core.eventbus._
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection.{PostgresSubscriptionsState, SubscriptionsState}
+import io.reactivecqrs.core.rebuild.ProjectionSupervisor.{Builds, GetBuilds}
+import io.reactivecqrs.core.rebuild.{PostgresProjectionRegistry, Projections, ProjectionsSettings}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.core.util.BlockingDispatcher
@@ -57,16 +59,17 @@ class BenchStores {
   val aggregatesUids = new PostgresUidGenerator("aggregates_uids_seq")
   val commandsUids = new PostgresUidGenerator("commands_uids_seq")
   val sagasUids = new PostgresUidGenerator("sagas_uids_seq")
+  val registry: PostgresProjectionRegistry = new PostgresProjectionRegistry().initSchema()
 }
 
 /**
   * One running system, wired the way a host application wires it (see `ReactiveTestDomainSpec`): a command bus for
-  * counters and, optionally, two projections, one events-based and one aggregate-based. `rebuild` wires a system
-  * whose projections start empty, for replaying stored events into new projection tables. Subscription versions live
-  * in the database, as on live nodes (since M4 there is no other mode, F3). `failing` makes the events-based projection
-  * fail for a counter; `context` sets the counters' command processing and snapshots.
+  * counters and, optionally, two projections, one events-based and one aggregate-based. `managed` starts them through
+  * the projections runtime (M4), so new ones are first built from the stored events; otherwise they are created
+  * directly and take only what is delivered live. Subscription versions live in the database (F3). `failing` makes the
+  * events-based projection fail for a counter; `context` sets the counters' command processing and snapshots.
   */
-class BenchSystem(name: String, stores: BenchStores, projections: Boolean, rebuild: Boolean = false,
+class BenchSystem(name: String, stores: BenchStores, projections: Boolean, managed: Boolean = false,
                   failing: io.reactivecqrs.api.id.AggregateId => Boolean = _ => false, context: CounterContext = new CounterContext) {
 
   val system: ActorSystem = ActorSystem(name)
@@ -84,21 +87,38 @@ class BenchSystem(name: String, stores: BenchStores, projections: Boolean, rebui
   val eventBus: ActorRef = system.actorOf(Props(new EventsBusActor()), "eventBus")
 
   val counters: ActorRef = system.actorOf(AggregateCommandBusActor(context, uidGenerator, stores.eventStore,
-    stores.commandResponseState, eventBus, eventsReplayMode = rebuild), "counters")
+    stores.commandResponseState, eventBus), "counters")
 
-  /** The table whose increments sum shows how far the events-based projection got. */
-  val progressTable: String = "projection_" + name + "_progress"
+  /** The table whose increments sum shows how far the events-based projection got (its first build's, when managed). */
+  val progressTable: String = "projection_" + name + "_progress" + (if (managed) "_v1" else "")
 
-  private val subscribers = if (projections) {
-    val progress = new PostgresDocumentStore[CounterProgress](name + "_progress", stores.mpjsons, new NoopDocumentStoreCache[CounterProgress, AnyRef])
-    val state = new PostgresDocumentStore[Counter](name + "_state", stores.mpjsons, new NoopDocumentStoreCache[Counter, AnyRef])
-    List(system.actorOf(Props(new CountingProjection(subscriptionsState, progress, name + "Progress", failing)).withDispatcher(BlockingDispatcher.id), "progressProjection"),
-      system.actorOf(Props(new CounterStateProjection(subscriptionsState, state, name + "State")).withDispatcher(BlockingDispatcher.id), "stateProjection"))
-  } else Nil
+  private def progressStore(table: String) = new PostgresDocumentStore[CounterProgress](table, stores.mpjsons, new NoopDocumentStoreCache[CounterProgress, AnyRef])
+  private def stateStore(table: String) = new PostgresDocumentStore[Counter](table, stores.mpjsons, new NoopDocumentStoreCache[Counter, AnyRef])
+
+  private val subscribers = if (!projections) Nil else if (managed) {
+    val runtime = new Projections(system, ProjectionsSettings(stores.eventStore, subscriptionsState, stores.registry, eventBus, Seq(context)))
+    List(runtime.start[CountingProjection](name + "Progress", 1, "progressProjection") { build =>
+        new CountingProjection(subscriptionsState, progressStore(build.documentStore(name + "_progress")), name + "Progress", failing)
+      },
+      runtime.start[CounterStateProjection](name + "State", 1, "stateProjection") { build =>
+        new CounterStateProjection(subscriptionsState, stateStore(build.documentStore(name + "_state")), name + "State")
+      })
+  } else {
+    List(system.actorOf(Props(new CountingProjection(subscriptionsState, progressStore(name + "_progress"), name + "Progress", failing))
+      .withDispatcher(BlockingDispatcher.id), "progressProjection"),
+      system.actorOf(Props(new CounterStateProjection(subscriptionsState, stateStore(name + "_state"), name + "State"))
+        .withDispatcher(BlockingDispatcher.id), "stateProjection"))
+  }
   eventBus ! EventsBusActor.RegisterSubscribers(subscribers)
 
-  // Re-delivers what waits in the outbox (D8); a rebuild system publishes nothing of its own.
-  if (!rebuild) system.actorOf(Props(new OutboxPollerActor(stores.eventStore, eventBus)), "outboxPoller")
+  // Re-delivers what waits in the outbox (D8).
+  system.actorOf(Props(new OutboxPollerActor(stores.eventStore, eventBus)), "outboxPoller")
+
+  /** Whether every managed projection serves the build it has and builds nothing (M4). */
+  def built(): Boolean = subscribers.forall { supervisor =>
+    val builds = Await.result(org.apache.pekko.pattern.ask(supervisor, GetBuilds)(10.seconds), 10.seconds).asInstanceOf[Builds]
+    builds.active.isDefined && builds.building.isEmpty
+  }
 
   /** Increments the events-based projection has applied so far. */
   def projectedIncrements(): Long = DB.readOnly { implicit session =>

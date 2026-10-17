@@ -248,12 +248,6 @@ class MemoryEventStoreState extends EventStoreState {
         metadata = metadata.getOrElse(row.metadata)) else row)
   }
 
-  override def readAndProcessAllEvents(aggregateType: String, batchPerAggregate: Boolean, eventHandler: (Seq[EventInfo[_]], AggregateId, AggregateType) => Unit): Unit = {
-    synchronized(eventsRows).reverse.filter(_.aggregateType.typeName == aggregateType).foreach(row => { // oldest first, as in SQL
-      eventHandler(Seq(EventInfo(row.aggregateVersion, row.event, row.userId, row.timestamp, row.metadata)), row.aggregateId, row.aggregateType)
-    })
-  }
-
   override def readCommitted(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[CommittedEvent] = synchronized {
     val wanted = types.toSet
     eventsRows.reverseIterator.filter(row => row.eventId > after && wanted.contains(row.aggregateType) && inScope(row.aggregateId, scope)).take(limit).map { row =>
@@ -320,13 +314,6 @@ class MemoryEventStoreState extends EventStoreState {
     if (versions.isEmpty) None else Some(AggregateVersion(versions.min))
   }
 
-  override def countAllEvents(): Int = synchronized(eventsRows.size)
-
-  override def countEventsForAggregateTypes(aggregateTypes: Seq[String]): Int = synchronized {
-    val types = aggregateTypes.toSet
-    eventsRows.count(row => types.contains(row.aggregateType.typeName))
-  }
-
   override def localTx[A](block: (DBSession) => A): A = {
     block(NoSession)
   }
@@ -337,10 +324,6 @@ class MemoryEventStoreState extends EventStoreState {
         val upTo = eventStore(id).last.version.asInt - policy.keepLast
         if (upTo - squashedVersions.get(id).map(_.asInt).getOrElse(0) >= policy.afterEvents) Some(id -> AggregateVersion(upTo)) else None
       }.take(limit).toSeq
-  }
-
-  override def readNotYetPublishedEvents(): Map[AggregateId, AggregateVersion] = synchronized {
-    eventsToPublish.keys.groupBy(_._1).map(a => a._1 -> AggregateVersion(a._2.map(_._2.asInt).min))
   }
 
   // The SQL version updates the stored event in place; restore and re-publication then read the new one.
