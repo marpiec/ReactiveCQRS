@@ -3,6 +3,7 @@ package io.reactivecqrs.testdomain.spec
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
+import io.reactivecqrs.core.cluster.Singletons
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.documentstore.{Document, DocumentStore, NoopDocumentStoreCache, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus.EventsBusActor
@@ -29,10 +30,13 @@ case class SubscribeToNotes(subscriptionId: String, listener: ActorRef)
 
 /** The lines of each note, from its state; `shout` (a later version's code) keeps them in capitals. Pushes each update to
   * its subscribers, unless it is being rebuilt. */
-class ManagedNotes(val subscriptionsState: SubscriptionsState, store: DocumentStore[NoteLines], shout: Boolean) extends SubscribableProjectionActor {
+// `buildDelayMillis`: each note takes that long while the projection is built, so a build can be watched at work.
+class ManagedNotes(val subscriptionsState: SubscriptionsState, store: DocumentStore[NoteLines], shout: Boolean, buildDelayMillis: Long = 0)
+  extends SubscribableProjectionActor {
   protected val listeners = List(AggregateListener[BuildNote] { (id, _, created, note) => implicit session =>
     note match {
       case Some(n) =>
+        if (rebuilding && buildDelayMillis > 0) Thread.sleep(buildDelayMillis)
         val lines = NoteLines(n.title, if (shout) n.lines.map(_.toUpperCase) else n.lines)
         if (created) store.insertDocument(n.space, id.asLong, lines) else store.overwriteDocument(id.asLong, lines)
         if (!rebuilding) sendUpdate[NoteLines](lines)
@@ -163,15 +167,20 @@ class ProjectionsSpec extends CommonSpec {
       id
     }
 
-    def stop(): Unit = (supervisors ++ Seq(bus, notes)).foreach(system.stop)
+    def stop(): Unit = {
+      supervisors.foreach(Singletons.stop(system, _)) // in a cluster, the singleton too
+      Seq(bus, notes).foreach(system.stop)
+    }
   }
 
   /** The runtime with names unique to its node, as each node of the test runs in one actor system. */
   private class ProjectionsOf(val runtime: Projections, node: Int)
 
-  private def notesProjection(projections: Projections, name: String, version: Int, table: String, whileBuilding: WhileBuilding = ServeLive): ActorRef =
+  private def notesProjection(projections: Projections, name: String, version: Int, table: String, whileBuilding: WhileBuilding = ServeLive,
+                              buildDelayMillis: Long = 0): ActorRef =
     projections.start[ManagedNotes](name, version, name + "-" + systems, whileBuilding) { build =>
-      new ManagedNotes(subscriptions, new PostgresDocumentStore[NoteLines](build.documentStore(table), mpjsons, new NoopDocumentStoreCache), shout = version > 1)
+      new ManagedNotes(subscriptions, new PostgresDocumentStore[NoteLines](build.documentStore(table), mpjsons, new NoopDocumentStoreCache), shout = version > 1,
+        buildDelayMillis)
     }
 
   private def builds(supervisor: ActorRef): Builds = supervisor.askActor[Builds](GetBuilds)(5.seconds)
@@ -212,6 +221,9 @@ class ProjectionsSpec extends CommonSpec {
       var v1: ActorRef = null
       val first = new Node()(projections => { v1 = notesProjection(projections, "m4p-bump", 1, "m4p_bump"); Seq(v1) })
       val note = first.create("note", "one")
+      // Enough notes that version 2's build, 30 ms each, takes seconds: on a cluster the first question through the
+      // singleton's proxy waits about a second for it to be found (found on a cluster of one).
+      (1 to 100).foreach(i => first.create("filler " + i))
       switchedTo(v1, 1)
       awaitAssert(linesOf(v1, note) mustBe Some(NoteLines("note", Vector("one"))), 10.seconds)
       val oldSubscriber = registry.projection("m4p-bump").get.active.get.subscriber
@@ -220,7 +232,7 @@ class ProjectionsSpec extends CommonSpec {
       When("the code at version 2 starts, building slowly")
       var v2: ActorRef = null
       val second = new Node(settings = BuilderSettings(pageSize = 1, chunkEvents = 1))(projections => {
-        v2 = notesProjection(projections, "m4p-bump", 2, "m4p_bump"); Seq(v2)
+        v2 = notesProjection(projections, "m4p-bump", 2, "m4p_bump", buildDelayMillis = 30); Seq(v2)
       })
       awaitAssert(builds(v2).building.map(_.number) mustBe Some(2), 10.seconds)
 
@@ -343,7 +355,8 @@ class ProjectionsSpec extends CommonSpec {
       awaitAssert(supervisor.askActor[Option[MemoText]](GetMemoText(ids.head))(5.seconds) mustBe None, 10.seconds)
       supervisor.askActor[Option[MemoText]](GetMemoText(ids.last))(5.seconds) mustBe Some(MemoText("memo " + ids.last.asLong))
       awaitAssert(DB.readOnly(implicit s => sql"SELECT count(*) FROM events WHERE aggregate_id = ${ids.head.asLong}".map(_.int(1)).single().get) mustBe 0, 10.seconds)
-      Seq(supervisor, bus, memos).foreach(system.stop)
+      Singletons.stop(system, supervisor)
+      Seq(bus, memos).foreach(system.stop)
     }
 
     Scenario("a build retired before a stop let it be dropped is dropped at the next start (F116)") {
@@ -470,7 +483,7 @@ class ProjectionsSpec extends CommonSpec {
       watcher.expectNoMessage(1.second)
       busB.send(supervisor, EventsBusActor.SubscriberRemoved(old))
       watcher.expectTerminated(old, 10.seconds)
-      system.stop(supervisor)
+      Singletons.stop(system, supervisor)
     }
 
     Scenario("a context version bump rebuilds the projections that receive its states, and only them (D63)") {

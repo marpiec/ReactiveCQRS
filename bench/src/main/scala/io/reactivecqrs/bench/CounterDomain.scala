@@ -15,6 +15,15 @@ case class Counter(value: Long)
 case class CreateCounter(userId: UserId) extends FirstCommand[Counter, CustomCommandResponse[_]]
 case class Increment(userId: UserId, aggregateId: AggregateId, note: String) extends ConcurrentCommand[Counter, CustomCommandResponse[_]]
 
+/** Takes `millis` to handle, holding its thread, as a handler that computes or waits for minutes does (heavy handlers,
+  * docs/SCALING.md); `async`: the work runs as an `AsyncCommandResult` on a pool of the application's own instead. */
+case class HeavyIncrement(userId: UserId, aggregateId: AggregateId, millis: Long, async: Boolean) extends ConcurrentCommand[Counter, CustomCommandResponse[_]]
+
+object HeavyWork {
+  /** The application's own threads for heavy work, so it never holds the threads the library's actors run on. */
+  val pool: scala.concurrent.ExecutionContext = scala.concurrent.ExecutionContext.fromExecutor(java.util.concurrent.Executors.newCachedThreadPool())
+}
+
 /** Carries a document, as an upload would, which is stored in one event (large commands and events, docs/SCALING.md). */
 case class AttachDocument(userId: UserId, aggregateId: AggregateId, content: String) extends ConcurrentCommand[Counter, CustomCommandResponse[_]]
 
@@ -30,6 +39,14 @@ class CounterContext extends AggregateContext[Counter] {
     case _: CreateCounter => CommandSuccess(CounterCreated(SpaceId(0)))
     case c: Increment => CommandSuccess(Incremented(c.note))
     case c: AttachDocument => CommandSuccess(DocumentAttached(c.content))
+    case c: HeavyIncrement if c.async =>
+      AsyncCommandResult(scala.concurrent.Future {
+        Thread.sleep(c.millis)
+        CommandSuccess(Incremented("heavy"))
+      }(HeavyWork.pool))
+    case c: HeavyIncrement =>
+      Thread.sleep(c.millis)
+      CommandSuccess(Incremented("heavy"))
   }
 
   override def eventHandlers = (_, _, counter) => {
@@ -46,6 +63,11 @@ class SerialCounterContext extends CounterContext {
 /** D30: a snapshot every 200 events and when the owner stops. */
 class SnapshottingCounterContext extends CounterContext {
   override val snapshots: Option[SnapshotPolicy] = Some(SnapshotPolicy(every = 200))
+}
+
+/** A command timeout of `timeout` instead of 60 s, for handlers that take longer than it. */
+class TimedCounterContext(timeout: scala.concurrent.duration.FiniteDuration) extends CounterContext {
+  override val commandTimeout: scala.concurrent.duration.FiniteDuration = timeout
 }
 
 case class CounterProgress(increments: Long)

@@ -46,6 +46,7 @@ object Baseline {
                     longAggregateEvents: Int = 50000,
                     largeSize: Int = 5000000,
                     largeCommands: Int = 20,
+                    heavyMillis: Int = 5000,
                     scenarios: Set[String] = Set.empty)
 
   private def configFrom(arguments: Seq[String]): Config = {
@@ -60,6 +61,7 @@ object Baseline {
       int("soakEventsPerAggregate", defaults.soakEventsPerAggregate), int("soakFailingSeconds", defaults.soakFailingSeconds),
       int("restartCycles", defaults.restartCycles), int("burstCommands", defaults.burstCommands),
       int("longAggregateEvents", defaults.longAggregateEvents), int("largeSize", defaults.largeSize), int("largeCommands", defaults.largeCommands),
+      int("heavyMillis", defaults.heavyMillis),
       named.get("scenarios").map(_.split(",").map(_.trim).toSet).getOrElse(defaults.scenarios))
   }
 
@@ -77,7 +79,7 @@ object Baseline {
       val stores = new BenchStores
       report.environment(DatabaseCounters.serverVersion())
 
-      // `scenarios=commands,contended,serial,rebuild,restore,soak,deliverySoak,burst,long,large` runs only those; all by default.
+      // `scenarios=commands,contended,serial,rebuild,restore,soak,deliverySoak,burst,long,large,heavy` runs only those; all by default.
       def runs(scenario: String): Boolean = config.scenarios.isEmpty || config.scenarios.contains(scenario)
       if (runs("commands")) {
         val withProjections = startup(stores, report)
@@ -105,6 +107,7 @@ object Baseline {
       if (runs("burst")) burst(stores, config, report)
       if (runs("long")) longAggregate(stores, config, report)
       if (runs("large")) large(stores, config, report)
+      if (runs("heavy")) heavy(stores, config, report)
     } finally {
       BenchDatabase.drop()
     }
@@ -425,7 +428,8 @@ object Baseline {
     val eventsPeak = Heap.peak()
 
     val serializer = new ClusterSerializer(system.system.asInstanceOf[ExtendedActorSystem])
-    def kib(message: AnyRef): String = Try(serializer.toBinary(message).length).map { bytes =>
+    // Its size as written, not what goes out: a message over the limit goes out as a marker (F121).
+    def kib(message: AnyRef): String = Try(serializer.sizeOf(message)).map { bytes =>
       if (bytes < 10240) s"$bytes bytes" else f"${bytes / 1024.0}%.0f KiB"
     }.getOrElse("not serializable")
     val all = events.getOrElse(Nil)
@@ -535,6 +539,93 @@ object Baseline {
         "for this class; the library's default is 100 000 characters).")
   }
 
+  /** Command handlers that take `heavyMillis`, standing in for minutes: more at once than Pekko's default dispatcher has
+    * threads, holding their threads or running on a pool of their own, with a light command on another aggregate
+    * meanwhile; one on an aggregate that light commands change while it runs; one longer than its timeout. */
+  private def heavy(stores: BenchStores, config: Config, report: Report): Unit = {
+    val heavyMillis = config.heavyMillis.toLong
+    val system = new BenchSystem("heavy", stores, projections = false)
+    val threads = defaultDispatcherThreads(system.system)
+    val count = threads + 4
+
+    def timeOf(work: => Any): Long = {
+      val started = System.nanoTime()
+      work
+      System.nanoTime() - started
+    }
+
+    // Heavy commands on as many aggregates, sent at once; half a second later a light command on another aggregate.
+    def wave(async: Boolean): Seq[String] = {
+      val ids = (1 to count).map(_ => created(system))
+      val other = created(system)
+      val answered = new CountDownLatch(count)
+      val outcomes = new Outcomes
+      val last = new AtomicLong()
+      val started = System.nanoTime()
+      ids.foreach { id =>
+        (system.counters ? HeavyIncrement(userId, id, heavyMillis, async))(Timeout(5.minutes)).onComplete { result =>
+          result match {
+            case Success(response: CustomCommandResponse[_]) => outcomes.add(response)
+            case Success(other) => outcomes.addName(other.getClass.getSimpleName)
+            case Failure(e) => outcomes.addName(e.getClass.getSimpleName)
+          }
+          last.accumulateAndGet(System.nanoTime() - started, (a, b) => math.max(a, b))
+          answered.countDown()
+        }(ExecutionContext.global)
+      }
+      Thread.sleep(500)
+      val lightNanos = timeOf(send(system.counters, Increment(userId, other, "light")))
+      answered.await(5, TimeUnit.MINUTES)
+      Seq(s"$count at once, " + (if (async) "each on a pool of the application's own (`AsyncCommandResult`)" else "each holding its thread"),
+        s"${outcomes.summary}; the last answered after ${millis(last.get)}; a light command on another aggregate meanwhile: ${millis(lightNanos)}")
+    }
+
+    // A heavy command, its work on its own pool, on an aggregate that light commands change while it runs.
+    def contended(): Seq[String] = {
+      val id = created(system)
+      val started = System.nanoTime()
+      val heavyAnswer = (system.counters ? HeavyIncrement(userId, id, heavyMillis, async = true))(Timeout(5.minutes))
+      val lights = new Latencies
+      val lightOutcomes = new Outcomes
+      while (!heavyAnswer.isCompleted && System.nanoTime() - started < 4 * heavyMillis * 1000000L) {
+        val sent = System.nanoTime()
+        lightOutcomes.add(send(system.counters, Increment(userId, id, "light")))
+        lights.record(System.nanoTime() - sent)
+        Thread.sleep(200)
+      }
+      val heavyOutcome = Try(Await.result(heavyAnswer, 5.minutes)).map(_.getClass.getSimpleName).getOrElse("no answer")
+      Seq("one on an aggregate that light commands change while it runs (concurrent mode)",
+        s"$heavyOutcome after ${millis(System.nanoTime() - started)}; light commands meanwhile: ${lightOutcomes.summary}, latency p50 / max " +
+          f"${lights.percentileMillis(50)}%.0f / ${lights.percentileMillis(100)}%.0f ms")
+    }
+
+    // One longer than its context's timeout: answered at the timeout, and its events never stored afterwards (R5).
+    def timedOut(): Seq[String] = {
+      val timed = new BenchSystem("heavy-timed", stores, projections = false, context = new TimedCounterContext((heavyMillis / 2).millis))
+      val id = created(timed)
+      var answer: CustomCommandResponse[_] = null
+      val answeredAfter = timeOf { answer = send(timed.counters, HeavyIncrement(userId, id, heavyMillis, async = true)) }
+      Thread.sleep(heavyMillis) // its handler ends meanwhile
+      val version = Try(Await.result((timed.counters ? GetAggregate(id))(Timeout(1.minute)), 2.minutes).asInstanceOf[Try[Aggregate[Counter]]].get.version.asInt)
+      timed.shutdown()
+      Seq(s"one longer than its timeout (${heavyMillis / 2} ms)", s"${answer.getClass.getSimpleName} after ${millis(answeredAfter)}; " +
+        s"the aggregate's version once the handler ended: ${version.map(_.toString).getOrElse("not read")} (1: nothing stored)")
+    }
+
+    val rows = Seq(wave(async = false), wave(async = true), contended(), timedOut())
+    system.shutdown()
+    report.section(s"Command handlers of ${heavyMillis} ms", Seq("Case", "Outcome"), rows,
+      s"Each handler takes ${heavyMillis} ms, standing in for one that takes minutes. Pekko's default dispatcher, on which the library " +
+        s"runs command handlers and its buses, has $threads threads here; the command timeout is 60 s unless said otherwise.")
+  }
+
+  // Pekko's own rule for a fork-join dispatcher's size.
+  private def defaultDispatcherThreads(system: org.apache.pekko.actor.ActorSystem): Int = {
+    val c = system.settings.config.getConfig("pekko.actor.default-dispatcher.fork-join-executor")
+    math.min(math.max(math.ceil(Runtime.getRuntime.availableProcessors * c.getDouble("parallelism-factor")).toInt, c.getInt("parallelism-min")),
+      c.getInt("parallelism-max"))
+  }
+
   private def writeHistory(stores: BenchStores, id: AggregateId, events: Int, note: String): Unit = {
     var version = 0
     while (version < events) {
@@ -612,7 +703,7 @@ object Baseline {
           s"notes of ${config.noteSize} characters; rebuild data ${config.rebuildAggregates} x ${config.rebuildEventsPerAggregate} events; " +
           s"restore sizes ${config.restoreSizes.mkString(", ")}; soak ${config.soakSeconds} s; " +
           s"delivery soak ${config.soakAggregates} x ${config.soakEventsPerAggregate} events, failing ${config.soakFailingSeconds} s, ${config.restartCycles} restarts; " +
-          s"large: ${config.largeCommands} documents of ${config.largeSize} characters")))
+          s"large: ${config.largeCommands} documents of ${config.largeSize} characters; heavy handlers of ${config.heavyMillis} ms")))
     }
 
     def section(title: String, header: Seq[String], rowsIn: Seq[Seq[String]], note: String): Unit = {

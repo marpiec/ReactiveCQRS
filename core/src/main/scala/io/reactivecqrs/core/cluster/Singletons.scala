@@ -19,5 +19,15 @@ object Singletons {
       system.actorOf(ClusterSingletonProxy.props("/user/" + name, ClusterSingletonProxySettings(system)), name + "-proxy")
     } else system.actorOf(props, name)
 
+  /** Stops what `start` started on this node: in a cluster its manager, with the singleton when it runs here, and its
+    * proxy; otherwise the actor. Stopping the proxy alone would leave the singleton running (found by the suites run
+    * on a cluster of one). Another node's manager takes the singleton over only when this node leaves the cluster. */
+  def stop(system: ActorSystem, started: ActorRef): Unit = {
+    if (isCluster(system) && started.path.name.endsWith("-proxy")) {
+      system.actorSelection("/user/" + started.path.name.stripSuffix("-proxy")) ! PoisonPill
+    }
+    system.stop(started)
+  }
+
   def isCluster(system: ActorSystem): Boolean = system.settings.ProviderClass == "org.apache.pekko.cluster.ClusterActorRefProvider"
 }

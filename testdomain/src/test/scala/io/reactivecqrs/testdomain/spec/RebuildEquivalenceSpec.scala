@@ -3,6 +3,7 @@ package io.reactivecqrs.testdomain.spec
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
+import io.reactivecqrs.core.cluster.Singletons
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.documentstore._
 import io.reactivecqrs.core.eventbus.EventsBusActor
@@ -197,7 +198,10 @@ class RebuildEquivalenceSpec extends CommonSpec {
     } else Nil
     bus ! RegisterSubscribers(supervisor +: referenceProjection)
 
-    def stop(): Unit = (Seq(supervisor, bus, lists, tags) ++ referenceProjection).foreach(system.stop)
+    def stop(): Unit = {
+      Singletons.stop(system, supervisor) // in a cluster, the singleton too
+      (Seq(bus, lists, tags) ++ referenceProjection).foreach(system.stop)
+    }
   }
 
   /** A random history: each command is drawn from `random`; a refused one (an undo or a duplication below a squash
