@@ -127,9 +127,9 @@ baseline-M4 adds restores of 100 000 events (356 ms, heap peak 102 MB) and 500 0
 
 **The default limit stops such an aggregate at 10 000 events.** `aggregateVersionLimit` (10 000 by
 default) refuses a command whose events would go past it. The caller gets `EventHandlingError`, and
-the log names `TooManyEventsException`. The check lets one event too many through: the aggregate
-stops at version 10 001 (F125). To allow longer histories, construct the `PostgresEventStoreState`
-with a larger limit. The limit applies to every type of that store.
+the log names `TooManyEventsException`. (Before M5 one more event got through, F125.) To allow
+longer histories, construct the `PostgresEventStoreState` with a larger limit. The limit applies
+to every type of that store.
 
 **Where length costs:**
 - **Restore.** Without a snapshot, an owner replays every event on its first message. That happens
@@ -321,4 +321,4 @@ Recorded in [KNOWN-ISSUES](KNOWN-ISSUES.md):
 | F122: the outbox poll groups the whole outbox every 30 s and keeps every waiting aggregate in memory | M5, with flow control |
 | F123: given-up aggregates wait for the poller's next start, even when their subscriber is back | M5, with flow control |
 | F124: a commit-order build walks the events of every type to find its own | M6 |
-| F125: the per-aggregate limit lets one event too many through | M5 |
+| F125: the per-aggregate limit let one event too many through | fixed in M5 |
