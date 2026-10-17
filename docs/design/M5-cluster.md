@@ -266,7 +266,7 @@ are internal and keep their sequences.
 
 - **The write switch:** `AggregateContext.writtenFrom: Map[Class[_], String]`, an event class and the
   app-version from which every node reads it. Each node keeps the lowest app-version among the
-  cluster's members (`AppVersions`, from cluster events) in the contexts of its command buses; an
+  cluster's members (`Members`, from cluster events) in the contexts of its command buses; an
   owner refuses to persist an event of such a class earlier (`CommandRejected`, retryable), and so
   does a squash with such a squash event (`SquashRefused`); a command handler asks
   `everyNodeRuns(version)` to write the older event meanwhile. When every member's app-version is

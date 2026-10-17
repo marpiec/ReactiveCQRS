@@ -594,6 +594,19 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Test:** `ChosenIdRaceSpec` (both owners pass the existence check before either inserts, as a table lock holds them until both wait; `EventHandlingError` before the fix).
 - **Found:** plan review at the M1 close (refinement of M5 item 3).
 
+#### F131 — Owners of a `Local` type on several nodes answered from states the others had moved past
+- **High** for clusters of several nodes, confirmed (reproduced in `LocalOwnersSpec`) · **Fixed in M5** (17/10/2026) · `AggregateOwner.caughtUp`, `Members`, `EventStoreState.storedVersion`
+- **Symptom:** `Local` is the default placement, and every node that serves a type has an owner of an aggregate it touched. A running owner read the store again only for a command that expected a newer version (I1 assumed one writer). So after node B wrote version 6, node A's owner answered `GetAggregate` with version 5 for as long as it ran (with 200 owners or fewer, it is never stopped as idle); `GetAggregateMinVersion` for version 6 through A waited and failed; the poller's `RepublishOutbox` and a projection's gap request through A re-published nothing past version 5, and the gap became a recorded failure after its retries, which blocks the aggregate's squash and permanent delete.
+- **Fix:** an owner of a `Local` type on a node that is not alone (`Members.alone`: not a cluster, or its only member) reads the aggregate's stored version and history generation (one key lookup) before it answers the state, a min-version query not reached (and again at the query's deadline), a re-publication and a squash, and restores the aggregate when they differ from its own. Commands are unchanged: a stale owner's command conflicts in the store, and the owner reads the aggregate again (F19). A sharded owner is the only one and never asks; changing a type's placement or `numberOfShards` makes two owners per aggregate while old and new nodes run together, so it needs a full stop (H10).
+- **Test:** `LocalOwnersSpec` (two nodes: a read, a re-publication, a min-version query waiting and one answered at once; all four red without the check), `MembersSpec` (whether the node is alone).
+- **Found:** M5 close, audit of the cluster.
+
+#### F138 — The write switch allowed every new event class before the node knew its cluster
+- **Low**, confirmed · **Fixed in M5** (17/10/2026) · `Members` (was `AppVersions`)
+- **Symptom:** the lowest app-version started as none, and an empty member list gave none too, which means "write every class". A new node that took a command for a `Local` type before it had joined (the readiness check usually keeps traffic away) could write a class that older members cannot read (D67).
+- **Fix:** in a cluster the lowest version is Pekko's 0.0.0 until the node knows a member, and again if it knows none. Test: `MembersSpec` (red before).
+- **Found:** M5 close, audit of the cluster.
+
 ### Event store and SQL
 
 #### F22 — Restore loads the whole event stream into memory before handling it

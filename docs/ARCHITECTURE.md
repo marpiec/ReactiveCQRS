@@ -1264,7 +1264,16 @@ deletes) and sends its owners everything as `ToOwner(aggregateId, message)`: the
 aggregate id, the shard `abs(id % numberOfShards)`. An owner takes its id from its entity name;
 a command for an id just taken from the pool carries `fresh`, so its owner does not read.
 `Local` (the default) keeps the bus's own owners, one per node, with the store's version check
-deciding between nodes.
+deciding between nodes. Such an owner does not see what the others write: on a node that is not
+alone (`cluster/Members`: a cluster with other members, or one whose members the node does not
+know yet), it compares the stored version and history generation with its own (one key lookup)
+before it answers the state, a min-version query it has not reached (and again at the query's
+deadline), a re-publication or a squash, and reads the aggregate again when they differ (F131).
+Its commands need no lookup: a stale owner's commit conflicts, and it reads the aggregate again
+(F19). Reads of a `Local` type on several nodes therefore cost a lookup each; a type read often
+in a cluster of several nodes is better `Sharded`. Changing a type's placement or
+`numberOfShards` makes two owners per aggregate while old and new nodes run together, and the
+sharded ones do not look: such a change needs a full stop, not a rolling upgrade.
 
 - **Owners made on a node use that node's settings:** they publish to that node's event bus
   with that node's command bus as the publisher, which deletes the outbox rows (F91). They tell
@@ -1382,13 +1391,14 @@ chosen ids through a command bus.
   nodes of the newest version, and a singleton runs on the oldest node, which is restarted last
   (D66, `ClusterBehaviourSpec`).
 - **New event classes (D67):** `AggregateContext.writtenFrom` maps a class added in a version to
-  that version. `cluster/AppVersions` keeps the lowest app-version among the cluster's members,
+  that version. `cluster/Members` keeps the lowest app-version among the cluster's members,
   from the members' events, in the contexts of the node's command buses; an owner answers a
   command whose events include such a class with `CommandRejected` until every member runs the
   version, and a squash with such a squash event with `SquashRefused`. A handler writes the older
   event meanwhile, asking `everyNodeRuns(version)`. When no member set an app-version (all at
-  Pekko's 0.0.0) or the system is not a cluster, everything is written. A version whose new
-  classes were written cannot be rolled back. A new command class can reach an owner on an old
+  Pekko's 0.0.0) or the system is not a cluster, everything is written; while a node knows no
+  member yet, nothing new is (F138). A version whose new classes were written cannot be rolled
+  back. A new command class can reach an owner on an old
   node during the rollout, which does not know it: send it only once every node runs its
   version.
 - **Readiness (D71):** `cluster/Readiness(system)` waits for each event bus until its subscribers
@@ -1398,7 +1408,7 @@ chosen ids through a command bus.
   idempotency key, through another node when a node leaves before it answered.
 
 `RollingUpgradeSpec` (four nodes in one JVM: two of version 1.0.0, two of 2.0.0, which adds an
-event class) covers it under load; `AppVersionsSpec` the switch's rules; `EventsBusActorSpec` the
+event class) covers it under load; `MembersSpec` the switch's rules; `EventsBusActorSpec` the
 readiness of a bus.
 
 ## 14. Metrics (R19, D56)

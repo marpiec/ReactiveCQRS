@@ -5,6 +5,7 @@ import java.time.temporal.ChronoUnit
 
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
+import io.reactivecqrs.core.cluster.Members
 import io.reactivecqrs.core.commandhandler.{Idempotency, IdempotencyKeyTakenException}
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
@@ -120,6 +121,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
   private val handlersContext: ExecutionContext = context.system.dispatchers.lookup("reactivecqrs.handler-dispatcher")
 
   private val aggregateId: AggregateId = id.getOrElse(AggregateId(self.path.name.toLong))
+  private val members = Members(context.system)
   private val metrics = ReactiveMetrics(context.system) // R19
   private val typeTag = Map("type" -> aggregateType.simpleName)
 
@@ -235,13 +237,15 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     case HandlerFinished(commandId, result) => handlerFinished(commandId, result)
     case RunAgain(commandId) => pending.get(commandId.asLong).foreach(command => if (waitsItsTurn(command)) contended.enqueue(commandId.asLong) else attempt(command))
     case CommandTimedOut(commandId) => timedOut(commandId)
-    case GetState(respondTo) => respondTo ! Success(aggregate)
+    case GetState(respondTo) => respondTo ! caughtUp().fold[Try[Aggregate[AGGREGATE_ROOT]]](Success(aggregate))(Failure(_))
     case GetStateMinVersion(respondTo, minVersion, maxMillis) => minVersionQuery(respondTo, minVersion, maxMillis)
     case MinVersionDeadline => answerExpiredMinVersionQueries()
     case PublishEventsAck(_, versions, _) => delivered(versions)
-    case RepublishOutbox(_) => eventStore.oldestVersionToPublish(aggregateId).foreach(from => outboxRepublishedUpTo = republish(from, None))
-    case RepublishRange(_, from, subscriber) => republish(from, Some(subscriber))
-    case Squash(respondTo, request) => respondTo ! squashHistory(request)
+    case RepublishOutbox(_) =>
+      if (caughtUp().isEmpty) eventStore.oldestVersionToPublish(aggregateId).foreach(from => outboxRepublishedUpTo = republish(from, None))
+    case RepublishRange(_, from, subscriber) => if (caughtUp().isEmpty) republish(from, Some(subscriber))
+    case Squash(respondTo, request) =>
+      respondTo ! caughtUp().fold(squashHistory(request))(failure => SquashRefused(request.id, "the aggregate cannot be restored: " + failure.getMessage))
     case StopOwner =>
       stopping = true
       stopIfDone()
@@ -269,6 +273,19 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
 
   private def aggregate: Aggregate[AGGREGATE_ROOT] =
     Aggregate[AGGREGATE_ROOT](aggregateId, version, if (version == AggregateVersion.ZERO) None else Option(root))
+
+  // F131: the owners of a `Local` aggregate on other nodes write it without this one. Before it answers what must be
+  // current (the state, a version asked for, a re-publication, a squash), the owner compares the stored version and
+  // history generation with its own, and restores the aggregate when they differ. A sharded owner is the aggregate's
+  // only one, and so is the owner on a node that is alone: they never ask.
+  private def caughtUp(): Option[AggregateRestoreFailedException] =
+    if (sharded || members.alone || eventStore.storedVersion(aggregateId).getOrElse((AggregateVersion.ZERO, 0)) == ((version, generation))) None
+    else restore() match {
+      case None =>
+        answerReachedMinVersionQueries()
+        None
+      case failure => failure
+    }
 
   // ************** Commands
 
@@ -679,7 +696,10 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
   // ************** Queries for a version not reached yet (F81)
 
   private def minVersionQuery(respondTo: ActorRef, minVersion: AggregateVersion, maxMillis: Int): Unit = {
-    if (version >= minVersion) {
+    val failure = if (version < minVersion) caughtUp() else None
+    if (failure.isDefined) {
+      respondTo ! Failure(failure.get)
+    } else if (version >= minVersion) {
       respondTo ! Success(aggregate)
     } else {
       minVersionQueries :+= MinVersionQuery(respondTo, minVersion, System.nanoTime() + maxMillis * 1000000L)
@@ -694,7 +714,9 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     scheduleMinVersionDeadline()
   }
 
+  // F131: another node's owner may have written the version asked for; the store says so before the queries fail.
   private def answerExpiredMinVersionQueries(): Unit = {
+    if (restoreFailure.isEmpty && minVersionQueries.exists(_.deadline <= System.nanoTime())) caughtUp()
     val now = System.nanoTime()
     val (expired, waiting) = minVersionQueries.partition(_.deadline <= now)
     expired.foreach(q => q.respondTo ! Failure(new AggregateInIncorrectVersionException(aggregateId, aggregateType, version, q.version)))

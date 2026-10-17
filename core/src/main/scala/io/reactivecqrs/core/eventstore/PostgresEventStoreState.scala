@@ -236,6 +236,11 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     sql"""SELECT history_generation FROM aggregates WHERE id = ${aggregateId.asLong} AND base_id = ${aggregateId.asLong}""".map(_.int(1)).single().getOrElse(0)
   }
 
+  override def storedVersion(aggregateId: AggregateId): Option[(AggregateVersion, Int)] = DB.readOnly { implicit session =>
+    sql"""SELECT base_version, history_generation FROM aggregates WHERE id = ${aggregateId.asLong} AND base_id = ${aggregateId.asLong}"""
+      .map(rs => (AggregateVersion(rs.int(1)), rs.int(2))).single()
+  }
+
   // D30, F119: the snapshots of these aggregates may hold states their history no longer gives: they go, and the
   // aggregates' history generation moves on, so an owner still holding such a state cannot write it as a snapshot again.
   private def historyChangedFor(aggregateIds: SQLSyntax)(implicit session: DBSession): Unit = {

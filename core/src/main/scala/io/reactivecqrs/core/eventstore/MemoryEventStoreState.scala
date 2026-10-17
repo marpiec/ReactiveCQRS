@@ -159,6 +159,10 @@ class MemoryEventStoreState extends EventStoreState {
 
   override def historyGeneration(aggregateId: AggregateId): Int = synchronized(generations.getOrElse(aggregateId, 0))
 
+  override def storedVersion(aggregateId: AggregateId): Option[(AggregateVersion, Int)] = synchronized {
+    eventStore.get(aggregateId).flatMap(_.lastOption).map(last => (last.version, generations.getOrElse(aggregateId, 0)))
+  }
+
   // As in PostgreSQL (D30, F119): their snapshots may be wrong; owners holding the states of before must not write them.
   private def historyChangedFor(aggregateIds: Set[AggregateId]): Unit = {
     snapshots --= aggregateIds

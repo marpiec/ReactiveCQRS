@@ -55,7 +55,7 @@ class ShardedCartContextV2 extends ShardedCartContext {
 /** One node of a cluster in this JVM (M5): an actor system with what the host starts on every node, over the test
   * database, with stores of its own as a process would have. `subscribers` starts what the node registers on its event
   * bus (projections' proxies, singletons); it runs once the node's buses exist. */
-class TestNode(val system: ActorSystem, subscribers: TestNode => Seq[ActorRef] = _ => Nil, cartContext: ShardedCartContext = new ShardedCartContext) {
+class TestNode(val system: ActorSystem, subscribers: TestNode => Seq[ActorRef] = _ => Nil, cartContext: ShoppingCartAggregateContext = new ShardedCartContext) {
   val mpjsons = new MPJsons
   val typesNames: PostgresTypesNamesState = new PostgresTypesNamesState().initSchema()
   val eventStore: PostgresEventStoreState = new PostgresEventStoreState(mpjsons, typesNames).initSchema()
@@ -89,7 +89,7 @@ object TestCluster {
   /** `count` nodes joined into one cluster, every one up; the first is the oldest. `appVersion` and `carts` give a node its
     * `pekko.cluster.app-version` (none: Pekko's 0.0.0) and its carts' context. */
   def start(count: Int, extra: String = "", subscribers: TestNode => Seq[ActorRef] = _ => Nil, appVersion: Int => String = _ => "",
-            carts: Int => ShardedCartContext = _ => new ShardedCartContext): Vector[TestNode] = {
+            carts: Int => ShoppingCartAggregateContext = _ => new ShardedCartContext): Vector[TestNode] = {
     TestDatabase.init()
     val systems = (0 until count).toVector.map(i => ActorSystem("cluster", config(extra + versionLine(appVersion(i)))))
     val seed = Cluster(systems.head).selfAddress
@@ -102,7 +102,7 @@ object TestCluster {
 
   /** `count` more nodes joined to the cluster of `to`, once every one is up. */
   def join(to: TestNode, count: Int, extra: String = "", subscribers: TestNode => Seq[ActorRef] = _ => Nil, appVersion: Int => String = _ => "",
-           carts: Int => ShardedCartContext = _ => new ShardedCartContext): Vector[TestNode] = {
+           carts: Int => ShoppingCartAggregateContext = _ => new ShardedCartContext): Vector[TestNode] = {
     val systems = (0 until count).toVector.map(i => ActorSystem("cluster", config(extra + versionLine(appVersion(i)))))
     systems.foreach(system => Cluster(system).join(to.cluster.selfAddress))
     awaitUp(systems :+ to.system, to.cluster.state.members.size + count)

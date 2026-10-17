@@ -74,6 +74,10 @@ abstract class EventStoreState {
     * the history, so that a state is never paired with a later generation than its own. */
   def historyGeneration(aggregateId: AggregateId): Int
 
+  /** The aggregate's stored version and history generation, by one key lookup; None for an aggregate not stored (yet, or
+    * any more). An owner that may share its aggregate with another node's owner compares it with its own (F131). */
+  def storedVersion(aggregateId: AggregateId): Option[(AggregateVersion, Int)]
+
   // ************** Rebuild (D58, D59)
 
   /** Up to `limit` events of the aggregates of `types` with row ids above `after`, in commit order (row id), each under

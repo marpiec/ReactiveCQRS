@@ -4,7 +4,7 @@ import java.util.concurrent.{ConcurrentHashMap, ConcurrentLinkedQueue}
 
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
-import io.reactivecqrs.core.cluster.{AppVersions, Singletons}
+import io.reactivecqrs.core.cluster.{Members, Singletons}
 import io.reactivecqrs.core.delivery.{OutboxPollerActor, OutboxPollerOptions, RedeliveryPolicy}
 import io.reactivecqrs.core.documentstore.{NoopDocumentStoreCache, PostgresDocumentStore}
 import io.reactivecqrs.core.projection.PostgresSubscriptionsState
@@ -117,7 +117,7 @@ class RollingUpgradeSpec extends AnyFeatureSpec with Matchers with Eventually wi
       }
 
       Then("while an old node is a member, the new class is not written, and a command that would write it is rejected")
-      AppVersions(newest.system).oldestAppVersion mustBe Some(Version("1.0.0"))
+      Members(newest.system).oldestAppVersion mustBe Some(Version("1.0.0"))
       // An owner on a new node runs version 2.0.0; one on an old node does not know the class.
       val onNewNode = newCarts.find(cart => Seq(newer, newest).exists(node => ownersOn(node).contains(cart.asLong))).get
       add(newest, onNewNode, "v2 early") mustBe a[CommandRejected]
