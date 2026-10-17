@@ -1,6 +1,6 @@
 package io.reactivecqrs.core.uid
 
-import org.apache.pekko.actor.{Actor, ActorRef, Status}
+import org.apache.pekko.actor.{Actor, ActorRef, ActorSystem, Props, Status}
 import io.reactivecqrs.core.util.{BlockingDispatcher, MyActorLogging}
 
 import scala.concurrent.{ExecutionContext, Future}
@@ -14,6 +14,16 @@ object UidGeneratorActor {
   case object GetNewAggregatesIdsPool
   case object GetNewCommandsIdsPool
   case object GetNewSagasIdsPool
+
+  /** A host's uid generator on PostgreSQL: aggregate ids in the installation's range (D39), read from the same setting the
+    * command buses check chosen ids against (`reactivecqrs.installation-number`); command and saga ids from their
+    * sequences. The generators are made at once, so a wrong installation number fails the host as it starts. */
+  def postgres(system: ActorSystem): Props = {
+    val aggregates = new PostgresUidGenerator("aggregates_uids_seq", Some(IdRange.of(system.settings.config)))
+    val commands = new PostgresUidGenerator("commands_uids_seq")
+    val sagas = new PostgresUidGenerator("sagas_uids_seq")
+    Props(new UidGeneratorActor(aggregates, commands, sagas))
+  }
 }
 
 

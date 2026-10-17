@@ -12,7 +12,7 @@ import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{DeletedPerm
 import io.reactivecqrs.core.delivery.RepublishRequest
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventsAck, RegisterPublisher}
 import io.reactivecqrs.core.eventstore.EventStoreState
-import io.reactivecqrs.core.uid.{IdPool, NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
+import io.reactivecqrs.core.uid.{IdPool, IdRange, NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
 import io.reactivecqrs.core.util.{BlockingDispatcher, MyActorLogging, RandomUtil}
 import org.slf4j.Logger
 
@@ -67,6 +67,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
 
   // F23: ids come from pools fetched ahead. While a command (or an id reservation) waits for a pool, the ones that arrive
   // after it wait too, in order.
+  private val idRange = IdRange.of(context.system.settings.config)
   private val aggregateIds = new IdPool
   private val commandIds = new IdPool
   private var waitingForIds = Vector[(Any, ActorRef)]()
@@ -139,9 +140,18 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
 
   // ************** Ids (F23)
 
-  private def withIds(message: Any, respondTo: ActorRef): Unit = {
-    if (waitingForIds.nonEmpty || !route(message, respondTo)) waitingForIds :+= (message -> respondTo)
-    askForIds()
+  private def withIds(message: Any, respondTo: ActorRef): Unit = refusedChoice(message) match {
+    case Some(reason) => respondTo ! FailureResponse(List(reason))
+    case None =>
+      if (waitingForIds.nonEmpty || !route(message, respondTo)) waitingForIds :+= (message -> respondTo)
+      askForIds()
+  }
+
+  // D39: a caller may choose a system or legacy id, or one of this installation's range, never another installation's, a
+  // negative one (ephemeral, D77), or one a JavaScript client cannot read.
+  private def refusedChoice(message: Any): Option[String] = message match {
+    case c: FirstCommand[_, _] => c.chosenAggregateId.flatMap(idRange.refusedChoice)
+    case _ => None
   }
 
   private def serveWaiting(): Unit =

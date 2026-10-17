@@ -231,6 +231,25 @@ So:
 pool that would leave the range or pass 2^53 is refused; existing ids stay as a legacy range;
 `chosenAggregateId` is checked against the range.
 
+As built in step 6: `IdRange(installation)` (`reactivecqrs.installation-number`, 0 by default: the
+legacy range `[1, 10^12)`, where every id made before 1.0 lives); the aggregate id generator moves
+its sequence to the range's start when it is behind, and refuses a pool past the range's end or
+2^53; the command bus refuses a chosen id that is not positive, not below 2^53, or in another
+installation's range (system and legacy ids, below 10^12, stay allowed). Command and saga ids
+are internal and keep their sequences.
+
+**Where it could go wrong, and what handles it (written before step 6's code):**
+
+| Circumstance | What happens | Handled by |
+|---|---|---|
+| A node starts again with the sequence already in its range | moving it again would reuse nothing, but must not move it back | it moves only forward, and only when behind the range's start (under the schema lock) |
+| The sequence is past the range's end: a wrong installation number, two numbers on one database, or the range used up | ids of another installation | the generator refuses at start, with the reason; a pool past the end is refused too |
+| A pool that would pass 2^53 | ids a JavaScript client reads wrong | refused; the bus answers the command with an error (F75) |
+| A rolling upgrade: old nodes take pools from a sequence a new node moved forward | larger ids than before | still unique; old nodes do not check the range, new ones do |
+| A chosen id that is negative (ephemeral, D77), not below 2^53, or in another installation's range | an ephemeral id stored, a misread id, a collision when installations' data meet | refused with `FailureResponse`, before anything runs |
+| A chosen id among the system ids (below 1001) or reserved earlier | the host's own ids | allowed: below 10^12, or in the installation's range |
+| Installation 0 (no number set) | the legacy range | as before 1.0, with the end and 2^53 checks |
+
 ## Rolling upgrades (D65–D73)
 
 - `pekko.cluster.app-version` is the host's configuration; the spike shows shards and

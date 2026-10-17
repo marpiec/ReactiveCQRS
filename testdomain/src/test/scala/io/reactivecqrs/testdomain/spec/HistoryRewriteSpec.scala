@@ -12,7 +12,7 @@ import io.reactivecqrs.core.eventstore.{NewEvents, PostgresEventStoreState}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
+import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorRef, Props}
 import scalikejdbc._
 
@@ -59,7 +59,7 @@ class HistoryRewriteSpec extends CommonSpec {
   private val userId = UserId(1)
 
   private def cartWithAnItem(): AggregateId = {
-    val cartId = AggregateId(System.nanoTime())
+    val cartId = AggregateId(TestIds.aggregate())
     eventStore.localTx(session => eventStore.persistEvents(cartId,
       NewEvents[ShoppingCart](userId, AggregateVersion.ZERO, Instant.now, Seq(ShoppingCartCreated("Groceries"))))(session)).get
     val added: CustomCommandResponse[_] = commandBus ?? AddItem(userId, cartId, AggregateVersion(1), "apple")

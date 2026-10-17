@@ -1292,3 +1292,24 @@ rebuild switches across every bus; a saga runner answers a caller on another nod
 the oldest node leaves, the projection, the poller and the saga runner move, and what was
 published meanwhile reaches the projection. `EventsBusActorSpec` covers the protocol with a
 proxy and a supervisor of probes; `ProjectionsSpec` the retirement with two buses.
+
+### 13.5 Aggregate ids across installations (D39)
+
+`uid/IdRange(installation)`: an installation makes aggregate ids from `installation × 10^12` up
+to the next installation's, below 2^53 (the largest whole number a JavaScript client reads
+exactly). Installation 0, the default (`reactivecqrs.installation-number`), is the legacy range
+below 10^12, where every id made before 1.0 lives; its first 1 000 ids are system ids.
+
+- `UidGeneratorActor.postgres(system)` makes the host's generators: the aggregate ids' moves its
+  sequence to the range's start when it is behind (never back, under the schema lock), refuses
+  to start when the sequence is past the range (a wrong number, or two on one database), and
+  refuses a pool past the range's end; command and saga ids keep their sequences, stopping only
+  at 2^53. The generators are made at once, so a wrong number fails the host as it starts.
+- The command bus refuses a chosen id (`FirstCommand.chosenAggregateId`) that is not positive
+  (negative ids are ephemeral aggregates', D77), not below 2^53, or in another installation's
+  range, with a `FailureResponse`, before anything runs; system and legacy ids stay allowed.
+- During a rolling upgrade, old nodes take pools from a sequence a new node moved forward:
+  their ids are larger, and still unique.
+
+`IdRangeSpec` covers the ranges and the generator against real sequences; `ChosenIdRaceSpec` the
+chosen ids through a command bus.

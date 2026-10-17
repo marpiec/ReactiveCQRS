@@ -10,7 +10,7 @@ import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
+import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
@@ -64,17 +64,30 @@ class ChosenIdRaceSpec extends CommonSpec {
     read.get
   }
 
+  feature("A first command's chosen id (D39)") {
+
+    scenario("is refused when not positive, not below 2^53, or in another installation's range; a legacy id is taken") {
+      Seq(AggregateId(-7), AggregateId(1L << 53), AggregateId(5000000000000L)).foreach { id =>
+        val answer: CustomCommandResponse[_] = nodes.head ?? CreateShoppingCartWithId(None, userId, id, "refused")
+        answer mustBe a[FailureResponse]
+      }
+      val legacy = AggregateId(TestIds.aggregate())
+      val answer: CustomCommandResponse[_] = nodes.head ?? CreateShoppingCartWithId(None, userId, legacy, "taken")
+      answer mustBe SuccessResponse(legacy, AggregateVersion(1))
+    }
+  }
+
   feature("A first command with a chosen id, run by two owners at once") {
 
     scenario("an idempotent one: both are answered with the response of the one that won") {
-      val cartId = AggregateId(System.nanoTime())
+      val cartId = AggregateId(TestIds.aggregate())
       race(CreateShoppingCartWithId(Some(ClientKey("race-" + cartId.asLong)), userId, cartId, "Groceries")) mustBe
         Seq.fill(2)(SuccessResponse(cartId, AggregateVersion(1)))
       stored(cartId).version mustBe AggregateVersion(1)
     }
 
     scenario("another one: the one that lost is answered with the conflict") {
-      val cartId = AggregateId(System.nanoTime())
+      val cartId = AggregateId(TestIds.aggregate())
       val answers = race(CreateShoppingCartWithId(None, userId, cartId, "Groceries"))
       answers must contain(SuccessResponse(cartId, AggregateVersion(1)))
       answers must contain(AggregateConcurrentModificationError(cartId, AggregateType.of[ShoppingCart], AggregateVersion.ZERO, AggregateVersion(1)))

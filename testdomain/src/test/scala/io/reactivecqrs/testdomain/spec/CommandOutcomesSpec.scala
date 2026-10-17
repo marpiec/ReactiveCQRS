@@ -10,7 +10,7 @@ import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{IdsPool, PostgresUidGenerator, UidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
+import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorIdentity, ActorRef, Identify, Props}
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.testkit.TestProbe
@@ -117,7 +117,7 @@ class CommandOutcomesSpec extends CommonSpec {
 
   Feature("A command for an aggregate that does not exist") {
     Scenario("the caller gets a concurrent-modification error at once instead of waiting for the timeout (F67)") {
-      val missing = AggregateId(System.nanoTime())
+      val missing = AggregateId(TestIds.aggregate())
 
       val response: CustomCommandResponse[_] = cartBus ?? AddItem(userId, missing, AggregateVersion(1), "apple")
 

@@ -16,7 +16,7 @@ import io.reactivecqrs.core.projection.PostgresSubscriptionsState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
+import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
@@ -264,7 +264,7 @@ class SquashSpec extends CommonSpec {
   Feature("A squash is refused, changing nothing (D51)") {
 
     Scenario("while events at or below the point wait in the outbox") {
-      val cartId = AggregateId(System.nanoTime())
+      val cartId = AggregateId(TestIds.aggregate())
       eventStore.localTx(session => eventStore.persistEvents(cartId,
         NewEvents[ShoppingCart](userId, AggregateVersion.ZERO, Instant.now, Seq(ShoppingCartCreated("Unpublished"), ItemAdded("apple"))))(session)).get
       refusal(cartId, 2) must include("outbox")

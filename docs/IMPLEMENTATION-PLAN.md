@@ -1600,3 +1600,19 @@ Open test-infrastructure items:
   their sender, a supervisor answering one bus, no ask again when instances stop, no ask again
   every tick, retiring after the first bus.
 - `sbt test`: core 229, testdomain 146, all pass.
+
+**17/10/2026: aggregate ids across installations (D39)**
+- The circumstances it could fail in were written down first (`docs/design/M5-cluster.md`, Ids).
+- `IdRange` and `reactivecqrs.installation-number` (0, the legacy range below 10^12, by default);
+  `PostgresUidGenerator(sequence, range)` moves the sequence forward into the range, refuses to
+  start past it and refuses pools past its end (or 2^53 without a range);
+  `UidGeneratorActor.postgres(system)` makes the three generators from the setting the command
+  buses use, eagerly; the command bus refuses chosen ids that are not positive, not below 2^53,
+  or in another installation's range (`FailureResponse`).
+- Found on the way: `MemoryUidGenerator` handed out id 0 first; it starts at 1001 now, as the
+  sequences do.
+- Tests: `IdRangeSpec` (core: ranges, moving forward and never back, refusing to start, refusing
+  pools); `ChosenIdRaceSpec` (chosen ids through the bus). Tests that choose ids take them from
+  `TestIds` (testutils), in the legacy range, instead of `System.nanoTime()`.
+- Neula's host steps for M5 are collected in H10 (KNOWN-ISSUES §4).
+- `sbt test`: core 235, testdomain 147, all pass.

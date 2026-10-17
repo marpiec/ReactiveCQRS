@@ -14,7 +14,7 @@ import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.core.util.BlockingDispatcher
 import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
+import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorRef, Props}
 
 import scala.concurrent.duration._
@@ -59,7 +59,7 @@ class DeliveryEndToEndSpec extends CommonSpec {
       Given("a cart with three events, delivered while the projection did not exist")
       val firstBus = system.actorOf(Props(new EventsBusActor()))
       firstBus ! RegisterSubscribers(Nil)
-      val cartId = AggregateId(System.nanoTime())
+      val cartId = AggregateId(TestIds.aggregate())
       val firstCommands = commandBusOn(firstBus)
       Seq[AnyRef](CreateShoppingCartWithId(None, userId, cartId, "Groceries"), AddItem(userId, cartId, AggregateVersion(1), "apple"),
         AddItem(userId, cartId, AggregateVersion(2), "pear")).foreach { command =>

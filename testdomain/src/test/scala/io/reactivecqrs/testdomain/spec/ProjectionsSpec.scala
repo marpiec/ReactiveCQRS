@@ -16,7 +16,7 @@ import io.reactivecqrs.core.rebuild._
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.core.util.BlockingDispatcher
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
+import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.testkit.TestProbe
 import scalikejdbc._
@@ -324,7 +324,7 @@ class ProjectionsSpec extends CommonSpec {
       val bus = system.actorOf(Props(new EventsBusActor()))
       val memos = system.actorOf(AggregateCommandBusActor(memoContext, uidGenerator, eventStore, responses, bus))
       def send(command: AnyRef): Unit = memos.askActor[CustomCommandResponse[_]](command)(10.seconds) mustBe a[SuccessResponse]
-      val ids = (1 to 60).map(_ => AggregateId(System.nanoTime()))
+      val ids = (1 to 60).map(_ => AggregateId(TestIds.aggregate()))
       ids.foreach(id => send(WriteMemo(userId, id, "memo " + id.asLong)))
       val firstEvent = DB.readOnly(implicit s => sql"SELECT id FROM events WHERE aggregate_id = ${ids.head.asLong}".map(_.long(1)).single().get)
       val runtime = new Projections(system, ProjectionsSettings(eventStore, subscriptions, registry, Seq(memoContext),

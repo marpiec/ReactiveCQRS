@@ -13,7 +13,7 @@ import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEvent
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
+import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.testkit.TestProbe
 import scalikejdbc._
@@ -34,7 +34,7 @@ class RepublishSpec extends CommonSpec {
 
   /** A cart with three events in the store and in the outbox; no actor has published them. */
   private def storedCart(): AggregateId = {
-    val cartId = AggregateId(System.nanoTime())
+    val cartId = AggregateId(TestIds.aggregate())
     eventStore.localTx { session =>
       eventStore.persistEvents(cartId, NewEvents[ShoppingCart](userId, AggregateVersion.ZERO,
         Instant.now, Seq(ShoppingCartCreated("Groceries"), ItemAdded("apple"), ItemAdded("pear"))))(session)

@@ -16,7 +16,7 @@ import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection.{PostgresSubscriptionsState, SubscriptionFailure, SubscriptionType}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
+import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorIdentity, ActorRef, Identify, Props}
 import org.apache.pekko.testkit.TestProbe
 
@@ -112,7 +112,7 @@ class PermanentDeleteSpec extends CommonSpec {
 
     Scenario("happens once every subscriber has acknowledged the permanent delete event") {
       val f = new Fixture
-      val memoId = AggregateId(System.nanoTime())
+      val memoId = AggregateId(TestIds.aggregate())
       val written: CustomCommandResponse[_] = f.commandBus ?? WriteMemo(userId, memoId, "note")
       written mustBe SuccessResponse(memoId, AggregateVersion(1))
       f.delivered(memoId) mustBe Seq(1)
@@ -130,7 +130,7 @@ class PermanentDeleteSpec extends CommonSpec {
     Scenario("waits while a subscription of the aggregate is failed, and happens on a later delivery once it is cleared (D20a)") {
       Given("a memo that a projection failed on")
       val f = new Fixture
-      val memoId = AggregateId(System.nanoTime())
+      val memoId = AggregateId(TestIds.aggregate())
       val written: CustomCommandResponse[_] = f.commandBus ?? WriteMemo(userId, memoId, "note")
       written mustBe SuccessResponse(memoId, AggregateVersion(1))
       f.delivered(memoId) mustBe Seq(1)
@@ -160,7 +160,7 @@ class PermanentDeleteSpec extends CommonSpec {
 
     Scenario("leaves no snapshot behind, also when the owner takes snapshots and stops after the delete") {
       val f = new Fixture(new MemoContext() { override val snapshots: Option[SnapshotPolicy] = Some(SnapshotPolicy(every = 100)) })
-      val memoId = AggregateId(System.nanoTime())
+      val memoId = AggregateId(TestIds.aggregate())
       val written: CustomCommandResponse[_] = f.commandBus ?? WriteMemo(userId, memoId, "note")
       written mustBe SuccessResponse(memoId, AggregateVersion(1))
       f.delivered(memoId) mustBe Seq(1)
@@ -180,7 +180,7 @@ class PermanentDeleteSpec extends CommonSpec {
     }
 
     Scenario("still waiting in the outbox after a restart, it is carried out when delivered again") {
-      val memoId = AggregateId(System.nanoTime())
+      val memoId = AggregateId(TestIds.aggregate())
       eventStore.localTx { session =>
         eventStore.persistEvents(memoId, NewEvents[Memo](userId, AggregateVersion.ZERO,
           Instant.now, Seq(MemoWritten("note"), MemoErased())))(session)
@@ -200,7 +200,7 @@ class PermanentDeleteSpec extends CommonSpec {
 
     /** A memo and a copy of it, both delivered, and the memo erased. */
     def erasedWithCopy(f: Fixture): (AggregateId, AggregateId) = {
-      val memoId = AggregateId(System.nanoTime())
+      val memoId = AggregateId(TestIds.aggregate())
       val written: CustomCommandResponse[_] = f.commandBus ?? WriteMemo(userId, memoId, "note")
       written mustBe SuccessResponse(memoId, AggregateVersion(1))
       f.delivered(memoId) mustBe Seq(1)

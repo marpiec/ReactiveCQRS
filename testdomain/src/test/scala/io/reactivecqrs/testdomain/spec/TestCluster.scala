@@ -7,7 +7,7 @@ import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCo
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
-import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
+import io.reactivecqrs.core.uid.UidGeneratorActor
 import io.reactivecqrs.testdomain.shoppingcart.{AddItemConcurrently, ItemAdded, ShoppingCart, ShoppingCartAggregateContext}
 import io.reactivecqrs.testutils.TestDatabase
 import org.apache.pekko.actor.{ActorRef, ActorSystem, Props}
@@ -42,8 +42,7 @@ class TestNode(val system: ActorSystem, subscribers: TestNode => Seq[ActorRef] =
   val eventStore: PostgresEventStoreState = new PostgresEventStoreState(mpjsons, typesNames).initSchema()
   private val responses = new PostgresCommandResponseState(mpjsons, typesNames).initSchema()
 
-  val uidGenerator: ActorRef = system.actorOf(Props(new UidGeneratorActor(new PostgresUidGenerator("aggregates_uids_seq"),
-    new PostgresUidGenerator("commands_uids_seq"), new PostgresUidGenerator("sagas_uids_seq"))), "uidGenerator")
+  val uidGenerator: ActorRef = system.actorOf(UidGeneratorActor.postgres(system), "uidGenerator")
   val eventBus: ActorRef = system.actorOf(Props(new EventsBusActor()), "eventBus")
   val carts: ActorRef = system.actorOf(AggregateCommandBusActor(new ShardedCartContext, uidGenerator, eventStore, responses, eventBus), "carts")
   eventBus ! EventsBusActor.RegisterSubscribers(subscribers(this))

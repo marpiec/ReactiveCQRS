@@ -14,7 +14,7 @@ import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.core.util.BlockingDispatcher
 import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
+import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorRef, Props}
 
 import scala.concurrent.duration._
@@ -67,7 +67,7 @@ class MetadataSpec extends CommonSpec {
   }
 
   private def storedCart(metadata: Option[EventMetadata] = None): AggregateId = {
-    val cartId = AggregateId(System.nanoTime())
+    val cartId = AggregateId(TestIds.aggregate())
     eventStore.localTx(session => eventStore.persistEvents(cartId,
       NewEvents[ShoppingCart](userId, AggregateVersion.ZERO, Instant.now, Seq(ShoppingCartCreated("Groceries")), metadata))(session)).get
     cartId

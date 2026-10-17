@@ -13,7 +13,7 @@ import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
+import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorRef, Props}
 import scalikejdbc._
 
@@ -41,7 +41,7 @@ class FailedRestoreSpec extends CommonSpec {
 
   /** A cart written straight to the store, so no actor has loaded it yet. */
   private def storedCart(): AggregateId = {
-    val cartId = AggregateId(System.nanoTime())
+    val cartId = AggregateId(TestIds.aggregate())
     eventStore.localTx { session =>
       eventStore.persistEvents(cartId,
         NewEvents[ShoppingCart](userId, AggregateVersion.ZERO, Instant.now, Seq(ShoppingCartCreated("Groceries"))))(session)

@@ -16,7 +16,7 @@ import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testutils.{CommonSpec, TestClock, TestDatabase}
+import io.reactivecqrs.testutils.{CommonSpec, TestClock, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.testkit.TestProbe
 
@@ -70,7 +70,7 @@ class OutboxPollerSpec extends CommonSpec {
   }
 
   private def newCart(f: Fixture): AggregateId = {
-    val cartId = AggregateId(System.nanoTime())
+    val cartId = AggregateId(TestIds.aggregate())
     val created: CustomCommandResponse[_] = f.commandBus ?? CreateShoppingCartWithId(None, userId, cartId, "Groceries")
     created mustBe SuccessResponse(cartId, AggregateVersion(1))
     cartId
@@ -83,7 +83,7 @@ class OutboxPollerSpec extends CommonSpec {
 
     Scenario("events committed before a restart reach the subscribers at the first poll") {
       Given("a cart committed but never published, as when the process stops right after the commit")
-      val cartId = AggregateId(System.nanoTime())
+      val cartId = AggregateId(TestIds.aggregate())
       eventStore.localTx { session =>
         eventStore.persistEvents(cartId, NewEvents[ShoppingCart](userId, AggregateVersion.ZERO,
           Instant.now, Seq(ShoppingCartCreated("Groceries"), ItemAdded("apple"))))(session)

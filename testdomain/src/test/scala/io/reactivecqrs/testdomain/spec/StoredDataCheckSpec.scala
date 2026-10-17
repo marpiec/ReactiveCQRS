@@ -15,7 +15,7 @@ import io.reactivecqrs.core.tools.StoredDataCheck.ProjectionTable
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.CreateMultipleCarts
 import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
+import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
 import org.apache.pekko.actor.ActorRef
 import scalikejdbc._
 
@@ -44,7 +44,7 @@ class StoredDataCheckSpec extends CommonSpec {
 
     Scenario("reports the rows of every kind of stored data, and which of them cannot be read") {
       Given("a cart with two events, a saga, an idempotent response and a projection document")
-      val cartId = AggregateId(System.nanoTime())
+      val cartId = AggregateId(TestIds.aggregate())
       eventStore.localTx { session =>
         eventStore.persistEvents(cartId, NewEvents[ShoppingCart](userId, AggregateVersion.ZERO,
           Instant.now, Seq(ShoppingCartCreated("Checked"), ItemAdded("apple"))))(session)
