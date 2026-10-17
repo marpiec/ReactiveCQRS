@@ -343,6 +343,7 @@ case class ReserveItems(idempotencyId: Option[SagaStep], userId: UserId, aggrega
   extends ConcurrentCommand[Stock, CustomCommandResponse[_]] with IdempotentCommand[SagaStep]
 ```
 
+<!-- snippet: e4/CheckoutSaga.scala#saga -->
 ```scala
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
@@ -350,6 +351,7 @@ import io.reactivecqrs.core.saga._
 import org.apache.pekko.actor.ActorRef
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
+
 import scala.concurrent.{ExecutionContext, Future}
 
 object CheckoutSaga {

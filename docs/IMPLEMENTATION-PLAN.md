@@ -2225,3 +2225,9 @@ Open test-infrastructure items:
   are definitions; `SagaRunnerSpec` (new) runs a definition's saga, a deprecated `SagaActor`'s, and
   resumes a saga a `SagaActor` stored under the definition of its name. Design: M7-release.md, "Saga
   definitions run by the library". Book: chapter 12 (with the move in five changes), 17, appendices.
+
+**17/10/2026: E4, a checkout saga, and the first chapter block from an example**
+- E4 (`examples/.../e4`): a stock and a payment account, and `CheckoutSaga`, a `SagaDefinition` that
+  reserves items, charges the customer and gives the items back when the charge is refused; a
+  runnable main and `CheckoutSagaSpec` (both paths). Chapter 12's checkout saga is now E4's region
+  (`<!-- snippet: e4/CheckoutSaga.scala#saga -->`), checked by `BookSnippetsSpec`.
