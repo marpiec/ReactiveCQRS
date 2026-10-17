@@ -2231,3 +2231,9 @@ Open test-infrastructure items:
   reserves items, charges the customer and gives the items back when the charge is refused; a
   runnable main and `CheckoutSagaSpec` (both paths). Chapter 12's checkout saga is now E4's region
   (`<!-- snippet: e4/CheckoutSaga.scala#saga -->`), checked by `BookSnippetsSpec`.
+
+**17/10/2026: E3, projections**
+- E3 (`examples/.../e3`, on E1's carts): one read model filled by the three kinds of listener (the
+  state, the events, both), a delayed query that reads its own write, and a listener that keeps
+  failing on one cart: recorded, shown by `GetProjectionStatus`, the other listeners going on, cleared
+  by `SkipFailedVersion`. A runnable main and `ProjectionsSpec`.
