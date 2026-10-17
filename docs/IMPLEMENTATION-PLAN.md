@@ -535,6 +535,11 @@ upgrade behaviour differences found by the spike.
 **Goal:** organizations can be purged, exported and imported between installations;
 history rewrites are complete; ephemeral aggregates and retention squash are available.
 
+Design, with the order of the work and each step's failure circumstances: `docs/design/M6-organizations.md`
+(17/10/2026). The archive (item 6) comes second, as the purge, the export and the rewrite each
+cover archived events; F124 comes first, as every organization operation ends with a rebuild of
+one space.
+
 **Work items**
 
 1. **Required space and backfill (D38, F49):** backfill tool for `space_id = -1` rows,
