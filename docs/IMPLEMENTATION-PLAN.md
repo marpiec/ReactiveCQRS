@@ -2088,3 +2088,10 @@ Open test-infrastructure items:
   (or its supervisor's) with a failure naming them, as one with a listener for `Any` does; the bus
   keeps waiting and logs the cause. Before, the second silently replaced the first.
   `ProjectionDeliverySpec` "F164", red before the fix. Book: chapter 8.
+
+**17/10/2026: F166, a permanent delete runs once its failure is cleared**
+- A projection that clears a failure (a retry reaching the failed version, or a skip) sends the bus
+  `Republish` for the aggregate, as the poller does, so a permanent delete the failure held is
+  carried out at once, not at the poller's next turn (up to 30 minutes). `ProjectionDeliverySpec`
+  "F166", red before the fix; the rest of the way (bus, command bus, owner, delete) is covered by
+  `EventsBusActorSpec` and `PermanentDeleteSpec`. Book: chapter 9.

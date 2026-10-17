@@ -375,8 +375,10 @@ that would break that promise wait until the record is gone:
   `SquashRefused(cartId, "a subscription of the aggregate is failed")`.
 - **Permanent delete** (chapter 6): the cart is not deleted yet. The command bus logs
   `Aggregate 43 of type ShoppingCart is not deleted yet: a subscription of it is failed`, and the
-  delete event's outbox row stays. Once the failure is retried or skipped, the next publication of
-  that row, on the poller's schedule above, finishes the delete.
+  delete event's outbox row stays. Once the failure is retried or skipped, the projection has the
+  cart's owner publish that row again at once, and the delete finishes. A failure record removed
+  another way (`clearSubscriptionsInfo` below) is not noticed: the delete then waits for the
+  poller's next turn, at most 30 minutes.
 
 > **Warning:** a projection you remove from the code leaves its failure records behind, and they
 > keep squashes refused and permanent deletes waiting. For a managed projection,

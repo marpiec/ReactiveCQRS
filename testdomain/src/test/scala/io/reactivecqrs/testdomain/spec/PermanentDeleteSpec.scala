@@ -150,7 +150,7 @@ class PermanentDeleteSpec extends CommonSpec {
       awaitAssert(eventStore.oldestVersionToPublish(memoId) mustBe Some(AggregateVersion(2)), 5.seconds, 50.millis)
       storedVersions(memoId) mustBe Seq(1, 2)
 
-      When("the failure is cleared and the erase is delivered again")
+      When("the failure is cleared and the erase is delivered again, as a projection that clears its failure asks (F166)")
       subscriptions.localTx { implicit session => subscriptions.clearFailure("PermanentDeleteSpecProjection", SubscriptionType.EVENTS, memoId) }
       f.commandBus ! RepublishOutbox(memoId)
       f.delivered(memoId) mustBe Seq(2)

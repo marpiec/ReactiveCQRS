@@ -695,9 +695,11 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         queue.failedAttempts = 0
         queue.retryOf.filter(_.version <= batch.to).foreach { failure =>
           queue.retryOf = None
-          Try(subscriptionsState.autoCommit(subscriptionsState.clearFailure(subscriberName, key.subscriptionType, key.aggregateId)(_))).failed
-            .foreach(e => log.error(e, "Projection " + projectionName + " applied the failed version of aggregate " + key.aggregateId.asLong +
-              " but could not clear its failure record; it is retried again at the next start"))
+          Try(subscriptionsState.autoCommit(subscriptionsState.clearFailure(subscriberName, key.subscriptionType, key.aggregateId)(_))) match {
+            case Success(_) => failureCleared(failure)
+            case Failure(e) => log.error(e, "Projection " + projectionName + " applied the failed version of aggregate " + key.aggregateId.asLong +
+              " but could not clear its failure record; it is retried again at the next start")
+          }
           log.info("Projection " + projectionName + " recovered from its failure on " + failure.aggregateType.simpleName + " " + key.aggregateId.asLong)
         }
         requestQueriesReplay()
@@ -960,6 +962,12 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     true
   }
 
+  // F166: what waits in the aggregate's outbox may wait for this failure: a permanent delete is not carried out while a
+  // subscription of the aggregate is failed. The owner re-publishes it now, through the bus, not at the poller's next
+  // turn (up to 30 minutes). Without a bus yet (a build before it goes live), the poller does it.
+  private def failureCleared(failure: SubscriptionFailure): Unit =
+    eventBus.foreach(_ ! Republish(failure.aggregateType, failure.aggregateId))
+
   // Marks each failed version as applied, then asks once for the versions after it: there may be none, and a later
   // event of the aggregate asks for any that went missing.
   private def skipFailedVersions(aggregateId: AggregateId): Int = failed.keys.filter(_.aggregateId == aggregateId).toSeq.count { key =>
@@ -974,6 +982,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         log.warning("Projection " + projectionName + " skipped version " + failure.version.asInt + " of " + failure.aggregateType.simpleName + " " + aggregateId.asLong)
         failed -= key
         republisher.foreach(_ ! RequestRepublish(self, failure.aggregateType, failure.aggregateId, failure.version.increment))
+        failureCleared(failure)
         true
       case Failure(e) =>
         log.error(e, "Projection " + projectionName + " could not skip version " + failure.version.asInt + " of aggregate " + aggregateId.asLong)

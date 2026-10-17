@@ -118,6 +118,9 @@ class ProjectionDeliverySpec extends CommonSpec {
     def requestedFrom(id: AggregateId): Int =
       bus.fishForSpecificMessage(3.seconds) { case RequestRepublish(_, `noteType`, `id`, from) => from.asInt }
 
+    def outboxRepublished(id: AggregateId): Unit =
+      bus.fishForSpecificMessage(3.seconds) { case Republish(`noteType`, `id`) => () }
+
     def applied(kind: String): Seq[(AggregateId, Seq[Int])] =
       projection.askActor[Vector[(String, AggregateId, Seq[Int])]](GetApplied)(3.seconds).collect { case (`kind`, id, versions) => (id, versions) }
 
@@ -449,6 +452,26 @@ class ProjectionDeliverySpec extends CommonSpec {
       f.requestedFrom(id) mustBe 2
       f.state.lastVersion(classOf[RecordingProjection].getName, SubscriptionType.EVENTS, id) mustBe AggregateVersion(1)
       f.applied("events") mustBe empty
+    }
+
+    Scenario("a failure cleared by a retry or a skip has the owner re-publish what waits in its outbox, such as a permanent delete the failure held (F166)") {
+      val f = new Fixture(ProjectionActorOptions.DEFAULT.withRetries(quickRetries).copy(gapRequestRepeat = 200.millis))
+      val (retried, skipped) = (newId(), newId())
+      f.failTimes(retried, 3)
+      f.failTimes(skipped, 3)
+      f.events(retried, 1)
+      f.failedFor(retried)
+      f.events(skipped, 1)
+      f.failedFor(skipped)
+
+      f.projection.askActor[FailedSubscriptionsHandled](RetryFailedSubscription(retried))(3.seconds) mustBe FailedSubscriptionsHandled(retried, 1)
+      f.requestedFrom(retried) mustBe 1
+      f.events(retried, 1)
+      f.acked(retried) mustBe Seq(1)
+      f.outboxRepublished(retried)
+
+      f.projection.askActor[FailedSubscriptionsHandled](SkipFailedVersion(skipped))(3.seconds) mustBe FailedSubscriptionsHandled(skipped, 1)
+      f.outboxRepublished(skipped)
     }
 
     Scenario("SkipFailedVersion also skips a failure at the squash event a subscription starts at (F113)") {
