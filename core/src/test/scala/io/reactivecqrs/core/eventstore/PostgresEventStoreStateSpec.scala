@@ -4,7 +4,7 @@ import java.time.Instant
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 
 import io.mpjsons.MPJsons
-import io.reactivecqrs.api.{AggregateSquashedException, AggregateType, AggregateVersion, Event, TooManyEventsException}
+import io.reactivecqrs.api.{AggregateSquashedException, AggregateType, AggregateVersion, Event, FirstEvent, TooManyEventsException}
 import io.reactivecqrs.api.id.{AggregateId, SpaceId}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.testutils.TestDatabase
@@ -14,6 +14,11 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
 import scala.util.{Success, Try}
+
+/** The first event of an aggregate of a given organization. */
+case class EventInSpace(space: Long) extends FirstEvent[SomeAggregate] {
+  def spaceId: SpaceId = SpaceId(space)
+}
 
 object PostgresEventStoreStateSpec {
   def storeState = {
@@ -281,6 +286,49 @@ class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStore
 
   private def orphanKeys(): Long = DB.readOnly { implicit session =>
     sql"""SELECT count(*) FROM event_keys k WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.id = k.id)""".map(_.long(1)).single().get
+  }
+
+  // R17: one batch of a purge, in its transaction.
+  Scenario("a purge batch deletes every row of its aggregates, and leaves out one an aggregate of another space reads") {
+    val store = eventStoreState.asInstanceOf[PostgresEventStoreState]
+    val space = SpaceId(9000000000L + System.nanoTime() % 1000000L)
+    val f = new TestFixture(eventStoreState)
+    val (purged, read, theirCopy) = (newId(), newId(), newId())
+    f.storeEvents(Seq(EventInSpace(space.asLong), EventB(2), EventB(3)), purged, AggregateVersion.ZERO)
+    f.storeEvents(Seq(Undo(1)), purged, AggregateVersion(3))
+    f.storeEvents(Seq(EventInSpace(space.asLong), EventB(2)), read, AggregateVersion.ZERO)
+    f.storeEvents(Seq(Copy(SpaceId(space.asLong + 1), read, AggregateVersion(2))), theirCopy, AggregateVersion.ZERO)
+    DB.autoCommit { implicit session =>
+      sql"""INSERT INTO events_archive (id, aggregate_id, version, event_type_id, event_type_version, event, user_id, event_time, archived)
+           | SELECT id, aggregate_id, version, event_type_id, event_type_version, event, user_id, event_time, current_timestamp FROM events
+           | WHERE aggregate_id = ${purged.asLong} AND version = 2""".stripMargin.update()
+      sql"""INSERT INTO snapshots (aggregate_id, version, context_version, schema_version, state, created)
+           | VALUES (${purged.asLong}, 3, 1, 1, '{}', current_timestamp)""".stripMargin.update()
+    }
+    def rows(id: AggregateId): Seq[Long] = DB.readOnly { implicit session =>
+      Seq("events", "events_archive", "events_to_publish", "snapshots").map(table =>
+        SQL(s"SELECT count(*) FROM $table WHERE aggregate_id = ?").bind(id.asLong).map(_.long(1)).single().get) ++
+        Seq(sql"SELECT count(*) FROM aggregates WHERE id = ${id.asLong}".map(_.long(1)).single().get,
+          sql"SELECT count(*) FROM noop_events n JOIN events e ON e.id = n.id WHERE e.aggregate_id = ${id.asLong}".map(_.long(1)).single().get)
+    }
+
+    store.spaceAggregates(space, AggregateId(Long.MaxValue), 10).map(_.aggregateId) mustBe Seq(purged, read).sortBy(-_.asLong)
+    store.spaceAggregates(space, read, 10).map(_.aggregateId) mustBe Seq(purged).filter(_.asLong < read.asLong)
+    store.spaceTypes(space) mustBe Set(AggregateType.of[SomeAggregate])
+    store.duplicatesInOtherSpaces(space) mustBe Seq((AggregateType.of[SomeAggregate], read, theirCopy))
+    rows(purged) mustBe Seq(4L, 1L, 4L, 1L, 1L, 2L)
+
+    val deleted = DB.localTx { implicit session =>
+      val ids = store.lockForPurge(space, Seq(purged, read))
+      ids mustBe Seq(purged)
+      store.purgeAggregates(ids)
+    }
+
+    (deleted("events"), deleted("noop_events"), deleted("events_archive"), deleted("snapshots"), deleted("aggregates")) mustBe ((4L, 2L, 1L, 1L, 1L))
+    rows(purged) mustBe Seq(0L, 0L, 0L, 0L, 0L, 0L)
+    keysOf(purged) mustBe empty
+    rows(read).take(1) mustBe Seq(2L)
+    store.spaceSize(space) mustBe 1
   }
 
   Scenario("each event gets a key of its aggregate's type and space from every procedure, and the key goes with its event (F124)") {

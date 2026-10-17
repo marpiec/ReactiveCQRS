@@ -280,6 +280,10 @@ purge.purge(SpaceId(42)): Future[PurgeReport]
 | The purge stops between batches | some aggregates gone; a copy in the space may read a base already gone | run it again: every step is idempotent, and the copy goes in the next run |
 | Responses stored before M6, sagas started before M6 | no `aggregate_id`, no `space_id` | responses expire with the retention (30 days by default); untagged sagas are not purged (documented) |
 | A host table with rows of the space | the library does not know it | a `PurgeHook`, in the batch's transaction |
+| A copy of another organization reads two of the space's aggregates (a copy of a copy) | the plan lists it once per base, and a second detach would find it detached | each copy is detached once, through its first base |
+
+Built as refined (17/10/2026). The index of an organization's aggregates became `(space_id, id)`, so
+that pages of a space come in id order without a sort (the targeted rebuild of a space reads it too).
 
 ## Export and import (D40)
 

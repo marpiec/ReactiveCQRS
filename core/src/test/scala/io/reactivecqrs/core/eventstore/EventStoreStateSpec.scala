@@ -6,7 +6,7 @@ import org.apache.pekko.actor.ActorRef
 import io.reactivecqrs.api.{AggregateSquashedException, AggregateType, AggregateVersion, AutomaticSquash, DuplicationEvent, Event, EventMetadata, EventWithVersion, FirstEvent, UndoEvent}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, SpaceId, UserId}
 import io.reactivecqrs.core.eventstore.NewEvents
-import io.reactivecqrs.testutils.CommonSpec
+import io.reactivecqrs.testutils.{CommonSpec, TestIds}
 
 import scala.concurrent.duration._
 import scala.util.Try
@@ -36,7 +36,7 @@ object Nesting {
 
 class TestFixture(val eventStoreState: EventStoreState) {
 
-  val aggregateId = AggregateId(System.nanoTime() + Math.random().toLong)
+  val aggregateId = AggregateId(TestIds.aggregate()) // unique in the run: consecutive nanoTime readings can be equal
   val commandId = CommandId(101)
   val userId = UserId(201)
   var expectedVersion = AggregateVersion(0)
@@ -411,7 +411,7 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     f.getEvents(Some(AggregateVersion(4))) mustBe Seq(EventA("one"), EventB(2))
   }
 
-  protected def newId(): AggregateId = AggregateId(System.nanoTime())
+  protected def newId(): AggregateId = AggregateId(TestIds.aggregate())
 
   protected def published(ids: AggregateId*): Unit = {
     ids.foreach(id => eventStoreState.deletePublished(id, (1 to 20).map(AggregateVersion(_))))
@@ -589,6 +589,27 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     published(copy)
     eventStoreState.deleteAggregatePermanently(base.aggregateId, Seq(copy -> EventA("copy"))) mustBe Right(())
     base.getEvents(id = copy) mustBe Seq(EventA("copy"))
+  }
+
+  // R17: a purge detaches the copies of other organizations, and only those, each once subscribers have its first event.
+  Scenario("Detaching some duplicates leaves the others reading the aggregate, and waits only for the ones it detaches") {
+    val base = new TestFixture(eventStoreState)
+    base.storeEvents(Seq(EventA("one"), EventB(2)))
+    val (detached, kept) = (newId(), newId())
+    base.storeEvents(Seq(Copy(SpaceId(1), base.aggregateId, AggregateVersion(2))), detached, AggregateVersion.ZERO)
+    base.storeEvents(Seq(Copy(SpaceId(2), base.aggregateId, AggregateVersion(1))), kept, AggregateVersion.ZERO)
+    published(base.aggregateId)
+
+    eventStoreState.detachDuplicates(base.aggregateId, Seq(detached -> EventA("copy"))).left.toOption.get must
+      include("first event of duplicate " + detached.asLong + ", which the purge detaches, still waits in the outbox")
+    eventStoreState.detachDuplicates(base.aggregateId, Nil) mustBe Right(()) // none named, none checked
+    published(detached) // the other duplicate's first event still waits: not this detach's concern
+    eventStoreState.detachDuplicates(base.aggregateId, Seq(detached -> EventA("copy"))) mustBe Right(())
+
+    base.getEvents(id = detached) mustBe Seq(EventA("copy"))
+    eventStoreState.duplicatesReading(base.aggregateId, None) mustBe Seq(kept)
+    eventStoreState.detachDuplicates(base.aggregateId, Seq(detached -> EventA("copy"))) mustBe Left("the duplicates of the aggregate changed meanwhile")
+    eventStoreState.detachDuplicates(base.aggregateId, Seq(kept -> EventA("copy"))).left.toOption.get must include("still waits in the outbox")
   }
 
   // As the procedures store a command's events one after another, each undo is checked against the events before it.

@@ -261,13 +261,15 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       .map(_.boolean(1)).single().getOrElse(false)
     if (invalid) sql"""DROP INDEX CONCURRENTLY IF EXISTS events_aggregate_version_idx""".execute()
     sql"""CREATE INDEX CONCURRENTLY IF NOT EXISTS events_aggregate_version_idx ON events (aggregate_id, version)""".execute()
-    // M6: an organization's aggregates, for its purge and export (D38).
+    // M6: an organization's aggregates in id order, for its purge, export and rebuild (D38). The index of the first M6
+    // steps, on the space alone, goes once this one is built.
     val spaceIndexInvalid = sql"""SELECT NOT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
                                  | JOIN pg_namespace n ON n.oid = c.relnamespace
-                                 | WHERE c.relname = 'aggregates_space_idx' AND n.nspname = current_schema()""".stripMargin
+                                 | WHERE c.relname = 'aggregates_space_id_idx' AND n.nspname = current_schema()""".stripMargin
       .map(_.boolean(1)).single().getOrElse(false)
-    if (spaceIndexInvalid) sql"""DROP INDEX CONCURRENTLY IF EXISTS aggregates_space_idx""".execute()
-    sql"""CREATE INDEX CONCURRENTLY IF NOT EXISTS aggregates_space_idx ON aggregates (space_id)""".execute()
+    if (spaceIndexInvalid) sql"""DROP INDEX CONCURRENTLY IF EXISTS aggregates_space_id_idx""".execute()
+    sql"""CREATE INDEX CONCURRENTLY IF NOT EXISTS aggregates_space_id_idx ON aggregates (space_id, id)""".execute()
+    sql"""DROP INDEX CONCURRENTLY IF EXISTS aggregates_space_idx""".execute()
   }
 
   /**
@@ -486,6 +488,86 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     }
   }
 
+  override def detachDuplicates(baseId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])], archive: Set[String]): Either[String, Unit] =
+    if (detach.isEmpty) Right(()) // none to check: `detachBlocker` reads no names as all of them
+    else {
+      outboxDeletes.flushNow() // acknowledged rows go first, so the outbox check sees only what still waits
+      localTx { implicit session =>
+        val id = baseId.asLong
+        lockChain(id)
+        val detached = detach.map(_._1)
+        for {
+          _ <- Either.cond(detached.forall(duplicates(id, None).contains), (), "the duplicates of the aggregate changed meanwhile")
+          _ <- detachBlocker(id, None, "the purge", detached.map(_.asLong)).toLeft(())
+        } yield detach.foreach(detachDuplicate(_, archive))
+      }
+    }
+
+  // ************** Purge of an organization (R17)
+
+  /** R17: up to `limit` of the space's aggregates with ids below `before`, newest first, from `aggregates (space_id, id)`. */
+  def spaceAggregates(space: SpaceId, before: AggregateId, limit: Int): Seq[StoredAggregate] = DB.readOnly { implicit session =>
+    sql"""SELECT type_id, id, base_version, squashed_version FROM aggregates
+         | WHERE space_id = ${space.asLong} AND base_id = id AND id < ${before.asLong} ORDER BY space_id DESC, id DESC LIMIT $limit""".stripMargin
+      .map(rs => StoredAggregate(AggregateType(typesNamesState.classNameById(rs.short(1))), AggregateId(rs.long(2)), AggregateVersion(rs.int(3)),
+        rs.intOpt(4).map(AggregateVersion(_)))).list()
+  }
+
+  /** R17: the types of the space's aggregates. */
+  def spaceTypes(space: SpaceId): Set[AggregateType] = DB.readOnly { implicit session =>
+    sql"""SELECT DISTINCT type_id FROM aggregates WHERE space_id = ${space.asLong} AND base_id = id"""
+      .map(rs => AggregateType(typesNamesState.classNameById(rs.short(1)))).list().toSet
+  }
+
+  /** R17: how many aggregates the space has. */
+  def spaceSize(space: SpaceId): Int = DB.readOnly { implicit session =>
+    sql"""SELECT count(*) FROM aggregates WHERE space_id = ${space.asLong} AND base_id = id""".map(_.int(1)).single().getOrElse(0)
+  }
+
+  /** R17: the aggregates of other spaces that read one of the space's aggregates, each with the aggregate it reads (its
+    * base) and their type. A copy's chain rows carry the copy's own space. */
+  def duplicatesInOtherSpaces(space: SpaceId): Seq[(AggregateType, AggregateId, AggregateId)] = DB.readOnly { implicit session =>
+    sql"""SELECT b.type_id, b.id, d.id FROM aggregates b JOIN aggregates d ON d.base_id = b.id AND d.id <> b.id
+         | WHERE b.space_id = ${space.asLong} AND b.base_id = b.id AND d.space_id <> ${space.asLong} ORDER BY b.id, d.id""".stripMargin
+      .map(rs => (AggregateType(typesNamesState.classNameById(rs.short(1))), AggregateId(rs.long(2)), AggregateId(rs.long(3)))).list()
+  }
+
+  /** R17, in the purge's transaction: locks the chains of the given aggregates (as `lockChain` does, in one order) and
+    * returns those that may go: still of the space, and read by no aggregate of another space (one duplicated meanwhile
+    * stays for the next pass, which detaches it first). */
+  def lockForPurge(space: SpaceId, ids: Seq[AggregateId])(implicit session: DBSession): Seq[AggregateId] = if (ids.isEmpty) Nil else {
+    val longs = ids.map(_.asLong)
+    sql"""SELECT id FROM aggregates WHERE id IN (SELECT id FROM aggregates WHERE base_id IN ($longs))
+         | ORDER BY id, base_id FOR UPDATE""".stripMargin.map(_.long(1)).list()
+    val read = sql"""SELECT DISTINCT base_id FROM aggregates WHERE base_id IN ($longs) AND id <> base_id AND space_id <> ${space.asLong}"""
+      .map(_.long(1)).list().toSet
+    sql"""SELECT id FROM aggregates WHERE id IN ($longs) AND base_id = id AND space_id = ${space.asLong} ORDER BY id DESC"""
+      .map(_.long(1)).list().filterNot(read.contains).map(AggregateId(_))
+  }
+
+  /** R17, in the purge's transaction, after `lockForPurge`: deletes everything the library stores for these aggregates,
+    * their keys going with their events (the cascade), and answers the rows deleted per table. */
+  def purgeAggregates(ids: Seq[AggregateId])(implicit session: DBSession): Map[String, Long] = if (ids.isEmpty) Map.empty else {
+    val longs = ids.map(_.asLong)
+    def deleted(table: String, where: SQLSyntax): Option[(String, Long)] = Some(table -> sql"DELETE FROM ${SQLSyntax.createUnsafely(table)} WHERE $where".update().toLong)
+    Seq(
+      // noop rows first: they are found through the events they mark (F76's lesson).
+      deleted("noop_events", sqls"id IN (SELECT id FROM events WHERE aggregate_id IN ($longs))"),
+      deleted("events", sqls"aggregate_id IN ($longs)"),
+      deleted("events_archive", sqls"aggregate_id IN ($longs)"),
+      deleted("events_to_publish", sqls"aggregate_id IN ($longs)"),
+      deleted("snapshots", sqls"aggregate_id IN ($longs)"),
+      if (tableExists("subscriptions")) deleted("subscriptions", sqls"aggregate_id IN ($longs)") else None,
+      if (tableExists("subscription_failures")) deleted("subscription_failures", sqls"aggregate_id IN ($longs)") else None,
+      if (columnExists("commands_responses", "aggregate_id")) deleted("commands_responses", sqls"aggregate_id IN ($longs)") else None,
+      deleted("aggregates", sqls"id IN ($longs)")
+    ).flatten.toMap
+  }
+
+  private def columnExists(table: String, column: String)(implicit session: DBSession): Boolean =
+    sql"""SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $table AND column_name = $column)"""
+      .map(_.boolean(1)).single().getOrElse(false)
+
   // ************** Squash (D47–D52)
 
   override def squashedVersion(aggregateId: AggregateId): Option[AggregateVersion] =
@@ -517,8 +599,8 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   // D51, F143: a detach replaces a duplicate's first event, so it waits while that event was undone, still waits in the
   // outbox, or a subscription of the duplicate is failed: subscribers must have the original first event before it
   // changes. For the duplicates that read the aggregate below `below`, or all of them.
-  private def detachBlocker(id: Long, below: Option[Int], by: String)(implicit session: DBSession): Option[String] = {
-    def detachedOne(joined: SQLSyntax): Option[Long] = duplicateWith(id, below, joined)
+  private def detachBlocker(id: Long, below: Option[Int], by: String, only: Seq[Long] = Nil)(implicit session: DBSession): Option[String] = {
+    def detachedOne(joined: SQLSyntax): Option[Long] = duplicateWith(id, below, joined, only)
     def failedDuplicate = if (tableExists("subscription_failures")) detachedOne(sqls"JOIN subscription_failures f ON f.aggregate_id = a.id") else None
     detachedOne(undoneFirstEvent).map(d => "the first event of duplicate " + d + ", which " + by + " detaches, was undone")
       .orElse(detachedOne(sqls"JOIN events_to_publish p ON p.aggregate_id = a.id AND p.version = 1")
@@ -546,9 +628,10 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
 
   // A duplicate of the aggregate, reading it below `below` if given, that `joined` finds.
-  private def duplicateWith(id: Long, below: Option[Int], joined: SQLSyntax)(implicit session: DBSession): Option[Long] = {
+  private def duplicateWith(id: Long, below: Option[Int], joined: SQLSyntax, only: Seq[Long] = Nil)(implicit session: DBSession): Option[Long] = {
     val reading = below.fold(sqls"")(n => sqls"AND a.base_version < $n")
-    sql"""SELECT a.id FROM aggregates a $joined WHERE a.base_id = $id AND a.id <> $id $reading LIMIT 1""".map(_.long(1)).single()
+    val some = if (only.isEmpty) sqls"" else sqls"AND a.id IN ($only)"
+    sql"""SELECT a.id FROM aggregates a $joined WHERE a.base_id = $id AND a.id <> $id $reading $some LIMIT 1""".map(_.long(1)).single()
   }
 
   // A detach replaces the first event; one that was undone cannot be, as its undo would then take the base's state too.

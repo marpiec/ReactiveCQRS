@@ -9,7 +9,7 @@ import io.reactivecqrs.api.id.{AggregateId, CommandId}
 import io.reactivecqrs.core.aggregate.AggregateOwner._
 import io.reactivecqrs.core.aggregate.{AggregateOwner, OwnerSettings}
 import io.reactivecqrs.core.cluster.{Members, MessageSize}
-import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{DeletedPermanently, IdsNotReceived, PassivateAggregate, RemoveExpiredResponses}
+import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor._
 import io.reactivecqrs.core.delivery.RepublishRequest
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventsAck, RegisterPublisher}
 import io.reactivecqrs.core.eventstore.EventStoreState
@@ -33,6 +33,19 @@ object AggregateCommandBusActor {
   /** Stops the aggregate's owner once the commands it started are answered; the next message for the aggregate starts a
     * new owner. The bus does the same by itself for owners idle for long; this is for operations and tests. */
   case class PassivateAggregate(id: AggregateId)
+
+  /** R17, from a purge: detaches these duplicates of `baseId` (aggregates of other organizations that read it), each with
+    * a squash event of its state at version 1, as a permanent delete does (D50, F76). Answered `DuplicatesDetached`, or
+    * `DetachRefused` with the reason, having changed nothing. */
+  case class DetachDuplicates(baseId: AggregateId, duplicates: Seq[AggregateId])
+  case class DuplicatesDetached(baseId: AggregateId, duplicates: Seq[AggregateId])
+  case class DetachRefused(baseId: AggregateId, reason: String)
+
+  /** R17, from a purge: the aggregates are gone from the store, so their owners stop without writing a snapshot (a
+    * sharded one through its shard, which starts an owner only to stop it, without restoring). Answered
+    * `AggregatesForgotten`. */
+  case class ForgetAggregates(ids: Seq[AggregateId])
+  case class AggregatesForgotten(count: Int)
 
   def apply[AGGREGATE_ROOT: ClassTag](aggregateContext: AggregateContext[AGGREGATE_ROOT],
                                              uidGenerator: ActorRef, eventStoreState: EventStoreState,
@@ -138,6 +151,10 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
     case PassivateAggregate(id) => owners.stop(id, stale = false)
     case DeletedPermanently(id, changed) => (id +: changed).foreach(owners.stop(_, stale = true)) // its state is gone
     case HistoryChanged(changed) => changed.foreach(owners.stop(_, stale = true))
+    case DetachDuplicates(baseId, duplicates) => detachForPurge(baseId, duplicates, sender())
+    case ForgetAggregates(ids) =>
+      ids.foreach(owners.stop(_, stale = true))
+      sender() ! AggregatesForgotten(ids.size)
     case m @ (OwnerPassivate | _: OwnerStarted | _: Terminated) => owners.fromOwners(sender()).applyOrElse(m, unhandled)
     case m =>
       // Answered, not thrown: a throw would restart the bus, which stops its children and with them every
@@ -283,6 +300,30 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
       case Success(Some(changed)) => self ! DeletedPermanently(id, changed)
       case Success(None) => ()
       case Failure(e) => log.error(e, "Deleting aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " failed; it is tried again when its event is delivered again")
+    }
+  }
+
+  // R17: the duplicates a purge names are detached as a permanent delete detaches them, off this bus's thread (F27).
+  private def detachForPurge(baseId: AggregateId, duplicates: Seq[AggregateId], respondTo: ActorRef): Unit = {
+    implicit val blocking: ExecutionContext = BlockingDispatcher(context.system)
+    Future {
+      for {
+        detach <- settings.squash match {
+          case Some(policy) => settings.restorer.detachEvents(duplicates, policy)
+          case None => Left("aggregates " + duplicates.map(_.asLong).mkString(", ") + " were duplicated from it, and the type has no squash " +
+            "event to detach them (F76)")
+        }
+        _ <- settings.notWrittenYet(detach.map(_._2)).toLeft(())
+        _ <- eventStoreState.detachDuplicates(baseId, detach, settings.squash.fold(Set.empty[String])(_.keep.map(_.getName)))
+      } yield detach.collect { case (duplicate, _: SquashMayChangeState) => duplicate }
+    }.onComplete {
+      case Success(Right(changed)) =>
+        self ! HistoryChanged(changed)
+        respondTo ! DuplicatesDetached(baseId, duplicates)
+      case Success(Left(reason)) => respondTo ! DetachRefused(baseId, reason)
+      case Failure(e) =>
+        log.error(e, "Detaching the duplicates of aggregate " + baseId.asLong + " of type " + aggregateTypeSimpleName + " failed")
+        respondTo ! DetachRefused(baseId, "detaching failed: " + e.getMessage)
     }
   }
 

@@ -177,7 +177,8 @@ class PostgresEventStoreSchemaInitializer  {
   private def createAggregatesSpaceIndexWhenSmall(): Unit = DB.autoCommit { implicit session =>
     val estimatedRows = sql"""SELECT reltuples::bigint FROM pg_class WHERE oid = 'aggregates'::regclass""".map(_.long(1)).single().getOrElse(0L)
     if (estimatedRows < 100000L) {
-      sql"""CREATE INDEX IF NOT EXISTS aggregates_space_idx ON aggregates (space_id)""".execute()
+      sql"""CREATE INDEX IF NOT EXISTS aggregates_space_id_idx ON aggregates (space_id, id)""".execute()
+      sql"""DROP INDEX IF EXISTS aggregates_space_idx""".execute() // the first M6 steps' index, on the space alone
     }
   }
 

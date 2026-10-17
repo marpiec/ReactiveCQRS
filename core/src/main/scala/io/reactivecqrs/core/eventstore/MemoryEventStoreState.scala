@@ -330,6 +330,15 @@ class MemoryEventStoreState extends EventStoreState {
     archives.getOrElse(aggregateId, Vector()).asInstanceOf[Vector[ArchivedEvent[AGGREGATE_ROOT]]]
   }
 
+  // As in PostgreSQL: only the duplicates given, each of which must still read the aggregate.
+  override def detachDuplicates(baseId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])], archive: Set[String]): Either[String, Unit] = synchronized {
+    val detached = detach.map(_._1)
+    for {
+      _ <- Either.cond(detached.forall(duplicatesReading(baseId, None).contains), (), "the duplicates of the aggregate changed meanwhile")
+      _ <- detachBlocker(detached, "the purge").toLeft(())
+    } yield detach.foreach(detachDuplicate(_, archive))
+  }
+
   // Subscription failures live in the subscriptions state, which this store does not see.
   override def deleteAggregatePermanently(aggregateId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])], archive: Set[String]): Either[String, Unit] = synchronized {
     val duplicates = duplicatesReading(aggregateId, None)

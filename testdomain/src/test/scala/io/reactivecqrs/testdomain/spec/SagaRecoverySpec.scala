@@ -4,7 +4,7 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 
 import io.mpjsons.MPJsons
-import io.reactivecqrs.api.id.{SagaId, UserId}
+import io.reactivecqrs.api.id.{SagaId, SpaceId, UserId}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
@@ -31,9 +31,9 @@ class FlakySagaState(underlying: SagaState, createFailures: Int, updateFailures:
   def updateAttempts: Int = updates.get
   def loadsOfPendingSagas: Int = loads.get
 
-  override def createSaga(name: String, sagaId: SagaId, respondTo: String, order: SagaInternalOrder) = {
+  override def createSaga(name: String, sagaId: SagaId, respondTo: String, order: SagaInternalOrder, spaceId: Option[SpaceId]) = {
     if (creates.incrementAndGet() <= createFailures) throw new IllegalStateException("database unavailable")
-    underlying.createSaga(name, sagaId, respondTo, order)
+    underlying.createSaga(name, sagaId, respondTo, order, spaceId)
   }
 
   override def updateSaga(name: String, sagaId: SagaId, order: SagaInternalOrder, phase: SagaPhase, step: Int) = {

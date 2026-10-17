@@ -1864,3 +1864,20 @@ Open test-infrastructure items:
 - Tests: `EventStoreStateSpec` (the archive with undo marks and the delete; retention by age; both
   stores) and `SquashSpec` (through the command bus: the archive read, a restore, the class
   report); nine mutations, each caught.
+
+**17/10/2026: the purge of an organization (R17)**
+- `SpacePurge` as refined in the design: a plan that refuses before anything changes, the
+  detaches of other organizations' copies (`DetachDuplicates`, `EventStoreState.detachDuplicates`),
+  batches with the host's `PurgeHook`s, owners stopped (`ForgetAggregates`), projections told
+  (`PurgeCheck`, `PurgedAggregates` with a drop window, `PurgeSpace`), tagged sagas deleted, a
+  `PurgeReport`. Written from now on: `commands_responses.aggregate_id`, `sagas.space_id`
+  (`SagaActor.spaceOf`). The space index became `(space_id, id)`.
+- Found while building it: a copy of a copy in another organization is listed under both bases,
+  and the second detach would refuse the purge; each copy is detached once.
+- Tests: `PurgeSpec` (everything stored for an organization goes, nothing of another; refusals;
+  a late delivery; an aggregate made during the purge), `EventStoreStateSpec` (detaching some
+  copies, both stores), `PostgresEventStoreStateSpec` (a purge batch), `PurgedIdsSpec`. A mutation of each step is
+  caught; the first run found "each copy once" written twice (either alone passed the tests), now
+  one filter whose mutation is caught; an empty detach list checks nothing.
+- The core specs take their aggregate ids from `TestIds`: ids from `System.nanoTime()` made back
+  to back can be equal on Windows, which made the purge batch's scenario fail once.

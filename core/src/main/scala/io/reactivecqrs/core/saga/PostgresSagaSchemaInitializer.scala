@@ -8,7 +8,13 @@ import scalikejdbc._
 class PostgresSagaSchemaInitializer {
   def initSchema(): Unit = SchemaLock {
     createSagasTable()
+    addSpaceColumn()
     createSagaKeyIndex()
+  }
+
+  // R17: the organization of a saga's order, when the saga says (`SagaActor.spaceOf`); a purge of the space removes it.
+  private def addSpaceColumn(): Unit = DB.autoCommit { implicit session =>
+    sql"""ALTER TABLE sagas ADD COLUMN IF NOT EXISTS space_id BIGINT""".execute()
   }
 
   private def createSagasTable(): Unit = DB.autoCommit { implicit session =>

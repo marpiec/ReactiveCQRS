@@ -454,7 +454,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
             if (rewritten.nonEmpty) eventStore.overwriteEvents(aggregateId, rewritten)
             val persisted = eventStore.persist(aggregateId, NewEvents(userId, version, timestamp, events, metadata)).get
             val stored = persisted.map(e => EventInfo(e.version, e.event, userId, timestamp, metadata))
-            if (idempotency.isIdempotent(envelope.command)) idempotency.record(envelope.command, response)
+            if (idempotency.isIdempotent(envelope.command)) idempotency.record(envelope.command, response, aggregateId)
             // R12, D33: after the idempotency record, so a copy whose key is taken rolls back before writing anything.
             outboxWriter.foreach(_.write(aggregateId, stored.last.version, stored))
             (stored, persisted.map(_.size))

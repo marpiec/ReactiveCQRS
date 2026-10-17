@@ -387,6 +387,17 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       runtime.slots ! ReleaseBuildSlot
       trySwitch()
     case RebuildAggregates(target) => rebuildTarget(target, sender())
+    // R17: a purge waits for builds; its other messages go to the active build.
+    case check: PurgeCheck => (building, targeted, active) match {
+      case (Some(b), _, _) => sender() ! PurgeCheckAnswer(spec.name, Some("build " + b.record.number + " of projection " + spec.name + " is in progress"))
+      case (_, Some(t), _) => sender() ! PurgeCheckAnswer(spec.name, Some("the rebuild of " + t.target + " by projection " + spec.name + " is in progress"))
+      case (_, _, Some(a)) => a.ref.forward(check)
+      case _ => sender() ! PurgeCheckAnswer(spec.name, Some("projection " + spec.name + " has no active build"))
+    }
+    case message @ (_: PurgedAggregates | _: PurgeSpace) => active match {
+      case Some(a) => a.ref.forward(message)
+      case None => sender() ! Status.Failure(new IllegalStateException("Projection " + spec.name + " has no active build"))
+    }
     case ResetForRebuildDone(aggregates) if targeted.isDefined =>
       targeted = targeted.map(_.copy(aggregates = aggregates))
       startTargetedBuilder()

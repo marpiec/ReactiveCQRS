@@ -7,7 +7,7 @@ import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.cluster.Readiness
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
-import io.reactivecqrs.testutils.CommonSpec
+import io.reactivecqrs.testutils.{CommonSpec, TestIds}
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.event.Logging
 import org.apache.pekko.testkit.TestProbe
@@ -68,7 +68,7 @@ class EventsBusActorSpec extends CommonSpec {
     probe.expectMsgType[DeliveryStatus](3.seconds)
   }
 
-  private def newId(): AggregateId = AggregateId(System.nanoTime())
+  private def newId(): AggregateId = AggregateId(TestIds.aggregate())
 
   Feature("Start-up (D15)") {
 

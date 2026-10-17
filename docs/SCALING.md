@@ -198,6 +198,11 @@ Estimated from the measured numbers. None of this was run at this scale.
     a key; until then it walks the store up to its position. The keys cost about 40 bytes a row
     before their two indexes (estimated: about 4 GB per 100 million events with them); writing
     them cost nothing measurable (within the runs' spread, `docs/design/M6-organizations.md`).
+- **Purging an organization** (R17, since M6). The purge deletes in batches of at most 1 000
+  aggregates and 100 000 events, one transaction each, and waits for the owners and the projections
+  to answer each batch, so its load on the database and the nodes stays bounded; its duration grows
+  with the organization's events (not measured). A sharded type's owners are started only to be
+  stopped, one per purged aggregate. Each projection keeps the purged ids for its drop window.
 - **The outbox.** `events_to_publish` takes an insert and a delete per event. Autovacuum must keep
   up with it, or the table and its index bloat. The outbox poller still groups the whole outbox
   every 30 s, which is cheap while the outbox is near empty (normal running) and grows with a
@@ -437,6 +442,7 @@ Pekko's default dispatcher has 12 threads on the measured machine; since M5, han
 | A rebuild | 150 MB peak for 112 211 events (measured, baseline-M4) | pages, 2 chunks in flight, 10 000 replay states, each the size of a state |
 | Subscription version cache | 10 000 aggregates' versions | LRU |
 | Outbox poller | one entry per waiting aggregate, at most 100 000 | `OutboxPollerOptions.maxTracked` |
+| Purged aggregates (R17) | 8 bytes per aggregate a purge removed, per projection instance: 8 MB for 1 million (arithmetic) | `ProjectionActorOptions.purgedDropWindow` (30 minutes) after the purge's last batch |
 | Artery buffers (direct memory) | up to 128 × the frame size, and 32 × the large frame size | Pekko's buffer pools |
 
 Measured for orientation: 15 to 35 MB of heap after GC at rest, 128 MB right after the 60 s soak

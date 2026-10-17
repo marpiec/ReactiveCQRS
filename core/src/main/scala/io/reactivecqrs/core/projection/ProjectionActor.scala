@@ -67,6 +67,22 @@ object RebuildTarget {
 case class ResetForRebuild(target: RebuildTarget, aggregatesOf: () => Seq[AggregateId])
 case class ResetForRebuildDone(aggregates: Int)
 
+// R17: the purge of an organization.
+
+/** From a purge, before it deletes anything: answered `PurgeCheckAnswer`, with the reason when the projection cannot take
+  * part: it does not implement `clearForRebuild`, or (a managed one) a build or a targeted rebuild runs. */
+case class PurgeCheck(space: SpaceId)
+case class PurgeCheckAnswer(projectionName: String, refusal: Option[String])
+/** From a purge, after it deleted these aggregates of the space: the projection forgets them (versions, queues, failures)
+  * and, for `ProjectionActorOptions.purgedDropWindow`, acknowledges deliveries of them without applying them, as one may
+  * still be on its way. Answered `PurgedAggregatesForgotten`. */
+case class PurgedAggregates(space: SpaceId, aggregateIds: Seq[AggregateId])
+case class PurgedAggregatesForgotten(projectionName: String, count: Int)
+/** From a purge, last: the projection clears what it derived from the space (`clearForRebuild(OneSpace(space))`) in one
+  * transaction. Answered `SpacePurged`, or `Status.Failure`. */
+case class PurgeSpace(space: SpaceId)
+case class SpacePurged(projectionName: String, space: SpaceId)
+
 // D57, D58, D61: a projection being built is fed by a builder that reads the event store.
 
 /** The projection is being built from the store by `builder` (D57): until `GoLive`, deliveries from the bus are
@@ -135,7 +151,8 @@ case class ProjectionActorOptions (groupUpdatesDelayMillis: Long,
                                    gapRequestRepeat: FiniteDuration = 10.seconds,
                                    gapGiveUpAfter: FiniteDuration = 10.minutes,
                                    failureRetryInterval: FiniteDuration = 50.millis,
-                                   maxBatchesPerTransaction: Int = 100) {
+                                   maxBatchesPerTransaction: Int = 100,
+                                   purgedDropWindow: FiniteDuration = 30.minutes) {
 
   def withGroupUpdatesDelayMillis(millis: Long): ProjectionActorOptions = {
     copy(groupUpdatesDelayMillis = millis)
@@ -355,14 +372,25 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         subscriptionsState.resetVersions(subscriberName, aggregateIds)(session)
       }
       val reset = aggregateIds.toSet
-      // Their waiting deliveries are answered: the builder gives their events again.
-      queues.filter { case (key, _) => reset.contains(key.aggregateId) }.foreach { case (key, queue) =>
-        queue.pending.foreach(delivery => delivery.respondTo ! MessageAck(self, key.aggregateId, delivery.versions, key.kind))
-      }
-      queues --= queues.keys.filter(key => reset.contains(key.aggregateId))
-      failed --= failed.keys.filter(key => reset.contains(key.aggregateId))
-      failuresToRetry = failuresToRetry.filterNot(key => reset.contains(key.aggregateId))
+      forget(reset) // the builder gives their events again
+      purged = purged.without(reset)
       sender() ! ResetForRebuildDone(aggregateIds.size)
+    case PurgeCheck(_) =>
+      sender() ! PurgeCheckAnswer(projectionName, if (clearsForRebuild) None else Some("projection " + projectionName + " does not implement clearForRebuild"))
+    case PurgedAggregates(_, aggregateIds) =>
+      subscriptionsState.localTx(session => subscriptionsState.resetVersions(subscriberName, aggregateIds)(session))
+      forget(aggregateIds.toSet)
+      purged = purged.adding(aggregateIds, System.nanoTime(), options.purgedDropWindow.toNanos)
+      sender() ! PurgedAggregatesForgotten(projectionName, aggregateIds.size)
+    case PurgeSpace(space) =>
+      Try(subscriptionsState.localTx(session => clearForRebuild(RebuildTarget.OneSpace(space))(session))) match {
+        case Success(_) =>
+          log.info("Projection " + projectionName + " cleared the purged space " + space.asLong)
+          sender() ! SpacePurged(projectionName, space)
+        case Failure(e) =>
+          log.error(e, "Projection " + projectionName + " could not clear the purged space " + space.asLong)
+          sender() ! Status.Failure(e)
+      }
     case Retire(successor) =>
       log.info("Projection " + projectionName + " (" + subscriberName + ") is retired")
       onRetired(successor)
@@ -469,6 +497,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   private val queues = mutable.HashMap[Key, Queue]()
   private val failed = mutable.LinkedHashMap[Key, SubscriptionFailure]()
   private var failuresToRetry = Vector[Key]()
+  private var purged = PurgedIds.empty // R17
   private var eventBus: Option[ActorRef] = None
   private var failuresLoaded = false
   private var building: Option[ActorRef] = None // the builder, while the projection is built from the store (D57)
@@ -486,6 +515,9 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   private def receiveDelivery(key: Key, aggregateType: AggregateType, delivery: Pending): Unit = {
     if (delivery.versions.isEmpty) {
       log.warning("Projection " + projectionName + " received a delivery without events for aggregate " + key.aggregateId.asLong)
+    } else if (purged.contains(key.aggregateId, System.nanoTime())) {
+      // R17: the aggregate's organization was purged; a delivery still on its way writes nothing.
+      delivery.respondTo ! MessageAck(self, key.aggregateId, delivery.versions, key.kind)
     } else if (building.isDefined && !removesAggregate(key, delivery)) {
       // D57: the builder reads these events from the store, the bulk pass or the reconciliation after GoLive.
       delivery.respondTo ! MessageAck(self, key.aggregateId, delivery.versions, key.kind)
@@ -496,6 +528,20 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       enqueue(key, aggregateType, delivery)
     }
   }
+
+  // The aggregates' waiting deliveries are answered, and their queues and failures dropped.
+  private def forget(aggregateIds: Set[AggregateId]): Unit = {
+    queues.filter { case (key, _) => aggregateIds.contains(key.aggregateId) }.foreach { case (key, queue) =>
+      queue.pending.foreach(delivery => delivery.respondTo ! MessageAck(self, key.aggregateId, delivery.versions, key.kind))
+    }
+    queues --= queues.keys.filter(key => aggregateIds.contains(key.aggregateId))
+    failed --= failed.keys.filter(key => aggregateIds.contains(key.aggregateId))
+    failuresToRetry = failuresToRetry.filterNot(key => aggregateIds.contains(key.aggregateId))
+  }
+
+  // R17: whether the projection's class implements clearForRebuild; the default refuses every target.
+  private def clearsForRebuild: Boolean =
+    getClass.getMethod("clearForRebuild", classOf[RebuildTarget], classOf[DBSession]).getDeclaringClass != classOf[ProjectionActor]
 
   // F111: a delivery that removes its aggregate is applied even while the projection is built: a permanent delete takes
   // the aggregate's events out of the store once every subscriber has it, so no builder could deliver it later. A state

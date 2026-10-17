@@ -5,7 +5,7 @@ import org.apache.pekko.actor.{Actor, ActorRef, ActorSystem, ExtendedActorSystem
 import org.apache.pekko.serialization.Serialization
 import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api.SagaStep
-import io.reactivecqrs.api.id.{SagaId, UserId}
+import io.reactivecqrs.api.id.{SagaId, SpaceId, UserId}
 import io.reactivecqrs.core.saga.SagaActor._
 import io.reactivecqrs.core.uid.{IdPool, NewSagasIdsPool, UidGeneratorActor}
 import io.reactivecqrs.core.util.{Backoff, BlockingDispatcher, MyActorLogging}
@@ -78,6 +78,10 @@ abstract class SagaActor extends Actor with MyActorLogging {
 
   def handleOrder(sagaStep: SagaStep): ReceiveOrder
   def handleRevert(sagaStep: SagaStep): ReceiveRevert
+
+  /** The organization an order belongs to, stored with its saga so that a purge of that organization removes the saga
+    * (R17). None, the default, leaves the saga out of purges. */
+  protected def spaceOf(order: SagaInternalOrder): Option[SpaceId] = None
 
   // All rows are read before any saga starts, so a load that fails part-way and is retried starts no saga twice. The
   // read runs off the actor's thread and touches no actor state.
@@ -202,9 +206,13 @@ abstract class SagaActor extends Actor with MyActorLogging {
   // The write runs off the actor's thread and touches no actor state; its result comes back as a message.
   private def write(pending: SagaWrite, attempt: Int = 1): Unit = {
     val saga = pending.saga
+    val space = pending match {
+      case _: CreateSaga => spaceOf(saga.order)
+      case _ => None
+    }
     Future {
       pending match {
-        case _: CreateSaga => state.createSaga(name, saga.sagaId, saga.respondTo, saga.order); true
+        case _: CreateSaga => state.createSaga(name, saga.sagaId, saga.respondTo, saga.order, space); true
         case _: StoreProgress => state.updateSaga(name, saga.sagaId, saga.order, saga.phase, saga.step)
         case _: DeleteSaga => state.deleteSaga(name, saga.sagaId)
       }

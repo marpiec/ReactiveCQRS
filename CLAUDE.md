@@ -342,5 +342,6 @@ behaviour under high volume and load, with recommendations, is in `docs/SCALING.
 | Full wiring of a system | `testdomain/.../spec/ReactiveTestDomainSpec.scala` |
 | Replay / rebuild | `core/.../rebuild/*` (M4), `docs/design/M4-rebuild.md` |
 | Limits, throttling and failure under load | `docs/SCALING.md`, `docs/perf/load-M5.md` |
+| Purging an organization | `core/.../space/SpacePurge.scala`, ARCHITECTURE §4.7 |
 | How a user uses the library (the user docs) | `docs/book/` (a step-by-step book; how to write for it: `docs/book/STYLE.md`) |
 | The cluster: placement, members, singletons, messages between nodes | `core/.../cluster/*` (`Members`, `Singletons`, `ClusterSerializer`, `MessageSize`), `ARCHITECTURE.md` §13, `docs/design/M5-cluster.md`; multi-node tests `testdomain/.../spec/TestCluster.scala` |

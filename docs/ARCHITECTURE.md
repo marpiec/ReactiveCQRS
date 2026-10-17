@@ -330,7 +330,7 @@ run works in a new schema (`TestDatabase`).
 | Table | Columns / keys | Role |
 |---|---|---|
 | `events` (`:29-41`) | `id` (from `events_seq`) PK, `user_id`, `aggregate_id`, `event_time TIMESTAMP`, `version`, `event_type_id`, `event_type_version` (always 0, D29), `event TEXT`, since M3 `metadata JSONB` (the envelope, D32; null when none); indexes `(aggregate_id)`, `(aggregate_id, id)`, and `(aggregate_id, version)` built online by `buildIndexesConcurrently()` (F38) | append-only event log |
-| `aggregates` (`:103-115`) | PK `(id, base_id)`, `space_id`, `creation_time`, `type_id`, `base_order`, `base_id`, `base_version`, since M3 `squashed_version` (null unless squashed, D49), since M5 `history_generation` (F119); indexes `(type_id)`, `(base_id)`, and since M6 `(space_id)` (an organization's aggregates, built online on a large installation) | one row per (aggregate, ancestor) in its duplication chain; the own row (`base_id = id`) holds the **current version** used for locking |
+| `aggregates` (`:103-115`) | PK `(id, base_id)`, `space_id`, `creation_time`, `type_id`, `base_order`, `base_id`, `base_version`, since M3 `squashed_version` (null unless squashed, D49), since M5 `history_generation` (F119); indexes `(type_id)`, `(base_id)`, and since M6 `(space_id, id)` (an organization's aggregates in id order, built online on a large installation) | one row per (aggregate, ancestor) in its duplication chain; the own row (`base_id = id`) holds the **current version** used for locking |
 | `noop_events` (`:75-81`) | `id` (= `events.id`) PK, `from_version` | events cancelled by an undo, effective from that version |
 | `snapshots` (since M3) | `aggregate_id` PK, `version`, `context_version`, `schema_version`, `state TEXT`, `created` | the latest performance snapshot of an aggregate (D30, §4.3); disposable |
 | `events_archive` (since M6) | `id` PK (the event's own), `aggregate_id`, `version`, `event_type_id`, `event_type_version`, `event TEXT`, `user_id`, `event_time`, `metadata JSONB`, `undone_from` (its undo mark), `archived`; index `(aggregate_id, version)` | the audit events squashes kept (R11, §4.6): read only by `GetArchivedEvents` and the stored-data checks, never by restores, re-publications or rebuilds |
@@ -338,7 +338,7 @@ run works in a new schema (`TestDatabase`).
 | `event_keys` (since M6) | `id` PK (→ `events.id`, deleted with it), `type_id`, `space_id` of the event's aggregate; indexes `(type_id, id)`, `(space_id, type_id, id)` | the commit-order pass by type and organization (F124): written by the three procedures with each event; the rows from before by `backfillEventKeys()` |
 | `schema_steps` (since M6) | `name` PK, `completed` | online steps that have completed (D69): `event_keys` once every event has a key |
 | `types_names` (`TypesNamesState.scala`) | `id SMALLINT`, unique `name` | class-name ↔ id dictionary (aggregates, events, subscribers, responses) |
-| `commands_responses` (`CommandResponseState.scala`) | `id`, `key` (unique), `handling_timestamp` (indexed, for retention), `response`, `response_type_id`, and since 1.0 `info`, `info_type_id` (the info of a `CustomSuccessResponse`, F64) | idempotent responses (D12) |
+| `commands_responses` (`CommandResponseState.scala`) | `id`, `key` (unique), `handling_timestamp` (indexed, for retention), `response`, `response_type_id`, and since 1.0 `info`, `info_type_id` (the info of a `CustomSuccessResponse`, F64), since M6 `aggregate_id` (indexed: the aggregate of the response, for a purge, R17) | idempotent responses (D12) |
 
 ### 4.2 Stored procedures and optimistic locking
 
@@ -557,6 +557,45 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   measure with release-freezing data. Disk space comes back through (auto)VACUUM; shrinking
   files needs `pg_repack` or `VACUUM FULL`. Contexts with audit duties name their audit
   event classes in `keep` (R11, M6).
+
+### 4.7 Purge of an organization (R17, M6)
+
+`new SpacePurge(eventStore, commandBuses, projections, hooks, options).purge(space)`
+(`space/SpacePurge.scala`) removes an organization. The host runs it once, from one node, while
+the organization is quiet. Every step is idempotent: a purge that stopped or failed is run again.
+It answers a `PurgeReport`: the rows deleted per table, the copies detached, the projections that
+cleared the space, what failed or refused, what remains (`complete` when nothing did).
+
+1. **Plan**, reading only: the space's types (`spaceTypes`) and the aggregates of other spaces
+   that read the space's (`duplicatesInOtherSpaces`; a copy's chain rows carry the copy's own
+   space). It refuses, before a row changes, when a type has no command bus given, or a projection
+   refuses `PurgeCheck` (it does not implement `clearForRebuild`; a managed one is building).
+2. **Detach**: `DetachDuplicates(base, copies)` to the type's command bus, which builds the
+   detach events as a permanent delete does and calls `EventStoreState.detachDuplicates`: only
+   those copies, under the chain lock, with F143's checks for them. Each copy is detached once,
+   through its first base; one refusal ends the purge before a row is deleted.
+3. **Delete**, page by page of the space's aggregates, newest first (`spaceAggregates`, on
+   `aggregates (space_id, id)`), in batches of at most 1 000 aggregates and 100 000 events (by
+   version; a larger aggregate alone), one transaction each: `lockForPurge` locks the batch's
+   chains and leaves out an aggregate that a copy of another space reads (a duplication made after
+   the plan: the next pass detaches it); the host's `PurgeHook`s delete its rows; `purgeAggregates`
+   deletes `noop_events`, `events` (their keys go by the cascade), `events_archive`,
+   `events_to_publish`, `snapshots`, `subscriptions`, `subscription_failures`,
+   `commands_responses` (by `aggregate_id`) and `aggregates`. Then each type's command bus stops
+   the owners (`ForgetAggregates`, without a snapshot; a sharded type's shard starts an owner only
+   to stop it, without a restore) and each projection forgets them (`PurgedAggregates`, §6.1);
+   their answers pace the batches.
+4. **Passes** repeat while one purged aggregates, at most three.
+5. **Sagas** tagged with the space (`SagaActor.spaceOf`, stored in `sagas.space_id`) are deleted.
+6. **Projections** get `PurgeSpace(space)`: `clearForRebuild(OneSpace(space))` in one
+   transaction. A purge run again clears them again, even when it finds nothing to delete.
+
+What it does not reach: a `Local` owner of a purged aggregate on another node keeps the state in
+memory until its next use (which finds no stored row, F145) or its idle passivation; responses
+stored before M6 have no `aggregate_id` and expire with the retention (30 days by default); sagas
+started before M6, or of a saga that does not implement `spaceOf`, are not tagged; legacy
+aggregates with space `-1` belong to no organization (`backfillSpaces` first); a host table
+without a hook. `StoredDataCheck.spaceRows(space)` counts what a space still has, to verify.
 
 ---
 
@@ -830,6 +869,14 @@ store can feed it directly, through the same gate, failure records and status:
   gate even then: a permanent delete takes the events out of the store once every subscriber
   has it, so no builder could give it later (F111). `GoLive` ends that, retries the failures
   recorded meanwhile, and is answered with `ProjectionLive`.
+- **Purge** (R17, §4.7): `PurgeCheck(space)` is answered `PurgeCheckAnswer`, refusing when the
+  class does not implement `clearForRebuild` (the method's declaring class is `ProjectionActor`).
+  `PurgedAggregates(space, ids)` resets their versions, answers their waiting deliveries and drops
+  their queues and failures, and keeps the ids (a sorted array of longs) for `purgedDropWindow`:
+  meanwhile a delivery of one is acknowledged without being applied, as it may have been on its way
+  (in a mailbox, or from another node's bus) when the rows went; a targeted rebuild takes the
+  aggregates it resets out of it. `PurgeSpace(space)` runs `clearForRebuild(OneSpace(space))` in
+  one transaction and answers `SpacePurged`, or `Status.Failure`.
 
 **Managed by a supervisor** (M4, §8.2). `BindSubscriber(subscriber)` gives the instance its
 build's subscriber identity (otherwise its class name); `ConnectedTo(bus)` tells it the bus that
@@ -855,6 +902,7 @@ not use the old build's stores), parked queries are answered with `None`, and it
 | `gapRequestRepeat` | 10 s | how long a request for missing versions waits before it is sent again, doubling up to 5 minutes |
 | `gapGiveUpAfter` | 10 minutes | how long missing versions are asked for before the gap is recorded as a failure |
 | `failureRetryInterval` | 50 ms | the pace of retrying many failures (at start, `RetryAllFailedSubscriptions`) |
+| `purgedDropWindow` | 30 minutes | how long, after a purge's last batch, deliveries of the aggregates it removed are acknowledged without being applied (R17) |
 
 ### 6.5 Delayed queries (read-your-writes for queries)
 
@@ -1102,6 +1150,10 @@ that does not implement `clearForRebuild` refuses (`RebuildRefused`), as does on
 progress, and an organization is not rebuilt while aggregates of the projection's types have no
 space yet.
 
+**Purge** (R17, §4.7). The supervisor answers `PurgeCheck` with a refusal while a build or a
+targeted rebuild runs, so no build reads the organization while it goes, and passes `PurgedAggregates`
+and `PurgeSpace` to the active build.
+
 **Spaces of legacy aggregates** (F49, D38). Rows of `aggregates` from before the `space_id`
 column have `-1`. `PostgresEventStoreState.backfillSpaces(spaceOf)` gives them the space of their
 first event (the squash event of a squashed one), or, when that event does not know it, the one
@@ -1118,7 +1170,9 @@ returns `SagaContinues | SagaSucceded | SagaFailed` (failure switches to the `RE
 phase and calls `handleRevert`). Progress is stored in `sagas` (`PostgresSagaState.scala`)
 and reloaded at start. Each step passes `SagaStep(sagaId, step)` as the idempotency key of
 the commands it sends, so a resumed saga doesn't repeat a command
-(`MultipleCartCreatorSaga.scala`).
+(`MultipleCartCreatorSaga.scala`). Since M6 a saga can say which organization an order belongs to
+(`spaceOf(order)`, none by default); it is stored in `sagas.space_id` when the saga starts, and a
+purge of that organization deletes the saga (§4.7).
 
 Since 1.0 (fixed F35, F17, F36, F34) every step result and every write of saga progress
 comes back to the actor as a message, so all decisions run on the actor's thread;

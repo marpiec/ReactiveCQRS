@@ -3,7 +3,7 @@ package io.reactivecqrs.core.saga
 import io.reactivecqrs.core.util.SchemaLock
 
 import io.mpjsons.MPJsons
-import io.reactivecqrs.api.id.{SagaId, UserId}
+import io.reactivecqrs.api.id.{SagaId, SpaceId, UserId}
 import io.reactivecqrs.core.types.TypesNamesState
 import scalikejdbc._
 
@@ -13,12 +13,12 @@ class PostgresSagaState(mpjsons: MPJsons, typesNamesState: TypesNamesState) exte
     new PostgresSagaSchemaInitializer().initSchema()
   }
 
-  override def createSaga(name: String, sagaId: SagaId, respondTo: String, order: SagaInternalOrder): Unit = {
+  override def createSaga(name: String, sagaId: SagaId, respondTo: String, order: SagaInternalOrder, spaceId: Option[SpaceId]): Unit = {
     DB.autoCommit { implicit session =>
-      sql"""INSERT INTO sagas (name, saga_id, user_id, respond_to, creation_time, update_time, phase, step, saga_order, order_type_id)
-            |VALUES (?, ?, ?, ?, current_timestamp, current_timestamp, ?, ?, ?, ?)""".stripMargin
+      sql"""INSERT INTO sagas (name, saga_id, user_id, respond_to, creation_time, update_time, phase, step, saga_order, order_type_id, space_id)
+            |VALUES (?, ?, ?, ?, current_timestamp, current_timestamp, ?, ?, ?, ?, ?)""".stripMargin
         .bind(name, sagaId.asLong, order.userId.asLong, respondTo, CONTINUES.name, 0,
-          mpjsons.serialize(order, order.getClass.getName), typesNamesState.typeIdByClass(order.getClass)).update()
+          mpjsons.serialize(order, order.getClass.getName), typesNamesState.typeIdByClass(order.getClass), spaceId.map(_.asLong)).update()
     }
   }
 

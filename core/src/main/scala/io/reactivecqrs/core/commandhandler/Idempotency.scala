@@ -1,6 +1,7 @@
 package io.reactivecqrs.core.commandhandler
 
 import io.reactivecqrs.api.{CustomCommandResponse, IdempotentCommand}
+import io.reactivecqrs.api.id.AggregateId
 import scalikejdbc.DBSession
 
 /**
@@ -16,10 +17,10 @@ class Idempotency(responses: CommandResponseState) {
 
   def isIdempotent(command: Any): Boolean = keyOf(command).isDefined
 
-  /** Stores the response of an idempotent command inside the persist transaction. Throws
+  /** Stores the response of an idempotent command on `aggregateId` inside the persist transaction. Throws
     * `IdempotencyKeyTakenException` when a copy got there first, which must roll the transaction back. */
-  def record(command: Any, response: CustomCommandResponse[_])(implicit session: DBSession): Unit = {
-    keyOf(command).foreach(responses.storeResponse(_, response))
+  def record(command: Any, response: CustomCommandResponse[_], aggregateId: AggregateId)(implicit session: DBSession): Unit = {
+    keyOf(command).foreach(responses.storeResponse(_, response, Some(aggregateId)))
   }
 
   /** Removes the stored responses older than the retention period; later copies of those commands run again. */

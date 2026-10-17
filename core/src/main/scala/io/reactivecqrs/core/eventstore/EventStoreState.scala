@@ -104,6 +104,12 @@ abstract class EventStoreState {
     * must wait (F143), or when the duplicates given are not all those that read the aggregate (one was made meanwhile). */
   def deleteAggregatePermanently(aggregateId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])] = Nil, archive: Set[String] = Set.empty): Either[String, Unit]
 
+  /** R17: detaches the given duplicates of the aggregate, each with its new first event (see `squash`; D50), in one
+    * transaction under the chain lock, archiving the replaced first events of the classes in `archive`. Changes nothing,
+    * giving the reason, when one of them no longer reads the aggregate, or when a detach must wait (F143: its first event
+    * was undone, still waits in the outbox, or a subscription of it is failed). */
+  def detachDuplicates(baseId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])], archive: Set[String] = Set.empty): Either[String, Unit]
+
   // ************** Squash (D47–D52)
 
   /** The version the aggregate's history is squashed up to, if it was. Reads below it fail with
