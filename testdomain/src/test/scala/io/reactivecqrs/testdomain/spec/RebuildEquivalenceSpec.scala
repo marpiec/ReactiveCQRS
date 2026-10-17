@@ -187,7 +187,7 @@ class RebuildEquivalenceSpec extends CommonSpec {
     val bus: ActorRef = system.actorOf(Props(new EventsBusActor()), "m4e-bus-" + nodes)
     val lists: ActorRef = system.actorOf(AggregateCommandBusActor(listContext, uidGenerator, eventStore, responses, bus))
     val tags: ActorRef = system.actorOf(AggregateCommandBusActor(tagContext, uidGenerator, eventStore, responses, bus))
-    private val runtime = new Projections(system, ProjectionsSettings(eventStore, subscriptions, registry, bus, Seq(listContext, tagContext), settings,
+    private val runtime = new Projections(system, ProjectionsSettings(eventStore, subscriptions, registry, Seq(listContext, tagContext), settings,
       restartAfter = 1.second))
     val supervisor: ActorRef = runtime.start[EqOverview](name, version, name + "-" + nodes) { build =>
       new EqOverview(subscriptions, spacesStore(build.documentStore("m4e_spaces"), new MapDocumentCache), indexStore(build.documentStore("m4e_index"), new MapDocumentCache))

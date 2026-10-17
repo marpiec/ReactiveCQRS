@@ -34,18 +34,19 @@ class ShardedCartContext extends ShoppingCartAggregateContext {
 }
 
 /** One node of a cluster in this JVM (M5): an actor system with what the host starts on every node, over the test
-  * database, with stores of its own as a process would have. */
-class TestNode(val system: ActorSystem) {
-  private val mpjsons = new MPJsons
-  private val typesNames = new PostgresTypesNamesState().initSchema()
+  * database, with stores of its own as a process would have. `subscribers` starts what the node registers on its event
+  * bus (projections' proxies, singletons); it runs once the node's buses exist. */
+class TestNode(val system: ActorSystem, subscribers: TestNode => Seq[ActorRef] = _ => Nil) {
+  val mpjsons = new MPJsons
+  val typesNames: PostgresTypesNamesState = new PostgresTypesNamesState().initSchema()
   val eventStore: PostgresEventStoreState = new PostgresEventStoreState(mpjsons, typesNames).initSchema()
   private val responses = new PostgresCommandResponseState(mpjsons, typesNames).initSchema()
 
   val uidGenerator: ActorRef = system.actorOf(Props(new UidGeneratorActor(new PostgresUidGenerator("aggregates_uids_seq"),
     new PostgresUidGenerator("commands_uids_seq"), new PostgresUidGenerator("sagas_uids_seq"))), "uidGenerator")
   val eventBus: ActorRef = system.actorOf(Props(new EventsBusActor()), "eventBus")
-  eventBus ! EventsBusActor.RegisterSubscribers(Nil)
   val carts: ActorRef = system.actorOf(AggregateCommandBusActor(new ShardedCartContext, uidGenerator, eventStore, responses, eventBus), "carts")
+  eventBus ! EventsBusActor.RegisterSubscribers(subscribers(this))
 
   def cluster: Cluster = Cluster(system)
 
@@ -68,13 +69,13 @@ object TestCluster {
        |$extra""".stripMargin).withFallback(ConfigFactory.load())
 
   /** `count` nodes joined into one cluster, every one up. */
-  def start(count: Int, extra: String = ""): Vector[TestNode] = {
+  def start(count: Int, extra: String = "", subscribers: TestNode => Seq[ActorRef] = _ => Nil): Vector[TestNode] = {
     TestDatabase.init()
     val systems = Vector.fill(count)(ActorSystem("cluster", config(extra)))
     val seed = Cluster(systems.head).selfAddress
     systems.foreach(system => Cluster(system).join(seed))
     awaitUp(systems, count)
-    systems.map(new TestNode(_))
+    systems.map(new TestNode(_, subscribers))
   }
 
   def awaitUp(systems: Seq[ActorSystem], count: Int): Unit = {

@@ -76,7 +76,7 @@ class ProjectionDeliverySpec extends CommonSpec {
     val bus = TestProbe()
     val projection: ActorRef = system.actorOf(Props(new RecordingProjection(state, options, failures, slowMillis)))
     if (register) {
-      bus.send(projection, GetSubscriptionRequests)
+      bus.send(projection, GetSubscriptionRequests(projection))
       bus.expectMsgType[SubscriptionRequests](3.seconds)
     }
 

@@ -1570,3 +1570,33 @@ Open test-infrastructure items:
   from inside the same process deadlocked); `SerialCommandsSpec`'s concurrent-mode comparison now
   expects no conflict (F99).
 - `sbt test`: core 226, testdomain 141, all pass.
+
+**17/10/2026: delivery across nodes and what runs once (D44, D46, D53, D55; F48)**
+- Before the code, the circumstances it could fail in were written down (`docs/design/M5-cluster.md`,
+  the table under "Delivery in the cluster"); the work follows it.
+- The registration protocol names the ref the bus asked: `GetSubscriptionRequests(registered)`
+  and `SubscriptionRequests(requests, registered)` (and `AddSubscriptions(..., registered)`), so a
+  projection's supervisor behind a singleton proxy answers for the proxy. A bus asks again every
+  tick until answered, takes answers while running too, and asks a registered ref again when
+  the subscribers it answered with stop; the new answer replaces the stopped ones without
+  acknowledging, so their rows wait in the outbox for the poller.
+- The supervisor answers every bus that asks and keeps them all: a later build is added on each,
+  a replaced build stops only once every bus removed it. `ProjectionsSettings` loses its event
+  bus: the buses come to the supervisor.
+- `cluster/Singletons.start`: a singleton manager on every node and a proxy returned (a plain
+  actor on a system that is not a cluster). `Projections.start` makes each supervisor a
+  singleton on a cluster; the host starts the outbox poller, the squash scheduler and each saga
+  runner with it. `Projections.retire` runs under the schema lock (every node calls it as it
+  starts). A projection loads its failures once per start, not once per bus.
+- Sagas store their caller with its node's address and answer through `resolveActorRef`.
+- The response clean-up stays with the command buses (a refinement of D53: idempotent and hourly).
+- Tests: `ClusterDeliverySpec` (three nodes: a projection singleton gets every node's owners'
+  events and answers on any node, one instance in the cluster; a rebuild switches across every
+  bus; a saga runner answers a caller on another node; the oldest node leaves and the
+  projection, the poller and the saga runner move, and what was published meanwhile reaches the
+  projection); `EventsBusActorSpec` (asking again every tick; an answer naming the proxy; an
+  instance that stops and is replaced); `ProjectionsSpec` (a replaced build stops only once both
+  of two buses removed it). Mutations caught: a supervisor on every node, answers taken from
+  their sender, a supervisor answering one bus, no ask again when instances stop, no ask again
+  every tick, retiring after the first bus.
+- `sbt test`: core 229, testdomain 146, all pass.

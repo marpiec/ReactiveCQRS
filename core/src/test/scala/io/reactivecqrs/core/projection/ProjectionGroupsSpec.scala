@@ -94,7 +94,7 @@ class ProjectionGroupsSpec extends CommonSpec {
     val subscriber: String = "ProjectionGroupsSpec-" + System.nanoTime() // no failures of earlier scenarios to retry
     val projection: ActorRef = system.actorOf(Props(new TableProjection(subscriptionsState, failures, failuresBeforeWork, slow, taskCalls)).withDispatcher(BlockingDispatcher.id))
     projection ! BindSubscriber(subscriber)
-    bus.send(projection, GetSubscriptionRequests)
+    bus.send(projection, GetSubscriptionRequests(projection))
     bus.expectMsgType[SubscriptionRequests](3.seconds)
 
     def slowOn(id: AggregateId): Unit = slow.set(id)

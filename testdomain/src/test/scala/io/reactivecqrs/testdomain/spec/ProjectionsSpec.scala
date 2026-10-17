@@ -147,7 +147,7 @@ class ProjectionsSpec extends CommonSpec {
     systems += 1
     val bus: ActorRef = system.actorOf(Props(new EventsBusActor()), "m4p-bus-" + systems)
     val notes: ActorRef = system.actorOf(AggregateCommandBusActor(context, uidGenerator, eventStore, responses, bus))
-    val projections = new ProjectionsOf(new Projections(system, ProjectionsSettings(storeOf, subscriptions, registryOf, bus, Seq(context), settings,
+    val projections = new ProjectionsOf(new Projections(system, ProjectionsSettings(storeOf, subscriptions, registryOf, Seq(context), settings,
       restartAfter = 1.second)), systems)
     val supervisors: Seq[ActorRef] = start(projections.runtime)
     bus ! RegisterSubscribers(supervisors)
@@ -327,7 +327,7 @@ class ProjectionsSpec extends CommonSpec {
       val ids = (1 to 60).map(_ => AggregateId(System.nanoTime()))
       ids.foreach(id => send(WriteMemo(userId, id, "memo " + id.asLong)))
       val firstEvent = DB.readOnly(implicit s => sql"SELECT id FROM events WHERE aggregate_id = ${ids.head.asLong}".map(_.long(1)).single().get)
-      val runtime = new Projections(system, ProjectionsSettings(eventStore, subscriptions, registry, bus, Seq(memoContext),
+      val runtime = new Projections(system, ProjectionsSettings(eventStore, subscriptions, registry, Seq(memoContext),
         BuilderSettings(pageSize = 1, chunkEvents = 1), restartAfter = 1.second))
       val supervisor = runtime.start[MemoTexts]("m4p-memos", 1, "m4p-memos") { build =>
         new MemoTexts(subscriptions, new PostgresDocumentStore[MemoText](build.documentStore("m4p_memos"), mpjsons, new NoopDocumentStoreCache))
@@ -444,6 +444,33 @@ class ProjectionsSpec extends CommonSpec {
       node.send(AddBuildNoteLine(userId, note, AggregateVersion(2), "b"))
       listener.fishForSpecificMessage(10.seconds) { case SubscriptionUpdated("subscription", NoteLines("pushed", Vector("a", "b"))) => () }
       node.stop()
+    }
+
+    Scenario("with the buses of two nodes (M5), the build replaced at a switch stops only once both removed it") {
+      Given("a projection asked by two buses")
+      val runtime = new Projections(system, ProjectionsSettings(eventStore, subscriptions, registry, Seq(new BuildNoteContext),
+        BuilderSettings(pageSize = 20, chunkEvents = 10), restartAfter = 1.second))
+      val supervisor = notesProjection(runtime, "m5-two-buses", 1, "m5_two_buses")
+      val (busA, busB) = (TestProbe(), TestProbe())
+      Seq(busA, busB).foreach { bus =>
+        bus.send(supervisor, EventsBusActor.GetSubscriptionRequests(supervisor))
+        bus.fishForSpecificMessage(10.seconds) { case EventsBusActor.SubscriptionRequests(_, registered) if registered == supervisor => () }
+      }
+      switchedTo(supervisor, 1)
+
+      When("it is built again and switches: both buses are told to remove the build it replaces")
+      supervisor.askActor[RebuildStarted](RebuildProjection)(5.seconds) mustBe RebuildStarted(2)
+      val old = busA.fishForSpecificMessage(60.seconds) { case EventsBusActor.RemoveSubscriber(subscriber, false) => subscriber }
+      busB.fishForSpecificMessage(10.seconds) { case EventsBusActor.RemoveSubscriber(subscriber, false) => subscriber } mustBe old
+      val watcher = TestProbe()
+      watcher.watch(old)
+
+      Then("it keeps running while one bus still delivers to it, and stops once the other let it go too")
+      busA.send(supervisor, EventsBusActor.SubscriberRemoved(old))
+      watcher.expectNoMessage(1.second)
+      busB.send(supervisor, EventsBusActor.SubscriberRemoved(old))
+      watcher.expectTerminated(old, 10.seconds)
+      system.stop(supervisor)
     }
 
     Scenario("a context version bump rebuilds the projections that receive its states, and only them (D63)") {

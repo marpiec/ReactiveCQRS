@@ -104,7 +104,7 @@ class ClusterSerializationSpec extends AnyFeatureSpec with Matchers with Eventua
         AggregateWithTypeAndEvents[ShoppingCart](cart, id, None, events),
         MessageAck(ref, id, Seq(v3), EventsDelivery), MessageFailed(ref, id, Seq(v3), "broken", AggregatesWithEventsDelivery),
         RequestRepublish(ref, cart, id, v3), Republish(cart, id),
-        GetSubscriptionRequests, SubscriptionRequests(Seq(SubscribeForEvents(cart, ref), SubscribeForAggregates(cart, ref))),
+        GetSubscriptionRequests(ref), SubscriptionRequests(Seq(SubscribeForEvents(cart, ref), SubscribeForAggregates(cart, ref)), ref),
         AddSubscriptions(Seq(SubscribeForAggregatesWithEvents(cart, ref))), RemoveSubscriber(ref, keepOutbox = true), SubscriberRemoved(ref),
         GetDeliveryStatus, DeliveryStatus(1, Seq(Undelivered(cart, id, v3, "projection", AggregatesDelivery, now)), Seq("stopped"))
       ).foreach(message => roundTrip(message) mustBe message)

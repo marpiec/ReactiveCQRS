@@ -138,8 +138,11 @@ The command bus answers historical reads (`GetAggregateForVersion`, `GetAggregat
 AggregateOwner → EventsBusActor → subscribers (ProjectionActor, sagas,
                                                           AggregateListenerActor)
   At start the host sends the bus RegisterSubscribers; the bus asks each subscriber
-  for its subscriptions (GetSubscriptionRequests) and publishes nothing until all
+  for its subscriptions (GetSubscriptionRequests(registered)) and publishes nothing until all
   have answered. Command buses register as their type's publishers (RegisterPublisher).
+  In a cluster (M5) there is a bus per node, and what must see every event runs once
+  (`Singletons.start`; managed projections through `Projections.start`), registered on every
+  node's bus through its proxy (ARCHITECTURE §13.4).
   EventsBusActor keeps one delivery per event until every subscription (subscriber and
   DeliveryKind) has answered MessageAck or MessageFailed, the deadline passes, or the
   subscriber stops; only acks and failures acknowledge the publication (PublishEventsAck)

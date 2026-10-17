@@ -32,7 +32,7 @@ unless the path says `api/` or `testdomain/`).
 | `EventsBusActor.scala` | `eventbus/` |
 | `UidGeneratorActor.scala`, `IdPool.scala` (ids from pools fetched ahead, M3) | `uid/` |
 | `BlockingDispatcher.scala` (F27) and `reference.conf` (`reactivecqrs.blocking-dispatcher`, the serializer's bindings) | `util/`, `core/src/main/resources/` |
-| `ClusterSerializer.scala` (with `ClusterSerialization` and `RemoteFailure`, M5) | `cluster/` |
+| `ClusterSerializer.scala` (with `ClusterSerialization` and `RemoteFailure`), `Singletons.scala` (actors that run once, M5) | `cluster/` |
 | `SchemaLock.scala` (one schema initialization at a time, F63) | `util/` |
 | `SequenceGate.scala`, `RedeliveryPolicy.scala`, `OutboxPollerActor.scala`, `Republish.scala` (the delivery module, M2) | `delivery/` |
 | `OutboxDeletes.scala` (batched outbox deletes) | `eventstore/` |
@@ -1250,3 +1250,45 @@ any node, one owner per aggregate under concurrent commands from every node, out
 acknowledgements, passivation asked on another node, a rewrite that stops a duplicate's owner
 elsewhere, idle passivation, and a node that leaves under load while an owner runs a twelve-second
 command.
+
+### 13.4 Delivery across nodes, and what runs once (D44, D46, D53, D55)
+
+Every node has its own event bus; an owner publishes to its node's bus (D44). Whatever must see
+every event runs once in the cluster and is registered on every node's bus through a proxy:
+
+- **`cluster/Singletons.start(system, name, props)`** starts a cluster singleton manager under
+  `name` on this node and returns a proxy (`name-proxy`), which forwards to wherever the
+  singleton runs, keeping the sender, and holds messages while it moves. The singleton runs on
+  the oldest node and moves once when that node leaves (D66). On an actor system that is not a
+  cluster it starts the actor itself. `Projections.start` uses it for each managed projection's
+  supervisor (with its instances and builder), so the `ActorRef` it returns is the node's proxy:
+  the host registers it on its node's bus and sends it queries, as before (D55). The host starts
+  the outbox poller, the squash scheduler and each saga runner the same way.
+- **Registration names the ref asked:** a bus asks `GetSubscriptionRequests(registered)`, and the
+  answer, `SubscriptionRequests(requests, registered)`, may come from another actor: the
+  supervisor behind the proxy answers for the proxy. A bus asks again every tick until a
+  registered subscriber answered (an ask can be lost in a proxy's buffer). It remembers which
+  subscribers each registered ref answered with (and added with `AddSubscriptions(..., registered)`):
+  when one of them stops while the registered ref lives (the singleton moved), it asks that ref
+  again, and the new answer replaces the stopped subscribers without acknowledging their
+  deliveries, whose rows stay in the outbox for the outbox poller (F110).
+- **The supervisor answers every bus** and keeps them all: the build it starts later is added on
+  each (`AddSubscriptions`), and the build it replaces at a switch is removed from each; that
+  instance stops (`Retire`) only once every bus confirmed (`SubscriberRemoved`), or ended.
+- **Acknowledgements and requests** go back to the bus that delivered: each delivery's sender
+  (`respondTo`); re-publication requests go to the last bus that delivered, which routes them to
+  its command bus and on to the owner, wherever it runs.
+- **Sagas** store their caller as `Serialization.serializedActorPath`, with its node's address, and
+  answer through `resolveActorRef`, so a runner that moved never answers an actor of the same
+  path on its own node; rows stored before, with a bare path, resolve as they did.
+- **One writer** (F48): a projection's caches have one writer; two at once, in a partition before
+  the resolver downs a side, are decided by the subscription versions and the document
+  versions. A subscriber registered on one node only sees that node's owners' events.
+- **The response clean-up** stays with each command bus: an idempotent hourly `DELETE`.
+
+`ClusterDeliverySpec` (three nodes in one JVM): a projection singleton gets the events of the
+owners on every node and answers queries on any node, with one instance in the cluster; a
+rebuild switches across every bus; a saga runner answers a caller on another node; and when
+the oldest node leaves, the projection, the poller and the saga runner move, and what was
+published meanwhile reaches the projection. `EventsBusActorSpec` covers the protocol with a
+proxy and a supervisor of probes; `ProjectionsSpec` the retirement with two buses.

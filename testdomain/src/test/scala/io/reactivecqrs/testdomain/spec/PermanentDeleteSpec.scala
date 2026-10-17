@@ -83,8 +83,8 @@ class PermanentDeleteSpec extends CommonSpec {
     val subscriber = TestProbe()
     val bus: ActorRef = system.actorOf(Props(new EventsBusActor()))
     bus ! RegisterSubscribers(Seq(subscriber.ref))
-    subscriber.expectMsg(GetSubscriptionRequests)
-    subscriber.reply(SubscriptionRequests(Seq(SubscribeForEvents(memoType, subscriber.ref))))
+    subscriber.expectMsg(GetSubscriptionRequests(subscriber.ref))
+    subscriber.reply(SubscriptionRequests(Seq(SubscribeForEvents(memoType, subscriber.ref)), subscriber.ref))
     val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(context, uidGenerator, eventStore,
       new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema(), bus))
 

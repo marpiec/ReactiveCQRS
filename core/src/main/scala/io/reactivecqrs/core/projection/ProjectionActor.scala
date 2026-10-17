@@ -319,9 +319,9 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   }
 
   protected def receiveUpdate: Receive = {
-    case GetSubscriptionRequests =>
+    case GetSubscriptionRequests(registered) =>
       eventBus = Some(sender())
-      sender() ! SubscriptionRequests(subscriptionRequests)
+      sender() ! SubscriptionRequests(subscriptionRequests, registered)
       loadFailures()
     case GetListeners => sender() ! Listeners(
       aggregateListenersMap.keys.toSeq.map(_ -> SubscriptionType.AGGREGATES) ++
@@ -467,6 +467,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   private val failed = mutable.LinkedHashMap[Key, SubscriptionFailure]()
   private var failuresToRetry = Vector[Key]()
   private var eventBus: Option[ActorRef] = None
+  private var failuresLoaded = false
   private var building: Option[ActorRef] = None // the builder, while the projection is built from the store (D57)
   private var drainTokens = 0
   private var queueIds = 0
@@ -853,9 +854,11 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
   // ************** Failed subscriptions (D20a)
 
-  private def loadFailures(): Unit = {
+  // Once per start: the bus of every node asks (M5), some of them again.
+  private def loadFailures(): Unit = if (!failuresLoaded) {
     Try(subscriptionsState.failures(subscriberName)) match {
       case Success(stored) =>
+        failuresLoaded = true
         stored.foreach(failure => failed += Key(failure.subscriptionType, failure.aggregateId) -> failure)
         if (options.retryFailuresOnStart && stored.nonEmpty) {
           log.info("Projection " + projectionName + " retries " + stored.size + " failed subscriptions")

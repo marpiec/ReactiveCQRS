@@ -2,13 +2,14 @@ package io.reactivecqrs.core.rebuild
 
 import io.reactivecqrs.api.{AggregateContext, AggregateType}
 import io.reactivecqrs.api.id.{AggregateId, SpaceId}
+import io.reactivecqrs.core.cluster.Singletons
 import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.core.eventstore.{AggregateScope, EventStoreState}
 import io.reactivecqrs.core.projection._
 import io.reactivecqrs.core.rebuild.ProjectionBuilder._
 import io.reactivecqrs.core.rebuild.ProjectionSupervisor._
-import io.reactivecqrs.core.util.{BlockingDispatcher, MyActorLogging}
-import org.apache.pekko.actor.{Actor, ActorRef, ActorRefFactory, OneForOneStrategy, Props, Stash, Status, SupervisorStrategy, Terminated}
+import io.reactivecqrs.core.util.{BlockingDispatcher, MyActorLogging, SchemaLock}
+import org.apache.pekko.actor.{Actor, ActorRef, ActorRefFactory, ActorSystem, OneForOneStrategy, Props, Stash, Status, SupervisorStrategy, Terminated}
 
 import scala.collection.mutable
 import scala.concurrent.duration._
@@ -21,7 +22,7 @@ import scala.util.control.NonFatal
   * @param buildsAtOnce how many builds run at the same time; the others wait
   */
 case class ProjectionsSettings(eventStore: EventStoreState, subscriptionsState: SubscriptionsState, registry: ProjectionRegistry,
-                               eventBus: ActorRef, contexts: Seq[AggregateContext[_]], builder: BuilderSettings = BuilderSettings(),
+                               contexts: Seq[AggregateContext[_]], builder: BuilderSettings = BuilderSettings(),
                                buildsAtOnce: Int = 2, restartAfter: FiniteDuration = 10.seconds)
 
 /**
@@ -38,16 +39,22 @@ class Projections(actors: ActorRefFactory, val settings: ProjectionsSettings) {
 
   /** Starts the projection `name` at `version`; its supervisor is named `actorName`. The instance `create` makes for a
     * build must take its stores' table names from that build (`build.documentStore(...)`). `P`, the projection's class,
-    * names the subscriptions of a projection 0.12 built, which is adopted as it is (D81). */
+    * names the subscriptions of a projection 0.12 built, which is adopted as it is (D81). In a cluster (started on an
+    * actor system with the cluster provider) the supervisor is a singleton (D53): every node starts it, and the
+    * `ActorRef` returned is this node's proxy to it, for queries and for this node's event bus (`RegisterSubscribers`). */
   def start[P <: ProjectionActor : ClassTag](name: String, version: Int, actorName: String, whileBuilding: WhileBuilding = ServeLive)
                                            (create: ProjectionBuild => P): ActorRef = {
     val spec = ProjectionSpec(name, version, classTag[P].runtimeClass.getName, whileBuilding)
-    actors.actorOf(Props(new ProjectionSupervisor(spec, create, this)).withDispatcher(BlockingDispatcher.id), actorName)
+    val props = Props(new ProjectionSupervisor(spec, create, this)).withDispatcher(BlockingDispatcher.id)
+    actors match {
+      case system: ActorSystem => Singletons.start(system, actorName, props)
+      case _ => actors.actorOf(props, actorName)
+    }
   }
 
   /** Drops every build of a projection removed from the code: its tables, its subscription versions and its failures, which
-    * would keep permanent deletes waiting (F94). */
-  def retire(name: String): Unit = {
+    * would keep permanent deletes waiting (F94). Under the schema lock: every node of a cluster calls it as it starts. */
+  def retire(name: String): Unit = SchemaLock {
     settings.registry.builds(name).foreach { build =>
       settings.subscriptionsState.clearSubscriptionsInfo(build.subscriber)
       settings.registry.drop(name, build.number)
@@ -173,8 +180,12 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   private var active: Option[Instance] = None
   private var building: Option[Instance] = None // the same instance as `active` while a new projection is built first
   private var listeners: Seq[(AggregateType, SubscriptionType)] = Nil
-  private var bus: Option[ActorRef] = None
-  private var answeredBus = false
+  // M5: the bus of every node asks (through this supervisor's singleton proxy, which it names), and each is sent the
+  // later changes. `unanswered`: buses that asked before the instances were known, or asked again.
+  private var buses = Map[ActorRef, ActorRef]()
+  private var unanswered = Map[ActorRef, ActorRef]()
+  // A retired build's instance stops only once every bus that delivered to it removed it.
+  private val removing = mutable.Map[ActorRef, Set[ActorRef]]()
   private var builder: Option[ActorRef] = None
   private var caughtUp = false
   private val retiring = mutable.Map[ActorRef, BuildRecord]()
@@ -235,10 +246,14 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       if (building.isEmpty) logged("could not read its pending targeted rebuild; it runs at the next start") {
         registry.projection(spec.name).flatMap(_.pendingTarget).flatMap(decode).foreach(target => rebuildTarget(target, context.system.deadLetters))
       }
-    case GetSubscriptionRequests =>
-      bus = Some(sender())
+    case GetSubscriptionRequests(registered) => asked(sender(), registered) // answered once the instances are known
     case Terminated(ref) => terminated(ref)
     case _ => stash()
+  }
+
+  private def asked(bus: ActorRef, registered: ActorRef): Unit = {
+    context.watch(bus)
+    unanswered += bus -> registered
   }
 
   private def decideBuilds(): Unit = {
@@ -302,22 +317,21 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
     runningBuild.foreach(_ => runtime.slots ! RequestBuildSlot)
   }
 
-  private def subscribeTakers(): Unit = {
+  // Buses answered before get the new takers' subscriptions; buses that asked get every subscription. Until a bus has
+  // asked, nothing is subscribed: it is answered when it does.
+  private def subscribeTakers(): Unit = (buses.keys ++ unanswered.keys).headOption.foreach { anyBus =>
     def takesDeliveries(i: Instance) = building.isEmpty || building.exists(_.ref == i.ref) || spec.whileBuilding == ServeLive
     val takers = (active ++ runningBuild).toSeq.distinct.filter(i => !i.subscribed && takesDeliveries(i))
-    if (takers.nonEmpty) subscribe(takers)
-  }
-
-  private def subscribe(instances: Seq[Instance]): Unit = bus.orElse(if (answeredBus) Some(settings.eventBus) else None) match {
-    case Some(b) =>
-      instances.foreach(_.ref ! ConnectedTo(b))
-      val requests = instances.flatMap(requestsOf)
-      if (answeredBus) b ! AddSubscriptions(requests) else b ! SubscriptionRequests(requests)
-      answeredBus = true
-      markSubscribed(instances)
-      replaced.foreach(old => b ! RemoveSubscriber(old, keepOutbox = true))
-      replaced = Vector.empty
-    case None => () // the bus has not asked yet; it is answered when it does
+    takers.foreach(_.ref ! ConnectedTo(anyBus)) // where it asks for re-publications until a delivery names its bus
+    markSubscribed(takers)
+    val added = takers.flatMap(requestsOf)
+    if (added.nonEmpty) buses.foreach { case (bus, registered) => bus ! AddSubscriptions(added, Some(registered)) }
+    val all = (active ++ building).toSeq.distinct.filter(_.subscribed).flatMap(requestsOf)
+    unanswered.foreach { case (bus, registered) => bus ! SubscriptionRequests(all, registered) }
+    buses ++= unanswered
+    unanswered = Map.empty
+    for (bus <- buses.keys; old <- replaced) bus ! RemoveSubscriber(old, keepOutbox = true)
+    replaced = Vector.empty
   }
 
   private def markSubscribed(instances: Seq[Instance]): Unit = {
@@ -335,8 +349,8 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   // ************** Running
 
   private def running: Receive = {
-    case GetSubscriptionRequests =>
-      bus = Some(sender())
+    case GetSubscriptionRequests(registered) =>
+      asked(sender(), registered)
       subscribeTakers()
     case BuildSlotGranted =>
       if (runningBuild.isDefined && builder.isEmpty) startBuilder()
@@ -368,7 +382,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
           " failed subscriptions; it replaces the active build once they are retried or skipped (ToBuildInProgress)")
         context.system.scheduler.scheduleOnce(30.seconds, self, CheckSwitch)(context.dispatcher)
       }
-    case SubscriberRemoved(old) => retiringActive(old)
+    case SubscriberRemoved(old) => removedFrom(old, sender())
     case RebuildProjection => rebuild()
     case ToBuildInProgress(message) => runningBuild match {
       case Some(b) => b.ref.forward(message)
@@ -412,15 +426,31 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       builder = None
       old.foreach { o =>
         retiring += o.ref -> o.record
-        if (o.subscribed) settings.eventBus ! RemoveSubscriber(o.ref) else o.ref ! Retire(active.map(_.ref))
+        if (o.subscribed && buses.nonEmpty) {
+          removing += o.ref -> buses.keySet
+          buses.keys.foreach(_ ! RemoveSubscriber(o.ref))
+        } else o.ref ! Retire(active.map(_.ref))
       }
     } else if (switched.contains(false)) {
       log.error("Projection " + spec.name + ": build " + b.record.number + " is no longer the build in progress in the registry; it does not switch")
     }
   }
 
-  // The bus no longer waits for the old instance: it hands its push subscriptions to the new one and stops.
-  private def retiringActive(old: ActorRef): Unit = if (retiring.contains(old)) old ! Retire(active.map(_.ref))
+  // No bus waits for the old instance any more: it hands its push subscriptions to the new one and stops.
+  private def removedFrom(old: ActorRef, bus: ActorRef): Unit = removing.get(old).foreach { waiting =>
+    val left = waiting - bus
+    if (left.nonEmpty) removing += old -> left else {
+      removing -= old
+      if (retiring.contains(old)) old ! Retire(active.map(_.ref))
+    }
+  }
+
+  // A bus that ended (its node left) is neither answered nor waited for.
+  private def busEnded(bus: ActorRef): Unit = {
+    buses -= bus
+    unanswered -= bus
+    removing.keys.toSeq.foreach(old => removedFrom(old, bus))
+  }
 
   // ************** Targeted rebuild (D63, R14)
 
@@ -489,7 +519,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       sender() ! RebuildStarted(b.record.number)
   }
 
-  private def terminated(ref: ActorRef): Unit = {
+  private def terminated(ref: ActorRef): Unit = if (buses.contains(ref) || unanswered.contains(ref)) busEnded(ref) else {
     retiring.remove(ref) match {
       case Some(retired) => drop(retired)
       case None if targeted.exists(_.builder.contains(ref)) =>

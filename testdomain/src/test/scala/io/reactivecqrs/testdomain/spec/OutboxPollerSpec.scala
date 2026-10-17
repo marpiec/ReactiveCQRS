@@ -45,8 +45,8 @@ class OutboxPollerSpec extends CommonSpec {
     val subscriber = TestProbe()
     val bus: ActorRef = system.actorOf(Props(new EventsBusActor()))
     bus ! RegisterSubscribers(Seq(subscriber.ref))
-    subscriber.expectMsg(GetSubscriptionRequests)
-    subscriber.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, subscriber.ref))))
+    subscriber.expectMsg(GetSubscriptionRequests(subscriber.ref))
+    subscriber.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, subscriber.ref)), subscriber.ref))
     val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStore,
       responses, bus))
     val poller: ActorRef = system.actorOf(Props(new OutboxPollerActor(eventStore, bus,

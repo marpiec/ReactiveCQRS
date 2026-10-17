@@ -58,15 +58,18 @@ object EventsBusActor {
   // Start-up (D15): the host registers its subscribers; the bus asks each for its subscriptions and publishes nothing
   // until all have answered. Command buses register as the publishers of their aggregate type.
   case class RegisterSubscribers(subscribers: Seq[ActorRef])
-  case object GetSubscriptionRequests
-  case class SubscriptionRequests(requests: Seq[SubscribeRequest])
+  /** `registered`: the subscriber the bus asked, which the answer names: an answer may come from another actor, such as
+    * a projection's supervisor behind a cluster singleton proxy (M5). */
+  case class GetSubscriptionRequests(registered: ActorRef)
+  case class SubscriptionRequests(requests: Seq[SubscribeRequest], registered: ActorRef)
   case class RegisterPublisher(aggregateType: AggregateType, publisher: ActorRef)
 
   // D57: a projection's supervisor adds the subscriptions of a build that starts later, and removes those of a build it
   // retires: the deliveries waiting for a removed subscriber end for it, so no outbox row waits for it. `keepOutbox`: the
   // subscriber is an instance that stopped, replaced by one subscribed already: its deliveries end without acknowledging
-  // their owners, so their rows stay in the outbox and are published again to the replacement (F110).
-  case class AddSubscriptions(requests: Seq[SubscribeRequest])
+  // their owners, so their rows stay in the outbox and are published again to the replacement (F110). `registered`: the
+  // registered subscriber the added ones belong to, which the bus asks again when they stop (M5).
+  case class AddSubscriptions(requests: Seq[SubscribeRequest], registered: Option[ActorRef] = None)
   case class RemoveSubscriber(subscriber: ActorRef, keepOutbox: Boolean = false)
   case class SubscriberRemoved(subscriber: ActorRef)
 
@@ -125,6 +128,11 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
 
   private var awaitingRegistration = Set[ActorRef]()
   private var registrationRequested = false
+  // M5: the registered subscribers (watched), the subscribers each answered with, and those asked again since their
+  // subscribers stopped (a projection's singleton moved): a new answer replaces the stopped ones.
+  private var registered = Set[ActorRef]()
+  private var answeredWith = Map[ActorRef, Set[ActorRef]]()
+  private var askedAgain = Set[ActorRef]()
   private var lastSummary = System.nanoTime()
 
   private val undelivered = mutable.Queue[Undelivered]()
@@ -143,29 +151,33 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     case RegisterSubscribers(subscribers) =>
       registrationRequested = true
       awaitingRegistration = subscribers.toSet
+      registered ++= subscribers
       subscribers.foreach { subscriber =>
         context.watch(subscriber)
-        subscriber ! GetSubscriptionRequests
+        subscriber ! GetSubscriptionRequests(subscriber)
       }
       startIfRegistered()
-    case SubscriptionRequests(requests) =>
-      requests.foreach(subscribe)
-      awaitingRegistration -= sender()
+    case SubscriptionRequests(requests, registeredSubscriber) =>
+      answered(registeredSubscriber, requests)
+      awaitingRegistration -= registeredSubscriber
       startIfRegistered()
     case RegisterPublisher(aggregateType, publisher) => publishers += aggregateType -> publisher
-    case AddSubscriptions(requests) => requests.foreach(subscribe)
+    case AddSubscriptions(requests, registeredSubscriber) => added(requests, registeredSubscriber)
     case RemoveSubscriber(subscriber, keepOutbox) =>
       awaitingRegistration -= subscriber
       removeSubscriber(subscriber, keepOutbox)
+      sender() ! SubscriberRemoved(subscriber)
       startIfRegistered()
     case GetDeliveryStatus => sender() ! status
     case Terminated(subscriber) =>
       awaitingRegistration -= subscriber
-      subscriberStopped(subscriber)
+      stoppedOrUnregistered(subscriber)
       startIfRegistered()
     case Tick =>
       if (registrationRequested) {
         log.warning("Event bus waits for the subscriptions of: " + awaitingRegistration.map(_.path.name).toSeq.sorted.mkString(", "))
+        // An ask can be lost on the way, in a singleton proxy's buffer among others: it is asked again.
+        awaitingRegistration.foreach(subscriber => subscriber ! GetSubscriptionRequests(subscriber))
       } else {
         log.warning("Event bus waits for RegisterSubscribers from the host; nothing is published until then")
       }
@@ -188,6 +200,34 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     }
   }
 
+  // A registered subscriber's answer, the first or one asked for again (M5). The subscribers of its earlier answers that
+  // stopped and are not in this one were replaced: they leave without acknowledging their deliveries, so the rows stay
+  // in the outbox for the replacements (F110).
+  private def answered(registeredSubscriber: ActorRef, requests: Seq[SubscribeRequest]): Unit = {
+    askedAgain -= registeredSubscriber
+    val now = requests.map(_.subscriber).toSet
+    answeredWith.getOrElse(registeredSubscriber, Set.empty).filter(s => stopped.contains(s) && !now.contains(s))
+      .foreach(replaced => removeSubscriber(replaced, keepOutbox = true))
+    added(requests, Some(registeredSubscriber))
+  }
+
+  private def added(requests: Seq[SubscribeRequest], registeredSubscriber: Option[ActorRef]): Unit = {
+    requests.foreach(subscribe)
+    registeredSubscriber.foreach { r => answeredWith += r -> (answeredWith.getOrElse(r, Set.empty) ++ requests.map(_.subscriber)) }
+  }
+
+  // A subscriber stopped: its deliveries end (D20b). The registered subscribers that answered with it and live, such as a
+  // singleton's proxy, are asked again: a projection's singleton that moved answers with its new instances (M5).
+  private def stoppedOrUnregistered(subscriber: ActorRef): Unit = {
+    registered -= subscriber
+    subscriberStopped(subscriber)
+    answeredWith.collect { case (r, subscribers) if subscribers.contains(subscriber) && r != subscriber && registered.contains(r) && !askedAgain.contains(r) => r }
+      .foreach { r =>
+        askedAgain += r
+        r ! GetSubscriptionRequests(r)
+      }
+  }
+
   // ****************** RUNNING
 
   // AR7: a message the bus fails on (a malformed one) is logged and dropped; its outbox rows stay. A restart
@@ -208,10 +248,13 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       routeToPublisher(aggregateType, RepublishRange(aggregateId, from, subscriber))
     case Republish(aggregateType, aggregateId) => routeToPublisher(aggregateType, RepublishOutbox(aggregateId))
     case RegisterPublisher(aggregateType, publisher) => publishers += aggregateType -> publisher
-    case AddSubscriptions(requests) => requests.foreach(subscribe)
-    case RemoveSubscriber(subscriber, keepOutbox) => removeSubscriber(subscriber, keepOutbox)
+    case SubscriptionRequests(requests, registeredSubscriber) => answered(registeredSubscriber, requests)
+    case AddSubscriptions(requests, registeredSubscriber) => added(requests, registeredSubscriber)
+    case RemoveSubscriber(subscriber, keepOutbox) =>
+      removeSubscriber(subscriber, keepOutbox)
+      sender() ! SubscriberRemoved(subscriber)
     case GetDeliveryStatus => sender() ! status
-    case Terminated(subscriber) => subscriberStopped(subscriber)
+    case Terminated(subscriber) => stoppedOrUnregistered(subscriber)
     case Tick => checkDeadlines()
   }
 
@@ -313,9 +356,9 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   private def removeSubscriber(subscriber: ActorRef, keepOutbox: Boolean): Unit = {
     context.unwatch(subscriber)
     subscriptions = subscriptions.map { case (aggregateType, requests) => aggregateType -> requests.filterNot(_.subscriber == subscriber) }.filter(_._2.nonEmpty)
+    answeredWith = answeredWith.map { case (r, subscribers) => r -> (subscribers - subscriber) }
     stopped -= subscriber
     if (keepOutbox) endDeliveries(_.subscriber == subscriber, _ => true) else completeFor(subscriber)
-    sender() ! SubscriberRemoved(subscriber)
   }
 
   private def completeFor(subscriber: ActorRef): Unit = {

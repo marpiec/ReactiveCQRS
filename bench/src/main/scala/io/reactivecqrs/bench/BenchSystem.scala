@@ -96,7 +96,7 @@ class BenchSystem(name: String, stores: BenchStores, projections: Boolean, manag
   private def stateStore(table: String) = new PostgresDocumentStore[Counter](table, stores.mpjsons, new NoopDocumentStoreCache[Counter, AnyRef])
 
   private val subscribers = if (!projections) Nil else if (managed) {
-    val runtime = new Projections(system, ProjectionsSettings(stores.eventStore, subscriptionsState, stores.registry, eventBus, Seq(context)))
+    val runtime = new Projections(system, ProjectionsSettings(stores.eventStore, subscriptionsState, stores.registry, Seq(context)))
     List(runtime.start[ManagedCountingProjection](name + "Progress", 1, "progressProjection") { build =>
         new ManagedCountingProjection(subscriptionsState, progressStore(build.documentStore(name + "_progress")), name + "Progress", failing)
       },

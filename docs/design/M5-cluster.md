@@ -62,7 +62,7 @@ node A                                         node B
 3. **Serialization (D45, D68)** (done): one mpjsons-based serializer for every library message and the
    domain's commands, events, states and query answers; round-trip tests.
 4. **Sharded owners (D43, D72; F46, F99)** (done) with the in-JVM multi-node harness; found on the way: F119 (stale snapshots), F120 (a chosen id on two owners).
-5. **Delivery in the cluster and singletons (D44, D46, D53–D55; F48)**: registration through
+5. **Delivery in the cluster and singletons (D44, D46, D53–D55; F48)** (done): registration through
    proxies, supervisors on every bus, the singletons, saga replies across nodes.
 6. **Ids (D39)**: installation ranges below 2^53.
 7. **Rolling upgrades (D65–D73)**: app-version, the write switch for new event classes,
@@ -146,13 +146,41 @@ follows.
 - Single writer (F48): a projection runs once, so its caches are its own; the subscription
   version cache is per node and the database decides (F29, F115).
 
+**The protocol, as built in step 5:** `GetSubscriptionRequests(registered)` names the ref the
+bus asked (the subscriber itself, or a proxy), and `SubscriptionRequests(requests, registered)`
+echoes it, so an answer from the supervisor behind a proxy completes the proxy's registration.
+The bus remembers which subscribers each registered ref answered with; when one of them stops
+while the registered ref lives, it asks that ref again, and a new answer replaces the stopped
+subscribers of that ref (they leave without acknowledging, as `RemoveSubscriber(keepOutbox)`).
+While a registration is awaited, the bus asks again every tick. The supervisor answers every bus
+that asks, keeps them all (watched), and sends each its later changes; a build it retires is
+told to stop only once every bus confirmed the removal.
+
+**Where it could go wrong, and what handles it (written before step 5's code):**
+
+| Circumstance | What happens | Handled by |
+|---|---|---|
+| The singleton is not up yet when a bus asks, or the proxy's buffer overflows | the ask is lost or waits; the bus publishes nothing (D15) | the bus asks every tick until answered; a supervisor answers every ask (idempotent) |
+| An answer comes from the supervisor, not from the proxy the bus asked | the bus would wait for the proxy forever | the answer names the registered ref |
+| The singleton moves or crashes | its instances stop: each bus ends their deliveries incomplete (rows stay in the outbox) | the bus asks the proxy again; the new supervisor's instances replace the stopped ones; the outbox poller re-publishes what waited (a lag of up to its first attempt, 3 min) |
+| An answer to an old ask arrives after registration | a running bus ignored it before | the running bus takes answers too (they replace or add) |
+| A build retired while several buses deliver to it | its tables would go while another bus still delivers | the supervisor waits for `SubscriberRemoved` from every bus it answered; a bus that ends is no longer waited for |
+| Two supervisors at once (a partition before the resolver downs a side) | both subscribe their instances; both write | the subscription versions' compare-and-set and the document versions decide (F48), as for two writers today |
+| A subscriber registered on one node only, not a singleton | it sees only the events of the owners on its node | documented: whatever must see every event runs once in the cluster |
+| Several nodes start `Projections.retire` together | concurrent drops of one build | it runs under the schema lock (D69) |
+| A saga runner that moved answers a caller stored as a local path | the path resolves on the new node: the answer is lost | the caller is stored with its node's address; rows stored before resolve as before |
+| Two saga runners (one per node) resume the same pending sagas | each step runs twice | the runner is a singleton; saga commands are idempotent (H3) |
+| The outbox poller and the squash scheduler on every node | every row re-published, every candidate squashed, N times | both are singletons |
+| The response clean-up on every node's every command bus | the same idempotent `DELETE` N times an hour, at random minutes | left as it is (a singleton would add wiring for no gain); recorded as a refinement of D53 |
+
 ## Singletons (D46, D53, D55)
 
 - `Projections.start` runs the supervisor as a singleton when the system is a cluster of more
   than one possible node (always, with the cluster provider) and returns its proxy, which the
   host uses as before (queries, `RegisterSubscribers`).
-- The outbox poller, the squash scheduler, the response clean-up and each saga runner run as
-  singletons through small factories in core, with proxies where callers need them.
+- The outbox poller, the squash scheduler and each saga runner run as singletons through a small
+  factory in core (`Singletons.start`), with proxies where callers need them. The response
+  clean-up stays with the command buses (above).
 - Sagas store the caller to answer as a serialized actor path with its node's address, so an
   answer reaches it from any node.
 

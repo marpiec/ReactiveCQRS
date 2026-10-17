@@ -1,7 +1,8 @@
 package io.reactivecqrs.core.saga
 
 import org.apache.pekko.pattern.{ask, pipe}
-import org.apache.pekko.actor.{Actor, ActorRef}
+import org.apache.pekko.actor.{Actor, ActorRef, ExtendedActorSystem}
+import org.apache.pekko.serialization.Serialization
 import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api.SagaStep
 import io.reactivecqrs.api.id.{SagaId, UserId}
@@ -128,7 +129,8 @@ abstract class SagaActor extends Actor with MyActorLogging {
   private def startWaiting(): Unit = while (waitingForIds.nonEmpty && sagaIds.available) {
     val (order, respondTo) = waitingForIds.head
     waitingForIds = waitingForIds.tail
-    write(CreateSaga(RunningSaga(SagaId(sagaIds.take()), respondTo.path.toString, order, CONTINUES, 0)))
+    // With its node's address: the runner may answer from another node after it moved (D46, M5).
+    write(CreateSaga(RunningSaga(SagaId(sagaIds.take()), Serialization.serializedActorPath(respondTo), order, CONTINUES, 0)))
   }
 
   private def askForIds(): Unit =
@@ -188,9 +190,9 @@ abstract class SagaActor extends Actor with MyActorLogging {
       write(DeleteSaga(saga))
   }
 
-  private def respond(saga: RunningSaga, response: SagaResponse): Unit = {
-    context.system.actorSelection(saga.respondTo) ! response
-  }
+  // A caller stored before 1.0 has a path without an address, which resolves on this node as it did.
+  private def respond(saga: RunningSaga, response: SagaResponse): Unit =
+    context.system.asInstanceOf[ExtendedActorSystem].provider.resolveActorRef(saga.respondTo) ! response
 
   // The write runs off the actor's thread and touches no actor state; its result comes back as a message.
   private def write(pending: SagaWrite, attempt: Int = 1): Unit = {

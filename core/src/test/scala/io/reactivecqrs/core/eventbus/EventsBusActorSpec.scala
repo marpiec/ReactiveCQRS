@@ -39,8 +39,8 @@ class EventsBusActorSpec extends CommonSpec {
     val bus = newBus()
     bus ! RegisterSubscribers(subscribers.map(_.ref))
     subscribers.foreach { subscriber =>
-      subscriber.expectMsg(GetSubscriptionRequests)
-      subscriber.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, subscriber.ref))))
+      subscriber.expectMsg(GetSubscriptionRequests(subscriber.ref))
+      subscriber.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, subscriber.ref)), subscriber.ref))
     }
     bus
   }
@@ -67,17 +67,70 @@ class EventsBusActorSpec extends CommonSpec {
       val (a, b, owner) = (TestProbe(), TestProbe(), TestProbe())
       val bus = newBus()
       bus ! RegisterSubscribers(Seq(a.ref, b.ref))
-      a.expectMsg(GetSubscriptionRequests)
-      a.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, a.ref))))
-      b.expectMsg(GetSubscriptionRequests)
+      a.expectMsg(GetSubscriptionRequests(a.ref))
+      a.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, a.ref)), a.ref))
+      b.expectMsg(GetSubscriptionRequests(b.ref))
+      b.ignoreMsg { case _: GetSubscriptionRequests => true } // asked again every tick until it answers
       val id = newId()
 
       publish(bus, owner, id, 1)
       a.expectNoMessage(300.millis)
 
-      b.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, b.ref))))
+      b.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, b.ref)), b.ref))
       delivered(a) mustBe Seq(1)
       delivered(b) mustBe Seq(1)
+    }
+
+    Scenario("asks a subscriber again every tick until it answers: an ask can be lost on the way (M5)") {
+      val a = TestProbe()
+      newBus() ! RegisterSubscribers(Seq(a.ref))
+      a.expectMsg(GetSubscriptionRequests(a.ref))
+      a.expectMsg(1.second, GetSubscriptionRequests(a.ref))
+    }
+  }
+
+  Feature("Subscribers behind a cluster singleton's proxy (M5)") {
+
+    // A proxy forwards the bus's ask to the projection's supervisor, which answers with its instances.
+    def busBehindProxy(proxy: TestProbe, supervisor: TestProbe, instance: TestProbe): ActorRef = {
+      val bus = newBus()
+      bus ! RegisterSubscribers(Seq(proxy.ref))
+      proxy.expectMsg(GetSubscriptionRequests(proxy.ref))
+      proxy.ignoreMsg { case _: GetSubscriptionRequests => true }
+      bus.tell(SubscriptionRequests(Seq(SubscribeForEvents(cartType, instance.ref)), proxy.ref), supervisor.ref)
+      bus
+    }
+
+    Scenario("an answer from another actor that names the proxy completes the proxy's registration") {
+      val (proxy, supervisor, instance, owner) = (TestProbe(), TestProbe(), TestProbe(), TestProbe())
+      val bus = busBehindProxy(proxy, supervisor, instance)
+      val id = newId()
+      publish(bus, owner, id, 1)
+      delivered(instance) mustBe Seq(1)
+    }
+
+    Scenario("when an instance stops, the proxy is asked again, and the new instance replaces the stopped one") {
+      val (proxy, supervisor, owner) = (TestProbe(), TestProbe(), TestProbe())
+      val (before, after) = (TestProbe(), TestProbe())
+      val bus = busBehindProxy(proxy, supervisor, before)
+      val id = newId()
+      publish(bus, owner, id, 1)
+      delivered(before) mustBe Seq(1)
+
+      Given("the singleton moved: its instance stopped")
+      proxy.ignoreNoMsg()
+      system.stop(before.ref)
+      proxy.expectMsg(3.seconds, GetSubscriptionRequests(proxy.ref))
+      publish(bus, owner, id, 2) // nobody takes it: it stays in the outbox
+
+      When("the new supervisor answers with its instance")
+      bus.tell(SubscriptionRequests(Seq(SubscribeForEvents(cartType, after.ref)), proxy.ref), supervisor.ref)
+      publish(bus, owner, id, 3)
+
+      Then("the new instance takes what comes; the stopped one is gone; nothing was acknowledged to the owner")
+      delivered(after) mustBe Seq(3)
+      statusOf(bus).stopped mustBe empty
+      owner.expectNoMessage(300.millis)
     }
   }
 
@@ -138,8 +191,8 @@ class EventsBusActorSpec extends CommonSpec {
       val (a, owner) = (TestProbe(), TestProbe())
       val bus = newBus()
       bus ! RegisterSubscribers(Seq(a.ref))
-      a.expectMsg(GetSubscriptionRequests)
-      a.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, a.ref), SubscribeForAggregates(cartType, a.ref))))
+      a.expectMsg(GetSubscriptionRequests(a.ref))
+      a.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, a.ref), SubscribeForAggregates(cartType, a.ref)), a.ref))
       val id = newId()
 
       publish(bus, owner, id, 1)
