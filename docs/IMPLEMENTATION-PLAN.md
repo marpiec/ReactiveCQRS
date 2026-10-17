@@ -782,6 +782,54 @@ Neula's own targets (verified by Neula's load tests, not by the library): task c
 p95 below 150 ms excluding scripts and jobs; restore from at most one snapshot plus 200
 events.
 
+### 7.1 Short JSON keys with mpjsons `@jsonName` (planned 17/10/2026, at the user's request)
+
+**Question:** how much would short JSON keys save in storage and time, for events, projection
+documents and messages between nodes, and is it worth giving Neula's classes short keys?
+
+**What mpjsons 0.7.0 does** (read in its sources): `@jsonName("n")` on a case class parameter, a
+`val` or a `var` (inherited ones too) names the field's JSON key; reading also accepts the Scala
+field name when the two differ, so JSON stored before a rename still reads; two fields of one class
+must not share a name.
+
+**Variants**, run alternately on one machine and day, three runs each, medians and spread:
+- *long keys*: a bench event and a document of eight fields with descriptive camelCase names (8 to 20
+  characters) and short values, as Neula's business events look;
+- *short keys*: the same classes with one- or two-character `@jsonName`s;
+- *control*: the counter's 200-character note, where values outweigh keys.
+
+**Measures** (a bench scenario `jsonNames`):
+1. Size: JSON characters per event; `events` bytes per event (`pg_total_relation_size` over the row
+   count); WAL bytes per 100 000 events (`pg_wal_lsn_diff`); projection document bytes (JSONB).
+2. CPU: microseconds to serialize and to deserialize one event, after warm-up, over 1 000 000
+   calls.
+3. Write path: commands and events per second and latency p50/p95/p99 for 100 000 commands from
+   16 callers.
+4. Restore: an aggregate of 50 000 events, time and peak heap.
+5. Rebuild: an events-based managed projection over 1 000 000 events, events per second.
+6. Between nodes: the bytes of a delivery of 1 000 events through the cluster serializer, so how
+   many events fit Artery's 256 KiB frame.
+7. Document queries: a query on an indexed JSON path (the path is the JSON name), latency.
+
+**Expected** (estimated, to be checked): small events with long keys shrink by 30 to 60 % (their keys
+are about half of their JSON); rows under about 2 kB are not compressed by TOAST, so the saving
+reaches the table, the WAL, the buffer cache and the network; serialization gets a little faster;
+the control shows no difference.
+
+**Risks the report must weigh:**
+- Rolling upgrades: a node without the annotation cannot read the short keys a newer node writes
+  (events, documents, messages between nodes, F135): the switch needs a full stop, or a release that
+  reads short keys before one that writes them (to be asked of mpjsons: a reading-only mode).
+- Document queries and indexes name JSON paths: a renamed field changes its path (`Seq("name")`
+  becomes `Seq("n")`), so queries change and indexes are rebuilt.
+- Stored JSON gets harder to read for support and operators: a dictionary of the short names.
+- Mixed histories (long and short keys) read; a squash or the complete rewrite (D76) writes old
+  events again in the short form.
+
+**Deliverable:** `docs/perf/jsonnames-M6.md`, every number labelled measured (machine, date) or
+estimated, with a recommendation for Neula: whether, for which classes, and how to roll it out.
+**When:** right after export and import (M6), before the M6 close.
+
 ---
 
 ## 8. Risks and spikes
