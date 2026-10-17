@@ -22,31 +22,31 @@ case class AsyncCommandResult[RESPONSE_INFO](future: Future[CustomCommandResult[
 
 
 object RewriteCommandSuccess {
-  def apply[AGGREGATE_ROOT](eventsRewritten: Iterable[EventWithVersion[AGGREGATE_ROOT]], event: Event[AGGREGATE_ROOT]):RewriteCommandSuccess[AGGREGATE_ROOT, Nothing] =
-    new RewriteCommandSuccess(eventsRewritten, List(event), Nothing.empty)
+  def apply[AGGREGATE_ROOT](eventsRewritten: Iterable[EventWithVersion[AGGREGATE_ROOT]], event: Event[AGGREGATE_ROOT]):RewriteCommandSuccess[AGGREGATE_ROOT, NoInfo] =
+    new RewriteCommandSuccess(eventsRewritten, List(event), NoInfo.empty)
 
   def apply[AGGREGATE_ROOT, RESPONSE_INFO](eventsRewritten: Iterable[EventWithVersion[AGGREGATE_ROOT]], event: Event[AGGREGATE_ROOT], responseInfo: RESPONSE_INFO) =
     new RewriteCommandSuccess(eventsRewritten, List(event), responseInfo)
 
-  def apply[AGGREGATE_ROOT](eventsRewritten: Iterable[EventWithVersion[AGGREGATE_ROOT]], events: Seq[Event[AGGREGATE_ROOT]]):RewriteCommandSuccess[AGGREGATE_ROOT, Nothing] =
-    new RewriteCommandSuccess(eventsRewritten, events, Nothing.empty)
+  def apply[AGGREGATE_ROOT](eventsRewritten: Iterable[EventWithVersion[AGGREGATE_ROOT]], events: Seq[Event[AGGREGATE_ROOT]]):RewriteCommandSuccess[AGGREGATE_ROOT, NoInfo] =
+    new RewriteCommandSuccess(eventsRewritten, events, NoInfo.empty)
 }
 
 object CommandSuccess {
-  def apply[AGGREGATE_ROOT](event: Event[AGGREGATE_ROOT]):CommandSuccess[AGGREGATE_ROOT, Nothing] =
-    new CommandSuccess(List(event), Nothing.empty)
+  def apply[AGGREGATE_ROOT](event: Event[AGGREGATE_ROOT]):CommandSuccess[AGGREGATE_ROOT, NoInfo] =
+    new CommandSuccess(List(event), NoInfo.empty)
 
   def apply[AGGREGATE_ROOT, RESPONSE_INFO](event: Event[AGGREGATE_ROOT], responseInfo: RESPONSE_INFO) =
     new CommandSuccess(List(event), responseInfo)
 
-  def apply[AGGREGATE_ROOT](events: Seq[Event[AGGREGATE_ROOT]]):CommandSuccess[AGGREGATE_ROOT, Nothing] =
-    new CommandSuccess(events, Nothing.empty)
+  def apply[AGGREGATE_ROOT](events: Seq[Event[AGGREGATE_ROOT]]):CommandSuccess[AGGREGATE_ROOT, NoInfo] =
+    new CommandSuccess(events, NoInfo.empty)
 }
 
 
 object CommandFailure {
-  def apply[AGGREGATE_ROOT](exceptions: List[String]) = new CommandFailure[AGGREGATE_ROOT, Nothing](FailureResponse(exceptions))
-  def apply[AGGREGATE_ROOT](exception: String) = new CommandFailure[AGGREGATE_ROOT, Nothing](FailureResponse(List(exception)))
+  def apply[AGGREGATE_ROOT](exceptions: List[String]) = new CommandFailure[AGGREGATE_ROOT, NoInfo](FailureResponse(exceptions))
+  def apply[AGGREGATE_ROOT](exception: String) = new CommandFailure[AGGREGATE_ROOT, NoInfo](FailureResponse(List(exception)))
 }
 
 object CustomCommandFailure {

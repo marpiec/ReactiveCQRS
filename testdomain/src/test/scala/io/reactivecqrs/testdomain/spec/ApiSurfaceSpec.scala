@@ -10,9 +10,9 @@ class ApiSurfaceSpec extends AnyFeatureSpec with Matchers {
 
   Feature("The 1.0 API") {
 
-    Scenario("has none of the classes that did nothing (F157)") {
+    Scenario("has none of the classes that did nothing (F157), nor the one that hid scala.Nothing (F165)") {
       Seq("io.reactivecqrs.api.command.OnConcurrentModification", "io.reactivecqrs.api.command.Retry$",
-        "io.reactivecqrs.api.command.Fail$", "io.reactivecqrs.api.SimulateEvent")
+        "io.reactivecqrs.api.command.Fail$", "io.reactivecqrs.api.SimulateEvent", "io.reactivecqrs.api.Nothing", "io.reactivecqrs.api.Nothing$")
         .filter(name => Try(Class.forName(name)).isSuccess) mustBe empty
     }
   }

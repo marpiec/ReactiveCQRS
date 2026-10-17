@@ -2209,3 +2209,10 @@ Open test-infrastructure items:
   Neula's sagas; a design first); F165: `io.reactivecqrs.api.Nothing` renamed to `NoInfo`. Still the
   owner's: JDK 21 on the build machine (D74; until then Java 17 bytecode, which Neula's Java 21
   runs) and the rehearsal on a production copy.
+
+**17/10/2026: F165, `api.Nothing` renamed to `NoInfo`**
+- The case class and its `empty`, the result types (`CommandSuccess[R, NoInfo]`, `CommandResponse`,
+  `CommandResult`), the responses' type parameter and the owner's match. No stored format holds the
+  class (a plain success is answered with `SuccessResponse`; the schema references name none), so
+  stored data reads as before; Neula's signatures that name `api.Nothing` change (H12). `ApiSurfaceSpec`
+  checks the old name is gone. Book: chapter 3.

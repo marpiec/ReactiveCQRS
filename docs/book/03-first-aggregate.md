@@ -365,12 +365,12 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
 
 val decision = context.commandHandlers(cart)(AddItem(alice, AggregateId(1001), AggregateVersion(4), "pears"))
-// decision: CommandSuccess(List(ItemAdded(pears)),Nothing())
+// decision: CommandSuccess(List(ItemAdded(pears)),NoInfo())
 ```
 
-The `Nothing()` at the end is the "no extra information" of a plain `CommandSuccess`. It is the
-library's own little case class `io.reactivecqrs.api.Nothing`, not Scala's `Nothing`; in a file that
-imports `io.reactivecqrs.api._`, the name `Nothing` means the library's one.
+The `NoInfo()` at the end is the "no extra information" of a plain `CommandSuccess`, the library's
+own little case class `io.reactivecqrs.api.NoInfo`. A plain success is answered with
+`SuccessResponse`; a command that answers more (chapter 5) puts its information there instead.
 
 Notice that the version in the command did not matter here: checking it is the library's job, not
 the handler's, and calling the handler directly skips that check. [Chapter 19](19-testing.md) turns

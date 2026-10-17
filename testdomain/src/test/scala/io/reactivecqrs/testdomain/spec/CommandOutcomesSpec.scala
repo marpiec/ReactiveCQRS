@@ -30,7 +30,7 @@ class SluggishAggregateContext extends AggregateContext[Sluggish] {
   override val commandTimeout: FiniteDuration = 300.millis
   override def initialAggregateRoot: Sluggish = Sluggish()
   override def commandHandlers = _ => {
-    case _: StartSluggish => AsyncCommandResult(Promise[CustomCommandResult[Nothing]]().future)
+    case _: StartSluggish => AsyncCommandResult(Promise[CustomCommandResult[NoInfo]]().future)
   }
   override def eventHandlers = (_, _, root) => {
     case _ => root

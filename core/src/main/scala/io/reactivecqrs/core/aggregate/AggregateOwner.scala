@@ -622,7 +622,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     CommandHandlingError(envelope.command.getClass.getSimpleName, RandomUtil.generateRandomString(16), envelope.commandId)
 
   private def successResponse(newVersion: AggregateVersion, info: AnyRef): CustomCommandResponse[_] = info match {
-    case _: io.reactivecqrs.api.Nothing => SuccessResponse(aggregateId, newVersion)
+    case _: io.reactivecqrs.api.NoInfo => SuccessResponse(aggregateId, newVersion)
     case _ => CustomSuccessResponse(aggregateId, newVersion, info)
   }
 
