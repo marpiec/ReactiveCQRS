@@ -829,6 +829,8 @@ the control shows no difference.
 **Deliverable:** `docs/perf/jsonnames-M6.md`, every number labelled measured (machine, date) or
 estimated, with a recommendation for Neula: whether, for which classes, and how to roll it out.
 **When:** right after export and import (M6), before the M6 close.
+**Done** (17/10/2026): `docs/perf/jsonnames-M6.md`, with its findings and recommendation; the log
+below sums it up.
 
 ---
 
@@ -1974,3 +1976,14 @@ Open test-infrastructure items:
   before event keys and the key backfill. Verified with `EXPLAIN ANALYZE` on the bench's data; the
   specs pass unchanged. A like problem in the walk over a type's aggregates is smaller (about 80 ms
   a page at a million aggregates) and recorded for M7 (F173).
+
+**17/10/2026: short JSON keys measured (§7.1)**
+- A bench scenario (`jsonNames`, run only when listed) compares one order event and one document
+  with descriptive keys and with mpjsons `@jsonName` keys of one character, three runs of each,
+  alternately: `docs/perf/jsonnames-M6.md`. Measured: the JSON −56 %, the events table −34 % per
+  event, the WAL −6 to −11 %, deserialization −54 % (so restores −32 %, document lists −24 %);
+  commands, rebuilds and lookups unchanged within the noise; a control event with a long value
+  unchanged. The report recommends short keys only for the few classes that hold most of the
+  volume, in one release with a full stop and new projection versions, after the delivery envelope
+  (F170), which costs about 275 bytes per event between nodes, more than short keys save.
+- Found while measuring: F172 (fixed the same day), F170, F171 and F173 (M7).

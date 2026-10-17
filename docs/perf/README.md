@@ -8,7 +8,8 @@ the projections' live groups, with every scenario's subscriptions in the databas
 scenarios with the cluster libraries and flow control (F93). M5's high-load scenarios have reports of their own:
 `load-M5.md` (10 000 commands at once, an aggregate of 50 000 events), `large-M5.md` (documents of 5 MB),
 `flow-M5.md` (the soak with flow control), `heavy-M5.md` and `heavy-before-F127.md` (handlers that hold their
-threads); `docs/SCALING.md` reads them.
+threads); `docs/SCALING.md` reads them. `jsonnames-M6.md` compares short JSON keys (mpjsons `@jsonName`) with
+descriptive ones (§7.1), with its findings and a recommendation.
 
 ## Running it
 
@@ -20,9 +21,11 @@ The name becomes the report file, `docs/perf/<name>.md`. Sizes can follow the na
 `key=value` arguments (`workers`, `commandsPerWorker`, `contendedCommandsPerWorker`,
 `noteSize`, `rebuildAggregates`, `rebuildEventsPerAggregate`, `restoreSizes`,
 `soakSeconds`, `soakAggregates`, `soakEventsPerAggregate`, `soakFailingSeconds`,
-`restartCycles`, `burstCommands`, `longAggregateEvents`, `largeSize`, `largeCommands`, `heavyMillis`), and
+`restartCycles`, `burstCommands`, `longAggregateEvents`, `largeSize`, `largeCommands`, `heavyMillis`, and for
+`jsonNames` `jsonRuns`, `jsonCalls`, `jsonCommands`, `jsonRestoreEvents`, `jsonRebuildEvents`, `jsonDocuments`), and
 `scenarios=commands,contended,serial,rebuild,restore,soak,deliverySoak,burst,long,large,heavy` runs only those (all
-by default; the baselines run the first seven); for example a quick check:
+by default; the baselines run the first seven); `jsonNames` runs only when listed
+(`sbt "bench/run jsonnames-M6 scenarios=jsonNames"`, about 30 minutes). For example a quick check:
 
 ```bash
 sbt "bench/run smoke workers=2 commandsPerWorker=10 restoreSizes=100,1000 soakSeconds=5"
@@ -49,6 +52,7 @@ events carry a 200-character note, so the numbers show the library's costs, not 
 | Aggregate restore | A new owner reading 1 000 to 500 000 events: time, peak heap, statements; since M3 also the restore from the snapshot the owner writes when it stops (D30) |
 | Memory over a soak run | Heap after GC before, right after a 60-second load (with the projections' backlog), and once the projections caught up and 20 s idle. The load itself varies widely between runs (it depends on how far the projections fall behind early, F93), so it is not a throughput measure |
 | Delivery soak (M2) | Many counters, a tenth of whose events-based listener fails for a while and recovers within its retries. When every event is projected; the bus deliveries, outbox rows and recorded failures left (all zero when healthy); heap after GC before, after the load, after 20 s idle and after each of several restarts |
+| Short JSON keys (§7.1) | The same order line event and projection document with descriptive keys and with one-character `@jsonName` keys: JSON and stored sizes, WAL, serialization time, the command path, a restore, a managed rebuild, one delivery between nodes, indexed document queries; three runs of each form, alternately, median and range |
 
 ## Reading the numbers
 

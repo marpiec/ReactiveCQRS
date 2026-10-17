@@ -834,6 +834,12 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Verified:** `EXPLAIN ANALYZE` on the bench's data before and after; the specs pass unchanged (the plans changed, not the rows); the rebuild of `docs/perf/jsonnames-M6.md` ran with the fix.
 - **Found:** the short JSON keys bench (M6, 17/10/2026).
 
+#### F170 — Each event in a delivery between nodes carries about 275 bytes besides its JSON
+- **Low** (performance), measured · **Fix in M7** · `ClusterSerializer` (D68)
+- **Symptom:** the cluster serializer writes the library's case classes field by field with their class and field names (D68), so that a node of another version can read them. In an `IdentifiableEvents`, each `EventInfo` repeats its class name and five field names, `AggregateVersion` and `UserId` as named products, and the event's full class name: 273 to 278 bytes per event besides the event's JSON (measured, `docs/perf/jsonnames-M6.md`), more than a small event's whole JSON (104 to 239 characters there). A delivery part (half of the 248 KiB frame, F121) holds 248 such events of 239 characters; with an envelope of about 30 bytes it would hold about 470 (estimated). More parts mean more messages and acknowledgements.
+- **Fix idea:** a compact form for a delivery's events: the class names once per message, versions, users and times as numbers; under a new tag that a node receives only once every node reads it (D67, `Members`), so rolling upgrades keep working.
+- **Found:** the short JSON keys bench (IMPLEMENTATION-PLAN §7.1, M6, 17/10/2026).
+
 #### F173 — A page of a type's aggregates costs about 80 ms at a million aggregates of the type
 - **Low** (performance at scale), measured · **Fix in M7** · `PostgresEventStoreState.aggregatesOf`
 - **Symptom:** the builder's final-state pass (D62), its reconciliation and the targeted rebuild of a type walk the type's aggregates 1 000 at a time. With 1 000 000 aggregates of one type, a page in the middle took 70 to 100 ms (`EXPLAIN ANALYZE`, PostgreSQL 17.4): misjudging `id = base_id` at 0.5 % again, the planner scans `aggregates (base_id)` in parallel, and leaves an added index on `(type_id, id)` unused. About 80 s for the whole walk (estimated from the page).
@@ -951,6 +957,12 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Low**, confirmed (by reading) · **Fix in M7** · `DocumentStore.findDocumentByPath(ExpectedValue)`, `findDocumentByPaths`
 - **Symptom:** they take no session, so inside a listener they read what is committed, not what the listener's batch wrote.
 - **Found:** writing the book (M6, 17/10/2026).
+
+#### F171 — A document index whose path changes keeps its old definition
+- **Low**, confirmed (by reading) · **Fix in M7** · `PostgresDocumentStore.init`
+- **Symptom:** the store matches the indexes it declares with those in the database by their `uniqueId` only. An index declared with the same id and a new path (a renamed field, or a field given a short JSON name) is neither dropped nor created again: the old index stays on the old path, and queries on the new path read the whole table, without a warning.
+- **Fix:** compare each index's definition (`pg_indexes.indexdef`) with the declared one and build it again when they differ (concurrently on a large table, D69). Until then, a changed path needs a new `uniqueId`.
+- **Found:** planning the short JSON keys measurement (IMPLEMENTATION-PLAN §7.1, M6, 17/10/2026).
 
 ### Sagas
 
@@ -1248,7 +1260,7 @@ From §7 of Neula's change requests.
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F155 (decide at review 8), F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔ |
-| M7 | AR5 (moved from M5 at review 7); F148, F152, F153, F156, F157, F160, F161, F162, F163, F164, F165, F166, F169 (found writing the book), F173 |
+| M7 | AR5 (moved from M5 at review 7); F148, F152, F153, F156, F157, F160, F161, F162, F163, F164, F165, F166, F169 (found writing the book), F170, F171, F173 |
 
 ---
 
