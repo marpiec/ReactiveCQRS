@@ -448,12 +448,81 @@ complete purge, every count is zero.
 > meanwhile. See [ARCHITECTURE.md, section 4.7](../ARCHITECTURE.md) and the design in
 > [docs/design/M6-organizations.md](../design/M6-organizations.md).
 
-## Coming in 1.0: moving an organization
+## Moving an organization to another installation
 
-**Moving an organization** between installations, exporting it from one and importing it into
-another with its read models rebuilt there, is being built for 1.0. Its API is not settled yet; it
-builds on the habits of this chapter: every aggregate with its real space, every document written
-with it, and every projection able to clear one organization.
+A shop moves to a shopping centre in another town. Its stock, its books and its history pack into
+boxes, travel, and are unpacked in an empty unit there, where the new centre's signs are put up
+for it. Moving an organization between installations is the same: an **export** packs the boxes,
+an **import** unpacks them into an empty space of the other installation, and the read models are
+rebuilt there.
+
+### Packing: the export
+
+```scala
+import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Paths}
+import io.reactivecqrs.core.space.SpaceExport
+
+val writer = Files.newBufferedWriter(Paths.get("shop-42.jsonl"), StandardCharsets.UTF_8)
+val exported = try new SpaceExport(eventStore, contexts = Seq(new ShoppingCartAggregateContext)).write(SpaceId(42), writer)
+               finally writer.close()
+// ExportReport(space, aggregates, events, archived, detached, waitingInOutbox, refused)
+```
+
+The file holds one line of JSON per aggregate and per event, the events in the order they were
+stored, plus the archived events ([chapter 14](14-squash.md)); snapshots, read models and sagas stay
+behind. Export a quiet organization: `waitingInOutbox` tells you how many of its events were not
+delivered yet.
+
+`contexts` are the aggregate contexts of the organization's types. They matter for one case: a
+copy that shop 42 made of somebody else's cart reads that other organization's history, which does
+not travel. The export gives such a copy a first event of its own, made with its type's squash event
+from its own state, just as the purge does, so it keeps exactly what it had. Without a squash event
+(or without the context), the export refuses and writes nothing.
+
+### Unpacking: the import
+
+```scala
+import io.reactivecqrs.core.space.SpaceImport
+
+val imported = new SpaceImport(eventStore, uidGenerator)(system).read(Paths.get("shop-42.jsonl"), into = SpaceId(7))
+// ImportReport(space, aggregates, events, archived, remapped, unknownReferences, someUnknown, refused)
+```
+
+It runs on the other installation, into a space that must be empty. It reads the file twice:
+
+1. **It checks first**, writing nothing: every class in the file must exist here, every event must
+   fit this installation's limits ([chapter 6](06-events.md)), and the space must be empty. Any
+   problem ends up in `refused`.
+2. **Then it writes**: the aggregates, then the events in their original order, with their undo
+   marks, then the archived events.
+
+Two installations made their ids in ranges of their own (the installation number of chapter 2), so
+ids rarely clash; ids from before 1.0 can. An aggregate whose id is taken here gets a new one, and
+every reference to it follows: the import reads each event with its own mpjsons instance, which
+replaces `AggregateId` and `UserId` values that moved, and turns the old organization's `SpaceId` into
+the new one. `remapped` lists the ids that moved.
+
+> **Warning:** the import only sees ids that are typed. An id kept as a plain `Long`, or inside a
+> text ("user:5" in a metadata actor), is invisible to it. Give the import an `ImportRewriter` for
+> each type that holds such references (`rewriters = Map(AggregateType.of[ShoppingCart] -> ...)`): it
+> gets every event with a function that maps old ids to new ones. And if you registered converters
+> on your mpjsons, pass `newMPJsons = () => yourConfiguredMPJsons()` so the import reads your classes
+> as you do.
+
+`unknownReferences` counts references to aggregates that neither travelled nor exist here, for you
+to look at; they are left as they are.
+
+### After the move
+
+1. **Rebuild the read models** of the new space: send each projection
+   `RebuildAggregates(RebuildTarget.OneSpace(SpaceId(7)))` ([chapter 10](10-rebuilding-projections.md)).
+   The import writes no outbox rows, so nothing is delivered live.
+2. **Point the organization's users** at the new installation.
+3. **Purge the old copy** when you are sure ([earlier in this chapter](#removing-an-organization-the-purge)).
+
+> **Tip:** an import that stopped halfway, or one you want to redo, is simple to repeat: purge the
+> target space and import the same file again.
 
 > **Tip:** if you run more than one installation, give each its own
 > `reactivecqrs.installation-number` as early as you can ([chapter 18](18-production.md)). Each
@@ -474,6 +543,8 @@ with it, and every projection able to clear one organization.
 - `SpacePurge` removes an organization: it checks first, detaches other organizations' copies,
   deletes in small transactions with your `PurgeHook`s, clears the projections, and reports; run it
   again until `complete`, and verify with `StoredDataCheck.spaceRows`.
-- Moving an organization between installations is coming in 1.0.
+- `SpaceExport` packs an organization into a file of JSON lines, and `SpaceImport` unpacks it into
+  an empty space of another installation, moving taken ids and the typed references to them; then
+  rebuild the space's read models.
 
 Next: [chapter 17](17-cluster.md) spreads all of this over several machines.

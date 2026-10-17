@@ -600,6 +600,38 @@ started before M6, or of a saga that does not implement `spaceOf`, are not tagge
 aggregates with space `-1` belong to no organization (`backfillSpaces` first); a host table
 without a hook. `StoredDataCheck.spaceRows(space)` counts what a space still has, to verify.
 
+### 4.8 Moving an organization: export and import (D40, M6)
+
+`new SpaceExport(eventStore, contexts).write(space, writer)` (`space/SpaceExport.scala`) writes one
+organization as JSON lines (`SpaceFormat`): a header (format, source installation, space, time), one
+line per aggregate (id, root class, version, squash point, creation time, its chain within the
+space), the events in commit order (aggregate, version, class name, the stored JSON, user, time,
+metadata JSON, undo mark), then the archived events. Classes are named, never numbered. It reads
+only, streaming the events (one read transaction, a fetch size). An aggregate whose chain reaches a
+base outside the space is written detached: its version-1 event is the type's squash event of its
+state at version 1, built and checked as a detach builds it (D50, D85), and it has no chain; a type
+without a squash event, or whose context is not given, refuses the export, as does an id below
+1001 in the space. The `ExportReport` counts the space's outbox rows (export a quiet organization).
+
+`new SpaceImport(eventStore, uidGenerator, rewriters)(system).read(file, into)` writes it into
+another installation's empty space `into`, in two passes over the file:
+
+1. **Check**, writing nothing: the format, an empty target space, every class present, every event
+   within this store's size limit and every aggregate within its version limit; each exported id
+   this installation has already gets a fresh one from its pool (`GetNewAggregatesIdsPool`).
+2. **Write**: the aggregates' own and chain rows (bases mapped), then the events in the file's order
+   under new ids from `events_seq` (so their relative order is kept), each with its undo mark and
+   its key, in transactions of at most 10 000 events, then the archived events. Each event is read by
+   an `MPJsons` of the import's own (`newMPJsons`, set up like the host's) whose post-deserialization
+   transforms map `AggregateId` and `UserId` to the new ids and the exported space to `into`, then
+   passed to its type's `ImportRewriter` for references the codec cannot see, and written by the
+   store's serializer. No outbox rows: the host rebuilds the space's projections
+   (`RebuildAggregates(OneSpace(into))`).
+
+The `ImportReport` gives the counts, the ids remapped, the references to aggregates neither exported
+nor in the target, and the reasons it refused or where it stopped (then the host purges `into` and
+imports again). Snapshots, outbox rows, subscriptions, command responses and sagas do not move.
+
 ---
 
 ## 5. Event publication

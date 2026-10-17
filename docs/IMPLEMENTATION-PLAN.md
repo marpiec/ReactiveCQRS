@@ -1952,3 +1952,16 @@ Open test-infrastructure items:
   rewritten events skipping the size limits (F154); a permanent delete leaving the aggregate's
   stored responses (F167). The user-facing texts of F149 and F168 and the comment of F150 were
   corrected; the book's chapters 6, 8 and 12 and appendix C with them.
+
+**17/10/2026: moving an organization (D40)**
+- `SpaceExport` writes a space as JSON lines (`SpaceFormat`), streaming its events; a copy whose
+  chain reaches outside the space is written detached, with its type's checked squash event.
+  `SpaceImport` checks the whole file first and writes nothing on a refusal, then writes the rows
+  in commit order under new event ids, mapping `AggregateId`, `UserId` and the space with
+  post-deserialization transforms of an `MPJsons` of its own, and untyped references through an
+  `ImportRewriter` per type; a fresh id for every exported id the target has.
+- Tests: `ExportImportSpec` exports from one schema and imports into a second
+  (`TestDatabase.inSchema`), with a squashed, archived and undone history, a copy within the
+  organization, a copy of another organization's folder, a taken id and a reference outside;
+  refusals of the export and of the import. Six mutations, each caught (one first survived: the
+  detached copy's chain row; the test now checks the rows).

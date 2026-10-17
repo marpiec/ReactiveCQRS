@@ -50,4 +50,18 @@ object TestDatabase {
 
   /** Initializes the default ScalikeJDBC connection pool once per JVM, whichever spec runs first. */
   def init(): Unit = initialized
+
+  private val settings = ConnectionPoolSettings(initialSize = 5, maxSize = 20, connectionTimeoutMillis = 3000L)
+
+  /** Runs `block` with the default pool on a second schema of this run (`<schema>_<suffix>`, created if missing), as a
+    * second installation, then on this run's schema again. Nothing else may use the pool meanwhile: the library's
+    * objects made inside the block belong to the second installation. */
+  def inSchema[A](suffix: String)(block: => A): A = {
+    init()
+    val other = schema + "_" + suffix
+    val connection = DriverManager.getConnection(url, user, password)
+    try connection.createStatement().execute("CREATE SCHEMA IF NOT EXISTS " + other) finally connection.close()
+    ConnectionPool.singleton(url + "?currentSchema=" + other, user, password, settings)
+    try block finally ConnectionPool.singleton(url + "?currentSchema=" + schema, user, password, settings)
+  }
 }

@@ -203,6 +203,11 @@ Estimated from the measured numbers. None of this was run at this scale.
   to answer each batch, so its load on the database and the nodes stays bounded; its duration grows
   with the organization's events (not measured). A sharded type's owners are started only to be
   stopped, one per purged aggregate. Each projection keeps the purged ids for its drop window.
+- **Moving an organization** (D40, since M6). The export streams the space's events in one read
+  transaction; its file takes about the events' stored size (382 bytes per event in the bench, so
+  about 4 GB for 10 million events, estimated). The import reads the file twice and holds the
+  aggregates' ids and the remapped ones; it writes in transactions of at most 10 000 events. Its
+  duration grows with the events (not measured).
 - **The outbox.** `events_to_publish` takes an insert and a delete per event. Autovacuum must keep
   up with it, or the table and its index bloat. The outbox poller still groups the whole outbox
   every 30 s, which is cheap while the outbox is near empty (normal running) and grows with a

@@ -372,6 +372,9 @@ val imported: ImportReport = new SpaceImport(eventStore, uidGenerator, rewriters
 | The target space is not empty | two organizations would merge | refused in pass 1 |
 | A copy of a copy reaches outside the space | its chain cannot be imported | detached on export, as above |
 
+Built as refined (17/10/2026), with one change: the header lists no classes; pass 1 checks the class
+of every line it reads, which it reads anyway for the sizes.
+
 ## The complete rewrite (R15, D76; F8, F146)
 
 A rewrite replaces a value everywhere the library stored it, for an aggregate and every copy of

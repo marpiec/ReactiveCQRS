@@ -252,8 +252,8 @@ need. To get started you need no `application.conf` at all. Here is what the def
 | `reactivecqrs.handler-dispatcher` | 32 threads | Where your command handlers run, so a slow handler holds up commands only, never the event bus, projections or sagas. |
 
 The installation number matters when several installations of your application might one day
-share their data: each then makes ids no other installation makes. Moving an organization between
-installations is coming in 1.0. If you run a single installation, the default `0` is fine; chapter
+share their data: each then makes ids no other installation makes, so an organization can move
+between them ([chapter 16](16-organizations.md)). If you run a single installation, the default `0` is fine; chapter
 17 tells the rest of the story.
 
 The rest of `reference.conf` prepares the ground for a cluster (the serializer of messages between

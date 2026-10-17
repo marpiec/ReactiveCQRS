@@ -506,6 +506,15 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       }
     }
 
+  // ************** Moving an organization (D40): what SpaceExport and SpaceImport take from the store.
+
+  private[core] def jsons: MPJsons = mpjsons
+  private[core] def types: TypesNamesState = typesNamesState
+  /** The most characters of JSON an event of the class may have in this store. */
+  private[core] def sizeLimitOf(className: String): Int = eventSizeLimitPerClassName.getOrElse(className, eventSizeLimit)
+  /** The most events an aggregate may have in this store. */
+  private[core] def versionLimit: Int = aggregateVersionLimit
+
   // ************** Purge of an organization (R17)
 
   /** R17: up to `limit` of the space's aggregates with ids below `before`, newest first, from `aggregates (space_id, id)`. */
