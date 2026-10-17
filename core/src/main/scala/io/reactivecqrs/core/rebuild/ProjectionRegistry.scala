@@ -1,5 +1,7 @@
 package io.reactivecqrs.core.rebuild
 
+import io.reactivecqrs.core.util.SchemaLock
+
 import io.reactivecqrs.core.rebuild.ProjectionBuilder.BuildPosition
 import scalikejdbc._
 
@@ -77,7 +79,7 @@ class PostgresProjectionRegistry extends ProjectionRegistry {
 
   import ProjectionRegistry._
 
-  def initSchema(): PostgresProjectionRegistry = {
+  def initSchema(): PostgresProjectionRegistry = SchemaLock {
     DB.autoCommit { implicit session =>
       sql"""CREATE TABLE IF NOT EXISTS projections (
            |  name VARCHAR(255) NOT NULL PRIMARY KEY,

@@ -757,7 +757,7 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 ### Schema initialization
 
 #### F63 — Concurrent schema initialization fails
-- **Medium**, confirmed · Fix in **M5** (migration runner, D69) · `PostgresEventStoreSchemaInitializer`
+- **Medium**, confirmed · **Fixed in M5** (17/10/2026: every schema initialization, the components' `initSchema()` and the document stores' tables, runs under a PostgreSQL advisory lock held on a connection of its own, so processes that start together initialize one at a time; `SchemaLockSpec`, red before the fix with a duplicate `pg_type` key) · `PostgresEventStoreSchemaInitializer` and every `initSchema`
 - **Symptom:** two processes initializing the schema at once (test suites in parallel today; cluster nodes starting together later) fail with a duplicate key on `pg_proc_proname_args_nsp_index` for `add_event`.
 - **Root cause:** `CREATE OR REPLACE FUNCTION` and the other initialization statements run without any lock.
 - **Fix:** run migrations once, under a PostgreSQL advisory lock, outside node startup (D69). Tests now run one suite at a time.
@@ -936,7 +936,7 @@ From §7 of Neula's change requests.
 | M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔, F95 ✔; Neula H2, H7 |
 | M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8 ✔; F8 (contract ✔), F22 ✔, F23 ✔, F25 ✔, F27 ✔, F30 ✔, F31 ✔, F32 ✔, F33 (rest ✔), F38 ✔, F39 ✔, F44 ✔, F50 ✔, F65 ✔, F76 ✔, F78 ✔, F81 ✔, F96 ✔, F97 ✔, F100–F107 ✔; D85 ✔; Neula H8 |
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
-| M5 | AR5; F46, F48, F63, F99 (F78 between nodes ✔ in M3) |
+| M5 | AR5; F46, F48, F63 ✔, F93 (flow control), F99 (F78 between nodes ✔ in M3) |
 | M6 | F8 (complete) |
 
 ---

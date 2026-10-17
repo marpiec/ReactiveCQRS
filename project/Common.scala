@@ -78,6 +78,14 @@ object Common {
       "org.apache.pekko" %% "pekko-testkit" % pekkoVersion % Test
     )
 
+    // M5: a cluster of one on-premise, of many in the cloud (D42); sharded owners (D43), singletons (D46, D53).
+    val pekkoCluster = Seq(
+      "org.apache.pekko" %% "pekko-cluster" % pekkoVersion,
+      "org.apache.pekko" %% "pekko-cluster-sharding" % pekkoVersion,
+      "org.apache.pekko" %% "pekko-cluster-tools" % pekkoVersion,
+      "org.apache.pekko" %% "pekko-coordination" % pekkoVersion
+    )
+
     val scalikejdbc = Seq(
       "org.scalikejdbc" %% "scalikejdbc" % "4.3.5",
       "org.scalikejdbc" %% "scalikejdbc-streams" % "4.3.5"

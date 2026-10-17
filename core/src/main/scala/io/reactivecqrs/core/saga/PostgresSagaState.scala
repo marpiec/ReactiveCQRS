@@ -1,5 +1,7 @@
 package io.reactivecqrs.core.saga
 
+import io.reactivecqrs.core.util.SchemaLock
+
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.id.{SagaId, UserId}
 import io.reactivecqrs.core.types.TypesNamesState
@@ -7,7 +9,7 @@ import scalikejdbc._
 
 class PostgresSagaState(mpjsons: MPJsons, typesNamesState: TypesNamesState) extends SagaState {
 
-  def initSchema(): Unit = {
+  def initSchema(): Unit = SchemaLock {
     new PostgresSagaSchemaInitializer().initSchema()
   }
 

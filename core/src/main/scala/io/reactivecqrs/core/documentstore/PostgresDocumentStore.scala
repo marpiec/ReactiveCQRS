@@ -7,7 +7,7 @@ import scalikejdbc.{DB, DBSession}
 import scala.annotation.tailrec
 import scala.reflect.runtime.universe._
 import scalikejdbc._
-import io.reactivecqrs.core.util.AfterCommit
+import io.reactivecqrs.core.util.{AfterCommit, SchemaLock}
 
 sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
@@ -35,7 +35,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
   init()
 
-  protected def init(): Unit = {
+  protected def init(): Unit = SchemaLock {
     // F43: the table and its columns change in one transaction.
     DB.localTx { implicit session =>
       createTableIfNotExists()

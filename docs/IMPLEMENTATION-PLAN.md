@@ -1476,3 +1476,22 @@ Open test-infrastructure items:
   adopted the earlier scenarios' unmanaged ones as 0.12 builds) and polls its table only once it
   exists.
 - `sbt test`: core 214, testdomain 122, all pass.
+
+**17/10/2026: M5 design, the spike and the schema lock (D46, D66; F63)**
+- `docs/design/M5-cluster.md`: the cluster's shape (sharded owners per context, a bus per node,
+  singletons for projections, the poller, the scheduler, sagas and the clean-up), the order of
+  the work, and the serialization plan from a survey of the messages that cross nodes and of what
+  mpjsons can type.
+- The spike, kept as `ClusterBehaviourSpec` (three nodes in one JVM, Pekko 1.7.1): new shards go
+  only to the newest app-version; a singleton runs on the oldest node and moves once when it
+  leaves; the split brain resolver downs a lost node with `keep-majority` and, with a lease, with
+  `lease-majority` (D46, D66 confirmed). Java serialization is off, so library messages need the
+  serializer of step 3.
+- Docker is not available on the development machine: the plan's docker-compose scenarios are
+  prepared as files for a machine that has it; in-JVM multi-node tests cover the rest.
+- F63: every schema initialization runs under a PostgreSQL advisory lock (`SchemaLock`), so nodes
+  that start together no longer fail on concurrent DDL (`SchemaLockSpec`, red before: a duplicate
+  `pg_type` key).
+- Build: the core module gains `pekko-cluster`, `-cluster-sharding`, `-cluster-tools` and
+  `-coordination` (1.7.1).
+- `sbt test`: core 220, testdomain 122, all pass.

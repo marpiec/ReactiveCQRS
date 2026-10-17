@@ -5,7 +5,7 @@ import java.time.Instant
 import io.reactivecqrs.api.{AggregateType, AggregateVersion}
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.types.TypesNamesState
-import io.reactivecqrs.core.util.AfterCommit
+import io.reactivecqrs.core.util.{AfterCommit, SchemaLock}
 import org.slf4j.Logger
 import scalikejdbc._
 
@@ -155,7 +155,7 @@ object SubscriptionCacheKey {
 class PostgresSubscriptionsState(typesNamesState: TypesNamesState, eventsLogger: Option[Logger] = None,
                                  maxCachedAggregates: Int = 10000) extends SubscriptionsState {
 
-  def initSchema(): PostgresSubscriptionsState = {
+  def initSchema(): PostgresSubscriptionsState = SchemaLock {
     createSubscriptionsTable()
     createSubscriptionsSequence()
     createSubscriberTypeAggregateIdIndex()

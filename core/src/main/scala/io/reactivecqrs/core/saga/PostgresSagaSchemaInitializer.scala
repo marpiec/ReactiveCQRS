@@ -1,10 +1,12 @@
 package io.reactivecqrs.core.saga
 
+import io.reactivecqrs.core.util.SchemaLock
+
 import org.postgresql.util.PSQLException
 import scalikejdbc._
 
 class PostgresSagaSchemaInitializer {
-  def initSchema(): Unit = {
+  def initSchema(): Unit = SchemaLock {
     createSagasTable()
     createSagaKeyIndex()
   }

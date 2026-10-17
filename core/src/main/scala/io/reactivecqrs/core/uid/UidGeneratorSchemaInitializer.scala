@@ -1,5 +1,7 @@
 package io.reactivecqrs.core.uid
 
+import io.reactivecqrs.core.util.SchemaLock
+
 import scalikejdbc._
 
 /**
@@ -11,7 +13,7 @@ class UidGeneratorSchemaInitializer {
 
   private val poolSize = 10000
 
-  def initSchema(): Unit = {
+  def initSchema(): Unit = SchemaLock {
     DB.autoCommit { implicit session =>
       // The first 1000 aggregate ids are reserved for system ids.
       initSequence("aggregates_uids_seq", start = 1001)

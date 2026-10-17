@@ -1,5 +1,7 @@
 package io.reactivecqrs.core.commandhandler
 
+import io.reactivecqrs.core.util.SchemaLock
+
 import java.time.Instant
 
 import io.mpjsons.MPJsons
@@ -57,7 +59,7 @@ class PostgresCommandResponseState(mpjsons: MPJsons, typesNamesState: TypesNames
 
   private val customSuccessClassName = classOf[CustomSuccessResponse[_]].getName
 
-  def initSchema(): PostgresCommandResponseState = {
+  def initSchema(): PostgresCommandResponseState = SchemaLock {
     createCommandResponseTable()
     createCommandResponseSequence()
     addInfoColumns()

@@ -2,4 +2,4 @@ Common.settings("core")
 
 import Common.dependencies._
 
-libraryDependencies ++= pekko ++ logback ++ scalikejdbc ++ postgresql
+libraryDependencies ++= pekko ++ pekkoCluster ++ logback ++ scalikejdbc ++ postgresql

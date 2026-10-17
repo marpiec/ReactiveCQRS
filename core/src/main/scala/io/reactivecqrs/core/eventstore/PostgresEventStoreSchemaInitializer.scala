@@ -1,11 +1,13 @@
 package io.reactivecqrs.core.eventstore
 
+import io.reactivecqrs.core.util.SchemaLock
+
 import scalikejdbc._
 
 
 class PostgresEventStoreSchemaInitializer  {
 
-  def initSchema(): Unit = {
+  def initSchema(): Unit = SchemaLock {
     createEventsTable()
     dropColumnCommandId()
     createEventsAggregateIdIndex()

@@ -1,5 +1,7 @@
 package io.reactivecqrs.core.types
 
+import io.reactivecqrs.core.util.SchemaLock
+
 import scalikejdbc._
 
 import scala.collection.concurrent.TrieMap
@@ -39,7 +41,7 @@ class PostgresTypesNamesState extends TypesNamesState {
   private val names = TrieMap[Short, String]()
   @volatile private var loaded = false
 
-  def initSchema(): PostgresTypesNamesState = {
+  def initSchema(): PostgresTypesNamesState = SchemaLock {
     createTypesNamesTable()
     createTypesNamesSequence()
     createNamesIndex()
