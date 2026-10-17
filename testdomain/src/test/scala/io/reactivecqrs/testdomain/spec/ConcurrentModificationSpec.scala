@@ -5,7 +5,7 @@ import java.time.Instant
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
-import io.reactivecqrs.core.eventstore.NewEvents
+import io.reactivecqrs.core.eventstore.{NewEvents, StoredEvent}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
@@ -30,12 +30,12 @@ class InterferingEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesName
   /** How many more persists of `interfereWith` meet a write from elsewhere. */
   val interferencesLeft = new java.util.concurrent.atomic.AtomicInteger(Int.MaxValue)
 
-  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId,
-                                             eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = {
+  override def persist[AGGREGATE_ROOT](aggregateId: AggregateId,
+                                       eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[StoredEvent[AGGREGATE_ROOT]]] = {
     if (interfereWith.contains(aggregateId) && interferencesLeft.getAndDecrement() > 0) {
       writeFromElsewhere(aggregateId, eventsEnvelope.expectedVersion, ItemAdded("from elsewhere"))
     }
-    super.persistEvents(aggregateId, eventsEnvelope)
+    super.persist(aggregateId, eventsEnvelope)
   }
 
   // A rewrite changes stored rows before it persists its events, the aggregate's among them (F119): the other writer
@@ -51,7 +51,7 @@ class InterferingEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesName
   /** Commits an event in its own transaction, as another writer would. */
   def writeFromElsewhere(aggregateId: AggregateId, expectedVersion: AggregateVersion, event: Event[ShoppingCart]): Unit = {
     DB.localTx { session =>
-      super.persistEvents(aggregateId,
+      super.persist(aggregateId,
         NewEvents[ShoppingCart](UserId(2), expectedVersion, Instant.now, Seq(event)))(session).get
     }
   }

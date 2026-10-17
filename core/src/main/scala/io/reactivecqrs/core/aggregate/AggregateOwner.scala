@@ -75,6 +75,7 @@ class OwnerSettings[AGGREGATE_ROOT: ClassTag](context: AggregateContext[AGGREGAT
                                               val commandBus: ActorRef,
                                               val failedRestoreRetryAfter: FiniteDuration,
                                               val maxRepublishEvents: Int = 1000,
+                                              val maxRepublishBytes: Long = 16L * 1024 * 1024,
                                               val concurrentRetries: Backoff = AggregateOwner.defaultConcurrentRetries) {
   val aggregateType: AggregateType = context.aggregateType
   val commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]] = context.commandHandlers
@@ -419,28 +420,28 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
         val outcome = Try {
           eventStore.localTx { implicit session =>
             if (rewritten.nonEmpty) eventStore.overwriteEvents(aggregateId, rewritten)
-            val stored = eventStore.persistEvents(aggregateId, NewEvents(userId, version, timestamp, events, metadata)).get
-              .map { case (event, eventVersion) => EventInfo(eventVersion, event, userId, timestamp, metadata) }
+            val persisted = eventStore.persist(aggregateId, NewEvents(userId, version, timestamp, events, metadata)).get
+            val stored = persisted.map(e => EventInfo(e.version, e.event, userId, timestamp, metadata))
             if (idempotency.isIdempotent(envelope.command)) idempotency.record(envelope.command, response)
             // R12, D33: after the idempotency record, so a copy whose key is taken rolls back before writing anything.
             outboxWriter.foreach(_.write(aggregateId, stored.last.version, stored))
-            stored
+            (stored, persisted.map(_.size))
           }
         }
         outcome match {
-          case Success(published) =>
+          case Success((published, sizes)) =>
             if (readAfterCommit) {
               // A rewrite changed what the history gives to the duplicates too: their owners read it again.
               if (rewritten.nonEmpty) historyChangedForDuplicates()
               // If the state cannot be read, nothing is published now: the outbox poller has it re-published later.
               if (restore().isEmpty) {
-                publish(published)
+                publish(published, sizes)
                 snapshotIfDue(command.baseVersion)
               }
             } else {
               root = newRoot
               version = published.last.version
-              publish(published)
+              publish(published, sizes)
               snapshotIfDue(command.baseVersion)
             }
             finish(envelope.commandId, response)
@@ -694,17 +695,18 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
   // ************** Publication (D8, D20c)
 
   // The acknowledgement goes to the command bus of this node, which outlives this owner: delivered rows are
-  // deleted even when the owner is stopped (or, later, passivated) before the subscribers caught up (F91).
-  private def publish(events: Seq[EventInfo[AGGREGATE_ROOT]]): Unit = {
-    eventsBus.tell(PublishEvents(aggregateType, events, aggregateId, Option(root)), commandBus)
+  // deleted even when the owner is stopped (or, later, passivated) before the subscribers caught up (F91). The events'
+  // stored sizes go with them, for the bus's window (F93, F126).
+  private def publish(events: Seq[EventInfo[AGGREGATE_ROOT]], sizes: Seq[Int]): Unit = {
+    eventsBus.tell(PublishEvents(aggregateType, events, aggregateId, Option(root), sizes = sizes), commandBus)
     answerReachedMinVersionQueries()
   }
 
   // Re-publishes `from` up to the current version with the current state, so a subscriber that receives state ends with
   // a consistent range; subscribers drop what they applied before (D8, D20c). A long range goes in parts of at most
-  // `maxRepublishEvents`, so a subscriber far behind never gets the whole history in one message: one to many
-  // subscribers continues when the bus acks the part, a subscriber filling its gap asks for the next part. The parts
-  // before the last carry the current state too. Returns the last version sent.
+  // `maxRepublishEvents` and `maxRepublishBytes` (F126), so a subscriber far behind never gets the whole history in one
+  // message: one to many subscribers continues when the bus acks the part, a subscriber filling its gap asks for the
+  // next part. The parts before the last carry the current state too. Returns the last version sent.
   private def republish(from: AggregateVersion, onlyTo: Option[ActorRef]): Option[AggregateVersion] = {
     // D51: nothing below the squash point exists any more; a range from below it starts at the squash event, and says
     // so, so a subscriber that never saw the squash point starts there (F98).
@@ -712,10 +714,11 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     val start = squashed.filter(_ > from).getOrElse(from)
     if (start <= version) {
       val to = AggregateVersion(math.min(version.asInt.toLong, start.asInt.toLong + maxRepublishEvents - 1).toInt)
-      val events = eventStore.readEventsRange[AGGREGATE_ROOT](aggregateId, start, to)
-      if (events.nonEmpty) {
-        eventsBus.tell(PublishEvents(aggregateType, events, aggregateId, Option(root), onlyTo, startsAtSquash = squashed.contains(start)), commandBus)
-        Some(events.last.version)
+      val part = eventStore.readPart[AGGREGATE_ROOT](aggregateId, start, to, maxRepublishBytes)
+      if (part.nonEmpty) {
+        eventsBus.tell(PublishEvents(aggregateType, part.map(_._1), aggregateId, Option(root), onlyTo, startsAtSquash = squashed.contains(start),
+          sizes = part.map(_._2)), commandBus)
+        Some(part.last._1.version)
       } else None
     } else None
   }

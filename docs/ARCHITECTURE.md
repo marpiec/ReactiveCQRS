@@ -561,12 +561,14 @@ Lifecycle of one event:
    (§4.5). A live owner gets the acknowledgement too, to continue re-publishing its outbox.
 
 **Re-delivery** has a single owner, the `OutboxPollerActor` (D8). Every 30 s (the first poll
-10 s after start) it reads every aggregate with waiting rows in one query for all types
-(`readWaitingInOutbox`, F37), and the pure `RedeliveryPolicy` decides:
+10 s after start) it reads the aggregates with waiting rows in one query for all types
+(`readWaitingInOutbox`, F37), at most 100 000 of them, those waiting longest first, so what it
+holds no longer grows with the outbox (`maxTracked`, F122; the query still groups every row),
+and the pure `RedeliveryPolicy` decides:
 
 | Rows | Re-publication | Then |
 |---|---|---|
-| written while the process runs (the live publication was the first attempt) | 3 and 6 minutes after it | at 10 minutes "undelivered", logged once; the rows stay for the next start |
+| written while the process runs (the live publication was the first attempt) | 3 and 6 minutes after it | at 10 minutes "undelivered", logged once; then every 30 minutes again, as the subscriber may be back without a restart (F123) |
 | written before the process started | at the first poll, then 3 and 6 minutes later | the same, 10 minutes after the first poll |
 | a newer oldest version (the older rows were delivered) | a fresh set of attempts | |
 
@@ -576,9 +578,10 @@ to the bus, which passes `RepublishOutbox(id)` to the type's command bus (regist
 `RegisterPublisher`), which passes it to the owner (creating it if needed; re-publications
 count as activity for reaping). The owner re-publishes from its oldest outbox version to its
 current version, with its current state, so a state-receiving subscriber always gets a
-consistent range. A range longer than 1 000 events goes in parts (F83): the owner sends the
-next part of its outbox when the bus acknowledges the previous one, and a subscriber filling a
-gap asks for each next part itself; parts before the last carry the current state too.
+consistent range. A range longer than 1 000 events or 16 MB of stored events goes in parts
+(F83, F126; the store cuts a range by the events' stored sizes, `readPart`): the owner sends
+the next part of its outbox when the bus acknowledges the previous one, and a subscriber
+filling a gap asks for each next part itself; parts before the last carry the current state too.
 `GetOutboxStatus` reports the waiting and the given-up aggregates; the log names at most 10 of
 them per poll.
 
@@ -634,6 +637,26 @@ with a gap or a retry goes to the type's command bus as `RepublishRange(id, from
 subscriber)`; the owner re-publishes `from` to its current version to that subscriber only
 (D20c).
 
+**Flow control (F93, F126; `eventbus/FlowControl`).** A subscriber is sent at most
+`DeliveryOptions.window` events (10 000) and `windowBytes` (64 MB) of their stored sizes in
+messages not yet answered: its mailbox holds them, so the window is the subscriber's, across its
+kinds. The owner passes the sizes the store reported (`PublishEvents.sizes`); one not known
+counts as 1 KB. Each message sent is recorded by aggregate, first version and kind, and the
+answer naming them takes it off; a record older than the deadline is taken off too, so a lost
+message cannot keep the window shut. With nothing in flight, one publication goes whatever its
+size. A live publication that does not fit is **held** for that subscriber: its deliveries wait
+for it as held, not sent, and its aggregate is behind for it, so every later event of that
+aggregate is held too and the subscriber never sees a gap of the bus's making. Once at most
+half the window is in flight, the bus **pulls** the aggregates behind, oldest first: it sends
+`RepublishRange` to their owners for that subscriber, at most 100 at once and about as many
+events and bytes as the window has room for, counting each as a part of the owners' size. A
+part that ends before the last held version leaves the rest behind; a pull unanswered within
+a minute is asked again. A re-publication to one subscriber, a pull or a gap fill, goes
+whatever the window. A held delivery completes when the subscriber answers the pulled part, so
+the owner is acknowledged and its outbox rows go as soon as the slow subscriber has them; the
+payloads in between stay in the store, and the bus keeps keys only. `DeliveryStatus.held` and
+`.behind` show it, and the summary line names the subscribers behind.
+
 **Failures inside the bus (AR7).** A message the bus fails on (a malformed one) is logged and
 dropped. A restart would lose every delivery and the subscriptions.
 
@@ -646,11 +669,11 @@ dropped. A restart would lose every delivery and the subscriptions.
 - **Applied exactly once** by `ProjectionActor`, through the sequence gate on the stored
   subscription version (§6.3); a gap is asked from the owner. A `noDBSession` listener runs
   before its version is written, so it sees a batch again if that write fails: at least once.
-- **No flow control on the live path** (F93): groups (§6.3) raise how fast a projection keeps
-  up, but when commands come faster than it applies them, its mailbox and the bus's
-  deliveries still grow with the lag.
-- A delivery that nobody answers ends at the deadline; the poller tries again at the next
-  start.
+- **Flow control on the live path** (F93, since M5): a subscriber's mailbox holds at most its
+  window; what waits beyond it stays in the store and is pulled for it as it catches up. The
+  bus still keeps a delivery (keys only) per event held, until the deadline.
+- A delivery that nobody answers ends at the deadline; the poller tries again, then every
+  30 minutes.
 
 ---
 
@@ -912,7 +935,7 @@ subscriber). `BuildPlan` lists its subscriptions (the projection answers `GetLis
 `ReplaySource.of(contexts, eventStore)` gives each aggregate type's restorer and event
 handlers. It runs on the blocking dispatcher and reads synchronously on its own thread.
 
-1. **Bulk pass.** `readCommitted(types, after, limit)` pages through the events of the plan's
+1. **Bulk pass.** `readCommittedPage(types, after, limit, scope, maxBytes)` pages through the events of the plan's
    types in commit order (`events.id`, D59), each under its own aggregate (a duplicate's own
    events, not its base's), undone events and undo events included (D60), with the aggregate's
    squash point. Consecutive rows of one aggregate with consecutive versions form a run; each
@@ -925,7 +948,9 @@ handlers. It runs on the blocking dispatcher and reads synchronously on its own 
    a run that starts at the aggregate's first event or squash event starts from the initial
    state. A projection whose listeners all take the state only (D62) gets one item per
    aggregate instead, its final state (`aggregatesOf` pages through the aggregates), which
-   starts its subscription. Items go in chunks of about `chunkEvents` (1 000) events, two in
+   starts its subscription. A page is at most `pageSize` events and `pageBytes` (64 MB) of them, a
+   chunk about `chunkEvents` (1 000) events and at most `chunkBytes` (16 MB), at least one event
+   each (F126); a page its bytes cut short is not taken for the last. Chunks go two in
    flight, so the next page is read while the projection applies a chunk in one transaction
    (D61, §6.3). The projection acknowledges the bus's deliveries without applying them
    meanwhile (`BuildFromStore`).
@@ -1116,8 +1141,8 @@ this read (lost document updates, caches ahead of the database, timestamps, lost
 partial persists, idempotency); M2 rebuilt delivery (no cursor, a single owner of
 re-deliveries, the sequence gate, gap requests, failure records); M3 detaches duplicates
 before a permanent delete (F76); M4 replaced the 0.12 replayer, which left out undone events
-(F58) and could stop the JVM (F82), with builds from the event store. Still open: flow control
-on the live path (F93), so a projection that cannot keep up lets its backlog grow in memory.
+(F58) and could stop the JVM (F82), with builds from the event store. Flow control on the live
+path (F93) came in M5 (§5.2).
 
 ---
 

@@ -24,7 +24,8 @@ object OutboxPollerActor {
 /** @param firstPollAfter gives the host time to start its command buses, which the bus routes re-publications to */
 case class OutboxPollerOptions(firstPollAfter: FiniteDuration = 10.seconds,
                                pollInterval: FiniteDuration = 30.seconds,
-                               redelivery: RedeliveryPolicy.Options = RedeliveryPolicy.Options())
+                               redelivery: RedeliveryPolicy.Options = RedeliveryPolicy.Options(),
+                               maxTracked: Int = 100000)
 
 /**
   * The single owner of re-deliveries (D8). Every poll it reads which aggregates have rows waiting in the outbox, and,
@@ -57,7 +58,7 @@ class OutboxPollerActor(eventStore: EventStoreState, eventBus: ActorRef, options
   // F27: the read runs on the blocking dispatcher; its result comes back as a message.
   private def read(): Unit = {
     reading = true
-    Future(eventStore.readWaitingInOutbox())(BlockingDispatcher(context.system)).onComplete(result => self ! Read(result))
+    Future(eventStore.readWaitingInOutbox(options.maxTracked))(BlockingDispatcher(context.system)).onComplete(result => self ! Read(result))
   }
 
   // A failed read is logged and retried at the next poll (AR7: a throw would restart the poller and forget the attempts).
@@ -67,7 +68,7 @@ class OutboxPollerActor(eventStore: EventStoreState, eventBus: ActorRef, options
       decision.republish.foreach(w => eventBus ! Republish(w.aggregateType, w.aggregateId))
       // A few lines per poll; under overload the count says the rest (GetOutboxStatus lists them all).
       decision.gaveUp.take(maxLinesPerPoll).foreach(w => log.error("Undelivered: " + w.aggregateType.simpleName + " " + w.aggregateId.asLong +
-        " from version " + w.oldestVersion.asInt + " still waits in the outbox after " + options.redelivery.giveUpAfter + "; it is re-published again at the next start"))
+        " from version " + w.oldestVersion.asInt + " still waits in the outbox after " + options.redelivery.giveUpAfter + "; it is re-published again every " + options.redelivery.retryGivenUpEvery))
       if (decision.gaveUp.size > maxLinesPerPoll) {
         log.error(s"${decision.gaveUp.size - maxLinesPerPoll} more aggregates are undelivered after ${options.redelivery.giveUpAfter}")
       }

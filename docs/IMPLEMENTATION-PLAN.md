@@ -1675,3 +1675,20 @@ Open test-infrastructure items:
   larger frame). SCALING §7 recommends the claim-check pattern and what to set otherwise.
 - New issue: F126 (batches counted in events hold whatever their events weigh: a re-publication
   part of 1 000 such events is about 5 GB), fixed in M5 with F93, whose window counts bytes too.
+
+**17/10/2026: flow control on the live path (F93), batches by bytes (F126), the poller (F122, F123)**
+- The circumstances it could fail in were written down first (`docs/design/M5-cluster.md`).
+- The bus keeps a window per subscriber (`FlowControl`): 10 000 events and 64 MB of their stored
+  sizes not yet answered. What does not fit is held, its aggregate behind for that subscriber (its
+  later events held too), and pulled from the owners (`RepublishRange`) once half the window is
+  free, at most 100 at once; held deliveries complete when the subscriber answers the pulled part,
+  so the outbox is the queue and a slow projection's mailbox stays bounded.
+- F126: the event store reports each event's stored size (`persist`, `readPart`,
+  `readCommittedPage`), cutting ranges in SQL by `octet_length`; re-publication parts are at most
+  16 MB, rebuild pages 64 MB and chunks 16 MB; the owner passes the sizes to the bus.
+- F122: the poller holds at most 100 000 waiting aggregates, the oldest first. F123: given-up
+  aggregates are re-published every 30 minutes.
+- Found in review, before committing: an aggregate held while its owner moved to another node would
+  be pulled again every minute, as the parts go out through the other node's bus; one held since
+  the deadline is dropped (its held deliveries ended then; gap requests and the poller deliver it).
+- Tests and mutations as listed in the design; `sbt test`: core 260, testdomain 155.

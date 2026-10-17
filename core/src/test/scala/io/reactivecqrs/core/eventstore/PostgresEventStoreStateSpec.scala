@@ -4,7 +4,7 @@ import java.time.Instant
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 
 import io.mpjsons.MPJsons
-import io.reactivecqrs.api.{AggregateSquashedException, AggregateVersion, Event, TooManyEventsException}
+import io.reactivecqrs.api.{AggregateSquashedException, AggregateType, AggregateVersion, Event, TooManyEventsException}
 import io.reactivecqrs.api.id.SpaceId
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.testutils.TestDatabase
@@ -86,6 +86,41 @@ class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStore
     store(2, EventC(true)) mustBe Success(Seq(3))
     store(3, EventB(4)).failed.get mustBe a[TooManyEventsException]
     store(3, Undo(1)).failed.get mustBe a[TooManyEventsException]
+  }
+
+  // F126: the store reports each event's stored size, and cuts parts and pages by them, keeping at least one event.
+  Scenario("events come with their stored sizes; parts and pages are cut by bytes, at least one event each") {
+    val f = new TestFixture(eventStoreState)
+    val stored = eventStoreState.localTx(session => eventStoreState.persist(f.aggregateId,
+      NewEvents(f.userId, AggregateVersion(0), Instant.now, Seq(EventA("x" * 100), EventB(1), EventC(true))))(session)).get
+    stored.map(_.version.asInt) mustBe Seq(1, 2, 3)
+    val sizes = stored.map(_.size)
+    sizes.head must be > 100
+
+    def part(maxBytes: Long): Seq[(Int, Int)] =
+      eventStoreState.readPart[SomeAggregate](f.aggregateId, AggregateVersion(1), AggregateVersion(3), maxBytes).map { case (e, size) => (e.version.asInt, size) }
+    part(Long.MaxValue) mustBe Seq(1, 2, 3).zip(sizes)
+    part(sizes(0) + sizes(1)).map(_._1) mustBe Seq(1, 2)
+    part(1).map(_._1) mustBe Seq(1)
+
+    val types = Seq(AggregateType.of[SomeAggregate])
+    val cut = eventStoreState.readCommittedPage(types, 0L, 10, AggregateScope.Only(Set(f.aggregateId)), sizes(0) + 1)
+    (cut.events.map(e => (e.version.asInt, e.size)), cut.cut) mustBe ((Seq(1 -> sizes(0)), true))
+    val whole = eventStoreState.readCommittedPage(types, 0L, 10, AggregateScope.Only(Set(f.aggregateId)), Long.MaxValue)
+    (whole.events.map(_.version.asInt), whole.cut) mustBe ((Seq(1, 2, 3), false))
+    eventStoreState.readCommittedPage(types, 0L, 2, AggregateScope.Only(Set(f.aggregateId)), Long.MaxValue).cut mustBe false // its limit, not its bytes
+  }
+
+  // F122: the poller holds at most a limit of waiting aggregates, those waiting longest first.
+  Scenario("the aggregates waiting in the outbox are read at most a limit at a time, those waiting longest first") {
+    Seq("2026-02-01T10:00:02Z", "2026-02-01T10:00:00Z", "2026-02-01T10:00:01Z").foreach { time =>
+      val f = new TestFixture(eventStoreState)
+      eventStoreState.localTx(session => eventStoreState.persistEvents(f.aggregateId, NewEvents(f.userId, AggregateVersion.ZERO, Instant.parse(time),
+        Seq(EventA("waiting"))))(session)).get
+    }
+    val all = eventStoreState.readWaitingInOutbox()
+    all mustBe all.sortBy(w => (w.since, w.aggregateId.asLong))
+    eventStoreState.readWaitingInOutbox(2) mustBe all.take(2)
   }
 
   // F38, D69: the restore index is built online, once; running it again does nothing.

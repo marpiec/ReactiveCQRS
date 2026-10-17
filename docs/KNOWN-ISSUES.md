@@ -379,7 +379,7 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Fix:** at most 10 lines per tick or poll, with a count and the periodic summary for the rest; a failing batch warns once.
 
 #### F93 — No back-pressure on the live path
-- **Medium**, confirmed (measured) · **Throughput part fixed in M4** (17/10/2026: deliveries that arrive together are applied up to 100 aggregates per transaction, their versions read in one query per listener kind (D61 on the live path); measured on one machine, 200 000 events of 20 000 counters with failing listeners in the first 30 s: every event projected after 62 s instead of 96 s, about 3 200 instead of 2 100 events/s; 3 200 commands on 16 counters: 2 600 to 2 900 instead of 1 500 events/s, 3.4 instead of 7.0 statements per command; `ProjectionGroupsSpec`). **Flow control still open**: a projection slower than the commands still lets its mailbox and the bus's deliveries grow; scheduled in M5 (review 6) · `EventsBusActor`, `ProjectionActor`
+- **Medium**, confirmed (measured) · **Throughput part fixed in M4** (17/10/2026: deliveries that arrive together are applied up to 100 aggregates per transaction, their versions read in one query per listener kind (D61 on the live path); measured on one machine, 200 000 events of 20 000 counters with failing listeners in the first 30 s: every event projected after 62 s instead of 96 s, about 3 200 instead of 2 100 events/s; 3 200 commands on 16 counters: 2 600 to 2 900 instead of 1 500 events/s, 3.4 instead of 7.0 statements per command; `ProjectionGroupsSpec`). **Flow control fixed in M5** (17/10/2026: a window per subscriber of 10 000 events and 64 MB of their stored sizes not yet answered; what does not fit is held, its aggregate behind for that subscriber, and pulled from the owners once half the window is free; held deliveries complete when the subscriber answers the pulled part, so the outbox is the queue and its rows go as soon as the slow subscriber has them; `FlowControlSpec`, `EventsBusActorSpec` and `DeliveryEndToEndSpec`, caught under mutations that admit everything or never pull) · `EventsBusActor`, `FlowControl`, `ProjectionActor`
 - **Symptom:** when commands come faster than a projection applies them, its mailbox and the bus's deliveries grow with the lag. Measured: 1 000 000 events at about 12 000 commands/s against projections at about 1 700 events/s ended 10 minutes behind; it fit in a 2 GB heap (peak not measured).
 - **Fix idea:** a window per subscription in the bus; past it, events are left in the outbox and fetched from the store when the subscriber catches up (`RepublishRange`), so memory holds keys, not payloads.
 
@@ -407,15 +407,15 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Found:** high-load analysis at M5 (docs/SCALING.md).
 
 #### F122 — The outbox poll groups the whole outbox and keeps every waiting aggregate in memory
-- **Medium**, likely (estimated, not measured) · **Fix in M5** (with flow control) · `PostgresEventStoreState.readWaitingInOutbox`, `OutboxPollerActor`, `RedeliveryPolicy`
+- **Medium**, likely (estimated, not measured) · **Fixed in M5** (17/10/2026, in part) · `PostgresEventStoreState.readWaitingInOutbox`, `OutboxPollerActor`, `RedeliveryPolicy`
 - **Symptom:** every 30 s the poller groups all of `events_to_publish` by aggregate and keeps one entry per waiting aggregate, and re-publishes at most 1 000 aggregates per poll. After a long outage of a projection (millions of rows), each poll scans every row, the poller's memory grows with the aggregates, and draining 1 000 000 aggregates takes about 8.3 h (estimated: 1 000 000 / 1 000 × 30 s).
-- **Fix idea:** read only the oldest waiting rows per poll, bounded by the per-poll limit, and keep memory for those only; drain faster while re-publications are acknowledged quickly.
+- **Fix:** the poller reads at most `maxTracked` (100 000) waiting aggregates, those waiting longest first, so its memory is bounded; the grouping itself still reads every row (cheap while the outbox is near empty; documented in SCALING §4). Test: `PostgresEventStoreStateSpec` (the oldest first, at most the limit; red when the limit is dropped).
 - **Found:** high-load analysis at M5 (docs/SCALING.md).
 
 #### F123 — Given-up aggregates wait for the poller's next start, even when their subscriber is back
-- **Medium**, confirmed (by reading `RedeliveryPolicy`) · **Fix in M5** (with flow control) · `RedeliveryPolicy`
+- **Medium**, confirmed (by reading `RedeliveryPolicy`) · **Fixed in M5** (17/10/2026) · `RedeliveryPolicy`
 - **Symptom:** after its attempts at 3 and 6 minutes, the poller gives up on an aggregate at 10 minutes and does not re-publish it again while it runs (D20b: the rows stay for the next start). A subscriber that stopped answering for longer (an overload, F93; a partition; a long pause) and recovers without a restart keeps missing the events of aggregates that get no new events; those that do are filled by gap requests. In a cluster the poller is a singleton, which starts again only when the oldest node leaves.
-- **Fix idea:** keep re-publishing given-up aggregates at a slow pace within the per-poll limit, and at once when a subscriber registers or a replacement subscribes.
+- **Fix:** after the report, a given-up aggregate is re-published again every `retryGivenUpEvery` (30 minutes), within the per-poll limit. Test: `RedeliveryPolicySpec` (re-published at 41 and 71 minutes after giving up at 11; red before).
 - **Found:** high-load analysis at M5 (docs/SCALING.md).
 
 ### Commands and aggregates
@@ -674,9 +674,9 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 ### Performance and runtime
 
 #### F126 — Batches counted in events hold whatever their events weigh
-- **Medium**, confirmed (measured with 5 MB events; the larger batches estimated) · **Fix in M5** (with the flow control of F93) · `AggregateOwner.republish`, `ProjectionBuilder`, `PostgresEventStoreState` (`fetchSize`), `EventsBusActor`
+- **Medium**, confirmed (measured with 5 MB events; the larger batches estimated) · **Fixed in M5** (17/10/2026) · `AggregateOwner.republish`, `ProjectionBuilder`, `PostgresEventStoreState` (`fetchSize`), `EventsBusActor`
 - **Symptom:** an event store that allows large events (`eventSizeLimitPerClassName`) keeps every batch counted in events: a re-publication part of 1 000 events, a rebuild page and chunk of 1 000 events, a fetch of 1 000 rows, and the window F93 plans in events. With events of 5 MB a part is about 5 GB, more than any heap. Measured (docs/perf/large-M5.md): a restore of 20 such events took 206 MB of heap, about 10 MB per event.
-- **Fix idea:** the store reports each event's stored size when it writes and reads it; re-publication parts, rebuild pages and chunks, and the bus's window are bounded by bytes as well as by events (at least one event each); hosts with large events lower `fetchSize` or set the driver's `adaptiveFetch` (docs/SCALING.md §7).
+- **Fix:** the store reports each event's stored size when it writes it (`persist`) and reads it (`readPart`, `readCommittedPage`), cutting a range by the sizes in SQL (`octet_length`, without detoasting); re-publication parts are at most 1 000 events and 16 MB, rebuild pages 64 MB and chunks 16 MB (a page its bytes cut short is not the last), the reconciliation reads an aggregate's missing range in parts, and the bus's window counts bytes (F93). Restores still fetch 1 000 rows at a time: hosts with large events lower `fetchSize` or set the driver's `adaptiveFetch` (SCALING §7). Tests: `PostgresEventStoreStateSpec`, `ProjectionBuilderSpec` (a page cut short did not end the bulk pass: red under the old `readAll`), `EventsBusActorSpec`.
 - **Found:** analysis of commands and events of 5 MB at M5 (docs/SCALING.md §7).
 
 #### F23 — Id pools of 100 and a blocking wait on refill
@@ -994,7 +994,7 @@ From §7 of Neula's change requests.
 | M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔, F95 ✔; Neula H2, H7 |
 | M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8 ✔; F8 (contract ✔), F22 ✔, F23 ✔, F25 ✔, F27 ✔, F30 ✔, F31 ✔, F32 ✔, F33 (rest ✔), F38 ✔, F39 ✔, F44 ✔, F50 ✔, F65 ✔, F76 ✔, F78 ✔, F81 ✔, F96 ✔, F97 ✔, F100–F107 ✔; D85 ✔; Neula H8 |
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
-| M5 | AR5; F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122, F123, F125 ✔, F126 (F78 between nodes ✔ in M3) |
+| M5 | AR5; F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 (complete), F124 |
 
 ---

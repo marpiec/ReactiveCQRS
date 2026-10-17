@@ -10,9 +10,10 @@ import scala.concurrent.duration._
 /**
   * When to ask an aggregate's owner to re-publish what waits in its outbox (D8, D20b). The first attempt is the live
   * publication at commit; re-publications follow it after each of `attemptsAfter` (3 and 6 minutes). Once they are
-  * made and `giveUpAfter` (10 minutes) has passed, the aggregate is reported once as undelivered and left alone; its
-  * rows stay for the next start. Rows written before this process started get a fresh set of attempts, the first one
-  * at once, because nothing delivers them otherwise.
+  * made and `giveUpAfter` (10 minutes) has passed, the aggregate is reported once as undelivered, and re-published
+  * again every `retryGivenUpEvery` (30 minutes): its subscriber may be back without a restart (F123). Rows written
+  * before this process started get a fresh set of attempts, the first one at once, because nothing delivers them
+  * otherwise.
   *
   * At most `maxRepublishPerPoll` aggregates are re-published per poll, the longest waiting first, so a large backlog
   * (after an outage) does not start and restore every owner at once; the rest follow at the next polls (1 000 per
@@ -21,11 +22,11 @@ import scala.concurrent.duration._
 object RedeliveryPolicy {
 
   case class Options(attemptsAfter: Seq[FiniteDuration] = Seq(3.minutes, 6.minutes), giveUpAfter: FiniteDuration = 10.minutes,
-                     maxRepublishPerPoll: Int = 1000)
+                     maxRepublishPerPoll: Int = 1000, retryGivenUpEvery: FiniteDuration = 30.minutes)
 
   /** What the policy remembers about one aggregate between polls; `firstAttempt` is the live publication, or the first
     * re-publication for rows from before the start. */
-  case class Tracked(waiting: WaitingInOutbox, firstAttempt: Instant, attemptsMade: Int, gaveUp: Boolean)
+  case class Tracked(waiting: WaitingInOutbox, firstAttempt: Instant, attemptsMade: Int, gaveUp: Boolean, lastTry: Option[Instant] = None)
 
   case class Decision(republish: Seq[WaitingInOutbox], gaveUp: Seq[WaitingInOutbox], memory: Map[AggregateId, Tracked])
 
@@ -59,12 +60,17 @@ object RedeliveryPolicy {
     val elapsed = Duration.between(tracked.firstAttempt, now).toMillis.millis
     val due = options.attemptsAfter.count(_ <= elapsed)
     if (tracked.gaveUp) {
-      Step(w, before, tracked, republish = false, gaveUp = false)
+      // F123: reported once, then tried again now and then, as its subscriber may be back without a restart.
+      if (tracked.lastTry.forall(at => Duration.between(at, now).toMillis.millis >= options.retryGivenUpEvery)) {
+        Step(w, before, tracked.copy(lastTry = Some(now)), republish = true, gaveUp = false)
+      } else {
+        Step(w, before, tracked, republish = false, gaveUp = false)
+      }
     } else if (due > tracked.attemptsMade) {
       // one re-publication, however many attempts fell due since the last poll
       Step(w, before, tracked.copy(attemptsMade = due), republish = true, gaveUp = false)
     } else if (due == options.attemptsAfter.size && elapsed >= options.giveUpAfter) {
-      Step(w, before, tracked.copy(gaveUp = true), republish = false, gaveUp = true)
+      Step(w, before, tracked.copy(gaveUp = true, lastTry = Some(now)), republish = false, gaveUp = true)
     } else {
       Step(w, before, tracked, republish = false, gaveUp = false)
     }

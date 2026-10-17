@@ -21,9 +21,17 @@ case class Snapshot[AGGREGATE_ROOT](version: AggregateVersion, contextVersion: I
 case class WaitingInOutbox(aggregateType: AggregateType, aggregateId: AggregateId, oldestVersion: AggregateVersion, since: Instant)
 
 /** A stored event in commit order (D59): its row id, its aggregate's type and squash point (D51), and the event, or why
-  * it cannot be read. */
+  * it cannot be read; `size`: its stored JSON's length (F126), 0 when the store does not know it. */
 case class CommittedEvent(id: Long, aggregateType: AggregateType, aggregateId: AggregateId, version: AggregateVersion,
-                          squashedUpTo: Option[AggregateVersion], event: Either[String, EventInfo[Any]])
+                          squashedUpTo: Option[AggregateVersion], event: Either[String, EventInfo[Any]], size: Int = 0)
+
+/** A page of events in commit order; `cut`: its bytes ended it before its limit of events (F126), so a shorter page does
+  * not mean that no more events are stored. */
+case class CommittedPage(events: Seq[CommittedEvent], cut: Boolean)
+
+/** An event as stored: its version, and its stored JSON's length, which bounds batches by bytes (F126); 0 when the
+  * store does not know it. */
+case class StoredEvent[AGGREGATE_ROOT](event: Event[AGGREGATE_ROOT], version: AggregateVersion, size: Int)
 
 /** A stored aggregate: its type, current version and squash point. */
 case class StoredAggregate(aggregateType: AggregateType, aggregateId: AggregateId, version: AggregateVersion, squashedUpTo: Option[AggregateVersion])
@@ -37,7 +45,10 @@ object AggregateScope {
 }
 
 abstract class EventStoreState {
-  def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]]
+  /** Stores the events after `expectedVersion`: each with its version and stored size. */
+  def persist[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[StoredEvent[AGGREGATE_ROOT]]]
+  final def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] =
+    persist(aggregateId, eventsEnvelope).map(_.map(stored => (stored.event, stored.version)))
   def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit
   def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, version: Option[Either[AggregateVersion, Instant]])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit
   /** Like `readAndProcessEvents`, with each event's metadata envelope (D32): for answers that return events. */
@@ -66,9 +77,14 @@ abstract class EventStoreState {
   // ************** Rebuild (D58, D59)
 
   /** Up to `limit` events of the aggregates of `types` with row ids above `after`, in commit order (row id), each under
-  * its own aggregate (a duplicate's own events, not its base's). Undone events and undo events too, as live delivery
-  * sent them (D60). A row that cannot be read is returned with the reason, so one bad row does not stop a rebuild. */
-  def readCommitted(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[CommittedEvent]
+  * its own aggregate (a duplicate's own events, not its base's), and no more than `maxBytes` of stored JSON, but at least
+  * one (F126). Undone events and undo events too, as live delivery sent them (D60). A row that cannot be read is
+  * returned with the reason, so one bad row does not stop a rebuild. */
+  def readCommittedPage(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope, maxBytes: Long): CommittedPage
+
+  /** `readCommittedPage` without a limit of bytes. */
+  final def readCommitted(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[CommittedEvent] =
+    readCommittedPage(types, after, limit, scope, Long.MaxValue).events
 
   /** Up to `limit` aggregates of `types` with ids above `after`, in id order. */
   def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[StoredAggregate]
@@ -115,13 +131,19 @@ abstract class EventStoreState {
     * `policy` says to squash now, each with the version to squash it up to. */
   def squashCandidates(aggregateType: AggregateType, policy: AutomaticSquash, after: AggregateId, limit: Int): Seq[(AggregateId, AggregateVersion)]
 
-  /** Every aggregate with rows waiting in the outbox, for the outbox poller (D8). */
-  def readWaitingInOutbox(): Seq[WaitingInOutbox]
+  /** The aggregates with rows waiting in the outbox, for the outbox poller (D8): at most `limit`, those waiting longest first (F122). */
+  def readWaitingInOutbox(limit: Int = Int.MaxValue): Seq[WaitingInOutbox]
 
   /** The aggregate's own events with versions `from` to `to`, in order, undone ones included, as live delivery sent
-    * them (D60): what a re-publication sends. */
-  def readEventsRange[AGGREGATE_ROOT](aggregateId: AggregateId,
-                                      from: AggregateVersion, to: AggregateVersion): Seq[EventInfo[AGGREGATE_ROOT]]
+    * them (D60), each with its stored size, and no more than `maxBytes` of them, but at least one: a re-publication's
+    * part (F126). */
+  def readPart[AGGREGATE_ROOT](aggregateId: AggregateId, from: AggregateVersion, to: AggregateVersion,
+                               maxBytes: Long): Seq[(EventInfo[AGGREGATE_ROOT], Int)]
+
+  /** The aggregate's own events with versions `from` to `to`, in order, undone ones included (D60). */
+  final def readEventsRange[AGGREGATE_ROOT](aggregateId: AggregateId,
+                                            from: AggregateVersion, to: AggregateVersion): Seq[EventInfo[AGGREGATE_ROOT]] =
+    readPart[AGGREGATE_ROOT](aggregateId, from, to, Long.MaxValue).map(_._1)
 
   /** The oldest version of the aggregate still waiting in the outbox, if any. */
   def oldestVersionToPublish(aggregateId: AggregateId): Option[AggregateVersion]

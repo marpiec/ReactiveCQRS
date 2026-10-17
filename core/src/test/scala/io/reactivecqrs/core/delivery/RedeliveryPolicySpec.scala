@@ -53,6 +53,16 @@ class RedeliveryPolicySpec extends AnyFeatureSpec with Matchers {
       memory(AggregateId(1)).gaveUp mustBe true
     }
 
+    // F123: a subscriber may be back without a restart of the poller.
+    Scenario("once given up, are reported once and re-published again every 30 minutes") {
+      val row = waiting(1, 4, at(1.minute))
+
+      val (republished, gaveUp, _) = pollEvery30Seconds(Seq(row), 1.minute, 75.minutes)
+
+      republished mustBe Seq(4.minutes -> 1L, 7.minutes -> 1L, 41.minutes -> 1L, 71.minutes -> 1L)
+      gaveUp mustBe Seq(11.minutes -> 1L)
+    }
+
     Scenario("seen late, after a long pause, get one re-publication, not one per missed attempt") {
       val row = waiting(1, 4, at(0.seconds))
 

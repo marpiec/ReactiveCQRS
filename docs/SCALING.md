@@ -36,12 +36,12 @@ receive bursts must bound the commands it lets in** (section 2).
 | Id pools (`IdPool`) | 10 000 ids per pool, fetched ahead | A `FirstCommand` waits for a late pool. A failing generator answers `CommandHandlingError` (F75). |
 | Events per aggregate (`PostgresEventStoreState.aggregateVersionLimit`) | 10 000 | Every command on an aggregate at the limit fails with `EventHandlingError` (section 3). |
 | Event size (`eventSizeLimit`, per class `eventSizeLimitPerClassName`) | 100 000 characters of JSON | The command fails with `EventHandlingError`. Larger events cost memory and disk in proportion (section 7). |
-| Event bus (`EventsBusActor`) | one actor per node | It keeps one entry per event in flight until every subscription answers, with no flow control (F93), and ends a delivery at a 10-minute deadline. |
-| Projection | mailbox unbounded; up to 100 aggregates per transaction | Measured: 2 732 events/s while commands run (baseline-M4). The lag lives in memory (section 5). |
-| Outbox poller (`OutboxPollerOptions`) | a poll every 30 s, at most 1 000 aggregates re-published per poll, gives up after 10 min | A large backlog drains at 1 000 aggregates per poll. Given-up rows wait for a restart (section 4). |
-| Re-publication parts (`OwnerSettings.maxRepublishEvents`) | 1 000 events per message | Counted in events; the bus splits them again for a subscriber on another node (F121, section 6). |
+| Event bus (`EventsBusActor`) | one actor per node; a window per subscriber of 10 000 events and 64 MB not yet answered (`DeliveryOptions`) | What does not fit a subscriber's window is held: it stays in the store and is pulled for the subscriber as it catches up (F93, section 5). The bus keeps a delivery (keys) per event in flight or held, and ends one at a 10-minute deadline. |
+| Projection | its mailbox holds at most its window; up to 100 aggregates per transaction | Measured: 2 732 events/s while commands run (baseline-M4). Beyond its window the lag waits in the store (section 5). |
+| Outbox poller (`OutboxPollerOptions`) | a poll every 30 s over the 100 000 aggregates waiting longest, at most 1 000 re-published per poll, gives up after 10 min | A large backlog drains at 1 000 aggregates per poll. Given-up aggregates are tried again every 30 minutes (section 4). |
+| Re-publication parts (`OwnerSettings`) | 1 000 events and 16 MB per message | The bus splits them again for a subscriber on another node (F121, section 6). |
 | Subscription version cache | 10 000 aggregates (LRU) | Misses read the database. |
-| Rebuild (`BuilderSettings`) | pages of 1 000, chunks of 1 000 events, 2 chunks in flight, 10 000 replay states | Measured: 6 769 events/s (baseline-M4). Evicted states are read again from snapshots (section 4). |
+| Rebuild (`BuilderSettings`) | pages of 1 000 events and 64 MB, chunks of 1 000 events and 16 MB, 2 chunks in flight, 10 000 replay states | Measured: 6 769 events/s (baseline-M4). Evicted states are read again from snapshots (section 4). |
 | Owners in memory | local: an owner idle for 2 min beyond the 200 most recent, or idle for 12 h, is stopped by a sweep every 5 min (`Owners.scala`). Sharded: Pekko passivates after 120 s idle. | Not a limit: every aggregate touched in the last minutes has an owner and its state in memory (section 8). |
 | Messages between nodes (Artery) | `maximum-frame-size` 256 KiB | Pekko drops a larger message unseen. The library splits deliveries, refuses large commands and fails other large messages at once (section 6). |
 | Shard region buffer | 100 000 messages per region | It holds messages while a shard is located or handed over. Beyond that, Pekko drops them. |
@@ -188,11 +188,12 @@ Estimated from the measured numbers. None of this was run at this scale.
   - The commit-order read joins every event to its aggregate to filter by type. A projection whose
     types hold a small share of the store still walks most of the store (F124).
 - **The outbox.** `events_to_publish` takes an insert and a delete per event. Autovacuum must keep
-  up with it, or the table and its index bloat. The outbox poller groups the *whole* outbox every
-  30 s and keeps one entry per waiting aggregate in memory. That is cheap while the outbox is near
-  empty (normal running) and grows with a backlog after an outage (F122). An aggregate the poller
-  gave up on after 10 minutes waits for the poller's next start, even when its subscriber is back
-  (F123). Subscribers' gap requests still fill aggregates that receive new events.
+  up with it, or the table and its index bloat. The outbox poller still groups the whole outbox
+  every 30 s, which is cheap while the outbox is near empty (normal running) and grows with a
+  backlog after an outage. Since M5 it keeps only the 100 000 aggregates waiting longest (F122),
+  and it tries given-up aggregates again every 30 minutes, so a subscriber that is back without
+  a restart gets them (F123). Aggregates past the oldest 100 000 wait until those are delivered,
+  and subscribers' gap requests fill any aggregate that gets new events.
 - **Hot tables.** `aggregates` (one update per command) and `subscriptions` (one update per event
   per projection) churn the same way.
 
@@ -304,9 +305,12 @@ host that needs larger events raises `eventSizeLimitPerClassName` for those clas
 - **Restore:** the store reads 1 000 rows per fetch (`fetchSize`), so all of an aggregate's large
   events are read at once. 20 events of 5 MB took 206 MB of heap (measured), about 10 MB per event;
   1 000 such events would need about 10 GB (estimated) and fail.
-- **Batches counted in events:** a re-publication part (1 000 events), a rebuild page and chunk
-  (1 000 events each), a projection's transaction (up to 100 aggregates) and the bus's window
-  hold whatever their events weigh. A part of 1 000 events of 5 MB is about 5 GB (estimated, F126).
+- **Batches:** since M5 (F126), a re-publication part is at most 1 000 events and 16 MB, a rebuild
+  page 1 000 events and 64 MB, a chunk 1 000 events and 16 MB, and the bus's window 10 000 events
+  and 64 MB, each at least one event. Before, they were counted in events only: a part of 1 000
+  events of 5 MB is about 5 GB (estimated). A restore still fetches 1 000 rows at a time
+  (`fetchSize`, below), and a projection's transaction takes up to 100 aggregates, whose events
+  its window bounds.
 - **`GetEventsForAggregate`:** the whole history in one answer: 324 MB at the peak for 20 events
   (measured).
 - **Between nodes:** one such event is 4.8 MB serialized, far over the limit. Since F121, a
@@ -343,12 +347,12 @@ host that needs larger events raises `eventSizeLimitPerClassName` for those clas
 | --- | --- | --- |
 | Owners | the state plus the actor, per aggregate touched recently | local: idle owners stopped by the 5-minute sweep; sharded: after 120 s idle |
 | Commands in flight | 8 to 15 KB each, upper bound (section 2); about 12 MB for one carrying a 5 MB document (section 7) | none in the library: bound them at the edge, by bytes for large ones |
-| Bus deliveries and projection mailboxes | a few hundred bytes per event behind, plus the events (section 5) | none until F93's flow control |
+| Bus deliveries and projection mailboxes | the window: at most 10 000 events and 64 MB of them per subscriber; a delivery (keys, about 200 bytes) per event held, until the deadline (section 5) | `DeliveryOptions.window`, `windowBytes`, `deadline` |
 | `GetEventsForAggregate` answers | the whole history: 168 MB for 50 000 events (measured) | none |
 | A restore | transient: 52 MB for 50 000 events, 146 MB for 500 000 (measured peaks) | one per owner restoring, at most 32 at once |
 | A rebuild | 150 MB peak for 112 211 events (measured, baseline-M4) | pages, 2 chunks in flight, 10 000 replay states, each the size of a state |
 | Subscription version cache | 10 000 aggregates' versions | LRU |
-| Outbox poller | one entry per aggregate waiting in the outbox | none (F122) |
+| Outbox poller | one entry per waiting aggregate, at most 100 000 | `OutboxPollerOptions.maxTracked` |
 | Artery buffers (direct memory) | up to 128 × the frame size, and 32 × the large frame size | Pekko's buffer pools |
 
 Measured for orientation: 15 to 35 MB of heap after GC at rest, 177 MB right after the 60 s soak,
@@ -384,8 +388,8 @@ Recorded in [KNOWN-ISSUES](KNOWN-ISSUES.md):
 | Issue | Planned in |
 | --- | --- |
 | F121: messages between nodes could exceed Artery's frame and were dropped silently | fixed in M5 |
-| F122: the outbox poll groups the whole outbox every 30 s and keeps every waiting aggregate in memory | M5, with flow control |
-| F123: given-up aggregates wait for the poller's next start, even when their subscriber is back | M5, with flow control |
+| F122: the outbox poll kept every waiting aggregate in memory | fixed in M5 (the grouping still reads the whole outbox) |
+| F123: given-up aggregates waited for the poller's next start | fixed in M5 |
 | F124: a commit-order build walks the events of every type to find its own | M6 |
 | F125: the per-aggregate limit let one event too many through | fixed in M5 |
-| F126: batches counted in events (fetches, re-publication parts, rebuild pages and chunks, the bus's window) hold whatever their events weigh | M5 |
+| F126: batches counted in events held whatever their events weighed | fixed in M5 (restore fetches stay 1 000 rows: hosts with large events lower them) |

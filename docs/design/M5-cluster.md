@@ -68,7 +68,8 @@ node A                                         node B
 7. **Rolling upgrades (D65–D73)** (done): app-version, the write switch for new event classes,
    readiness; the rolling-upgrade test.
 8. **Metrics (D56, R19)** with a no-op default.
-9. **Flow control (F93)**.
+9. **Flow control (F93)** (done, with the issues the high-load analysis found: F121 messages that fit the
+   frame, F122 and F123 in the outbox poller, F126 batches by bytes).
 10. **Scala 3 groundwork (D75)**: the remaining `TypeTag` uses.
 
 Each step ends with `sbt test` green, the docs updated and a commit; the plan's M5 verification
@@ -348,10 +349,17 @@ the same mailbox.
 over the events it has sent and not yet had answered. Beyond the window it holds events back, and
 the outbox, which has every one of them, is the queue.
 
-- **The window:** `DeliveryOptions.window` events (10 000) sent to a subscription and not yet
-  answered. Each message sent is recorded by aggregate and first version, and the answer that
-  names them takes it off. A record older than the deadline is taken off too, so a lost message
-  cannot shut the window.
+- **The window:** `DeliveryOptions.window` events (10 000) and `windowBytes` (64 MB) sent to a
+  subscriber and not yet answered, whichever is reached first; the subscriber's mailbox is what
+  holds them, so the window is the subscriber's, across its kinds. The bytes are the events'
+  stored JSON, which the event store reports when it writes and reads them (F126); the owner
+  passes them with each publication. Each message sent is recorded by aggregate, first version and
+  kind, and the answer that names them takes it off. A record older than the deadline is taken off
+  too, so a lost message cannot shut the window.
+- **Parts by bytes too (F126):** a re-publication part is at most 1 000 events and 16 MB, and a
+  rebuild page and chunk at most their events and 64 MB and 16 MB; each takes at least one event.
+  The store cuts a range by the stored sizes (`octet_length`, which PostgreSQL reads without
+  detoasting), so it never reads more than the part.
 - **Holding:** a live publication that does not fit is held for that subscription. Its events'
   deliveries wait for it as held, not sent, and the aggregate is behind for it from the first
   held version. Every later event of an aggregate that is behind is held too, so the subscriber
@@ -379,7 +387,7 @@ the outbox, which has every one of them, is the queue.
 | A subscriber answers a message twice, or one the bus does not know (a duplicate from a gap fill) | the count would go wrong | answers are matched by aggregate and first version; an unmatched answer changes nothing; a message sent again under the same key keeps one record (it counts once, which errs open) |
 | An aggregate's event held while a later one is sent | the subscriber sees a gap and asks for it as well | once an aggregate is behind for a subscription, every later event of it is held until it is pulled |
 | One publication larger than the window (a command with 20 000 events) | it would never fit | with nothing in flight to the subscription, it goes |
-| The pulled part is published through another node's bus (the owner moved) | this bus's held deliveries never see their answers | they end at the deadline (the rows stay); the poller re-publishes them later, and the subscriber acknowledges duplicates |
+| The pulled part is published through another node's bus (the owner moved) | this bus's held deliveries never see their answers, and it would pull the aggregate again every minute | the held deliveries end at the deadline (the rows stay), and the aggregate stops being behind then (found in review, before committing); the poller re-publishes it, and the subscriber acknowledges duplicates |
 | A pull is lost, or its owner cannot read the store | the aggregate stays behind | an unanswered pull goes back to the queue after `pullTimeout`; held deliveries end at the deadline |
 | Many aggregates behind, each with one event | thousands of pulls at once, each restoring an owner | at most `maxPulls` pulls at once |
 | A part ends before the last held version (1 000 events per part) | the rest would wait | the remainder goes back to the queue as behind from the next version |
@@ -391,6 +399,27 @@ the outbox, which has every one of them, is the queue.
 | A fast subscriber next to a slow one | — | each subscription has its own window; the fast one is never held |
 | The stall log fills with held deliveries | held is expected under load | stall lines are for sent deliveries; held ones appear in the summary by subscriber |
 | The poller reads only the oldest waiting aggregates | aggregates past them wait until the oldest are delivered | the oldest are retried (and given-up ones every 30 minutes), and subscribers' gap requests fill any aggregate that gets new events; documented (SCALING §4) |
+| An event whose size is not known (a store that does not report it, the memory store) | the byte window cannot count it | it counts as 1 KB; the event window still bounds it |
+| One event larger than the byte window or a part's bytes | it would never fit | a part, a page and a chunk take at least one event, and with nothing in flight a publication goes whatever its size |
+| The sizes are the JSON's, not the objects' in memory | the heap holds more (about twice for text, measured: 10 MB per 5 MB event at a restore) | the byte window is a budget for comparison, documented with that factor |
+
+Built as designed, with three things found on the way:
+- The window is the subscriber's, counted across its kinds, since one mailbox holds them all;
+  records are kept per kind, as each kind is answered on its own.
+- The builder took a short page for its last (`readAll`): a page its bytes cut short now says so
+  (`CommittedPage.cut`), or the bulk pass would end early and leave the rest to the
+  reconciliation (correct, but per aggregate and slower).
+- The reconciliation and gap fills read an aggregate's missing range at once: they read it in
+  parts of a chunk's bytes now, one item each. The whole range is still read before its items are
+  chunked, so a very long missing range of large events is held at once (documented).
+
+Tests: `FlowControlSpec` (the window, holding, pulls, expiry), `EventsBusActorSpec` (a slow
+subscriber gets its window and the rest by pulls, a fast one is not held back, an aggregate stays
+held while pulled, bytes count), `DeliveryEndToEndSpec` (a slow projection behind real owners),
+`ProjectionBuilderSpec` (pages and chunks by bytes), `PostgresEventStoreStateSpec` (sizes, cuts,
+the poller's limit), `RedeliveryPolicySpec` (retries after giving up). Mutations caught: a window
+that admits everything (four bus scenarios), a bus that never pulls (the end-to-end scenario), a
+builder that takes a cut page for its last, a poller without the limit or the retries.
 
 The plan's M5 verification; in-JVM multi-node tests (several `ActorSystem`s on local ports, one
 PostgreSQL schema) for sharding, singletons, delivery across nodes, hand-over under load, a lost

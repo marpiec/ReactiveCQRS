@@ -389,4 +389,97 @@ class EventsBusActorSpec extends CommonSpec {
       commandBus.expectMsg(3.seconds, RepublishOutbox(id))
     }
   }
+
+  Feature("Flow control (F93)") {
+
+    // A window of 2 events in flight per subscriber.
+    def windowedBus(window: Int, windowBytes: Long, subscribers: TestProbe*): ActorRef = {
+      val bus = system.actorOf(Props(new EventsBusActor(options.copy(deadline = 10.seconds, window = window, windowBytes = windowBytes))))
+      bus ! RegisterSubscribers(subscribers.map(_.ref))
+      subscribers.foreach { subscriber =>
+        subscriber.expectMsg(GetSubscriptionRequests(subscriber.ref))
+        subscriber.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, subscriber.ref)), subscriber.ref))
+      }
+      bus
+    }
+
+    def deliveredTo(subscriber: TestProbe): (AggregateId, Seq[Int]) = {
+      val delivery = subscriber.expectMsgType[IdentifiableEvents[Any]](3.seconds)
+      (delivery.aggregateId, delivery.events.map(_.version.asInt))
+    }
+
+    Scenario("a slow subscriber gets at most its window; the rest is held, pulled once half the window is free, and acknowledged to the owner when it has it") {
+      val (slow, owner, commandBus, republisher) = (TestProbe(), TestProbe(), TestProbe(), TestProbe())
+      val bus = windowedBus(2, Long.MaxValue, slow)
+      bus ! RegisterPublisher(cartType, commandBus.ref)
+      val Seq(x, y, z) = Seq(newId(), newId(), newId())
+
+      publish(bus, owner, x, 1)
+      publish(bus, owner, y, 1)
+      publish(bus, owner, z, 1)
+      deliveredTo(slow) mustBe (x -> Seq(1))
+      deliveredTo(slow) mustBe (y -> Seq(1))
+      slow.expectNoMessage(300.millis) // z is held
+      val held = statusOf(bus)
+      (held.held, held.behind.values.sum) mustBe ((1, 1))
+
+      ack(bus, slow, x, 1)
+      acked(owner) mustBe Seq(1)
+      commandBus.expectMsg(3.seconds, RepublishRange(z, AggregateVersion(1), slow.ref))
+
+      // The owner re-publishes z to the slow subscriber; once it has it, the owner of the live publication is acknowledged.
+      publishTo(bus, republisher, z, slow.ref, 1)
+      deliveredTo(slow) mustBe (z -> Seq(1))
+      ack(bus, slow, y, 1)
+      ack(bus, slow, z, 1)
+      Set(acked(owner), acked(owner)) mustBe Set(Seq(1))
+      owner.expectNoMessage(300.millis)
+      republisher.expectNoMessage(100.millis)
+      statusOf(bus) mustBe DeliveryStatus(0, Nil, Nil, 0, Map.empty)
+    }
+
+    Scenario("a fast subscriber is not held back by a slow one") {
+      val (slow, fast, owner) = (TestProbe(), TestProbe(), TestProbe())
+      val bus = windowedBus(2, Long.MaxValue, slow, fast)
+      val ids = (1 to 4).map(_ => newId())
+      ids.foreach { id =>
+        publish(bus, owner, id, 1)
+        deliveredTo(fast) mustBe (id -> Seq(1))
+        ack(bus, fast, id, 1)
+      }
+      deliveredTo(slow)._1 mustBe ids(0)
+      deliveredTo(slow)._1 mustBe ids(1)
+      slow.expectNoMessage(300.millis)
+      owner.expectNoMessage(100.millis) // the slow one has not acknowledged anything
+    }
+
+    Scenario("an aggregate held for a subscriber keeps its later events held, so the subscriber sees no gap") {
+      val (slow, owner, commandBus) = (TestProbe(), TestProbe(), TestProbe())
+      val bus = windowedBus(1, Long.MaxValue, slow)
+      bus ! RegisterPublisher(cartType, commandBus.ref)
+      val (x, y) = (newId(), newId())
+
+      publish(bus, owner, x, 1)
+      deliveredTo(slow) mustBe (x -> Seq(1))
+      publish(bus, owner, y, 1) // held: the window is full
+      ack(bus, slow, x, 1)
+      commandBus.expectMsg(3.seconds, RepublishRange(y, AggregateVersion(1), slow.ref))
+      publish(bus, owner, y, 2) // the window has room, but y is being pulled
+      slow.expectNoMessage(300.millis)
+
+      publishTo(bus, owner, y, slow.ref, 1, 2) // the pulled part holds both
+      deliveredTo(slow) mustBe (y -> Seq(1, 2))
+    }
+
+    Scenario("the window counts the events' stored sizes too (F126)") {
+      val (slow, owner) = (TestProbe(), TestProbe())
+      val bus = windowedBus(100, 1000, slow)
+      val (x, y) = (newId(), newId())
+      bus.tell(PublishEvents[Any](cartType, events(1), x, Some(BusCart("cart")), sizes = Seq(600)), owner.ref)
+      deliveredTo(slow) mustBe (x -> Seq(1))
+      bus.tell(PublishEvents[Any](cartType, events(1), y, Some(BusCart("cart")), sizes = Seq(600)), owner.ref)
+      slow.expectNoMessage(300.millis) // 1 200 bytes would be in flight
+      statusOf(bus).held mustBe 1
+    }
+  }
 }

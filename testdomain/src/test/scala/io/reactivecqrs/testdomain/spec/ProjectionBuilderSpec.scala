@@ -9,7 +9,7 @@ import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCo
 import io.reactivecqrs.core.documentstore.{Document, DocumentStore, NoopDocumentStoreCache, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
-import io.reactivecqrs.core.eventstore.{AggregateScope, CommittedEvent, EventStoreState, PostgresEventStoreState}
+import io.reactivecqrs.core.eventstore.{AggregateScope, CommittedEvent, CommittedPage, EventStoreState, PostgresEventStoreState}
 import io.reactivecqrs.core.projection._
 import io.reactivecqrs.core.rebuild.ProjectionBuilder._
 import io.reactivecqrs.core.rebuild.{ProjectionBuilder, ReplaySource}
@@ -118,17 +118,17 @@ class MemoryBuildPositions(onSave: BuildPosition => Unit = _ => ()) extends Buil
 /** The store, but its first read of the row `hidden` leaves that row out, as if its transaction committed late. */
 class LateRowEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNamesState, hidden: Long) extends PostgresEventStoreState(mpjsons, typesNamesState) {
   private val hiddenOnce = new AtomicInteger(1)
-  override def readCommitted(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope): Seq[CommittedEvent] = {
-    val rows = super.readCommitted(types, after, limit, scope)
-    if (rows.exists(_.id == hidden) && hiddenOnce.getAndDecrement() > 0) rows.filterNot(_.id == hidden) else rows
+  override def readCommittedPage(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope, maxBytes: Long): CommittedPage = {
+    val page = super.readCommittedPage(types, after, limit, scope, maxBytes)
+    if (page.events.exists(_.id == hidden) && hiddenOnce.getAndDecrement() > 0) page.copy(events = page.events.filterNot(_.id == hidden)) else page
   }
 }
 
 /** The store, but its first read of events by version fails as a lost connection does (F117). */
 class FlakyRangeEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNamesState) extends PostgresEventStoreState(mpjsons, typesNamesState) {
   private val failures = new AtomicInteger(1)
-  override def readEventsRange[AGGREGATE_ROOT](aggregateId: AggregateId, from: AggregateVersion, to: AggregateVersion): Seq[EventInfo[AGGREGATE_ROOT]] =
-    if (failures.getAndDecrement() > 0) throw new java.sql.SQLException("connection lost", "08006") else super.readEventsRange(aggregateId, from, to)
+  override def readPart[AGGREGATE_ROOT](aggregateId: AggregateId, from: AggregateVersion, to: AggregateVersion, maxBytes: Long): Seq[(EventInfo[AGGREGATE_ROOT], Int)] =
+    if (failures.getAndDecrement() > 0) throw new java.sql.SQLException("connection lost", "08006") else super.readPart(aggregateId, from, to, maxBytes)
 }
 
 // D58–D62: a projection built from the store gets what live delivery gave it.
@@ -269,6 +269,33 @@ class ProjectionBuilderSpec extends CommonSpec {
 
       Then("every note's log is the live one: no event is missing or applied twice")
       documents(rebuiltLogs, ids) mustBe documents(liveLogs, ids)
+    }
+
+    // F126: pages and chunks are bounded by bytes too; a page its bytes cut short is not the last.
+    Scenario("pages and chunks cut by their bytes give the same projection, and a page cut short does not end the bulk pass") {
+      Given("a live log of notes with long lines")
+      val liveLogs = logs("m4b_bytes_live")
+      val live = new Live(Seq(onBlocking(Props(new NoteEventsLog("m4b-bytes-live", subscriptions, liveLogs)))))
+      val ids = (1 to 5).map { n =>
+        val id = live.create("note " + n)
+        (1 to 3).foreach(v => live.add(id, v, "line " + v + " " + "x" * 300))
+        id
+      }
+      live.delivered(ids)
+      val last = DB.readOnly { implicit session =>
+        SQL("SELECT max(id) FROM events WHERE aggregate_id IN (" + ids.map(_.asLong).mkString(",") + ")").map(_.long(1)).single().get
+      }
+
+      When("it is built with pages and chunks of about one event's bytes")
+      val rebuiltLogs = logs("m4b_bytes_rebuilt")
+      val bulkReached = new java.util.concurrent.atomic.AtomicLong()
+      val positions = new MemoryBuildPositions(position => if (!position.bulkDone) bulkReached.accumulateAndGet(position.position, math.max))
+      build(onBlocking(Props(new NoteEventsLog("m4b-bytes-rebuilt", subscriptions, rebuiltLogs))), "m4b-bytes-rebuilt", positions = positions,
+        settings = BuilderSettings(pageSize = 50, chunkEvents = 20, pageBytes = 300, chunkBytes = 300))
+
+      Then("every note's log is the live one, and the bulk pass read to the last of them")
+      documents(rebuiltLogs, ids) mustBe documents(liveLogs, ids)
+      bulkReached.get() must be >= last
     }
 
     Scenario("a build that stopped after its bulk pass gets everything it lacks from the reconciliation") {

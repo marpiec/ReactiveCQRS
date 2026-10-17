@@ -29,7 +29,8 @@ class MemoryEventStoreState extends EventStoreState {
   private var squashedVersions: Map[AggregateId, AggregateVersion] = Map.empty
   private var generations: Map[AggregateId, Int] = Map.empty
 
-  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = Try { synchronized {
+  // The memory store keeps objects, not JSON: the sizes are not known (0).
+  override def persist[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[StoredEvent[AGGREGATE_ROOT]]] = Try { synchronized {
 
     var eventsForAggregate: Vector[EventStoreEntry[_]] = eventStore.getOrElse(aggregateId, Vector())
     val currentVersion = eventsForAggregate.lastOption.map(_.version.asInt).getOrElse(0) // not the count: a squash removes events
@@ -60,7 +61,7 @@ class MemoryEventStoreState extends EventStoreState {
 
       val value = (eventsEnvelope.userId, eventsEnvelope.timestamp, event, eventIdSeq)
       eventsToPublish += key -> value
-      (event, version)
+      StoredEvent(event, version, 0)
     }
 
     eventStore += aggregateId -> eventsForAggregate
@@ -258,12 +259,13 @@ class MemoryEventStoreState extends EventStoreState {
         metadata = metadata.getOrElse(row.metadata)) else row)
   }
 
-  override def readCommitted(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[CommittedEvent] = synchronized {
+  // The sizes are not known here (0), so no page is cut by its bytes.
+  override def readCommittedPage(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope, maxBytes: Long): CommittedPage = synchronized {
     val wanted = types.toSet
-    eventsRows.reverseIterator.filter(row => row.eventId > after && wanted.contains(row.aggregateType) && inScope(row.aggregateId, scope)).take(limit).map { row =>
+    CommittedPage(eventsRows.reverseIterator.filter(row => row.eventId > after && wanted.contains(row.aggregateType) && inScope(row.aggregateId, scope)).take(limit).map { row =>
       CommittedEvent(row.eventId, row.aggregateType, row.aggregateId, row.aggregateVersion, squashedVersions.get(row.aggregateId),
         Right(EventInfo[Any](row.aggregateVersion, row.event.asInstanceOf[Event[Any]], row.userId, row.timestamp, row.metadata)))
-    }.toVector
+    }.toVector, cut = false)
   }
 
   override def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[StoredAggregate] = synchronized {
@@ -304,19 +306,20 @@ class MemoryEventStoreState extends EventStoreState {
     }
   }
 
-  override def readWaitingInOutbox(): Seq[WaitingInOutbox] = synchronized {
+  override def readWaitingInOutbox(limit: Int = Int.MaxValue): Seq[WaitingInOutbox] = synchronized {
     val typeOf = eventsRows.map(row => row.aggregateId -> row.aggregateType).toMap
     eventsToPublish.toSeq.groupBy { case ((aggregateId, _), _) => aggregateId }.toSeq.map { case (aggregateId, rows) =>
       val oldest = rows.minBy { case ((_, version), _) => version.asInt }
       WaitingInOutbox(typeOf(aggregateId), aggregateId, oldest._1._2, rows.map { case (_, (_, timestamp, _, _)) => timestamp }.min)
-    }
+    }.sortBy(w => (w.since, w.aggregateId.asLong)).take(limit)
   }
 
-  override def readEventsRange[AGGREGATE_ROOT](aggregateId: AggregateId,
-                                               from: AggregateVersion, to: AggregateVersion): Seq[EventInfo[AGGREGATE_ROOT]] = {
+  // The sizes are not known here (0), so every event of the range fits.
+  override def readPart[AGGREGATE_ROOT](aggregateId: AggregateId, from: AggregateVersion, to: AggregateVersion,
+                                        maxBytes: Long): Seq[(EventInfo[AGGREGATE_ROOT], Int)] = {
     synchronized(eventStore.getOrElse(aggregateId, Vector.empty))
       .filter(entry => entry.version >= from && entry.version <= to)
-      .map(entry => EventInfo[AGGREGATE_ROOT](entry.version, entry.event.asInstanceOf[Event[AGGREGATE_ROOT]], entry.userId, entry.timestamp, entry.metadata))
+      .map(entry => (EventInfo[AGGREGATE_ROOT](entry.version, entry.event.asInstanceOf[Event[AGGREGATE_ROOT]], entry.userId, entry.timestamp, entry.metadata), 0))
   }
 
   override def oldestVersionToPublish(aggregateId: AggregateId): Option[AggregateVersion] = synchronized {

@@ -35,13 +35,13 @@ object ProjectionBuilder {
     def save(position: BuildPosition): Unit
   }
 
-  /** @param pageSize events (or aggregates) read from the store at once
-    * @param chunkEvents events per chunk, one transaction of the projection
+  /** @param pageSize events (or aggregates) read from the store at once, and at most `pageBytes` of events (F126)
+    * @param chunkEvents events per chunk, one transaction of the projection, and at most `chunkBytes` of events (F126)
     * @param chunksInFlight chunks sent and not yet applied: the next page is read while the projection applies them
     * @param maxReplayStates aggregate states kept open by a commit-order replay (D59)
     * @param retryAfter the wait after the store or the projection failed */
   case class BuilderSettings(pageSize: Int = 1000, chunkEvents: Int = 1000, chunksInFlight: Int = 2, maxReplayStates: Int = 10000,
-                             retryAfter: FiniteDuration = 5.seconds)
+                             retryAfter: FiniteDuration = 5.seconds, pageBytes: Long = 64L * 1024 * 1024, chunkBytes: Long = 16L * 1024 * 1024)
 
   /** To `reportTo`: the projection is live and has applied every event committed before it went live, or recorded a
     * failure for it (D20a). */
@@ -195,12 +195,16 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
 
   // Reads one page of the current pass into `ready`; false when the store failed, to be tried again later.
   private def readNextPage(): Boolean = try {
+    var cut = false // a page its bytes ended is short, but not the last (F126)
     val (items, reached, count) = phase match {
       case Bulk if plan.finalStates => finalStates(eventStore.aggregatesOf(plan.types, AggregateId(position), settings.pageSize, scope))
-      case Bulk => committed(eventStore.readCommitted(plan.types, position, settings.pageSize, scope))
+      case Bulk =>
+        val page = eventStore.readCommittedPage(plan.types, position, settings.pageSize, scope, settings.pageBytes)
+        cut = page.cut
+        committed(page.events)
       case _ => behind(eventStore.aggregatesOf(plan.types, AggregateId(position), settings.pageSize, scope))
     }
-    readAll = count < settings.pageSize
+    readAll = count < settings.pageSize && !cut
     position = reached
     chunked(items, reached).foreach(ready.enqueue)
     true
@@ -224,7 +228,8 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
     val items = Vector.newBuilder[(ChunkItem, Long)]
     var run = Vector[CommittedEvent]()
     def endRun(): Unit = if (run.nonEmpty) {
-      items ++= itemsOf(run).map(_ -> run.last.id)
+      val bytes = run.map(_.size.toLong).sum
+      items ++= itemsOf(run).map(item => item.copy(bytes = bytes) -> run.last.id)
       run = Vector.empty
     }
     rows.foreach { row =>
@@ -306,11 +311,20 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
         val current = version.orElse(eventStore.aggregatesOf(Seq(aggregateType), AggregateId(id.asLong - 1), 1).find(_.aggregateId == id).map(_.version))
         current.toSeq.map(v => ChunkItem(kind, aggregateType, id, from, v, Nil, Option(sources(aggregateType).stateAt(id, Some(v))), startsSequence = true))
       } else {
-        val events = eventStore.readEventsRange[Any](id, from, AggregateVersion(Int.MaxValue))
-        if (events.isEmpty) Nil else {
-          val state = if (kind == SubscriptionType.AGGREGATES_WITH_EVENTS) Option(sources(aggregateType).stateAt(id, Some(events.last.version))) else None
-          Seq(item(kind, aggregateType, id, events, state, squashedUpTo.contains(events.head.version)))
+        // In parts of at most a chunk's bytes and a page's events (F126), one item each.
+        var parts = Vector[ChunkItem]()
+        var next = from
+        var more = true
+        while (more) {
+          val part = eventStore.readPart[Any](id, next, AggregateVersion((next.asInt.toLong + settings.pageSize - 1).min(Int.MaxValue).toInt), settings.chunkBytes)
+          if (part.isEmpty) more = false else {
+            val events = part.map(_._1)
+            val state = if (kind == SubscriptionType.AGGREGATES_WITH_EVENTS) Option(sources(aggregateType).stateAt(id, Some(events.last.version))) else None
+            parts :+= item(kind, aggregateType, id, events, state, squashedUpTo.contains(events.head.version)).copy(bytes = part.map(_._2.toLong).sum)
+            next = events.last.version.increment
+          }
         }
+        parts
       }
     } catch {
       case NonFatal(e) if !transient(e) =>
@@ -331,21 +345,25 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
     chunked(items.map(_ -> -1L), -1L).reverseIterator.foreach(ready.prepend)
   }
 
-  // Items in chunks of about `chunkEvents` events, each with the position reached once it is applied.
+  // Items in chunks of about `chunkEvents` events and `chunkBytes` of them (F126), each with the position reached once
+  // it is applied.
   private def chunked(items: Seq[(ChunkItem, Long)], reached: Long): Seq[(ApplyChunk, Long)] = {
     val chunks = Vector.newBuilder[(ApplyChunk, Long)]
     var current = Vector[(ChunkItem, Long)]()
     var events = 0
+    var bytes = 0L
     def endChunk(): Unit = if (current.nonEmpty) {
       chunkIds += 1
       chunks += ApplyChunk(chunkIds, current.map(_._1)) -> current.map(_._2).max
       current = Vector.empty
       events = 0
+      bytes = 0L
     }
     items.foreach { case (item, at) =>
       current :+= item -> at
       events += math.max(item.events.size, 1)
-      if (events >= settings.chunkEvents) endChunk()
+      bytes += item.bytes
+      if (events >= settings.chunkEvents || bytes >= settings.chunkBytes) endChunk()
     }
     endChunk()
     val result = chunks.result()

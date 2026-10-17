@@ -148,10 +148,15 @@ AggregateOwner → EventsBusActor → subscribers (ProjectionActor, sagas,
   DeliveryKind) has answered MessageAck or MessageFailed, the deadline passes, or the
   subscriber stops; only acks and failures acknowledge the publication (PublishEventsAck)
   to the owner's command bus, which deletes the outbox rows (the owner may be reaped).
-  No cursor (D7). Re-publications go in parts of 1 000 events.
-  OutboxPollerActor (one per system) alone re-delivers: every 30 s it reads the
-  outbox and has owners re-publish (Republish via the bus) at 3 and 6 minutes, then
-  reports "undelivered" at 10; rows from before the start go out at the first poll.
+  No cursor (D7). Re-publications go in parts of 1 000 events and 16 MB (F126).
+  Flow control (F93): a subscriber is sent at most a window of 10 000 events and 64 MB
+  not yet answered; what does not fit is held (its aggregate stays held until pulled) and
+  pulled from the owners (RepublishRange) once half the window is free, so the outbox is
+  the queue and a slow projection's mailbox stays bounded (`FlowControl`).
+  OutboxPollerActor (one per system) alone re-delivers: every 30 s it reads the oldest
+  100 000 waiting aggregates of the outbox and has owners re-publish (Republish via the
+  bus) at 3 and 6 minutes, reports "undelivered" at 10, then retries every 30 minutes
+  (F123); rows from before the start go out at the first poll.
   ProjectionActor updates a DocumentStore and records progress in subscriptions.
 ```
 Design of the delivery work in M2: `docs/design/M2-delivery.md`.
@@ -176,7 +181,8 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
   runs again at once, in turn (F99). Design: `docs/design/M3-aggregates.md`.
 - **`EventsBusActor`** — in-memory routing and delivery tracking (deadline, stall
   logging, `GetDeliveryStatus`); routes re-publish requests to the type's command bus;
-  adds and removes the subscriptions of managed builds (M4). No flow control yet (F93).
+  adds and removes the subscriptions of managed builds (M4). Flow control per subscriber
+  (`FlowControl`, F93): a window of events and bytes, held deliveries, pulls.
 - **`OutboxPollerActor`** (`core/.../delivery/`) — the single owner of re-deliveries
   (D8); its timing lives in the pure `RedeliveryPolicy`. The host creates one per system.
 - **`SquashScheduler`** (`core/.../aggregate/`) — squashes aggregates by their contexts'

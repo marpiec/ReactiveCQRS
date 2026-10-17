@@ -54,19 +54,21 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   private def metadataOf(json: String): Option[EventMetadata] = Option(json).map(mpjsons.deserialize[EventMetadata](_, classOf[EventMetadata].getName))
 
   // Plain and first events of a command go in one `add_events` call (F31); undo and duplication events have procedures
-  // of their own, one call per event. Every failure is thrown, so the caller's transaction rolls back whole.
-  override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, newEvents: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = Try {
+  // of their own, one call per event. Every failure is thrown, so the caller's transaction rolls back whole. Each event's
+  // size is its stored JSON's length (F126).
+  override def persist[AGGREGATE_ROOT](aggregateId: AggregateId, newEvents: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[StoredEvent[AGGREGATE_ROOT]]] = Try {
     val events = newEvents.events
     val metadata = metadataJson(newEvents.metadata)
     if (events.exists(e => e.isInstanceOf[UndoEvent[_]] || e.isInstanceOf[DuplicationEvent[_]])) {
       var version = newEvents.expectedVersion
       events.map { event =>
-        version = persistOne(aggregateId, newEvents, event, version, metadata)
-        (event, version)
+        val (stored, size) = persistOne(aggregateId, newEvents, event, version, metadata)
+        version = stored
+        StoredEvent(event, version, size)
       }
     } else {
-      persistPlain(aggregateId, newEvents, events, newEvents.expectedVersion, metadata)
-      events.zipWithIndex.map { case (event, i) => (event, newEvents.expectedVersion.incrementBy(i + 1)) }
+      val (_, sizes) = persistPlain(aggregateId, newEvents, events, newEvents.expectedVersion, metadata)
+      events.zip(sizes).zipWithIndex.map { case ((event, size), i) => StoredEvent(event, newEvents.expectedVersion.incrementBy(i + 1), size) }
     }
   }
 
@@ -82,8 +84,9 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     serialized
   }
 
+  // Returns the version the procedure gives and the events' sizes.
   private def persistPlain[AGGREGATE_ROOT](aggregateId: AggregateId, newEvents: NewEvents[AGGREGATE_ROOT], events: Seq[Event[AGGREGATE_ROOT]],
-                                           expectedVersion: AggregateVersion, metadata: Option[String])(implicit session: DBSession): AggregateVersion = {
+                                           expectedVersion: AggregateVersion, metadata: Option[String])(implicit session: DBSession): (AggregateVersion, Seq[Int]) = {
     val serialized = events.zipWithIndex.map { case (event, i) => serializedChecked(aggregateId, event, expectedVersion.incrementBy(i)) }
     val spaceIds = events.map {
       case first: FirstEvent[_] => Long.box(first.spaceId.asLong)
@@ -95,27 +98,30 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       ParameterBinder(sqlArray, (statement, index) => statement.setArray(index, sqlArray))
     }
     val aggregateTypeId = typesNamesState.typeIdByClassName(aggregateTypeName(events.head))
-    AggregateVersion(sql"""SELECT add_events(${newEvents.userId.asLong}, ${array("bigint", spaceIds)}, ${aggregateId.asLong}, ${expectedVersion.asInt},
-                          |  $aggregateTypeId, ${array("smallint", eventTypeIds)}, ${utc(newEvents.timestamp)}, ${array("text", serialized)}, $metadata::jsonb)"""
-      .stripMargin.map(_.int(1)).single().get)
+    val version = sql"""SELECT add_events(${newEvents.userId.asLong}, ${array("bigint", spaceIds)}, ${aggregateId.asLong}, ${expectedVersion.asInt},
+         |  $aggregateTypeId, ${array("smallint", eventTypeIds)}, ${utc(newEvents.timestamp)}, ${array("text", serialized)}, $metadata::jsonb)"""
+      .stripMargin.map(_.int(1)).single().get
+    (AggregateVersion(version), serialized.map(_.length))
   }
 
+  // Returns the event's version and size.
   private def persistOne[AGGREGATE_ROOT](aggregateId: AggregateId, newEvents: NewEvents[AGGREGATE_ROOT], event: Event[AGGREGATE_ROOT],
-                                         expectedVersion: AggregateVersion, metadata: Option[String])(implicit session: DBSession): AggregateVersion = event match {
+                                         expectedVersion: AggregateVersion, metadata: Option[String])(implicit session: DBSession): (AggregateVersion, Int) = event match {
     case undo: UndoEvent[_] =>
       val serialized = serializedChecked(aggregateId, event, expectedVersion)
-      AggregateVersion(sql"""SELECT add_undo_event(${newEvents.userId.asLong}, ${aggregateId.asLong}, ${expectedVersion.asInt},
-                            |  ${typesNamesState.typeIdByClassName(aggregateTypeName(event))}, ${typesNamesState.typeIdByClassName(event.getClass.getName)},
-                            |  ${utc(newEvents.timestamp)}, $serialized, ${undo.eventsCount}, $metadata::jsonb)"""
-        .stripMargin.map(_.int(1)).single().get)
+      (AggregateVersion(sql"""SELECT add_undo_event(${newEvents.userId.asLong}, ${aggregateId.asLong}, ${expectedVersion.asInt},
+                             |  ${typesNamesState.typeIdByClassName(aggregateTypeName(event))}, ${typesNamesState.typeIdByClassName(event.getClass.getName)},
+                             |  ${utc(newEvents.timestamp)}, $serialized, ${undo.eventsCount}, $metadata::jsonb)"""
+        .stripMargin.map(_.int(1)).single().get), serialized.length)
     case duplication: DuplicationEvent[_] =>
       val serialized = serializedChecked(aggregateId, event, expectedVersion)
-      AggregateVersion(sql"""SELECT add_duplication_event(${newEvents.userId.asLong}, ${duplication.spaceId.asLong}, ${aggregateId.asLong}, ${expectedVersion.asInt},
-                            |  ${typesNamesState.typeIdByClassName(aggregateTypeName(event))}, ${typesNamesState.typeIdByClassName(event.getClass.getName)},
-                            |  ${utc(newEvents.timestamp)}, $serialized, ${duplication.baseAggregateId.asLong}, ${duplication.baseAggregateVersion.asInt}, $metadata::jsonb)"""
-        .stripMargin.map(_.int(1)).single().get)
+      (AggregateVersion(sql"""SELECT add_duplication_event(${newEvents.userId.asLong}, ${duplication.spaceId.asLong}, ${aggregateId.asLong}, ${expectedVersion.asInt},
+                             |  ${typesNamesState.typeIdByClassName(aggregateTypeName(event))}, ${typesNamesState.typeIdByClassName(event.getClass.getName)},
+                             |  ${utc(newEvents.timestamp)}, $serialized, ${duplication.baseAggregateId.asLong}, ${duplication.baseAggregateVersion.asInt}, $metadata::jsonb)"""
+        .stripMargin.map(_.int(1)).single().get), serialized.length)
     case _ =>
-      persistPlain(aggregateId, newEvents, Seq(event), expectedVersion, metadata)
+      val (version, sizes) = persistPlain(aggregateId, newEvents, Seq(event), expectedVersion, metadata)
+      (version, sizes.head)
   }
 
 
@@ -250,18 +256,28 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
 
   // The aggregate's own row of its chain gives the type: a duplicate's events are read under it, not its base.
-  override def readCommitted(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[CommittedEvent] =
-    if (types.isEmpty) Seq.empty else DB.readOnly { implicit session =>
-      sql"""SELECT e.id, a.type_id, e.aggregate_id, e.version, e.event_type_id, e.event_type_version, e.event, e.user_id, e.event_time,
-           |   e.metadata::text, a.squashed_version
-           | FROM events e JOIN aggregates a ON a.id = e.aggregate_id AND a.base_id = e.aggregate_id
-           | WHERE e.id > $after AND a.type_id IN (${typeIds(types)}) ${scoped(scope)}
-           | ORDER BY e.id LIMIT $limit""".stripMargin.map { rs =>
+  // F126: the rows are chosen by their stored sizes first (`octet_length`, which PostgreSQL takes from a TOAST pointer
+  // without reading the value), so a page never reads more than `maxBytes` of events, but at least one; each row also
+  // says how many rows the page had before the cut.
+  override def readCommittedPage(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope, maxBytes: Long): CommittedPage =
+    if (types.isEmpty) CommittedPage(Seq.empty, cut = false) else DB.readOnly { implicit session =>
+      val rows = sql"""WITH page AS (SELECT e.id, octet_length(e.event) AS size
+           |     FROM events e JOIN aggregates a ON a.id = e.aggregate_id AND a.base_id = e.aggregate_id
+           |     WHERE e.id > $after AND a.type_id IN (${typeIds(types)}) ${scoped(scope)}
+           |     ORDER BY e.id LIMIT $limit),
+           |   kept AS (SELECT id, size FROM (SELECT id, size, sum(size) OVER (ORDER BY id) AS up_to, row_number() OVER (ORDER BY id) AS n FROM page) p
+           |     WHERE up_to <= $maxBytes OR n = 1)
+           |SELECT e.id, a.type_id, e.aggregate_id, e.version, e.event_type_id, e.event_type_version, e.event, e.user_id, e.event_time,
+           |   e.metadata::text, a.squashed_version, k.size, (SELECT count(*) FROM page)
+           | FROM kept k JOIN events e ON e.id = k.id JOIN aggregates a ON a.id = e.aggregate_id AND a.base_id = e.aggregate_id
+           | ORDER BY e.id""".stripMargin.map { rs =>
         val (aggregateId, version) = (AggregateId(rs.long(3)), AggregateVersion(rs.int(4)))
         val event = Try(EventInfo[Any](version, mpjsons.deserialize[Event[Any]](rs.string(7), eventClass(rs.short(5), rs.short(6), aggregateId.asLong, version.asInt)),
           UserId(rs.long(8)), utcTime(rs.underlying, 9), metadataOf(rs.string(10)))).toEither.left.map(e => e.getClass.getSimpleName + ": " + e.getMessage)
-        CommittedEvent(rs.long(1), AggregateType(typesNamesState.classNameById(rs.short(2))), aggregateId, version, rs.intOpt(11).map(AggregateVersion(_)), event)
+        (CommittedEvent(rs.long(1), AggregateType(typesNamesState.classNameById(rs.short(2))), aggregateId, version, rs.intOpt(11).map(AggregateVersion(_)),
+          event, rs.int(12)), rs.long(13))
       }.list()
+      CommittedPage(rows.map(_._1), cut = rows.headOption.exists { case (_, pageRows) => pageRows > rows.size })
     }
 
   override def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[StoredAggregate] =
@@ -474,29 +490,33 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
            | ORDER BY id LIMIT $limit""".stripMargin.map(rs => (AggregateId(rs.long(1)), AggregateVersion(rs.int(2)))).list()
     }
 
-  // One query for all aggregate types (F37); the aggregate's own row of its chain gives the type.
-  override def readWaitingInOutbox(): Seq[WaitingInOutbox] = DB.readOnly { implicit session =>
-    sql"""SELECT aggregates.type_id, events_to_publish.aggregate_id, MIN(events_to_publish.version), MIN(events_to_publish.event_time)
+  // One query for all aggregate types (F37); the aggregate's own row of its chain gives the type. The limit bounds what
+  // the poller holds, not the grouping, which still reads every row (F122: cheap while the outbox is near empty).
+  override def readWaitingInOutbox(limit: Int = Int.MaxValue): Seq[WaitingInOutbox] = DB.readOnly { implicit session =>
+    sql"""SELECT aggregates.type_id, events_to_publish.aggregate_id, MIN(events_to_publish.version), MIN(events_to_publish.event_time) AS since
          | FROM events_to_publish
          | JOIN aggregates ON aggregates.id = events_to_publish.aggregate_id AND aggregates.base_id = aggregates.id
-         | GROUP BY aggregates.type_id, events_to_publish.aggregate_id""".stripMargin
+         | GROUP BY aggregates.type_id, events_to_publish.aggregate_id
+         | ORDER BY since, events_to_publish.aggregate_id LIMIT $limit""".stripMargin
       .map(rs => WaitingInOutbox(AggregateType(typesNamesState.classNameById(rs.short(1))), AggregateId(rs.long(2)),
         AggregateVersion(rs.int(3)), utcTime(rs.underlying, 4)))
       .list()
   }
 
-  override def readEventsRange[AGGREGATE_ROOT](aggregateId: AggregateId,
-                                               from: AggregateVersion, to: AggregateVersion): Seq[EventInfo[AGGREGATE_ROOT]] = {
-    DB.readOnly { implicit session =>
-      sql"""SELECT version, event_type_id, event_type_version, event, user_id, event_time, metadata::text
-           | FROM events
-           | WHERE aggregate_id = ? AND version BETWEEN ? AND ?
-           | ORDER BY version""".stripMargin.bind(aggregateId.asLong, from.asInt, to.asInt).map { rs =>
-        val eventType = eventClass(rs.short(2), rs.short(3), aggregateId.asLong, rs.int(1))
-        EventInfo[AGGREGATE_ROOT](AggregateVersion(rs.int(1)), mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(4), eventType),
-          UserId(rs.long(5)), utcTime(rs.underlying, 6), metadataOf(rs.string(7)))
-      }.list()
-    }
+  // F126: as for `readCommitted`, the rows are chosen by their stored sizes first.
+  override def readPart[AGGREGATE_ROOT](aggregateId: AggregateId, from: AggregateVersion, to: AggregateVersion,
+                                        maxBytes: Long): Seq[(EventInfo[AGGREGATE_ROOT], Int)] = DB.readOnly { implicit session =>
+    sql"""WITH part AS (SELECT version, octet_length(event) AS size, sum(octet_length(event)) OVER (ORDER BY version) AS up_to,
+         |     row_number() OVER (ORDER BY version) AS n
+         |     FROM events WHERE aggregate_id = ${aggregateId.asLong} AND version BETWEEN ${from.asInt} AND ${to.asInt})
+         |SELECT e.version, e.event_type_id, e.event_type_version, e.event, e.user_id, e.event_time, e.metadata::text, p.size
+         | FROM part p JOIN events e ON e.aggregate_id = ${aggregateId.asLong} AND e.version = p.version
+         | WHERE p.up_to <= $maxBytes OR p.n = 1
+         | ORDER BY e.version""".stripMargin.map { rs =>
+      val eventType = eventClass(rs.short(2), rs.short(3), aggregateId.asLong, rs.int(1))
+      (EventInfo[AGGREGATE_ROOT](AggregateVersion(rs.int(1)), mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(4), eventType),
+        UserId(rs.long(5)), utcTime(rs.underlying, 6), metadataOf(rs.string(7))), rs.int(8))
+    }.list()
   }
 
   override def oldestVersionToPublish(aggregateId: AggregateId): Option[AggregateVersion] = DB.readOnly { implicit session =>

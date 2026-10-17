@@ -83,10 +83,11 @@ case class ApplyChunk(id: Long, items: Seq[ChunkItem])
 /** One subscription's versions `first` to `last` of one aggregate: its events (none for a state listener) and the
   * aggregate's state after `last`. `startsSequence`: nothing before `first` is needed: it is the aggregate's squash event
   * (F98), or the item holds the aggregate's whole state (D62). `unreadable`: the event at `first` cannot be read from
-  * the store, so the subscription fails there (D20a) instead of stopping the build (F82). */
+  * the store, so the subscription fails there (D20a) instead of stopping the build (F82). `bytes`: its events' stored
+  * sizes, which bound a chunk (F126); 0 when not known. */
 case class ChunkItem(subscriptionType: SubscriptionType, aggregateType: AggregateType, aggregateId: AggregateId,
                      first: AggregateVersion, last: AggregateVersion, events: Seq[EventInfo[Any]], aggregateRoot: Option[Any],
-                     startsSequence: Boolean = false, unreadable: Option[String] = None)
+                     startsSequence: Boolean = false, unreadable: Option[String] = None, bytes: Long = 0)
 /** `gaps`: subscriptions whose items were not applied because versions before them are missing, with the first missing
   * one. `handedOver`: items applied one aggregate at a time instead, like deliveries (the chunk failed, or the
   * subscription had deliveries at work); each is answered to the builder with `MessageAck` or `MessageFailed`. Items

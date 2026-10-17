@@ -7,7 +7,8 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.eventbus.EventsBusActor
-import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
+import io.reactivecqrs.core.eventbus.DeliveryOptions
+import io.reactivecqrs.core.eventbus.EventsBusActor.{DeliveryStatus, GetDeliveryStatus, RegisterSubscribers}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection.{MemorySubscriptionsState, ProjectionActor, SubscriptionsState}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
@@ -16,6 +17,7 @@ import io.reactivecqrs.core.util.BlockingDispatcher
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorRef, Props}
+import org.apache.pekko.testkit.TestProbe
 
 import scala.concurrent.duration._
 
@@ -87,5 +89,50 @@ class DeliveryEndToEndSpec extends CommonSpec {
       val delivered = projection.askActor[Map[AggregateId, Vector[(Int, Instant)]]](GetDeliveredCarts)(3.seconds)(cartId)
       delivered.map(_._2) mustBe eventStore.readEventsRange[ShoppingCart](cartId, AggregateVersion(1), AggregateVersion(4)).map(_.timestamp)
     }
+
+    // F93: through the real owners, what a slow projection's window cannot take waits in the store and is pulled for it.
+    Scenario("a projection slower than the commands gets at most its window; the rest is pulled from the owners, every event once") {
+      Given("a projection that takes 20 ms per delivery, and a bus with a window of 5 events")
+      val bus = system.actorOf(Props(new EventsBusActor(DeliveryOptions(window = 5))))
+      val projection = system.actorOf(Props(new SlowCartsProjection(new MemorySubscriptionsState, 20.millis)).withDispatcher(BlockingDispatcher.id))
+      bus ! RegisterSubscribers(Seq(projection))
+      val commands = commandBusOn(bus)
+
+      When("30 carts get two items each, the commands sent at once")
+      val ids = (1 to 30).map(_ => AggregateId(TestIds.aggregate()))
+      ids.foreach { id =>
+        val created: CustomCommandResponse[_] = commands ?? CreateShoppingCartWithId(None, userId, id, "cart")
+        created mustBe a[SuccessResponse]
+      }
+      val replies = TestProbe()
+      ids.foreach(id => (1 to 2).foreach(n => commands.tell(AddItemConcurrently(userId, id, "item " + n), replies.ref)))
+      replies.receiveN(60, 30.seconds).foreach(_ mustBe a[SuccessResponse])
+
+      Then("the bus held events for the projection")
+      val held = TestProbe()
+      bus.tell(GetDeliveryStatus, held.ref)
+      held.expectMsgType[DeliveryStatus](3.seconds).behind.values.sum must be > 0
+
+      And("every event reaches the projection once, in order, and every outbox row goes")
+      awaitAssert(projection.askActor[Map[AggregateId, Vector[Int]]](GetDeliveredCarts)(3.seconds) mustBe ids.map(_ -> Vector(1, 2, 3)).toMap,
+        60.seconds, 200.millis)
+      awaitAssert(ids.foreach(id => eventStore.oldestVersionToPublish(id) mustBe None), 10.seconds, 100.millis)
+    }
   }
+}
+
+/** Records the versions of every cart event it applies, taking `delay` for each batch: slower than the commands. */
+class SlowCartsProjection(val subscriptionsState: SubscriptionsState, delay: FiniteDuration) extends ProjectionActor {
+  private var delivered = Map[AggregateId, Vector[Int]]()
+
+  protected val listeners = List(EventsListener.noDBSession[ShoppingCart] { (id, events) =>
+    Thread.sleep(delay.toMillis)
+    delivered += id -> (delivered.getOrElse(id, Vector.empty) ++ events.map(_.version.asInt))
+  })
+
+  override protected def receiveQuery: Receive = {
+    case GetDeliveredCarts => sender() ! delivered
+  }
+
+  override protected val projectionName: String = "SlowCartsProjection"
 }
