@@ -9,6 +9,7 @@ import io.reactivecqrs.core.commandhandler.{Idempotency, IdempotencyKeyTakenExce
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
 import io.reactivecqrs.core.eventstore.{EventStoreState, NewEvents}
+import io.reactivecqrs.core.metrics.ReactiveMetrics
 import io.reactivecqrs.core.util.{Backoff, MyActorLogging, RandomUtil}
 import org.apache.pekko.actor.{Actor, ActorRef, Cancellable}
 import org.apache.pekko.cluster.sharding.ShardRegion
@@ -118,6 +119,8 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
   private val handlersContext: ExecutionContext = context.system.dispatcher
 
   private val aggregateId: AggregateId = id.getOrElse(AggregateId(self.path.name.toLong))
+  private val metrics = ReactiveMetrics(context.system) // R19
+  private val typeTag = Map("type" -> aggregateType.simpleName)
 
   private var version: AggregateVersion = AggregateVersion.ZERO
   private var root: AGGREGATE_ROOT = initialState()
@@ -128,7 +131,8 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
 
   /** A command of this owner, from its arrival until it is answered. `started`: it is under way (checked, its handler
     * running, or waiting to run again); in serial mode a command waits in `queued` until it may start. */
-  private case class Pending(envelope: CommandEnvelope, timeout: Cancellable, attempt: Int, baseVersion: AggregateVersion, running: Boolean, started: Boolean)
+  private case class Pending(envelope: CommandEnvelope, timeout: Cancellable, attempt: Int, baseVersion: AggregateVersion, running: Boolean, started: Boolean,
+                             arrived: Long)
   private val pending = mutable.LinkedHashMap[Long, Pending]() // by command id, oldest first
   private val queued = mutable.Queue[Long]() // serial mode (R8): commands that have not started, oldest first
   private var startingQueued = false
@@ -187,8 +191,11 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
   /** Reads the aggregate from the store, first or again. On failure the owner answers every request with it and asks
     * the command bus to stop it after `failedRestoreRetryAfter`, so a later request restores in a new owner (D11). */
   private def restore(): Option[AggregateRestoreFailedException] = {
+    val started = System.nanoTime()
     Try(restorer.restore(aggregateId)) match {
       case Success(restored) =>
+        metrics.metrics.time("reactivecqrs.restore", typeTag + ("from" -> (if (restored.fromSnapshot.isDefined) "snapshot" else "events")),
+          System.nanoTime() - started)
         version = restored.version
         root = restored.root
         snapshotVersion = restored.fromSnapshot.getOrElse(AggregateVersion.ZERO)
@@ -270,9 +277,10 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
       log.warning("Command " + envelope.command.getClass.getSimpleName + " for aggregate " + aggregateId.asLong + " of type " +
         aggregateType.simpleName + " rejected: " + maxQueue + " commands wait already")
       envelope.respondTo ! CommandRejected(aggregateId, s"$maxQueue commands of the aggregate wait already")
+      measured(envelope, "CommandRejected", 0L)
     case processing =>
       val timeout = context.system.scheduler.scheduleOnce(commandTimeout, self, CommandTimedOut(envelope.commandId))
-      val command = Pending(envelope, timeout, attempt = 1, version, running = false, started = false)
+      val command = Pending(envelope, timeout, attempt = 1, version, running = false, started = false, arrived = System.nanoTime())
       pending += envelope.commandId.asLong -> command
       processing match {
         case CommandProcessing.Concurrent => begin(command)
@@ -430,6 +438,8 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
         }
         outcome match {
           case Success((published, sizes)) =>
+            metrics.metrics.count("reactivecqrs.events.stored", typeTag, published.size)
+            metrics.metrics.count("reactivecqrs.events.stored.bytes", typeTag, sizes.map(_.toLong).sum)
             if (readAfterCommit) {
               // A rewrite changed what the history gives to the duplicates too: their owners read it again.
               if (rewritten.nonEmpty) historyChangedForDuplicates()
@@ -524,6 +534,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     log.warning("Command " + command.envelope.command.getClass.getSimpleName + " timed out after " + commandTimeout +
       " and is not applied, errorId: [" + error.errorId + "]")
     command.envelope.respondTo ! error
+    measured(command.envelope, "Timeout", System.nanoTime() - command.arrived)
     startQueued()
     leftItsTurn(commandId.asLong)
     stopIfDone()
@@ -532,10 +543,15 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
   private def finish(commandId: CommandId, response: CustomCommandResponse[_]): Unit = pending.remove(commandId.asLong).foreach { command =>
     command.timeout.cancel()
     command.envelope.respondTo ! response
+    measured(command.envelope, response.getClass.getSimpleName, System.nanoTime() - command.arrived)
     startQueued()
     leftItsTurn(commandId.asLong)
     stopIfDone()
   }
+
+  // R19: how long a command took from its arrival here to its answer, by its class and the answer's.
+  private def measured(envelope: CommandEnvelope, outcome: String, nanos: Long): Unit =
+    metrics.metrics.time("reactivecqrs.command", typeTag + ("command" -> envelope.command.getClass.getSimpleName) + ("outcome" -> outcome), nanos)
 
   /** An error for the caller; its id is written to the log with the cause, so both can be matched. */
   private def finishWithError(envelope: CommandEnvelope, cause: Throwable): Unit = {

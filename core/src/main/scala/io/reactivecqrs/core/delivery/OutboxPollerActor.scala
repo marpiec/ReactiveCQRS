@@ -5,6 +5,7 @@ import java.time.Clock
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.eventbus.EventsBusActor.Republish
 import io.reactivecqrs.core.eventstore.{EventStoreState, WaitingInOutbox}
+import io.reactivecqrs.core.metrics.ReactiveMetrics
 import io.reactivecqrs.core.util.{BlockingDispatcher, MyActorLogging}
 import org.apache.pekko.actor.{Actor, ActorRef}
 
@@ -73,6 +74,11 @@ class OutboxPollerActor(eventStore: EventStoreState, eventBus: ActorRef, options
         log.error(s"${decision.gaveUp.size - maxLinesPerPoll} more aggregates are undelivered after ${options.redelivery.giveUpAfter}")
       }
       memory = decision.memory
+      // R19: the outbox's levels at each poll.
+      val metrics = ReactiveMetrics(context.system).metrics
+      metrics.gauge("reactivecqrs.outbox.waiting", Map.empty, waiting.size)
+      metrics.gauge("reactivecqrs.outbox.given.up", Map.empty, memory.valuesIterator.count(_.gaveUp))
+      metrics.count("reactivecqrs.outbox.republished", Map.empty, decision.republish.size)
     case Failure(e) =>
       log.error(e, "Reading the outbox failed; the next poll tries again in " + options.pollInterval)
   }

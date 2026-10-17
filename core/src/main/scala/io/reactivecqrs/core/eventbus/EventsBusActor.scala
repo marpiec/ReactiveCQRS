@@ -9,6 +9,7 @@ import io.reactivecqrs.core.cluster.{MessageSize, Readiness}
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.core.eventbus.FlowControl.SentKey
+import io.reactivecqrs.core.metrics.ReactiveMetrics
 import io.reactivecqrs.core.util.MyActorLogging
 import org.slf4j.Logger
 
@@ -290,6 +291,18 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       flow.expire(System.nanoTime())
       flow.withBehind.toSeq.foreach(pull)
       checkDeadlines()
+      sampleLevels()
+  }
+
+  // R19: the bus's levels, every tick; each subscriber's aggregates held, 0 for one not behind.
+  private def sampleLevels(): Unit = {
+    val metrics = ReactiveMetrics(context.system).metrics
+    metrics.gauge("reactivecqrs.bus.waiting", Map.empty, deliveries.size)
+    metrics.gauge("reactivecqrs.bus.held", Map.empty, deliveries.valuesIterator.count(_.held.nonEmpty))
+    val behind = flow.status
+    subscriptions.valuesIterator.flatten.map(_.subscriber).toSet.foreach { (subscriber: ActorRef) =>
+      metrics.gauge("reactivecqrs.bus.behind", Map("subscriber" -> subscriber.path.name), behind.get(subscriber).map(_.aggregatesBehind.toLong).getOrElse(0L))
+    }
   }
 
   private def routeToPublisher(aggregateType: AggregateType, message: Any): Unit = publishers.get(aggregateType) match {

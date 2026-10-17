@@ -126,7 +126,7 @@ behaviour.
 | D63 | A projection version bump rebuilds that projection only; an aggregate context version bump invalidates its snapshots and rebuilds only projections that receive that type's state; explicit targeted rebuild for one aggregate, one type or one organization (R14). |
 | D70 | A registry row per projection name holds the active version; queries go to the active version; switch-over is one database update; the old version stops after the rollout. **Refined in M4:** the row holds the active build and the build in progress; a projection's supervisor, whose `ActorRef` the host uses for queries, routes them to the active build (or a new projection's first build, which serves while built); a projection 0.12 built is adopted as build 0 (D81). |
 | D56 (R14) | Projection status (lag, failed aggregates, position); targeted rebuild; many aggregates per transaction; slices later (after 1.0). |
-| D56 (R19, R20, R21) | A small `Metrics` interface with a no-op default; tracing context carried in metadata (R13). In-memory adapters for every new feature and an event-schema reference test utility (R20). Durable scheduled commands (R21) are not built. |
+| D56 (R19, R20, R21) | A small `Metrics` interface with a no-op default; tracing context carried in metadata (R13). In-memory adapters for every new feature and an event-schema reference test utility (R20). Durable scheduled commands (R21) are not built. *(R19 done in M5, 17/10/2026: `Metrics`, `ReactiveMetrics`, `RecordingMetrics`; the measures in ARCHITECTURE §14.)* |
 | D14 | Superseded by D61. |
 
 ### 1.7 Cluster and upgrades

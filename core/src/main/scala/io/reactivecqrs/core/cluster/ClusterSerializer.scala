@@ -11,6 +11,7 @@ import io.mpjsons.{MPJsons, NullPolicy}
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.commandhandler.IdempotencyKeyTakenException
+import io.reactivecqrs.core.metrics.ReactiveMetrics
 import org.apache.pekko.actor.{ActorRef, ActorSystem, ExtendedActorSystem, Extension, ExtensionId, ExtensionIdProvider, Status}
 import org.apache.pekko.event.Logging
 import org.apache.pekko.serialization.{Serialization, SerializerWithStringManifest}
@@ -96,6 +97,7 @@ class ClusterSerializer(system: ExtendedActorSystem) extends SerializerWithStrin
 
   // Logged at most once per class every 10 seconds: one aggregate's large state goes out with each of its events.
   private def tooLarge(className: String, size: Int): Array[Byte] = {
+    ReactiveMetrics(system).metrics.count("reactivecqrs.message.too.large", Map("class" -> className), 1L)
     val now = System.nanoTime()
     val last = lastLogged.get(className)
     if (last == null || now - last > 10000000000L) {

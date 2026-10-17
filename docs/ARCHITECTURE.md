@@ -1153,6 +1153,8 @@ path (F93) came in M5 (§5.2).
 | New command kind / routing rule | `Command.scala`, `AggregateCommandBusActor.receive`, `AggregateOwner` (`expectedVersion`, `runsAgainOnConflict`, `rewrittenClasses`, `userIdOf`) | the retry rule in `AggregateOwner.conflict` (a rewrite must read its events again, F73); a timed-out command must never be persisted |
 | New special event type | `Event.scala`, `PostgresEventStoreState.persistEventsOneByOne` + a stored procedure, `AggregateOwner.persist`/`nextRoot` (`readAfterCommit`), `readAndProcessEvents` | batch eligibility (`:31-32`); restore semantics; replay path |
 | Snapshots | `AggregateRestorer` (use), `AggregateOwner.snapshotIfDue`/`stopNow` (write), `EventStoreState.readSnapshot`/`writeSnapshot`/`readAndProcessOwnEvents`, the deletes in `add_undo_event`, `overwriteEvents`, `squash` and `deleteAggregatePermanently` | every change that alters the state behind a snapshot must delete it in its own transaction; a snapshot is read only when its context and schema versions match; never fail a restore because of a snapshot |
+| A new measure (R19) | `metrics/Metrics` (the interface stays three methods), the place it is taken, §14's table | a measure on a hot path must cost nothing with the no-op default; tags of low cardinality, never ids |
+| Flow control (F93) | `eventbus/FlowControl` (the window, holding, pulls), `EventsBusActor.publish`/`finish`/`pull`, `DeliveryOptions` | an aggregate behind stays held until pulled (no gaps of the bus's making); a held delivery completes only when the subscriber answers; records expire at the deadline |
 | Squash | `AggregateOwner.squashHistory`, `EventStoreState.squashBlocker`/`duplicatesReading`/`squash`/`squashCandidates`, `add_undo_event` and `add_duplication_event` (the guards), `SquashScheduler` | the preconditions run again inside the transaction under the chain lock; duplicates reading below the point are detached first; every reader of old history must start at the squash event or be refused (§10, 10) |
 | Non-blocking persistence | `AggregateOwner.persist` → a dedicated dispatcher, re-entering via message | keep one in-flight persist per aggregate; apply the events before the next message is handled (F69: persist synchronously or stash); the in-memory version check |
 | Re-delivery timing | `delivery/RedeliveryPolicy` (pure), `OutboxPollerActor`, `EventStoreState.readWaitingInOutbox` | one owner of retries (D8); the attempts at 3 and 6 minutes come after a subscriber's own retries (about 2 minutes, D20a); the per-poll limit |
@@ -1390,3 +1392,33 @@ chosen ids through a command bus.
 `RollingUpgradeSpec` (four nodes in one JVM: two of version 1.0.0, two of 2.0.0, which adds an
 event class) covers it under load; `AppVersionsSpec` the switch's rules; `EventsBusActorSpec` the
 readiness of a bus.
+
+## 14. Metrics (R19, D56)
+
+`metrics/Metrics` is what the library measures, for the host to send on to its metrics system:
+`count(name, tags, amount)`, `time(name, tags, nanos)` and `gauge(name, tags, value)`, called on
+the library's threads (an implementation must be quick, thread-safe and must not throw). The
+default measures nothing; the host sets its own with `ReactiveMetrics(system).use(metrics)`, before
+or after the library's actors start. `metrics/RecordingMetrics` keeps them in memory for tests
+(R20). Tags are of low cardinality, never ids.
+
+| Name | Kind | Tags | Taken |
+|---|---|---|---|
+| `reactivecqrs.command` | time | `type`, `command`, `outcome` (the answer's class, or `Timeout`) | when an owner answers a command, from its arrival at the owner |
+| `reactivecqrs.events.stored` | count | `type` | events an owner stored |
+| `reactivecqrs.events.stored.bytes` | count | `type` | their stored sizes (F126) |
+| `reactivecqrs.restore` | time | `type`, `from` (`snapshot` or `events`) | an owner read its aggregate |
+| `reactivecqrs.bus.waiting` | gauge | | every tick of a bus: its deliveries in flight |
+| `reactivecqrs.bus.held` | gauge | | its deliveries held for subscribers behind their window (F93) |
+| `reactivecqrs.bus.behind` | gauge | `subscriber` | the aggregates held for each subscriber, 0 when it is not behind |
+| `reactivecqrs.projection.applied` | count | `projection` | versions a projection applied from live deliveries |
+| `reactivecqrs.projection.failed` | count | `projection` | subscriptions a projection gave up on (D20a) |
+| `reactivecqrs.outbox.waiting` | gauge | | at each poll: aggregates waiting in the outbox, at most `maxTracked` |
+| `reactivecqrs.outbox.given.up` | gauge | | aggregates the poller reported undelivered |
+| `reactivecqrs.outbox.republished` | count | | re-publications the poller asked for |
+| `reactivecqrs.message.too.large` | count | `class` | messages too large to cross nodes (F121) |
+
+Tracing goes with the metadata envelope (R13, D32): `EventMetadata.traceContext` holds the W3C
+trace context a command brings (`WithMetadata`), and every event it stores carries it to the
+listeners; a saga continues the trace by putting it in the metadata of the commands it sends.
+`MetricsSpec` covers the measures through a running system.

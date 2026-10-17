@@ -67,7 +67,7 @@ node A                                         node B
 6. **Ids (D39)** (done): installation ranges below 2^53.
 7. **Rolling upgrades (D65–D73)** (done): app-version, the write switch for new event classes,
    readiness; the rolling-upgrade test.
-8. **Metrics (D56, R19)** with a no-op default.
+8. **Metrics (D56, R19)** with a no-op default (done).
 9. **Flow control (F93)** (done, with the issues the high-load analysis found: F121 messages that fit the
    frame, F122 and F123 in the outbox poller, F126 batches by bytes).
 10. **Scala 3 groundwork (D75)**: the remaining `TypeTag` uses.

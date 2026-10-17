@@ -9,6 +9,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.core.delivery.SequenceGate
 import io.reactivecqrs.core.delivery.SequenceGate.{AlreadyApplied, Apply, Gap}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
+import io.reactivecqrs.core.metrics.ReactiveMetrics
 import io.reactivecqrs.core.util.{Backoff, MyActorLogging}
 import org.slf4j.Logger
 import scalikejdbc.DBSession
@@ -627,6 +628,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     outcome match {
       case Success(_) =>
         batch.deliveries.foreach(delivery => delivery.respondTo ! MessageAck(self, key.aggregateId, delivery.versions, key.kind))
+        ReactiveMetrics(context.system).metrics.count("reactivecqrs.projection.applied", Map("projection" -> projectionName), batch.to.asInt - batch.from.asInt + 1L)
         options.eventsLogger.filter(_.isDebugEnabled).foreach(_.debug(s"$className ${key.aggregateId.asLong} applied ${batch.from.asInt}-${batch.to.asInt}"))
         queue.failedAttempts = 0
         queue.retryOf.filter(_.version <= batch.to).foreach { failure =>
@@ -661,6 +663,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     val failure = SubscriptionFailure(key.subscriptionType, aggregateType, key.aggregateId, version, error, Instant.now)
     Try(subscriptionsState.recordFailure(subscriberName, failure)) match {
       case Success(_) =>
+        ReactiveMetrics(context.system).metrics.count("reactivecqrs.projection.failed", Map("projection" -> projectionName), 1L)
         val message = "Projection " + projectionName + " gave up on " + aggregateType.simpleName + " " + key.aggregateId.asLong + " at version " +
           version.asInt + " (" + error + "); deliveries of it fail until it is retried or skipped"
         cause match {

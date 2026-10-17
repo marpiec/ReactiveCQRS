@@ -297,6 +297,8 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
   (undo, rewrite, squash, permanent delete) must delete it in its own transaction.
 - **Logging**: use `MyActorLogging` / slf4j. There are stray `println`s in
   production paths (saga / uid generator) — prefer the logger when touching them.
+- **Metrics** (R19): measures go through `ReactiveMetrics(system).metrics` (`count`, `time`, `gauge`; no-op by
+  default); the names and tags are listed in ARCHITECTURE §14, and `RecordingMetrics` records them in tests.
 - **`asInstanceOf`** is used liberally to recover generic event types after
   deserialization; type mismatches fail at runtime, not compile time.
 

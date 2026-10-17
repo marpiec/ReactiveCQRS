@@ -389,6 +389,10 @@ leaves room for bursts and lag; the owners' states set the rest (estimated).
   - "… is too large to be sent between nodes" (the cluster serializer, F121), and Pekko's
     "Discarding oversized payload" for messages it did not write
   - "Buffer is full" from shard regions and singleton proxies
+- **Metrics (R19):** with `ReactiveMetrics(system).use(...)` the host gets command times and
+  outcomes, events stored and their bytes, restores, the bus's deliveries waiting and held, each
+  subscriber's aggregates behind, projections' applied and failed counts, the outbox's levels and
+  messages too large to cross nodes (ARCHITECTURE §14).
 - **PostgreSQL:**
   - connections in use (`pg_stat_activity`)
   - autovacuum on the hot tables (`pg_stat_user_tables`)

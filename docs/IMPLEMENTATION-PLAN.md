@@ -1697,3 +1697,14 @@ Open test-infrastructure items:
   and the heap held 128 MB after GC right after it (177 MB); a delivery soak of 200 000 events was
   projected 54 s after the load started, with nothing waiting or undelivered and the outbox empty.
   Single runs on one machine.
+
+**17/10/2026: metrics (D56, R19)**
+- `metrics/Metrics` (`count`, `time`, `gauge`) with a no-op default, set per actor system with
+  `ReactiveMetrics(system).use(...)`; `RecordingMetrics` keeps them in memory for tests (R20).
+- Measured: command times by type, class and outcome (from the arrival at the owner, timeouts and
+  rejections included); events stored and their bytes; restores by source; the bus's deliveries
+  waiting and held and each subscriber's aggregates behind, every tick; projections' applied and
+  failed counts; the outbox's levels and re-publications at each poll; messages too large to cross
+  nodes. The table is ARCHITECTURE §14. Tracing stays with the metadata envelope (R13).
+- Test: `MetricsSpec` (a running system; red when the host's metrics are not used). `sbt test`: core 260,
+  testdomain 156.
