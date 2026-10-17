@@ -382,7 +382,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     lockChain(id)
     for {
       _ <- Either.cond(!failedSubscription(id), (), "a subscription of it is failed")
-      _ <- duplicateWith(id, None, undoneFirstEvent).map(d => "the first event of duplicate " + d + " was undone, so it cannot be detached").toLeft(())
+      _ <- detachBlocker(id, None, "the delete").toLeft(())
       _ <- detachingAll(duplicates(id, None), detach)
     } yield {
       detach.foreach(detachDuplicate) // F76: they read this aggregate's events, which go now
@@ -412,7 +412,6 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 
   // D51. The duplicates the squash detaches count too: their first event changes.
   private def blocker(id: Long, n: Int)(implicit session: DBSession): Option[String] = {
-    def detachedOne(joined: SQLSyntax): Option[Long] = duplicateWith(id, Some(n), joined)
     val squashed = squashedPoint(id)
     if (squashed.exists(_ >= n)) {
       Some("already squashed up to version " + squashed.get)
@@ -423,13 +422,19 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     } else if (exists(sql"""SELECT EXISTS (SELECT 1 FROM noop_events JOIN events ON events.id = noop_events.id
                           |  WHERE events.aggregate_id = $id AND events.version <= $n AND noop_events.from_version > $n)""".stripMargin)) {
       Some("an undo after version " + n + " undid events at or below it")
-    } else {
-      def failedDuplicate = if (tableExists("subscription_failures")) detachedOne(sqls"JOIN subscription_failures f ON f.aggregate_id = a.id") else None
-      detachedOne(undoneFirstEvent).map(d => "the first event of duplicate " + d + ", which the squash detaches, was undone")
-        .orElse(detachedOne(sqls"JOIN events_to_publish p ON p.aggregate_id = a.id AND p.version = 1")
-          .map(d => "the first event of duplicate " + d + ", which the squash detaches, still waits in the outbox"))
-        .orElse(failedDuplicate.map(d => "a subscription of duplicate " + d + ", which the squash detaches, is failed"))
-    }
+    } else detachBlocker(id, Some(n), "the squash")
+  }
+
+  // D51, F143: a detach replaces a duplicate's first event, so it waits while that event was undone, still waits in the
+  // outbox, or a subscription of the duplicate is failed: subscribers must have the original first event before it
+  // changes. For the duplicates that read the aggregate below `below`, or all of them.
+  private def detachBlocker(id: Long, below: Option[Int], by: String)(implicit session: DBSession): Option[String] = {
+    def detachedOne(joined: SQLSyntax): Option[Long] = duplicateWith(id, below, joined)
+    def failedDuplicate = if (tableExists("subscription_failures")) detachedOne(sqls"JOIN subscription_failures f ON f.aggregate_id = a.id") else None
+    detachedOne(undoneFirstEvent).map(d => "the first event of duplicate " + d + ", which " + by + " detaches, was undone")
+      .orElse(detachedOne(sqls"JOIN events_to_publish p ON p.aggregate_id = a.id AND p.version = 1")
+        .map(d => "the first event of duplicate " + d + ", which " + by + " detaches, still waits in the outbox"))
+      .orElse(failedDuplicate.map(d => "a subscription of duplicate " + d + ", which " + by + " detaches, is failed"))
   }
 
   // A duplicate of the aggregate, reading it below `below` if given, that `joined` finds.

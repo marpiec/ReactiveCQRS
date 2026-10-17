@@ -609,7 +609,7 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 #### F131 — Owners of a `Local` type on several nodes answered from states the others had moved past
 - **High** for clusters of several nodes, confirmed (reproduced in `LocalOwnersSpec`) · **Fixed in M5** (17/10/2026) · `AggregateOwner.caughtUp`, `Members`, `EventStoreState.storedVersion`
 - **Symptom:** `Local` is the default placement, and every node that serves a type has an owner of an aggregate it touched. A running owner read the store again only for a command that expected a newer version (I1 assumed one writer). So after node B wrote version 6, node A's owner answered `GetAggregate` with version 5 for as long as it ran (with 200 owners or fewer, it is never stopped as idle); `GetAggregateMinVersion` for version 6 through A waited and failed; the poller's `RepublishOutbox` and a projection's gap request through A re-published nothing past version 5, and the gap became a recorded failure after its retries, which blocks the aggregate's squash and permanent delete.
-- **Fix:** an owner of a `Local` type on a node that is not alone (`Members.alone`: not a cluster, or its only member) reads the aggregate's stored version and history generation (one key lookup) before it answers the state, a min-version query not reached (and again at the query's deadline), a re-publication and a squash, and restores the aggregate when they differ from its own. Commands are unchanged: a stale owner's command conflicts in the store, and the owner reads the aggregate again (F19). A sharded owner is the only one and never asks; changing a type's placement or `numberOfShards` makes two owners per aggregate while old and new nodes run together, so it needs a full stop (H10).
+- **Fix:** an owner of a `Local` type on a node that is not alone (`Members.alone`: not a cluster, or its only member) reads the aggregate's stored version and history generation (one key lookup) before it answers the state, a min-version query not reached (and again at the query's deadline), a re-publication and a squash, and restores the aggregate when they differ from its own. Commands were left to the store's version check (F19), which misses changes that keep the version: they catch up too since F145. A sharded owner is the only one and never asks; changing a type's placement or `numberOfShards` makes two owners per aggregate while old and new nodes run together, so it needs a full stop (H10).
 - **Test:** `LocalOwnersSpec` (two nodes: a read, a re-publication, a min-version query waiting and one answered at once; all four red without the check), `MembersSpec` (whether the node is alone).
 - **Found:** M5 close, audit of the cluster.
 
@@ -624,6 +624,29 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Symptom:** a squash checks its detach events against the write switch (D67); a permanent delete, which detaches the duplicates with the same squash events (F76), did not. A squash event class added in a version was written into the duplicates during the rollout, and owners on nodes of the older version could no longer restore them.
 - **Fix:** the detach events are checked like a squash's; while a node cannot read their class, the delete waits as for a failed subscription (its event stays in the outbox and is tried again when delivered again). Test: `PermanentDeleteSpec` (red before).
 - **Found:** M5 close, audit of the cluster.
+
+#### F143 — A permanent delete detached duplicates whose first event subscribers did not have yet
+- **Low**, confirmed (by reading; reproduced in `EventStoreStateSpec`) · **Fixed in M6** (17/10/2026) · `PostgresEventStoreState`, `MemoryEventStoreState` (`detachBlocker`)
+- **Symptom:** a squash waits while a duplicate it detaches still has its first event in the outbox or a failed subscription (D51): subscribers must have the original first event before the detach replaces it. A permanent delete detached the same way without those two checks, so a subscriber could get the detach's squash event as the duplicate's first event instead of the duplication event.
+- **Fix:** one check for both, which the delete answers as "not deleted yet" (its event stays in the outbox and is tried again when delivered again). Test: `EventStoreStateSpec` (both stores; red before).
+- **Found:** M6 survey.
+
+#### F144 — Owners of contexts without snapshots never matched the stored history generation after an undo
+- **Medium**, confirmed (reproduced in `LocalOwnersSpec`) · **Fixed in M6** (17/10/2026; introduced by F131 the same day) · `AggregateRestorer.restore`
+- **Symptom:** the restorer read the history generation only for contexts with snapshots, so an owner of any other context held generation 0, while an undo, a rewrite or a squash that may change the state raises the stored one. Since F131 a `Local` owner on a node that is not alone compares both before it answers, so after such a change it never matched again and restored the whole aggregate before every read (three reads, three restores).
+- **Fix:** the restorer reads the generation for every context (one key lookup per restore). Test: `LocalOwnersSpec` (one restore for three reads after an undo on the other node; three under the old rule).
+- **Found:** M6 survey.
+
+#### F145 — Commands on another node's `Local` owner ran on a state changed without a new version
+- **Medium**, confirmed (reproduced in `LocalOwnersSpec`) · **Fixed in M6** (17/10/2026) · `AggregateOwner.attempt`
+- **Symptom:** F131 made `Local` owners catch up before reads only. A change that keeps an aggregate's version (a rewrite of its base, a squash that may change its state, a rewrite without a new event) left another node's owner with its state of before, and a command there ran on it and committed: a duplicate whose base was renamed took a command on the old name.
+- **Fix:** such an owner catches up before a command too (one key lookup per command, on nodes that are not alone). Test: `LocalOwnersSpec` (red before).
+- **Found:** M6 survey.
+
+#### F146 — A history rewrite without a new event was answered with success and not stored
+- **Medium**, confirmed (by reading) · **Fix in M6** (with the complete rewrite, D76) · `AggregateOwner.persistOrAnswer`
+- **Symptom:** a command that gives no events writes nothing (R9), and the owner applied that rule to rewrites too: a `RewriteCommandSuccess` with rewritten events and no new event was answered `SuccessResponse` and dropped. D17 recommends a compensating event, but nothing requires one, and a rewrite for R15 has none to add.
+- **Found:** M6 survey.
 
 ### Event store and SQL
 
@@ -1092,7 +1115,7 @@ From §7 of Neula's change requests.
 | M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8 ✔; F8 (contract ✔), F22 ✔, F23 ✔, F25 ✔, F27 ✔, F30 ✔, F31 ✔, F32 ✔, F33 (rest ✔), F38 ✔, F39 ✔, F44 ✔, F50 ✔, F65 ✔, F76 ✔, F78 ✔, F81 ✔, F96 ✔, F97 ✔, F100–F107 ✔; D85 ✔; Neula H8 |
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
-| M6 | F8 (complete), F124 |
+| M6 | F8 (complete), F124, F143 ✔, F144 ✔, F145 ✔, F146 |
 | M7 | AR5 (moved from M5 at review 7) |
 
 ---

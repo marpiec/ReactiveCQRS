@@ -355,7 +355,9 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
   }
 
   // A copy of an idempotent command that was applied already is answered with the stored response (D12). A command
-  // expecting a version above the owner's means another writer moved the aggregate on: it is reloaded first (F19).
+  // expecting a version above the owner's means another writer moved the aggregate on: it is reloaded first (F19). An
+  // owner that may share its aggregate catches up first too (F145): another node's change may have kept the version
+  // (a rewrite of its base, a squash that changes the state), and the command must not run on the state of before.
   private def attempt(command: Pending): Unit = {
     val envelope = command.envelope
     Try(idempotency.storedResponse(envelope.command)) match {
@@ -363,7 +365,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
       case Success(Some(stored)) => finish(envelope.commandId, stored)
       case Success(None) =>
         val expected = expectedVersion(envelope.command)
-        val reloadFailure = if (expected.exists(_ > version)) restore() else None
+        val reloadFailure = if (expected.exists(_ > version)) restore() else caughtUp()
         reloadFailure match {
           case Some(failure) => pendingFailed(envelope.commandId, failure)
           case None => expected match {

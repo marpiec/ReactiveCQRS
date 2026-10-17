@@ -35,8 +35,9 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
   /** The aggregate at its newest version, or at `at`. A version counts only the aggregate's own events, not those of
     * the base it was duplicated from. Fails when an event cannot be read or handled. */
   def restore(aggregateId: AggregateId, at: Option[Either[AggregateVersion, Instant]] = None): Restored[AGGREGATE_ROOT] = {
-    // F119: read before the history, so the state is never paired with a later generation than its own.
-    val generation = if (at.isEmpty && snapshots.isDefined) eventStore.historyGeneration(aggregateId) else 0
+    // F119: read before the history, so the state is never paired with a later generation than its own. Read for every
+    // context, as owners that may share their aggregate compare it with the store's (F131, F144).
+    val generation = if (at.isEmpty) eventStore.historyGeneration(aggregateId) else 0
     usableSnapshot(aggregateId, at) match {
       case Some(snapshot) =>
         var version = snapshot.version

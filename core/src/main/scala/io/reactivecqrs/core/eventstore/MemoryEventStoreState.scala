@@ -191,20 +191,22 @@ class MemoryEventStoreState extends EventStoreState {
     val entries = eventStore.getOrElse(aggregateId, Vector()).asInstanceOf[Vector[EventStoreEntry[Any]]]
     val undoneThen = withNoopFlags(entries.filter(_.version <= upTo)).map { case (entry, noop) => entry.version -> noop }.toMap
     val squashed = squashedVersions.get(aggregateId)
-    def waiting(id: AggregateId, upTo: AggregateVersion): Boolean = eventsToPublish.keys.exists { case (i, version) => i == id && version <= upTo }
     if (squashed.exists(_ >= upTo)) {
       Some("already squashed up to version " + squashed.get.asInt)
     } else if (waiting(aggregateId, upTo)) {
       Some("events at or below version " + upTo.asInt + " still wait in the outbox")
     } else if (withNoopFlags(entries).exists { case (entry, noop) => entry.version <= upTo && noop != undoneThen(entry.version) }) {
       Some("an undo after version " + upTo.asInt + " undid events at or below it")
-    } else {
-      val detached = duplicatesReading(aggregateId, Some(upTo))
-      detached.find(firstEventUndone).map(d => "the first event of duplicate " + d.asLong + ", which the squash detaches, was undone")
-        .orElse(detached.find(waiting(_, AggregateVersion(1)))
-          .map(d => "the first event of duplicate " + d.asLong + ", which the squash detaches, still waits in the outbox"))
-    }
+    } else detachBlocker(duplicatesReading(aggregateId, Some(upTo)), "the squash")
   }
+
+  private def waiting(id: AggregateId, upTo: AggregateVersion): Boolean = eventsToPublish.keys.exists { case (i, version) => i == id && version <= upTo }
+
+  // As in PostgreSQL (D51, F143), but for subscription failures, which this store does not see.
+  private def detachBlocker(detached: Seq[AggregateId], by: String): Option[String] =
+    detached.find(firstEventUndone).map(d => "the first event of duplicate " + d.asLong + ", which " + by + " detaches, was undone")
+      .orElse(detached.find(waiting(_, AggregateVersion(1)))
+        .map(d => "the first event of duplicate " + d.asLong + ", which " + by + " detaches, still waits in the outbox"))
 
   // As in PostgreSQL: a detach replaces the first event, and one that was undone cannot be.
   private def firstEventUndone(aggregateId: AggregateId): Boolean =
@@ -298,7 +300,7 @@ class MemoryEventStoreState extends EventStoreState {
   override def deleteAggregatePermanently(aggregateId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])]): Either[String, Unit] = synchronized {
     val duplicates = duplicatesReading(aggregateId, None)
     for {
-      _ <- duplicates.find(firstEventUndone).map(d => "the first event of duplicate " + d.asLong + " was undone, so it cannot be detached").toLeft(())
+      _ <- detachBlocker(duplicates, "the delete").toLeft(())
       _ <- detachingAll(duplicates, detach)
     } yield {
       detach.foreach(detachDuplicate)

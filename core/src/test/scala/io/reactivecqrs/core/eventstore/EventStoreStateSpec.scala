@@ -536,6 +536,23 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     base.getEvents() mustBe Seq(EventA("one"), EventB(2), EventC(true))
   }
 
+  // F143: as for a squash, subscribers must have a duplicate's original first event before a detach replaces it.
+  Scenario("A permanent delete waits while a duplicate it would detach still has its first event in the outbox") {
+    val base = new TestFixture(eventStoreState)
+    base.storeEvents(Seq(EventA("one"), EventB(2)))
+    val copy = newId()
+    base.storeEvents(Seq(Copy(SpaceId(1), base.aggregateId, AggregateVersion(2))), copy, AggregateVersion.ZERO)
+    published(base.aggregateId)
+
+    eventStoreState.deleteAggregatePermanently(base.aggregateId, Seq(copy -> EventA("copy"))).left.toOption.get must
+      include("first event of duplicate " + copy.asLong + ", which the delete detaches, still waits in the outbox")
+    base.getEvents() mustBe Seq(EventA("one"), EventB(2))
+
+    published(copy)
+    eventStoreState.deleteAggregatePermanently(base.aggregateId, Seq(copy -> EventA("copy"))) mustBe Right(())
+    base.getEvents(id = copy) mustBe Seq(EventA("copy"))
+  }
+
   // As the procedures store a command's events one after another, each undo is checked against the events before it.
   Scenario("The undos of one command are checked one after another against the squash point") {
     val f = new TestFixture(eventStoreState)

@@ -1285,9 +1285,11 @@ deciding between nodes. Such an owner does not see what the others write: on a n
 alone (`cluster/Members`: a cluster with other members, or one whose members the node does not
 know yet), it compares the stored version and history generation with its own (one key lookup)
 before it answers the state, a min-version query it has not reached (and again at the query's
-deadline), a re-publication or a squash, and reads the aggregate again when they differ (F131).
-Its commands need no lookup: a stale owner's commit conflicts, and it reads the aggregate again
-(F19). Reads of a `Local` type on several nodes therefore cost a lookup each; a type read often
+deadline), a re-publication or a squash, and before it runs a command, and reads the aggregate
+again when they differ (F131, F145): a change made on another node may keep the version (a rewrite
+of the aggregate's base, a squash that changes its state), so a version conflict alone would not
+show it. The generation is read with every restore (F144). Reads and commands of a `Local` type on
+several nodes therefore cost a lookup each; a type read often
 in a cluster of several nodes is better `Sharded`. Changing a type's placement or
 `numberOfShards` makes two owners per aggregate while old and new nodes run together, and the
 sharded ones do not look: such a change needs a full stop, not a rolling upgrade.
