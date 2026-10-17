@@ -310,6 +310,8 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
   default); the names and tags are listed in ARCHITECTURE §14, and `RecordingMetrics` records them in tests.
 - **`asInstanceOf`** is used liberally to recover generic event types after
   deserialization; type mismatches fail at runtime, not compile time.
+- **User docs**: the book in `docs/book/` teaches the library to its users. A change to what a user writes or
+  runs (an option, a message, a default, a host step) updates its chapter in the same commit (`docs/book/STYLE.md`).
 
 ---
 
@@ -340,4 +342,5 @@ behaviour under high volume and load, with recommendations, is in `docs/SCALING.
 | Full wiring of a system | `testdomain/.../spec/ReactiveTestDomainSpec.scala` |
 | Replay / rebuild | `core/.../rebuild/*` (M4), `docs/design/M4-rebuild.md` |
 | Limits, throttling and failure under load | `docs/SCALING.md`, `docs/perf/load-M5.md` |
+| How a user uses the library (the user docs) | `docs/book/` (a step-by-step book; how to write for it: `docs/book/STYLE.md`) |
 | The cluster: placement, members, singletons, messages between nodes | `core/.../cluster/*` (`Members`, `Singletons`, `ClusterSerializer`, `MessageSize`), `ARCHITECTURE.md` §13, `docs/design/M5-cluster.md`; multi-node tests `testdomain/.../spec/TestCluster.scala` |

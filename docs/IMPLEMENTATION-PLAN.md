@@ -54,8 +54,10 @@ Each goal is an observable outcome with the check that proves it.
   fixed, unless they block the work.
 - Every schema change follows D28 and D69: additive, idempotent, large indexes
   `CONCURRENTLY`, heavy jobs outside startup.
-- Each milestone keeps `ARCHITECTURE.md` accurate and adds draft guide pages for what it
-  delivered, so M7 polishes rather than writes from scratch.
+- Each milestone keeps `ARCHITECTURE.md` accurate. Each work item that changes what a user writes
+  or runs (a new option, message, default or host step) updates its chapter of the book
+  (`docs/book/`, written by `docs/book/STYLE.md`) in the same commit, so M7 polishes rather than
+  writes from scratch.
 - A milestone is done when its exit criteria hold; it is then tagged `v1.0.0-Mn`.
 
 ---
@@ -555,6 +557,12 @@ one space.
    squash-style first event under a new id; loss reported.
 6. **Retention squash with audit archive (D52, R11):** keep audit-class events in a
    readable archive; "who still uses this class" report.
+7. **The book (added 17/10/2026, at the user's request):** the user documentation as a book,
+   `docs/book/`, *ReactiveCQRS, Step by Step*: it teaches the library step by step, in chapters of
+   growing complexity, in light language with examples from the test domain, in the manner of the
+   "For Dummies" books. Written now for what M1–M5 and the first M6 steps built (19 chapters and
+   three appendices); each later step updates its chapters (organizations: purge, export and
+   import; the complete rewrite; a chapter of its own for ephemeral aggregates).
 
 **Refined at the M1 review** (KNOWN-ISSUES §7, review 3):
 - Purge and complete rewrite need `commands_responses` rows tied to their aggregate (add the
@@ -617,7 +625,8 @@ GitHub documentation alone; the 0.12.47 → 1.0 migration is rehearsed on produc
 1. **README** (GitHub landing page): what the library is and when to use it, features,
    requirements (Scala 2.13, Java 21, PostgreSQL, Pekko), installation coordinates, a
    five-minute quick start (basic setup), links to the guide.
-2. **User guide** (`docs/guide/`), one page per topic:
+2. **The book** (`docs/book/`, begun in M6), completed and polished; each topic below has a
+   chapter or a section:
    - getting started;
    - concepts: aggregate model, `AggregateContext`, command kinds and results, event kinds,
      event handlers, evolving events with `V<n>` classes;
@@ -633,8 +642,8 @@ GitHub documentation alone; the 0.12.47 → 1.0 migration is rehearsed on produc
    - upgrades: rolling upgrades, expand/contract, two-step event introduction;
    - operations: metrics, logs, alerts, troubleshooting, VACUUM and `pg_repack`;
    - testing with the test kit; configuration reference; migration guide 0.12.47 → 1.0.
-3. **Architecture for users** (`docs/guide/architecture.md`), with Mermaid diagrams (GitHub
-   renders them natively):
+3. **Architecture for users**, an appendix of the book, with Mermaid diagrams (GitHub renders
+   them natively):
    - component overview (modules, actors, database);
    - write path, sequence diagram (command → events → commit → publish → reply);
    - delivery, sequence diagram (deliver, ack or failure, re-delivery, deadline, gap fetch);
@@ -706,7 +715,7 @@ the bus's window is per node).
 
 - Every example compiles and its test passes in the local test run; E2 also runs as a
   docker-compose smoke test where Docker is available.
-- Code in the guide is compiled by mdoc or included from example sources; nothing is
+- Code in the book is compiled by mdoc or included from example sources; nothing is
   hand-copied.
 - Link check and Mermaid render check pass; `sbt doc` produces no warnings for public
   packages; every public type and method in `api` is documented.
