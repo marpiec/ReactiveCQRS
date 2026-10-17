@@ -1715,3 +1715,18 @@ Open test-infrastructure items:
   `SubscribableProjectionActor`'s update keys (a `ClassTag` would erase type arguments and mix the
   subscriptions of `List[A]` and `List[B]`). They move when mpjsons is replaced, a step of its own
   after 1.0 (recorded with D75). `StoredDataCheckSpec` passes.
+
+**17/10/2026: command handlers that take minutes (docs/SCALING.md §8; F127)**
+- Asked for at M5: heavy command handlers, such as 5 minutes of processing. A bench scenario
+  (`heavy`, handlers of 5 s standing in for minutes) measured four cases: many handlers holding
+  their threads, the same work on the application's own pool (`AsyncCommandResult`), one on an
+  aggregate changed meanwhile (it conflicts and runs again at its turn, F99), and one longer than
+  its timeout (an error, nothing stored).
+- F127, found by it: handlers ran on Pekko's default dispatcher, so 16 handlers of 5 s on 12
+  threads held a light command on another aggregate for 4.9 s (`docs/perf/heavy-before-F127.md`),
+  and the buses and projections with it. Handlers now run on `reactivecqrs.handler-dispatcher`
+  (32 threads): with 36 such handlers the event bus answered in 8 ms (`docs/perf/heavy-M5.md`).
+  `HandlerDispatcherSpec` (red under the default dispatcher).
+- SCALING §8 explains a 5-minute handler: the 60 s timeout, the caller's own timeout, threads,
+  conflicts in concurrent mode, queues in serial mode, hand-overs of sharded owners; and
+  recommends moving long work out of the command, or giving it its own threads and timeouts.

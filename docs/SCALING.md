@@ -3,12 +3,12 @@
 How the library behaves when the volume or the load is high: where it throttles, what it holds in
 memory, how it fails or stalls, and what to do about it. The scenarios follow the questions asked
 at M5: 10 000 command requests at once, aggregates of 50 000 events, a store of 100 million events,
-writes that outrun the projections, and commands and events of 5 MB (section 7). Section 6 covers
-the messages between the nodes of a cluster.
+writes that outrun the projections, commands and events of 5 MB (section 7) and command handlers
+that take minutes (section 8). Section 6 covers the messages between the nodes of a cluster.
 
 **How to read the numbers.**
 - **Measured** numbers come from the bench reports [docs/perf/load-M5.md](perf/load-M5.md),
-  [docs/perf/large-M5.md](perf/large-M5.md), [docs/perf/flow-M5.md](perf/flow-M5.md) and
+  [docs/perf/large-M5.md](perf/large-M5.md), [docs/perf/flow-M5.md](perf/flow-M5.md), [docs/perf/heavy-M5.md](perf/heavy-M5.md) and
   [docs/perf/baseline-M4.md](perf/baseline-M4.md). Each is a single run on one
   machine: Windows 10, 12 CPU threads, OpenJDK 17, a 2 GB heap, PostgreSQL 17.4 on the same machine,
   and a JDBC pool of 40 connections. They are good for comparing runs. They are not capacity figures
@@ -31,6 +31,7 @@ receive bursts must bound the commands it lets in** (section 2).
 | Blocking dispatcher (`reactivecqrs.blocking-dispatcher`) | 32 threads (`reference.conf`) | Owners and every JDBC call run on it. Work waits in its queue, which is unbounded. A long restore holds a thread for its whole length. |
 | JDBC pool (set up by the host) | ScalikeJDBC: 8 connections, a 5 s wait | A thread that waits more than 5 s for a connection fails its work. For a command, the caller gets `EventHandlingError`. |
 | Owner mailbox | unbounded (Pekko) | The commands of one busy aggregate wait in it. Each one's 60 s timeout starts when the owner takes it. |
+| Command handlers (`reactivecqrs.handler-dispatcher`) | 32 threads (`reference.conf`, F127) | A handler that holds its thread holds one of them; when all are held, every command of the node waits. The buses and projections run elsewhere (section 8). |
 | Serial queue (`CommandProcessing.Serial`) | 1 000 per aggregate | Further commands are answered `CommandRejected` at once (measured, section 2). |
 | Command timeout (`AggregateContext.commandTimeout`) | 60 s | The caller gets `CommandHandlingError`, and the command is never persisted afterwards (R5). |
 | Id pools (`IdPool`) | 10 000 ids per pool, fetched ahead | A `FirstCommand` waits for a late pool. A failing generator answers `CommandHandlingError` (F75). |
@@ -42,7 +43,7 @@ receive bursts must bound the commands it lets in** (section 2).
 | Re-publication parts (`OwnerSettings`) | 1 000 events and 16 MB per message | The bus splits them again for a subscriber on another node (F121, section 6). |
 | Subscription version cache | 10 000 aggregates (LRU) | Misses read the database. |
 | Rebuild (`BuilderSettings`) | pages of 1 000 events and 64 MB, chunks of 1 000 events and 16 MB, 2 chunks in flight, 10 000 replay states | Measured: 6 769 events/s (baseline-M4). Evicted states are read again from snapshots (section 4). |
-| Owners in memory | local: an owner idle for 2 min beyond the 200 most recent, or idle for 12 h, is stopped by a sweep every 5 min (`Owners.scala`). Sharded: Pekko passivates after 120 s idle. | Not a limit: every aggregate touched in the last minutes has an owner and its state in memory (section 8). |
+| Owners in memory | local: an owner idle for 2 min beyond the 200 most recent, or idle for 12 h, is stopped by a sweep every 5 min (`Owners.scala`). Sharded: Pekko passivates after 120 s idle. | Not a limit: every aggregate touched in the last minutes has an owner and its state in memory (section 9). |
 | Messages between nodes (Artery) | `maximum-frame-size` 256 KiB | Pekko drops a larger message unseen. The library splits deliveries, refuses large commands and fails other large messages at once (section 6). |
 | Shard region buffer | 100 000 messages per region | It holds messages while a shard is located or handed over. Beyond that, Pekko drops them. |
 | Singleton proxy buffer | 1 000 messages | It holds messages while the singleton moves. Beyond that, Pekko drops them. |
@@ -353,7 +354,58 @@ host that needs larger events raises `eventSizeLimitPerClassName` for those clas
 - **Size disk and WAL for the documents:** 5 MB per event in the table (measured), and about as
   much again in the WAL (estimated).
 
-## 8. Memory per node
+## 8. Command handlers that take minutes
+
+Measured ([heavy-M5](perf/heavy-M5.md), commit fc26c83; before F127's fix: [heavy-before-F127](perf/heavy-before-F127.md),
+commit 8414de5). Handlers of 5 s stand in for handlers of minutes, as the mechanics scale with time.
+Pekko's default dispatcher has 12 threads on the measured machine; since M5, handlers run on
+`reactivecqrs.handler-dispatcher`, 32 threads (F127).
+
+| Case | Outcome |
+| --- | --- |
+| 36 at once, each holding its thread | all succeeded, the last after 10.0 s (32 at a time); meanwhile the event bus answered in 8 ms, and a light command on another aggregate waited 5.4 s |
+| 36 at once, the work on the application's own pool (`AsyncCommandResult`) | the last after 5.0 s; the bus answered in 0 ms, a light command in 3 ms |
+| one on an aggregate that light commands change while it runs (concurrent mode) | succeeded after 10.2 s: it conflicted once and ran again, while 25 light commands waited up to 4.8 s behind its second run |
+| one longer than its timeout | `CommandHandlingError` at the timeout, and nothing stored (R5) |
+| before F127: 16 at once, each holding its thread | a light command on another aggregate waited 4.9 s, as the handlers held the default dispatcher, which the buses and projections run on too |
+
+**How such a command behaves.** For a 5-minute handler (estimated from the above):
+- **The timeout.** `commandTimeout` is 60 s by default. A 5-minute handler always ends in
+  `CommandHandlingError`, and its events are never stored (R5).
+- **The caller.** A client that asks for a shorter time gets an ask timeout while the command goes
+  on, and the command may still be applied.
+- **Threads.** A handler that holds its thread holds one of the handler dispatcher's 32. When 32
+  such commands run, every other command of the node waits as long, up to 5 minutes. The buses,
+  projections and sagas keep running: before F127 they waited too. With the work on the
+  application's own pool, nothing else waits.
+- **Concurrent mode.** The command runs on the state it started with. A command committed on the
+  aggregate meanwhile makes it conflict. It then runs again at its turn (F99), and the commands that
+  arrive meanwhile wait behind its second run, up to 5 minutes. A `Command` with an expected version
+  gets the conflict instead.
+- **Serial mode.** One command at a time per aggregate: the commands behind a 5-minute one wait
+  5 minutes each. Their timeout counts from their arrival (R5), so a queue of N needs a timeout of
+  N × 5 minutes.
+- **Sharded owners.** A hand-over waits for the commands at work up to 85 s (`handoff-timeout`
+  90 s, less 5 s), then stops the owner. A 5-minute command at work is then lost: the caller gets no
+  answer and the events are not stored. Idle passivation (after 120 s) waits for commands at work.
+
+**Recommendations.**
+- **Move long work out of the command.** A command records the request (one event); a worker or
+  saga does the work outside the aggregate, on its own threads, retried and resumable; a second
+  command records the result. The aggregate stays available, and no timeout, hand-over or conflict
+  involves the long work.
+- **If a command must do it:**
+  - return `AsyncCommandResult` with the work on a bounded pool of the application's own;
+  - raise `commandTimeout` for that context above the longest run;
+  - use serial mode for that type, so the work is not run again after a conflict;
+  - give clients an idempotency key and a long enough timeout, or answer "accepted" and report the
+    result later through a projection or a subscription;
+  - for sharded types, raise `pekko.cluster.sharding.handoff-timeout`, the
+    `cluster-sharding-shutdown-region` phase and the pod's termination grace period above it.
+- **Size `reactivecqrs.handler-dispatcher`:** more threads for handlers that wait (I/O), about the
+  number of cores for handlers that compute.
+
+## 9. Memory per node
 
 | Holder | Size | Bound |
 | --- | --- | --- |
@@ -371,7 +423,7 @@ Measured for orientation: 15 to 35 MB of heap after GC at rest, 128 MB right aft
 (177 MB before flow control), and 168 MB at the peak of a 50 000-event read. A heap of a few GB
 leaves room for bursts and lag; the owners' states set the rest (estimated).
 
-## 9. Signals
+## 10. Signals
 
 - **`GetDeliveryStatus`** (each node's bus): deliveries waiting, the latest undelivered ones,
   stopped subscribers, and the deliveries held for subscribers behind their window, with the
@@ -398,7 +450,7 @@ leaves room for bursts and lag; the owners' states set the rest (estimated).
   - autovacuum on the hot tables (`pg_stat_user_tables`)
   - table and index sizes
 
-## 10. Issues found by this analysis
+## 11. Issues found by this analysis
 
 Recorded in [KNOWN-ISSUES](KNOWN-ISSUES.md):
 
@@ -410,3 +462,4 @@ Recorded in [KNOWN-ISSUES](KNOWN-ISSUES.md):
 | F124: a commit-order build walks the events of every type to find its own | M6 |
 | F125: the per-aggregate limit let one event too many through | fixed in M5 |
 | F126: batches counted in events held whatever their events weighed | fixed in M5 (restore fetches stay 1 000 rows: hosts with large events lower them) |
+| F127: command handlers ran on Pekko's default dispatcher, so a slow handler stalled the buses and projections | fixed in M5 |

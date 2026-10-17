@@ -440,8 +440,10 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
 - **Dispatchers (F27, since M3):** owners run on `reactivecqrs.blocking-dispatcher` (the
   library's `reference.conf`: a fixed pool of 32 threads, throughput 1; size it near the JDBC
   pool), so persisting stays synchronous on the owner's thread (F69) without holding up the
-  default dispatcher; command handlers, the application's code, run as futures on the default
-  one. The command bus stays on the host's dispatcher and runs its JDBC (historical reads, the
+  default dispatcher; command handlers, the application's code, run as futures on
+  `reactivecqrs.handler-dispatcher` (32 threads, since M5): one that holds its thread for long
+  then slows the commands only, not the buses, projections and sagas on the default dispatcher
+  (F127; measured in `docs/SCALING.md` §8). The command bus stays on the host's dispatcher and runs its JDBC (historical reads, the
   permanent delete, expired responses) in futures on the blocking dispatcher, as do the uid
   generator, the saga state, the outbox poller and the squash scheduler. Projections are made
   by the host: `Props(...).withDispatcher(BlockingDispatcher.id)`; one left on the default
