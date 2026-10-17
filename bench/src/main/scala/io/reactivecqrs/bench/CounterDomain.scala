@@ -15,8 +15,12 @@ case class Counter(value: Long)
 case class CreateCounter(userId: UserId) extends FirstCommand[Counter, CustomCommandResponse[_]]
 case class Increment(userId: UserId, aggregateId: AggregateId, note: String) extends ConcurrentCommand[Counter, CustomCommandResponse[_]]
 
+/** Carries a document, as an upload would, which is stored in one event (large commands and events, docs/SCALING.md). */
+case class AttachDocument(userId: UserId, aggregateId: AggregateId, content: String) extends ConcurrentCommand[Counter, CustomCommandResponse[_]]
+
 case class CounterCreated(spaceId: SpaceId) extends FirstEvent[Counter]
 case class Incremented(note: String) extends Event[Counter]
+case class DocumentAttached(content: String) extends Event[Counter]
 
 class CounterContext extends AggregateContext[Counter] {
   override val version: Int = 1
@@ -25,11 +29,12 @@ class CounterContext extends AggregateContext[Counter] {
   override def commandHandlers = _ => {
     case _: CreateCounter => CommandSuccess(CounterCreated(SpaceId(0)))
     case c: Increment => CommandSuccess(Incremented(c.note))
+    case c: AttachDocument => CommandSuccess(DocumentAttached(c.content))
   }
 
   override def eventHandlers = (_, _, counter) => {
     case _: CounterCreated => Counter(0)
-    case _: Incremented => counter.copy(value = counter.value + 1)
+    case _: Incremented | _: DocumentAttached => counter.copy(value = counter.value + 1)
   }
 }
 

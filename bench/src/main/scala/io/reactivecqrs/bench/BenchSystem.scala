@@ -54,8 +54,10 @@ object BenchDatabase {
 class BenchStores {
   val mpjsons = new MPJsons
   val typesNamesState: PostgresTypesNamesState = new PostgresTypesNamesState().initSchema()
-  /** Without the default limit of 10 000 events per aggregate, for the restore measurements. */
-  val eventStore: PostgresEventStoreState = new PostgresEventStoreState(mpjsons, typesNamesState, aggregateVersionLimit = 10000000).initSchema()
+  /** Without the default limit of 10 000 events per aggregate, for the restore measurements, and with documents of up
+    * to 6 000 000 characters in one event (the default limit is 100 000). */
+  val eventStore: PostgresEventStoreState = new PostgresEventStoreState(mpjsons, typesNamesState, aggregateVersionLimit = 10000000,
+    eventSizeLimitPerClassName = Map(classOf[DocumentAttached].getName -> 6000000)).initSchema()
   val commandResponseState: PostgresCommandResponseState = new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema()
   val aggregatesUids = new PostgresUidGenerator("aggregates_uids_seq")
   val commandsUids = new PostgresUidGenerator("commands_uids_seq")

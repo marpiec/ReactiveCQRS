@@ -9,7 +9,7 @@ import java.util.concurrent.{ConcurrentHashMap, ConcurrentLinkedQueue, CountDown
 
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
-import io.reactivecqrs.core.cluster.ClusterSerializer
+import io.reactivecqrs.core.cluster.{ClusterSerializer, MessageSize}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.PassivateAggregate
 import io.reactivecqrs.core.eventstore.NewEvents
 import org.apache.pekko.actor.{ActorRef, ExtendedActorSystem, Props}
@@ -21,7 +21,7 @@ import scala.collection.mutable.ListBuffer
 import scala.concurrent.{Await, ExecutionContext}
 import scala.concurrent.duration._
 import scala.jdk.CollectionConverters._
-import scala.util.{Failure, Success, Try}
+import scala.util.{Failure, Random, Success, Try}
 
 /**
   * The performance baseline of docs/IMPLEMENTATION-PLAN.md §7, run end to end against PostgreSQL:
@@ -44,6 +44,8 @@ object Baseline {
                     restartCycles: Int = 5,
                     burstCommands: Int = 10000,
                     longAggregateEvents: Int = 50000,
+                    largeSize: Int = 5000000,
+                    largeCommands: Int = 20,
                     scenarios: Set[String] = Set.empty)
 
   private def configFrom(arguments: Seq[String]): Config = {
@@ -57,7 +59,7 @@ object Baseline {
       int("soakSeconds", defaults.soakSeconds), int("soakAggregates", defaults.soakAggregates),
       int("soakEventsPerAggregate", defaults.soakEventsPerAggregate), int("soakFailingSeconds", defaults.soakFailingSeconds),
       int("restartCycles", defaults.restartCycles), int("burstCommands", defaults.burstCommands),
-      int("longAggregateEvents", defaults.longAggregateEvents),
+      int("longAggregateEvents", defaults.longAggregateEvents), int("largeSize", defaults.largeSize), int("largeCommands", defaults.largeCommands),
       named.get("scenarios").map(_.split(",").map(_.trim).toSet).getOrElse(defaults.scenarios))
   }
 
@@ -75,7 +77,7 @@ object Baseline {
       val stores = new BenchStores
       report.environment(DatabaseCounters.serverVersion())
 
-      // `scenarios=commands,contended,serial,rebuild,restore,soak,deliverySoak,burst,long` runs only those; all by default.
+      // `scenarios=commands,contended,serial,rebuild,restore,soak,deliverySoak,burst,long,large` runs only those; all by default.
       def runs(scenario: String): Boolean = config.scenarios.isEmpty || config.scenarios.contains(scenario)
       if (runs("commands")) {
         val withProjections = startup(stores, report)
@@ -102,6 +104,7 @@ object Baseline {
       if (runs("deliverySoak")) deliverySoak(stores, config, report)
       if (runs("burst")) burst(stores, config, report)
       if (runs("long")) longAggregate(stores, config, report)
+      if (runs("large")) large(stores, config, report)
     } finally {
       BenchDatabase.drop()
     }
@@ -451,6 +454,87 @@ object Baseline {
       s"Events carry a ${config.noteSize}-character note. The event store of the bench has no limit of events per aggregate; the library's default is 10 000.")
   }
 
+  /** Commands that carry a document of `largeSize` characters each, stored in one event: one after another on one
+    * aggregate, then `largeCommands` at once on as many aggregates, with the two projections taking them; then that
+    * aggregate's restore, every event in one answer, the events table per event, and one event's delivery between nodes. */
+  private def large(stores: BenchStores, config: Config, report: Report): Unit = {
+    val size = config.largeSize
+    val n = config.largeCommands
+    val random = new Random(42)
+    val letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    // Random letters, which compress little, as an uploaded file encoded as text does.
+    def document(): String = {
+      val chars = new Array[Char](size)
+      var i = 0
+      while (i < size) {
+        chars(i) = letters.charAt(random.nextInt(letters.length))
+        i += 1
+      }
+      new String(chars)
+    }
+    def eventsTableBytes(): Long = DB.readOnly { implicit session => sql"SELECT pg_total_relation_size('events')".map(_.long(1)).single().get }
+    def mb(bytes: Double): String = f"${bytes / 1024 / 1024}%.1f MB"
+
+    val system = new BenchSystem("large", stores, projections = true)
+    val id = created(system)
+    val tableBefore = eventsTableBytes()
+    val oneByOne = new Latencies
+    val outcomes = new Outcomes
+    val heapBefore = Heap.usedAfterGc()
+    Heap.resetPeak()
+    val oneByOneStarted = System.nanoTime()
+    (1 to n).foreach { _ =>
+      val command = AttachDocument(userId, id, document())
+      val sent = System.nanoTime()
+      outcomes.add(send(system.counters, command))
+      oneByOne.record(System.nanoTime() - sent)
+    }
+    val oneByOneNanos = System.nanoTime() - oneByOneStarted
+    val oneByOnePeak = Heap.peak()
+    val tablePerEvent = (eventsTableBytes() - tableBefore).toDouble / n
+    val oneByOneDelivered = awaitUntil(5.minutes)(system.deliveryStatus().waiting == 0)
+
+    val others = (1 to n).map(_ => created(system)).toVector
+    val documents = others.map(_ => document())
+    val atOnce = sendAtOnce(n, "at once")(i => (system.counters, AttachDocument(userId, others(i), documents(i))))(_ => ())
+    val atOnceDelivered = awaitUntil(5.minutes)(system.deliveryStatus().waiting == 0)
+
+    system.counters ! PassivateAggregate(id)
+    Thread.sleep(1000)
+    val restoreHeapBefore = Heap.usedAfterGc()
+    Heap.resetPeak()
+    val restoreStarted = System.nanoTime()
+    val restored = Try(Await.result((system.counters ? GetAggregate(id))(Timeout(5.minutes)), 6.minutes).asInstanceOf[Try[Aggregate[Counter]]].get)
+    val restoreNanos = System.nanoTime() - restoreStarted
+    val restorePeak = Heap.peak()
+
+    Heap.resetPeak()
+    val eventsStarted = System.nanoTime()
+    val events = Try(Await.result((system.counters ? GetEventsForAggregate(id))(Timeout(5.minutes)), 6.minutes).asInstanceOf[Try[List[EventInfo[Counter]]]].get)
+    val eventsNanos = System.nanoTime() - eventsStarted
+    val eventsPeak = Heap.peak()
+
+    val sizes = MessageSize(system.system)
+    val delivery = events.toOption.flatMap(all => Try(sizes.of(IdentifiableEvents[Counter](AggregateType.of[Counter], id, all.takeRight(1)))).toOption)
+    system.shutdown()
+
+    report.section(s"Commands and events of $size characters", Seq("Measure", "Value"), Seq(
+      Seq(s"$n commands one after another, on one aggregate", s"${outcomes.summary}; latency p50 / max " +
+        f"${oneByOne.percentileMillis(50)}%.0f / ${oneByOne.percentileMillis(100)}%.0f ms; " +
+        f"${n.toDouble * size / 1024 / 1024 / seconds(oneByOneNanos)}%.1f MB/s of documents; heap ${Heap.mb(heapBefore)} / ${Heap.mb(oneByOnePeak)}"),
+      Seq("every delivery answered (two projections), after the last command", oneByOneDelivered.map(millis).getOrElse("not within 5 minutes")),
+      Seq(s"$n commands at once, each on its own aggregate", s"${atOnce(1)}; last answer after ${atOnce(2)}; latency p50 / p95 / p99 / max ${atOnce(4)}; " +
+        s"heap ${atOnce(5)} (the documents were made before)"),
+      Seq("every delivery answered (two projections), after the last answer", atOnceDelivered.map(millis).getOrElse("not within 5 minutes")),
+      Seq("events table with its indexes and TOAST, per event", mb(tablePerEvent)),
+      Seq(s"restore by a new owner of the aggregate of $n such events", s"${millis(restoreNanos)}; " +
+        s"${restored.map(a => "version " + a.version.asInt).getOrElse("failed")}; heap ${Heap.mb(restoreHeapBefore)} / ${Heap.mb(restorePeak)}"),
+      Seq("every event in one answer (GetEventsForAggregate)", s"${millis(eventsNanos)}; ${events.map(_.size + " events").getOrElse("failed")}; heap peak ${Heap.mb(eventsPeak)}"),
+      Seq("one event's delivery, serialized for another node", delivery.map(bytes => mb(bytes) + s", against a limit of ${sizes.limit / 1024} KiB").getOrElse("not measured"))),
+      s"Each command carries a document of $size random letters and digits, stored in one event (the event store allows such events " +
+        "for this class; the library's default is 100 000 characters).")
+  }
+
   private def writeHistory(stores: BenchStores, id: AggregateId, events: Int, note: String): Unit = {
     var version = 0
     while (version < events) {
@@ -527,7 +611,8 @@ object Baseline {
         Seq("sizes", s"${config.workers} callers; ${config.commandsPerWorker} commands each on many aggregates, ${config.contendedCommandsPerWorker} each on one; " +
           s"notes of ${config.noteSize} characters; rebuild data ${config.rebuildAggregates} x ${config.rebuildEventsPerAggregate} events; " +
           s"restore sizes ${config.restoreSizes.mkString(", ")}; soak ${config.soakSeconds} s; " +
-          s"delivery soak ${config.soakAggregates} x ${config.soakEventsPerAggregate} events, failing ${config.soakFailingSeconds} s, ${config.restartCycles} restarts")))
+          s"delivery soak ${config.soakAggregates} x ${config.soakEventsPerAggregate} events, failing ${config.soakFailingSeconds} s, ${config.restartCycles} restarts; " +
+          s"large: ${config.largeCommands} documents of ${config.largeSize} characters")))
     }
 
     def section(title: String, header: Seq[String], rowsIn: Seq[Seq[String]], note: String): Unit = {

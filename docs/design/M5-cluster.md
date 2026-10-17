@@ -337,6 +337,61 @@ Built as designed. `ClusterMessageSizeSpec` failed in all five scenarios before 
 Pekko's "Discarding oversized payload … max allowed size 262144 bytes" in the log, and passes
 after it.
 
+## Flow control (F93, with F122 and F123)
+
+A projection slower than the commands lets its mailbox hold every event behind it, with the
+states that come with them, and the bus a delivery per event (F93; `docs/SCALING.md` §5). Under a
+lag of more than 3 minutes, the outbox poller re-publishes what still waits, adding duplicates to
+the same mailbox.
+
+**As designed (before the code):** the bus keeps a window per subscription (subscriber and kind)
+over the events it has sent and not yet had answered. Beyond the window it holds events back, and
+the outbox, which has every one of them, is the queue.
+
+- **The window:** `DeliveryOptions.window` events (10 000) sent to a subscription and not yet
+  answered. Each message sent is recorded by aggregate and first version, and the answer that
+  names them takes it off. A record older than the deadline is taken off too, so a lost message
+  cannot shut the window.
+- **Holding:** a live publication that does not fit is held for that subscription. Its events'
+  deliveries wait for it as held, not sent, and the aggregate is behind for it from the first
+  held version. Every later event of an aggregate that is behind is held too, so the subscriber
+  never sees a gap of the bus's making. When nothing is in flight to the subscription, one
+  publication goes whatever its size.
+- **Pulling:** while the subscription's in-flight events are at most half the window, the bus asks
+  the owners of the aggregates behind, oldest first, to re-publish to that subscriber
+  (`RepublishRange`, the gap request's path), at most `maxPulls` (100) at once and about as many
+  events as the window has room for. A re-published part goes out whatever the window, as a
+  subscriber's own gap fill does. It turns held deliveries into sent ones, and what remains past
+  it is behind again. A pull unanswered after `pullTimeout` (1 minute) goes back to the queue.
+- **Acknowledgement:** a delivery completes when every subscription answered, held ones included,
+  so the owner is acknowledged and its outbox rows go as soon as the slow subscriber has the
+  events; the poller has nothing to clean up.
+- **Status:** `DeliveryStatus` also gives the held events and, per subscriber, the aggregates
+  behind; the summary line says the same.
+- **The poller:** an aggregate it gave up on is re-published again every `retryGivenUpEvery`
+  (30 minutes) instead of waiting for the next start (F123). It reads at most `maxTracked`
+  (100 000) waiting aggregates per poll, the oldest first, so its memory no longer grows with
+  the outbox (F122).
+
+| Circumstance | What happens | Handled by |
+|---|---|---|
+| A sent message is never answered (lost between nodes, a marker for a message too large, F121) | its events would hold the window shut | records older than the deadline are taken off; the deliveries end as undelivered and the rows stay for the poller |
+| A subscriber answers a message twice, or one the bus does not know (a duplicate from a gap fill) | the count would go wrong | answers are matched by aggregate and first version; an unmatched answer changes nothing; a message sent again under the same key keeps one record (it counts once, which errs open) |
+| An aggregate's event held while a later one is sent | the subscriber sees a gap and asks for it as well | once an aggregate is behind for a subscription, every later event of it is held until it is pulled |
+| One publication larger than the window (a command with 20 000 events) | it would never fit | with nothing in flight to the subscription, it goes |
+| The pulled part is published through another node's bus (the owner moved) | this bus's held deliveries never see their answers | they end at the deadline (the rows stay); the poller re-publishes them later, and the subscriber acknowledges duplicates |
+| A pull is lost, or its owner cannot read the store | the aggregate stays behind | an unanswered pull goes back to the queue after `pullTimeout`; held deliveries end at the deadline |
+| Many aggregates behind, each with one event | thousands of pulls at once, each restoring an owner | at most `maxPulls` pulls at once |
+| A part ends before the last held version (1 000 events per part) | the rest would wait | the remainder goes back to the queue as behind from the next version |
+| The subscriber stops while events are held | — | its held deliveries end like its sent ones (incomplete, rows stay, D20b), and its window, behind and pulls are dropped |
+| The subscriber is removed (a retired build) | — | held deliveries stop waiting for it, as sent ones do |
+| The outbox poller re-publishes an aggregate that is behind | — | for the behind subscription it is held again (the range grows); the others take it as a duplicate |
+| Held deliveries are still in memory | a delivery per held event (keys, about 200 bytes) | ended at the deadline (10 min): bounded by the rate times the deadline, as before; the payloads are in the store, not in memory |
+| A projection with many gaps of its own | its gap fills are not held | it asks for one gap per aggregate at a time, repeating with back-off (D20c) |
+| A fast subscriber next to a slow one | — | each subscription has its own window; the fast one is never held |
+| The stall log fills with held deliveries | held is expected under load | stall lines are for sent deliveries; held ones appear in the summary by subscriber |
+| The poller reads only the oldest waiting aggregates | aggregates past them wait until the oldest are delivered | the oldest are retried (and given-up ones every 30 minutes), and subscribers' gap requests fill any aggregate that gets new events; documented (SCALING §4) |
+
 The plan's M5 verification; in-JVM multi-node tests (several `ActorSystem`s on local ports, one
 PostgreSQL schema) for sharding, singletons, delivery across nodes, hand-over under load, a lost
 node and a rolling upgrade between app-versions; the full suites in a cluster of one; round trips
