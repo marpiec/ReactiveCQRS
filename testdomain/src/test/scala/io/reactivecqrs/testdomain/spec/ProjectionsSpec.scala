@@ -11,7 +11,7 @@ import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
 import io.reactivecqrs.core.eventstore.{AggregateScope, EventStoreState, PostgresEventStoreState, StoredAggregate}
 import io.reactivecqrs.core.projection.SubscribableProjectionActor.{SubscribedForProjectionUpdates, SubscriptionUpdated}
 import io.reactivecqrs.core.projection._
-import io.reactivecqrs.core.rebuild.ProjectionBuilder.BuilderSettings
+import io.reactivecqrs.core.rebuild.ProjectionBuilder.{BuildStatus, BuilderSettings, GetBuildStatus}
 import io.reactivecqrs.core.rebuild.ProjectionSupervisor._
 import io.reactivecqrs.core.rebuild._
 import io.reactivecqrs.core.types.PostgresTypesNamesState
@@ -406,6 +406,31 @@ class ProjectionsSpec extends CommonSpec {
       switchedTo(again, 1)
       ids.foreach(id => linesOf(again, id).map(_.lines) mustBe Some(Vector("line")))
       second.stop()
+    }
+
+    Scenario("a host watches a build's progress through the supervisor: the builder's status, and the position it saved (F152)") {
+      Given("notes, and a new projection building them slowly")
+      val writer = new Node()(_ => Nil)
+      (1 to 100).foreach(n => writer.create("note " + n, "line"))
+      writer.stop()
+      var built: ActorRef = null
+      val node = new Node(settings = BuilderSettings(pageSize = 1, chunkEvents = 1))(projections => {
+        built = notesProjection(projections, "m4p-watch", 1, "m4p_watch", buildDelayMillis = 30); Seq(built)
+      })
+      def status(): BuildStatus = built.askActor[BuildStatus](GetBuildStatus)(5.seconds)
+
+      Then("while it builds, the status is the builder's, and GetBuilds gives the position the builder saved")
+      awaitAssert({
+        val now = status()
+        now.phase mustBe "Bulk"
+        now.position must be > 0L
+      }, 30.seconds, 50.millis)
+      awaitAssert(builds(built).building.map(_.position.position).getOrElse(0L) must be > 0L, 30.seconds, 50.millis)
+
+      And("once it switched, no build runs")
+      switchedTo(built, 1)
+      status() mustBe BuildStatus.NoBuild
+      node.stop()
     }
 
     Scenario("a projection 0.12 built is adopted with its tables and subscription rows, not built again (D81)") {

@@ -47,8 +47,15 @@ object ProjectionBuilder {
     * failure for it (D20a). */
   case object BuildCaughtUp
 
+  /** Answered by a projection's supervisor too (F152), with the running builder's status. */
   case object GetBuildStatus
+  /** `phase`: `Bulk`, `GoingLive`, `Reconciling` or `CaughtUp` from a builder; from the supervisor without one,
+    * `Waiting` (a build waits for its turn or a restart) or `NoBuild`. `position`: how far the bulk pass got. */
   case class BuildStatus(phase: String, position: Long, eventsSent: Long, gapsFilled: Long, handedOver: Long, unreadable: Long)
+  object BuildStatus {
+    val NoBuild: BuildStatus = BuildStatus("NoBuild", 0, 0, 0, 0, 0)
+    def waiting(position: Long): BuildStatus = BuildStatus("Waiting", position, 0, 0, 0, 0)
+  }
 
   private case object Retry
 }

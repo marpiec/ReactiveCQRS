@@ -420,11 +420,21 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       case Some(b) => b.ref.forward(message)
       case None => sender() ! RebuildRefused("no build is running")
     }
-    case GetBuilds => sender() ! Builds(spec.name, active.map(_.record), building.map(_.record), caughtUp)
+    case GetBuilds => sender() ! Builds(spec.name, active.map(_.record), building.map(b => saved(b.record)), caughtUp)
+    // F152: the running builder answers, a full build's or a targeted rebuild's.
+    case GetBuildStatus => builder.orElse(targeted.flatMap(_.builder)) match {
+      case Some(b) => b.forward(GetBuildStatus)
+      case None => sender() ! building.fold(BuildStatus.NoBuild)(b => BuildStatus.waiting(saved(b.record).position.position))
+    }
     case request: RequestRepublish => builder.foreach(_.forward(request)) // from the build in progress, before its builder runs
     case Terminated(ref) => terminated(ref)
     case message => serving.foreach(_.ref.forward(message))
   }
+
+  // F152: an instance's record keeps the position its build started from; the builder saves its progress in the registry.
+  // Without the registry the answer has the position the build started from.
+  private def saved(record: BuildRecord): BuildRecord =
+    Try(registry.builds(spec.name)).toOption.flatMap(_.find(_.number == record.number)).getOrElse(record)
 
   private def startBuilder(): Unit = runningBuild.foreach { b =>
     val missing = listeners.collect { case (t, kind) if kind != SubscriptionType.EVENTS && !runtime.sources.contains(t) => t.typeName }.distinct

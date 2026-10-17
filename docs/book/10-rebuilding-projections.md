@@ -206,7 +206,23 @@ import io.reactivecqrs.core.rebuild.ProjectionSupervisor._
 `active` and `building` are `BuildRecord`s: the build's `number`, its `version`, its table `suffix`
 (`"_v2"`), and the `subscriber` name its subscription versions are stored under
 (`"projection:cart-names_v2"`). `caughtUp` is true once the build in progress has every event; it
-replaces the active build as soon as it has no failed subscription (more on that below).
+replaces the active build as soon as it has no failed subscription (more on that below). The
+building record's `position` is where the build saved its progress last.
+
+To watch a build at work, ask the same supervisor for `GetBuildStatus`:
+
+```scala
+import io.reactivecqrs.core.rebuild.ProjectionBuilder.{BuildStatus, GetBuildStatus}
+
+(cartNames ? GetBuildStatus).mapTo[BuildStatus]
+// BuildStatus("Bulk", 182044, 91000, 0, 0, 0): reading the store, 91 000 events sent so far
+```
+
+The `phase` goes `Bulk` (reading the store), `GoingLive` and `Reconciling` (joining the live
+events), then `CaughtUp`. Without a builder at work the supervisor answers `Waiting` (the build
+waits for its turn, or for a restart after a failure) or `NoBuild`. The other numbers count the
+events sent, the gaps filled, the aggregates handed over to live delivery and the events that
+could not be read.
 
 > **Remember:** a build that is interrupted (you stop the application, or it crashes) carries on
 > from where it was at the next start; it does not begin again. But deploy version 3 while version 2
@@ -453,7 +469,8 @@ Things that help:
 - Raising the version builds the new version from the event store while the old one serves, then
   switches in one update and drops the old tables; `whileBuilding` says what the old build does
   meanwhile.
-- `RebuildProjection`, `GetBuilds` and `ToBuildInProgress` start, watch and unblock builds.
+- `RebuildProjection`, `GetBuilds`, `GetBuildStatus` and `ToBuildInProgress` start, watch and
+  unblock builds.
 - `RebuildAggregates` repairs one aggregate, type or organization in place, through your
   `clearForRebuild`.
 - Subscribers whose job is a side effect stay unmanaged, and are never rebuilt.

@@ -260,6 +260,7 @@ a support tool):
 | `GetOutboxStatus` | the outbox poller | `OutboxStatus`: aggregates waiting in the outbox, and those given up |
 | `GetProjectionStatus` | each projection | `ProjectionStatus`: failed aggregates, retries and gaps ([chapter 9](09-projection-failures.md)) |
 | `GetBuilds` | each managed projection | `Builds`: the active build and the one in progress ([chapter 10](10-rebuilding-projections.md)) |
+| `GetBuildStatus` | each managed projection | `BuildStatus`: the running build's phase and how far it got |
 | `GetSquashStatus` | the squash scheduler | `SquashStatus`: squashed, refused, still waiting |
 
 In a cluster, ask the poller, the scheduler and the projections through their proxies, from any

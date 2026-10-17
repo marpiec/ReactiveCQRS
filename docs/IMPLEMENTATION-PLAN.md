@@ -2110,3 +2110,9 @@ Open test-infrastructure items:
   connection. `PostgresDocumentStoreSpec` "F160", red before the fix. Book: chapter 8.
 - KNOWN-ISSUES H12 collects M7's host steps for Neula: F148, F160, F162, F164 (a scan of Neula's
   code found no projection with two listeners of one kind for one type), F166.
+
+**17/10/2026: F152, a host watches a build's progress**
+- A projection's supervisor forwards `GetBuildStatus` to the running builder (a full build's or a
+  targeted rebuild's) and answers `Waiting` or `NoBuild` without one; `GetBuilds` gives the
+  building record with the position the builder saved in the registry. `ProjectionsSpec` "F152",
+  red before the fix (the ask went unanswered). Book: chapters 10 and 18, appendix B; SCALING §10.

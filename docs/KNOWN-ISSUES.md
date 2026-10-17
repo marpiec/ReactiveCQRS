@@ -1191,8 +1191,9 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Found:** M5 close, audit of the cluster.
 
 #### F152 — A host cannot watch a build's progress
-- **Low**, confirmed (by reading) · **Fix in M7** (operations) · `ProjectionSupervisor`
+- **Low**, confirmed (red first) · **Fixed in M7** (17/10/2026; `ProjectionsSpec` "F152") · `ProjectionSupervisor`
 - **Symptom:** `GetBuildStatus` is the builder's, and the supervisor passes unknown messages to the serving instance, which ignores it; `GetBuilds` answers the `BuildRecord` captured when the instance was made, whose position is never refreshed. SCALING §10 lists `GetBuildStatus` as a signal.
+- **Fix:** the supervisor forwards `GetBuildStatus` to the running builder (a full build's or a targeted rebuild's), and answers `Waiting` or `NoBuild` without one; `GetBuilds` gives the building record with the position read from the registry, where the builder saves it.
 - **Found:** writing the book (M6, 17/10/2026).
 
 #### F153 — `ServeStale` holds only for builds begun when the supervisor starts
@@ -1282,7 +1283,7 @@ From §7 of Neula's change requests.
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔, F174 ✔; F155 decided (review 8) |
-| M7 | AR5 (moved from M5 at review 7); F148 ✔, F152, F153, F156, F157, F160 ✔, F161, F162 ✔, F163, F164 ✔, F165, F166 ✔, F169 ✔ (found writing the book), F170, F171, F173, F175 |
+| M7 | AR5 (moved from M5 at review 7); F148 ✔, F152 ✔, F153, F156, F157, F160 ✔, F161, F162 ✔, F163, F164 ✔, F165, F166 ✔, F169 ✔ (found writing the book), F170, F171, F173, F175 |
 
 ---
 

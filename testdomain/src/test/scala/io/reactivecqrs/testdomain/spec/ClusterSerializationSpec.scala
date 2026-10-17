@@ -15,7 +15,7 @@ import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.core.eventstore.WaitingInOutbox
 import io.reactivecqrs.core.projection.SubscribableProjectionActor._
 import io.reactivecqrs.core.projection._
-import io.reactivecqrs.core.rebuild.ProjectionBuilder.BuildPosition
+import io.reactivecqrs.core.rebuild.ProjectionBuilder.{BuildPosition, BuildStatus, GetBuildStatus}
 import io.reactivecqrs.core.rebuild.ProjectionSupervisor._
 import io.reactivecqrs.core.rebuild.BuildRecord
 import io.reactivecqrs.core.saga.SagaFailureResponse
@@ -122,6 +122,7 @@ class ClusterSerializationSpec extends AnyFeatureSpec with Matchers with Eventua
         RebuildProjection, RebuildStarted(2), RebuildRefused("busy"), RebuildAggregates(RebuildTarget.OneSpace(SpaceId(4))),
         AggregatesRebuilt(RebuildTarget.OneAggregate(id), 1), ToBuildInProgress(RetryAllFailedSubscriptions), GetBuilds,
         Builds("carts", Some(BuildRecord("carts", 1, 2, "_v2", "projection:carts_v2", Map("Cart" -> 1), BuildPosition(bulkDone = false, 99L))), None, caughtUp = true),
+        GetBuildStatus, BuildStatus("Bulk", 99L, 10L, 1L, 2L, 0L), BuildStatus.NoBuild,
         GetOutboxStatus, OutboxStatus(3, Seq(WaitingInOutbox(cart, id, v3, now))), GetSquashStatus, SquashStatus(1, 2, 3),
         SubscribedForProjectionUpdates("s-1"), CancelProjectionSubscriptions(List("s-1")), ProjectionSubscriptionsCancelled(List("s-1")),
         RenewSubscription("s-1"), SubscriptionUpdated("s-1", state)
