@@ -1408,6 +1408,12 @@ value, each part written with a tag that says what it is:
   address, resolved on the reading node;
 - `Option`, `Try`, lists, sets, maps, other sequences (read back as vectors) and tuples, element
   by element;
+- a sequence of events (`EventInfo`), as deliveries, re-publications and event reads carry them,
+  in a compact form (F170): the event classes once, then each event's version, user, time (as
+  numbers), class (an index into those names), JSON and envelope; 33 bytes per event besides its
+  JSON, where field by field took about 275. It is part of 1.0's format: a node of a milestone
+  build (1.0.0-M5, -M6) cannot read it, so such a cluster is upgraded with a full stop. A new tag
+  after 1.0 needs a switch like D67's, as a node of the version before cannot read it;
 - the library's case classes (`io.reactivecqrs.api.*`, `io.reactivecqrs.core.*`) field by field
   with the fields' names, rebuilt through their constructor, so a field typed `Any`, a type
   parameter or an `ActorRef` keeps its value, which mpjsons, typing by the declared type, could

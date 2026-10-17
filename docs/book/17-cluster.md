@@ -337,7 +337,8 @@ so the case classes and Scala collections that cross nodes go through it (Pekko 
 own, such as `Some` and `None`). Java serialization stays off (Pekko's default). You configure
 nothing.
 
-- The library's own messages are written field by field.
+- The library's own messages are written field by field; the events in deliveries take about 33
+  bytes each besides their JSON.
 - **Your values** (commands, events, aggregate states, query messages and their answers, saga orders
   and responses) are written as the JSON of their class, by mpjsons, just as events are stored.
 - The library's exceptions, such as `AggregateInIncorrectVersionException`, keep their class. Any
@@ -514,6 +515,8 @@ A few more rules of the road:
 - **A projection removed in the new version:** `Projections.retire(name)` waits until every member
   runs that version before it drops the projection (it looks again every 10 seconds).
 - **Placement changes** still need a full stop (see above).
+- **A cluster that runs a milestone build** (1.0.0-M5 or -M6) moves to 1.0.0 with a full stop: 1.0
+  writes the events of a delivery in a form those builds cannot read.
 
 > **Under the hood:** app-versions, the write switch, readiness and the rolling-upgrade test are
 > described in [ARCHITECTURE.md, section 13.6](../ARCHITECTURE.md) (D65–D73, F132, F138).

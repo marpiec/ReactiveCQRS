@@ -2157,3 +2157,11 @@ Open test-infrastructure items:
 - `OnConcurrentModification` (`Retry`, `Fail`) and `SimulateEvent` are gone; a scan of Neula's code found
   no use. `NoEventsForAggregateException` stays, thrown since D77. `ApiSurfaceSpec` (new) checks that the
   classes do not exist, red before the removal.
+
+**17/10/2026: F170, a compact form for a delivery's events between nodes**
+- A sequence of `EventInfo` crosses nodes under a tag of its own: the classes once, then version,
+  user, time, class index, JSON and envelope per event, 33 bytes besides the JSON (computed; the
+  spec measured 287 before), so a part holds about 466 events of 239 characters instead of 248
+  (computed). Without the planned version switch: 1.0.0 is the first release that runs as a
+  cluster; a milestone cluster is upgraded with a full stop (book, chapter 17; H12).
+  `ClusterSerializationSpec` "F170", red before the fix.

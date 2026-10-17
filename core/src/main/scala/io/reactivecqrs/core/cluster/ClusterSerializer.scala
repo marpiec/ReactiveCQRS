@@ -9,7 +9,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 import io.mpjsons.{MPJsons, NullPolicy}
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.AggregateId
+import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.IdempotencyKeyTakenException
 import io.reactivecqrs.core.metrics.ReactiveMetrics
 import org.apache.pekko.actor.{ActorRef, ActorSystem, ExtendedActorSystem, Extension, ExtensionId, ExtensionIdProvider, Status}
@@ -47,6 +47,8 @@ object ClusterSerialization extends ExtensionId[ClusterSerialization] with Exten
   *
   *  - scalars, `Instant`, `UUID`, `BigDecimal`, an `ActorRef` (its serialized path, with its node's address);
   *  - `Option`, `Try`, lists, vectors, sets, maps and tuples, each element written the same way;
+  *  - a sequence of events (`EventInfo`), as deliveries and re-publications carry them, in a compact form: the event
+  *    classes once, then each event's version, user, time, class and JSON, about 30 bytes besides the JSON (F170);
   *  - the library's case classes field by field, with the fields' names, rebuilt with their constructor, so a field
   *    typed `Any`, a type parameter or an `ActorRef` keeps its value (mpjsons types by declaration, F64) and a node
   *    reads what a node of another version wrote (D68); case objects by name;
@@ -146,6 +148,7 @@ object ClusterSerializer {
   private final val OtherError = 26
   private final val TupleV = 27
   private final val TooLarge = 28 // F121: in place of a message larger than the limit
+  private final val EventsV = 29 // F170: a sequence of events, compact; 1.0's first nodes read it
 
   /** The library's own classes, written field by field; the application's go through mpjsons. */
   private[cluster] def isLibrary(className: String): Boolean =
@@ -221,6 +224,7 @@ object ClusterSerializer {
       case Some(x) => out.writeByte(SomeV); write(x)
       case Success(x) => out.writeByte(SuccessV); write(x)
       case Failure(e) => out.writeByte(FailureV); write(e)
+      case events: Seq[_] if events.nonEmpty && events.forall(_.isInstanceOf[EventInfo[_]]) => this.events(events.asInstanceOf[Seq[EventInfo[Any]]])
       case l: List[_] => out.writeByte(ListV); elements(l)
       case s: Set[_] => out.writeByte(SetV); elements(s)
       case m: Map[_, _] =>
@@ -247,6 +251,27 @@ object ClusterSerializer {
       str(className)
       out.writeInt(p.productArity)
       p.productElementNames.zip(p.productIterator).foreach { case (name, value) => str(name); write(value) }
+    }
+
+    // F170: field by field, each event took about 275 bytes besides its JSON: its class and five field names, and the
+    // version and user as named products. Read back as a vector, as other sequences.
+    private def events(events: Seq[EventInfo[Any]]): Unit = {
+      out.writeByte(EventsV)
+      val classes = events.map(_.event.getClass.getName).distinct
+      out.writeInt(classes.size)
+      classes.foreach(str)
+      val index = classes.zipWithIndex.toMap
+      out.writeInt(events.size)
+      events.foreach { e =>
+        val className = e.event.getClass.getName
+        out.writeInt(e.version.asInt)
+        out.writeLong(e.userId.asLong)
+        out.writeLong(e.timestamp.getEpochSecond)
+        out.writeInt(e.timestamp.getNano)
+        out.writeInt(index(className))
+        str(json.serialize[Any](e.event, className))
+        write(e.storedMetadata)
+      }
     }
 
     /** The marker written in place of a message larger than `limit` (F121). */
@@ -331,6 +356,7 @@ object ClusterSerializer {
         val className = str()
         val size = in.readInt()
         Status.Failure(new MessageTooLargeException(className, size, in.readInt()))
+      case EventsV => events()
       case unknown => throw new IllegalArgumentException("Unknown value kind " + unknown + " in a cluster message")
     }
 
@@ -355,6 +381,18 @@ object ClusterSerializer {
     }
 
     private def elements(): Vector[Any] = (1 to in.readInt()).map(_ => read()).toVector
+
+    private def events(): Vector[EventInfo[Any]] = {
+      val classes = Vector.fill(in.readInt())(str())
+      Vector.fill(in.readInt()) {
+        val version = AggregateVersion(in.readInt())
+        val userId = UserId(in.readLong())
+        val timestamp = Instant.ofEpochSecond(in.readLong(), in.readInt())
+        val className = classes(in.readInt())
+        val event = json.deserialize[Any](str(), className).asInstanceOf[Event[Any]]
+        EventInfo[Any](version, event, userId, timestamp, read().asInstanceOf[Option[EventMetadata]])
+      }
+    }
 
     private def loaded(className: String): Class[_] = system.dynamicAccess.getClassFor[AnyRef](className).get
 

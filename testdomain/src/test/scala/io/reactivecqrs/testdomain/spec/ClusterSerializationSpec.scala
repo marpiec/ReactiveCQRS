@@ -184,6 +184,24 @@ class ClusterSerializationSpec extends AnyFeatureSpec with Matchers with Eventua
     }
   }
 
+  Feature("A delivery's events (F170)") {
+
+    Scenario("cross nodes in about 30 bytes each besides their JSON, the class names written once, and read back the same") {
+      val events = (1 to 1000).map(v => EventInfo[ShoppingCart](AggregateVersion(v), if (v % 2 == 0) ItemAdded("apple " + v) else ItemRemoved(v),
+        UserId(7), now.plusMillis(v), if (v == 500) Some(EventMetadata.ofUser(UserId(2)).copy(correlationId = Some("c-1"))) else None))
+      val message = IdentifiableEvents[ShoppingCart](cart, id, events, startsAtSquash = true)
+      val json = ClusterSerialization(nodeA).mpjsons
+      val jsonBytes = events.map(e => json.serialize[Any](e.event, e.event.getClass.getName).getBytes(java.nio.charset.StandardCharsets.UTF_8).length).sum
+      val size = serialization.findSerializerFor(message).asInstanceOf[ClusterSerializer].sizeOf(message)
+
+      (size - jsonBytes) / events.size must be < 40
+      roundTrip(message) mustBe message
+      roundTrip(AggregateWithTypeAndEvents[ShoppingCart](cart, id, Some(ShoppingCart("cart", Vector())), events.take(3))) mustBe
+        AggregateWithTypeAndEvents[ShoppingCart](cart, id, Some(ShoppingCart("cart", Vector())), events.take(3))
+      roundTrip(Vector.empty[EventInfo[ShoppingCart]]) mustBe Vector.empty
+    }
+  }
+
   Feature("Tolerant reading (D68)") {
 
     Scenario("a field the reader does not know is skipped; one it misses reads as null") {
