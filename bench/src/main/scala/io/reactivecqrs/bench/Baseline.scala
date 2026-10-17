@@ -546,7 +546,8 @@ object Baseline {
     val heavyMillis = config.heavyMillis.toLong
     val system = new BenchSystem("heavy", stores, projections = false)
     val threads = defaultDispatcherThreads(system.system)
-    val count = threads + 4
+    val handlerThreads = system.system.settings.config.getInt("reactivecqrs.handler-dispatcher.thread-pool-executor.fixed-pool-size")
+    val count = handlerThreads + 4
 
     def timeOf(work: => Any): Long = {
       val started = System.nanoTime()
@@ -574,10 +575,12 @@ object Baseline {
         }(ExecutionContext.global)
       }
       Thread.sleep(500)
+      val busNanos = timeOf(system.deliveryStatus())
       val lightNanos = timeOf(send(system.counters, Increment(userId, other, "light")))
       answered.await(5, TimeUnit.MINUTES)
       Seq(s"$count at once, " + (if (async) "each on a pool of the application's own (`AsyncCommandResult`)" else "each holding its thread"),
-        s"${outcomes.summary}; the last answered after ${millis(last.get)}; a light command on another aggregate meanwhile: ${millis(lightNanos)}")
+        s"${outcomes.summary}; the last answered after ${millis(last.get)}; meanwhile the event bus answered its status after ${millis(busNanos)}, " +
+          s"and a light command on another aggregate after ${millis(lightNanos)}")
     }
 
     // A heavy command, its work on its own pool, on an aggregate that light commands change while it runs.
@@ -616,7 +619,8 @@ object Baseline {
     system.shutdown()
     report.section(s"Command handlers of ${heavyMillis} ms", Seq("Case", "Outcome"), rows,
       s"Each handler takes ${heavyMillis} ms, standing in for one that takes minutes. Pekko's default dispatcher, on which the library " +
-        s"runs command handlers and its buses, has $threads threads here; the command timeout is 60 s unless said otherwise.")
+        s"runs its buses and projections, has $threads threads here, and command handlers have $handlerThreads of their own (F127); the command timeout " +
+        "is 60 s unless said otherwise.")
   }
 
   // Pekko's own rule for a fork-join dispatcher's size.

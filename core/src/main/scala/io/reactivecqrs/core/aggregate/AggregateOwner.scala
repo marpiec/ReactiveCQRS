@@ -115,8 +115,9 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
   import AggregateOwner._
   import settings._
   import context.dispatcher
-  // F27: the owner runs on the blocking dispatcher; command handlers are the application's code and run on the default one.
-  private val handlersContext: ExecutionContext = context.system.dispatcher
+  // F27: the owner runs on the blocking dispatcher; command handlers are the application's code and run on their own, so
+  // one that holds its thread stalls only the commands (F127).
+  private val handlersContext: ExecutionContext = context.system.dispatchers.lookup("reactivecqrs.handler-dispatcher")
 
   private val aggregateId: AggregateId = id.getOrElse(AggregateId(self.path.name.toLong))
   private val metrics = ReactiveMetrics(context.system) // R19
