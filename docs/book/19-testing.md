@@ -155,7 +155,7 @@ Each database part of the library has an in-memory double in `core`:
 | `MemoryEventStoreState` (`core.eventstore`) | `PostgresEventStoreState` | keeps objects, not JSON; no transaction to roll back; reads at an instant fail |
 | `MemoryCommandResponseState` (`core.commandhandler`) | `PostgresCommandResponseState` | not transactional: a response stays stored when the persist fails later |
 | `MemorySubscriptionsState` (`core.projection`) | `PostgresSubscriptionsState` | the same compare-and-set rules for projection versions; no transactions |
-| `MemoryDocumentStore[T]`, `MemoryDocumentStoreAutoId[T]` (`core.documentstore`) | `PostgresDocumentStore` | the query conditions mirror PostgreSQL's; organizations (spaces) are ignored |
+| `MemoryDocumentStore[T]`, `MemoryDocumentStoreAutoId[T]` (`core.documentstore`) | `PostgresDocumentStore` | the query conditions mirror PostgreSQL's; each document keeps the space it was first written with, and `clearSpace` removes a space's documents |
 | `MemoryUidGenerator` (`core.uid`) | `PostgresUidGenerator` | pools of 100 ids, from 1001 |
 | `MemoryTypesNamesState` (`core.types`) | `PostgresTypesNamesState` | ids of class names, numbered as they are asked for |
 | `MemoryProjectionRegistry` (`core.rebuild`) | `PostgresProjectionRegistry` | dropping a build only forgets it |

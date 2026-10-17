@@ -2165,3 +2165,8 @@ Open test-infrastructure items:
   (computed). Without the planned version switch: 1.0.0 is the first release that runs as a
   cluster; a milestone cluster is upgraded with a full stop (book, chapter 17; H12).
   `ClusterSerializationSpec` "F170", red before the fix.
+
+**17/10/2026: F156, the memory document store keeps spaces**
+- Each document's space is kept as the `space_id` column keeps it (set at the insert, kept after), and
+  `clearSpace` removes that space's documents, in both memory stores. `MemoryDocumentStoreSpec`
+  "F156", red before the fix. Book: chapters 16 and 19. The first piece of the test kit (E11).

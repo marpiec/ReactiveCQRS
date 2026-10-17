@@ -217,8 +217,9 @@ Two things to notice:
 > works fine until the day you clear or rebuild one organization: then it clears nothing, or, for
 > space 0, everything. Pass the aggregate's real space from the start.
 
-> **Remember:** `MemoryDocumentStore`, the in-memory store for tests, ignores spaces: its
-> `clearSpace` does nothing. Test organization clean-ups against `PostgresDocumentStore`.
+> **Remember:** `MemoryDocumentStore`, the in-memory store for tests, keeps each document's space as
+> PostgreSQL does: set when the document is first written, kept after, and `clearSpace` removes that
+> space's documents. A test of an organization's clean-up can run against it.
 
 ## Clearing and rebuilding one organization
 

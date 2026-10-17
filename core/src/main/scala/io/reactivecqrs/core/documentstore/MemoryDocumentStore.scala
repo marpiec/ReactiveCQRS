@@ -12,6 +12,13 @@ import scala.reflect.runtime.universe._
 sealed trait MemoryDocumentStoreTrait[T <: AnyRef] {
 
   val store = mutable.ParHashMap[Long, Document[T]]()
+  // F156: each document's space, as the space_id column keeps it: set when the document is inserted, kept after.
+  protected val spaces = mutable.ParHashMap[Long, Long]()
+
+  protected def stored(spaceId: Long, key: Long, document: Document[T]): Unit = {
+    store += key -> document
+    spaces += key -> spaceId
+  }
 
 
   // Conditions mirror PostgresDocumentStore.createQuery, so tests using this store see the same results.
@@ -186,7 +193,10 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef] {
 
   def getDocument(key: Long)(implicit session: DBSession = null): Option[Document[T]] = store.get(key)
 
-  def removeDocument(key: Long)(implicit session: DBSession = null): Unit = store -= key
+  def removeDocument(key: Long)(implicit session: DBSession = null): Unit = {
+    store -= key
+    spaces -= key
+  }
 
   def getDocuments(keys: Iterable[Long])(implicit session: DBSession = null): Map[Long, Document[T]] = (store filterKeys keys.toSet).seq.toMap
 
@@ -199,8 +209,9 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef] {
   }
 
   def updateDocument(spaceId: Long, key: Long, modify: Option[Document[T]] => Document[T])(implicit session: DBSession = null): Document[T] = {
-    val modified: Document[T] = modify(store.get(key))
-    store += key -> modified
+    val existing = store.get(key)
+    val modified: Document[T] = modify(existing)
+    if (existing.isEmpty) stored(spaceId, key, modified) else store += key -> modified
     modified
   }
 
@@ -212,10 +223,11 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef] {
 
   def clearAllData()(implicit session: DBSession): Unit = {
     store.clear()
+    spaces.clear()
   }
 
-  def clearSpace(spaceId: Long)(implicit session: DBSession): Unit = {
-  }
+  def clearSpace(spaceId: Long)(implicit session: DBSession): Unit =
+    spaces.filter(_._2 == spaceId).keys.seq.foreach(key => removeDocument(key))
 
 
 }
@@ -226,7 +238,7 @@ class MemoryDocumentStore[T <: AnyRef] extends DocumentStore[T] with MemoryDocum
     if (store.contains(key)) {
       throw new IllegalStateException("Attempting to re-insert document with key " + key)
     } else {
-      store += key -> Document[T](document)
+      stored(spaceId, key, Document[T](document))
     }
 
   override def insertDocuments(spaceId: Long, documents: Seq[DocumentToInsert[T]])(implicit session: DBSession): Unit =
@@ -247,7 +259,7 @@ class MemoryDocumentStoreAutoId[T <: AnyRef] extends DocumentStoreAutoId[T] with
 
   def insertDocument(spaceId: Long, document: T)(implicit session: DBSession = null): Long = {
     val key = generateNextId
-    store += key -> Document[T](document)
+    stored(spaceId, key, Document[T](document))
     key
   }
 

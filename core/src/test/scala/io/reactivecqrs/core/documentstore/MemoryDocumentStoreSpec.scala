@@ -83,6 +83,39 @@ class MemoryDocumentStoreSpec extends AnyFeatureSpecLike with GivenWhenThen with
       keysFor(ExpectedMultipleTextValuesInArray(Seq("tags"), Seq("green", "blue"))) mustBe Set(1, 2)
     }
   }
+
+  // F156: a test of clearing an organization against the memory store tests what PostgreSQL does.
+  Feature("Spaces (F156)") {
+
+    Scenario("clearing a space removes its documents only, however they were written") {
+      implicit val session: DBSession = NoSession
+      val store = new MemoryDocumentStore[SimpleType]()
+      store.insertDocument(1, 10, SimpleType(1))
+      store.insertDocuments(1, Seq(DocumentToInsert(11, SimpleType(2))))
+      store.updateDocument(2, 20, _ => Document(SimpleType(3)))
+      store.insertDocument(2, 21, SimpleType(4))
+      store.updateDocument(5, 10, existing => Document(SimpleType(existing.get.document.field + 1))) // keeps space 1, as SQL does
+      store.overwriteDocument(21, SimpleType(5))
+
+      store.clearSpace(1)
+
+      store.findAll().keySet mustBe Set(20, 21)
+      store.clearSpace(2)
+      store.findAll() mustBe empty
+    }
+
+    Scenario("the same in the store with ids of its own") {
+      implicit val session: DBSession = NoSession
+      val store = new MemoryDocumentStoreAutoId[SimpleType]()
+      val kept = store.insertDocument(2, SimpleType(1))
+      store.insertDocument(1, SimpleType(2))
+      store.insertDocuments(1, Seq(SimpleType(3)))
+
+      store.clearSpace(1)
+
+      store.findAll().keySet mustBe Set(kept)
+    }
+  }
 }
 
 case class Item(name: String, count: Int, total: Long, active: Boolean, tags: List[String], note: Option[String])
