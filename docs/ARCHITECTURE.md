@@ -754,7 +754,12 @@ them per poll.
 **Start-up (D15).** The host sends `RegisterSubscribers(subscribers)`. The bus watches each,
 asks it for its subscriptions (`GetSubscriptionRequests` → `SubscriptionRequests`), and
 stashes everything else until all have answered, logging the missing ones on each tick. A
-subscriber that stops before answering is dropped. Subscriptions are fixed after start.
+subscriber that stops before answering is dropped; one that answers with a failure is logged
+and asked again at the next tick, as one whose answer was lost. A second `RegisterSubscribers`
+before the start adds to the first; one after the start registers its subscribers the same way,
+asked every tick until they answer, and they miss what was published before (F162, logged).
+Managed projections add and remove their builds' subscriptions (`AddSubscriptions`,
+`RemoveSubscriber`, D57).
 
 **Routing.** Every subscription of the event's aggregate type gets it (since M3 there are no
 subscription classifiers, AR8: the sequence gate needs every version):
@@ -1323,9 +1328,11 @@ answer for the same saga as a repeat.
 7. **Type names are stable identifiers.** Aggregate root, event, projection-class and
    response class names are persisted via `types_names`; renaming one is a data migration.
 8. **Aggregate roots are immutable** and shared across threads by reference.
-9. **The subscription set is fixed at bus start**: the host's `RegisterSubscribers` list,
-   each subscriber answering `GetSubscriptionRequests`. Adding a projection means adding it
-   to that list.
+9. **The subscription set is settled at bus start**: the host's `RegisterSubscribers` list,
+   each subscriber answering `GetSubscriptionRequests`, plus the builds a managed projection
+   adds (D57). A subscriber registered after the start misses what was published before it
+   answered (F162): adding a projection means adding it to that list, or starting it with
+   `Projections.start`, which builds it from the store.
 10. **Nothing reads below a squash point.** Every path that reads or keeps an aggregate's
    old history (restore, undo, duplication, re-publication, a chain row of a duplicate)
    either starts at the squash event or is refused; a squash or a permanent delete detaches

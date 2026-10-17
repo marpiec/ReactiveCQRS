@@ -2,7 +2,7 @@ package io.reactivecqrs.core.eventbus
 
 import java.time.Instant
 
-import org.apache.pekko.actor.{Actor, ActorRef, Stash, Terminated}
+import org.apache.pekko.actor.{Actor, ActorRef, Stash, Status, Terminated}
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.cluster.{MessageSize, Readiness}
@@ -151,11 +151,12 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
 
   private var awaitingRegistration = Set[ActorRef]()
   private var registrationRequested = false
-  // M5: the registered subscribers (watched), the subscribers each answered with, and those asked again since their
-  // subscribers stopped (a projection's singleton moved): a new answer replaces the stopped ones.
+  // M5: the registered subscribers (watched), the subscribers each answered with, and those asked since the start, every
+  // tick until they answer: asked again since their subscribers stopped (a projection's singleton moved), where a new
+  // answer replaces the stopped ones, or registered late (F162).
   private var registered = Set[ActorRef]()
   private var answeredWith = Map[ActorRef, Set[ActorRef]]()
-  private var askedAgain = Set[ActorRef]()
+  private var asking = Set[ActorRef]()
   private var lastSummary = System.nanoTime()
 
   private val undelivered = mutable.Queue[Undelivered]()
@@ -182,12 +183,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   private def registering: Receive = {
     case RegisterSubscribers(subscribers) =>
       registrationRequested = true
-      awaitingRegistration = subscribers.toSet
-      registered ++= subscribers
-      subscribers.foreach { subscriber =>
-        context.watch(subscriber)
-        subscriber ! GetSubscriptionRequests(subscriber)
-      }
+      awaitingRegistration ++= register(subscribers) // F162: a second list adds to the first
       startIfRegistered()
     case SubscriptionRequests(requests, registeredSubscriber) =>
       answered(registeredSubscriber, requests)
@@ -201,6 +197,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       sender() ! SubscriberRemoved(subscriber)
       startIfRegistered()
     case GetDeliveryStatus => sender() ! status
+    case Status.Failure(e) => failedToAnswer(e)
     case Terminated(subscriber) =>
       awaitingRegistration -= subscriber
       stoppedOrUnregistered(subscriber)
@@ -215,6 +212,22 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       }
     case _ => stash()
   }
+
+  /** Watches and asks the subscribers not registered yet, and returns them. */
+  private def register(subscribers: Seq[ActorRef]): Set[ActorRef] = {
+    val fresh = subscribers.toSet -- registered
+    registered ++= fresh
+    fresh.foreach { subscriber =>
+      context.watch(subscriber)
+      subscriber ! GetSubscriptionRequests(subscriber)
+    }
+    fresh
+  }
+
+  // F162: a subscriber that cannot answer (a projection's supervisor whose registry is unavailable) is asked again at the
+  // next tick, like one whose answer was lost.
+  private def failedToAnswer(e: Throwable): Unit =
+    log.warning("Event bus asked " + sender().path.name + " for its subscriptions and got a failure, asks again: " + e.getMessage)
 
   private def startIfRegistered(): Unit = {
     if (registrationRequested && awaitingRegistration.isEmpty) {
@@ -237,7 +250,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   // stopped and are not in this one were replaced: they leave without acknowledging their deliveries, so the rows stay
   // in the outbox for the replacements (F110).
   private def answered(registeredSubscriber: ActorRef, requests: Seq[SubscribeRequest]): Unit = {
-    askedAgain -= registeredSubscriber
+    asking -= registeredSubscriber
     val now = requests.map(_.subscriber).toSet
     answeredWith.getOrElse(registeredSubscriber, Set.empty).filter(s => stopped.contains(s) && !now.contains(s))
       .foreach(replaced => removeSubscriber(replaced, keepOutbox = true))
@@ -254,9 +267,9 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   private def stoppedOrUnregistered(subscriber: ActorRef): Unit = {
     registered -= subscriber
     subscriberStopped(subscriber)
-    answeredWith.collect { case (r, subscribers) if subscribers.contains(subscriber) && r != subscriber && registered.contains(r) && !askedAgain.contains(r) => r }
+    answeredWith.collect { case (r, subscribers) if subscribers.contains(subscriber) && r != subscriber && registered.contains(r) && !asking.contains(r) => r }
       .foreach { r =>
-        askedAgain += r
+        asking += r
         r ! GetSubscriptionRequests(r)
       }
   }
@@ -281,17 +294,25 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       routeToPublisher(aggregateType, RepublishRange(aggregateId, from, subscriber))
     case Republish(aggregateType, aggregateId) => routeToPublisher(aggregateType, RepublishOutbox(aggregateId))
     case RegisterPublisher(aggregateType, publisher) => publishers += aggregateType -> publisher
+    case RegisterSubscribers(subscribers) =>
+      val late = register(subscribers)
+      asking ++= late
+      if (late.nonEmpty) log.warning("Event bus registered " + late.map(_.path.name).toSeq.sorted.mkString(", ") + " after its start: " +
+        "what was published before they answer is not delivered to them. Register every subscriber in the first " +
+        "RegisterSubscribers, or start a new projection with Projections.start, which builds it from the stored events")
     case SubscriptionRequests(requests, registeredSubscriber) => answered(registeredSubscriber, requests)
     case AddSubscriptions(requests, registeredSubscriber) => added(requests, registeredSubscriber)
     case RemoveSubscriber(subscriber, keepOutbox) =>
       removeSubscriber(subscriber, keepOutbox)
       sender() ! SubscriberRemoved(subscriber)
     case GetDeliveryStatus => sender() ! status
+    case Status.Failure(e) => failedToAnswer(e)
     case Terminated(subscriber) => stoppedOrUnregistered(subscriber)
     case Tick =>
-      // F129: a registered subscriber asked again (its singleton moved) is asked every tick until it answers, as at the
-      // start: the first ask can be lost, sent to an instance that is stopping or dropped from a proxy's full buffer.
-      askedAgain.foreach(r => r ! GetSubscriptionRequests(r))
+      // F129: a registered subscriber asked since the start (its singleton moved, or registered late) is asked every
+      // tick until it answers, as at the start: an ask can be lost, sent to an instance that is stopping or dropped
+      // from a proxy's full buffer.
+      asking.foreach(r => r ! GetSubscriptionRequests(r))
       flow.expire(System.nanoTime())
       flow.withBehind.toSeq.foreach(pull)
       checkDeadlines()

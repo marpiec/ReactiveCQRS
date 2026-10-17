@@ -8,7 +8,7 @@ import io.reactivecqrs.core.cluster.Readiness
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.testutils.{CommonSpec, TestIds}
-import org.apache.pekko.actor.{ActorRef, Props}
+import org.apache.pekko.actor.{ActorRef, Props, Status}
 import org.apache.pekko.event.Logging
 import org.apache.pekko.testkit.TestProbe
 
@@ -108,6 +108,66 @@ class EventsBusActorSpec extends CommonSpec {
       a.expectMsg(GetSubscriptionRequests(a.ref))
       a.expectMsg(1.second, GetSubscriptionRequests(a.ref))
       system.stop(bus) // it would ask, and warn, every tick for the rest of the run
+    }
+
+    Scenario("waits for the subscribers of a second RegisterSubscribers too (F162)") {
+      val (a, b, owner) = (TestProbe(), TestProbe(), TestProbe())
+      val bus = newBus()
+      bus ! RegisterSubscribers(Seq(a.ref))
+      bus ! RegisterSubscribers(Seq(b.ref))
+      a.expectMsg(GetSubscriptionRequests(a.ref))
+      a.ignoreMsg { case _: GetSubscriptionRequests => true }
+      b.expectMsg(GetSubscriptionRequests(b.ref))
+      b.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, b.ref)), b.ref))
+      answered(bus, b)
+      val id = newId()
+
+      publish(bus, owner, id, 1)
+      b.expectNoMessage(300.millis)
+
+      a.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, a.ref)), a.ref))
+      delivered(a) mustBe Seq(1)
+      delivered(b) mustBe Seq(1)
+    }
+
+    Scenario("asks a subscriber registered after the start, warns that it missed what was published before, and delivers to it once it answered (F162)") {
+      val (a, late, owner, warnings) = (TestProbe(), TestProbe(), TestProbe(), TestProbe())
+      val bus = busWith(a)
+      system.eventStream.subscribe(warnings.ref, classOf[Logging.Warning])
+      try {
+        bus ! RegisterSubscribers(Seq(late.ref))
+        late.expectMsg(GetSubscriptionRequests(late.ref))
+        warnings.fishForMessage(3.seconds) { case w: Logging.Warning => w.message.toString.contains(late.ref.path.name + " after its start") }
+      } finally system.eventStream.unsubscribe(warnings.ref)
+      late.expectMsg(1.second, GetSubscriptionRequests(late.ref)) // asked every tick until it answers
+      late.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, late.ref)), late.ref))
+      answered(bus, late)
+      val id = newId()
+
+      publish(bus, owner, id, 1)
+      delivered(a) mustBe Seq(1)
+      delivered(late) mustBe Seq(1)
+    }
+
+    Scenario("names a subscriber that answers with a failure in a warning, and asks it again (F162)") {
+      val (a, owner, warnings) = (TestProbe(), TestProbe(), TestProbe())
+      val bus = newBus()
+      system.eventStream.subscribe(warnings.ref, classOf[Logging.Warning])
+      try {
+        bus ! RegisterSubscribers(Seq(a.ref))
+        a.expectMsg(GetSubscriptionRequests(a.ref))
+        a.reply(Status.Failure(new IllegalStateException("registry unavailable")))
+        warnings.fishForMessage(3.seconds) { case w: Logging.Warning =>
+          w.message.toString.contains(a.ref.path.name) && w.message.toString.contains("registry unavailable")
+        }
+      } finally system.eventStream.unsubscribe(warnings.ref)
+      a.expectMsg(1.second, GetSubscriptionRequests(a.ref))
+      a.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, a.ref)), a.ref))
+      answered(bus, a)
+      val id = newId()
+
+      publish(bus, owner, id, 1)
+      delivered(a) mustBe Seq(1)
     }
   }
 

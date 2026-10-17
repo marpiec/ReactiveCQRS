@@ -2075,3 +2075,10 @@ Open test-infrastructure items:
   command with an undo event has its state read from the store after the commit, as before. The
   test domain's `ShoppingCartChangesUndone => shoppingCart` case is gone; four undo scenarios
   failed without the fix. The book's chapter 6 says handlers need no case for undo events.
+
+**17/10/2026: F162, late and failing subscribers of the event bus**
+- A second `RegisterSubscribers` before the start adds to the first (it replaced the first list's
+  waiting subscribers, so the bus could start before they answered); one after the start registers
+  its subscribers, asked every tick until they answer, and warns that they missed what was published
+  before; a `Status.Failure` answer is logged with its cause, not stashed, and the subscriber asked
+  again. Three scenarios in `EventsBusActorSpec`, red before the fix. Book: chapter 18 and appendix C.

@@ -223,6 +223,8 @@ waits for the subscriptions of: ..." with a list of names. The node does not rep
   is not a projection, or a managed projection whose supervisor cannot read its registry (the log
   says "Projection ... could not read its builds; trying again in 10 seconds", for example because
   `PostgresProjectionRegistry.initSchema()` was not called).
+- A subscriber answers with a failure: the bus says "Event bus asked ... for its subscriptions and
+  got a failure, asks again: ..." with the cause, at every tick until the subscriber answers.
 
 Nothing is lost meanwhile: the events are stored and wait in the outbox, and the bus keeps the
 publications until it starts.

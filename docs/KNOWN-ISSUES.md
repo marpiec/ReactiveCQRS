@@ -454,8 +454,9 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Found:** writing the book (M6, 17/10/2026).
 
 #### F162 — The event bus ignores a late `RegisterSubscribers`, and waits for a subscriber that answered with a failure
-- **Low**, confirmed (by reading) · **Fix in M7** · `EventsBusActor`
-- **Symptom:** a `RegisterSubscribers` sent after start-up is unhandled, without a log line; a `Status.Failure` from a subscriber during start-up is stashed, so the bus keeps waiting for its subscriptions.
+- **Low**, confirmed (red first) · **Fixed in M7** (17/10/2026; `EventsBusActorSpec` "F162", three scenarios) · `EventsBusActor`
+- **Symptom:** a `RegisterSubscribers` sent after start-up is unhandled, without a log line; a `Status.Failure` from a subscriber during start-up is stashed, so the bus keeps waiting for its subscriptions. Also: a second `RegisterSubscribers` before the start replaced the first list's waiting subscribers, so the bus could start before they answered.
+- **Fix:** a second list adds to the first; one after the start registers its subscribers, asked every tick until they answer, with a warning that they missed what was published before; a failure answer is logged with its cause and the subscriber asked again at the next tick.
 - **Found:** writing the book (M6, 17/10/2026).
 
 #### F163 — Delayed queries with a `Future` can miss the update they wait for
@@ -1276,7 +1277,7 @@ From §7 of Neula's change requests.
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔, F174 ✔; F155 decided (review 8) |
-| M7 | AR5 (moved from M5 at review 7); F148 ✔, F152, F153, F156, F157, F160, F161, F162, F163, F164, F165, F166, F169 (found writing the book), F170, F171, F173, F175 |
+| M7 | AR5 (moved from M5 at review 7); F148 ✔, F152, F153, F156, F157, F160, F161, F162 ✔, F163, F164, F165, F166, F169 (found writing the book), F170, F171, F173, F175 |
 
 ---
 

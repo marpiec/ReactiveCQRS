@@ -142,6 +142,14 @@ publishes nothing until all of them have answered; meanwhile the node is not rea
 [chapter 17](17-cluster.md)), and the bus logs "Event bus waits for the subscriptions of: ..." with
 the names of the late ones.
 
+Send one list. A second `RegisterSubscribers` before the bus has started adds to the first. One sent
+after the start registers its subscribers too, but they miss what was published before they answered,
+and the bus warns: "Event bus registered ... after its start". A new projection that must see the
+whole history is started with `Projections.start` ([chapter 10](10-rebuilding-projections.md)), which
+builds it from the stored events. A subscriber that answers the bus's question with a failure (a
+managed projection whose registry is unavailable) is named in a warning and asked again at every
+tick.
+
 How long is "meanwhile"? Measured on 17/10/2026 (`docs/perf/baseline-M5.md`, one machine): a new
 system with two projections answered its first command after 668 ms and its projections saw the first
 event after 767 ms.
@@ -265,6 +273,8 @@ node; ask each node's bus separately.
 | "Undelivered after ..." or "Held for a full window after ..." | event bus | a delivery reached its 10-minute deadline; its outbox row stays |
 | "Subscriber ... stopped" | event bus | a subscriber stopped; its events stay in the outbox until the next start |
 | "Event bus waits for the subscriptions of: ..." | event bus | at start: a registered subscriber has not answered; the node is not ready |
+| "Event bus asked ... for its subscriptions and got a failure" | event bus | a subscriber could not answer; it is asked again at every tick, and the line gives the cause |
+| "Event bus registered ... after its start" | event bus | a `RegisterSubscribers` came after the start: those subscribers missed what was published before |
 | "Delivery waits for ..." and "... deliveries wait longer than ..." | event bus | a subscriber is slow to answer |
 | "Subscribers with events held beyond their window ..." | event bus | a projection is behind; its events wait in the store |
 | "Error handling command ..., errorId: [...]" | aggregate owner | a caller got `CommandHandlingError` with that error id |
