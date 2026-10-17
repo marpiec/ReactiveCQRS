@@ -4,7 +4,7 @@ import java.time.Instant
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 
 import io.mpjsons.MPJsons
-import io.reactivecqrs.api.{AggregateSquashedException, AggregateVersion, Event}
+import io.reactivecqrs.api.{AggregateSquashedException, AggregateVersion, Event, TooManyEventsException}
 import io.reactivecqrs.api.id.SpaceId
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.testutils.TestDatabase
@@ -71,6 +71,21 @@ class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStore
 
     f.storeEvents(Seq(Undo(1))) // undoes version 3, after the squash point
     f.getEvents() mustBe Seq(EventA("one"), EventB(2))
+  }
+
+  // F125: the limit is the highest version an aggregate reaches, however its events are stored.
+  Scenario("an aggregate takes no event past aggregateVersionLimit, stored together, one by one or as an undo") {
+    val limited = new PostgresEventStoreState(new MPJsons, new PostgresTypesNamesState(), aggregateVersionLimit = 3)
+    val f = new TestFixture(limited)
+    def store(expected: Int, events: Event[SomeAggregate]*): Try[Seq[Int]] =
+      Try(limited.localTx(session => limited.persistEvents(f.aggregateId, NewEvents(f.userId, AggregateVersion(expected), Instant.now, events))(session).get))
+        .map(_.map(_._2.asInt))
+
+    store(0, EventA("one"), EventB(2)) mustBe Success(Seq(1, 2))
+    store(2, EventC(true), EventB(4)).failed.get mustBe a[TooManyEventsException]
+    store(2, EventC(true)) mustBe Success(Seq(3))
+    store(3, EventB(4)).failed.get mustBe a[TooManyEventsException]
+    store(3, Undo(1)).failed.get mustBe a[TooManyEventsException]
   }
 
   // F38, D69: the restore index is built online, once; running it again does nothing.

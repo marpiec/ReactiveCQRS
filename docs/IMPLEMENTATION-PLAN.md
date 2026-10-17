@@ -1650,3 +1650,5 @@ Open test-infrastructure items:
   next start), F124 (a commit-order build walks every type's events, M6), F125 (the
   per-aggregate limit lets one event too many through). F121, F122, F123 and F125 are fixed in
   M5, F122 and F123 with the flow control of F93.
+- F125 fixed: an event is refused once the aggregate's version has reached
+  `aggregateVersionLimit` (`PostgresEventStoreStateSpec`, red before the fix).

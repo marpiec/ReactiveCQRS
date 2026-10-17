@@ -70,12 +70,13 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     }
   }
 
+  // `version`: the aggregate's version before the event, which takes the next one (F125).
   private def serializedChecked(aggregateId: AggregateId, event: Event[_], version: AggregateVersion): String = {
     val serialized = mpjsons.serialize(event, event.getClass.getName)
     val limit = eventSizeLimitPerClassName.getOrElse(event.getClass.getName, eventSizeLimit)
     if (serialized.length > limit) {
       throw new EventTooLargeException(aggregateId, aggregateTypeName(event), version, event.getClass.getName, serialized.length, limit)
-    } else if (version.asInt > aggregateVersionLimit) {
+    } else if (version.asInt >= aggregateVersionLimit) {
       throw new TooManyEventsException(aggregateId, aggregateTypeName(event), aggregateVersionLimit)
     }
     serialized
