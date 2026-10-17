@@ -2,7 +2,6 @@ package io.reactivecqrs.core.commandhandler
 
 import java.time.Instant
 import org.apache.pekko.actor.{Actor, ActorRef, OneForOneStrategy, Props, Status, SupervisorStrategy, Terminated}
-import org.apache.pekko.cluster.sharding.{ClusterSharding, ClusterShardingSettings, ShardRegion}
 import org.apache.pekko.pattern.{ask, pipe}
 import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api._
@@ -17,7 +16,6 @@ import io.reactivecqrs.core.uid.{IdPool, NewAggregatesIdsPool, NewCommandsIdsPoo
 import io.reactivecqrs.core.util.{BlockingDispatcher, MyActorLogging, RandomUtil}
 import org.slf4j.Logger
 
-import scala.collection.mutable
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
 import scala.reflect.ClassTag
@@ -64,8 +62,6 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
                                                        val failedRestoreRetryAfter: FiniteDuration)
                                                         (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT]) extends Actor with MyActorLogging {
 
-  val minimumInactivityMillis: Long = 120000L // 2 minutes
-
   private val aggregateType = AggregateType.of[AGGREGATE_ROOT]
   val aggregateTypeSimpleName: String = aggregateRootClassTag.runtimeClass.getSimpleName
 
@@ -75,27 +71,18 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   private val commandIds = new IdPool
   private var waitingForIds = Vector[(Any, ActorRef)]()
 
-  private val owners = mutable.HashMap[Long, ActorRef]()
-  private val ownerIds = mutable.HashMap[ActorRef, Long]()
-  private val childrenActivity = mutable.HashMap[Long, Long]()
-  // Owners asked to stop, with the messages that arrived for them since; a new owner gets them once the old one stopped.
-  private val keptForStopping = mutable.HashMap[Long, Vector[Any]]()
-
-  private var lastClear: Long = 0L
-
-  private var spawnedCount = 0 // keeps actor names unique while a stopped owner's name is still taken
-
   private val idempotency = new Idempotency(commandResponseState)
 
   private val settings = new OwnerSettings[AGGREGATE_ROOT](aggregateContext, eventStoreState, idempotency, eventBus, self, failedRestoreRetryAfter)
 
-  // D43: the shard region of a sharded type, and its owners that run on this node, which get the acknowledgements.
-  private val region: Option[ActorRef] = aggregateContext.placement match {
-    case Placement.Sharded(numberOfShards) => Some(startRegion(numberOfShards))
-    case Placement.Local => None
+  private def ownerProps(id: Option[AggregateId]): Props =
+    Props(new AggregateOwner[AGGREGATE_ROOT](settings, id)).withDispatcher(BlockingDispatcher.id)
+
+  // D43: this bus's own children, or the entities of the type's shard region.
+  private val owners: Owners = aggregateContext.placement match {
+    case Placement.Sharded(numberOfShards) => ShardedOwners.start(context, aggregateType.typeName, ownerProps(None), numberOfShards)
+    case Placement.Local => new LocalOwners(context, id => ownerProps(Some(id)), aggregateTypeSimpleName, keepAliveLimit, maxInactivityMillis, eventsLogger)
   }
-  private val shardedOwners = mutable.HashMap[Long, ActorRef]()
-  private val shardedOwnerIds = mutable.HashMap[ActorRef, Long]()
 
   // AR7: an owner that fails is stopped, never restarted: a restart would lose its pending callers. It is forgotten
   // when it terminates, and the next request creates a new one.
@@ -128,23 +115,21 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
     case NewAggregatesIdsPool(from, size) => aggregateIds.received(from, size); serveWaiting(); askForIds()
     case NewCommandsIdsPool(from, size) => commandIds.received(from, size); serveWaiting(); askForIds()
     case IdsNotReceived(ofAggregates, e) => idsNotReceived(ofAggregates, e)
-    case GetAggregate(id) => toOwner(id, GetState(sender()))
-    case GetAggregateMinVersion(id, version, maxMillis) => toOwner(id, GetStateMinVersion(sender(), version, maxMillis))
-    case GetEventsForAggregate(id) => toOwner(id, GetEvents(sender()))
+    case GetAggregate(id) => owners.send(id, GetState(sender()))
+    case GetAggregateMinVersion(id, version, maxMillis) => owners.send(id, GetStateMinVersion(sender(), version, maxMillis))
+    case GetEventsForAggregate(id) => owners.send(id, GetEvents(sender()))
     case GetAggregateForVersion(id, version) => historicalRead(id)(aggregateAt(id, Left(version)))
     case GetAggregateAtInstant(id, instant) => historicalRead(id)(aggregateAt(id, Right(instant)))
     case GetEventsForAggregateForVersion(id, version) => historicalRead(id)(settings.restorer.events(id, Some(Left(version))))
     case ack: PublishEventsAck => delivered(ack)
     // Re-publications count as activity, so the owners they start are stopped like others when idle.
-    case m: RepublishRequest => toOwner(m.aggregateId, m)
-    case request: SquashAggregate => toOwner(request.id, Squash(sender(), request))
+    case m: RepublishRequest => owners.send(m.aggregateId, m)
+    case request: SquashAggregate => owners.send(request.id, Squash(sender(), request))
     case RemoveExpiredResponses => removeExpiredResponses()
-    case PassivateAggregate(id) => stopOwner(id.asLong)
-    case DeletedPermanently(id, changed) => (id +: changed).foreach(aggregate => stopOwner(aggregate.asLong, stale = true)) // its state is gone
-    case HistoryChanged(changed) => changed.foreach(aggregate => stopOwner(aggregate.asLong, stale = true))
-    case OwnerPassivate => ownerIds.get(sender()).foreach(key => stopOwner(key))
-    case OwnerStarted(id) => shardedOwnerStarted(id, sender())
-    case Terminated(ref) => if (shardedOwnerIds.contains(ref)) shardedOwnerTerminated(ref) else ownerTerminated(ref)
+    case PassivateAggregate(id) => owners.stop(id, stale = false)
+    case DeletedPermanently(id, changed) => (id +: changed).foreach(owners.stop(_, stale = true)) // its state is gone
+    case HistoryChanged(changed) => changed.foreach(owners.stop(_, stale = true))
+    case m @ (OwnerPassivate | _: OwnerStarted | _: Terminated) => owners.fromOwners(sender()).applyOrElse(m, unhandled)
     case m =>
       // Answered, not thrown: a throw would restart the bus, which stops its children and with them every
       // command in flight for this aggregate type (F70).
@@ -184,7 +169,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   }
 
   private def routeCommand(command: Any, respondTo: ActorRef, aggregateId: AggregateId, fresh: Boolean = false): Unit =
-    toOwner(aggregateId, CommandEnvelope(respondTo, CommandId(commandIds.take()), command, fresh))
+    owners.send(aggregateId, CommandEnvelope(respondTo, CommandId(commandIds.take()), command, fresh))
 
   private def askForIds(): Unit = {
     import context.dispatcher
@@ -212,88 +197,6 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
         respondTo ! CommandHandlingError(command.getClass.getSimpleName, errorId, CommandId(0)) // no command id was assigned
     }
     serveWaiting()
-  }
-
-  private def toOwner(id: AggregateId, message: Any): Unit = region match {
-    case Some(shards) => shards ! ToOwner(id, message)
-    case None =>
-      val key = id.asLong
-      val now = System.nanoTime() / 1_000_000
-      childrenActivity += key -> now
-      keptForStopping.get(key) match {
-        case Some(kept) => keptForStopping += key -> (kept :+ message)
-        case None => owners.getOrElseUpdate(key, createOwner(id)) ! message
-      }
-      clearOldAggregateRepositories(now)
-  }
-
-  private def createOwner(id: AggregateId): ActorRef = {
-    val owner = context.actorOf(Props(new AggregateOwner[AGGREGATE_ROOT](settings, Some(id))).withDispatcher(BlockingDispatcher.id), aggregateTypeSimpleName + "_" + id.asLong + "_" + spawnedCount)
-    spawnedCount += 1
-    context.watch(owner)
-    ownerIds += owner -> id.asLong
-    owner
-  }
-
-  // `stale`: the store changed under the owner, so it must not write its state as a snapshot; it is told so also when it
-  // is stopping already. A sharded owner gets the request wherever it runs (started for it if it does not).
-  private def stopOwner(key: Long, stale: Boolean = false): Unit = region match {
-    case Some(shards) => shards ! ToOwner(AggregateId(key), PassivateOwner(stale))
-    case None => owners.get(key).foreach { owner =>
-      val stopping = keptForStopping.contains(key)
-      if (!stopping) {
-        keptForStopping += key -> Vector.empty
-        childrenActivity -= key
-      }
-      if (stale) owner ! StopOwnerStale else if (!stopping) owner ! StopOwner
-    }
-  }
-
-  // ************** Sharded owners (D43)
-
-  // Every node's bus starts the region; owners are made on the node their shard is allocated to, with that node's
-  // settings, so they publish to that node's event bus with its command bus as the publisher. A rebalance and idle
-  // passivation stop an owner with `StopOwner`, after its commands at work (D72); new shards go to the nodes of the
-  // newest app-version (D66).
-  private def startRegion(numberOfShards: Int): ActorRef = {
-    val system = context.system
-    val shardingSettings = ClusterShardingSettings(system)
-    def shardOf(id: Long): String = math.abs(id % numberOfShards).toString
-    ClusterSharding(system).start(
-      typeName = "owner-" + aggregateType.typeName,
-      entityProps = Props(new AggregateOwner[AGGREGATE_ROOT](settings)).withDispatcher(BlockingDispatcher.id),
-      settings = shardingSettings,
-      extractEntityId = { case ToOwner(id, message) => (id.asLong.toString, message) },
-      extractShardId = {
-        case ToOwner(id, _) => shardOf(id.asLong)
-        case ShardRegion.StartEntity(entityId) => shardOf(entityId.toLong)
-        case other => throw new IllegalArgumentException("Not a message for an owner: " + other.getClass.getName) // the region passes only these
-      },
-      allocationStrategy = ClusterSharding(system).defaultShardAllocationStrategy(shardingSettings),
-      handOffStopMessage = StopOwner)
-  }
-
-  private def shardedOwnerStarted(id: AggregateId, owner: ActorRef): Unit = {
-    shardedOwners += id.asLong -> owner
-    shardedOwnerIds += owner -> id.asLong
-    context.watch(owner)
-  }
-
-  // The next owner of the aggregate may have started on this node before this one's end is known here.
-  private def shardedOwnerTerminated(ref: ActorRef): Unit = shardedOwnerIds.remove(ref).foreach { key =>
-    if (shardedOwners.get(key).contains(ref)) shardedOwners -= key
-  }
-
-  // An owner stopped: on request, after a failure, or after a failed restore. Messages kept for it go to a new owner.
-  private def ownerTerminated(ref: ActorRef): Unit = ownerIds.remove(ref).foreach { key =>
-    if (owners.get(key).contains(ref)) owners -= key
-    keptForStopping.remove(key) match {
-      case Some(kept) if kept.nonEmpty =>
-        val owner = owners.getOrElseUpdate(key, createOwner(AggregateId(key)))
-        childrenActivity += key -> System.nanoTime() / 1_000_000
-        kept.foreach(owner ! _)
-      case _ => childrenActivity -= key
-    }
   }
 
   // Historical reads need no owner: the aggregate is read up to the version or instant, outside the actor's thread.
@@ -325,8 +228,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
       case None => Try(eventStoreState.deletePublished(id, ack.versions)).failed.foreach(e =>
         log.error(e, "Removing delivered events of aggregate " + id.asLong + " from the outbox failed; they are re-published later"))
     }
-    if (region.isDefined) shardedOwners.get(id.asLong).foreach(_ ! ack)
-    else if (!keptForStopping.contains(id.asLong)) owners.get(id.asLong).foreach(_ ! ack)
+    owners.acknowledged(ack)
   }
 
   // F27: off this bus's thread, as it restores the duplicates first (F76); the owner is stopped once the state is gone.
@@ -361,25 +263,4 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
         "event to detach them (F76)")
     }
   }
-
-  private def clearOldAggregateRepositories(now: Long): Unit = {
-    if(now - lastClear > 300000) { // no more often than every 5 minutes
-      lastClear = now
-      if (childrenActivity.size > keepAliveLimit) {
-        val sorted = childrenActivity.toVector.sortBy(_._2)
-        val toStop = sorted.take(sorted.length - keepAliveLimit)
-        toStop.foreach { case (key, lastActive) =>
-          if(now - lastActive > minimumInactivityMillis) { // give at least 2 minutes before stopping in case of prolonged activity
-            stopOwner(key)
-          }
-        }
-      }
-
-      childrenActivity.filter(now - _._2 > maxInactivityMillis).keys.foreach { key =>
-        eventsLogger.filter(_.isDebugEnabled).foreach(_.debug("Stopping aggregate " + key + " because of inactivity"))
-        stopOwner(key)
-      }
-    }
-  }
-
 }

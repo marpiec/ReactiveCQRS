@@ -26,7 +26,7 @@ unless the path says `api/` or `testdomain/`).
 | Short name | Path |
 |---|---|
 | `AggregateContext.scala`, `Command.scala`, `Event.scala`, `CommandResult.scala`, `CustomCommandResponse.scala`, `Aggregate.scala` | `api/src/main/scala/io/reactivecqrs/api/` |
-| `AggregateCommandBusActor.scala`, `CommandResponseState.scala`, `Idempotency.scala` | `commandhandler/` |
+| `AggregateCommandBusActor.scala`, `Owners.scala` (where a type's owners run, M5), `CommandResponseState.scala`, `Idempotency.scala` | `commandhandler/` |
 | `AggregateOwner.scala` (with `OwnerSettings`), `AggregateRestorer.scala`, `OutboxWriter.scala`, `SquashScheduler.scala` (M3) | `aggregate/` |
 | `PostgresEventStoreState.scala`, `PostgresEventStoreSchemaInitializer.scala`, `EventStoreState.scala` | `eventstore/` |
 | `EventsBusActor.scala` | `eventbus/` |
@@ -443,7 +443,7 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   generator, the saga state, the outbox poller and the squash scheduler. Projections are made
   by the host: `Props(...).withDispatcher(BlockingDispatcher.id)`; one left on the default
   dispatcher logs a warning at start.
-- **Reaping** of a `Local` type's owners (`AggregateCommandBusActor.clearOldAggregateRepositories`; a
+- **Reaping** of a `Local` type's owners (`LocalOwners.sweep`; a
   shard passivates the owners of a `Sharded` type itself): at most every 5
   minutes, and only when a message for some owner arrives. When more than `keepAliveLimit`
   (200) owners are tracked, the least recently used ones idle for more than 2 minutes are
@@ -1136,7 +1136,7 @@ on the live path (F93), so a projection that cannot keep up lets its backlog gro
 | Idempotency rules | `commandhandler/Idempotency.scala`, `CommandResponseState` | the response is written in the persist transaction (I2); a taken key and a version conflict both answer with the stored response |
 | Retries and timeouts | `util/Backoff`; `AggregateOwner` (concurrent retries, command timeout), `SagaActor` (write retries), `ProjectionActor` (listener retries), `RedeliveryPolicy`, `PostgresDocumentStore.updateWithRetries` | bounded everywhere; the document-store retry runs inside the listener transaction and must stay immediate (AR6) |
 | New message between nodes | `cluster/ClusterSerializer` (library classes by field name, the application's values through mpjsons, exceptions), the bindings in `reference.conf` | no functions, futures or mutable state in a message that leaves its node; a field added to a library message is an `Option` or has a default, a changed field type needs a new class (D68); a library exception keeps its class only with a field codec and a binding of its own |
-| Owner placement and hand-over (sharding) | `AggregateCommandBusActor.startRegion`, `toOwner`, `stopOwner`, `shardedOwnerStarted`; `AggregateOwner` (`unrestored`, `askToStop`, `PassivateOwner`); the hand-over timeouts in `reference.conf` | only the shard keeps messages for a stopping sharded owner, so every stop goes through it; a hand-over must wait for the command at work (D72): the timeouts stay above the longest command timeout; acknowledgements go only to an owner on the bus's node |
+| Owner placement and hand-over (sharding) | `commandhandler/Owners.scala` (`LocalOwners`, `ShardedOwners`, `ShardedOwners.start`); `AggregateOwner` (`unrestored`, `askToStop`, `PassivateOwner`); the hand-over timeouts in `reference.conf` | only the shard keeps messages for a stopping sharded owner, so every stop goes through it; a hand-over must wait for the command at work (D72): the timeouts stay above the longest command timeout; acknowledgements go only to an owner on the bus's node |
 
 ---
 

@@ -468,7 +468,7 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Fix:** D30, opt-in per context (`SnapshotPolicy`). Tests: `SnapshotSpec` (a property test over random histories with undo and duplication, red under two mutations; R10 with 100 000 events; the fallbacks; invalidation), `EventStoreStateSpec` for both stores.
 
 #### F46 — Command-bus child cache reap sorts the whole map
-- **Low**, likely · **Fixed in M5 for sharded types** (17/10/2026; replaced by passivation, D43) · `AggregateCommandBusActor.clearOldAggregateRepositories`
+- **Low**, likely · **Fixed in M5 for sharded types** (17/10/2026; replaced by passivation, D43) · `LocalOwners.sweep`
 - **As fixed:** the owners of a `Sharded` type are passivated by their shards (`pekko.cluster.sharding.passivation`); the bus keeps no children for them and runs no sweep. A `Local` type keeps the sweep, for ephemeral aggregates (M6) and gradual moves. Test: `ShardedOwnersSpec` (an idle owner is passivated by its shard and comes back with its state).
 
 #### F70 — An unknown message restarts the command bus and drops every command in flight
