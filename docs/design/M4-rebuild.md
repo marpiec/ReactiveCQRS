@@ -77,7 +77,8 @@ starts at once. A projection with no trace at all gets its first build.
 
 **Retirement (F94).** A retired build's tables, subscription rows and failure rows are
 dropped once nothing uses it: at the switch on a single node. `RetireProjection(name)` drops
-every build of a projection removed from the code.
+every build of a projection removed from the code. (As built: `Projections.retire(name)`, a call
+at start, not a message.)
 
 ## The projection supervisor
 
@@ -86,7 +87,8 @@ supervisor's `ActorRef`, named as the projection was; the host passes that ref w
 passed the projection's before (the REST layer, query APIs, `RegisterSubscribers`):
 
 ```scala
-val projections = new Projections(system, ProjectionsSettings(eventStore, subscriptionsState, registry, eventBus, contexts))
+val projections = new Projections(system, ProjectionsSettings(eventStore, subscriptionsState, registry, contexts))
+// As built: no event bus (the supervisor is registered on the bus by the host); also builder, buildsAtOnce, restartAfter.
 val carts: ActorRef = projections.start[ShoppingCartsListProjection]("ShoppingCartsList", version = 2, "shoppingCartsList") { build =>
   new ShoppingCartsListProjection(subscriptionsState, new PostgresDocumentStore[CartView](build.documentStore("carts"), mpjsons, new CartsCache))
 }
@@ -151,7 +153,8 @@ version runs on old nodes until the rollout ends (D70).
 context version that differs from the one a build recorded for a type whose state the
 projection receives, starts a build at start; `RebuildProjection` starts one on request. At
 most two builds run at once (configurable); a build waits for the projections it is declared
-`after` (listeners that read other projections).
+`after` (listeners that read other projections). (As built: no `after`; builds of projections that
+read others are ordered by the host.)
 
 ## Targeted rebuild (D63, R14)
 
@@ -197,7 +200,8 @@ backlog.
 - **D57, D70 on one node:** the active build applies live events with the new code during a
   version's build (or serves unchanged, per projection).
 - **D58:** reactors are not managed and are never rebuilt; a subscriber that must not act on old
-  events can start each aggregate at its first delivery (`skipHistory`).
+  events can start each aggregate at its first delivery (`skipHistory`). (As built: not provided;
+such subscribers stay unmanaged and see only live events.)
 - **D60:** listeners that ignore undo events (Neula's two, H6) give the same result rebuilt as
   live; whether they should handle undo is the host's decision.
 

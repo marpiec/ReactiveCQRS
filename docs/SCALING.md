@@ -456,7 +456,8 @@ leaves room for bursts and lag; the owners' states set the rest (estimated).
   aggregates held per subscriber (F93).
 - **`GetOutboxStatus`** (outbox poller): aggregates waiting in the outbox, and those given up.
 - **`GetProjectionStatus`** (each projection): failures, aggregates being retried, and gaps.
-  `GetBuildStatus` reports a build.
+  `GetBuilds` (each managed projection's supervisor) names the active build and the one in progress;
+  a build's progress shows only in its log lines for now (F152).
 - **Readiness (D71):** a node is not ready while its bus waits for its subscribers.
 - **Log lines:**
   - "Undelivered: …" (poller)

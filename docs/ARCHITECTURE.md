@@ -240,7 +240,10 @@ abstract class AggregateContext[R : ClassTag] {           // AggregateContext.sc
   val commandTimeout: FiniteDuration = 60.seconds         // since 1.0 (R5): answer CommandHandlingError after it
   val snapshots: Option[SnapshotPolicy] = None             // since 1.0 (D30): performance snapshots, opt-in
   val commandProcessing: CommandProcessing = Concurrent    // since 1.0 (R8, D31): or Serial(maxQueuePerAggregate, Reject)
-  val aggregateType = AggregateType(classTag[R].toString) // FQCN; the routing key everywhere
+  val squash: Option[SquashPolicy[R]] = None               // since 1.0 (D47-D52, R11): squash events, automatic squash, the archive
+  val placement: Placement = Placement.Local               // since M5 (D43): or Sharded(numberOfShards)
+  val writtenFrom: Map[Class[_], String] = Map.empty       // since M5 (D67): new classes written once every node reads them
+  val aggregateType: AggregateType = AggregateType.of[R]  // the root's class name; the routing key everywhere
 }
 ```
 
@@ -902,6 +905,7 @@ not use the old build's stores), parked queries are answered with `None`, and it
 | `gapRequestRepeat` | 10 s | how long a request for missing versions waits before it is sent again, doubling up to 5 minutes |
 | `gapGiveUpAfter` | 10 minutes | how long missing versions are asked for before the gap is recorded as a failure |
 | `failureRetryInterval` | 50 ms | the pace of retrying many failures (at start, `RetryAllFailedSubscriptions`) |
+| `maxBatchesPerTransaction` | 100 | how many aggregates' batches one listener transaction applies when deliveries keep arriving (D61); 1 applies each alone |
 | `purgedDropWindow` | 30 minutes | how long, after a purge's last batch, deliveries of the aggregates it removed are acknowledged without being applied (R17) |
 
 ### 6.5 Delayed queries (read-your-writes for queries)
@@ -1069,7 +1073,7 @@ status) and the build goes on (F82).
 ### 8.2 Managed projections: the registry and the supervisor (`rebuild/Projections.scala`, M4)
 
 **Wiring.** The host creates one `Projections(actorSystem, ProjectionsSettings(eventStore,
-subscriptionsState, registry, eventBus, contexts))` and starts each managed projection with
+subscriptionsState, registry, contexts, builder, buildsAtOnce = 2, restartAfter = 10 s))` and starts each managed projection with
 `projections.start[P](name, version, actorName) { build => new P(...) }`. The result is the
 projection's **supervisor**, whose `ActorRef` the host uses where it used the projection's:
 queries, the REST layer, `RegisterSubscribers`. `create` makes an instance of the projection for
@@ -1177,8 +1181,8 @@ purge of that organization deletes the saga (§4.7).
 Since 1.0 (fixed F35, F17, F36, F34) every step result and every write of saga progress
 comes back to the actor as a message, so all decisions run on the actor's thread;
 `handleOrder` and `handleRevert` are called there too and must only start the work and
-return a Future. A failed write is retried with back-off (from 100 ms, doubling, at most
-`maxPersistAttempts` = 10 attempts; the last wait is 25.6 s). After that the saga stays at
+return a Future. A failed write is retried with back-off (`persistRetries`, a `Backoff` from 100 ms,
+doubling up to 30 s, 10 attempts; the last wait is 25.6 s). After that the saga stays at
 its last stored step and resumes from it at the next start, which repeats that step; its
 commands must therefore be idempotent. An order that cannot be stored at all, or gets no saga
 id, is answered with `SagaFailureResponse` (F75). Pending sagas are read completely before

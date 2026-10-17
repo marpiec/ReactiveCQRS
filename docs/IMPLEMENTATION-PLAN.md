@@ -1865,6 +1865,20 @@ Open test-infrastructure items:
   stores) and `SquashSpec` (through the command bus: the archive read, a restore, the class
   report); nine mutations, each caught.
 
+**17/10/2026: the book**
+- At the user's request, the user documentation is a book, `docs/book/`, *ReactiveCQRS, Step by Step*:
+  19 chapters in six parts (first steps; commands and events; read models; processes; long
+  histories; organizations, clusters and production) and three appendices (a glossary, the messages
+  and their answers, troubleshooting), about 9 600 lines in light language with examples from the
+  test domain. `docs/book/STYLE.md` says how to write for it and keep it current.
+- Seven writers drafted it in parallel from one brief, checking each name and default against the
+  code; the review aligned the chapters (names, references, the purge) and a script checks every
+  code name against the sources.
+- Writing it was a code review too: 23 problems recorded (F147–F169), among them a value written
+  into SQL by `findDocumentByObjectInArray` (F158) and copies made at a version their base had not
+  reached (F147). M6 fixes ten, review 8 decides F155, M7 takes the rest. Stale statements in
+  ARCHITECTURE, the M4 and M5 designs, KNOWN-ISSUES, SCALING and CLAUDE.md were corrected.
+
 **17/10/2026: the purge of an organization (R17)**
 - `SpacePurge` as refined in the design: a plan that refuses before anything changes, the
   detaches of other organizations' copies (`DetachDuplicates`, `EventStoreState.detachDuplicates`),

@@ -178,8 +178,8 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
   from the snapshot and the events after it when the context opts in (D30), otherwise by
   replaying the *entire* event stream; then it keeps them updated. With `commandProcessing = Serial(...)`
   (R8) it runs one command at a time from a bounded queue. A context mixing in
-  `WithOutboxWriter` writes rows of its own in the transaction of the events (R12). `aggregateVersionLimit` defaults to
-  10 000 events per aggregate. A concurrent command that conflicts with its own owner's commit
+  `WithOutboxWriter` writes rows of its own in the transaction of the events (R12). The event store's
+  `aggregateVersionLimit` (a `PostgresEventStoreState` parameter) defaults to 10 000 events per aggregate. A concurrent command that conflicts with its own owner's commit
   runs again at once, in turn (F99). Design: `docs/design/M3-aggregates.md`.
 - **`EventsBusActor`** — in-memory routing and delivery tracking (deadline, stall
   logging, `GetDeliveryStatus`); routes re-publish requests to the type's command bus;

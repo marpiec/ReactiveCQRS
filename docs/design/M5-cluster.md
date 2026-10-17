@@ -260,7 +260,7 @@ are internal and keep their sequences.
 - `pekko.cluster.app-version` is the host's configuration; the spike shows shards and
   singletons follow it.
 - A new event class ships first with its handlers and is written only once every node runs
-  that version: a write switch per class (`AggregateContext.writableFrom` or configuration),
+  that version: a write switch per class (`AggregateContext.writtenFrom` as built, or configuration),
   checked when a command's events are persisted.
 - Readiness (D71): a check class for Pekko Management's health checks: the node's bus registered
   its subscribers, the regions and proxies are up, the schema version matches.

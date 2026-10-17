@@ -144,7 +144,7 @@ behaviour.
 | D55 | `GetAggregate`, `GetAggregateMinVersion` and projection queries keep their messages and are routed transparently to the shard owner or the projection singleton. **Done in M5:** owner queries go through the region (`ToOwner`), projection queries through the supervisor's proxy, with the caller as sender. |
 | D65 | Goal: zero-downtime rolling upgrades from 1.0 on (cloud cluster; on-premise temporarily runs two nodes, or does a fast restart). |
 | D66 | During a rollout work moves only from old to new nodes (`pekko.cluster.app-version` + default shard allocation, which avoids old nodes); singletons move once (oldest node last). Confirm on the chosen Pekko version with a spike. |
-| D67 | A new event class (or `V<n>`, saga order class, squash event class) ships first with its handlers; it is written only after every node runs that version (per-feature write switch, or the next version). **Done in M5:** `AggregateContext.writtenFrom` (a class and the app-version from which every node reads it); each node keeps the lowest app-version among the members (`AppVersions`, from the members' events) in its command buses' contexts; an owner refuses to persist such an event earlier (`CommandRejected`), and a squash such a squash event (`SquashRefused`); handlers ask `everyNodeRuns(version)`. All members at Pekko's 0.0.0 (no app-versions) or no cluster: everything is written. Saga order classes are not guarded: the runner, a singleton on the oldest node, writes them itself. |
+| D67 | A new event class (or `V<n>`, saga order class, squash event class) ships first with its handlers; it is written only after every node runs that version (per-feature write switch, or the next version). **Done in M5:** `AggregateContext.writtenFrom` (a class and the app-version from which every node reads it); each node keeps the lowest app-version among the members (`Members`, from the members' events) in its command buses' contexts; an owner refuses to persist such an event earlier (`CommandRejected`), and a squash such a squash event (`SquashRefused`); handlers ask `everyNodeRuns(version)`. All members at Pekko's 0.0.0 (no app-versions) or no cluster: everything is written. Saga order classes are not guarded: the runner, a singleton on the oldest node, writes them itself. |
 | D71 | A node is ready only after its subscriber list is registered, shards and proxies are up and the schema check passed; blocking startup waits (bus init timer and 180 s `Await`, 30 s `EnsureEventsPublished` delay, index builds) are removed or asynchronous. **Done in M5:** `Readiness(system)` waits for each event bus until its subscribers answered (through the singletons' proxies, the singletons too); `ReadinessCheck` is a Pekko Management readiness check; the blocking startup waits were gone by M3. |
 | D72 | Handover passivates an aggregate after its current command; outbox rows stay for the new owner; serial queues drain or reject with a retryable error; sagas resume from their stored step (requires idempotent saga commands, H3). **Done in M5 for owners:** the region's hand-off message is `StopOwner`, so an owner finishes its commands (its serial queue drains) and writes its passivation snapshot before it stops; a stop the bus asks for goes through the shard (`PassivateOwner`), which keeps what arrives meanwhile; `handoff-timeout` and the shutdown phase of the regions are 90 s in core's `reference.conf`, above the default command timeout. Sagas: step 5. |
 | D73 | Every version's upgrade test includes a rolling-upgrade test (old and new in one cluster under load): no lost or doubled command, projections catch up, no deserialization errors, projection switch-over works. **Done in M5 (the test):** `RollingUpgradeSpec`: two nodes of 1.0.0 and two of 2.0.0, which adds an event class, under load from every node; the old nodes leave, the oldest last; no command lost or applied twice (clients retry through another node with an idempotency key), the projection has every item, the new class is written only once the old nodes are gone. Deserialization errors cannot show in one JVM, where every node has every class. |
@@ -448,6 +448,35 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Fix:** while other aggregates are due, retries take at most half the budget; each kind takes what the other leaves. Test: `RedeliveryPolicySpec` (red before).
 - **Found:** M5 close, audit of delivery.
 
+#### F161 — Subscribable projections push before the listener's transaction commits, and one failing filter stops an update
+- **Medium**, confirmed (by reading) · **Fix in M7** · `SubscribableProjectionActor.sendUpdate`
+- **Symptom:** `sendUpdate` sends at once, so a batch that rolls back has pushed a change never stored (and pushes it again when retried); one `try` wraps the loop over subscriptions, so a filter that throws keeps the update from the rest; a reused subscription id gives the newest listener every update twice and the older none.
+- **Found:** writing the book (M6, 17/10/2026).
+
+#### F162 — The event bus ignores a late `RegisterSubscribers`, and waits for a subscriber that answered with a failure
+- **Low**, confirmed (by reading) · **Fix in M7** · `EventsBusActor`
+- **Symptom:** a `RegisterSubscribers` sent after start-up is unhandled, without a log line; a `Status.Failure` from a subscriber during start-up is stashed, so the bus keeps waiting for its subscriptions.
+- **Found:** writing the book (M6, 17/10/2026).
+
+#### F163 — Delayed queries with a `Future` can miss the update they wait for
+- **Low**, confirmed (by reading) · **Fix in M7** · `ProjectionActor` (`delayIfNotAvailableAsync`, `...AsyncCustom`)
+- **Symptom:** such a query is parked only once its `Future` answered; an update applied meanwhile asks for no replay, and at the deadline the answer is `None` without a last search. The custom variant answers `None` at its deadline, where it answers a `T` on success.
+- **Found:** writing the book (M6, 17/10/2026).
+
+#### F164 — A second listener of one kind for one type silently replaces the first
+- **Low**, confirmed (by reading) · **Fix in M7** (refused at start) · `ProjectionActor` (the listener maps)
+- **Found:** writing the book (M6, 17/10/2026).
+
+#### F169 — `OutboxStatus.waiting` can count fewer aggregates than wait
+- **Low**, confirmed (by reading) · **Fix in M7** · `OutboxPollerActor`, `RedeliveryPolicy`
+- **Symptom:** it is the poller's tracked aggregates; new ones postponed past `maxRepublishPerPoll` are not tracked yet.
+- **Found:** writing the book (M6, 17/10/2026).
+
+#### F166 — A permanent delete held by a failed subscription runs only at the next re-publication
+- **Low**, confirmed (by reading) · **Fix in M7** · `AggregateCommandBusActor.deletePermanently`
+- **Symptom:** once the failure is retried or skipped, the delete happens when the poller next re-publishes its event: every 30 minutes after the 10-minute report.
+- **Found:** writing the book (M6, 17/10/2026).
+
 ### Commands and aggregates
 
 #### F7 — Event timestamps differ between live delivery and the store
@@ -648,6 +677,41 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Symptom:** a command that gives no events writes nothing (R9), and the owner applied that rule to rewrites too: a `RewriteCommandSuccess` with rewritten events and no new event was answered `SuccessResponse` and dropped. D17 recommends a compensating event, but nothing requires one, and a rewrite for R15 has none to add.
 - **Found:** M6 survey.
 
+#### F147 — A duplication at a version its base has not reached was stored, and the copy then read the base's later events
+- **Medium**, likely (by reading; test first) · **Fix in M6** · `add_duplication_event`
+- **Symptom:** `add_duplication_event` checks that the base exists and that the version is not below its squash point, but not that the base has reached it. A copy made "at version 10" of a base at version 5 reads the base's versions 6 to 10 as they are stored later: the copy's state changes without an event of its own, and its subscribers are never told.
+- **Fix:** the procedure refuses a version above the base's current one, under the lock it already takes.
+- **Found:** writing the book (M6, 17/10/2026).
+
+#### F148 — Event handlers must handle undo events, although the owner reads the state again after an undo
+- **Low**, confirmed (by reading; the test domain's TODO) · **Fix in M7** · `AggregateOwner.nextRoot`
+- **Symptom:** the owner applies every new event to a copy of the state before the commit, undo events included, so a context without a case for its undo event fails the command with `EventHandlingError`; restores skip undo events, and the state after an undo is read from the store.
+- **Found:** writing the book (M6, 17/10/2026).
+
+#### F149 — A refused first event without a space answered with the decision's number
+- **Low**, confirmed · **Fix in M6** · `AggregateOwner.persistOrAnswer`
+- **Symptom:** the `FailureResponse` text, which users see, ends with "(D38)".
+- **Found:** writing the book (M6, 17/10/2026).
+
+#### F154 — Squash and detach events were stored without the event size check
+- **Low**, confirmed (by reading) · **Fix in M6** · `PostgresEventStoreState.squash`, `detachDuplicate`
+- **Symptom:** both write the event with `mpjsons.serialize` rather than `serializedChecked`, so a large state gives a squash event above `eventSizeLimit` (and its per-class limits), which the limits are there to prevent.
+- **Found:** writing the book (M6, 17/10/2026).
+
+#### F155 — An automatic squash checks its event as `UserId(0)`, so a state that records its last user never passes
+- **Medium**, confirmed (by reading) · **Decide at review 8** (M6 close) · `AggregateRestorer.squashEvent`, `SquashScheduler`
+- **Symptom:** D85's check applies the squash event as the request's user, as a restore will; the scheduler asks as `UserId(0)`. A context whose event handlers copy the user into the state ("last changed by") gets every automatic squash refused, and a manual one passes only when the right person asks. Options: the squash event takes the user of the event it replaces (keeping the squasher in its metadata), or the check compares states without such fields (the context says which).
+- **Found:** writing the book (M6, 17/10/2026).
+
+#### F157 — Dead API: `OnConcurrentModification` and `SimulateEvent`
+- **Low**, confirmed · **Fix in M7** (API clean-up) · `api/.../command/OnConcurrentModification.scala`, `AggregateContext.scala`
+- **Symptom:** `OnConcurrentModification` (`Retry`/`Fail`) is used nowhere: the kind of command alone decides what a clash does. `SimulateEvent` is declared, and the command bus answers it as an unknown message. `NoEventsForAggregateException` is never thrown (it has only a serializer binding).
+- **Found:** writing the book (M6, 17/10/2026).
+
+#### F165 — `io.reactivecqrs.api.Nothing` hides `scala.Nothing` after `import io.reactivecqrs.api._`
+- **Low**, confirmed · **Fix in M7** (API clean-up, a rename) · `api/.../CustomCommandResponse.scala`
+- **Found:** writing the book (M6, 17/10/2026).
+
 ### Event store and SQL
 
 #### F22 — Restore loads the whole event stream into memory before handling it
@@ -749,6 +813,16 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Fix:** a written event's size is its UTF-8 bytes, counted without encoding the string. The per-class size limits stay in characters. Test: `PostgresEventStoreStateSpec` (sizes of Polish text, red before; the count against `getBytes`).
 - **Found:** M5 close, audit of delivery.
 
+#### F168 — `EventTooLargeException` spoke of bytes for a limit in characters
+- **Low**, confirmed · **Fix in M6** · `api/.../Exceptions.scala`
+- **Symptom:** the check compares the JSON's length in characters (`PostgresEventStoreState.serializedChecked`); the message says bytes.
+- **Found:** writing the book (M6, 17/10/2026).
+
+#### F167 — A permanent delete left the aggregate's stored command responses to expire
+- **Low**, confirmed · **Fix in M6** · `PostgresEventStoreState.deletingPermanently`
+- **Symptom:** since M6 a stored response names its aggregate (R17), and a purge deletes the responses of the aggregates it removes; a permanent delete still left them for the retention (30 days by default), with the aggregate's data in the response's info.
+- **Found:** writing the book (M6, 17/10/2026).
+
 ### Performance and runtime
 
 #### F127 — Command handlers ran on Pekko's default dispatcher
@@ -842,6 +916,27 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Symptom:** the guard against names PostgreSQL cuts at 63 characters always counted an index name, so a table name of 47 to 52 characters (58 to 63 with `projection_`) was refused for a store without indexes; with a build's suffix more names passed the limit, and the refusal stopped the build's instance (F110).
 - **Found:** M4 close (review 6), audit.
 
+#### F158 — `findDocumentByObjectInArray` wrote its value into the SQL text
+- **High**, confirmed (by reading) · **Fix in M6** · `PostgresDocumentStore.findDocumentByObjectInArray`
+- **Symptom:** the value is put between quotes in the query without escaping, so a value with a quote breaks the query, and one made to do so changes it (SQL injection) when a host passes a user's input.
+- **Fix:** the JSON is bound as a parameter, written by a JSON encoder.
+- **Found:** writing the book (M6, 17/10/2026).
+
+#### F159 — Some document queries made invalid SQL
+- **Medium**, confirmed (by reading) · **Fix in M6** · `PostgresDocumentStore.createQuery`, `createPartsQuery`
+- **Symptom:** `findDocument` with no condition gives `WHERE` with nothing after it (the memory store returns every document); the parts queries' int and long sorts close the quote in the wrong place, and they always add `LIMIT`, so `DocumentStoreQuery.basic` (limit -1) is refused.
+- **Found:** writing the book (M6, 17/10/2026).
+
+#### F156 — The memory document store ignores spaces
+- **Low**, confirmed · **Fix in M7** (the test kit, E11) · `MemoryDocumentStore`
+- **Symptom:** `clearSpace` does nothing, so a test of clearing an organization against it passes without testing anything.
+- **Found:** writing the book (M6, 17/10/2026).
+
+#### F160 — Two finders read outside the listener's transaction
+- **Low**, confirmed (by reading) · **Fix in M7** · `DocumentStore.findDocumentByPath(ExpectedValue)`, `findDocumentByPaths`
+- **Symptom:** they take no session, so inside a listener they read what is committed, not what the listener's batch wrote.
+- **Found:** writing the book (M6, 17/10/2026).
+
 ### Sagas
 
 #### F17 — Saga uses `ActorContext` off its thread
@@ -857,7 +952,7 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **High**, confirmed · **Fixed in M1** (16/10/2026) · `SagaActor.scala:70, 80, 108, 132`
 - **Symptom:** a failed persist leaves the saga unfinished, with no retry and only an unsupervised exception.
 - **Test:** `SagaRecoverySpec`: writes that fail a few times (before the fix the caller never got an answer), an order that cannot be stored (no answer before), a saga that resumes after a restart without repeating its last step's effects.
-- **Fix:** every write result comes back as a message; failed writes are retried with back-off (100 ms doubling to 30 s, at most `maxPersistAttempts` = 10, both overridable), then the saga is left at its last stored step and resumes after a restart. An order that cannot be stored is answered with `SagaFailureResponse`. Pending sagas are read completely before any starts, and a failed load is retried.
+- **Fix:** every write result comes back as a message; failed writes are retried with back-off (100 ms doubling to 30 s, at most 10 attempts: `SagaActor.persistRetries`, overridable), then the saga is left at its last stored step and resumes after a restart. An order that cannot be stored is answered with `SagaFailureResponse`. Pending sagas are read completely before any starts, and a failed load is retried.
 
 #### F36 — Saga update and delete ignore row counts
 - **Medium**, confirmed · **Fixed in M1** (16/10/2026) · `PostgresSagaState.scala:23-33`
@@ -875,6 +970,12 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Symptom:** Pekko writes an `ask`'s temporary actor with its node's address only while it serializes a message. Stored outside one, its path had no address (`pekko://cluster/temp/$a`), so after the runner moved, the answer went to the actor of that path on the new node: dead letters, or an unrelated ask of the same temporary name. Against D46.
 - **Fix:** the path is written within the node's transport information, which gives it the address. Test: `SagaCallerPathSpec` (red before).
 - **Found:** M5 close, audit of the cluster.
+
+#### F151 — One unreadable stored saga order kept every saga of its name from resuming
+- **Medium**, confirmed (by reading) · **Fix in M6** · `PostgresSagaState.loadAllSagas`, `SagaActor`
+- **Symptom:** the load reads every row of a saga name before any starts, and one order that no longer reads fails the whole load, which is retried without end: no saga of that name resumes.
+- **Fix:** an unreadable row is logged and left out (`StoredDataCheck` reports it); the others resume.
+- **Found:** writing the book (M6, 17/10/2026).
 
 ### Serialization (mpjsons 0.7)
 
@@ -1047,6 +1148,16 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Fix:** while a member runs an older app-version than the node (or the node knows no member yet), the drop waits, looked at again every 10 s; it happens once every member runs the node's version or a later one. Test: `RollingUpgradeSpec` (the removed projection still serves while the old nodes run, and is retired once they left; red when the drop does not wait).
 - **Found:** M5 close, audit of the cluster.
 
+#### F152 — A host cannot watch a build's progress
+- **Low**, confirmed (by reading) · **Fix in M7** (operations) · `ProjectionSupervisor`
+- **Symptom:** `GetBuildStatus` is the builder's, and the supervisor passes unknown messages to the serving instance, which ignores it; `GetBuilds` answers the `BuildRecord` captured when the instance was made, whose position is never refreshed. SCALING §10 lists `GetBuildStatus` as a signal.
+- **Found:** writing the book (M6, 17/10/2026).
+
+#### F153 — `ServeStale` holds only for builds begun when the supervisor starts
+- **Low**, confirmed (by reading) · **Fix in M7** · `ProjectionSupervisor`
+- **Symptom:** for a `RebuildProjection` at run time the active instance is already subscribed and keeps taking live events; after a restart during that build it serves stale.
+- **Found:** writing the book (M6, 17/10/2026).
+
 ### Code structure
 
 #### F14 — In-memory test doubles are wrong or incomplete
@@ -1070,6 +1181,11 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **As fixed:** one key, `AggregateType.of[R]`, for the context, the command bus, the owner, the stores, projection listeners, the replayer and the squash scheduler: Scala's full name of the class, which is what the store has always kept (`typeSymbol.fullName`), taken from the class (`getName` with `$` read as `.`). No stored name changes. Events and listeners take a `ClassTag` instead of a `TypeTag`. Test: `EventStoreStateSpec` (a nested root class, both stores). Left: `SubscribableProjectionActor` keys updates by `TypeTag` (a listener-side key, not stored).
 
 ---
+
+#### F150 — `StoredDataCheck.usersOf` said "None" for a class nobody uses
+- **Low**, confirmed · **Fix in M6** · `StoredDataCheck.usersOf` (its comment)
+- **Symptom:** the method always answers `ClassUsers`; a class can go when both its counts are zero.
+- **Found:** writing the book (M6, 17/10/2026).
 
 ## 4. Issues on the Neula side
 
@@ -1116,8 +1232,8 @@ From §7 of Neula's change requests.
 | M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8 ✔; F8 (contract ✔), F22 ✔, F23 ✔, F25 ✔, F27 ✔, F30 ✔, F31 ✔, F32 ✔, F33 (rest ✔), F38 ✔, F39 ✔, F44 ✔, F50 ✔, F65 ✔, F76 ✔, F78 ✔, F81 ✔, F96 ✔, F97 ✔, F100–F107 ✔; D85 ✔; Neula H8 |
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
-| M6 | F8 (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 |
-| M7 | AR5 (moved from M5 at review 7) |
+| M6 | F8 (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146, F147, F149, F150, F151, F154, F155 (decide at review 8), F158, F159, F167, F168 |
+| M7 | AR5 (moved from M5 at review 7); F148, F152, F153, F156, F157, F160, F161, F162, F163, F164, F165, F166, F169 (found writing the book) |
 
 ---
 
