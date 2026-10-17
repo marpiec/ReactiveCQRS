@@ -108,7 +108,7 @@ flowchart LR
 | M2 | Delivery that is reliable, visible and bounded | D3, D4, D7, D8, D15, D20a–c | R1, R3, R4 |
 | M3 | Features for Neula v2 core; storage reduction; quick performance wins | D29, D30, D31, D32, D33, D17, D34, D35, D47–D52 | R8, R10, R12, R13 |
 | M4 | Rebuild without downtime, equal to live, resumable, fast | D57–D63, D70, D56 (R14) | R14 |
-| M5 | Cluster, rolling upgrades, id ranges | D39, D42–D46, D53–D55, D65–D73, D68, D75 | R18, R19, R20 (multi-node) |
+| M5 | Cluster, rolling upgrades, id ranges | D39, D42–D46, D53–D55, D65–D73, D68, D75 | R18, R19 (R20's multi-node harness for hosts moved to M7) |
 | M6 | Organization operations and migration; complete rewrite; ephemeral aggregates; retention squash | D38, D40, D41, D56 (R17), D76, D77, D52 (R11) | R11, R15, R16, R17 |
 | M7 | Library documentation and examples; 0.12.47 → 1.0 migration; release | D81, D79 | all (documentation, migration) |
 
@@ -571,6 +571,13 @@ through the targeted rebuild of one space, which lists its aggregates where it r
 and is refused while aggregates of the projection's types have no space: the backfill (F49) runs
 first. A purge clears the organization's documents in every build the registry lists.
 
+**Refined at the M5 review** (KNOWN-ISSUES §7, review 7): in a cluster, a purge, an import or a
+complete rewrite changes aggregates under owners on other nodes: `Local` owners catch up through
+the stored version and history generation (F131), sharded ones are stopped through their shard
+(`PassivateAggregate`), and the operation itself runs once (a singleton, or under the schema
+lock). New event classes it adds go through the write switch (D67). The commit-order pass of one
+organization's rebuild still walks the whole store (F124), which M6 fixes.
+
 **Verification**
 
 - Export → import into a second database: every aggregate restores to the same state
@@ -677,6 +684,18 @@ refusals and what clears them, F98 until M4).
 (H9: managed projections, one cache per build, the members step 6 removed, the space backfill)
 and the operations of managed projections (`GetBuilds`, `RebuildProjection`, `RebuildAggregates`,
 `ToBuildInProgress`, `Projections.retire`, what a stopped instance or a failing build looks like).
+
+**Refined at the M5 review** (KNOWN-ISSUES §7, review 7): E2 carries the part of M5's verification
+that needs Docker: a writer killed right after a commit (its events still reach the projections
+through the outbox), a rebalance under load with a client ledger of idempotency keys (nothing lost
+or applied twice), a network partition (the resolver downs the minority side; no version appended
+twice) and singleton failover after a loss. AR5 moves here: saga definitions run by a
+framework-owned runner, with the migration of Neula's sagas in the guide (the runner already runs
+as a singleton and stores its callers with their addresses, F137). E11's test kit gets a
+multi-node harness for hosts (R20's multi-node part; the library's `TestCluster` is test-scoped).
+The runbook carries M5's host steps (H10) and the cluster's operations notes (`docs/SCALING.md`;
+types read often are `Sharded`, F131; a change of placement or `numberOfShards` needs a full stop;
+the bus's window is per node).
 
 **Verification**
 
@@ -1763,3 +1782,31 @@ Open test-infrastructure items:
   scenarios), `RedeliveryPolicySpec`; each red under its mutation.
 - The store reported a written event's size in characters and a read one's in bytes; both are
   UTF-8 bytes now (F142, `PostgresEventStoreStateSpec`, red before).
+
+**17/10/2026: M5 closed (review 7, `baseline-M5`, tag `v1.0.0-M5`)**
+- The plan's M5 verification, item by item (the table under "Verification" in
+  `docs/design/M5-cluster.md`):
+  - In-JVM multi-node tests: `ShardedOwnersSpec`, `ClusterDeliverySpec`, `LocalOwnersSpec`,
+    `ClusterMessageSizeSpec`, `RollingUpgradeSpec`: a command on any node reaches its owner, a
+    projection singleton receives every owner's events, queries work from any node, nodes leave
+    under load and singletons move without a command lost or applied twice.
+  - The docker-compose cluster (a writer killed after a commit, a rebalance with a client ledger,
+    a partition, failover after a loss): not run, as the machine has no Docker; moved to M7's E2.
+    The in-JVM tests cover nodes that leave gracefully only.
+  - Cluster of one: the full suites pass with `-Dreactivecqrs.test.clusterOfOne=true` (core 274,
+    testdomain 164).
+  - Rolling upgrade: `RollingUpgradeSpec` (1.0.0 → 2.0.0 with a new event class under load); a
+    projection version switch across nodes in `ClusterDeliverySpec`.
+  - Serialization: `ClusterSerializationSpec`, `ClusterSerializerSpec`. Id ranges: `IdRangeSpec`,
+    `ChosenIdRaceSpec`.
+  - Neula's acceptance: R18 with Neula's cluster tests and H10's host steps; R19 done (metrics,
+    tracing with the metadata envelope); R20's multi-node harness for hosts moves to M7's test kit.
+- Review 7 (KNOWN-ISSUES §7): the audits found F128–F142, all fixed but F136 (accepted and
+  documented), each with a test that failed before it or under a mutation. The full suites found a
+  stale assertion of the default dispatcher left from F127 and a start-up race in a bus test. AR5
+  moved to M7.
+- `baseline-M5` against `baseline-M4` and M4's code run the same day: no throughput regression;
+  commands with projections, contended commands and both soaks faster (F99, F93); startup about
+  100 ms slower, from the cluster libraries' configuration (found by elimination).
+- `docs/perf/README.md` describes the M5 reports and the same-day comparison.
+- `sbt test`: core 274, testdomain 164, all pass, also as a cluster of one.

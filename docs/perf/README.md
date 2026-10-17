@@ -4,20 +4,25 @@ Each file here is the report of one run of the `bench` module, the end-to-end lo
 the implementation plan (§7). `baseline-M1.md` is the reference that later milestones are
 compared with; `baseline-M2.md` adds the delivery soak of M2; `baseline-M3.md` adds serial command mode and
 restores from snapshots; `baseline-M4.md` measures the rebuild through managed projections (the builder) and
-the projections' live groups, with every scenario's subscriptions in the database.
+the projections' live groups, with every scenario's subscriptions in the database; `baseline-M5.md` the same
+scenarios with the cluster libraries and flow control (F93). M5's high-load scenarios have reports of their own:
+`load-M5.md` (10 000 commands at once, an aggregate of 50 000 events), `large-M5.md` (documents of 5 MB),
+`flow-M5.md` (the soak with flow control), `heavy-M5.md` and `heavy-before-F127.md` (handlers that hold their
+threads); `docs/SCALING.md` reads them.
 
 ## Running it
 
 ```bash
-sbt "bench/run baseline-M4 soakAggregates=100000 soakEventsPerAggregate=10"
+sbt "bench/run baseline-M5 soakAggregates=100000 scenarios=commands,contended,serial,rebuild,restore,soak,deliverySoak"
 ```
 
 The name becomes the report file, `docs/perf/<name>.md`. Sizes can follow the name as
 `key=value` arguments (`workers`, `commandsPerWorker`, `contendedCommandsPerWorker`,
 `noteSize`, `rebuildAggregates`, `rebuildEventsPerAggregate`, `restoreSizes`,
 `soakSeconds`, `soakAggregates`, `soakEventsPerAggregate`, `soakFailingSeconds`,
-`restartCycles`), and `scenarios=commands,contended,serial,rebuild,restore,soak,deliverySoak` runs
-only those; for example a quick check:
+`restartCycles`, `burstCommands`, `longAggregateEvents`, `largeSize`, `largeCommands`, `heavyMillis`), and
+`scenarios=commands,contended,serial,rebuild,restore,soak,deliverySoak,burst,long,large,heavy` runs only those (all
+by default; the baselines run the first seven); for example a quick check:
 
 ```bash
 sbt "bench/run smoke workers=2 commandsPerWorker=10 restoreSizes=100,1000 soakSeconds=5"
@@ -53,6 +58,10 @@ events carry a 200-character note, so the numbers show the library's costs, not 
 - All numbers come from one run on one machine (named in the report). They are for comparing
   runs on the same machine, not absolute figures; run the bench twice when a difference is
   close to the noise.
+- The machine's state moves the numbers between days. M4's code run on the day of `baseline-M5`
+  gave 9 788 commands/s without subscribers (10 691 in `baseline-M4`) and its first command after
+  574 ms (502). When a difference matters, run the previous milestone's code the same day, from a
+  worktree at its tag (`git -c core.longpaths=true worktree add <dir> v1.0.0-M4` on Windows).
 - "Committed transactions" comes from `pg_stat_database` and also counts autocommit reads.
 - "Peak heap" is the sum of the heap pools' peaks during the measured step, an upper bound.
 - SQL statements are counted by ScalikeJDBC's completion listener in the bench's JVM.

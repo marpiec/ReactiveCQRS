@@ -1091,8 +1091,9 @@ From §7 of Neula's change requests.
 | M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔, F95 ✔; Neula H2, H7 |
 | M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8 ✔; F8 (contract ✔), F22 ✔, F23 ✔, F25 ✔, F27 ✔, F30 ✔, F31 ✔, F32 ✔, F33 (rest ✔), F38 ✔, F39 ✔, F44 ✔, F50 ✔, F65 ✔, F76 ✔, F78 ✔, F81 ✔, F96 ✔, F97 ✔, F100–F107 ✔; D85 ✔; Neula H8 |
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
-| M5 | AR5; F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
+| M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 (complete), F124 |
+| M7 | AR5 (moved from M5 at review 7) |
 
 ---
 
@@ -1169,7 +1170,7 @@ these modules to the command bus.
 - **Proposal:** a `SagaDefinition` (name, `handleOrder`, `handleRevert`) run by a
   framework-owned saga runner; the caller to answer is kept as a serialized `ActorRef`
   instead of a path string, which also works across nodes (D45).
-- **When:** M5, with the saga runner singleton (D46).
+- **When:** M7, with the migration guide for Neula's sagas (moved from M5 at review 7: the runner already runs as a singleton and answers across nodes, F137).
 
 #### AR6 — Retry and back-off rules are repeated with different shapes
 - **Finding:** the executor retries concurrent commands (10 attempts, 10–500 ms with
@@ -1498,3 +1499,107 @@ removed members of step 6.
 - *Watch*: listeners that make their work before returning it, and listeners with side effects,
   are the two shapes the runtime now handles explicitly (F109, F114); a new listener kind must
   keep both.
+
+### Review 7, 17/10/2026: closing M5 (architecture description, plan and code)
+
+Scope: the cluster as built (sharded owners D43, D72; serialization D45, D68; delivery across
+nodes and the singletons D44, D46, D53–D55; ids D39; rolling upgrades D65–D73), the high-load
+work (`docs/SCALING.md`: F121–F127, flow control F93), metrics (R19), the Scala 3 groundwork
+(D75), `docs/ARCHITECTURE.md` §5, §13 and §14, and the remaining milestones. Inputs: the bench
+(`baseline-M5.md` against `baseline-M4.md`, with the M5 scenarios `load-M5`, `large-M5`,
+`flow-M5` and `heavy-M5`), two read-only audits by separate agents (delivery and flow control;
+the cluster), the full suites run normally and as a cluster of one, and our own reading. Every
+finding was checked in the code, and every fix has a test that failed against the code before
+it, or under a mutation that restores the old code.
+
+**Outcome.** The M5 decisions hold. Refinements:
+- I1 (one writer per aggregate) holds for sharded types. A `Local` type has an owner on every
+  node that serves it; the store's version check decides between their writes, and since F131
+  each compares its version with the store's before it answers what must be current. Types read
+  often in a cluster of several nodes are better `Sharded`; a change of placement or
+  `numberOfShards` makes two owners per aggregate while old and new nodes run, so it needs a full
+  stop.
+- Delivery: a message holds consecutive versions only (F128); a bus asks a moved singleton every
+  tick until it answers (F129); flow control keeps half the window for pulls while aggregates are
+  behind, and counts what pulls asked for (F130). The window is one bus's, so a projection's
+  mailbox can hold one window per node (documented).
+- Rolling upgrades: `Projections.retire` waits for the older nodes (F132); a permanent delete's
+  detach events pass the write switch (F134); nothing new is written before a node knows its
+  cluster (F138); a field added to an application class must be an `Option` (F135, H10 and D68
+  corrected).
+- Sagas: callers are stored with their node's address (F137); answers are at least once (F136,
+  accepted and documented).
+- The builder and the poller: ranges read by version start at the squash point (F139), runs and
+  chunks are bounded and a range restores its state once (F140), retries of given-up aggregates
+  take at most half a poll (F141); event sizes are UTF-8 bytes on both paths (F142).
+
+**Fixed now:** F121–F123 and F125–F127 (the high-load analysis), F93's flow control, and
+F128–F142 (the audits: F128, F130, F139–F142 from the delivery audit, F129, F131–F138 from the
+cluster audit), except F136, accepted. Two test faults found by the full runs: an assertion of
+the default dispatcher left from before F127, and a start-up test that a tick could ask twice.
+
+**Deferred, with reasons:** AR5 (saga definitions instead of subclassing) to M7: the runner
+already runs as a singleton and answers across nodes, and the change of API belongs with the
+migration guide for Neula's sagas. The docker-compose verification (a killed writer, a
+partition, a rebalance with a client ledger) to M7's E2: the machine has no Docker. F124 stays
+in M6.
+
+**Measured** (`baseline-M5.md`; single runs on one machine, against `baseline-M4.md`):
+- Commands without subscribers: 9 123/s in the baseline run and 9 801/s in a re-run; M4's code,
+  run the same day from its tag, gave 9 788/s (`baseline-M4`: 10 691/s). The difference is the
+  machine's, not the code's.
+- Commands with two projections: 5 250/s (M4: 4 780/s), p99 7.2 ms (9.7 ms), max 16.8 ms (306.5
+  ms); the projections keep pace at 2 788 events/s, 0.5 s behind; 3.3 statements per command.
+- One contended aggregate (F99): 1 753 commands/s (M4: 1 133/s), p99 13.6 ms (339 ms), max 15.6 ms
+  (613 ms). Serial mode: 10 698/s, and 2 031/s on one aggregate (M4: 11 176 and 2 384).
+- Rebuild: 112 211 events in 17.1 s, 6 544 events/s, peak heap 155 MB (M4: 16.6 s, 6 769/s,
+  150 MB).
+- Restores as in M4: 500 000 events in 3.4 s in the full run and 2.07 s in the re-run (M4's code
+  the same day: 2.12 s; a full run's earlier scenarios fill the database); from a snapshot 1–6
+  ms; one statement more, the history generation (F119).
+- Memory soak: 695 806 commands in 60 s (M4: 475 403), projected 97 s after the load (M4: 201 s),
+  the heap right after the load 136 MB (M4: 177 MB) and back at 23 MB: flow control keeps the
+  projections' backlog in the store (F93), as `flow-M5` showed.
+- Delivery soak, 1 000 000 events, a tenth of the listeners failing for 30 s: every event
+  projected 257 s after the load started (M4: 330 s); no delivery waiting, an empty outbox, no
+  recorded failure; 26 MB after each of 5 restarts. Right after the projections caught up the
+  heap held 214–216 MB (M4: 44 MB): likely the 100 000 counters' owners, which the idle sweep
+  (every 5 minutes) had not yet stopped after 4.3 minutes, where M4's run took 5.5 (not
+  verified).
+- Startup: the first command after 668 ms and the first projected event after 767 ms (M4: 502 and
+  560 ms; M4's code the same day: 574 and 660 ms). The extra 100 ms or so comes from the cluster
+  libraries on the classpath, whose configuration and serializers load at every start: M4's code
+  with only those libraries added took 730 and 783 ms, M5's first commit without the schema lock
+  655 and 713 ms. Every deployment is a cluster (D42), so it stays.
+
+**Observations:**
+- Both audits found problems where M5 met an assumption of "one": one writer per aggregate for
+  `Local` types (F131), one ask of a moved singleton (F129), one window per subscriber (F130's
+  per-node note), one squash point read when a range starts (F139). The rule now: what the code
+  assumes to be one is checked against the cluster, where a node, a version or an owner can be
+  two.
+- The full suites found what the specs run per work item did not: F127's commit ran only its new
+  spec, and an older assertion of the default dispatcher failed from then on. Each work item now
+  ends with the full suites, in both modes.
+- The baseline needed M4's code run the same day: the machine's state moved the numbers by up to
+  9% (commands without subscribers), and one 500 000-event restore took 3.4 s once and 2.07 s the
+  next time. A difference beyond the noise is now checked against the previous milestone's code
+  run the same day before it is called a regression (`docs/perf/README.md`).
+- Flow control, the parts by bytes and the frame limit (F121, F126, F93) bound memory by
+  configuration; what is still unbounded is documented in `docs/SCALING.md` §9 (commands in
+  flight, `GetEventsForAggregate` answers).
+
+**Plan refinements** (recorded in the implementation plan): M6: purges, imports and the complete
+rewrite in a cluster (owners on other nodes, running once, the write switch), and F124. M7: E2
+carries the Docker part of M5's verification; AR5 with the saga migration; a multi-node harness
+for hosts in the test kit (R20); the runbook carries H10 and the cluster's operations notes.
+
+**Looking ahead:**
+- *M6*: organizations are purged, exported and imported while the cluster runs; each operation
+  runs once, writes new event classes through the switch, and leaves `Local` owners to catch up
+  and sharded ones to be stopped through their shards.
+- *M7*: the guide explains the placement choice (`Local` or `Sharded`), the per-node window, the
+  at-least-once saga answers and the H10 steps, with the cluster example (E2).
+- *Watch*: a new kind of message between nodes must fit the frame (F121) and keep consecutive
+  versions (F128); a new background job must run once (a singleton or the schema lock) and
+  respect the write switch.

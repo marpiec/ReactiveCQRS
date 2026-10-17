@@ -61,6 +61,10 @@ waiting for an answer, and there were no subscribers:
 | one aggregate, concurrent mode (F99) | all succeeded | 3 815 ms | 2 621/s | 2 136 / 3 768 ms | 35 / 106 MB |
 | one aggregate, serial mode | 1 003 succeeded, 8 997 `CommandRejected` | 594 ms | — | 92 / 552 ms | 17 / 52 MB |
 
+The four bursts ran one after another in a freshly started JVM. The first (new aggregates) also
+paid for the JVM's warm-up (class loading, the JIT, the first connections), so its numbers are
+pessimistic; a warm node's rate on new aggregates was not measured separately.
+
 **How it throttles.** On many aggregates, every command is accepted. The queue forms in the
 blocking dispatcher's queue and in front of the JDBC pool, so latency is roughly the number of
 commands in flight divided by the commit rate (Little's law). The last of 10 000 commands was

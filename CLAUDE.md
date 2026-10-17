@@ -6,7 +6,7 @@ problems**. Known problems, decisions and the plan of the 1.0 line live in
 `docs/KNOWN-ISSUES.md` and `docs/IMPLEMENTATION-PLAN.md` (§7 below points there);
 `docs/ARCHITECTURE.md` describes how the library works in detail.
 
-> Note: written from a static read of 0.12.44 and updated for the 1.0 line through milestone M4
+> Note: written from a static read of 0.12.44 and updated for the 1.0 line through milestone M5
 > (17/10/2026). Line numbers drift as files change — re-grep before quoting.
 
 ---
@@ -326,9 +326,10 @@ behaviour under high volume and load, with recommendations, is in `docs/SCALING.
 | Aggregate state & persistence | `core/.../aggregate/{AggregateOwner,AggregateRestorer}.scala` |
 | Squash and duplication chains | `ARCHITECTURE.md` §4.6, `AggregateOwner.squashHistory`, `PostgresEventStoreState.squash`, `add_duplication_event` |
 | Durable events + optimistic lock SQL | `core/.../eventstore/Postgres*` |
-| Event delivery, acks, back-pressure | `core/.../eventbus/EventsBusActor.scala`, `core/.../delivery/*`, `docs/design/M2-delivery.md` |
+| Event delivery, acks, back-pressure | `core/.../eventbus/{EventsBusActor,FlowControl}.scala`, `core/.../delivery/*`, `docs/design/M2-delivery.md` |
 | Read models | `core/.../projection/*`, `core/.../documentstore/*` |
 | Process managers | `core/.../saga/*` |
 | Full wiring of a system | `testdomain/.../spec/ReactiveTestDomainSpec.scala` |
 | Replay / rebuild | `core/.../rebuild/*` (M4), `docs/design/M4-rebuild.md` |
 | Limits, throttling and failure under load | `docs/SCALING.md`, `docs/perf/load-M5.md` |
+| The cluster: placement, members, singletons, messages between nodes | `core/.../cluster/*` (`Members`, `Singletons`, `ClusterSerializer`, `MessageSize`), `ARCHITECTURE.md` §13, `docs/design/M5-cluster.md`; multi-node tests `testdomain/.../spec/TestCluster.scala` |

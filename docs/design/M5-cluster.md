@@ -469,7 +469,15 @@ stop, documented in H10.
 
 ## Verification
 
-The plan's M5 verification; in-JVM multi-node tests (several `ActorSystem`s on local ports, one
-PostgreSQL schema) for sharding, singletons, delivery across nodes, hand-over under load, a lost
-node and a rolling upgrade between app-versions; the full suites in a cluster of one; round trips
-of every message.
+The plan's M5 verification, at the close (17/10/2026):
+
+| Item | How it is covered |
+|---|---|
+| A command on any node reaches its owner; a projection singleton receives every owner's events; queries from any node | in-JVM multi-node tests (several `ActorSystem`s on local ports, one PostgreSQL schema): `ShardedOwnersSpec`, `ClusterDeliverySpec`, `LocalOwnersSpec`, `ClusterMessageSizeSpec` |
+| A node that leaves under load; a singleton that moves | `ShardedOwnersSpec` (a twelve-second command during the hand-over, nothing lost or applied twice), `ClusterDeliverySpec` (the projection, the poller and the saga runner move with the oldest node), `RollingUpgradeSpec` |
+| A killed writer, a rebalance under load with a client ledger, a network partition, singleton failover after a loss | the docker-compose cluster with Toxiproxy: not run, as the machine has no Docker; moved to M7 (E2). The in-JVM tests cover graceful leaving only |
+| Cluster of one | the full suites pass with `-Dreactivecqrs.test.clusterOfOne=true` (core 274, testdomain 164) |
+| Rolling upgrade N → N+1 with a new event class under load | `RollingUpgradeSpec` (no failed command but retryable ones, the projection caught up, no deserialization error, a removed projection retired only after); a projection version switch across nodes in `ClusterDeliverySpec` |
+| Serialization | `ClusterSerializationSpec` (every conversation's messages), `ClusterSerializerSpec` (messages of another version) |
+| Id ranges | `IdRangeSpec`, `ChosenIdRaceSpec` |
+| Neula's acceptance (R18) | Neula's cluster tests, with the host steps of H10 |
