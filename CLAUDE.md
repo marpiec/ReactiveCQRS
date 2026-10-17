@@ -128,9 +128,10 @@ caller
 ```
 
 ### Read path (state)
-The owner answers `GetAggregate`, `GetEventsForAggregate` and `GetAggregateMinVersion` (held
-until the aggregate reaches the version, or answered with a failure at its deadline, F81).
-The command bus answers historical reads (`GetAggregateForVersion`, `GetAggregateAtInstant`,
+The owner answers `GetAggregate` and `GetAggregateMinVersion` (held until the aggregate
+reaches the version, or answered with a failure at its deadline, F81). The command bus answers
+`GetEventsForAggregate` (from the store, so the history never crosses nodes, F121) and the
+historical reads (`GetAggregateForVersion`, `GetAggregateAtInstant`,
 `GetEventsForAggregateForVersion`) itself with `AggregateRestorer`, in a `Future`.
 
 ### Event publication / projections

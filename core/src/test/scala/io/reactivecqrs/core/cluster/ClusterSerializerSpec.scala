@@ -2,11 +2,15 @@ package io.reactivecqrs.core.cluster
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream, DataInputStream, DataOutputStream}
 
-import org.apache.pekko.actor.{ActorSystem, ExtendedActorSystem}
+import com.typesafe.config.ConfigFactory
+import io.reactivecqrs.api.MessageTooLargeException
+import org.apache.pekko.actor.{ActorSystem, ExtendedActorSystem, Status}
 import org.apache.pekko.testkit.TestKit
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.must.Matchers
+
+import scala.util.Failure
 
 // One library message in two versions, and one whose field changed type.
 case class OldShape(id: Int, name: String, dropped: List[String])
@@ -19,8 +23,14 @@ class Holder { case class Inner(id: Int) }
 class ClusterSerializerSpec extends AnyFeatureSpec with Matchers with BeforeAndAfterAll {
 
   private val system = ActorSystem("serializer").asInstanceOf[ExtendedActorSystem]
+  // A frame of 64 KiB, so the limit is 56 KiB (F121).
+  private val smallFrame = ActorSystem("small-frame", ConfigFactory.parseString("pekko.remote.artery.advanced.maximum-frame-size = 64 KiB")
+    .withFallback(ConfigFactory.load())).asInstanceOf[ExtendedActorSystem]
 
-  override def afterAll(): Unit = TestKit.shutdownActorSystem(system)
+  override def afterAll(): Unit = {
+    TestKit.shutdownActorSystem(system)
+    TestKit.shutdownActorSystem(smallFrame)
+  }
 
   /** Writes `value` as the node that has it as class `as` would have, and reads it back. */
   private def asWrittenFor(value: Product, as: Class[_]): Any = {
@@ -51,6 +61,30 @@ class ClusterSerializerSpec extends AnyFeatureSpec with Matchers with BeforeAndA
     Scenario("a message defined inside a class is refused by the sending node") {
       val refused = the[IllegalArgumentException] thrownBy new ClusterSerializer(system).toBinary(new Holder().Inner(1))
       refused.getMessage must include("cannot go to another node")
+    }
+  }
+
+  Feature("Messages larger than a message between nodes may be (F121)") {
+
+    Scenario("one larger than the limit is read on the receiving node as a failure naming its class and size") {
+      val serializer = new ClusterSerializer(smallFrame)
+      val large = OldShape(1, "x" * 100000, Nil)
+      val size = serializer.sizeOf(large)
+      size must be > 100000
+      serializer.fromBinary(serializer.toBinary(large), classOf[OldShape].getName) match {
+        case Status.Failure(e: MessageTooLargeException) => (e.className, e.size, e.limit) mustBe ((classOf[OldShape].getName, size, 56 * 1024))
+        case other => fail("Not a failure: " + other)
+      }
+      val fitting = OldShape(1, "x" * 1000, Nil)
+      serializer.fromBinary(serializer.toBinary(fitting), classOf[OldShape].getName) mustBe fitting
+    }
+
+    Scenario("the failure keeps its class when it is sent on") {
+      val serializer = new ClusterSerializer(system)
+      serializer.fromBinary(serializer.toBinary(Failure(new MessageTooLargeException("a.B", 5, 4))), "") match {
+        case Failure(e: MessageTooLargeException) => (e.className, e.size, e.limit) mustBe (("a.B", 5, 4))
+        case other => fail("Not the failure: " + other)
+      }
     }
   }
 }

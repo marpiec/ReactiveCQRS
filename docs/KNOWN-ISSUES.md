@@ -399,10 +399,11 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Found:** M4 close (review 6), audit.
 
 #### F121 — Messages between nodes can exceed Artery's frame and are dropped
-- **High**, confirmed (measured sizes) · **Fix in M5** · `EventsBusActor`, `AggregateOwner.republish`, `AggregateCommandBusActor`, `ClusterSerializer`
+- **High**, confirmed (measured sizes; the drop seen in `ClusterMessageSizeSpec`) · **Fixed in M5** (17/10/2026) · `EventsBusActor`, `AggregateCommandBusActor`, `ClusterSerializer`, `MessageSize`
 - **Symptom:** in a cluster, Pekko drops a message larger than `pekko.remote.artery.advanced.maximum-frame-size` (256 KiB by default) and logs an error; its sender is not told. A re-publication part of 1 000 events with 200-character notes is 470 KiB serialized (docs/perf/load-M5.md), so a projection on another node never receives it: its gap request asks for the same part again, and the aggregate stays behind in that projection for good. A command with many events does the same on its first publication. A `GetEventsForAggregate` answer from an owner on another node (23 573 KiB for 50 000 events) never arrives, and the asker times out. The application's states, commands and answers above the frame are dropped the same way.
 - **Root cause:** parts are bounded by events, not bytes; the frame did not matter before M5, when every message stayed in one JVM.
-- **Fix idea:** the bus splits a delivery of several events to a subscriber on another node until each message fits; `GetEventsForAggregate` is answered on the asking node from the store, like the historical reads; the cluster serializer turns a message too large for the frame into a failure that an asker receives at once, naming the class and the size, and logs it. Hosts that need larger single messages raise the frame (docs/SCALING.md §6).
+- **Fix:** `MessageSize` gives the limit, the frame (or the large frame when `large-message-destinations` is set) less 8 KiB, and measures values with the serializer Pekko uses for them. The bus sends a subscriber on another node several events in parts of at most half the limit, each event measured once per publication. `GetEventsForAggregate` is answered on the asking node from the store, like the historical reads; the owner no longer answers it. A command of a sharded type over the limit is refused with `FailureResponse` wherever its owner runs. The cluster serializer writes any message over the limit as a marker that the receiving node reads as `Status.Failure(MessageTooLargeException)`, so an asker fails at once, and logs its class and size (at most once per class every 10 s). Hosts that need larger single messages raise the frame (docs/SCALING.md §6).
+- **Test:** `ClusterMessageSizeSpec` (two nodes: a subscriber and a projection on the other node receive 1 000 events of about 450 bytes; every event of an aggregate whose owner runs on the other node; a state over the limit fails at once for an asker on the other node; a command over the limit refused through either node; all five red before the fix), `ClusterSerializerSpec` (the marker and the failure's round trip).
 - **Found:** high-load analysis at M5 (docs/SCALING.md).
 
 #### F122 — The outbox poll groups the whole outbox and keeps every waiting aggregate in memory
@@ -987,7 +988,7 @@ From §7 of Neula's change requests.
 | M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔, F95 ✔; Neula H2, H7 |
 | M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8 ✔; F8 (contract ✔), F22 ✔, F23 ✔, F25 ✔, F27 ✔, F30 ✔, F31 ✔, F32 ✔, F33 (rest ✔), F38 ✔, F39 ✔, F44 ✔, F50 ✔, F65 ✔, F76 ✔, F78 ✔, F81 ✔, F96 ✔, F97 ✔, F100–F107 ✔; D85 ✔; Neula H8 |
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
-| M5 | AR5; F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 (flow control), F99 ✔, F119 ✔, F120 ✔, F121, F122, F123, F125 ✔ (F78 between nodes ✔ in M3) |
+| M5 | AR5; F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122, F123, F125 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 (complete), F124 |
 
 ---

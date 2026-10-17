@@ -1652,3 +1652,16 @@ Open test-infrastructure items:
   M5, F122 and F123 with the flow control of F93.
 - F125 fixed: an event is refused once the aggregate's version has reached
   `aggregateVersionLimit` (`PostgresEventStoreStateSpec`, red before the fix).
+
+**17/10/2026: messages that fit the frame (F121)**
+- The circumstances it could fail in were written down first (`docs/design/M5-cluster.md`).
+- `MessageSize`: the limit (Artery's frame, or the large frame when the host sets
+  `large-message-destinations`, less 8 KiB) and a value's serialized size. The bus sends a
+  subscriber on another node several events in parts of at most half the limit;
+  `GetEventsForAggregate` is answered on the asking node from the store (the owner's `GetEvents`
+  is gone); a command of a sharded type over the limit is refused with `FailureResponse` wherever
+  its owner runs; the cluster serializer writes any message over the limit as a marker read as
+  `Status.Failure(MessageTooLargeException)`, and logs it.
+- Tests: `ClusterMessageSizeSpec` (five scenarios on two nodes, all red before: Pekko discarded
+  the oversized payloads and the asks timed out), `ClusterSerializerSpec` (the marker, the
+  failure's round trip).

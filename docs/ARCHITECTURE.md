@@ -384,7 +384,9 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   snapshots. The owner restores through it, on its thread, on its first message and on every
   reload (§3); the command bus answers **historical reads** (`GetAggregateForVersion`,
   `GetAggregateAtInstant`, `GetEventsForAggregateForVersion`) with it in a `Future`, without
-  an actor (since M3; before, each read started a temporary repository actor). Restore reads
+  an actor (since M3; before, each read started a temporary repository actor), and every event
+  of an aggregate (`GetEventsForAggregate`) too, since M5: an owner on another node could not
+  send a long history back (F121, §13.1). Restore reads
   stream the rows (autocommit off and a fetch size, fixed F22). A read at an instant first
   finds the aggregate's version at that instant in SQL, then reads up to that version, with
   events undone later still counted as applied then (fixed F39; before, all events were read
@@ -1189,6 +1191,24 @@ testdomain suites with `pekko.actor.serialize-messages = on` found no other mess
 some through a second node; `ClusterSerializerSpec` (core) reads messages that another version
 wrote.
 
+**Size (F121).** Artery drops a message larger than its frame
+(`pekko.remote.artery.advanced.maximum-frame-size`, 256 KiB by default) and only logs it; the
+sender is not told. `cluster/MessageSize` gives the library's limit, the frame (or the large
+frame when the host sets `large-message-destinations`) less 8 KiB for Artery's header, and
+measures a value with the serializer Pekko uses for it. Three things keep the library's own
+messages within it:
+- the bus sends a subscriber on another node several events in parts of at most half the limit
+  (§13.4);
+- `GetEventsForAggregate` is answered on the asking node, from the store;
+- a command of a sharded type larger than the limit is refused by the command bus with
+  `FailureResponse`, wherever its owner runs, so the outcome does not depend on placement.
+
+What is still too large (a single event, a state, a query answer, a custom response) is written
+as a marker that the receiving node reads as `Status.Failure(MessageTooLargeException)`: an asker
+fails at once instead of timing out, and the sending node logs the class and the size, at most
+once per class every 10 seconds. `ClusterMessageSizeSpec` covers each case; `docs/SCALING.md` §6
+gives the measured sizes and what to do about larger messages.
+
 ### 13.2 Schema initialization (F63, D69)
 
 Every `initSchema()` and every document store's table creation runs under `util/SchemaLock`: a
@@ -1279,6 +1299,12 @@ every event runs once in the cluster and is registered on every node's bus throu
 - **Acknowledgements and requests** go back to the bus that delivered: each delivery's sender
   (`respondTo`); re-publication requests go to the last bus that delivered, which routes them to
   its command bus and on to the owner, wherever it runs.
+- **Deliveries in parts** (F121): a subscriber on another node (its ref has a host) that takes
+  several events of a publication gets them in parts whose events, plus the state for the kind
+  that carries both, stay within half of `MessageSize.limit`. Each event is measured once per
+  publication, and only then; one event, or the state alone, goes as it is. Only the first part
+  may start at the squash event. The parts go at once, in version order, and the subscriber
+  acknowledges each, so the bus's bookkeeping per event is unchanged.
 - **Sagas** store their caller as `Serialization.serializedActorPath`, with its node's address, and
   answer through `resolveActorRef`, so a runner that moved never answers an actor of the same
   path on its own node; rows stored before, with a bare path, resolve as they did.

@@ -1,16 +1,18 @@
 package io.reactivecqrs.core.cluster
 
-import java.io.{ByteArrayInputStream, ByteArrayOutputStream, DataInputStream, DataOutputStream}
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream, DataInputStream, DataOutputStream, OutputStream}
 import java.lang.reflect.Modifier
 import java.nio.charset.StandardCharsets.UTF_8
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 import io.mpjsons.{MPJsons, NullPolicy}
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.commandhandler.IdempotencyKeyTakenException
-import org.apache.pekko.actor.{ActorRef, ActorSystem, ExtendedActorSystem, Extension, ExtensionId, ExtensionIdProvider}
+import org.apache.pekko.actor.{ActorRef, ActorSystem, ExtendedActorSystem, Extension, ExtensionId, ExtensionIdProvider, Status}
+import org.apache.pekko.event.Logging
 import org.apache.pekko.serialization.{Serialization, SerializerWithStringManifest}
 
 import scala.util.{Failure, Success, Try}
@@ -54,14 +56,37 @@ object ClusterSerialization extends ExtensionId[ClusterSerialization] with Exten
   *
   * Messages that carry functions cannot cross nodes and are kept inside one (a projection's supervisor and its
   * instances are one singleton).
+  *
+  * F121: a message larger than `MessageSize.limit`, which Artery would drop unseen, is written as a marker that the
+  * receiving node reads as `Status.Failure(MessageTooLargeException)`: an asker fails at once instead of timing out, and
+  * this node logs what it was.
   */
 class ClusterSerializer(system: ExtendedActorSystem) extends SerializerWithStringManifest {
 
   override val identifier: Int = 76143011
 
+  private lazy val limit = MessageSize(system).limit
+  private val log = Logging(system, classOf[ClusterSerializer])
+  private val lastLogged = new ConcurrentHashMap[String, java.lang.Long]()
+
   override def manifest(o: AnyRef): String = o.getClass.getName
 
   override def toBinary(o: AnyRef): Array[Byte] = {
+    val bytes = written(o)
+    if (bytes.length <= limit) bytes else tooLarge(o.getClass.getName, bytes.length)
+  }
+
+  override def fromBinary(bytes: Array[Byte], manifest: String): AnyRef =
+    new ClusterSerializer.Reader(new DataInputStream(new ByteArrayInputStream(bytes)), system, ClusterSerialization(system).mpjsons).read().asInstanceOf[AnyRef]
+
+  /** How many bytes `o` takes, written without keeping them (F121). */
+  def sizeOf(o: AnyRef): Int = {
+    val out = new DataOutputStream(OutputStream.nullOutputStream())
+    new ClusterSerializer.Writer(out, ClusterSerialization(system).mpjsons).write(o)
+    out.size()
+  }
+
+  private def written(o: AnyRef): Array[Byte] = {
     val bytes = new ByteArrayOutputStream()
     val out = new DataOutputStream(bytes)
     new ClusterSerializer.Writer(out, ClusterSerialization(system).mpjsons).write(o)
@@ -69,8 +94,22 @@ class ClusterSerializer(system: ExtendedActorSystem) extends SerializerWithStrin
     bytes.toByteArray
   }
 
-  override def fromBinary(bytes: Array[Byte], manifest: String): AnyRef =
-    new ClusterSerializer.Reader(new DataInputStream(new ByteArrayInputStream(bytes)), system, ClusterSerialization(system).mpjsons).read().asInstanceOf[AnyRef]
+  // Logged at most once per class every 10 seconds: one aggregate's large state goes out with each of its events.
+  private def tooLarge(className: String, size: Int): Array[Byte] = {
+    val now = System.nanoTime()
+    val last = lastLogged.get(className)
+    if (last == null || now - last > 10000000000L) {
+      lastLogged.put(className, now)
+      log.error("A {} of {} bytes is too large to be sent between nodes; the limit is {} bytes (from pekko.remote.artery.advanced." +
+        "maximum-frame-size). Its recipient receives a MessageTooLargeException instead. Others of the class in the next 10 s are not logged.",
+        className, size, limit)
+    }
+    val bytes = new ByteArrayOutputStream()
+    val out = new DataOutputStream(bytes)
+    new ClusterSerializer.Writer(out, ClusterSerialization(system).mpjsons).tooLarge(className, size, limit)
+    out.flush()
+    bytes.toByteArray
+  }
 }
 
 object ClusterSerializer {
@@ -104,6 +143,7 @@ object ClusterSerializer {
   private final val LibraryError = 25
   private final val OtherError = 26
   private final val TupleV = 27
+  private final val TooLarge = 28 // F121: in place of a message larger than the limit
 
   /** The library's own classes, written field by field; the application's go through mpjsons. */
   private[cluster] def isLibrary(className: String): Boolean =
@@ -207,6 +247,14 @@ object ClusterSerializer {
       p.productElementNames.zip(p.productIterator).foreach { case (name, value) => str(name); write(value) }
     }
 
+    /** The marker written in place of a message larger than `limit` (F121). */
+    def tooLarge(className: String, size: Int, limit: Int): Unit = {
+      out.writeByte(TooLarge)
+      str(className)
+      out.writeInt(size)
+      out.writeInt(limit)
+    }
+
     private def elements(values: Iterable[_]): Unit = {
       out.writeInt(values.size)
       values.foreach(write)
@@ -220,6 +268,7 @@ object ClusterSerializer {
       case n: NoEventsForAggregateException => library(n, n.aggregateId, n.aggregateType)
       case l: EventTooLargeException => library(l, l.aggregateId, l.aggregateTypeName, l.currentVersion, l.eventTypeName, l.eventSize, l.maxSize)
       case t: TooManyEventsException => library(t, t.aggregateId, t.aggregateTypeName, t.maxCount)
+      case m: MessageTooLargeException => library(m, m.className, m.size, m.limit)
       case k: IdempotencyKeyTakenException => library(k, k.key)
       case r: RemoteFailure => out.writeByte(OtherError); str(r.className); write(r.getMessage)
       case other => out.writeByte(OtherError); str(other.getClass.getName); write(other.getMessage)
@@ -276,6 +325,10 @@ object ClusterSerializer {
         json.deserialize[Any](str(), className)
       case LibraryError => libraryError(str(), (1 to in.readInt()).map(_ => read()))
       case OtherError => new RemoteFailure(str(), read().asInstanceOf[String])
+      case TooLarge =>
+        val className = str()
+        val size = in.readInt()
+        Status.Failure(new MessageTooLargeException(className, size, in.readInt()))
       case unknown => throw new IllegalArgumentException("Unknown value kind " + unknown + " in a cluster message")
     }
 
@@ -292,6 +345,8 @@ object ClusterSerializer {
         case "io.reactivecqrs.api.EventTooLargeException" =>
           new EventTooLargeException(id, f(1).asInstanceOf[String], f(2).asInstanceOf[AggregateVersion], f(3).asInstanceOf[String], f(4).asInstanceOf[Int], f(5).asInstanceOf[Int])
         case "io.reactivecqrs.api.TooManyEventsException" => new TooManyEventsException(id, f(1).asInstanceOf[String], f(2).asInstanceOf[Int])
+        case "io.reactivecqrs.api.MessageTooLargeException" =>
+          new MessageTooLargeException(f.head.asInstanceOf[String], f(1).asInstanceOf[Int], f(2).asInstanceOf[Int])
         case "io.reactivecqrs.core.commandhandler.IdempotencyKeyTakenException" => new IdempotencyKeyTakenException(f.head.asInstanceOf[String])
         case other => new RemoteFailure(other, f.mkString(", "))
       }

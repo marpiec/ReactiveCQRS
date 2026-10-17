@@ -287,6 +287,56 @@ are internal and keep their sequences.
 | A saga order of a new class | stored, then resumed by a runner on an old node | the runner is a singleton on the oldest node, which writes orders itself: new order classes appear only after it moved; documented |
 | A node whose bus never gets every subscription | it publishes nothing (D15) | it never becomes ready, so a load balancer sends it no traffic |
 
+## Messages that fit the frame (F121)
+
+Found by the high-load analysis (`docs/SCALING.md` §6): Artery drops a message larger than its
+frame (`pekko.remote.artery.advanced.maximum-frame-size`, 256 KiB by default) and logs an error;
+the sender is not told. A re-publication part of 1 000 events with 200-character notes is
+470 KiB serialized, so a projection on another node never receives it, and its gap request asks
+for the same part again.
+
+**As designed (before the code):**
+
+- **`MessageSize`** (core, cluster): the largest message the library sends between nodes, which is
+  the frame (or the large frame, when the host routes large messages to destinations of their
+  own) less 8 KiB for Artery's header; and the serialized size of a value, through the serializer
+  Pekko would use (the cluster serializer counts its bytes without keeping them).
+- **Deliveries in parts:** the bus sends a subscriber on another node several events in parts
+  whose events (and state, for the kind that carries both) take at most half the limit, each
+  event measured once per publication. One event, and a delivery of the state only, go as they
+  are. Only the first part may start at the squash event.
+- **`GetEventsForAggregate` on the asking node:** the command bus reads the history from the
+  store, as it does for the historical reads; the owner no longer answers it (nor starts for it).
+- **A command too large to cross nodes:** for a sharded type, the command bus answers
+  `FailureResponse` at once when the command is larger than the limit, wherever its owner runs,
+  so the outcome does not depend on placement.
+- **The serializer's guard:** a message larger than the limit is written as a marker that the
+  receiving node reads as `Status.Failure(MessageTooLargeException(class, size, limit))`, so an
+  asker fails at once instead of timing out; the sending node logs the class and the size, at most
+  once per class every 10 seconds.
+
+| Circumstance | What happens | Handled by |
+|---|---|---|
+| One event, or a state, larger than the limit | it cannot be split | the guard fails it at the subscriber and the sender logs it; the delivery ends at the bus's deadline and re-publications fail the same way; documented (SCALING §6): raise the frame, or keep states and events small |
+| A state too large for the kind that carries state and events | halving the events does not help | parts of one event each; the guard fails what still does not fit |
+| An event that cannot be serialized (measuring throws) | the bus would fail on the whole publication, for every subscriber | a failed measurement counts as nothing; the event goes unsplit and Artery fails it as before |
+| A part is lost between nodes (a full outbound queue, a quarantine) | the next part leaves a gap | the subscriber's sequence gate asks the owner to re-publish from the gap, in parts again |
+| Parts and later live events of the aggregate | — | the bus sends a publication's parts at once, in version order, and Artery keeps the order between two actors; the gate applies by version anyway |
+| A later part marked as starting at the squash event | it would reset the subscriber's version | only the first part carries the flag |
+| Measuring on the bus (one actor per node) | every event serialized once more | only for subscribers on another node and publications of several events; a single event (the common case) is not measured |
+| A subscriber reached through a forwarder on the bus's node (a proxy) | it looks local, so nothing is split | subscriptions name the subscriber itself (D15, step 5); documented |
+| Large-message destinations set by the host | the limit would be too low for them | the limit takes the large frame when `large-message-destinations` is set; a message to another destination between the two frames is dropped by Artery as before (documented) |
+| A message just under the frame but over the limit (the header is usually far smaller than 8 KiB) | it fails although Artery might take it | accepted: the failure names the size and the limit |
+| A command that fits only because its owner runs on the bus's node | it would succeed there and fail elsewhere | the command bus refuses it wherever the owner runs (sharded types) |
+| A reply too large for an asker on another node (a state, a query answer, a custom response) | it was dropped; the asker timed out | the asker fails at once with `MessageTooLargeException`; a large state is read on the asking node with `GetAggregateAtInstant` (documented) |
+| A marker read by a node without F121 (an upgrade from an earlier version) | the unknown tag fails to deserialize: dropped as before | no installed version precedes it (M5 comes before 1.0) |
+| `GetEventsForAggregate` while the owner writes | — | the store has every committed event, and a command's caller is answered after the commit, so it reads its own writes |
+| The whole history of a very long aggregate | memory on the asking node (168 MB for 50 000 events, measured) | documented (SCALING §3) |
+
+Built as designed. `ClusterMessageSizeSpec` failed in all five scenarios before the change, with
+Pekko's "Discarding oversized payload … max allowed size 262144 bytes" in the log, and passes
+after it.
+
 The plan's M5 verification; in-JVM multi-node tests (several `ActorSystem`s on local ports, one
 PostgreSQL schema) for sharding, singletons, delivery across nodes, hand-over under load, a lost
 node and a rolling upgrade between app-versions; the full suites in a cluster of one; round trips

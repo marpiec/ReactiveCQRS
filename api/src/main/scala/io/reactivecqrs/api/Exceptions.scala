@@ -25,6 +25,14 @@ class EventTooLargeException(val aggregateId: AggregateId,
   override def fillInStackTrace(): Throwable = this
 }
 
+/** F121: a message larger than `limit` bytes, what may be sent between the nodes of a cluster (from Artery's frame,
+  * `pekko.remote.artery.advanced.maximum-frame-size`); an asker on another node receives this failure instead. */
+class MessageTooLargeException(val className: String, val size: Int, val limit: Int)
+  extends Exception("A " + className + " of " + size + " bytes is too large to be sent between nodes; the limit is " + limit +
+    " bytes (pekko.remote.artery.advanced.maximum-frame-size)") {
+  override def fillInStackTrace(): Throwable = this
+}
+
 class TooManyEventsException(val aggregateId: AggregateId,
                              val aggregateTypeName: String,
                              val maxCount: Int) extends Exception("Too many versions for aggregate " + aggregateId.asLong +"@"+aggregateTypeName+", max version is " + maxCount) {

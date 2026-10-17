@@ -5,7 +5,7 @@ import java.time.Instant
 import org.apache.pekko.actor.{Actor, ActorRef, Stash, Terminated}
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.core.cluster.Readiness
+import io.reactivecqrs.core.cluster.{MessageSize, Readiness}
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.core.util.MyActorLogging
@@ -13,6 +13,7 @@ import org.slf4j.Logger
 
 import scala.collection.mutable
 import scala.concurrent.duration._
+import scala.util.Try
 import scala.util.control.NonFatal
 
 
@@ -138,6 +139,8 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
 
   private val undelivered = mutable.Queue[Undelivered]()
   private val undeliveredKept = 1000
+
+  private val messageSize = MessageSize(context.system)
 
   import context.dispatcher
   private val ticks = context.system.scheduler.scheduleWithFixedDelay(options.tickInterval, options.tickInterval, self, Tick)
@@ -303,14 +306,50 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     }
 
     // A subscription that is sent a later part of the events than the first does not start at the squash event.
+    val measured = new Measured(aggregateRoot)
     sends.foreach { case (s, forSubscription) =>
-      s.subscriber ! messageFor(s, aggregateType, aggregateId, forSubscription, aggregateRoot, startsAtSquash && forSubscription.head.version == events.head.version)
+      val startsHere = startsAtSquash && forSubscription.head.version == events.head.version
+      partsFor(s, forSubscription, measured).zipWithIndex.foreach { case (part, i) =>
+        s.subscriber ! messageFor(s, aggregateType, aggregateId, part, aggregateRoot, startsHere && i == 0)
+      }
     }
     eventsLogger.filter(_.isDebugEnabled).foreach(_.debug("EventBus publishing " + aggregateId.asLong + ": " + events.map(_.version.asInt).mkString(",") +
       " to " + sends.map(_._1.subscriber.path.name).mkString(", ")))
 
     completeAll(finished)
   }
+
+  /** The sizes of one publication's events and state, each measured once, and only when a subscriber on another node
+    * takes several events; what cannot be measured counts as nothing, and Artery fails it as before. */
+  private final class Measured(aggregateRoot: Option[Any]) {
+    private lazy val events = mutable.HashMap[Int, Int]()
+    def event(e: EventInfo[Any]): Int = events.getOrElseUpdate(e.version.asInt, sizeOf(e))
+    lazy val state: Int = aggregateRoot.map(root => sizeOf(root.asInstanceOf[AnyRef])).getOrElse(0)
+    private def sizeOf(value: AnyRef): Int = Try(messageSize.of(value)).getOrElse(0)
+  }
+
+  // F121: a subscriber on another node takes several events in parts whose events, and the state that comes with them,
+  // stay within half of what a message between nodes may carry. One event, or the state alone, goes as it is: if even
+  // that is too large, the cluster serializer fails it at the subscriber, and this node logs it.
+  private def partsFor(s: SubscribeRequest, events: Seq[EventInfo[Any]], measured: Measured): Seq[Seq[EventInfo[Any]]] =
+    if (events.size < 2 || s.kind == AggregatesDelivery || !messageSize.onAnotherNode(s.subscriber)) Seq(events)
+    else {
+      val budget = messageSize.partBudget - (if (s.kind == AggregatesWithEventsDelivery) measured.state else 0)
+      val parts = Vector.newBuilder[Seq[EventInfo[Any]]]
+      var part = Vector[EventInfo[Any]]()
+      var used = 0L
+      events.foreach { event =>
+        val size = measured.event(event)
+        if (part.nonEmpty && used + size > budget) {
+          parts += part
+          part = Vector()
+          used = 0
+        }
+        part :+= event
+        used += size
+      }
+      (parts += part).result()
+    }
 
   private def messageFor(s: SubscribeRequest, aggregateType: AggregateType, aggregateId: AggregateId, events: Seq[EventInfo[Any]],
                          aggregateRoot: Option[Any], startsAtSquash: Boolean): AnyRef = s match {

@@ -8,7 +8,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId}
 import io.reactivecqrs.core.aggregate.AggregateOwner._
 import io.reactivecqrs.core.aggregate.{AggregateOwner, OwnerSettings}
-import io.reactivecqrs.core.cluster.AppVersions
+import io.reactivecqrs.core.cluster.{AppVersions, MessageSize}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{DeletedPermanently, IdsNotReceived, PassivateAggregate, RemoveExpiredResponses}
 import io.reactivecqrs.core.delivery.RepublishRequest
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventsAck, RegisterPublisher}
@@ -70,6 +70,10 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   // after it wait too, in order.
   private val idRange = IdRange.of(context.system.settings.config)
   AppVersions(context.system).track(aggregateContext) // D67: the lowest app-version among the cluster's members
+  private val messageSize = aggregateContext.placement match { // F121
+    case _: Placement.Sharded => Some(MessageSize(context.system))
+    case Placement.Local => None
+  }
   private val aggregateIds = new IdPool
   private val commandIds = new IdPool
   private var waitingForIds = Vector[(Any, ActorRef)]()
@@ -120,7 +124,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
     case IdsNotReceived(ofAggregates, e) => idsNotReceived(ofAggregates, e)
     case GetAggregate(id) => owners.send(id, GetState(sender()))
     case GetAggregateMinVersion(id, version, maxMillis) => owners.send(id, GetStateMinVersion(sender(), version, maxMillis))
-    case GetEventsForAggregate(id) => owners.send(id, GetEvents(sender()))
+    // F121: read here from the store, not by the owner, whose answer may be too large to come from another node.
+    case GetEventsForAggregate(id) => historicalRead(id)(settings.restorer.events(id))
     case GetAggregateForVersion(id, version) => historicalRead(id)(aggregateAt(id, Left(version)))
     case GetAggregateAtInstant(id, instant) => historicalRead(id)(aggregateAt(id, Right(instant)))
     case GetEventsForAggregateForVersion(id, version) => historicalRead(id)(settings.restorer.events(id, Some(Left(version))))
@@ -142,7 +147,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
 
   // ************** Ids (F23)
 
-  private def withIds(message: Any, respondTo: ActorRef): Unit = refusedChoice(message) match {
+  private def withIds(message: Any, respondTo: ActorRef): Unit = refused(message) match {
     case Some(reason) => respondTo ! FailureResponse(List(reason))
     case None =>
       if (waitingForIds.nonEmpty || !route(message, respondTo)) waitingForIds :+= (message -> respondTo)
@@ -151,9 +156,22 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
 
   // D39: a caller may choose a system or legacy id, or one of this installation's range, never another installation's, a
   // negative one (ephemeral, D77), or one a JavaScript client cannot read.
-  private def refusedChoice(message: Any): Option[String] = message match {
-    case c: FirstCommand[_, _] => c.chosenAggregateId.flatMap(idRange.refusedChoice)
-    case _ => None
+  private def refused(message: Any): Option[String] = message match {
+    case ReserveAggregateId => None
+    case c: FirstCommand[_, _] => c.chosenAggregateId.flatMap(idRange.refusedChoice).orElse(tooLarge(c))
+    case c => tooLarge(c)
+  }
+
+  // F121: a command of a sharded type may go to an owner on another node, so it must fit a message between nodes; it is
+  // refused wherever its owner runs, so the outcome does not depend on where that is. The envelope adds under 1 KiB.
+  private def tooLarge(command: Any): Option[String] = messageSize.flatMap { sizes =>
+    val limit = sizes.limit - 1024
+    Try(sizes.of(command.asInstanceOf[AnyRef])) match {
+      case Success(size) if size <= limit => None
+      case Success(size) => Some("Command " + command.getClass.getSimpleName + " of " + size + " bytes is too large to be sent between " +
+        "nodes; the limit is " + limit + " bytes (from pekko.remote.artery.advanced.maximum-frame-size)")
+      case Failure(e) => Some("Command " + command.getClass.getSimpleName + " cannot be sent between nodes: " + e)
+    }
   }
 
   private def serveWaiting(): Unit =

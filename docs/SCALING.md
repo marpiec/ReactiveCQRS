@@ -37,11 +37,11 @@ receive bursts must bound the commands it lets in** (section 2).
 | Event bus (`EventsBusActor`) | one actor per node | It keeps one entry per event in flight until every subscription answers, with no flow control (F93), and ends a delivery at a 10-minute deadline. |
 | Projection | mailbox unbounded; up to 100 aggregates per transaction | Measured: 2 732 events/s while commands run (baseline-M4). The lag lives in memory (section 5). |
 | Outbox poller (`OutboxPollerOptions`) | a poll every 30 s, at most 1 000 aggregates re-published per poll, gives up after 10 min | A large backlog drains at 1 000 aggregates per poll. Given-up rows wait for a restart (section 4). |
-| Re-publication parts (`OwnerSettings.maxRepublishEvents`) | 1 000 events per message | Counted in events, not bytes: too large between nodes (F121, section 6). |
+| Re-publication parts (`OwnerSettings.maxRepublishEvents`) | 1 000 events per message | Counted in events; the bus splits them again for a subscriber on another node (F121, section 6). |
 | Subscription version cache | 10 000 aggregates (LRU) | Misses read the database. |
 | Rebuild (`BuilderSettings`) | pages of 1 000, chunks of 1 000 events, 2 chunks in flight, 10 000 replay states | Measured: 6 769 events/s (baseline-M4). Evicted states are read again from snapshots (section 4). |
 | Owners in memory | local: an owner idle for 2 min beyond the 200 most recent, or idle for 12 h, is stopped by a sweep every 5 min (`Owners.scala`). Sharded: Pekko passivates after 120 s idle. | Not a limit: every aggregate touched in the last minutes has an owner and its state in memory (section 7). |
-| Messages between nodes (Artery) | `maximum-frame-size` 256 KiB | Pekko drops a larger message, and its sender is not told (section 6). |
+| Messages between nodes (Artery) | `maximum-frame-size` 256 KiB | Pekko drops a larger message unseen. The library splits deliveries, refuses large commands and fails other large messages at once (section 6). |
 | Shard region buffer | 100 000 messages per region | It holds messages while a shard is located or handed over. Beyond that, Pekko drops them. |
 | Singleton proxy buffer | 1 000 messages | It holds messages while the singleton moves. Beyond that, Pekko drops them. |
 | Hand-over (`handoff-timeout`, shutdown phase) | 90 s (the library's `reference.conf`; Pekko's own default is 60 s and 10 s) | The shard's commands wait in the region's buffer until the new owner runs. |
@@ -141,10 +141,11 @@ to every type of that store.
   at the measured speed.
 - **Commands.** Length does not slow them (3 ms). The owner keeps the state, not the events.
 - **`GetEventsForAggregate`** returns the whole history in one message: 168 MB of heap at the peak
-  for 50 000 events. Between nodes it is dropped (F121).
+  for 50 000 events. It is read on the asking node, from the store, so it never crosses nodes
+  (since M5, F121).
 - **Re-publication** (after an outage, or for a projection's gap) goes in parts of 1 000 events, one
-  round trip each: 50 parts for the whole history. Each part is 470 KiB, too large to cross nodes
-  (F121).
+  round trip each: 50 parts for the whole history. A part is 470 KiB, so the bus splits it again
+  for a subscriber on another node (since M5, F121).
 - **States.** Subscribers that take the state receive the whole state with every publication, so
   the state's size, not the history's length, counts there (section 6).
 
@@ -239,32 +240,31 @@ hundred thousand events), so 10 million events behind would take several GB.
 
 On a single node, messages are not serialized and have no size limit. In a cluster, every message
 that crosses nodes is serialized (D45) and must fit Artery's frame: `maximum-frame-size` is 256 KiB
-by default, including a header. **Pekko drops a larger message and logs an error. Its sender is not
-told**: an ask times out, and a delivery stays undelivered until the bus's deadline.
+by default, including a header. **Pekko drops a larger message and logs an error; its sender is not
+told.** Seen in `ClusterMessageSizeSpec` before F121's fix: "Discarding oversized payload … max
+allowed size 262144 bytes", after which an ask timed out and a delivery stayed undelivered.
 
-| Message | Crosses nodes when | Size |
-| --- | --- | --- |
-| A command and its answer | the owner runs on another node (sharded) | the application's command and response |
-| `GetAggregate` and `GetAggregateMinVersion` answers | the owner runs on another node | the whole state |
-| `GetEventsForAggregate` answer | the owner runs on another node | the whole history: 23 573 KiB for 50 000 events (measured) |
-| A delivery to a subscriber | the subscriber (a projection's singleton, a saga) runs on another node | the publication's events, plus the state for `AggregateWithType` and `AggregateWithTypeAndEvents` kinds: 561 bytes for one event (measured) |
-| A re-publication part | as a delivery | up to 1 000 events: 470 KiB with 200-character notes (measured) |
-| A projection's query and its answer | the projection's singleton runs on another node | the application's query result |
+The library's limit (`MessageSize.limit`) is the frame less 8 KiB for Artery's header: 248 KiB by
+default.
 
-**Open issue (F121, planned in M5).** Re-publication parts and multi-event publications can exceed
-the frame from small events alone. A projection on another node then never receives the part. Its
-gap request asks for the same part again, so that aggregate stays behind in that projection and the
-log repeats the error. `GetEventsForAggregate` answers exceed it for long aggregates. The planned
-fix:
-- split deliveries to subscribers on other nodes to fit the frame;
-- answer `GetEventsForAggregate` on the asking node, from the store;
-- make a message too large for the frame fail at once for the asker, naming its class and size,
-  instead of being dropped.
+| Message | Crosses nodes when | Size | Since M5 (F121) |
+| --- | --- | --- | --- |
+| A command | the owner runs on another node (sharded) | the application's command | Over the limit, it is refused at once with `FailureResponse`, wherever its owner runs. |
+| A command's answer, `GetAggregate` and `GetAggregateMinVersion` answers | the owner runs on another node | the response; the whole state | Over the limit, the asker fails at once with `MessageTooLargeException`. |
+| `GetEventsForAggregate` answer | never | the whole history: 23 573 KiB for 50 000 events (measured) | Read on the asking node, from the store. |
+| A delivery to a subscriber | the subscriber (a projection's singleton, a saga) runs on another node | the publication's events, plus the state for `AggregateWithType` and `AggregateWithTypeAndEvents` kinds: 561 bytes for one event (measured) | Several events go in parts of at most half the limit. A single event or a state over the limit fails at the subscriber, and the sender logs it. |
+| A re-publication part | as a delivery | up to 1 000 events: 470 KiB with 200-character notes (measured) | Split as a delivery. |
+| A projection's query and its answer | the projection's singleton runs on another node | the application's query result | Over the limit, the asker fails at once with `MessageTooLargeException`. |
+
+Every message over the limit is logged on the sending node with its class and size, at most once
+per class every 10 seconds.
 
 **Recommendations.**
 - **Keep commands, responses, query answers and aggregate states that cross nodes well under
-  256 KiB.** A state that subscribers take with every event is sent with every event: 1 KB states
+  248 KiB.** A state that subscribers take with every event is sent with every event: 1 KB states
   at 10 000 events/s are 10 MB/s per subscriber (estimated).
+- **Read a large state on the asking node** with `GetAggregateAtInstant(id, now)`. It is restored
+  from the store there, instead of the owner sending it from another node.
 - **If larger messages are unavoidable**, raise `pekko.remote.artery.advanced.maximum-frame-size`.
   Pekko keeps up to `buffer-pool-size` (128) buffers of that size in direct memory: a 1 MiB frame
   can take up to 128 MiB (estimated). Alternatively, route large messages to dedicated paths with
@@ -304,8 +304,9 @@ the owners' states set the rest (estimated).
   - stall lines and summaries of the bus
   - "Error persisting events, errorId …" (`EventHandlingError`)
   - "Error handling command …" (`CommandHandlingError`)
-  - Pekko's errors about oversized messages, and "Buffer is full" from shard regions and singleton
-    proxies
+  - "… is too large to be sent between nodes" (the cluster serializer, F121), and Pekko's
+    "Discarding oversized payload" for messages it did not write
+  - "Buffer is full" from shard regions and singleton proxies
 - **PostgreSQL:**
   - connections in use (`pg_stat_activity`)
   - autovacuum on the hot tables (`pg_stat_user_tables`)
@@ -317,7 +318,7 @@ Recorded in [KNOWN-ISSUES](KNOWN-ISSUES.md):
 
 | Issue | Planned in |
 | --- | --- |
-| F121: messages between nodes can exceed Artery's frame and are dropped silently | M5 |
+| F121: messages between nodes could exceed Artery's frame and were dropped silently | fixed in M5 |
 | F122: the outbox poll groups the whole outbox every 30 s and keeps every waiting aggregate in memory | M5, with flow control |
 | F123: given-up aggregates wait for the poller's next start, even when their subscriber is back | M5, with flow control |
 | F124: a commit-order build walks the events of every type to find its own | M6 |

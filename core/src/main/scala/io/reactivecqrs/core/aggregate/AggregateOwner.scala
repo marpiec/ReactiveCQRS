@@ -33,8 +33,6 @@ object AggregateOwner {
 
   /** The aggregate at its current version: `Success(Aggregate)`, or `Failure` when it cannot be restored. */
   case class GetState(respondTo: ActorRef)
-  /** Every event of the aggregate, those of the base it was duplicated from included: `Success(List[EventInfo])`. */
-  case class GetEvents(respondTo: ActorRef)
   /** The aggregate as soon as it reaches `version`; `Failure(AggregateInIncorrectVersionException)` when it does not
     * within `maxMillis` (F81). */
   case class GetStateMinVersion(respondTo: ActorRef, version: AggregateVersion, maxMillis: Int)
@@ -212,7 +210,6 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     case RunAgain(commandId) => pendingFailed(commandId, failure)
     case CommandTimedOut(commandId) => timedOut(commandId)
     case GetState(respondTo) => respondTo ! Failure(failure)
-    case GetEvents(respondTo) => respondTo ! Failure(failure)
     case GetStateMinVersion(respondTo, _, _) => respondTo ! Failure(failure)
     case Squash(respondTo, request) => respondTo ! SquashRefused(request.id, "the aggregate cannot be restored: " + failure.getMessage)
     case MinVersionDeadline => answerExpiredMinVersionQueries()
@@ -230,7 +227,6 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     case RunAgain(commandId) => pending.get(commandId.asLong).foreach(command => if (waitsItsTurn(command)) contended.enqueue(commandId.asLong) else attempt(command))
     case CommandTimedOut(commandId) => timedOut(commandId)
     case GetState(respondTo) => respondTo ! Success(aggregate)
-    case GetEvents(respondTo) => respondTo ! (if (version == AggregateVersion.ZERO) Success(Nil) else Try(restorer.events(aggregateId)))
     case GetStateMinVersion(respondTo, minVersion, maxMillis) => minVersionQuery(respondTo, minVersion, maxMillis)
     case MinVersionDeadline => answerExpiredMinVersionQueries()
     case PublishEventsAck(_, versions, _) => delivered(versions)

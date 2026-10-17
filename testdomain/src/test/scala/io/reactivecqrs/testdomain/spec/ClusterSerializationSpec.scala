@@ -83,7 +83,7 @@ class ClusterSerializationSpec extends AnyFeatureSpec with Matchers with Eventua
     Scenario("the messages between the command bus and an owner, and what owners answer") {
       Seq(
         CommandEnvelope(ref, CommandId(5), AddItem(UserId(1), id, v3, "pear")),
-        GetState(ref), GetEvents(ref), GetStateMinVersion(ref, v3, 1000), OwnerPassivate, PassivateAggregate(id), ReserveAggregateId,
+        GetState(ref), GetStateMinVersion(ref, v3, 1000), OwnerPassivate, PassivateAggregate(id), ReserveAggregateId,
         GetAggregate(id), GetAggregateMinVersion(id, v3, 1000), GetAggregateForVersion(id, v3), GetAggregateAtInstant(id, now),
         GetEventsForAggregate(id), GetEventsForAggregateForVersion(id, v3), SimulateEvent[ShoppingCart](id, v3, ItemAdded("x")),
         Squash(ref, SquashAggregate(id, v3, UserId(1), Some(EventMetadata.ofUser(UserId(1))))),
