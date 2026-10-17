@@ -6,8 +6,8 @@ problems**. Known problems, decisions and the plan of the 1.0 line live in
 `docs/KNOWN-ISSUES.md` and `docs/IMPLEMENTATION-PLAN.md` (§7 below points there);
 `docs/ARCHITECTURE.md` describes how the library works in detail.
 
-> Note: written from a static read of 0.12.44 and updated for the 1.0 line through milestone M6
-> (17/10/2026). Line numbers drift as files change — re-grep before quoting.
+> Note: written from a static read of 0.12.44 and updated for the 1.0 line through milestone M6 and
+> M7's findings and test kit (17/10/2026). Line numbers drift as files change — re-grep before quoting.
 
 ---
 
@@ -197,7 +197,9 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
   D61), gaps asked from the owner (`RequestRepublish`). A failing
   listener is retried about 2 minutes, then recorded in `subscription_failures` and
   answered `MessageFailed` (D20a); `GetProjectionStatus`, `RetryFailedSubscription`,
-  `SkipFailedVersion`; failures are retried at start, twenty per second.
+  `SkipFailedVersion`; failures are retried at start, twenty per second, and a cleared one has the
+  owner re-publish its outbox (F166). Work a listener must do only after its transaction commits
+  (the pushes of subscribable projections) goes through `afterCommit` (F161).
 - **`Projections` / `ProjectionSupervisor`** (`core/.../rebuild/`, M4) — managed projections: the host starts
   each read model through `Projections.start`, whose supervisor (the `ActorRef` the host queries) runs one
   instance per build (tables named by the build, D57), builds a new version from the store with
