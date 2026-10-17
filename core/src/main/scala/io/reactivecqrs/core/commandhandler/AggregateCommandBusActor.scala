@@ -126,6 +126,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
     case GetAggregateMinVersion(id, version, maxMillis) => owners.send(id, GetStateMinVersion(sender(), version, maxMillis))
     // F121: read here from the store, not by the owner, whose answer may be too large to come from another node.
     case GetEventsForAggregate(id) => historicalRead(id)(settings.restorer.events(id))
+    case GetArchivedEvents(id) => historicalRead(id)(ArchivedEvents(id, eventStoreState.readArchive[AGGREGATE_ROOT](id))) // R11
     case GetAggregateForVersion(id, version) => historicalRead(id)(aggregateAt(id, Left(version)))
     case GetAggregateAtInstant(id, instant) => historicalRead(id)(aggregateAt(id, Right(instant)))
     case GetEventsForAggregateForVersion(id, version) => historicalRead(id)(settings.restorer.events(id, Some(Left(version))))
@@ -269,7 +270,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
       val deleted = for {
         detach <- detachingDuplicates(id).left.map(reason => (reason, true))
         _ <- settings.notWrittenYet(detach.map(_._2)).map(reason => (reason, false)).toLeft(())
-        _ <- eventStoreState.deleteAggregatePermanently(id, detach).left.map(reason => (reason, false))
+        _ <- eventStoreState.deleteAggregatePermanently(id, detach, settings.squash.fold(Set.empty[String])(_.keep.map(_.getName)))
+          .left.map(reason => (reason, false))
       } yield detach.collect { case (duplicate, _: SquashMayChangeState) => duplicate }
       deleted.left.foreach { case (reason, forGood) =>
         if (forGood) log.error("Aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " is not deleted: " + reason)

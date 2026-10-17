@@ -418,8 +418,9 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     awaitAssert(ids.foreach(id => eventStoreState.oldestVersionToPublish(id) mustBe None), 3.seconds, 20.millis)
   }
 
-  protected def squash(f: TestFixture, upTo: Int, detach: Seq[(AggregateId, FirstEvent[_])] = Nil, metadata: Option[EventMetadata] = None) =
-    eventStoreState.squash(f.aggregateId, AggregateVersion(upTo), EventA("squashed"), UserId(9), metadata, detach)
+  protected def squash(f: TestFixture, upTo: Int, detach: Seq[(AggregateId, FirstEvent[_])] = Nil, metadata: Option[EventMetadata] = None,
+                       archive: Set[String] = Set.empty) =
+    eventStoreState.squash(f.aggregateId, AggregateVersion(upTo), EventA("squashed"), UserId(9), metadata, detach, archive)
 
   // D47, D49, D51.
   Scenario("A squash keeps the version and the later events; reading, undoing and duplicating below the point are refused") {
@@ -534,6 +535,43 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     squash(base, 3, Seq(copy -> EventA("copy"))).left.toOption.get must include("was undone")
     eventStoreState.deleteAggregatePermanently(base.aggregateId, Seq(copy -> EventA("copy"))).left.toOption.get must include("was undone")
     base.getEvents() mustBe Seq(EventA("one"), EventB(2), EventC(true))
+  }
+
+  // R11: what a squash keeps of the history it replaces.
+  Scenario("A squash moves the events of the kept classes to the archive, with their undo marks; a permanent delete takes the archive too") {
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one"), EventB(2), EventC(true)))
+    f.storeEvents(Seq(Undo(1))) // undoes EventC(true) at version 3
+    f.storeEvents(Seq(EventB(5)))
+    published(f.aggregateId)
+
+    squash(f, 4, archive = Set(classOf[EventB].getName, classOf[EventC].getName)) mustBe Right(())
+
+    eventStoreState.readArchive[SomeAggregate](f.aggregateId).map(a => (a.info.version.asInt, a.info.event, a.undoneFrom.map(_.asInt))) mustBe
+      Seq((2, EventB(2), None), (3, EventC(true), Some(4)))
+    f.getEvents() mustBe Seq(EventA("squashed"), EventB(5))
+
+    eventStoreState.deleteAggregatePermanently(f.aggregateId) mustBe Right(())
+    eventStoreState.readArchive[SomeAggregate](f.aggregateId) mustBe empty
+  }
+
+  Scenario("Automatic squash keeps the events younger than its age too, and squashes only once enough older ones wait") {
+    val f = new TestFixture(eventStoreState)
+    // Later than every event stored before, as the times of a real history grow with the ids.
+    val now = Instant.now.plusMillis(4.hours.toMillis)
+    Seq(3.hours, 2.hours, 30.minutes, 1.minute).zipWithIndex.foreach { case (ago, i) =>
+      eventStoreState.localTx { session =>
+        eventStoreState.persistEvents(f.aggregateId, NewEvents(f.userId, AggregateVersion(i), now.minusMillis(ago.toMillis),
+          Seq(if (i == 0) EventA("one") else EventB(i))))(session)
+      }.get
+    }
+    val before = AggregateId(f.aggregateId.asLong - 1)
+    val someAggregate = AggregateType.of[SomeAggregate]
+
+    eventStoreState.squashCandidates(someAggregate, AutomaticSquash(2, keepNewerThan = Some(1.hour)), before, 1, now) mustBe Seq(f.aggregateId -> AggregateVersion(2))
+    eventStoreState.squashCandidates(someAggregate, AutomaticSquash(3, keepNewerThan = Some(1.hour)), before, 1, now).filter(_._1 == f.aggregateId) mustBe empty
+    eventStoreState.squashCandidates(someAggregate, AutomaticSquash(1, keepLast = 3, keepNewerThan = Some(1.hour)), before, 1, now) mustBe Seq(f.aggregateId -> AggregateVersion(1))
+    eventStoreState.squashCandidates(someAggregate, AutomaticSquash(1, keepNewerThan = Some(5.hours)), before, 1, now).filter(_._1 == f.aggregateId) mustBe empty
   }
 
   // F143: as for a squash, subscribers must have a duplicate's original first event before a detach replaces it.

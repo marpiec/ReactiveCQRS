@@ -13,6 +13,7 @@ import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
 import io.reactivecqrs.core.eventstore.{NewEvents, PostgresEventStoreState, Snapshot}
 import io.reactivecqrs.core.projection.PostgresSubscriptionsState
+import io.reactivecqrs.core.tools.StoredDataCheck
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart._
@@ -69,6 +70,12 @@ class NameOnlyCarts(onPurpose: Boolean) extends ShoppingCartAggregateContext {
     Some(SquashPolicy(cart => if (onPurpose) CartArchived(SpaceId(0), cart.name) else CartNameKept(SpaceId(0), cart.name)))
   // Owners write a snapshot when they stop: one stopped after the history changed under it must not.
   override val snapshots: Option[SnapshotPolicy] = Some(SnapshotPolicy(every = 1000))
+}
+
+/** Carts whose squashes keep the items added, as an audit trail (R11). */
+class AuditedCarts extends ShoppingCartAggregateContext {
+  override val squash: Option[SquashPolicy[ShoppingCart]] =
+    Some(SquashPolicy(cart => CartSquashed(SpaceId(0), cart.name, cart.items), keep = Set(classOf[ItemAdded])))
 }
 
 // D47–D52: squashing old history into one event.
@@ -366,6 +373,40 @@ class SquashSpec extends CommonSpec {
       And("commands go on from the new states")
       sent(AddItem(userId, cartId, AggregateVersion(4), "kiwi")) mustBe SuccessResponse(cartId, AggregateVersion(5))
       itemsOf(cartId) mustBe Vector("plum", "kiwi")
+    }
+  }
+
+  Feature("Keeping audit events (R11)") {
+
+    Scenario("a squash moves the events its policy keeps to the archive, which the command bus reads and the class report finds") {
+      val bus = system.actorOf(AggregateCommandBusActor(new AuditedCarts, uidGenerator, eventStore, responses, eventBus))
+      def sent(command: AnyRef): CustomCommandResponse[_] = {
+        val response: CustomCommandResponse[_] = bus ?? command
+        response
+      }
+      val cartId = createdOn(bus, "apple", "pear")
+      sent(RemoveItem(userId, cartId, AggregateVersion(3), 1)) mustBe SuccessResponse(cartId, AggregateVersion(4))
+      sent(AddItem(userId, cartId, AggregateVersion(4), "plum")) mustBe SuccessResponse(cartId, AggregateVersion(5))
+      outboxEmpty(cartId)
+
+      squash(cartId, 4, bus = bus) mustBe AggregateSquashed(cartId, AggregateVersion(4))
+
+      Then("the items added below the point are in the archive; the removal went with the rest of the history")
+      val archived = Await.result((bus ? GetArchivedEvents(cartId)).mapTo[Try[ArchivedEvents[ShoppingCart]]], 10.seconds).get
+      archived.events.map(a => (a.info.version.asInt, a.info.event, a.info.userId, a.undoneFrom)) mustBe
+        Seq((2, ItemAdded("apple"), userId, None), (3, ItemAdded("pear"), userId, None))
+      (1 to 5).map(v => Try(eventClassAt(cartId, v)).toOption) mustBe
+        Seq(None, None, None, Some(classOf[CartSquashed].getName), Some(classOf[ItemAdded].getName))
+
+      And("a new owner restores the cart without reading the archive")
+      bus ! PassivateAggregate(cartId)
+      val cart: Try[Aggregate[ShoppingCart]] = bus ?? GetAggregate(cartId)
+      cart.get.aggregateRoot.get.items mustBe Vector(Item(2, "pear"), Item(3, "plum"))
+
+      And("the class report finds the added items in both tables, and the removal nowhere: that class could go")
+      StoredDataCheck.usersOf(classOf[ItemAdded].getName, limit = 1000000).aggregates.find(_.aggregateId == cartId.asLong) mustBe
+        Some(StoredDataCheck.ClassUser(cartId.asLong, 1, 2))
+      StoredDataCheck.usersOf(classOf[ItemRemoved].getName, limit = 1000000).aggregates.find(_.aggregateId == cartId.asLong) mustBe None
     }
   }
 

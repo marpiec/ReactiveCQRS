@@ -28,6 +28,7 @@ class MemoryEventStoreState extends EventStoreState {
   private var snapshots: Map[AggregateId, Snapshot[_]] = Map.empty
   private var squashedVersions: Map[AggregateId, AggregateVersion] = Map.empty
   private var generations: Map[AggregateId, Int] = Map.empty
+  private var archives: Map[AggregateId, Vector[ArchivedEvent[_]]] = Map.empty
 
   // The memory store keeps objects, not JSON: the sizes are not known (0).
   override def persist[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[StoredEvent[AGGREGATE_ROOT]]] = Try { synchronized {
@@ -231,12 +232,13 @@ class MemoryEventStoreState extends EventStoreState {
   }
 
   override def squash[AGGREGATE_ROOT](aggregateId: AggregateId, upTo: AggregateVersion, squashEvent: FirstEvent[AGGREGATE_ROOT], userId: UserId,
-                                      metadata: Option[EventMetadata], detach: Seq[(AggregateId, FirstEvent[_])]): Either[String, Unit] = synchronized {
+                                      metadata: Option[EventMetadata], detach: Seq[(AggregateId, FirstEvent[_])], archive: Set[String]): Either[String, Unit] = synchronized {
     for {
       _ <- squashBlocker(aggregateId, upTo).toLeft(())
       _ <- detachingAll(duplicatesReading(aggregateId, Some(upTo)), detach)
     } yield {
-      detach.foreach(detachDuplicate)
+      detach.foreach(detachDuplicate(_, archive))
+      archived(aggregateId, AggregateVersion(1), upTo, archive)
       eventStore += aggregateId -> eventStore.getOrElse(aggregateId, Vector()).filterNot(_.version < upTo)
       eventsRows = eventsRows.filterNot(row => row.aggregateId == aggregateId && row.aggregateVersion < upTo)
       replaceEvent(aggregateId, upTo, squashEvent, Some(userId), Some(metadata))
@@ -249,8 +251,9 @@ class MemoryEventStoreState extends EventStoreState {
   }
 
   // As in PostgreSQL: the duplicate's first event becomes `firstEvent`; one that may change the state takes its snapshot (D85).
-  private def detachDuplicate(duplicate: (AggregateId, FirstEvent[_])): Unit = {
+  private def detachDuplicate(duplicate: (AggregateId, FirstEvent[_]), archive: Set[String]): Unit = {
     val (duplicateId, firstEvent) = duplicate
+    archived(duplicateId, AggregateVersion(1), AggregateVersion(1), archive)
     replaceEvent(duplicateId, AggregateVersion(1), firstEvent, None, None)
     if (firstEvent.isInstanceOf[SquashMayChangeState]) historyChangedFor(Set(duplicateId))
   }
@@ -296,15 +299,47 @@ class MemoryEventStoreState extends EventStoreState {
     eventsToPublish --= versions.map(version => (aggregateId, version))
   }
 
+  // R11, as in PostgreSQL: the events from `from` to `upTo` of the classes in `archive`, with their undo marks.
+  private def archived(aggregateId: AggregateId, from: AggregateVersion, upTo: AggregateVersion, archive: Set[String]): Unit = if (archive.nonEmpty) {
+    val entries = eventStore.getOrElse(aggregateId, Vector()).asInstanceOf[Vector[EventStoreEntry[Any]]]
+    val undone = undoneFrom(entries)
+    val now = Instant.now
+    val existing = archives.getOrElse(aggregateId, Vector())
+    val kept = entries.filter(e => e.version >= from && e.version <= upTo && archive.contains(e.event.getClass.getName) &&
+        !existing.exists(_.info.version == e.version))
+      .map(e => ArchivedEvent[Any](EventInfo(e.version, e.event, e.userId, e.timestamp, e.metadata), undone.get(e.version), now))
+    archives += aggregateId -> (existing ++ kept).sortBy(_.info.version.asInt)
+  }
+
+  // As add_undo_event: the version of the undo that marked each undone event, and of each undo event itself.
+  private def undoneFrom(entries: Vector[EventStoreEntry[Any]]): Map[AggregateVersion, AggregateVersion] = {
+    var marks = Map[AggregateVersion, AggregateVersion]()
+    entries.indices.foreach { i =>
+      entries(i).event match {
+        case undo: UndoEvent[_] =>
+          (0 until i).reverseIterator.filterNot(j => marks.contains(entries(j).version)).take(undo.eventsCount)
+            .foreach(j => marks += entries(j).version -> entries(i).version)
+          marks += entries(i).version -> entries(i).version
+        case _ => ()
+      }
+    }
+    marks
+  }
+
+  override def readArchive[AGGREGATE_ROOT](aggregateId: AggregateId): Seq[ArchivedEvent[AGGREGATE_ROOT]] = synchronized {
+    archives.getOrElse(aggregateId, Vector()).asInstanceOf[Vector[ArchivedEvent[AGGREGATE_ROOT]]]
+  }
+
   // Subscription failures live in the subscriptions state, which this store does not see.
-  override def deleteAggregatePermanently(aggregateId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])]): Either[String, Unit] = synchronized {
+  override def deleteAggregatePermanently(aggregateId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])], archive: Set[String]): Either[String, Unit] = synchronized {
     val duplicates = duplicatesReading(aggregateId, None)
     for {
       _ <- detachBlocker(duplicates, "the delete").toLeft(())
       _ <- detachingAll(duplicates, detach)
     } yield {
-      detach.foreach(detachDuplicate)
+      detach.foreach(detachDuplicate(_, archive))
       snapshots -= aggregateId
+      archives -= aggregateId
       eventsRows = eventsRows.filterNot(_.aggregateId == aggregateId)
       eventStore -= aggregateId
       eventsToPublish = eventsToPublish.filterNot { case ((eventAggregateId, _), _) => eventAggregateId == aggregateId }
@@ -337,10 +372,15 @@ class MemoryEventStoreState extends EventStoreState {
     block(NoSession)
   }
 
-  override def squashCandidates(aggregateType: AggregateType, policy: AutomaticSquash, after: AggregateId, limit: Int): Seq[(AggregateId, AggregateVersion)] = synchronized {
+  override def squashCandidates(aggregateType: AggregateType, policy: AutomaticSquash, after: AggregateId, limit: Int,
+                                now: Instant): Seq[(AggregateId, AggregateVersion)] = synchronized {
     eventsRows.collect { case row if row.aggregateType == aggregateType && row.aggregateId.asLong > after.asLong => row.aggregateId }
       .distinct.sortBy(_.asLong).iterator.flatMap { id =>
-        val upTo = eventStore(id).last.version.asInt - policy.keepLast
+        val entries = eventStore(id)
+        // R11, as in PostgreSQL: the newest version older than `keepNewerThan`, if that is lower.
+        val olderThan = policy.keepNewerThan.map(age => now.minusMillis(age.toMillis))
+        val byAge = olderThan.map(at => entries.filter(_.timestamp.isBefore(at)).lastOption.map(_.version.asInt).getOrElse(0))
+        val upTo = math.min(entries.last.version.asInt - policy.keepLast, byAge.getOrElse(Int.MaxValue))
         if (upTo - squashedVersions.get(id).map(_.asInt).getOrElse(0) >= policy.afterEvents) Some(id -> AggregateVersion(upTo)) else None
       }.take(limit).toSeq
   }

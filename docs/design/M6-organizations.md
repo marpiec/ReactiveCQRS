@@ -144,8 +144,8 @@ business entities keep who changed what for years, while their technical events 
 
 - **What is kept**: `SquashPolicy(toEvent, automatic, keep: Set[Class[_]] = Set.empty)`. Events of a
   `keep` class at or below the squash point are moved, in the squash's transaction, into
-  `events_archive (id PK, aggregate_id, version, event_type_id, event, user_id, event_time,
-  metadata, undone_from, archived)`, indexed on `(aggregate_id, version)`: the row as it was, its
+  `events_archive (id PK, aggregate_id, version, event_type_id, event_type_version, event, user_id,
+  event_time, metadata, undone_from, archived)`, indexed on `(aggregate_id, version)`: the row as it was, its
   undo mark (`noop_events.from_version`), and when it was archived. The event at the squash point,
   which the squash event replaces, is archived first when it is of a kept class.
 - **Reading it**: `GetArchivedEvents(id)` on the command bus, answered from the store like the
@@ -170,6 +170,9 @@ business entities keep who changed what for years, while their technical events 
 | A class is removed from the code while archived rows use it | they could not be read | `usersOf` lists them; `StoredDataCheck` reads the archive too |
 | A rewrite (R15) must reach audit events | they hold the values too | the rewrite reads archived events with the others |
 | A large squash archives many events | the transaction holds them | as a squash today: the scheduler's per-run limit, one squash at a time |
+| Retention by age on a busy type (found while building it) | walking back through each aggregate's newer events would read most of the type's recent events on every run | one boundary per run: the first event id not older, by a binary search of the primary key (about 40 reads), then one probe of `events (aggregate_id, id)` per aggregate; exact up to the longest command's duration and the nodes' clock skew; events written later with old times (an import) count as new, so they are kept longer |
+
+Built as designed (17/10/2026), with the last row's change.
 
 ## Purge (R17)
 

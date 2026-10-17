@@ -1840,3 +1840,18 @@ Open test-infrastructure items:
   first: the extra insert per event cost nothing measurable.
 - Tests: `PostgresEventStoreStateSpec` (three scenarios, each red under its mutation); the builder,
   rebuild and equivalence specs read through the keys.
+
+**17/10/2026: the archive and retention squash (R11)**
+- `SquashPolicy.keep` names audit event classes: a squash moves its events of them at or below the
+  point (the event at the point, before the squash event replaces it, and a detached duplicate's
+  first event too) into `events_archive` with their undo marks, in its transaction; a permanent
+  delete deletes the archive with the aggregate. `GetArchivedEvents(id)` reads it on the command
+  bus like the historical reads; restores, re-publications and builds never do.
+- `AutomaticSquash.keepNewerThan` keeps the recent history. Found while building it: walking back
+  through each aggregate's newer events would read most of a busy type's recent events on every
+  run; the rule finds one boundary per run instead (the first event id not older, by a binary
+  search of the primary key) and probes `events (aggregate_id, id)` once per aggregate.
+- `StoredDataCheck` reads the archive; `usersOf(className)` lists who still uses a class.
+- Tests: `EventStoreStateSpec` (the archive with undo marks and the delete; retention by age; both
+  stores) and `SquashSpec` (through the command bus: the archive read, a restore, the class
+  report); nine mutations, each caught.

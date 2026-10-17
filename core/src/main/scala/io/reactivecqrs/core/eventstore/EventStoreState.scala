@@ -97,11 +97,12 @@ abstract class EventStoreState {
     * these deletes, F26); a delete that fails only leaves rows that the outbox poller re-publishes later. */
   def deletePublished(aggregateId: AggregateId, versions: Seq[AggregateVersion]): Unit
 
-  /** Carries out a `PermanentDeleteEvent` once it is delivered: removes the aggregate, its events, its outbox rows and
-    * its subscriptions in one transaction, after detaching the duplicates given (see `squash`; F76). Deletes nothing,
-    * giving the reason, while a subscription of the aggregate is failed (D20a: the delete would remove the record of
-    * that failure), or when the duplicates given are not all those that read the aggregate (one was made meanwhile). */
-  def deleteAggregatePermanently(aggregateId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])] = Nil): Either[String, Unit]
+  /** Carries out a `PermanentDeleteEvent` once it is delivered: removes the aggregate, its events, its archive, its outbox
+    * rows and its subscriptions in one transaction, after detaching the duplicates given (see `squash`; F76), whose
+    * replaced first events of the classes in `archive` are archived (R11). Deletes nothing, giving the reason, while a
+    * subscription of the aggregate is failed (D20a: the delete would remove the record of that failure), while a detach
+    * must wait (F143), or when the duplicates given are not all those that read the aggregate (one was made meanwhile). */
+  def deleteAggregatePermanently(aggregateId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])] = Nil, archive: Set[String] = Set.empty): Either[String, Unit]
 
   // ************** Squash (D47–D52)
 
@@ -127,13 +128,19 @@ abstract class EventStoreState {
     * the state (`SquashMayChangeState`) takes every snapshot of its aggregate, or of the duplicate it detaches. Changes
     * nothing, giving the reason, when `squashBlocker` finds one, or when the duplicates given are not all those that
     * read the aggregate below `upTo` (one was made meanwhile): the caller may try again. A duplication of the aggregate
-    * made at the same time waits for the transaction and is then refused below the squash point. */
+    * made at the same time waits for the transaction and is then refused below the squash point. The aggregate's own
+    * events at or below `upTo` of the classes in `archive` (and a detached duplicate's first event of one) move to its
+    * archive with their undo marks instead of going (R11). */
   def squash[AGGREGATE_ROOT](aggregateId: AggregateId, upTo: AggregateVersion, squashEvent: FirstEvent[AGGREGATE_ROOT], userId: UserId,
-                             metadata: Option[EventMetadata], detach: Seq[(AggregateId, FirstEvent[_])]): Either[String, Unit]
+                             metadata: Option[EventMetadata], detach: Seq[(AggregateId, FirstEvent[_])], archive: Set[String] = Set.empty): Either[String, Unit]
+
+  /** The aggregate's archived events (R11), oldest first. */
+  def readArchive[AGGREGATE_ROOT](aggregateId: AggregateId): Seq[ArchivedEvent[AGGREGATE_ROOT]]
 
   /** For the squash scheduler (D52): up to `limit` aggregates of the type with ids above `after`, in id order, that
-    * `policy` says to squash now, each with the version to squash it up to. */
-  def squashCandidates(aggregateType: AggregateType, policy: AutomaticSquash, after: AggregateId, limit: Int): Seq[(AggregateId, AggregateVersion)]
+    * `policy` says to squash at `now`, each with the version to squash it up to. */
+  def squashCandidates(aggregateType: AggregateType, policy: AutomaticSquash, after: AggregateId, limit: Int,
+                       now: Instant = Instant.now): Seq[(AggregateId, AggregateVersion)]
 
   /** The aggregates with rows waiting in the outbox, for the outbox poller (D8): at most `limit`, those waiting longest first (F122). */
   def readWaitingInOutbox(limit: Int = Int.MaxValue): Seq[WaitingInOutbox]

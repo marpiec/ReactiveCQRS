@@ -333,6 +333,7 @@ run works in a new schema (`TestDatabase`).
 | `aggregates` (`:103-115`) | PK `(id, base_id)`, `space_id`, `creation_time`, `type_id`, `base_order`, `base_id`, `base_version`, since M3 `squashed_version` (null unless squashed, D49), since M5 `history_generation` (F119); indexes `(type_id)`, `(base_id)`, and since M6 `(space_id)` (an organization's aggregates, built online on a large installation) | one row per (aggregate, ancestor) in its duplication chain; the own row (`base_id = id`) holds the **current version** used for locking |
 | `noop_events` (`:75-81`) | `id` (= `events.id`) PK, `from_version` | events cancelled by an undo, effective from that version |
 | `snapshots` (since M3) | `aggregate_id` PK, `version`, `context_version`, `schema_version`, `state TEXT`, `created` | the latest performance snapshot of an aggregate (D30, §4.3); disposable |
+| `events_archive` (since M6) | `id` PK (the event's own), `aggregate_id`, `version`, `event_type_id`, `event_type_version`, `event TEXT`, `user_id`, `event_time`, `metadata JSONB`, `undone_from` (its undo mark), `archived`; index `(aggregate_id, version)` | the audit events squashes kept (R11, §4.6): read only by `GetArchivedEvents` and the stored-data checks, never by restores, re-publications or rebuilds |
 | `events_to_publish` (`:83-101`) | `event_id` PK, `aggregate_id`, `version`, `user_id`, `event_time`; index `(aggregate_id, version)` | **outbox**: events not yet confirmed by every subscriber |
 | `event_keys` (since M6) | `id` PK (→ `events.id`, deleted with it), `type_id`, `space_id` of the event's aggregate; indexes `(type_id, id)`, `(space_id, type_id, id)` | the commit-order pass by type and organization (F124): written by the three procedures with each event; the rows from before by `backfillEventKeys()` |
 | `schema_steps` (since M6) | `name` PK, `completed` | online steps that have completed (D69): `event_keys` once every event has a key |
@@ -477,8 +478,9 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   acknowledgement (`permanentDeleteAt`); the command bus then calls
   `EventStoreState.deleteAggregatePermanently` and stops the owner, whose state is gone. In one transaction it locks
   the aggregate's chain as a squash does (§4.6), detaches its duplicates (F76, fixed in M3:
-  each one's first event becomes the type's squash event of its state at version 1), and
-  deletes the `aggregates`, `noop_events` (before `events`, so its sub-select still matches),
+  each one's first event becomes the type's squash event of its state at version 1, the
+  replaced event archived first when its class is kept, R11), and
+  deletes the `aggregates`, `events_archive`, `noop_events` (before `events`, so its sub-select still matches),
   `events`, `events_to_publish`, `snapshots` and `subscriptions` rows. It deletes nothing and
   gives the reason while a subscription of the aggregate is failed (`subscription_failures`,
   D20a) or when a duplicate was made after the command bus listed them; the event's outbox
@@ -488,10 +490,10 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
 
 ### 4.6 Squash (D47–D52)
 
-- **Opt-in per context:** `squash = Some(SquashPolicy(toEvent, automatic))`. `toEvent` makes
+- **Opt-in per context:** `squash = Some(SquashPolicy(toEvent, automatic, keep))`. `toEvent` makes
   the context's squash event from a state: an ordinary `FirstEvent` class of the context,
   handled by its event handlers and projections like any other; the history never holds raw
-  state (D48).
+  state (D48). `keep` names the audit event classes a squash archives instead of deleting (R11).
 - **Request:** `SquashAggregate(id, upTo, userId, metadata)` to the command bus, which passes
   it to the owner; the answer is `AggregateSquashed` or `SquashRefused(reason)`. The owner runs
   it on its thread between commands; its version and state stay as they are.
@@ -515,7 +517,9 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   preconditions, and that the duplicates reading it below `upTo` are those the owner
   prepared (else "changed meanwhile", nothing changes); detaches them (D50: the version-1
   event becomes a squash event of the duplicate's state at version 1, its noop rows and its
-  chain rows to other aggregates go); deletes the noop rows at or below `upTo`, the events
+  chain rows to other aggregates go, the replaced event archived first when its class is kept);
+  archives the events of the `keep` classes at or below `upTo` with their undo marks (R11);
+  deletes the noop rows at or below `upTo`, the events
   below it, the outbox rows and snapshot at or below it and its own chain rows to its bases;
   replaces the event at `upTo` with the squash event (keeping its id and time, with the
   request's user and metadata); records `aggregates.squashed_version`.
@@ -526,18 +530,33 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   `RepublishRange` from below it starts at
   the squash event; a restore and a rebuild read the squash event first. Versions come from
   the stored events, so they stay as they were.
+- **The archive (R11):** `GetArchivedEvents(id)` to the command bus is answered from the store
+  in a `Future`, like the historical reads: `Success(ArchivedEvents(id, events))`, oldest first,
+  each with its `EventInfo` (version, event, user, time, metadata), its undo mark (`undoneFrom`:
+  the version of the undo that cancelled it) and when it was archived. The event at the squash
+  point is archived as it was before the squash event replaced it (under the same id). Restores,
+  re-publications, historical reads and rebuilds never read the archive: what projections derive
+  comes from the squash event on (D51). A permanent delete deletes it with the aggregate (§4.5);
+  the purge, the export and the complete rewrite cover it (M6). `StoredDataCheck` reads it like
+  `events`, and `StoredDataCheck.usersOf(className)` lists the aggregates that still have events
+  or archived events of a class: an empty list means the class can go from the code (D29).
 - **Scheduler (D52):** `SquashScheduler(eventStore, targets, options)`, started by the host,
   one per system (a cluster singleton in M5). Each run reads, per type, up to `perRun`
-  aggregates that `AutomaticSquash(afterEvents, keepLast)` selects (`squashCandidates`: on the
-  own row, `base_version - keepLast - coalesce(squashed_version, 0) >= afterEvents`), going
+  aggregates that `AutomaticSquash(afterEvents, keepLast, keepNewerThan)` selects
+  (`squashCandidates`: on the own row, `base_version - keepLast - coalesce(squashed_version, 0)
+  >= afterEvents`; with `keepNewerThan` the point is at most the aggregate's newest version older
+  than that age, R11: a binary search of the primary key finds the first event id not older, once
+  per run, then one probe of `events (aggregate_id, id)` per aggregate; exact up to the longest
+  command's duration and the nodes' clock skew, as ids follow commits and times the commands'
+  starts), going
   on after the last id of the run before, and asks the command bus to squash them one at a
   time (`answerTimeout`); `GetSquashStatus` counts the answers. Its squash events carry the
   actor `system:squash-scheduler`.
 - **Costs and operations:** each detached duplicate is restored at version 1 before the
   transaction, which reads its base's history; long duplication chains are an M3 risk to
   measure with release-freezing data. Disk space comes back through (auto)VACUUM; shrinking
-  files needs `pg_repack` or `VACUUM FULL`. Contexts with audit duties should not opt in
-  before R11's archive (M6).
+  files needs `pg_repack` or `VACUUM FULL`. Contexts with audit duties name their audit
+  event classes in `keep` (R11, M6).
 
 ---
 

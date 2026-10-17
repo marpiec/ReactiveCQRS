@@ -665,7 +665,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
         reading = if (changesState) eventStore.duplicatesReading(aggregateId, None) else Nil
         detach <- restorer.detachEvents(eventStore.duplicatesReading(aggregateId, Some(upTo)), policy)
         _ <- notWrittenYet(detach.map(_._2)).toLeft(())
-        _ <- eventStore.squash(aggregateId, upTo, event, request.userId, request.metadata, detach)
+        _ <- eventStore.squash(aggregateId, upTo, event, request.userId, request.metadata, detach, policy.keep.map(_.getName)) // R11
       } yield (changesState, reading, detach)) match {
         case Success(Right((changesState, reading, detach))) =>
           log.info("Aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " squashed up to version " + upTo.asInt +

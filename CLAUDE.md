@@ -80,7 +80,8 @@ sbt "project core" "~compile"   # incremental
     event that replaces events 1..N at version N, on request with `SquashAggregate` or by the
     `SquashScheduler`; reads, undos and duplications below the squash point are refused). A squash
     event must give back exactly the state it replaces, or the squash is refused (D85), unless
-    its class mixes in `SquashMayChangeState`.
+    its class mixes in `SquashMayChangeState`. Events of the policy's `keep` classes move to an
+    archive (R11), read with `GetArchivedEvents`.
   - See `testdomain/.../ShoppingCartAggregateContext.scala` for the pattern.
 - **Commands** (`api/.../Command.scala`) come in flavors that drive routing:
   - `FirstCommand` — creates a new aggregate (no id yet).
@@ -240,6 +241,9 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
   event_time`. The outbox: owners publish what they committed, delivered rows are
   deleted in batches (F26), the outbox poller re-publishes waiting ones. Indexed on
   `(aggregate_id, version)`.
+- **`events_archive`** (M6, R11) — the audit events a squash kept: the event row as it was, its
+  undo mark (`undone_from`) and when it was archived; read only by `GetArchivedEvents` and
+  `StoredDataCheck`, never by restores or builds.
 - **`event_keys`** (M6, F124) — `id PK (→ events.id, cascade), type_id, space_id`: each
   event's aggregate type and space, written by the procedures, so a build of some types or of
   one organization reads only its events; `schema_steps` records when `backfillEventKeys()`

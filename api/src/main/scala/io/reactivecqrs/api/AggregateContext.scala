@@ -15,6 +15,13 @@ case class GetAggregateForVersion(id: AggregateId, version: AggregateVersion)
 case class GetAggregateAtInstant(id: AggregateId, instant: Instant)
 
 case class GetEventsForAggregate(id: AggregateId)
+
+/** The events of the aggregate that squashes kept in the archive (R11), oldest first; answered `Success(ArchivedEvents)`. */
+case class GetArchivedEvents(id: AggregateId)
+/** An archived event as it was stored, `undoneFrom` the version of the undo that cancelled it, if one did, and when the
+  * squash archived it. */
+case class ArchivedEvent[AGGREGATE_ROOT](info: EventInfo[AGGREGATE_ROOT], undoneFrom: Option[AggregateVersion], archived: Instant)
+case class ArchivedEvents[AGGREGATE_ROOT](id: AggregateId, events: Seq[ArchivedEvent[AGGREGATE_ROOT]])
 case class GetEventsForAggregateForVersion(id: AggregateId, version: AggregateVersion)
 
 /** Asks a command bus for a new aggregate id, for a `FirstCommand` that names its aggregate in `chosenAggregateId`.
@@ -41,9 +48,11 @@ case class SquashRefused(id: AggregateId, reason: String) extends SquashResponse
   * evolved like any other (D29); the history never holds raw state. Every squash checks it (D85): the event handlers
   * apply the event to the initial state, as a restore will, and the result must equal (`==`) the state it replaces, or
   * the squash is refused; see `SquashMayChangeState` for an event that may differ on purpose. `automatic`: the squash
-  * scheduler squashes the context's aggregates by this rule (D52).
+  * scheduler squashes the context's aggregates by this rule (D52). `keep`: the classes of audit events a squash moves to
+  * the aggregate's archive instead of deleting them (R11), readable with `GetArchivedEvents`.
   */
-case class SquashPolicy[AGGREGATE_ROOT](toEvent: AGGREGATE_ROOT => FirstEvent[AGGREGATE_ROOT], automatic: Option[AutomaticSquash] = None)
+case class SquashPolicy[AGGREGATE_ROOT](toEvent: AGGREGATE_ROOT => FirstEvent[AGGREGATE_ROOT], automatic: Option[AutomaticSquash] = None,
+                                        keep: Set[Class[_]] = Set.empty)
 
 /**
   * Mixed into a squash event class whose state may differ from the state it replaces, on purpose (D85): for example one
@@ -56,8 +65,9 @@ case class SquashPolicy[AGGREGATE_ROOT](toEvent: AGGREGATE_ROOT => FirstEvent[AG
 trait SquashMayChangeState
 
 /** An aggregate is squashed once at least `afterEvents` of its events are older than its newest `keepLast` and not
-  * squashed yet; it is squashed up to the version before those `keepLast`. */
-case class AutomaticSquash(afterEvents: Int, keepLast: Int = 0) {
+  * squashed yet; it is squashed up to the version before those `keepLast`. With `keepNewerThan`, the events younger than
+  * that stay too (R11): it is squashed up to its newest version older than that, if that leaves `afterEvents` to squash. */
+case class AutomaticSquash(afterEvents: Int, keepLast: Int = 0, keepNewerThan: Option[FiniteDuration] = None) {
   require(afterEvents > 0 && keepLast >= 0, "afterEvents must be positive and keepLast not negative")
 }
 

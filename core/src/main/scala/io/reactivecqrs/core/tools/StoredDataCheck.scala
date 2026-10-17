@@ -65,6 +65,14 @@ object StoredDataCheck {
       results.add("events", eventClass, "id " + rs.long(1), read)
     }
 
+    // R11: archived events are read like events.
+    if (DB.readOnly(implicit session => sql"SELECT to_regclass('events_archive') IS NOT NULL".map(_.boolean(1)).single().get)) {
+      eachRow(sql"SELECT id, event_type_id, event FROM events_archive") { rs =>
+        val eventClass = className(rs.short(2))
+        results.add("events_archive", eventClass, "id " + rs.long(1), Try(mpjsons.deserialize[AnyRef](rs.string(3), eventClass)))
+      }
+    }
+
     eachRow(sql"SELECT name, saga_id, order_type_id, saga_order FROM sagas") { rs =>
       val orderClass = className(rs.int(3).toShort)
       results.add("sagas", orderClass, rs.string(1) + " " + rs.long(2), Try(mpjsons.deserialize[AnyRef](rs.string(4), orderClass)))
@@ -87,6 +95,26 @@ object StoredDataCheck {
         sql"SELECT count(*) FROM aggregates WHERE space_id = -1".map(_.long(1)).single().get,
         sql"SELECT event_type_version, count(*) FROM events GROUP BY event_type_version".map(rs => rs.int(1) -> rs.long(2)).list().toMap)
     }
+  }
+
+  /** The aggregates that still have events of a class: in `events`, in the archive, and the first `limit` of them with
+    * their counts of each. */
+  case class ClassUsers(className: String, events: Long, archived: Long, aggregates: Seq[ClassUser])
+  case class ClassUser(aggregateId: Long, events: Long, archived: Long)
+
+  /** R11: who still uses an event class, in `events` or in the archive. None means the class can go from the code (D29:
+    * its successor holds the new shape). Reads both tables whole, as there is no index by class: run it on a copy or
+    * when the database is quiet. */
+  def usersOf(className: String, limit: Int = 100): ClassUsers = DB.readOnly { implicit session =>
+    val archive = sql"SELECT to_regclass('events_archive') IS NOT NULL".map(_.boolean(1)).single().get
+    def total(table: SQLSyntax): Long =
+      sql"SELECT count(*) FROM $table e JOIN types_names t ON t.id = e.event_type_id WHERE t.name = $className".map(_.long(1)).single().get
+    val archivedRows = if (archive) sqls"UNION ALL SELECT e.aggregate_id, 0 AS live, 1 AS kept FROM events_archive e JOIN types_names t ON t.id = e.event_type_id WHERE t.name = $className" else sqls""
+    val users = sql"""SELECT aggregate_id, sum(live), sum(kept) FROM (
+                     |  SELECT e.aggregate_id, 1 AS live, 0 AS kept FROM events e JOIN types_names t ON t.id = e.event_type_id WHERE t.name = $className
+                     |  $archivedRows) u
+                     | GROUP BY aggregate_id ORDER BY aggregate_id LIMIT $limit""".stripMargin.map(rs => ClassUser(rs.long(1), rs.long(2), rs.long(3))).list()
+    ClassUsers(className, total(sqls"events"), if (archive) total(sqls"events_archive") else 0L, users)
   }
 
   private class Results(examplesPerClass: Int) {

@@ -457,12 +457,13 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   private def detachingAll(found: Seq[AggregateId], detach: Seq[(AggregateId, FirstEvent[_])]): Either[String, Unit] =
     Either.cond(found.toSet == detach.map(_._1).toSet, (), "the duplicates of the aggregate changed meanwhile")
 
-  override def deleteAggregatePermanently(aggregateId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])]): Either[String, Unit] = {
+  override def deleteAggregatePermanently(aggregateId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])], archive: Set[String]): Either[String, Unit] = {
     outboxDeletes.flushNow() // acknowledged rows go first, so the outbox checks see only what still waits
-    localTx { implicit session => deletingPermanently(aggregateId, detach) }
+    localTx { implicit session => deletingPermanently(aggregateId, detach, archive) }
   }
 
-  private def deletingPermanently(aggregateId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])])(implicit session: DBSession): Either[String, Unit] = {
+  private def deletingPermanently(aggregateId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])], archive: Set[String])
+                                 (implicit session: DBSession): Either[String, Unit] = {
     val id = aggregateId.asLong
     lockChain(id)
     for {
@@ -470,8 +471,9 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       _ <- detachBlocker(id, None, "the delete").toLeft(())
       _ <- detachingAll(duplicates(id, None), detach)
     } yield {
-      detach.foreach(detachDuplicate) // F76: they read this aggregate's events, which go now
+      detach.foreach(detachDuplicate(_, archive)) // F76: they read this aggregate's events, which go now
       sql"""DELETE FROM aggregates WHERE id = $id""".update()
+      sql"""DELETE FROM events_archive WHERE aggregate_id = $id""".update()
       // noop_events must be deleted BEFORE events: it is resolved via a subquery over events,
       // so deleting events first would make the subquery match nothing and leak noop_events rows.
       sql"""DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = $id)""".update()
@@ -524,6 +526,25 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       .orElse(failedDuplicate.map(d => "a subscription of duplicate " + d + ", which " + by + " detaches, is failed"))
   }
 
+  // R11: copies the events `which` selects, of the classes in `archive`, into the archive with their undo marks.
+  private def archived(which: SQLSyntax, archive: Set[String])(implicit session: DBSession): Unit = if (archive.nonEmpty) {
+    val typeIds = archive.toSeq.map(typesNamesState.typeIdByClassName)
+    sql"""INSERT INTO events_archive (id, aggregate_id, version, event_type_id, event_type_version, event, user_id, event_time, metadata, undone_from, archived)
+         | SELECT e.id, e.aggregate_id, e.version, e.event_type_id, e.event_type_version, e.event, e.user_id, e.event_time, e.metadata, n.from_version, current_timestamp
+         | FROM events e LEFT JOIN noop_events n ON n.id = e.id
+         | WHERE $which AND e.event_type_id IN ($typeIds) ON CONFLICT (id) DO NOTHING""".stripMargin.update()
+  }
+
+  override def readArchive[AGGREGATE_ROOT](aggregateId: AggregateId): Seq[ArchivedEvent[AGGREGATE_ROOT]] = DB.readOnly { implicit session =>
+    sql"""SELECT version, event_type_id, event_type_version, event, user_id, event_time, metadata::text, undone_from, archived
+         | FROM events_archive WHERE aggregate_id = ${aggregateId.asLong} ORDER BY version""".stripMargin.map { rs =>
+      val version = AggregateVersion(rs.int(1))
+      val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(4), eventClass(rs.short(2), rs.short(3), aggregateId.asLong, version.asInt))
+      ArchivedEvent(EventInfo(version, event, UserId(rs.long(5)), utcTime(rs.underlying, 6), metadataOf(rs.string(7))),
+        rs.intOpt(8).map(AggregateVersion(_)), utcTime(rs.underlying, 9))
+    }.list()
+  }
+
   // A duplicate of the aggregate, reading it below `below` if given, that `joined` finds.
   private def duplicateWith(id: Long, below: Option[Int], joined: SQLSyntax)(implicit session: DBSession): Option[Long] = {
     val reading = below.fold(sqls"")(n => sqls"AND a.base_version < $n")
@@ -537,10 +558,11 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     DB.readOnly(implicit session => duplicates(baseId.asLong, below.map(_.asInt)))
 
   // D50: the duplicate's first event becomes one that holds its state at version 1, so it no longer reads its bases.
-  private def detachDuplicate(duplicate: (AggregateId, FirstEvent[_]))(implicit session: DBSession): Unit = {
+  private def detachDuplicate(duplicate: (AggregateId, FirstEvent[_]), archive: Set[String])(implicit session: DBSession): Unit = {
     val (duplicateId, firstEvent) = duplicate
     val id = duplicateId.asLong
     val className = firstEvent.getClass.getName
+    archived(sqls"e.aggregate_id = $id AND e.version = 1", archive)
     sql"""DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = $id AND version = 1)""".update()
     val updated = sql"""UPDATE events SET event = ${mpjsons.serialize(firstEvent, className)}, event_type_id = ${typesNamesState.typeIdByClassName(className)}
                        | WHERE aggregate_id = $id AND version = 1""".stripMargin.update()
@@ -551,7 +573,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
 
   override def squash[AGGREGATE_ROOT](aggregateId: AggregateId, upTo: AggregateVersion, squashEvent: FirstEvent[AGGREGATE_ROOT], userId: UserId,
-                                      metadata: Option[EventMetadata], detach: Seq[(AggregateId, FirstEvent[_])]): Either[String, Unit] = localTx { implicit session =>
+                                      metadata: Option[EventMetadata], detach: Seq[(AggregateId, FirstEvent[_])], archive: Set[String]): Either[String, Unit] = localTx { implicit session =>
     val id = aggregateId.asLong
     val n = upTo.asInt
     lockChain(id)
@@ -559,8 +581,9 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       _ <- blocker(id, n).toLeft(())
       _ <- detachingAll(duplicates(id, Some(n)), detach)
     } yield {
-      detach.foreach(detachDuplicate)
+      detach.foreach(detachDuplicate(_, archive))
       val className = squashEvent.getClass.getName
+      archived(sqls"e.aggregate_id = $id AND e.version <= $n", archive) // R11: before the rows and their undo marks go
       // noop rows first: they are found through the events they mark (F76's lesson).
       sql"""DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = $id AND version <= $n)""".update()
       sql"""DELETE FROM events WHERE aggregate_id = $id AND version < $n""".update()
@@ -578,14 +601,42 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     }
   }
 
-  override def squashCandidates(aggregateType: AggregateType, policy: AutomaticSquash, after: AggregateId, limit: Int): Seq[(AggregateId, AggregateVersion)] =
+  // R11: with `keepNewerThan`, the point is the aggregate's newest version below the first event not older than that: one
+  // probe of `events (aggregate_id, id)` per aggregate, not a walk back through every newer event of it.
+  override def squashCandidates(aggregateType: AggregateType, policy: AutomaticSquash, after: AggregateId, limit: Int,
+                                now: Instant): Seq[(AggregateId, AggregateVersion)] =
     DB.readOnly { implicit session =>
       val keep = policy.keepLast
-      sql"""SELECT id, base_version - $keep FROM aggregates
-           | WHERE type_id = ${typesNamesState.typeIdByClassName(aggregateType.typeName)} AND base_id = id AND id > ${after.asLong}
-           |   AND base_version - $keep - coalesce(squashed_version, 0) >= ${policy.afterEvents}
+      val upTo = policy.keepNewerThan match {
+        case None => sqls"a.base_version - $keep"
+        case Some(age) =>
+          val boundary = firstEventNotOlderThan(now.minusMillis(age.toMillis))
+          sqls"""LEAST(a.base_version - $keep, coalesce((SELECT e.version FROM events e WHERE e.aggregate_id = a.id AND e.id < $boundary
+                |  ORDER BY e.id DESC LIMIT 1), 0))""".stripMargin
+      }
+      sql"""SELECT id, up_to FROM (SELECT a.id, $upTo AS up_to, a.squashed_version FROM aggregates a
+           |   WHERE a.type_id = ${typesNamesState.typeIdByClassName(aggregateType.typeName)} AND a.base_id = a.id AND a.id > ${after.asLong}
+           |     AND a.base_version - $keep - coalesce(a.squashed_version, 0) >= ${policy.afterEvents}) c
+           | WHERE up_to - coalesce(squashed_version, 0) >= ${policy.afterEvents}
            | ORDER BY id LIMIT $limit""".stripMargin.map(rs => (AggregateId(rs.long(1)), AggregateVersion(rs.int(2)))).list()
     }
+
+  // R11: the id of the first event not older than `at`, by a binary search of the primary key (about 40 reads). Ids follow
+  // the commits and times the commands' starts, so it is exact up to the longest command's duration and the nodes' clock
+  // skew; events written later with old times (an import) count as new, so they are kept longer, never squashed early.
+  private def firstEventNotOlderThan(at: Instant)(implicit session: DBSession): Long = {
+    val time = utc(at) // stored as UTC wall time (F65)
+    var low = 0L // the events below are older
+    var high = sql"SELECT coalesce(max(id), 0) + 1 FROM events".map(_.long(1)).single().get // the first event from here is not
+    while (low < high) {
+      val mid = low + (high - low) / 2
+      sql"SELECT id, event_time < $time FROM events WHERE id >= $mid ORDER BY id LIMIT 1".map(rs => (rs.long(1), rs.boolean(2))).single() match {
+        case Some((id, true)) => low = math.min(id + 1, high)
+        case _ => high = mid
+      }
+    }
+    low
+  }
 
   // One query for all aggregate types (F37); the aggregate's own row of its chain gives the type. The limit bounds what
   // the poller holds, not the grouping, which still reads every row (F122: cheap while the outbox is near empty).

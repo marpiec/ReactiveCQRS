@@ -163,7 +163,10 @@ to every type of that store.
   type whose aggregates grow past a few thousand events.
 - **Squash long histories** (D47), on request or automatically (`AutomaticSquash`). The squash event
   replaces events 1..N, so restores and re-publications start there. Reads below the squash point
-  are refused.
+  are refused. Events of the classes a policy keeps move to `events_archive` (R11), one row each,
+  read only on request. With `keepNewerThan`, each scheduler run costs one binary search of the
+  events' primary key (about 40 reads) and one index probe per aggregate of the type that has
+  `afterEvents` to squash by count.
 - **Raise `aggregateVersionLimit` deliberately.** It guards against runaway aggregates.
 - **Do not ask for the whole history of a long aggregate.** `GetEventsForAggregateForVersion` reads
   up to a version, on the asking node.

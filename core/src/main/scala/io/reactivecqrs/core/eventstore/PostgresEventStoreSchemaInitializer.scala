@@ -27,6 +27,7 @@ class PostgresEventStoreSchemaInitializer  {
     createEventsAggregateVersionIndexWhenSmall()
     createAggregatesSpaceIndexWhenSmall()
     createEventKeysTable()
+    createEventsArchiveTable()
     dropOldFunctions()
     createAddEventsFunction()
     createAddEventFunction()
@@ -190,6 +191,14 @@ class PostgresEventStoreSchemaInitializer  {
          |  type_id SMALLINT NOT NULL, space_id BIGINT NOT NULL)""".stripMargin.execute()
     sql"""CREATE INDEX IF NOT EXISTS event_keys_type_idx ON event_keys (type_id, id)""".execute()
     sql"""CREATE INDEX IF NOT EXISTS event_keys_space_idx ON event_keys (space_id, type_id, id)""".execute()
+  }
+
+  // R11: the audit events a squash keeps, as they were stored, with their undo marks; never read by restores or builds.
+  private def createEventsArchiveTable(): Unit = DB.autoCommit { implicit session =>
+    sql"""CREATE TABLE IF NOT EXISTS events_archive (id BIGINT NOT NULL PRIMARY KEY, aggregate_id BIGINT NOT NULL, version INT NOT NULL,
+         |  event_type_id SMALLINT NOT NULL, event_type_version SMALLINT NOT NULL, event TEXT NOT NULL, user_id BIGINT NOT NULL, event_time TIMESTAMP NOT NULL, metadata JSONB,
+         |  undone_from INT, archived TIMESTAMP NOT NULL)""".stripMargin.execute()
+    sql"""CREATE INDEX IF NOT EXISTS events_archive_aggregate_idx ON events_archive (aggregate_id, version)""".execute()
   }
 
   // An installation without events has none to backfill. Checked once the procedures write keys, so an event written
