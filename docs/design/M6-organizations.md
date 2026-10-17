@@ -327,6 +327,51 @@ writes it into another installation. Its projections are then rebuilt for the sp
 | The organization has events in flight | the export misses them | documented: export a quiet organization; the export reports outbox rows of the space |
 | Event classes unknown to the target | it cannot read them | checked from the header before writing |
 
+### Refined before building (17/10/2026)
+
+The interface, as a host sees it:
+
+```scala
+val exported: ExportReport = new SpaceExport(eventStore, contexts = Seq(cartContext, ...)).write(SpaceId(42), writer)
+val imported: ImportReport = new SpaceImport(eventStore, uidGenerator, rewriters = Map(...))(system).read(path, into = SpaceId(7))
+```
+
+- **Format**, JSON lines written by mpjsons: an `ExportHeader` (format version, source installation,
+  space, time, every class name the lines use), one `ExportedAggregate` per aggregate (id, root class,
+  version, squash point, creation time, its chain within the space, and whether its first event is a
+  detach), then one `ExportedEvent` per event in commit order (`events.id`; aggregate, version, class,
+  the stored JSON, user, time, metadata JSON, undo mark), then one `ExportedArchived` per archived
+  event. The events are read in one read-only transaction with a fetch size, so the export streams.
+- **Detached on export**: an aggregate whose chain reaches a base outside the space (directly or
+  through a copy in the space) is exported with its version-1 event replaced by the type's squash
+  event of its state at version 1, checked (D85) as a detach is, and no chain; a type without a
+  squash event, or a context not given, refuses the export before anything is written.
+- **Refused on export**: ids below 1001 in the space (constants, D39); the report counts the space's
+  outbox rows (an organization moves quiet).
+- **Import, pass 1** (reads the file, writes nothing): the header's classes must all load; the
+  target space must be empty; every exported id that the target already has gets a fresh id from
+  the target's pool (`GetNewAggregatesIdsPool`); sizes and versions are checked against the target
+  store's limits; a refusal lists every reason.
+- **Import, pass 2**: the aggregates' rows (own and chain, bases mapped) in batches, then the events
+  in the file's order, each read with an `MPJsons` of the import's own whose post-deserialization
+  transforms map `AggregateId`, `UserId` (same map) and `SpaceId` (source space to target space),
+  then the type's `ImportRewriter` (untyped references), then written with the store's serializer
+  under a new id from `events_seq` (relative order kept), with its undo mark and its key; then the
+  archived events. Transactions of at most 10 000 events. No outbox rows: the host rebuilds the
+  space's projections (`RebuildAggregates(OneSpace(into))`).
+- **`ImportReport`**: counts, the ids remapped, references to aggregates neither exported nor in the
+  target (counted, the first 1 000 listed), refusals.
+
+| Circumstance | What happens | Handled by |
+|---|---|---|
+| An organization of 10 million events | a file of about 4 GB (382 bytes per event measured in load-M5; estimated), read twice | streamed both ways; memory holds the aggregate ids and the remapped ones only |
+| Events of 5 MB | long lines | read line by line; one event in memory at a time |
+| The import stops in pass 2 | part of the organization written | the report says how far; the host purges the target space (it was empty) and imports again |
+| A reference held as text ("user:5" in a metadata actor) | the codec cannot see it | the type's `ImportRewriter`; documented as the host's part |
+| The two installations run different code | a class of the file is missing in the target | refused in pass 1 with the class names |
+| The target space is not empty | two organizations would merge | refused in pass 1 |
+| A copy of a copy reaches outside the space | its chain cannot be imported | detached on export, as above |
+
 ## The complete rewrite (R15, D76; F8, F146)
 
 A rewrite replaces a value everywhere the library stored it, for an aggregate and every copy of
