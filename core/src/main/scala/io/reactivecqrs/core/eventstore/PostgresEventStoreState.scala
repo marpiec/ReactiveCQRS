@@ -101,7 +101,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     val version = sql"""SELECT add_events(${newEvents.userId.asLong}, ${array("bigint", spaceIds)}, ${aggregateId.asLong}, ${expectedVersion.asInt},
          |  $aggregateTypeId, ${array("smallint", eventTypeIds)}, ${utc(newEvents.timestamp)}, ${array("text", serialized)}, $metadata::jsonb)"""
       .stripMargin.map(_.int(1)).single().get
-    (AggregateVersion(version), serialized.map(_.length))
+    (AggregateVersion(version), serialized.map(PostgresEventStoreState.utf8Length))
   }
 
   // Returns the event's version and size.
@@ -112,13 +112,13 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       (AggregateVersion(sql"""SELECT add_undo_event(${newEvents.userId.asLong}, ${aggregateId.asLong}, ${expectedVersion.asInt},
                              |  ${typesNamesState.typeIdByClassName(aggregateTypeName(event))}, ${typesNamesState.typeIdByClassName(event.getClass.getName)},
                              |  ${utc(newEvents.timestamp)}, $serialized, ${undo.eventsCount}, $metadata::jsonb)"""
-        .stripMargin.map(_.int(1)).single().get), serialized.length)
+        .stripMargin.map(_.int(1)).single().get), PostgresEventStoreState.utf8Length(serialized))
     case duplication: DuplicationEvent[_] =>
       val serialized = serializedChecked(aggregateId, event, expectedVersion)
       (AggregateVersion(sql"""SELECT add_duplication_event(${newEvents.userId.asLong}, ${duplication.spaceId.asLong}, ${aggregateId.asLong}, ${expectedVersion.asInt},
                              |  ${typesNamesState.typeIdByClassName(aggregateTypeName(event))}, ${typesNamesState.typeIdByClassName(event.getClass.getName)},
                              |  ${utc(newEvents.timestamp)}, $serialized, ${duplication.baseAggregateId.asLong}, ${duplication.baseAggregateVersion.asInt}, $metadata::jsonb)"""
-        .stripMargin.map(_.int(1)).single().get), serialized.length)
+        .stripMargin.map(_.int(1)).single().get), PostgresEventStoreState.utf8Length(serialized))
     case _ =>
       val (version, sizes) = persistPlain(aggregateId, newEvents, Seq(event), expectedVersion, metadata)
       (version, sizes.head)
@@ -532,4 +532,23 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   // Cache updates made in the transaction through `AfterCommit`, an outbox writer's too (D33), apply once it committed.
   override def localTx[A](block: (DBSession) => A): A = AfterCommit.localTx(block)
 
+}
+
+object PostgresEventStoreState {
+
+  /** The bytes of `s` in UTF-8, as PostgreSQL keeps it (`octet_length`), counted without encoding it: a size the store
+    * reports when it writes is the one it reports when it reads (F142). */
+  private[eventstore] def utf8Length(s: String): Int = {
+    var bytes = 0
+    var i = 0
+    while (i < s.length) {
+      val c = s.charAt(i)
+      if (c < 0x80) bytes += 1
+      else if (c < 0x800) bytes += 2
+      else if (Character.isHighSurrogate(c) && i + 1 < s.length && Character.isLowSurrogate(s.charAt(i + 1))) { bytes += 4; i += 1 }
+      else bytes += 3
+      i += 1
+    }
+    bytes
+  }
 }

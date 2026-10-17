@@ -720,6 +720,12 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Fix:** an event is refused when the version before it has reached the limit. Test: `PostgresEventStoreStateSpec` (events stored together, one by one and as an undo; red before the fix).
 - **Found:** high-load analysis at M5 (docs/SCALING.md).
 
+#### F142 — An event's size was its characters when written and its bytes when read
+- **Low**, confirmed (reproduced in `PostgresEventStoreStateSpec`) · **Fixed in M5** (17/10/2026) · `PostgresEventStoreState`
+- **Symptom:** the store reported a written event's size as the length of its JSON string (UTF-16 characters), and a read event's as PostgreSQL's `octet_length` (UTF-8 bytes). For text outside ASCII, such as Polish, they differ (161 bytes against 111 characters for 50 ASCII and 50 Polish letters), so the bus's byte window and the stored-bytes metric counted the same event differently on the live path and in re-publications.
+- **Fix:** a written event's size is its UTF-8 bytes, counted without encoding the string. The per-class size limits stay in characters. Test: `PostgresEventStoreStateSpec` (sizes of Polish text, red before; the count against `getBytes`).
+- **Found:** M5 close, audit of delivery.
+
 ### Performance and runtime
 
 #### F127 — Command handlers ran on Pekko's default dispatcher
@@ -1085,7 +1091,7 @@ From §7 of Neula's change requests.
 | M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔, F95 ✔; Neula H2, H7 |
 | M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8 ✔; F8 (contract ✔), F22 ✔, F23 ✔, F25 ✔, F27 ✔, F30 ✔, F31 ✔, F32 ✔, F33 (rest ✔), F38 ✔, F39 ✔, F44 ✔, F50 ✔, F65 ✔, F76 ✔, F78 ✔, F81 ✔, F96 ✔, F97 ✔, F100–F107 ✔; D85 ✔; Neula H8 |
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
-| M5 | AR5; F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔ (F78 between nodes ✔ in M3) |
+| M5 | AR5; F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 (complete), F124 |
 
 ---

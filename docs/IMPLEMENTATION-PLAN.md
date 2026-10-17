@@ -1731,7 +1731,7 @@ Open test-infrastructure items:
   conflicts in concurrent mode, queues in serial mode, hand-overs of sharded owners; and
   recommends moving long work out of the command, or giving it its own threads and timeouts.
 
-**17/10/2026: audit of delivery and the cluster at the M5 close (F128–F141)**
+**17/10/2026: audit of delivery and the cluster at the M5 close (F128–F142)**
 - Two audits (delivery and flow control; the cluster) before closing M5, each finding checked
   against the code before fixing. In the bus and flow control: a re-publication could send a
   subscription added later a message with a hole, which the sequence gate applies as a range, so
@@ -1761,3 +1761,5 @@ Open test-infrastructure items:
   fit, and a range restores its state once (F140); retries of given-up aggregates take at most
   half of a poll's budget while others are due (F141). Tests: `ProjectionBuilderSpec` (two
   scenarios), `RedeliveryPolicySpec`; each red under its mutation.
+- The store reported a written event's size in characters and a read one's in bytes; both are
+  UTF-8 bytes now (F142, `PostgresEventStoreStateSpec`, red before).

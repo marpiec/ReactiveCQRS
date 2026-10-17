@@ -29,7 +29,7 @@ case class CommittedEvent(id: Long, aggregateType: AggregateType, aggregateId: A
   * not mean that no more events are stored. */
 case class CommittedPage(events: Seq[CommittedEvent], cut: Boolean)
 
-/** An event as stored: its version, and its stored JSON's length, which bounds batches by bytes (F126); 0 when the
+/** An event as stored: its version, and its stored JSON's bytes, which bound batches (F126, F142); 0 when the
   * store does not know it. */
 case class StoredEvent[AGGREGATE_ROOT](event: Event[AGGREGATE_ROOT], version: AggregateVersion, size: Int)
 

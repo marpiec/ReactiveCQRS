@@ -88,11 +88,12 @@ class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStore
     store(3, Undo(1)).failed.get mustBe a[TooManyEventsException]
   }
 
-  // F126: the store reports each event's stored size, and cuts parts and pages by them, keeping at least one event.
+  // F126: the store reports each event's stored size, in bytes as PostgreSQL keeps it (non-ASCII text too, F142), and cuts
+  // parts and pages by them, keeping at least one event.
   Scenario("events come with their stored sizes; parts and pages are cut by bytes, at least one event each") {
     val f = new TestFixture(eventStoreState)
     val stored = eventStoreState.localTx(session => eventStoreState.persist(f.aggregateId,
-      NewEvents(f.userId, AggregateVersion(0), Instant.now, Seq(EventA("x" * 100), EventB(1), EventC(true))))(session)).get
+      NewEvents(f.userId, AggregateVersion(0), Instant.now, Seq(EventA("x" * 50 + "ł" * 50), EventB(1), EventC(true))))(session)).get
     stored.map(_.version.asInt) mustBe Seq(1, 2, 3)
     val sizes = stored.map(_.size)
     sizes.head must be > 100
@@ -109,6 +110,12 @@ class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStore
     val whole = eventStoreState.readCommittedPage(types, 0L, 10, AggregateScope.Only(Set(f.aggregateId)), Long.MaxValue)
     (whole.events.map(_.version.asInt), whole.cut) mustBe ((Seq(1, 2, 3), false))
     eventStoreState.readCommittedPage(types, 0L, 2, AggregateScope.Only(Set(f.aggregateId)), Long.MaxValue).cut mustBe false // its limit, not its bytes
+  }
+
+  Scenario("a size is counted in UTF-8 bytes, as PostgreSQL keeps text (F142)") {
+    Seq("", "plain", "zażółć gęślą jaźń", "ࠀ￿", "𝄞 and 😀").foreach { s =>
+      PostgresEventStoreState.utf8Length(s) mustBe s.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+    }
   }
 
   // F122: the poller holds at most a limit of waiting aggregates, those waiting longest first.
