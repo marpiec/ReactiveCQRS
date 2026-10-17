@@ -1665,3 +1665,13 @@ Open test-infrastructure items:
 - Tests: `ClusterMessageSizeSpec` (five scenarios on two nodes, all red before: Pekko discarded
   the oversized payloads and the asks timed out), `ClusterSerializerSpec` (the marker, the
   failure's round trip).
+
+**17/10/2026: commands and events of 5 MB (docs/SCALING.md §7)**
+- Asked for at M5: large commands and events. A bench scenario (`large`) sends commands carrying
+  a 5 000 000-character document stored in one event, with the per-class limit raised
+  (`docs/perf/large-M5.md`): 90 ms per command (p50), about 12 MB of heap per command in flight,
+  5.0 MB per event on disk, 206 MB of heap to restore 20 such events, 4.8 MB per delivery between
+  nodes (over the limit, so such events cannot reach a projection on another node without a
+  larger frame). SCALING §7 recommends the claim-check pattern and what to set otherwise.
+- New issue: F126 (batches counted in events hold whatever their events weigh: a re-publication
+  part of 1 000 such events is about 5 GB), fixed in M5 with F93, whose window counts bytes too.

@@ -3,11 +3,13 @@
 How the library behaves when the volume or the load is high: where it throttles, what it holds in
 memory, how it fails or stalls, and what to do about it. The scenarios follow the questions asked
 at M5: 10 000 command requests at once, aggregates of 50 000 events, a store of 100 million events,
-and writes that outrun the projections. Section 6 covers the messages between the nodes of a cluster.
+writes that outrun the projections, and commands and events of 5 MB (section 7). Section 6 covers
+the messages between the nodes of a cluster.
 
 **How to read the numbers.**
 - **Measured** numbers come from the bench reports [docs/perf/load-M5.md](perf/load-M5.md)
-  (commit cd23537) and [docs/perf/baseline-M4.md](perf/baseline-M4.md). Each is a single run on one
+  (commit cd23537), [docs/perf/large-M5.md](perf/large-M5.md) (commit ee1b140) and
+  [docs/perf/baseline-M4.md](perf/baseline-M4.md). Each is a single run on one
   machine: Windows 10, 12 CPU threads, OpenJDK 17, a 2 GB heap, PostgreSQL 17.4 on the same machine,
   and a JDBC pool of 40 connections. They are good for comparing runs. They are not capacity figures
   for production hardware.
@@ -33,14 +35,14 @@ receive bursts must bound the commands it lets in** (section 2).
 | Command timeout (`AggregateContext.commandTimeout`) | 60 s | The caller gets `CommandHandlingError`, and the command is never persisted afterwards (R5). |
 | Id pools (`IdPool`) | 10 000 ids per pool, fetched ahead | A `FirstCommand` waits for a late pool. A failing generator answers `CommandHandlingError` (F75). |
 | Events per aggregate (`PostgresEventStoreState.aggregateVersionLimit`) | 10 000 | Every command on an aggregate at the limit fails with `EventHandlingError` (section 3). |
-| Event size (`eventSizeLimit`, per class `eventSizeLimitPerClassName`) | 100 000 characters of JSON | The command fails with `EventHandlingError`. |
+| Event size (`eventSizeLimit`, per class `eventSizeLimitPerClassName`) | 100 000 characters of JSON | The command fails with `EventHandlingError`. Larger events cost memory and disk in proportion (section 7). |
 | Event bus (`EventsBusActor`) | one actor per node | It keeps one entry per event in flight until every subscription answers, with no flow control (F93), and ends a delivery at a 10-minute deadline. |
 | Projection | mailbox unbounded; up to 100 aggregates per transaction | Measured: 2 732 events/s while commands run (baseline-M4). The lag lives in memory (section 5). |
 | Outbox poller (`OutboxPollerOptions`) | a poll every 30 s, at most 1 000 aggregates re-published per poll, gives up after 10 min | A large backlog drains at 1 000 aggregates per poll. Given-up rows wait for a restart (section 4). |
 | Re-publication parts (`OwnerSettings.maxRepublishEvents`) | 1 000 events per message | Counted in events; the bus splits them again for a subscriber on another node (F121, section 6). |
 | Subscription version cache | 10 000 aggregates (LRU) | Misses read the database. |
 | Rebuild (`BuilderSettings`) | pages of 1 000, chunks of 1 000 events, 2 chunks in flight, 10 000 replay states | Measured: 6 769 events/s (baseline-M4). Evicted states are read again from snapshots (section 4). |
-| Owners in memory | local: an owner idle for 2 min beyond the 200 most recent, or idle for 12 h, is stopped by a sweep every 5 min (`Owners.scala`). Sharded: Pekko passivates after 120 s idle. | Not a limit: every aggregate touched in the last minutes has an owner and its state in memory (section 7). |
+| Owners in memory | local: an owner idle for 2 min beyond the 200 most recent, or idle for 12 h, is stopped by a sweep every 5 min (`Owners.scala`). Sharded: Pekko passivates after 120 s idle. | Not a limit: every aggregate touched in the last minutes has an owner and its state in memory (section 8). |
 | Messages between nodes (Artery) | `maximum-frame-size` 256 KiB | Pekko drops a larger message unseen. The library splits deliveries, refuses large commands and fails other large messages at once (section 6). |
 | Shard region buffer | 100 000 messages per region | It holds messages while a shard is located or handed over. Beyond that, Pekko drops them. |
 | Singleton proxy buffer | 1 000 messages | It holds messages while the singleton moves. Beyond that, Pekko drops them. |
@@ -272,12 +274,75 @@ per class every 10 seconds.
 - **Size the network for deliveries.** About 561 bytes per event per remote subscriber for small
   events (measured): 10 000 events/s to two remote projections is about 11 MB/s (estimated).
 
-## 7. Memory per node
+## 7. Commands and events of several megabytes
+
+Measured ([docs/perf/large-M5.md](perf/large-M5.md), commit ee1b140). Each command carries a
+document of 5 000 000 random letters and digits (4.8 MB), stored in one event. The bench's event
+store allows such events for that class; the library's default limit is 100 000 characters per
+event.
+
+| Measure | Value |
+| --- | --- |
+| 20 commands one after another, on one aggregate | p50 90 ms, max 164 ms; 31.8 MB/s of documents; heap 15 → 105 MB |
+| 20 commands at once, each on its own aggregate | last answer after 890 ms; heap 117 → 358 MB |
+| events table with its indexes and TOAST, per event | 5.0 MB (random text: PostgreSQL's compression gains nothing) |
+| restore of an aggregate of 20 such events | 517 ms; heap 117 → 323 MB |
+| every event in one answer (`GetEventsForAggregate`) | 377 ms; heap peak 324 MB |
+| one event's delivery, serialized for another node | 4.8 MB, against a limit of 248 KiB |
+
+**By default such an event is refused.** `eventSizeLimit` is 100 000 characters of JSON per event.
+Over it, the command fails with `EventHandlingError` and the log names `EventTooLargeException`. A
+host that needs larger events raises `eventSizeLimitPerClassName` for those classes only.
+
+**Where size costs** (estimated from the measurements unless marked):
+- **Memory per command in flight:** about 12 MB for a 5 MB document, for the command, the event's
+  JSON and the copy sent to PostgreSQL (estimated: (358 − 117) MB / 20; the peak includes garbage
+  not yet collected). 100 such commands at once take about 1.2 GB; 10 000 fit no heap. Bounding
+  commands by count (section 2) is not enough here: bound the bytes in flight.
+- **Writing:** 31.8 MB/s with one caller on the measured machine. Each event goes to the table and
+  to the WAL in full, so disk bandwidth bounds it: about 10 MB written per 5 MB event (estimated).
+- **Restore:** the store reads 1 000 rows per fetch (`fetchSize`), so all of an aggregate's large
+  events are read at once. 20 events of 5 MB took 206 MB of heap (measured), about 10 MB per event;
+  1 000 such events would need about 10 GB (estimated) and fail.
+- **Batches counted in events:** a re-publication part (1 000 events), a rebuild page and chunk
+  (1 000 events each), a projection's transaction (up to 100 aggregates) and the bus's window
+  hold whatever their events weigh. A part of 1 000 events of 5 MB is about 5 GB (estimated, F126).
+- **`GetEventsForAggregate`:** the whole history in one answer: 324 MB at the peak for 20 events
+  (measured).
+- **Between nodes:** one such event is 4.8 MB serialized, far over the limit. Since F121, a
+  subscriber on another node receives a `MessageTooLargeException` instead and the sending node
+  logs it; the projection stays behind for that aggregate until its gap is recorded as a failure
+  (D20a, after `gapGiveUpAfter`, 10 minutes). For sharded types, a command over the limit is refused.
+- **States and snapshots:** a state that holds the document goes with every publication to state
+  subscribers, and into every snapshot.
+
+**Recommendations.**
+- **Keep documents out of events and commands (the claim-check pattern).** Store the file first,
+  in an object store or a table of its own. Then send a command that names it (an id, a hash, a
+  size), and keep only the reference in the event and the state. Events stay small, so restores,
+  deliveries, rebuilds and messages between nodes stay cheap, and the history does not carry every
+  version of every file.
+- **If documents must be events**, keep each class's limit as low as it can be, and also:
+  - turn on snapshots and keep the document out of the state, so a restore does not read the old
+    documents;
+  - lower the event store's `fetchSize` (for example to 10), or set the PostgreSQL driver's
+    `adaptiveFetch=true` with a `maxResultBuffer`, so reads take a few rows at a time;
+  - lower the builder's `pageSize` and `chunkEvents` (`ProjectionsSettings.builder`);
+  - bound the bytes of commands in flight at the edge (for example, uploads at once × the largest
+    document ≤ a quarter of the heap);
+  - in a cluster, raise `pekko.remote.artery.advanced.maximum-frame-size` above the largest event.
+    Pekko keeps up to 128 buffers of that size in direct memory, so 8 MiB frames can take up to
+    1 GiB (estimated). Alternatively, route the projections' paths to `large-message-destinations`
+    and raise `maximum-large-frame-size` (32 buffers).
+- **Size disk and WAL for the documents:** 5 MB per event in the table (measured), and about as
+  much again in the WAL (estimated).
+
+## 8. Memory per node
 
 | Holder | Size | Bound |
 | --- | --- | --- |
 | Owners | the state plus the actor, per aggregate touched recently | local: idle owners stopped by the 5-minute sweep; sharded: after 120 s idle |
-| Commands in flight | 8 to 15 KB each, upper bound (section 2) | none in the library: bound them at the edge |
+| Commands in flight | 8 to 15 KB each, upper bound (section 2); about 12 MB for one carrying a 5 MB document (section 7) | none in the library: bound them at the edge, by bytes for large ones |
 | Bus deliveries and projection mailboxes | a few hundred bytes per event behind, plus the events (section 5) | none until F93's flow control |
 | `GetEventsForAggregate` answers | the whole history: 168 MB for 50 000 events (measured) | none |
 | A restore | transient: 52 MB for 50 000 events, 146 MB for 500 000 (measured peaks) | one per owner restoring, at most 32 at once |
@@ -290,7 +355,7 @@ Measured for orientation: 15 to 35 MB of heap after GC at rest, 177 MB right aft
 and 168 MB at the peak of a 50 000-event read. A heap of a few GB leaves room for bursts and lag;
 the owners' states set the rest (estimated).
 
-## 8. Signals
+## 9. Signals
 
 - **`GetDeliveryStatus`** (each node's bus): deliveries waiting, the latest undelivered ones,
   and stopped subscribers.
@@ -312,7 +377,7 @@ the owners' states set the rest (estimated).
   - autovacuum on the hot tables (`pg_stat_user_tables`)
   - table and index sizes
 
-## 9. Issues found by this analysis
+## 10. Issues found by this analysis
 
 Recorded in [KNOWN-ISSUES](KNOWN-ISSUES.md):
 
@@ -323,3 +388,4 @@ Recorded in [KNOWN-ISSUES](KNOWN-ISSUES.md):
 | F123: given-up aggregates wait for the poller's next start, even when their subscriber is back | M5, with flow control |
 | F124: a commit-order build walks the events of every type to find its own | M6 |
 | F125: the per-aggregate limit let one event too many through | fixed in M5 |
+| F126: batches counted in events (fetches, re-publication parts, rebuild pages and chunks, the bus's window) hold whatever their events weigh | M5 |

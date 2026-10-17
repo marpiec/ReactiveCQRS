@@ -673,6 +673,12 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 
 ### Performance and runtime
 
+#### F126 — Batches counted in events hold whatever their events weigh
+- **Medium**, confirmed (measured with 5 MB events; the larger batches estimated) · **Fix in M5** (with the flow control of F93) · `AggregateOwner.republish`, `ProjectionBuilder`, `PostgresEventStoreState` (`fetchSize`), `EventsBusActor`
+- **Symptom:** an event store that allows large events (`eventSizeLimitPerClassName`) keeps every batch counted in events: a re-publication part of 1 000 events, a rebuild page and chunk of 1 000 events, a fetch of 1 000 rows, and the window F93 plans in events. With events of 5 MB a part is about 5 GB, more than any heap. Measured (docs/perf/large-M5.md): a restore of 20 such events took 206 MB of heap, about 10 MB per event.
+- **Fix idea:** the store reports each event's stored size when it writes and reads it; re-publication parts, rebuild pages and chunks, and the bus's window are bounded by bytes as well as by events (at least one event each); hosts with large events lower `fetchSize` or set the driver's `adaptiveFetch` (docs/SCALING.md §7).
+- **Found:** analysis of commands and events of 5 MB at M5 (docs/SCALING.md §7).
+
 #### F23 — Id pools of 100 and a blocking wait on refill
 - **Medium**, likely · **Fixed in M3** (16/10/2026) · `UidGeneratorSchemaInitializer.scala:18-28`, `AggregateCommandBusActor.scala:315-348`, `SagaActor.scala:136-152`
 - **Fix:** pools of 10 000 (`ALTER SEQUENCE … INCREMENT BY`), asynchronous prefetch at a low-water mark (D34).
@@ -988,7 +994,7 @@ From §7 of Neula's change requests.
 | M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔, F95 ✔; Neula H2, H7 |
 | M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8 ✔; F8 (contract ✔), F22 ✔, F23 ✔, F25 ✔, F27 ✔, F30 ✔, F31 ✔, F32 ✔, F33 (rest ✔), F38 ✔, F39 ✔, F44 ✔, F50 ✔, F65 ✔, F76 ✔, F78 ✔, F81 ✔, F96 ✔, F97 ✔, F100–F107 ✔; D85 ✔; Neula H8 |
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
-| M5 | AR5; F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122, F123, F125 ✔ (F78 between nodes ✔ in M3) |
+| M5 | AR5; F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122, F123, F125 ✔, F126 (F78 between nodes ✔ in M3) |
 | M6 | F8 (complete), F124 |
 
 ---

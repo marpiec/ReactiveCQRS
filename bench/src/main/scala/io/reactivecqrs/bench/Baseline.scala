@@ -12,7 +12,7 @@ import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.cluster.{ClusterSerializer, MessageSize}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.PassivateAggregate
 import io.reactivecqrs.core.eventstore.NewEvents
-import org.apache.pekko.actor.{ActorRef, ExtendedActorSystem, Props}
+import org.apache.pekko.actor.{ActorRef, ExtendedActorSystem}
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
 import scalikejdbc._
@@ -529,7 +529,7 @@ object Baseline {
       Seq("events table with its indexes and TOAST, per event", mb(tablePerEvent)),
       Seq(s"restore by a new owner of the aggregate of $n such events", s"${millis(restoreNanos)}; " +
         s"${restored.map(a => "version " + a.version.asInt).getOrElse("failed")}; heap ${Heap.mb(restoreHeapBefore)} / ${Heap.mb(restorePeak)}"),
-      Seq("every event in one answer (GetEventsForAggregate)", s"${millis(eventsNanos)}; ${events.map(_.size + " events").getOrElse("failed")}; heap peak ${Heap.mb(eventsPeak)}"),
+      Seq("every event in one answer (GetEventsForAggregate)", s"${millis(eventsNanos)}; ${events.map(all => s"${all.size} events").getOrElse("failed")}; heap peak ${Heap.mb(eventsPeak)}"),
       Seq("one event's delivery, serialized for another node", delivery.map(bytes => mb(bytes) + s", against a limit of ${sizes.limit / 1024} KiB").getOrElse("not measured"))),
       s"Each command carries a document of $size random letters and digits, stored in one event (the event store allows such events " +
         "for this class; the library's default is 100 000 characters).")
