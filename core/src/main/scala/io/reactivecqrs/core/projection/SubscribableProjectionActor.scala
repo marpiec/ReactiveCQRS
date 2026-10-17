@@ -7,6 +7,7 @@ import io.reactivecqrs.core.projection.SubscribableProjectionActor._
 
 import scala.collection.mutable
 import scala.concurrent.duration.DurationDouble
+import scala.util.{Failure, Success, Try}
 import scala.reflect.runtime.universe._
 
 object SubscribableProjectionActor {
@@ -47,10 +48,7 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
     case RenewSubscription(subscriptionId) => renewSubscription(subscriptionId)
     case ClearIdleSubscriptions => clearIdleSubscriptions()
     case SendUpdate(u, typeName) => deliverUpdate(u, typeName)
-    case SubscriptionsHandedOver(handed) => handed.foreach { subscription =>
-      subscriptions += subscription.subscriptionId -> subscription
-      subscriptionsPerType += subscription.typeName -> (subscription.subscriptionId :: subscriptionsPerType.getOrElse(subscription.typeName, Nil))
-    }
+    case SubscriptionsHandedOver(handed) => handed.foreach(add)
   }
 
   override protected def onRetired(successor: Option[ActorRef]): Unit =
@@ -80,8 +78,10 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
     try {
       val typeName = typeTag[DATA].toString()
 
-      subscriptions += subscriptionId -> SubscriptionInfo(subscriptionId, listener, filter, typeName, Instant.now())
-      subscriptionsPerType += typeName -> (subscriptionId :: subscriptionsPerType.getOrElse(typeName, Nil))
+      // F161: an id used again replaces its subscription; a listener it took the id from is told it is cancelled.
+      subscriptions.get(subscriptionId).filter(_.listener != listener)
+        .foreach(replaced => replaced.listener ! ProjectionSubscriptionsCancelled(List(subscriptionId)))
+      add(SubscriptionInfo(subscriptionId, listener, filter, typeName, Instant.now()))
 
       listener ! SubscribedForProjectionUpdates(subscriptionId)
 
@@ -100,9 +100,19 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
     }
   }
 
+  private def add(subscription: SubscriptionInfo): Unit = {
+    handleUnsubscribe(subscription.subscriptionId)
+    subscriptions += subscription.subscriptionId -> subscription
+    subscriptionsPerType += subscription.typeName -> (subscription.subscriptionId :: subscriptionsPerType.getOrElse(subscription.typeName, Nil))
+  }
+
   // Listeners call this, and in parallel mode they run on pool threads: the update reaches the subscriptions through a
-  // message, so the subscription maps are only touched on the actor's thread.
-  protected def sendUpdate[DATA: TypeTag](u: DATA): Unit = self ! SendUpdate(u, typeTag[DATA].toString())
+  // message, so the subscription maps are only touched on the actor's thread. F161: it is sent once the listener's
+  // transaction has committed, so a batch that rolls back, or is tried again, pushes nothing it did not store.
+  protected def sendUpdate[DATA: TypeTag](u: DATA): Unit = {
+    val update = SendUpdate(u, typeTag[DATA].toString())
+    afterCommit(self ! update)
+  }
 
   private def trimUpdatesCache(): Unit = {
     val shouldArriveAfter = Instant.now().minus(updatesCacheTTL)
@@ -126,8 +136,11 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
           false
         }
       }).map(subscriptions) foreach { subscription =>
-        val result = subscription.acceptor.asInstanceOf[Any => Option[_]](u) // and translate data to message for subscriber
-        result.foreach(r => subscription.listener ! SubscriptionUpdated(subscription.subscriptionId, r))// and send message if not None
+        // F161: each subscription on its own: a filter that throws keeps the update from no other.
+        Try(subscription.acceptor.asInstanceOf[Any => Option[_]](u)) match { // and translate data to message for subscriber
+          case Success(result) => result.foreach(r => subscription.listener ! SubscriptionUpdated(subscription.subscriptionId, r)) // and send message if not None
+          case Failure(e) => log.error(e, "Projection " + projectionName + ": the filter of subscription " + subscription.subscriptionId + " failed on an update")
+        }
       }
     } catch {
       case e: Exception => log.error(e, "Exception while handling subscription update") //log only because projection update is more important than subscription

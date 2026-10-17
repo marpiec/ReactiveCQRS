@@ -449,8 +449,9 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Found:** M5 close, audit of delivery.
 
 #### F161 — Subscribable projections push before the listener's transaction commits, and one failing filter stops an update
-- **Medium**, confirmed (by reading) · **Fix in M7** · `SubscribableProjectionActor.sendUpdate`
+- **Medium**, confirmed (red first) · **Fixed in M7** (17/10/2026; `SubscribablePushSpec`, four scenarios, serial and parallel) · `SubscribableProjectionActor.sendUpdate`
 - **Symptom:** `sendUpdate` sends at once, so a batch that rolls back has pushed a change never stored (and pushes it again when retried); one `try` wraps the loop over subscriptions, so a filter that throws keeps the update from the rest; a reused subscription id gives the newest listener every update twice and the older none.
+- **Fix:** `ProjectionActor.afterCommit` keeps what a listener asks to run after its transaction, per thread for the attempt at work (the listener runs on the transaction's thread, the actor's or a pool's), runs it after the commit and drops it on a rollback; `sendUpdate` pushes through it. Each filter runs in a `Try` of its own. An id used again replaces its subscription, and a listener it took the id from gets `ProjectionSubscriptionsCancelled`. A push is lost if the node stops between the commit and the push: pushes are at most once, the store is the truth (M7 design).
 - **Found:** writing the book (M6, 17/10/2026).
 
 #### F162 — The event bus ignores a late `RegisterSubscribers`, and waits for a subscriber that answered with a failure
@@ -1284,7 +1285,7 @@ From §7 of Neula's change requests.
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔, F174 ✔; F155 decided (review 8) |
-| M7 | AR5 (moved from M5 at review 7); F148 ✔, F152 ✔, F153 ✔, F156, F157, F160 ✔, F161, F162 ✔, F163, F164 ✔, F165, F166 ✔, F169 ✔ (found writing the book), F170, F171, F173, F175 |
+| M7 | AR5 (moved from M5 at review 7); F148 ✔, F152 ✔, F153 ✔, F156, F157, F160 ✔, F161 ✔, F162 ✔, F163, F164 ✔, F165, F166 ✔, F169 ✔ (found writing the book), F170, F171, F173, F175 |
 
 ---
 

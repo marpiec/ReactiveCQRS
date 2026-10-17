@@ -788,7 +788,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
   // The listener and the subscription's new version commit together; a listener without a transaction runs first and
   // the version is written after it, so such a listener may see a batch again if that write fails (at least once).
-  private def run(work: Work): Unit = if (work.noTransaction) {
+  private def run(work: Work): Unit = if (work.noTransaction) committing {
     asHistory(work.batch.fromBuilder)(work.apply(null)) // no session: the listener does not write to the database
     subscriptionsState.autoCommit(advance(work.key, work.batch.applied, work.batch.to))
   } else {
@@ -796,11 +796,30 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   }
 
   // Many batches in one transaction (D61): each listener, then its subscription's new version.
-  private def runTogether(works: Seq[Work]): Unit = subscriptionsState.localTx { session =>
+  private def runTogether(works: Seq[Work]): Unit = committing(subscriptionsState.localTx { session =>
     works.foreach { work =>
       asHistory(work.batch.fromBuilder)(work.apply(if (work.noTransaction) null else session))
       advance(work.key, work.batch.applied, work.batch.to)(session)
     }
+  })
+
+  // F161: what listeners ask to run after their transaction, kept for the attempt at work on its thread (the actor's,
+  // or a pool's in parallel mode, where the listener runs too).
+  private val afterCommitActions = new ThreadLocal[mutable.ArrayBuffer[() => Unit]]
+
+  /** Runs `action` once the transaction of the listener calling it has committed, and never if it rolls back: a batch
+    * may be tried several times, or applied again on its own after its group failed (D61). Outside a listener's
+    * transaction it runs at once. Subscribable projections push their updates this way (F161). */
+  protected def afterCommit(action: => Unit): Unit = Option(afterCommitActions.get) match {
+    case Some(actions) => actions += (() => action)
+    case None => action
+  }
+
+  private def committing(attempt: => Unit): Unit = {
+    val actions = mutable.ArrayBuffer[() => Unit]()
+    afterCommitActions.set(actions)
+    try attempt finally afterCommitActions.remove()
+    actions.foreach(action => Try(action()).failed.foreach(e => log.error(e, "Projection " + projectionName + " failed on an action after a commit")))
   }
 
   // ************** Groups of batches (D61, F93)

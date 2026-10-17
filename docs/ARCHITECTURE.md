@@ -1028,8 +1028,12 @@ updates to new subscribers. Subscriptions live in the instance's memory: a retir
 them to its successor, but an instance that stops (a singleton that moves) loses them, and a
 renewal of a subscription the projection does not know is answered with
 `ProjectionSubscriptionsCancelled(List(id))`, so the listener subscribes again (F133). Listeners may call `sendUpdate` from pool threads (parallel mode):
-the update reaches the subscriptions through a message to the actor. The one-minute tick that
-expires subscriptions also trims the cache, and stops with the projection (F95).
+the update reaches the subscriptions through a message to the actor, sent once the listener's
+transaction has committed (`ProjectionActor.afterCommit`, kept per thread for the attempt at
+work): an attempt that rolls back pushes nothing (F161). Pushes are at most once; the store is
+the truth. Each subscription's filter runs on its own, and an id used again replaces its
+subscription, telling the listener it replaced. The one-minute tick that expires subscriptions
+also trims the cache, and stops with the projection (F95).
 
 ### 6.7 `AggregateListenerActor`
 

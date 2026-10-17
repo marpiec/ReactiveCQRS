@@ -2122,3 +2122,10 @@ Open test-infrastructure items:
   build joined them, and tells it `ServeUnchanged` (deliveries on their way answered unapplied, no
   gap requests), as a start during a build leaves it unsubscribed. `ProjectionsSpec` "F153", red
   before the fix. Book: chapter 10.
+
+**17/10/2026: F161, pushes after the commit, to each subscription on its own**
+- `ProjectionActor.afterCommit` runs what a listener asks once its transaction has committed, and
+  drops it on a rollback (kept per thread for the attempt at work, so it holds in parallel mode);
+  `sendUpdate` pushes through it. Each subscription's filter runs on its own; an id used again
+  replaces its subscription and tells the listener it replaced. `SubscribablePushSpec` (new, four
+  scenarios, serial and parallel), red before the fix. Book: chapter 11.

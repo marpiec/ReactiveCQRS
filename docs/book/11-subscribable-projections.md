@@ -287,16 +287,21 @@ that have nothing to load.
 > as in `handleSubscribe[CartPageUpdate, CartPageUpdate]` and `sendUpdate[CartPageUpdate]`, keeps
 > them in step.
 
-> **Warning:** a push can arrive twice, or a little early. `sendUpdate` puts the update on its way at
-> once, while your listener's transaction is still open. If that transaction is then rolled back
-> (another cart in the same group failed, or your listener threw after calling `sendUpdate`), the
-> listener runs again, and the page may get the same update twice; if the listener keeps failing,
-> the page may even see a change that the read model never stored. So push whole documents with
-> their version rather than differences, and call `sendUpdate` as the last thing your listener does.
+> **Warning:** a push leaves once your listener's transaction has committed, never before. If the
+> transaction is rolled back (another cart in the same group failed, or your listener threw after
+> calling `sendUpdate`), nothing is pushed, and the run that succeeds pushes once. But a push can
+> still be lost, when the node stops right after the commit, and a page can see an update again from
+> the updates cache when it subscribes. The read model is the truth: push whole documents with
+> their version rather than differences, and reload when a subscription is cancelled.
 
 > **Warning:** every update runs the filter of every subscription of its type, one after another,
 > on the projection's thread. Keep filters to a quick comparison. A filter that throws is logged,
-> and that update stops there: the subscriptions after it in line do not get it.
+> and only its own subscription misses that update.
+
+> **Remember:** a subscription id names one subscription. Subscribing again with an id in use
+> replaces that subscription, and a listener that held the id is told
+> `ProjectionSubscriptionsCancelled`. A random id per page, as `CartPage` makes, never meets
+> another.
 
 > **Remember:** in a cluster, a projection started through `Projections.start` runs on one node, and
 > messages to it may cross the network (chapter 17). Your own messages must not carry `ActorRef`
@@ -305,7 +310,8 @@ that have nothing to load.
 > must be a plain case class that the cluster's serializer can write, like any query answer.
 
 > **Under the hood:** `sendUpdate` reaches the subscriptions through a message the projection sends
-> to itself, so a listener may call it even from the threads of `parallelUpdateProcessing`. When a
+> to itself once the listener's transaction has committed (`afterCommit`, which your own projections
+> can use too), so a listener may call it even from the threads of `parallelUpdateProcessing`. When a
 > managed projection switches to a new build (chapter 10), the old instance hands its
 > subscriptions, filters included, to the new one, and pages do not notice; that is also why a
 > filter must not use the old build's stores. The once-a-minute tick that expires subscriptions
