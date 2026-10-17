@@ -1313,3 +1313,28 @@ below 10^12, where every id made before 1.0 lives; its first 1 000 ids are syste
 
 `IdRangeSpec` covers the ranges and the generator against real sequences; `ChosenIdRaceSpec` the
 chosen ids through a command bus.
+
+### 13.6 Rolling upgrades (D65–D73)
+
+- **App-versions** (`pekko.cluster.app-version`, the host's setting): new shards go only to the
+  nodes of the newest version, and a singleton runs on the oldest node, which is restarted last
+  (D66, `ClusterBehaviourSpec`).
+- **New event classes (D67):** `AggregateContext.writtenFrom` maps a class added in a version to
+  that version. `cluster/AppVersions` keeps the lowest app-version among the cluster's members,
+  from the members' events, in the contexts of the node's command buses; an owner answers a
+  command whose events include such a class with `CommandRejected` until every member runs the
+  version, and a squash with such a squash event with `SquashRefused`. A handler writes the older
+  event meanwhile, asking `everyNodeRuns(version)`. When no member set an app-version (all at
+  Pekko's 0.0.0) or the system is not a cluster, everything is written. A version whose new
+  classes were written cannot be rolled back. A new command class can reach an owner on an old
+  node during the rollout, which does not know it: send it only once every node runs its
+  version.
+- **Readiness (D71):** `cluster/Readiness(system)` waits for each event bus until its subscribers
+  answered; `ReadinessCheck` is a Pekko Management readiness check over it
+  (`pekko.management.health-checks.readiness-checks`).
+- **Clients during a rollout** send commands to nodes that are up and retry, with an
+  idempotency key, through another node when a node leaves before it answered.
+
+`RollingUpgradeSpec` (four nodes in one JVM: two of version 1.0.0, two of 2.0.0, which adds an
+event class) covers it under load; `AppVersionsSpec` the switch's rules; `EventsBusActorSpec` the
+readiness of a bus.

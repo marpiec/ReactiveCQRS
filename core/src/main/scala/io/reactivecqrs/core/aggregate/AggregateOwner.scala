@@ -89,6 +89,8 @@ class OwnerSettings[AGGREGATE_ROOT: ClassTag](context: AggregateContext[AGGREGAT
   val commandProcessing: CommandProcessing = context.commandProcessing
   val squash: Option[SquashPolicy[AGGREGATE_ROOT]] = context.squash
   val sharded: Boolean = context.placement.isInstanceOf[Placement.Sharded]
+  /** Why one of these events may not be written yet: its class is newer than a node of the cluster (D67). */
+  def notWrittenYet(events: Seq[Any]): Option[String] = events.view.flatMap(context.notWrittenYet).headOption
   val outboxWriter: Option[OutboxWriter[AGGREGATE_ROOT]] = context match {
     case withWriter: WithOutboxWriter[AGGREGATE_ROOT @unchecked] => Some(withWriter.outboxWriter)
     case _ => None
@@ -396,8 +398,9 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
       finish(command.envelope.commandId, successResponse(command.baseVersion, info))
     } else if (command.baseVersion != version) {
       ownConflict(command, AggregateConcurrentModificationError(aggregateId, aggregateType, command.baseVersion, version))
-    } else {
-      persist(command, events, rewritten, info)
+    } else notWrittenYet(events) match {
+      case Some(reason) => finish(command.envelope.commandId, CommandRejected(aggregateId, reason)) // D67: may be sent again later
+      case None => persist(command, events, rewritten, info)
     }
   }
 
@@ -619,10 +622,12 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
       Try(for {
         _ <- eventStore.squashBlocker(aggregateId, upTo).toLeft(())
         event <- restorer.squashEvent(aggregateId, upTo, policy, Some(request.userId), if (upTo == version) Some(root) else None)
+        _ <- notWrittenYet(Seq(event)).toLeft(()) // D67, as for a command's events
         changesState = event.isInstanceOf[SquashMayChangeState]
         // Every duplicate reads the new squash event, or is detached: with an event that changes the state, all change.
         reading = if (changesState) eventStore.duplicatesReading(aggregateId, None) else Nil
         detach <- restorer.detachEvents(eventStore.duplicatesReading(aggregateId, Some(upTo)), policy)
+        _ <- notWrittenYet(detach.map(_._2)).toLeft(())
         _ <- eventStore.squash(aggregateId, upTo, event, request.userId, request.metadata, detach)
       } yield (changesState, reading, detach)) match {
         case Success(Right((changesState, reading, detach))) =>

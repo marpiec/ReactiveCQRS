@@ -3,6 +3,7 @@ package io.reactivecqrs.api
 import java.time.Instant
 
 import io.reactivecqrs.api.id.{AggregateId, UserId}
+import org.apache.pekko.util.Version
 
 import scala.concurrent.Future
 import scala.concurrent.duration._
@@ -150,6 +151,24 @@ abstract class AggregateContext[AGGREGATE_ROOT : ClassTag] {
 
   /** Owners on each node (`Local`, the default) or one owner per aggregate in the cluster (`Sharded`, D43). */
   val placement: Placement = Placement.Local
+
+  /** D67: event classes added in a rolling upgrade, each with the app-version (`pekko.cluster.app-version`) from which
+    * every node reads it. One is persisted only once every node of the cluster runs that version or a later one; a command
+    * that would write it earlier is answered with `CommandRejected`. Handlers write the older event meanwhile, asking
+    * `everyNodeRuns(version)`. Do not roll back past a version whose new classes were written. */
+  val writtenFrom: Map[Class[_], String] = Map.empty
+
+  // The lowest app-version among the cluster's members, kept here by the node's command buses; None when the system is
+  // not a cluster or no member set an app-version (all at 0.0.0): then every class is written.
+  @volatile private[reactivecqrs] var oldestAppVersion: Option[Version] = None
+
+  /** Whether every node of the cluster runs `version` or a later one (always, outside a cluster or without app-versions). */
+  protected final def everyNodeRuns(version: String): Boolean = oldestAppVersion.forall(_.compareTo(Version(version)) >= 0)
+
+  /** Why `event` may not be written yet (D67). */
+  private[reactivecqrs] def notWrittenYet(event: Any): Option[String] =
+    writtenFrom.get(event.getClass).filterNot(everyNodeRuns).map(version =>
+      event.getClass.getSimpleName + " is written once every node runs version " + version + " or later")
 
   val aggregateType: AggregateType = AggregateType.of[AGGREGATE_ROOT]
 

@@ -4,6 +4,7 @@ import java.time.Instant
 
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
+import io.reactivecqrs.core.cluster.Readiness
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.testutils.CommonSpec
@@ -79,6 +80,16 @@ class EventsBusActorSpec extends CommonSpec {
       b.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, b.ref)), b.ref))
       delivered(a) mustBe Seq(1)
       delivered(b) mustBe Seq(1)
+    }
+
+    Scenario("keeps the node from being ready until every registered subscriber answered (D71)") {
+      val a = TestProbe()
+      val bus = newBus()
+      bus ! RegisterSubscribers(Seq(a.ref))
+      a.expectMsg(GetSubscriptionRequests(a.ref))
+      Readiness(system).waitingFor must contain(bus.path.toString)
+      a.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, a.ref)), a.ref))
+      awaitAssert(Readiness(system).waitingFor must not contain bus.path.toString, 3.seconds)
     }
 
     Scenario("asks a subscriber again every tick until it answers: an ask can be lost on the way (M5)") {

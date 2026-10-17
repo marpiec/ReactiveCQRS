@@ -1616,3 +1616,20 @@ Open test-infrastructure items:
   `TestIds` (testutils), in the legacy range, instead of `System.nanoTime()`.
 - Neula's host steps for M5 are collected in H10 (KNOWN-ISSUES §4).
 - `sbt test`: core 235, testdomain 147, all pass.
+
+**17/10/2026: rolling upgrades (D65–D67, D71, D73)**
+- The circumstances it could fail in were written down first (`docs/design/M5-cluster.md`).
+- The write switch: `AggregateContext.writtenFrom` and `everyNodeRuns(version)`; `AppVersions`
+  keeps the lowest app-version among the members in the command buses' contexts; an owner
+  refuses an event of a class not every member reads yet (`CommandRejected`), and a squash such
+  a squash event (`SquashRefused`). Found by the rolling test: the members are taken from the
+  cluster events themselves, as `Cluster.state` may not yet have taken in a removal when the
+  event arrives (the switch stayed shut after the old nodes left).
+- Readiness: `Readiness(system)` and `ReadinessCheck` for Pekko Management.
+- Tests: `RollingUpgradeSpec` (two nodes of 1.0.0 with the carts made then, two of 2.0.0 joined
+  later; load from every node with clients retrying through another node with an idempotency
+  key; the old nodes leave, the oldest last; nothing lost or applied twice, the projection has
+  every item, the new class written only after); `AppVersionsSpec`; a readiness scenario in
+  `EventsBusActorSpec`. Mutations caught: no persist guard, every node taken to run every
+  version. The test cluster gained per-node app-versions and contexts, and nodes that join later.
+- `sbt test`: core 238, testdomain 148, all pass.

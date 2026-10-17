@@ -41,7 +41,7 @@ class ClusterCartsProjection(val subscriptionsState: SubscriptionsState, store: 
     super.postStop()
   }
   protected val listeners = List(EventsListener[ShoppingCart] { (id, events) => implicit session =>
-    val added = events.map(_.event).collect { case ItemAdded(name) => name }
+    val added = events.map(_.event).collect { case ItemAdded(name) => name; case ItemAddedV2(name, _) => name }
     store.updateDocument(0, id.asLong, existing => Document(ClusterCartItems(existing.map(_.document.items).getOrElse(Vector()) ++ added)))
   })
   override protected def receiveQuery: Receive = {

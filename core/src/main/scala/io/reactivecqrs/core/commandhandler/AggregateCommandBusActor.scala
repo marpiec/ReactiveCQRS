@@ -8,6 +8,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId}
 import io.reactivecqrs.core.aggregate.AggregateOwner._
 import io.reactivecqrs.core.aggregate.{AggregateOwner, OwnerSettings}
+import io.reactivecqrs.core.cluster.AppVersions
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{DeletedPermanently, IdsNotReceived, PassivateAggregate, RemoveExpiredResponses}
 import io.reactivecqrs.core.delivery.RepublishRequest
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventsAck, RegisterPublisher}
@@ -68,6 +69,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   // F23: ids come from pools fetched ahead. While a command (or an id reservation) waits for a pool, the ones that arrive
   // after it wait too, in order.
   private val idRange = IdRange.of(context.system.settings.config)
+  AppVersions(context.system).track(aggregateContext) // D67: the lowest app-version among the cluster's members
   private val aggregateIds = new IdPool
   private val commandIds = new IdPool
   private var waitingForIds = Vector[(Any, ActorRef)]()

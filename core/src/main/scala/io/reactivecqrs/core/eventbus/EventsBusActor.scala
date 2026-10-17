@@ -5,6 +5,7 @@ import java.time.Instant
 import org.apache.pekko.actor.{Actor, ActorRef, Stash, Terminated}
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
+import io.reactivecqrs.core.cluster.Readiness
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.core.util.MyActorLogging
@@ -141,7 +142,13 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   import context.dispatcher
   private val ticks = context.system.scheduler.scheduleWithFixedDelay(options.tickInterval, options.tickInterval, self, Tick)
 
-  override def postStop(): Unit = ticks.cancel()
+  // D71: the node is not ready while its bus waits for its subscribers.
+  Readiness(context.system).waitFor(self.path.toString)
+
+  override def postStop(): Unit = {
+    ticks.cancel()
+    Readiness(context.system).done(self.path.toString)
+  }
 
   override def receive: Receive = registering
 
@@ -187,6 +194,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   private def startIfRegistered(): Unit = {
     if (registrationRequested && awaitingRegistration.isEmpty) {
       log.info("Event bus started with " + subscriptions.values.map(_.size).sum + " subscriptions")
+      Readiness(context.system).done(self.path.toString)
       context.become(running)
       unstashAll()
     }

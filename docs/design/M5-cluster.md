@@ -64,8 +64,8 @@ node A                                         node B
 4. **Sharded owners (D43, D72; F46, F99)** (done) with the in-JVM multi-node harness; found on the way: F119 (stale snapshots), F120 (a chosen id on two owners).
 5. **Delivery in the cluster and singletons (D44, D46, D53–D55; F48)** (done): registration through
    proxies, supervisors on every bus, the singletons, saga replies across nodes.
-6. **Ids (D39)**: installation ranges below 2^53.
-7. **Rolling upgrades (D65–D73)**: app-version, the write switch for new event classes,
+6. **Ids (D39)** (done): installation ranges below 2^53.
+7. **Rolling upgrades (D65–D73)** (done): app-version, the write switch for new event classes,
    readiness; the rolling-upgrade test.
 8. **Metrics (D56, R19)** with a no-op default.
 9. **Flow control (F93)**.
@@ -260,7 +260,32 @@ are internal and keep their sequences.
 - Readiness (D71): a check class for Pekko Management's health checks: the node's bus registered
   its subscribers, the regions and proxies are up, the schema version matches.
 
-## Tests
+**As designed for step 7 (before its code):**
+
+- **The write switch:** `AggregateContext.writtenFrom: Map[Class[_], String]`, an event class and the
+  app-version from which every node reads it. Each node keeps the lowest app-version among the
+  cluster's members (`AppVersions`, from cluster events) in the contexts of its command buses; an
+  owner refuses to persist an event of such a class earlier (`CommandRejected`, retryable), and so
+  does a squash with such a squash event (`SquashRefused`); a command handler asks
+  `everyNodeRuns(version)` to write the older event meanwhile. When every member's app-version is
+  Pekko's default (0.0.0, not managed) or the system is not a cluster, everything is written.
+- **Readiness:** `Readiness(system)` lists what a node waits for (each event bus until its
+  subscribers registered); `ReadinessCheck` is a Pekko Management readiness check over it. The
+  schema is initialized before the actors start, and a failure stops the start.
+- **Migrations (D69):** the heavy jobs stay separate calls (`buildIndexesConcurrently`,
+  `backfillSpaces`); schema changes stay expand-then-contract.
+
+| Circumstance | What happens | Handled by |
+|---|---|---|
+| A new event class written while an old node is still a member | the old node's projections (the singletons run on the oldest, old node) or owners cannot read it | the persist guard refuses until every member runs the version; handlers fall back with `everyNodeRuns` |
+| The singleton projections run on the oldest node, which is old until it is restarted last | they would meet the new class first | the guard counts every member, the oldest included |
+| A host that never sets `pekko.cluster.app-version` (every member at 0.0.0) | the new class would never be written | all at 0.0.0 counts as not managed: everything is written (documented: set app-versions before using `writtenFrom`) |
+| Some members at 0.0.0, others versioned | an unversioned node may be old | it counts as the lowest version: nothing new is written |
+| Membership views differ between nodes for a moment | one node writes the new class while another still sees an old node leave | the old node is leaving or gone; the guard is per writer, so a node that sees an old member refuses |
+| A rollback to the old version after the new class was written | old nodes cannot read the stored events | documented: no rollback past a version whose new classes were written |
+| A squash event or a detach with a new class | the same | the squash checks its event like a command's |
+| A saga order of a new class | stored, then resumed by a runner on an old node | the runner is a singleton on the oldest node, which writes orders itself: new order classes appear only after it moved; documented |
+| A node whose bus never gets every subscription | it publishes nothing (D15) | it never becomes ready, so a load balancer sends it no traffic |
 
 The plan's M5 verification; in-JVM multi-node tests (several `ActorSystem`s on local ports, one
 PostgreSQL schema) for sharding, singletons, delivery across nodes, hand-over under load, a lost
