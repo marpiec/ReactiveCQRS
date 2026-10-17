@@ -36,7 +36,6 @@ class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
     case e: ItemAdded => itemAdded(shoppingCart, e)
     case e: ItemRemoved => itemRemoved(shoppingCart, e)
     case e: ShoppingCartDeleted => null
-    case e: ShoppingCartChangesUndone => shoppingCart // TODO - this event should not need to be handled
     case e: CartNameRewritten => cartNameRewritten(shoppingCart, e)
     case e: CartSquashed => ShoppingCart(e.name, e.items)
   }

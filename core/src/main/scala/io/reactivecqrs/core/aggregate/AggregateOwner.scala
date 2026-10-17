@@ -540,6 +540,8 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
       Right(root) // a duplicate has no state of its own before its first event; it is read after the commit
     } else {
       events.foldLeft[Either[(Exception, Event[AGGREGATE_ROOT]), AGGREGATE_ROOT]](Right(root)) {
+        // F148: restores skip undo events, and the state after an undo is read from the store, so handlers need none.
+        case (Right(state), _: UndoEvent[_]) => Right(state)
         case (Right(state), event) =>
           try Right(eventHandlers(userId, timestamp, state)(event)) catch {
             case e: Exception => Left((e, event))

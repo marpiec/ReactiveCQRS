@@ -2069,3 +2069,9 @@ Open test-infrastructure items:
   code from the examples, Scaladoc, the contributor documents, the runbook and its rehearsal, Java
   21, the release), the decisions that are the owner's (F175, AR5's scope, JDK 21 on the build
   machine, the rehearsal on a production copy, F165's rename) and the failure circumstances.
+
+**17/10/2026: F148, undo events need no handler**
+- The owner's trial run of a command's events (`nextRoot`) skips undo events, as restores do; a
+  command with an undo event has its state read from the store after the commit, as before. The
+  test domain's `ShoppingCartChangesUndone => shoppingCart` case is gone; four undo scenarios
+  failed without the fix. The book's chapter 6 says handlers need no case for undo events.

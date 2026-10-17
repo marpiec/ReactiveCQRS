@@ -24,7 +24,6 @@ override def eventHandlers = (userId, timestamp, shoppingCart) => {
   case e: ItemAdded                 => itemAdded(shoppingCart, e)
   case e: ItemRemoved               => itemRemoved(shoppingCart, e)
   case e: ShoppingCartDeleted       => null
-  case e: ShoppingCartChangesUndone => shoppingCart
   case e: CartNameRewritten         => cartNameRewritten(shoppingCart, e)
   case e: CartSquashed              => ShoppingCart(e.name, e.items)
 }
@@ -191,16 +190,11 @@ What to know about undo:
   cart without apples, because that is how it was then.
 - **It cancels the newest events that are still in effect.** Undo once more and it steps further
   back: it would cancel version 3, the oranges. Undos never cancel each other, and there is no redo.
-- **Your event handler still needs a case for the undo event**, returning the state unchanged:
-
-  ```scala
-  case e: ShoppingCartChangesUndone => shoppingCart // the library does the undoing
-  ```
-
-  The library runs every new event through your handlers before storing it, undo events included,
-  and a missing case would fail the command with `EventHandlingError`. After the commit it works out
-  the real state itself, by reading the aggregate back from the store and skipping the cancelled
-  events.
+- **Your event handlers need no case for the undo event.** The library does the undoing: it never
+  hands an undo event to your handlers, and after the commit it works out the real state itself, by
+  reading the aggregate back from the store and skipping the cancelled events. (Before 1.0 a missing
+  case failed the command with `EventHandlingError`, issue F148; a case left in from then does no
+  harm, it is simply never called.)
 - **An undo cannot reach below a squash point** (chapter 14); such a command gets
   `EventHandlingError`.
 - **Projections see the undo event like any other.** Listeners that build from events must undo
