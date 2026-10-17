@@ -70,8 +70,10 @@ node A                                         node B
 8. **Metrics (D56, R19)** with a no-op default (done).
 9. **Flow control (F93)** (done, with the issues the high-load analysis found: F121 messages that fit the
    frame, F122 and F123 in the outbox poller, F126 batches by bytes).
-10. **Scala 3 groundwork (D75)**: the remaining `TypeTag` uses (done for `StoredDataCheck`; the document
+10. **Scala 3 groundwork (D75)** (done): the remaining `TypeTag` uses (done for `StoredDataCheck`; the document
     store and `SubscribableProjectionActor` stay with mpjsons, which reads by `TypeTag`, until it is replaced).
+11. **Audits at the close** (done): delivery and flow control (F128, F130), the cluster (F129, F131–F138;
+    below).
 
 Each step ends with `sbt test` green, the docs updated and a commit; the plan's M5 verification
 follows.
@@ -164,13 +166,13 @@ told to stop only once every bus confirmed the removal.
 |---|---|---|
 | The singleton is not up yet when a bus asks, or the proxy's buffer overflows | the ask is lost or waits; the bus publishes nothing (D15) | the bus asks every tick until answered; a supervisor answers every ask (idempotent) |
 | An answer comes from the supervisor, not from the proxy the bus asked | the bus would wait for the proxy forever | the answer names the registered ref |
-| The singleton moves or crashes | its instances stop: each bus ends their deliveries incomplete (rows stay in the outbox) | the bus asks the proxy again; the new supervisor's instances replace the stopped ones; the outbox poller re-publishes what waited (a lag of up to its first attempt, 3 min) |
+| The singleton moves or crashes | its instances stop: each bus ends their deliveries incomplete (rows stay in the outbox) | the bus asks the proxy again, every tick until it answers (F129); the new supervisor's instances replace the stopped ones; the outbox poller re-publishes what waited (a lag of up to its first attempt, 3 min) |
 | An answer to an old ask arrives after registration | a running bus ignored it before | the running bus takes answers too (they replace or add) |
 | A build retired while several buses deliver to it | its tables would go while another bus still delivers | the supervisor waits for `SubscriberRemoved` from every bus it answered; a bus that ends is no longer waited for |
 | Two supervisors at once (a partition before the resolver downs a side) | both subscribe their instances; both write | the subscription versions' compare-and-set and the document versions decide (F48), as for two writers today |
 | A subscriber registered on one node only, not a singleton | it sees only the events of the owners on its node | documented: whatever must see every event runs once in the cluster |
 | Several nodes start `Projections.retire` together | concurrent drops of one build | it runs under the schema lock (D69) |
-| A saga runner that moved answers a caller stored as a local path | the path resolves on the new node: the answer is lost | the caller is stored with its node's address; rows stored before resolve as before |
+| A saga runner that moved answers a caller stored as a local path | the path resolves on the new node: the answer is lost | the caller is stored with its node's address, an ask's temporary actor too (F137); rows stored before resolve as before |
 | Two saga runners (one per node) resume the same pending sagas | each step runs twice | the runner is a singleton; saga commands are idempotent (H3) |
 | The outbox poller and the squash scheduler on every node | every row re-published, every candidate squashed, N times | both are singletons |
 | The response clean-up on every node's every command bus | the same idempotent `DELETE` N times an hour, at random minutes | left as it is (a singleton would add wiring for no gain); recorded as a refinement of D53 |
@@ -218,9 +220,10 @@ So:
   name, tuples by position.
 - **Tolerant reading** (D68): a library message is matched by field name (a field the reader
   lacks is skipped, a missing one takes its Scala default, else `None`, zero or null); the
-  application's JSON is read with `ignoreNonExistingFields`. A field added to a message must be
-  an `Option` or have a default (or accept its zero value), and a changed field type gets a new
-  class. Stored events keep the strict reader.
+  application's JSON is read with `ignoreNonExistingFields`. A field added to a library message
+  must be an `Option` or have a default; one added to an application class must be an `Option`
+  (or accept its zero value), as mpjsons applies no default (F135). A changed field type gets a
+  new class. Stored events keep the strict reader.
 - **Exceptions**: the library's own by class with their fields; any other as
   `RemoteFailure(className, message)`. Pekko binds `java.lang.Throwable` to Java serialization,
   so the library's exceptions get bindings of their own and keep their class inside a
@@ -437,6 +440,29 @@ held while pulled, bytes count), `DeliveryEndToEndSpec` (a slow projection behin
 the poller's limit), `RedeliveryPolicySpec` (retries after giving up). Mutations caught: a window
 that admits everything (four bus scenarios), a bus that never pulls (the end-to-end scenario), a
 builder that takes a cut page for its last, a poller without the limit or the retries.
+
+## The audit at the close (cluster)
+
+A read-only audit of the cluster code found nine circumstances the tables above missed; each was
+checked against the code, and each fix has a test that fails without it:
+
+| Circumstance | What happened | Now |
+|---|---|---|
+| A singleton moves, and the bus's ask to its proxy is lost (a full buffer, a stopping supervisor) | the bus asked once: the new instances stayed unsubscribed on that node until it restarted | asked every tick until answered (F129) |
+| A `Local` type's owners on several nodes | each answered from its own state: reads, min-version queries, re-publications and gap fills through a node whose owner was behind missed the others' writes | on a node that is not alone, an owner compares the stored version and generation before such answers and reads the aggregate again (F131) |
+| A new version removes a projection, and its first node calls `Projections.retire` | the projection was dropped while the oldest node, of the old version, still served it | the drop waits until every member runs the new version (F132) |
+| A projection's singleton moves | its push subscriptions were lost, and renewals were ignored | a renewal of an unknown subscription is answered as cancelled (F133) |
+| A permanent delete detaches duplicates during a rollout | its squash events skipped the write switch | checked like a squash's (F134) |
+| A command of version 2 adds a field with a default, read on another node | the application's classes get no default: the field read as null | documented: added fields must be `Option`s (F135) |
+| A saga's runner stops between its answer and its write | the next runner answers again | accepted, documented: answers are at least once (F136) |
+| A saga ordered by an ask on the runner's own node | its path was stored without the node's address | written with it (F137) |
+| A node takes a command before it knows its cluster | the write switch allowed every class | nothing new is written until a member is known (F138) |
+
+Changing a type's placement or `numberOfShards` makes two owners per aggregate while old and new
+nodes run together (sharded owners do not compare with the store): such a change needs a full
+stop, documented in H10.
+
+## Verification
 
 The plan's M5 verification; in-JVM multi-node tests (several `ActorSystem`s on local ports, one
 PostgreSQL schema) for sharding, singletons, delivery across nodes, hand-over under load, a lost

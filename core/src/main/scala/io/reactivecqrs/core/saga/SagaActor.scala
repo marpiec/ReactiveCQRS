@@ -1,7 +1,7 @@
 package io.reactivecqrs.core.saga
 
 import org.apache.pekko.pattern.{ask, pipe}
-import org.apache.pekko.actor.{Actor, ActorRef, ExtendedActorSystem}
+import org.apache.pekko.actor.{Actor, ActorRef, ActorSystem, ExtendedActorSystem}
 import org.apache.pekko.serialization.Serialization
 import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api.SagaStep
@@ -36,6 +36,12 @@ object SagaActor {
   private case class StepCompleted(saga: RunningSaga, result: Try[SagaHandlingStatus])
   private case class RevertStepCompleted(saga: RunningSaga, result: Try[SagaRevertHandlingStatus])
   private case class SagaIdsNotReceived(error: Throwable)
+
+  /** The caller's path with its node's address: the runner may answer from another node after it moved (D46, M5).
+    * Pekko adds the address of an ask's temporary actor only while it writes a message, so outside one the path would
+    * name an actor on whichever node reads it (F137). */
+  private[saga] def callerPath(system: ActorSystem, caller: ActorRef): String =
+    Serialization.withTransportInformation(system.asInstanceOf[ExtendedActorSystem])(() => Serialization.serializedActorPath(caller))
 }
 
 /**
@@ -129,8 +135,7 @@ abstract class SagaActor extends Actor with MyActorLogging {
   private def startWaiting(): Unit = while (waitingForIds.nonEmpty && sagaIds.available) {
     val (order, respondTo) = waitingForIds.head
     waitingForIds = waitingForIds.tail
-    // With its node's address: the runner may answer from another node after it moved (D46, M5).
-    write(CreateSaga(RunningSaga(SagaId(sagaIds.take()), Serialization.serializedActorPath(respondTo), order, CONTINUES, 0)))
+    write(CreateSaga(RunningSaga(SagaId(sagaIds.take()), callerPath(context.system, respondTo), order, CONTINUES, 0)))
   }
 
   private def askForIds(): Unit =

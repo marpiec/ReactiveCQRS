@@ -262,12 +262,15 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   }
 
   // F27: off this bus's thread, as it restores the duplicates first (F76); the owner is stopped once the state is gone.
+  // The duplicates' squash events wait for every node to read their class, as a squash's do (D67, F134).
   private def deletePermanently(id: AggregateId, otherVersions: Seq[AggregateVersion]): Unit = {
     implicit val blocking: ExecutionContext = BlockingDispatcher(context.system)
     Future {
-      val deleted = detachingDuplicates(id).left.map(reason => (reason, true)).flatMap(detach =>
-        eventStoreState.deleteAggregatePermanently(id, detach).left.map(reason => (reason, false))
-          .map(_ => detach.collect { case (duplicate, _: SquashMayChangeState) => duplicate }))
+      val deleted = for {
+        detach <- detachingDuplicates(id).left.map(reason => (reason, true))
+        _ <- settings.notWrittenYet(detach.map(_._2)).map(reason => (reason, false)).toLeft(())
+        _ <- eventStoreState.deleteAggregatePermanently(id, detach).left.map(reason => (reason, false))
+      } yield detach.collect { case (duplicate, _: SquashMayChangeState) => duplicate }
       deleted.left.foreach { case (reason, forGood) =>
         if (forGood) log.error("Aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " is not deleted: " + reason)
         else log.warning("Aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " is not deleted yet: " + reason)

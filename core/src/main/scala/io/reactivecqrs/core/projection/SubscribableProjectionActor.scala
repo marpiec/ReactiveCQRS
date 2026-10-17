@@ -134,9 +134,11 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
     }
   }
 
+  // F133: a subscription this instance does not know expired, or was held by an instance that stopped (the projection's
+  // singleton moved, M5): the renewer is told it is cancelled, so it subscribes again instead of waiting for updates.
   private def renewSubscription(subscriptionId: String): Unit = {
     subscriptions.get(subscriptionId) match {
-      case None => () // ??? Should we send info that subscription is no longer valid? Or should we create new one?
+      case None => sender() ! ProjectionSubscriptionsCancelled(List(subscriptionId))
       case Some(subscription) => subscriptions += subscriptionId -> subscription.copy(renewal = Instant.now())
     }
   }

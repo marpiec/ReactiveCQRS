@@ -7,7 +7,7 @@ import org.apache.pekko.testkit.{TestActorRef, TestProbe}
 import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.api._
-import io.reactivecqrs.core.projection.SubscribableProjectionActor.{CancelProjectionSubscriptions, ProjectionSubscriptionsCancelled, SubscribedForProjectionUpdates, SubscriptionUpdated}
+import io.reactivecqrs.core.projection.SubscribableProjectionActor.{CancelProjectionSubscriptions, ProjectionSubscriptionsCancelled, RenewSubscription, SubscribedForProjectionUpdates, SubscriptionUpdated}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import org.scalatest.{BeforeAndAfter, GivenWhenThen}
 import org.scalatest.featurespec.AnyFeatureSpecLike
@@ -211,6 +211,26 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
 
       f.simpleListenerProbe.expectNoMsg(2 seconds)
       f.secondSimpleListenerProbe.expectMsg(2 seconds, "another string")
+    }
+  }
+
+  feature("Renewing a subscription") {
+
+    scenario("a renewal of a subscription the projection does not know is answered as cancelled, so the listener subscribes again (F133)") {
+      val f = fixture
+      val renewer = TestProbe()
+
+      Given("a projection that does not hold the subscription: it expired, or the instance that held it stopped")
+      renewer.send(f.simpleProjectionActor, RenewSubscription("held by an instance that stopped"))
+
+      Then("the renewer is told it is cancelled")
+      renewer.expectMsg(2 seconds, ProjectionSubscriptionsCancelled(List("held by an instance that stopped")))
+
+      And("a renewal of a subscription it holds is not answered")
+      f.simpleListenerProbe.send(f.simpleProjectionActor, SubscribeForAll("held", f.simpleListener))
+      f.simpleListenerProbe.expectMsgAnyClassOf(2 seconds, classOf[SubscribedForProjectionUpdates])
+      renewer.send(f.simpleProjectionActor, RenewSubscription("held"))
+      renewer.expectNoMessage(500 millis)
     }
   }
 }

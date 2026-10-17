@@ -847,7 +847,10 @@ projection has caught up.
 Adds push subscriptions for clients: `handleSubscribe[DATA, UPDATE](id, listener, filter)`
 and `sendUpdate[DATA](u)` deliver `SubscriptionUpdated(id, update)`. Subscriptions expire
 after 10 minutes without `RenewSubscription`; an optional `updatesCacheTTL` replays recent
-updates to new subscribers. Listeners may call `sendUpdate` from pool threads (parallel mode):
+updates to new subscribers. Subscriptions live in the instance's memory: a retired build hands
+them to its successor, but an instance that stops (a singleton that moves) loses them, and a
+renewal of a subscription the projection does not know is answered with
+`ProjectionSubscriptionsCancelled(List(id))`, so the listener subscribes again (F133). Listeners may call `sendUpdate` from pool threads (parallel mode):
 the update reaches the subscriptions through a message to the actor. The one-minute tick that
 expires subscriptions also trims the cache, and stops with the projection (F95).
 
@@ -1043,13 +1046,15 @@ outbox and is published again to the replacements; then they leave it without ac
 Each child has a name of its own, and a supervisor holds or awaits one build slot at most. The
 supervisor itself never restarts (AR7): a message it fails on (the registry
 or the store unavailable) is logged and answered with `Status.Failure`, as a restart would
-stop its instances and leave the new ones unsubscribed (the bus asks once). A switch that
+stop its instances and lose what it holds. A switch that
 fails in the registry is tried again after `restartAfter`; a context check or a targeted rebuild
 the registry could not record waits for the next start. A retired build loses its subscription
 versions and failures before its registry row, and a supervisor drops at its start every build
 of its projection that is neither active nor in progress, so a stop between a switch and the
 drop leaves nothing behind (F116). `Projections.retire(name)` drops every build the registry has
-of a projection removed from the code.
+of a projection removed from the code; while a member of the cluster runs an older app-version,
+which may still serve it, it waits, and drops them once every member runs this version or a later
+one (F132).
 
 **Targeted rebuild** (D63, R14). `RebuildAggregates(target)` rebuilds in place, on the active
 build, what the projection derived from one aggregate (`OneAggregate`), one of its aggregate types
@@ -1101,6 +1106,13 @@ there; a saga whose row vanished is stopped with an error log. The table has a u
 index on `(name, saga_id)`, built `CONCURRENTLY`. Saga ids come from pools fetched ahead
 (F23); an order that arrives while none is at hand waits for the pool, and is refused if the
 pool does not come. The saga state's JDBC calls run on the blocking dispatcher (F27).
+
+In a cluster the runner is a singleton (D46). It stores its caller's path with the caller's node
+address (also for an ask made on its own node, F137), so it answers from whichever node it runs
+on. A saga answers before the write that ends it is stored: when the runner's node stops in
+between, the next runner runs that step again and answers again. Answers are therefore at least
+once (F136): an `ask` keeps the first, and a caller that is a long-lived actor treats a second
+answer for the same saga as a repeat.
 
 ---
 
@@ -1212,8 +1224,9 @@ value, each part written with a tag that says what it is:
 Reading is tolerant (D68), so nodes of two versions talk during a rolling upgrade. A library
 message is matched by field name: a field the reader does not have is skipped, one it lacks takes
 its Scala default, else `None`, zero or null. The application's JSON is read with
-`ignoreNonExistingFields` (a missing field reads as zero, null or `None`). A field whose type
-changed fails the message; such a change needs a new class. Stored events keep their strict
+`ignoreNonExistingFields` (a missing field reads as zero, null or `None`, never its Scala
+default), so a field added to an application class must be an `Option` (F135). A field whose
+type changed fails the message; such a change needs a new class. Stored events keep their strict
 reader.
 
 Messages that carry functions (`ResetForRebuild`, `SubscriptionsHandedOver`) stay inside one

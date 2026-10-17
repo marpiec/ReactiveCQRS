@@ -5,6 +5,7 @@ import java.time.Instant
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, SpaceId, UserId}
+import io.reactivecqrs.core.cluster.Members
 import io.reactivecqrs.core.eventstore.NewEvents
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.PassivateAggregate
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
@@ -19,6 +20,7 @@ import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorIdentity, ActorRef, Identify, Props}
 import org.apache.pekko.testkit.TestProbe
+import org.apache.pekko.util.Version
 
 import scala.concurrent.duration._
 import scala.util.Try
@@ -252,6 +254,33 @@ class PermanentDeleteSpec extends CommonSpec {
       awaitAssert(eventStore.oldestVersionToPublish(memoId) mustBe Some(AggregateVersion(2)), 5.seconds, 50.millis)
       storedVersions(memoId) mustBe Seq(1, 2)
       eventStore.readEventsRange[Memo](copyId, AggregateVersion(1), AggregateVersion(1)).map(_.event) mustBe Seq(MemoCopied(SpaceId(0), memoId, AggregateVersion(1)))
+      storedText(f, copyId) mustBe "note"
+    }
+
+    Scenario("waits while a node of an older version runs, when the squash event that detaches the duplicates is new in this version (D67, F134)") {
+      val context = new MemoContext {
+        override val writtenFrom: Map[Class[_], String] = Map(classOf[MemoRestated] -> "2.0.0")
+      }
+      val f = new Fixture(context)
+      awaitAssert(Members(system).alone mustBe true, 10.seconds) // the node knows its cluster: the versions stay as set here
+      context.oldestAppVersion = Some(Version("1.0.0")) // a rolling upgrade: a node of 1.0.0 cannot read the squash event
+      val (memoId, copyId) = erasedWithCopy(f)
+
+      f.ack(memoId, 2)
+
+      f.subscriber.expectNoMessage(1.second) // the delete is tried meanwhile
+      storedVersions(memoId) mustBe Seq(1, 2)
+      eventStore.oldestVersionToPublish(memoId) mustBe Some(AggregateVersion(2))
+      eventStore.readEventsRange[Memo](copyId, AggregateVersion(1), AggregateVersion(1)).map(_.event) mustBe Seq(MemoCopied(SpaceId(0), memoId, AggregateVersion(1)))
+
+      When("every node runs 2.0.0, and the event is delivered again")
+      context.oldestAppVersion = Some(Version("2.0.0"))
+      f.commandBus ! RepublishOutbox(memoId)
+      f.delivered(memoId) mustBe Seq(2)
+      f.ack(memoId, 2)
+
+      Then("the duplicate is detached and the memo deleted")
+      deletedForGood(memoId)
       storedText(f, copyId) mustBe "note"
     }
   }

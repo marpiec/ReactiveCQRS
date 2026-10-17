@@ -1742,3 +1742,17 @@ Open test-infrastructure items:
   stalled at once (F130). The window is one bus's: documented (SCALING §5).
 - Tests: `EventsBusActorSpec` (three scenarios) and `FlowControlSpec` (five), each red under a
   mutation that restores the old rule.
+- The cluster: `Local` owners on several nodes answered reads, min-version queries,
+  re-publications and gap fills from states the others had moved past (F131, high for clusters of
+  several nodes): an owner on a node that is not alone now compares the stored version and history
+  generation first (`Members`, as `AppVersions` is now named, says whether the node is alone).
+  `Projections.retire` dropped a projection that the old version still served during a rolling
+  upgrade; it now waits (F132). A renewal of a push subscription the projection does not know is
+  answered as cancelled (F133). A permanent delete's detach events pass the write switch (F134).
+  H10 and D68 said an added field of an application class may have a default; mpjsons applies none,
+  so it must be an `Option` (F135). Saga answers stay at least once, documented (F136). A saga
+  stores an ask's caller with its node's address (F137). The write switch writes nothing new before
+  the node knows its cluster (F138).
+- Tests: `LocalOwnersSpec` (two nodes, four scenarios), `MembersSpec`, `RollingUpgradeSpec` (the
+  removed projection), `SubscribableSpec`, `PermanentDeleteSpec`, `SagaCallerPathSpec`; each red
+  under a mutation that restores the old code.

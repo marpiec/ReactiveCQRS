@@ -28,6 +28,10 @@ class Members(system: ExtendedActorSystem) extends Extension {
 
   def oldestAppVersion: Option[Version] = oldest
 
+  /** Whether a member runs an older app-version than this node (a rolling upgrade is under way, D65), or the node knows
+    * no member yet; false outside a cluster and when no member set an app-version. */
+  def olderVersionsRun: Boolean = oldest.exists(_.compareTo(Cluster(system).selfMember.appVersion) < 0)
+
   def alone: Boolean = count == 1
 
   def track(context: AggregateContext[_]): Unit = synchronized {

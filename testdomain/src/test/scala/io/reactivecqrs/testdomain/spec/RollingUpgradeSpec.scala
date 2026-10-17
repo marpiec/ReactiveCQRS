@@ -35,7 +35,8 @@ class RollingUpgradeSpec extends AnyFeatureSpec with Matchers with Eventually wi
 
   private val projectionOn = new ConcurrentHashMap[ActorSystem, ActorRef]()
 
-  private def projection(node: TestNode): Seq[ActorRef] = {
+  /** The carts' projection on every node; version 1.0.0 runs a second one, which 2.0.0 removes from its code and retires. */
+  private def projection(version: Int)(node: TestNode): Seq[ActorRef] = {
     val subscriptions = new PostgresSubscriptionsState(node.typesNames).initSchema()
     val projections = new Projections(node.system, ProjectionsSettings(node.eventStore, subscriptions, new PostgresProjectionRegistry().initSchema(),
       Seq(new ShardedCartContext)))
@@ -46,15 +47,28 @@ class RollingUpgradeSpec extends AnyFeatureSpec with Matchers with Eventually wi
     // What waited in the outbox while the projection moved comes back after 2 or 4 seconds.
     Singletons.start(node.system, "outboxPoller", Props(new OutboxPollerActor(node.eventStore, node.eventBus, OutboxPollerOptions(firstPollAfter = 1.second,
       pollInterval = 1.second, redelivery = RedeliveryPolicy.Options(attemptsAfter = Seq(2.seconds, 4.seconds), giveUpAfter = 2.minutes)))))
-    Seq(carts)
+    if (version == 1) {
+      Seq(carts, projections.start[ClusterCartsProjection]("rolling-removed", 1, "rollingRemoved") { build =>
+        new ClusterCartsProjection(subscriptions, new PostgresDocumentStore[ClusterCartItems](build.documentStore("rolling_removed"), node.mpjsons, new NoopDocumentStoreCache))
+      })
+    } else {
+      projections.retire("rolling-removed")
+      Seq(carts)
+    }
   }
 
-  // Version 1.0.0 first: the oldest node runs the projection, and the carts made now have their owners on these nodes.
-  private val olds = TestCluster.start(2, subscribers = projection, appVersion = _ => "1.0.0")
+  private def removedProjectionServes: Boolean = new PostgresProjectionRegistry().projection("rolling-removed").exists(_.active.isDefined) &&
+    DB.readOnly(implicit s => sql"SELECT to_regclass('projection_rolling_removed_v1') IS NOT NULL".map(_.boolean(1)).single().get)
+
+  // Version 1.0.0 first: the oldest node runs the projections, and the carts made now have their owners on these nodes.
+  private val olds = TestCluster.start(2, subscribers = projection(1), appVersion = _ => "1.0.0")
   private val Vector(oldest, olderToo) = olds
   private val oldCarts = (1 to 4).map(i => create(oldest, "old " + i))
+  eventuallyServes()
   // Then version 2.0.0 joins: new shards go only to it (D66).
-  private val news = TestCluster.join(oldest, 2, subscribers = projection, appVersion = _ => "2.0.0", carts = _ => new ShardedCartContextV2)
+  private val news = TestCluster.join(oldest, 2, subscribers = projection(2), appVersion = _ => "2.0.0", carts = _ => new ShardedCartContextV2)
+
+  private def eventuallyServes(): Unit = eventually(removedProjectionServes mustBe true)
   private val Vector(newer, newest) = news
 
   override def afterAll(): Unit = TestCluster.stop(olds ++ news)
@@ -123,6 +137,8 @@ class RollingUpgradeSpec extends AnyFeatureSpec with Matchers with Eventually wi
       add(newest, onNewNode, "v2 early") mustBe a[CommandRejected]
       eventually(sent.size must be > 40)
       storedV2(carts) mustBe 0L
+      And("the projection that version 2.0.0 removed still serves: it is retired only once every node runs 2.0.0 (F132)")
+      removedProjectionServes mustBe true
 
       When("the old nodes leave, the oldest, which runs the projection, last")
       olderToo.cluster.leave(olderToo.cluster.selfAddress)
@@ -134,6 +150,9 @@ class RollingUpgradeSpec extends AnyFeatureSpec with Matchers with Eventually wi
       Then("the new class is written, by the owners that moved from the old nodes too")
       eventually(add(newest, oldCarts.head, "v2 late") mustBe a[SuccessResponse])
       eventually(storedV2(oldCarts) must be > 1L)
+      And("the projection that version 2.0.0 removed is retired")
+      eventually(new PostgresProjectionRegistry().projection("rolling-removed") mustBe None)
+      DB.readOnly(implicit s => sql"SELECT to_regclass('projection_rolling_removed_v1') IS NOT NULL".map(_.boolean(1)).single().get) mustBe false
       sending = false
       Await.result(load, 60.seconds)
 

@@ -2,18 +2,21 @@ package io.reactivecqrs.core.rebuild
 
 import io.reactivecqrs.api.{AggregateContext, AggregateType}
 import io.reactivecqrs.api.id.{AggregateId, SpaceId}
-import io.reactivecqrs.core.cluster.Singletons
+import io.reactivecqrs.core.cluster.{Members, Singletons}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.core.eventstore.{AggregateScope, EventStoreState}
 import io.reactivecqrs.core.projection._
 import io.reactivecqrs.core.rebuild.ProjectionBuilder._
 import io.reactivecqrs.core.rebuild.ProjectionSupervisor._
 import io.reactivecqrs.core.util.{BlockingDispatcher, MyActorLogging, SchemaLock}
-import org.apache.pekko.actor.{Actor, ActorRef, ActorRefFactory, ActorSystem, OneForOneStrategy, Props, Stash, Status, SupervisorStrategy, Terminated}
+import org.apache.pekko.actor.{Actor, ActorContext, ActorRef, ActorRefFactory, ActorSystem, OneForOneStrategy, Props, Stash, Status, SupervisorStrategy, Terminated}
+import org.slf4j.LoggerFactory
 
 import scala.collection.mutable
 import scala.concurrent.duration._
+import scala.jdk.CollectionConverters._
 import scala.reflect.{ClassTag, classTag}
+import scala.util.Try
 import scala.util.control.NonFatal
 
 /**
@@ -53,14 +56,32 @@ class Projections(actors: ActorRefFactory, val settings: ProjectionsSettings) {
   }
 
   /** Drops every build of a projection removed from the code: its tables, its subscription versions and its failures, which
-    * would keep permanent deletes waiting (F94). Under the schema lock: every node of a cluster calls it as it starts. */
-  def retire(name: String): Unit = SchemaLock {
-    settings.registry.builds(name).foreach { build =>
-      settings.subscriptionsState.clearSubscriptionsInfo(build.subscriber)
-      settings.registry.drop(name, build.number)
+    * would keep permanent deletes waiting (F94). Under the schema lock: every node of a cluster calls it as it starts.
+    * While members of an older app-version run (a rolling upgrade, D65), they may still serve the projection and write
+    * it: the drop waits until every member runs this node's version or a later one, looked at every 10 s (F132). */
+  def retire(name: String): Unit =
+    if (Members(system).olderVersionsRun) {
+      if (!retiresLater.contains(name)) Projections.log.info("Projection " + name + " is retired once every node runs this version")
+      retiresLater += name
+      Try(system.scheduler.scheduleOnce(10.seconds)(retire(name))(system.dispatchers.lookup(BlockingDispatcher.id))) // none once the system stops
+    } else SchemaLock {
+      settings.registry.builds(name).foreach { build =>
+        settings.subscriptionsState.clearSubscriptionsInfo(build.subscriber)
+        settings.registry.drop(name, build.number)
+      }
+      settings.registry.remove(name)
     }
-    settings.registry.remove(name)
+
+  private val retiresLater = java.util.concurrent.ConcurrentHashMap.newKeySet[String]().asScala
+
+  private def system: ActorSystem = actors match {
+    case system: ActorSystem => system
+    case context: ActorContext => context.system
   }
+}
+
+object Projections {
+  private val log = LoggerFactory.getLogger(classOf[Projections])
 }
 
 case class ProjectionSpec(name: String, version: Int, legacySubscriber: String, whileBuilding: WhileBuilding)
