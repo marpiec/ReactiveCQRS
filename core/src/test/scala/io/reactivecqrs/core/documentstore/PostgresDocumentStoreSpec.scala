@@ -7,6 +7,9 @@ import org.scalatest.matchers.must.Matchers
 import io.reactivecqrs.testutils.TestDatabase
 import scalikejdbc.DB
 
+case class Label(name: String)
+case class Labels(labels: List[Label])
+
 class PostgresDocumentStoreSpec extends AnyFeatureSpec with GivenWhenThen with BeforeAndAfter with Matchers {
 
   TestDatabase.init()
@@ -85,6 +88,47 @@ class PostgresDocumentStoreSpec extends AnyFeatureSpec with GivenWhenThen with B
         }
       } finally {
         // Outside the transaction: DROP TABLE on another connection would wait for its locks forever.
+        documentStore.dropTable()
+      }
+    }
+  }
+
+  // F158: the value is a parameter of the query, not a part of its text.
+  feature("searching by an object in an array") {
+    scenario("F158 a value with quotes finds its document, and a value made to change the query finds nothing") {
+      val documentStore = new PostgresDocumentStore[Labels](testTable, mpjsons, new NoopDocumentStoreCache)
+      try {
+        DB.localTx { implicit session =>
+          documentStore.insertDocument(0, 1, Labels(List(Label("O'Brien"), Label("plain"))))
+          documentStore.insertDocument(0, 2, Labels(List(Label("other"), Label("back\\slash \"quoted\""))))
+
+          documentStore.findDocumentByObjectInArray(List("labels"), Seq("name"), "O'Brien", 100).keySet mustBe Set(1)
+          documentStore.findDocumentByObjectInArray(List("labels"), Seq("name"), "back\\slash \"quoted\"", 100).keySet mustBe Set(2)
+          documentStore.findDocumentByObjectInArray(List("labels"), Seq("name"), "x\"}]' OR '1'='1' OR '[{\"name\":\"x", 100) mustBe empty
+        }
+      } finally {
+        documentStore.dropTable()
+      }
+    }
+  }
+
+  // F159: the queries a store builds are valid with no condition, sorted by numbers, and without a limit.
+  feature("queries without conditions, and queries of parts") {
+    scenario("F159 a query without conditions finds every document; parts sort by numbers without a limit") {
+      val documentStore = new PostgresDocumentStore[Item](testTable, mpjsons, new NoopDocumentStoreCache)
+      try {
+        DB.localTx { implicit session =>
+          documentStore.insertDocument(0, 1, Item("a", 3, 30L, active = true, Nil, None))
+          documentStore.insertDocument(0, 2, Item("b", 1, 10L, active = true, Nil, None))
+          documentStore.insertDocument(0, 3, Item("c", 2, 20L, active = false, Nil, None))
+
+          documentStore.findDocument(DocumentStoreQuery(Nil, Seq(SortAscInt(Seq("count"))), 0, -1)).map(_._1) mustBe Seq(2, 3, 1)
+          documentStore.findDocumentPartByPaths[String](Seq("name"),
+            DocumentStoreQuery(Seq(ExpectedSingleBooleanValue(Seq("active"), true)), Seq(SortDescInt(Seq("count"))), 0, -1)) mustBe Seq(1L -> "a", 2L -> "b")
+          documentStore.findDocumentPartByPaths[String](Seq("name"),
+            DocumentStoreQuery(Seq(ExpectedSingleBooleanValue(Seq("active"), true)), Seq(SortAscLong(Seq("total"))), 1, 1)) mustBe Seq(1L -> "a")
+        }
+      } finally {
         documentStore.dropTable()
       }
     }

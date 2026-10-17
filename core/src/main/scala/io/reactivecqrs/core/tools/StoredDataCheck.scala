@@ -115,7 +115,7 @@ object StoredDataCheck {
   case class ClassUsers(className: String, events: Long, archived: Long, aggregates: Seq[ClassUser])
   case class ClassUser(aggregateId: Long, events: Long, archived: Long)
 
-  /** R11: who still uses an event class, in `events` or in the archive. None means the class can go from the code (D29:
+  /** R11: who still uses an event class, in `events` or in the archive. Both counts zero means the class can go from the code (D29:
     * its successor holds the new shape). Reads both tables whole, as there is no index by class: run it on a copy or
     * when the database is quiet. */
   def usersOf(className: String, limit: Int = 100): ClassUsers = DB.readOnly { implicit session =>

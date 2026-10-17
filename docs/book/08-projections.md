@@ -378,8 +378,8 @@ arrays. Sorts come as `SortAscText`, `SortDescText`, `SortAscInt`, `SortDescInt`
 `SortDescLong`. A `limit` of `-1` means no limit, and `DocumentStoreQuery.basic(where)` is the
 shortcut for "these conditions, no sorting, no limit".
 
-> **Warning:** on PostgreSQL, `findDocument` needs at least one condition: an empty `where` makes
-> invalid SQL. To get everything, use `findAll()`.
+> **Tip:** a query with an empty `where` finds every document, sorted and paged as you ask; for all
+> of them at once, `findAll()` is simpler.
 
 What happens when a query goes wrong? A query that throws is answered with `Status.Failure`, so
 your `ask` fails with that exception, and the projection carries on with its work.

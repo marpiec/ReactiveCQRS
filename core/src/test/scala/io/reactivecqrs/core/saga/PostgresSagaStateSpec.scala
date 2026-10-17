@@ -41,6 +41,20 @@ class PostgresSagaStateSpec extends AnyFeatureSpec with Matchers {
     }
   }
 
+  Feature("Loading the sagas of a name") {
+
+    Scenario("F151 a saga whose order no longer reads is left out, and the others load") {
+      val name = sagaName()
+      state.createSaga(name, SagaId(1), "respondTo", order)
+      state.createSaga(name, SagaId(2), "respondTo", TestSagaOrder(UserId(1), "soon unreadable"))
+      DB.autoCommit { implicit session => sql"""UPDATE sagas SET saga_order = '{"broken' WHERE name = $name AND saga_id = 2""".update() }
+
+      var loaded = Vector[Long]()
+      state.loadAllSagas(name, (sagaId, _, _, _, _, _) => loaded :+= sagaId.asLong)
+      loaded mustBe Vector(1L)
+    }
+  }
+
   Feature("The sagas table") {
 
     Scenario("holds one row per saga name and id (F34)") {

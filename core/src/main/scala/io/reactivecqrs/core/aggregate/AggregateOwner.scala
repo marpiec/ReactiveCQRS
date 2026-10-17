@@ -425,7 +425,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     } else if (command.baseVersion != version) {
       ownConflict(command, AggregateConcurrentModificationError(aggregateId, aggregateType, command.baseVersion, version))
     } else if (version == AggregateVersion.ZERO && events.head.isInstanceOf[FirstEvent[_]] && events.head.asInstanceOf[FirstEvent[_]].spaceId.asLong < 0) {
-      finish(command.envelope.commandId, FailureResponse(List("A new aggregate needs a space (D38): " + events.head.getClass.getSimpleName +
+      finish(command.envelope.commandId, FailureResponse(List("A new aggregate needs a space: " + events.head.getClass.getSimpleName +
         " gives " + events.head.asInstanceOf[FirstEvent[_]].spaceId + "; use SpaceId(0) for the platform")))
     } else notWrittenYet(events) match {
       case Some(reason) => finish(command.envelope.commandId, CommandRejected(aggregateId, reason)) // D67: may be sent again later

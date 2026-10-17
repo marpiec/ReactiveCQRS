@@ -251,11 +251,9 @@ What to know about duplication:
   to the base afterwards (new events, undos) does not touch the copy. A rewrite of the base's history
   below that version does, as they share it (chapter 15); and a permanent delete of the base first
   gives the copy a first event of its own (next section).
-- **A copy cannot start below the base's squash point** (chapter 14).
-
-> **Warning:** duplicate only at a version the base has already reached, for example the version of a
-> `GetAggregate` answer. Today the library does not refuse a later version, and the copy would then
-> pick up the base's later events as they are stored.
+- **A copy cannot start below the base's squash point** (chapter 14), **nor above the base's version**:
+  a copy "at version 10" of a cart at version 5 is refused with `EventHandlingError`. Take the version
+  from a `GetAggregate` answer.
 
 ## Permanent delete: when the data must really go
 
@@ -296,8 +294,9 @@ What to know about permanent delete:
   state. A type without a squash policy cannot do that: the delete then waits, and the log says why.
   The cart has a squash policy.
 - **Your projections' tables are yours.** The library does not touch them: delete their rows when
-  your projections see the event. Stored responses of idempotent commands are not part of the delete
-  either; they expire with their retention period (30 days by default).
+  your projections see the event. The stored answers of the aggregate's idempotent commands go with
+  it; answers stored by older versions of the library, which do not name their aggregate, expire with
+  their retention period (30 days by default).
 
 > **Tip:** plan ahead if you need both kinds of delete. A command cannot run on an aggregate whose
 > state is `null`, so a cart soft-deleted the cart's way can no longer be erased by a command. If you

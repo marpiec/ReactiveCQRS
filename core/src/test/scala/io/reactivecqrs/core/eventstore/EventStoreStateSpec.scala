@@ -612,6 +612,19 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     eventStoreState.detachDuplicates(base.aggregateId, Seq(kept -> EventA("copy"))).left.toOption.get must include("still waits in the outbox")
   }
 
+  // F147: a copy reads its base up to the version it was made at, so the base must have reached it.
+  Scenario("F147 a duplication at a version its base has not reached is refused") {
+    val base = new TestFixture(eventStoreState)
+    base.storeEvents(Seq(EventA("one"), EventB(2)))
+    val (early, copy) = (newId(), newId())
+
+    Try(base.storeEvents(Seq(Copy(SpaceId(1), base.aggregateId, AggregateVersion(3))), early, AggregateVersion.ZERO)).isFailure mustBe true
+    base.getEvents(id = early) mustBe empty
+
+    base.storeEvents(Seq(Copy(SpaceId(1), base.aggregateId, AggregateVersion(2))), copy, AggregateVersion.ZERO)
+    base.getEvents(id = copy).take(2) mustBe Seq(EventA("one"), EventB(2))
+  }
+
   // As the procedures store a command's events one after another, each undo is checked against the events before it.
   Scenario("The undos of one command are checked one after another against the squash point") {
     val f = new TestFixture(eventStoreState)

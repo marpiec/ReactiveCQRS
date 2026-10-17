@@ -290,8 +290,8 @@ have been applied. That is the subject of the next section.
 
 > **Warning:** the saga's `name` and its order classes are stored. Do not change the `name` while
 > sagas are in flight (their rows would no longer be found), and never give two saga actors the same
-> one. Treat order classes like event classes (chapter 6): a stored order that no longer reads stops
-> *every* stored saga of that name from resuming, as the runner reads them all before it starts any.
+> one. Treat order classes like event classes (chapter 6): a saga whose stored order no longer reads
+> does not resume (the runner logs it as an error and goes on with the others).
 > `StoredDataCheck` (chapter 18) reads every stored order on a copy of your production data.
 
 > **Warning:** `handleOrder` and `handleRevert` run on the saga actor itself, which serves every

@@ -483,7 +483,7 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   the aggregate's chain as a squash does (§4.6), detaches its duplicates (F76, fixed in M3:
   each one's first event becomes the type's squash event of its state at version 1, the
   replaced event archived first when its class is kept, R11), and
-  deletes the `aggregates`, `events_archive`, `noop_events` (before `events`, so its sub-select still matches),
+  deletes the `aggregates`, `events_archive`, `commands_responses` (by `aggregate_id`, F167), `noop_events` (before `events`, so its sub-select still matches),
   `events`, `events_to_publish`, `snapshots` and `subscriptions` rows. It deletes nothing and
   gives the reason while a subscription of the aggregate is failed (`subscription_failures`,
   D20a) or when a duplicate was made after the command bus listed them; the event's outbox
@@ -1174,7 +1174,8 @@ returns `SagaContinues | SagaSucceded | SagaFailed` (failure switches to the `RE
 phase and calls `handleRevert`). Progress is stored in `sagas` (`PostgresSagaState.scala`)
 and reloaded at start. Each step passes `SagaStep(sagaId, step)` as the idempotency key of
 the commands it sends, so a resumed saga doesn't repeat a command
-(`MultipleCartCreatorSaga.scala`). Since M6 a saga can say which organization an order belongs to
+(`MultipleCartCreatorSaga.scala`). A stored order that no longer reads is logged and left out at the load, and
+the others resume (F151). Since M6 a saga can say which organization an order belongs to
 (`spaceOf(order)`, none by default); it is stored in `sagas.space_id` when the saga starts, and a
 purge of that organization deletes the saga (§4.7).
 

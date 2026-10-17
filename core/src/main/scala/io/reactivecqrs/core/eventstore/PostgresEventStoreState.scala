@@ -134,7 +134,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     // D17: a rewritten event keeps its class, so the history means what it meant; only the stored values change.
     events.foreach { e =>
       val className = e.event.getClass.getName
-      val updated = sql"""UPDATE events SET event = ${mpjsons.serialize(e.event, className)}
+      val updated = sql"""UPDATE events SET event = ${serializedChecked(aggregateId, e.event, AggregateVersion(e.version.asInt - 1))}
                          | WHERE aggregate_id = ${aggregateId.asLong} AND version = ${e.version.asInt} AND event_type_id = ${typesNamesState.typeIdByClassName(className)}"""
         .stripMargin.update()
       if (updated != 1) throw new RewriteChangesClassException(aggregateId, e.version, className)
@@ -485,6 +485,9 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       if (tableExists("subscriptions")) {
         sql"""DELETE FROM subscriptions WHERE aggregate_id = $id""".update()
       }
+      if (columnExists("commands_responses", "aggregate_id")) { // F167: as a purge does
+        sql"""DELETE FROM commands_responses WHERE aggregate_id = $id""".update()
+      }
     }
   }
 
@@ -647,7 +650,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     val className = firstEvent.getClass.getName
     archived(sqls"e.aggregate_id = $id AND e.version = 1", archive)
     sql"""DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = $id AND version = 1)""".update()
-    val updated = sql"""UPDATE events SET event = ${mpjsons.serialize(firstEvent, className)}, event_type_id = ${typesNamesState.typeIdByClassName(className)}
+    val updated = sql"""UPDATE events SET event = ${serializedChecked(duplicateId, firstEvent, AggregateVersion.ZERO)}, event_type_id = ${typesNamesState.typeIdByClassName(className)}
                        | WHERE aggregate_id = $id AND version = 1""".stripMargin.update()
     if (updated != 1) throw new IllegalStateException("Duplicate " + id + " has no event at version 1 to detach")
     if (firstEvent.isInstanceOf[SquashMayChangeState]) historyChangedFor(sqls"""$id""") // D85
@@ -670,7 +673,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       // noop rows first: they are found through the events they mark (F76's lesson).
       sql"""DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = $id AND version <= $n)""".update()
       sql"""DELETE FROM events WHERE aggregate_id = $id AND version < $n""".update()
-      val updated = sql"""UPDATE events SET event = ${mpjsons.serialize(squashEvent, className)}, event_type_id = ${typesNamesState.typeIdByClassName(className)},
+      val updated = sql"""UPDATE events SET event = ${serializedChecked(aggregateId, squashEvent, AggregateVersion(n - 1))}, event_type_id = ${typesNamesState.typeIdByClassName(className)},
                          |   user_id = ${userId.asLong}, metadata = ${metadataJson(metadata)}::jsonb
                          | WHERE aggregate_id = $id AND version = $n""".stripMargin.update()
       if (updated != 1) throw new IllegalStateException("Aggregate " + id + " has no event at version " + n + " to squash into")

@@ -21,7 +21,7 @@ class EventTooLargeException(val aggregateId: AggregateId,
                              val currentVersion: AggregateVersion,
                              val eventTypeName: String,
                              val eventSize: Int,
-                             val maxSize: Int) extends Exception("Event of type "+eventTypeName+" is too large: " + eventSize + " bytes, max size is " + maxSize + " bytes, aggregate " + aggregateId.asLong +"@"+aggregateTypeName+" version "+currentVersion.asInt) {
+                             val maxSize: Int) extends Exception("Event of type "+eventTypeName+" is too large: " + eventSize + " characters of JSON, max size is " + maxSize + " characters, aggregate " + aggregateId.asLong +"@"+aggregateTypeName+" version "+currentVersion.asInt) {
   override def fillInStackTrace(): Throwable = this
 }
 

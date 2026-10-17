@@ -226,7 +226,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     }).mkString(" ORDER BY ", ", ", "")
 
     SQL("SELECT id, version, document FROM " + projectionTableName +
-      " WHERE" + constructWhereClauseForExpectedValues(searchParams.where) +
+      whereClause(searchParams.where) +
       sortPart +
       (if(searchParams.limit >= 0) (" LIMIT " + searchParams.limit) else "") +
       (if(searchParams.offset > 0) (" OFFSET " + searchParams.offset) else "")
@@ -235,21 +235,22 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
   private def createPartsQuery(parts: Seq[Seq[String]], searchParams: DocumentStoreQuery) = {
 
-    val partsQuery = parts.map(part => "document#>>'{"+part.mkString(",")+"}'").mkString(", ")
+    val partsQuery = parts.map(part => "document#>'{"+part.mkString(",")+"}'").mkString(", ") // JSON, as the parts are read with mpjsons (F159)
 
     val sortPart = if(searchParams.sortBy.isEmpty) "" else searchParams.sortBy.map({
-      case SortAscInt(path) => "(document#>'{" + path.mkString(",") + "})::int' " + " ASC"
-      case SortDescInt(path) => "(document#>'{" + path.mkString(",") + "})::int' " + " DESC"
-      case SortAscLong(path) => "(document#>'{" + path.mkString(",") + "})::bigint' " + " ASC"
-      case SortDescLong(path) => "(document#>'{" + path.mkString(",") + "})::bigint' " + " DESC"
+      case SortAscInt(path) => "(document#>'{" + path.mkString(",") + "}')::int " + " ASC"
+      case SortDescInt(path) => "(document#>'{" + path.mkString(",") + "}')::int " + " DESC"
+      case SortAscLong(path) => "(document#>'{" + path.mkString(",") + "}')::bigint " + " ASC"
+      case SortDescLong(path) => "(document#>'{" + path.mkString(",") + "}')::bigint " + " DESC"
       case SortAscText(path) => "document#>>'{" + path.mkString(",") + "}' " + " ASC"
       case SortDescText(path) => "document#>>'{" + path.mkString(",") + "}' " + " DESC"
     }).mkString(" ORDER BY ", ", ", "")
 
     SQL("SELECT id, " + partsQuery + " FROM " + projectionTableName +
-      " WHERE" + constructWhereClauseForExpectedValues(searchParams.where) +
+      whereClause(searchParams.where) +
       sortPart +
-      " LIMIT " + searchParams.limit + " OFFSET " + searchParams.offset)
+      (if (searchParams.limit >= 0) " LIMIT " + searchParams.limit else "") +
+      (if (searchParams.offset > 0) " OFFSET " + searchParams.offset else ""))
 
   }
 
@@ -329,6 +330,10 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     }
   }
 
+  // F159: no condition, no WHERE (the memory store then finds every document too).
+  private def whereClause(values: Seq[ExpectedValue]): String =
+    if (values.isEmpty) "" else " WHERE" + constructWhereClauseForExpectedValues(values)
+
   private def constructWhereClauseForExpectedValues(values: Seq[ExpectedValue]): String = {
     values.map{
       case ExpectedNoValue(path) => s"document #>> '{${path.mkString(",")}}' IS NULL"
@@ -370,22 +375,22 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     findDocumentByObjectInArray("document", arrayPath, objectPath, value, limit)
   }
 
+  // F158: the path and the JSON are parameters, and the JSON is written by an encoder, so no value can change the query.
   protected def findDocumentByObjectInArray[V](columnName: String, array: Seq[String], objectPath: Seq[String], value: V, limit: Int)(implicit session: DBSession): Map[Long, Document[T]] = {
 
-    def QUERY(arrayPath: String, path: String) =
-      s"SELECT id, version, document FROM $projectionTableName WHERE $columnName #> '$arrayPath' @> '[$path]' LIMIT " + limit
-
-    def makeJson(path: Seq[String], value: V): String =
-      path match {
-        case head :: tail => "{\"" + head + "\":" + makeJson(tail, value) + "}"
-        case Nil => value match {
-          case s: String => "\"" + s + "\""
-          case anything => anything.toString
-        }
+    def json(path: List[String]): String = path match {
+      case head :: tail => "{" + jsonString(head) + ":" + json(tail) + "}"
+      case Nil => value match {
+        case number @ (_: Int | _: Long | _: Short | _: Byte | _: Double | _: Float | _: BigInt | _: BigDecimal | _: Boolean) => number.toString
+        case anything => jsonString(anything.toString)
       }
+    }
+    // A text[] literal with quoted elements: '{"a","b"}'.
+    val arrayPath = array.map(e => "\"" + e.replace("\\", "\\\\").replace("\"", "\\\"") + "\"").mkString("{", ",", "}")
 
     inSession { implicit session =>
-      val loaded = SQL(QUERY(array.mkString("{", ",", "}"), makeJson(objectPath, value)))
+      val loaded = SQL(s"SELECT id, version, document FROM $projectionTableName WHERE $columnName #> ?::text[] @> ?::jsonb LIMIT ?")
+        .bind(arrayPath, "[" + json(objectPath.toList) + "]", limit)
         .map(rs => rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3))))
         .list()
 
@@ -394,6 +399,17 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     }
   }
 
+
+  private def jsonString(s: String): String = {
+    val json = new StringBuilder("\"")
+    s.foreach {
+      case '"' => json.append("\\\"")
+      case '\\' => json.append("\\\\")
+      case c if c < ' ' => json.append(f"\\u${c.toInt}%04x")
+      case c => json.append(c)
+    }
+    json.append('"').toString
+  }
 
   def findAll()(implicit session: DBSession = null): Map[Long, Document[T]] = {
     val loaded = inSession { implicit session =>

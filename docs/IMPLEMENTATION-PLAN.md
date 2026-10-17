@@ -1895,3 +1895,12 @@ Open test-infrastructure items:
   one filter whose mutation is caught; an empty detach list checks nothing.
 - The core specs take their aggregate ids from `TestIds`: ids from `System.nanoTime()` made back
   to back can be equal on Windows, which made the purge batch's scenario fail once.
+
+**17/10/2026: the M6 findings of the book**
+- Fixed, each test red first: a copy "at" a version its base has not reached (F147, the procedure and
+  the memory store refuse it); a value written into SQL by `findDocumentByObjectInArray` (F158, now
+  bound as JSON); document queries that made invalid SQL or could not read string parts (F159); one
+  unreadable saga order keeping every saga of its name from resuming (F151); squash, detach and
+  rewritten events skipping the size limits (F154); a permanent delete leaving the aggregate's
+  stored responses (F167). The user-facing texts of F149 and F168 and the comment of F150 were
+  corrected; the book's chapters 6, 8 and 12 and appendix C with them.

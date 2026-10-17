@@ -131,10 +131,14 @@ class MemoryEventStoreState extends EventStoreState {
       }
     }
 
-  // As add_duplication_event: the base exists, and its history at the duplicated version is still there (D50).
+  // As add_duplication_event: the base exists, has reached the duplicated version (F147), and its history there is still
+  // there (D50).
   private def refuseDuplicationOfSquashed(duplication: DuplicationEvent[_]): Unit = {
     val base = duplication.baseAggregateId
     if (!eventStore.contains(base)) throw new IllegalStateException("Duplication of aggregate " + base.asLong + ", which does not exist")
+    val current = eventStore(base).lastOption.map(_.version).getOrElse(AggregateVersion.ZERO)
+    if (duplication.baseAggregateVersion > current) throw new IllegalStateException("Duplication of aggregate " + base.asLong + " at version " +
+      duplication.baseAggregateVersion.asInt + ", which it has not reached (it is at version " + current.asInt + ")")
     squashedVersions.get(base).filter(_ > duplication.baseAggregateVersion).foreach(squashed => throw new IllegalStateException(
       "Duplication cannot read the squashed history: aggregate " + base.asLong + ", squashed up to version " + squashed.asInt +
         ", duplicated at version " + duplication.baseAggregateVersion.asInt))

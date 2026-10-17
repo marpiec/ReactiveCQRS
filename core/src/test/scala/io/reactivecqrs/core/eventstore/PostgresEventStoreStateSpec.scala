@@ -4,8 +4,9 @@ import java.time.Instant
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 
 import io.mpjsons.MPJsons
-import io.reactivecqrs.api.{AggregateSquashedException, AggregateType, AggregateVersion, Event, FirstEvent, TooManyEventsException}
-import io.reactivecqrs.api.id.{AggregateId, SpaceId}
+import io.reactivecqrs.api.{AggregateSquashedException, AggregateType, AggregateVersion, Event, EventTooLargeException, EventWithVersion, FirstEvent, SuccessResponse, TooManyEventsException}
+import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
+import io.reactivecqrs.core.commandhandler.PostgresCommandResponseState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.testutils.TestDatabase
 import scalikejdbc._
@@ -14,6 +15,11 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
 import scala.util.{Success, Try}
+
+/** A squash or first event that a store limits to a few characters (F154). */
+case class Summary(text: String) extends FirstEvent[SomeAggregate] {
+  def spaceId: SpaceId = SpaceId(0)
+}
 
 /** The first event of an aggregate of a given organization. */
 case class EventInSpace(space: Long) extends FirstEvent[SomeAggregate] {
@@ -286,6 +292,51 @@ class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStore
 
   private def orphanKeys(): Long = DB.readOnly { implicit session =>
     sql"""SELECT count(*) FROM event_keys k WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.id = k.id)""".map(_.long(1)).single().get
+  }
+
+  // F167: a permanent delete takes the aggregate's stored command responses with it, as a purge does.
+  Scenario("F167 a permanent delete deletes the aggregate's stored command responses") {
+    val responses = new PostgresCommandResponseState(new MPJsons, new PostgresTypesNamesState).initSchema()
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one")))
+    DB.localTx { implicit session =>
+      responses.storeResponse("F167-" + f.aggregateId.asLong, SuccessResponse(f.aggregateId, AggregateVersion(1)), Some(f.aggregateId))
+    }
+    published(f.aggregateId)
+
+    eventStoreState.deleteAggregatePermanently(f.aggregateId) mustBe Right(())
+    DB.readOnly { implicit session =>
+      sql"SELECT count(*) FROM commands_responses WHERE aggregate_id = ${f.aggregateId.asLong}".map(_.long(1)).single().get
+    } mustBe 0L
+  }
+
+  private def rewrite(store: PostgresEventStoreState, id: AggregateId, event: Event[SomeAggregate]): Unit =
+    store.localTx(session => store.overwriteEvents(id, Seq(EventWithVersion(AggregateVersion(1), event)))(session))
+
+  // F154: squash, detach and rewritten events meet the size limits like every event.
+  Scenario("F154 a squash, detach or rewritten event above the size limit fails, and nothing changes") {
+    val small = new PostgresEventStoreState(new MPJsons, new PostgresTypesNamesState, eventSizeLimitPerClassName = Map(classOf[Summary].getName -> 30))
+    val large = Summary("x" * 100)
+
+    val squashed = new TestFixture(small)
+    squashed.storeEvents(Seq(EventA("one"), EventB(2)))
+    published(squashed.aggregateId)
+    Try(small.squash(squashed.aggregateId, AggregateVersion(2), large, UserId(9), None, Nil)).failed.get mustBe an[EventTooLargeException]
+    squashed.getEvents() mustBe Seq(EventA("one"), EventB(2))
+    small.squash(squashed.aggregateId, AggregateVersion(2), Summary("ok"), UserId(9), None, Nil) mustBe Right(())
+
+    val base = new TestFixture(small)
+    base.storeEvents(Seq(EventA("one")))
+    val copy = newId()
+    base.storeEvents(Seq(Copy(SpaceId(1), base.aggregateId, AggregateVersion(1))), copy, AggregateVersion.ZERO)
+    published(base.aggregateId, copy)
+    Try(small.detachDuplicates(base.aggregateId, Seq(copy -> large))).failed.get mustBe an[EventTooLargeException]
+    small.duplicatesReading(base.aggregateId, None) mustBe Seq(copy)
+
+    val rewritten = new TestFixture(small)
+    rewritten.storeEvents(Seq(Summary("ok")))
+    Try(rewrite(small, rewritten.aggregateId, large)).failed.get mustBe an[EventTooLargeException]
+    rewritten.getEvents() mustBe Seq(Summary("ok"))
   }
 
   // R17: one batch of a purge, in its transaction.

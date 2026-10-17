@@ -189,8 +189,7 @@ but neither lifts this limit.
 ### An event is too large
 
 **What you see:** `EventHandlingError`, and the log names `EventTooLargeException`: "Event of type
-... is too large: ... max size is 100000 bytes". The limit is counted in characters of the event's
-JSON (the message calls them bytes).
+... is too large: ... characters of JSON, max size is 100000 characters".
 
 **What to do:**
 
