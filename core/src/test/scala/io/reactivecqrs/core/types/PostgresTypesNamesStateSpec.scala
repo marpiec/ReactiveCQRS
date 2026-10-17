@@ -2,7 +2,7 @@ package io.reactivecqrs.core.types
 
 import java.util.concurrent.Executors
 
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
+import io.reactivecqrs.testkit.{CommonSpec, TestDatabase}
 
 import scala.concurrent.duration._
 import scala.concurrent.{Await, ExecutionContext, Future}

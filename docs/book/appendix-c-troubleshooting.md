@@ -543,7 +543,7 @@ breaks reading. Rows written with the event versions of releases before 1.0 do n
 **What you see:** during the rollout, commands answer `CommandRejected` with a reason like
 "ItemAddedV2 is written once every node runs version 2.0.0 or later", and squashes are refused
 with the same reason. (`ItemAddedV2(name, source)` is the new cart event of the test suite's rolling
-upgrade, `TestCluster.scala`.)
+upgrade, `CartCluster.scala`.)
 
 **Why:** the context lists the class in `writtenFrom`. A node of the older version could not read
 the event, so nothing writes it until every member of the cluster announces at least that

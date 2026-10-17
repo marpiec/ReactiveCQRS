@@ -34,7 +34,7 @@ test surface.
 | `api` | `api/` | Public domain API: `Aggregate`, `Event`, `Command`, results, ids. Depends only on Pekko. |
 | `core` | `core/` | All the machinery: actors, event store, event bus, projections, sagas, document store, uid generator. Depends on `api`. |
 | `testdomain` | `testdomain/` | Example shopping-cart domain + integration specs. Depends on `api`, `core`. |
-| `testutils` | `testutils/` | `CommonSpec`, `TestDatabase` (a new schema per test run), actor-ask helpers. |
+| `testkit` | `testkit/` | The published test kit (M7, E11): `TestDatabase` (a new schema per test run), `SchemaReference`, `TestSystems` (cluster of one), `TestCluster` (nodes in one JVM), `TestClock`, `TestIds`, actor-ask helpers; the library's ScalaTest base `CommonSpec` in its test sources. |
 | `bench` | `bench/` | Performance bench and load driver (`sbt "bench/run <name>"`, reports in `docs/perf/`). Not published. |
 | `utils` | `utils/` | Present in tree; commented out / mostly unused in `build.sbt`. |
 
@@ -57,7 +57,7 @@ sbt "project core" "~compile"   # incremental
 
 - Test framework: **ScalaTest 3.2.19**.
 - **Postgres-backed tests require a running PostgreSQL**: database `reactivecqrs`, user and
-  password `reactivecqrs` on localhost. `TestDatabase.init()` (testutils) gives each test run
+  password `reactivecqrs` on localhost. `TestDatabase.init()` (testkit) gives each test run
   its own schema `test_run_<epoch>_<n>` (dropped after six hours); suites run one at a time.
   Memory-backed variants (`Memory*State`, `MemoryDocumentStore`) are test doubles.
 - Publishing: `publishMavenStyle`, target `https://nexus.neula.in/...`

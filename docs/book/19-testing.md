@@ -31,16 +31,33 @@ touches the database. A fourth level, several nodes in one JVM, comes at the end
 
 Two kinds of help:
 
-- **In the published `core` module:** the in-memory stand-ins (this chapter calls them *doubles*) and
+- **In the `core` module:** the in-memory stand-ins (this chapter calls them *doubles*) and
   `RecordingMetrics`. Your tests can use them directly.
-- **In the `testutils` module:** the library's own test kit: `CommonSpec`, `ActorAskSupport` (the
-  `??` helper), `TestDatabase`, `TestIds`, `TestClock` and `SchemaReference`. Its classes live under
-  `src/test`, and the build does not publish test classes (`Test / publishArtifact := false` in
-  `project/Common.scala`), so your project cannot depend on them. They are short (none is much longer
-  than 60 lines): copy the ones you like. A test kit for applications is coming in 1.0.
+- **In the test kit**, `reactivecqrs-testkit`, a module of its own for your tests:
+
+  ```scala
+  libraryDependencies += "io.reactivecqrs" %% "reactivecqrs-testkit" % "1.0.0-SNAPSHOT" % Test
+  ```
+
+  It holds `TestDatabase` (a schema per test run), `TestIds`, `TestClock`, `SchemaReference` (the
+  golden test of stored formats), `TestSystems` (actor systems that run as a cluster of one when you
+  ask), `TestCluster` (several nodes in one JVM) and `ActorAskSupport` (the `??` helper), all in
+  `io.reactivecqrs.testkit`. It depends on no test framework: its helpers return values or throw.
 
 The examples below are written as the library's own specs are: ScalaTest 3.2's feature specs with
-`must` matchers, and Pekko's TestKit.
+`must` matchers, and Pekko's TestKit. They extend a small base class of their own, which you write
+once, as the library does:
+
+```scala
+import io.reactivecqrs.testkit.{ActorAskSupport, TestSystems}
+import org.apache.pekko.testkit.TestKit
+import org.scalatest.GivenWhenThen
+import org.scalatest.featurespec.AnyFeatureSpecLike
+import org.scalatest.matchers.must.Matchers
+
+abstract class CommonSpec extends TestKit(TestSystems.newSystem()) with AnyFeatureSpecLike
+  with GivenWhenThen with ActorAskSupport with Matchers
+```
 
 > **Remember:** every example in this chapter comes from, or is modelled on, a spec in
 > `testdomain/src/test/scala/io/reactivecqrs/testdomain/spec/`. When you want to see more, open the
@@ -181,7 +198,6 @@ import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
 import io.reactivecqrs.core.eventstore.MemoryEventStoreState
 import io.reactivecqrs.core.uid.{MemoryUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testutils.CommonSpec
 import org.apache.pekko.actor.{ActorRef, Props}
 
 import scala.util.Try
@@ -282,13 +298,15 @@ that takes events instead of states, send `IdentifiableEvents` instead of `Aggre
 
 The real database catches what the doubles cannot: JSON that does not read back, SQL, transactions,
 the outbox. The library's specs use a local PostgreSQL with a database `reactivecqrs`, whose user and
-password are both `reactivecqrs`, and `TestDatabase` from `testutils`:
+password are both `reactivecqrs`, and the test kit's `TestDatabase`:
 
 - **`TestDatabase.init()`** sets up ScalikeJDBC's connection pool, once per JVM, on a **schema of its
   own for this test run** (`test_run_<seconds>_<random>`). A run never sees what an earlier run left
   behind, and every run creates the schema from scratch; schemas of runs older than six hours are
   dropped. To keep a fixed schema (to look at it afterwards), run with
-  `-Dreactivecqrs.test.schema=<name>`.
+  `-Dreactivecqrs.test.schema=<name>`. Another database is `-Dreactivecqrs.test.url=<jdbc url>`,
+  with `-Dreactivecqrs.test.user` and `-Dreactivecqrs.test.password`: a database for tests only, as
+  the schemas of old runs are dropped there.
 - **Suites run one at a time**, as they share the database (`Test / parallelExecution := false`, and
   one test task at a time in `build.sbt`).
 - **Specs of one run share the schema**, so each scenario takes ids of its own: `TestIds.aggregate()`
@@ -310,7 +328,7 @@ import io.reactivecqrs.core.metrics.{ReactiveMetrics, RecordingMetrics}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.UidGeneratorActor
 import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
+import io.reactivecqrs.testkit.{TestDatabase, TestIds}
 import org.apache.pekko.actor.Props
 
 import scala.concurrent.duration._
@@ -366,7 +384,7 @@ one to the poller, with polls far apart so that it polls only when told:
 
 ```scala
 import io.reactivecqrs.core.delivery.{OutboxPollerActor, OutboxPollerOptions}
-import io.reactivecqrs.testutils.TestClock
+import io.reactivecqrs.testkit.TestClock
 
 val clock = new TestClock()
 val poller = system.actorOf(Props(new OutboxPollerActor(eventStore, eventBus,
@@ -387,7 +405,7 @@ each with a reference JSON file named after the class, and reports what no longe
 ```scala
 import java.nio.file.Paths
 import io.mpjsons.MPJsons
-import io.reactivecqrs.testutils.SchemaReference
+import io.reactivecqrs.testkit.SchemaReference
 
 class StoredFormatsSpec extends AnyFeatureSpec with Matchers {
 
@@ -449,26 +467,35 @@ between two production nodes.
 ## Several nodes in one JVM
 
 The library tests its cluster behaviour by starting several actor systems inside one test, each a
-node on a local port, all over the run's PostgreSQL schema. `TestCluster`, in the testdomain's test
-sources, does it:
+node on a local port, all over the run's PostgreSQL schema. The test kit's `TestCluster` does it for
+your tests too:
 
-- `TestCluster.start(3, extra)` starts three nodes, joins them and waits until all are up; each
-  `TestNode` holds its node's actor system, stores, event bus and cart command bus. `extra` is
-  configuration on top, such as a short idle timeout for sharded owners.
-- `TestCluster.join(to, 2, appVersion = _ => "2.0.0", ...)` adds nodes of another version later, for
-  rolling upgrades; `TestCluster.stop(nodes)` shuts them down.
+```scala
+import io.reactivecqrs.testkit.{TestCluster, TestDatabase}
+
+TestDatabase.init()
+val systems = TestCluster.start(3, "pekko.cluster.sharding.passivation.default-idle-strategy.idle-entity.timeout = 3s")
+val nodes = systems.map(system => new MyNode(system)) // what your host starts on a node
+// ... the scenario ...
+TestCluster.stop(systems)
+```
+
+- `TestCluster.start(count, extra)` starts the nodes, joins them and waits until all are up; the first
+  is the oldest. `extra` is configuration on top.
+- `TestCluster.join(to, 2, appVersion = _ => "2.0.0")` adds nodes of another version later, for
+  rolling upgrades; `TestCluster.stop(systems)` shuts them down.
 - Each node's configuration is the cluster provider on `127.0.0.1` with port 0, the split brain
   resolver with a short `stable-after`, and the settings that let several nodes share one JVM
   (`pekko.cluster.jmx.multi-mbeans-in-same-jvm = on`, `pekko.coordinated-shutdown.exit-jvm = off`).
 
-With it, `ShardedOwnersSpec`, `ClusterDeliverySpec`, `LocalOwnersSpec`, `ClusterMessageSizeSpec` and
-`RollingUpgradeSpec` check the behaviour [chapter 17](17-cluster.md) describes. `TestCluster` is test
-code of the library, like `testutils`; a multi-node harness for applications is coming in 1.0. Until
-then, copy the idea: it is about 120 lines.
+The library's own `CartCluster` (in the testdomain's test sources) builds a `TestNode` on each:
+stores, an event bus and a cart command bus. With it, `ShardedOwnersSpec`, `ClusterDeliverySpec`,
+`LocalOwnersSpec`, `ClusterMessageSizeSpec` and `RollingUpgradeSpec` check the behaviour
+[chapter 17](17-cluster.md) describes.
 
-There is also a cheap trick: run all your other specs on a **cluster of one**. The library's
-`CommonSpec` does that when the tests run with `-Dreactivecqrs.test.clusterOfOne=true`, and a cluster
-of one must behave exactly like a single node.
+There is also a cheap trick: run all your other specs on a **cluster of one**. `TestSystems.newSystem()`
+makes one when the tests run with `-Dreactivecqrs.test.clusterOfOne=true`, and a cluster of one must
+behave exactly like a single node; the library runs its whole suite both ways.
 
 ## Patterns worth stealing from the testdomain specs
 
@@ -512,7 +539,7 @@ of one must behave exactly like a single node.
 - A `TestProbe` playing the event bus tests a projection on its own; `RecordingMetrics` and
   `TestClock` test measures and timings measured in minutes.
 - `SchemaReference` guards stored formats, a round trip through the serializer guards messages
-  between nodes, and `TestCluster` shows how to run several nodes in one test.
+  between nodes, and the test kit's `TestCluster` runs several nodes in one test.
 
 Next: [chapter 20](20-ephemeral-aggregates.md), the last one, is about aggregates that live only in
 memory: drafts you keep when they matter.

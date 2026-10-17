@@ -7,7 +7,7 @@ import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.cluster.Readiness
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
-import io.reactivecqrs.testutils.{CommonSpec, TestIds}
+import io.reactivecqrs.testkit.{CommonSpec, TestIds}
 import org.apache.pekko.actor.{ActorRef, Props, Status}
 import org.apache.pekko.event.Logging
 import org.apache.pekko.testkit.TestProbe

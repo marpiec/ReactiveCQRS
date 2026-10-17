@@ -6,7 +6,7 @@ import org.apache.pekko.actor.ActorRef
 import io.reactivecqrs.api.{AggregateSquashedException, AggregateType, AggregateVersion, AutomaticSquash, DuplicationEvent, Event, EventMetadata, EventWithVersion, FirstEvent, HistoryChange, UndoEvent}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, SpaceId, UserId}
 import io.reactivecqrs.core.eventstore.NewEvents
-import io.reactivecqrs.testutils.{CommonSpec, TestIds}
+import io.reactivecqrs.testkit.{CommonSpec, TestIds}
 
 import scala.concurrent.duration._
 import scala.util.Try

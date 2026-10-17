@@ -8,7 +8,7 @@ import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.eventbus.EventsBusActor.MessageAck
 import io.reactivecqrs.core.projection.SubscribableProjectionActor.{ProjectionSubscriptionsCancelled, SubscribedForProjectionUpdates, SubscriptionUpdated}
 import io.reactivecqrs.core.util.Backoff
-import io.reactivecqrs.testutils.{CommonSpec, TestIds}
+import io.reactivecqrs.testkit.{CommonSpec, TestIds}
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.testkit.TestProbe
 

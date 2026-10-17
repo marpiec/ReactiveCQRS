@@ -17,7 +17,7 @@ import io.reactivecqrs.core.rebuild._
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.core.util.BlockingDispatcher
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
+import io.reactivecqrs.testkit.{CommonSpec, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.testkit.TestProbe
 import scalikejdbc._

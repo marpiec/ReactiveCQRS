@@ -1,6 +1,5 @@
 package io.reactivecqrs.testdomain.spec
 
-import com.typesafe.config.{Config, ConfigFactory}
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.{AggregateType, AsyncCommandResult, CommandSuccess, Event, Placement}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
@@ -9,13 +8,11 @@ import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.UidGeneratorActor
 import io.reactivecqrs.testdomain.shoppingcart.{AddItemConcurrently, EventsHandlers, ItemAdded, ShoppingCart, ShoppingCartAggregateContext}
-import io.reactivecqrs.testutils.TestDatabase
+import io.reactivecqrs.testkit.{TestCluster, TestDatabase}
 import org.apache.pekko.actor.{ActorRef, ActorSystem, Props}
 import org.apache.pekko.cluster.sharding.ClusterSharding
-import org.apache.pekko.cluster.{Cluster, MemberStatus}
-import org.apache.pekko.testkit.TestKit
+import org.apache.pekko.cluster.Cluster
 
-import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future, blocking}
 
 /** Shopping carts with one owner each in the cluster (D43). An item whose name starts with "slow " takes twelve seconds
@@ -72,53 +69,22 @@ class TestNode(val system: ActorSystem, subscribers: TestNode => Seq[ActorRef] =
   def cartOwners: ActorRef = ClusterSharding(system).shardRegion("owner-" + AggregateType.of[ShoppingCart].typeName)
 }
 
-object TestCluster {
-
-  /** A node's configuration: a cluster on local ports with the split brain resolver, and `extra` on top. */
-  def config(extra: String = ""): Config = ConfigFactory.parseString(
-    s"""pekko.actor.provider = cluster
-       |pekko.remote.artery.canonical { hostname = "127.0.0.1", port = 0 }
-       |pekko.cluster.jmx.multi-mbeans-in-same-jvm = on
-       |pekko.cluster.downing-provider-class = "org.apache.pekko.cluster.sbr.SplitBrainResolverProvider"
-       |pekko.cluster.split-brain-resolver.stable-after = 2s
-       |pekko.coordinated-shutdown.exit-jvm = off
-       |pekko.coordinated-shutdown.run-by-jvm-shutdown-hook = off
-       |pekko.loglevel = WARNING
-       |$extra""".stripMargin).withFallback(ConfigFactory.load())
+/** The carts of the testdomain on nodes of the test kit's cluster (M5): `TestCluster` starts and joins the actor systems,
+  * and each gets a `TestNode` over the test database. */
+object CartCluster {
 
   /** `count` nodes joined into one cluster, every one up; the first is the oldest. `appVersion` and `carts` give a node its
     * `pekko.cluster.app-version` (none: Pekko's 0.0.0) and its carts' context. */
   def start(count: Int, extra: String = "", subscribers: TestNode => Seq[ActorRef] = _ => Nil, appVersion: Int => String = _ => "",
             carts: Int => ShoppingCartAggregateContext = _ => new ShardedCartContext): Vector[TestNode] = {
     TestDatabase.init()
-    val systems = (0 until count).toVector.map(i => ActorSystem("cluster", config(extra + versionLine(appVersion(i)))))
-    val seed = Cluster(systems.head).selfAddress
-    Cluster(systems.head).join(seed)
-    awaitUp(systems.take(1), 1)
-    systems.tail.foreach(system => Cluster(system).join(seed))
-    awaitUp(systems, count)
-    systems.zipWithIndex.map { case (system, i) => new TestNode(system, subscribers, carts(i)) }
+    TestCluster.start(count, extra, appVersion).zipWithIndex.map { case (system, i) => new TestNode(system, subscribers, carts(i)) }
   }
 
   /** `count` more nodes joined to the cluster of `to`, once every one is up. */
   def join(to: TestNode, count: Int, extra: String = "", subscribers: TestNode => Seq[ActorRef] = _ => Nil, appVersion: Int => String = _ => "",
-           carts: Int => ShoppingCartAggregateContext = _ => new ShardedCartContext): Vector[TestNode] = {
-    val systems = (0 until count).toVector.map(i => ActorSystem("cluster", config(extra + versionLine(appVersion(i)))))
-    systems.foreach(system => Cluster(system).join(to.cluster.selfAddress))
-    awaitUp(systems :+ to.system, to.cluster.state.members.size + count)
-    systems.zipWithIndex.map { case (system, i) => new TestNode(system, subscribers, carts(i)) }
-  }
+           carts: Int => ShoppingCartAggregateContext = _ => new ShardedCartContext): Vector[TestNode] =
+    TestCluster.join(to.system, count, extra, appVersion).zipWithIndex.map { case (system, i) => new TestNode(system, subscribers, carts(i)) }
 
-  private def versionLine(version: String): String = if (version.isEmpty) "" else "\npekko.cluster.app-version = \"" + version + "\""
-
-  def awaitUp(systems: Seq[ActorSystem], count: Int): Unit = {
-    val deadline = System.nanoTime() + 30.seconds.toNanos
-    while (!systems.forall(system => Cluster(system).state.members.count(_.status == MemberStatus.Up) == count)) {
-      if (System.nanoTime() > deadline) throw new IllegalStateException(count + " nodes did not come up")
-      Thread.sleep(100)
-    }
-  }
-
-  def stop(nodes: Seq[TestNode]): Unit =
-    nodes.foreach(node => TestKit.shutdownActorSystem(node.system, 30.seconds, verifySystemShutdown = false))
+  def stop(nodes: Seq[TestNode]): Unit = TestCluster.stop(nodes.map(_.system))
 }

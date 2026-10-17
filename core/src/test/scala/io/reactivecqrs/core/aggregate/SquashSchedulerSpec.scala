@@ -6,7 +6,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.aggregate.SquashScheduler._
 import io.reactivecqrs.core.eventstore.{EventA, EventB, MemoryEventStoreState, NewEvents, SomeAggregate}
-import io.reactivecqrs.testutils.CommonSpec
+import io.reactivecqrs.testkit.CommonSpec
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.testkit.TestProbe
 

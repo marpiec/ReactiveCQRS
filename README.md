@@ -76,8 +76,9 @@ The artifacts are published to Neula's Maven repository:
 resolvers += "Neula releases" at "https://nexus.neula.in/repository/neula-releases"
 
 libraryDependencies ++= Seq(
-  "io.reactivecqrs" %% "reactivecqrs-core" % "1.0.0-SNAPSHOT",
-  "ch.qos.logback"  %  "logback-classic"   % "1.5.32" // or any other slf4j backend
+  "io.reactivecqrs" %% "reactivecqrs-core"    % "1.0.0-SNAPSHOT",
+  "io.reactivecqrs" %% "reactivecqrs-testkit" % "1.0.0-SNAPSHOT" % Test, // for your tests
+  "ch.qos.logback"  %  "logback-classic"      % "1.5.32" // or any other slf4j backend
 )
 ```
 
@@ -186,7 +187,7 @@ cluster, one chapter at a time.
 | `api` | The public API a domain author uses: `AggregateContext`, commands, events, results, ids. |
 | `core` | The machinery: owners and command buses, the event store, delivery, projections, rebuilds, sagas, the document store, organizations, the cluster. |
 | `testdomain` | A worked example (shopping carts and more) and the library's end-to-end tests. |
-| `testutils` | Test helpers: a fresh database schema per test run, actor ask helpers. |
+| `testkit` | The test kit, published for your tests: a database schema per test run, the golden test of stored formats, actor systems that run as a cluster of one, several nodes in one JVM, a test clock. |
 | `bench` | The benchmark and load driver (`sbt "bench/run <report-name>"`, reports in [docs/perf](docs/perf/README.md)). Not published. |
 
 ## Building and testing

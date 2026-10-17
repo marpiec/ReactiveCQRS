@@ -5,7 +5,7 @@ import java.util.UUID
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.id.{SagaId, UserId}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
-import io.reactivecqrs.testutils.TestDatabase
+import io.reactivecqrs.testkit.TestDatabase
 import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.must.Matchers
 import scalikejdbc._

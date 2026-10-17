@@ -61,17 +61,17 @@ class RollingUpgradeSpec extends AnyFeatureSpec with Matchers with Eventually wi
     DB.readOnly(implicit s => sql"SELECT to_regclass('projection_rolling_removed_v1') IS NOT NULL".map(_.boolean(1)).single().get)
 
   // Version 1.0.0 first: the oldest node runs the projections, and the carts made now have their owners on these nodes.
-  private val olds = TestCluster.start(2, subscribers = projection(1), appVersion = _ => "1.0.0")
+  private val olds = CartCluster.start(2, subscribers = projection(1), appVersion = _ => "1.0.0")
   private val Vector(oldest, olderToo) = olds
   private val oldCarts = (1 to 4).map(i => create(oldest, "old " + i))
   eventuallyServes()
   // Then version 2.0.0 joins: new shards go only to it (D66).
-  private val news = TestCluster.join(oldest, 2, subscribers = projection(2), appVersion = _ => "2.0.0", carts = _ => new ShardedCartContextV2)
+  private val news = CartCluster.join(oldest, 2, subscribers = projection(2), appVersion = _ => "2.0.0", carts = _ => new ShardedCartContextV2)
 
   private def eventuallyServes(): Unit = eventually(removedProjectionServes mustBe true)
   private val Vector(newer, newest) = news
 
-  override def afterAll(): Unit = TestCluster.stop(olds ++ news)
+  override def afterAll(): Unit = CartCluster.stop(olds ++ news)
 
   private def askFor[T](ref: ActorRef, message: Any): T = Await.result(ref ? message, 30.seconds).asInstanceOf[T]
 

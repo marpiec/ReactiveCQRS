@@ -13,7 +13,7 @@ import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEvent
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
+import io.reactivecqrs.testkit.{CommonSpec, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.testkit.TestProbe
 import scalikejdbc._

@@ -9,7 +9,7 @@ import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.core.types.{PostgresTypesNamesState, TypesNamesState}
 import io.reactivecqrs.core.util.{Backoff, BlockingDispatcher}
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
+import io.reactivecqrs.testkit.{CommonSpec, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.testkit.TestProbe
 import scalikejdbc._

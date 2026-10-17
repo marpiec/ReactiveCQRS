@@ -49,6 +49,42 @@ Code first, so that the examples and the book describe the final API.
 8. **Java 21 bytecode** (D74), once JDK 21 is on the build machine.
 9. **The release**: version `1.0.0`, tag `v1.0.0`; the owner publishes to Nexus.
 
+## The test kit (E11, R20)
+
+What an application's tests get from the library, refined before it is built (17/10/2026). The book
+has promised it since M6 ("a test kit for applications is coming in 1.0").
+
+- **A published module, `reactivecqrs-testkit`** (package `io.reactivecqrs.testkit`): today's
+  `testutils`, whose classes are test-scoped and so not published, renamed, with what an
+  application can use moved to its main sources. It depends on the core module, Pekko's cluster,
+  ScalikeJDBC, the PostgreSQL driver and mpjsons, and not on a test framework: its helpers return
+  values or throw. The library's own ScalaTest base class, `CommonSpec`, stays test-scoped in it.
+- **What it holds:**
+  - `SchemaReference.verify(mpjsons, dir, samples)`: the golden test of stored formats (R20, built in
+    M1), for the application's events, saga orders and responses;
+  - `TestDatabase`: a schema of its own per test run on a PostgreSQL for tests, its address, user and
+    password from system properties (the library's own as defaults), and `inSchema(suffix)` for a
+    second installation;
+  - `TestSystems.newSystem()`: an actor system for a test, a cluster of one when
+    `-Dreactivecqrs.test.clusterOfOne=true`, so an application can run its specs both ways as the
+    library does;
+  - `TestCluster`: several nodes in one JVM (configuration, start, join, wait until up, stop), each
+    node built by the application's own function (R20's multi-node part; the library's own carts
+    stay in its testdomain);
+  - `TestClock`, `TestIds` and `ActorAskSupport` (`??`);
+  - the in-memory doubles stay in the core module, made faithful where tests rely on them (F156).
+- **The second installation:** the import specs compare the projections rebuilt in the target
+  installation with the source's (M6's verification gap), with the source's actors stopped while the
+  pool points to the target.
+
+| Circumstance | What happens | Handled by |
+|---|---|---|
+| An application's suites run in parallel against one database | their tables mix in one schema | a schema per test run, suites one at a time (`concurrentRestrictions`, as this build does); the book says so |
+| `inSchema` while actors of the first installation work | they write into the second | its block runs with them stopped or idle; documented on the method |
+| `TestDatabase` pointed at a database that is not for tests | schemas created there, old `test_run_` ones dropped | only schemas named `test_run_<epoch>_<n>` are dropped; the book says to give it a test database |
+| Several nodes in one JVM | ports, JMX beans and shutdown hooks collide | port 0, `multi-mbeans-in-same-jvm`, coordinated shutdown without exiting the JVM, as `TestCluster` sets them |
+| The rename of `testutils` | the library's specs and docs name it | one mechanical change of the package; no application depended on it, as it was not published |
+
 ## Decisions for the owner
 
 - **F175**: accept that the event key costs about 8 % of the plain write path, as the price of

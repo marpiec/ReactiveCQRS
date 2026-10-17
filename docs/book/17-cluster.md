@@ -522,9 +522,9 @@ A few more rules of the road:
 > described in [ARCHITECTURE.md, section 13.6](../ARCHITECTURE.md) (D65–D73, F132, F138).
 
 > **Remember:** a complete cluster example (three nodes, Kubernetes manifests with the lease) is
-> coming in 1.0. Until then, `TestCluster`, `ShardedOwnersSpec`, `ClusterDeliverySpec` and
+> coming in 1.0. Until then, `CartCluster`, `ShardedOwnersSpec`, `ClusterDeliverySpec` and
 > `RollingUpgradeSpec` in `testdomain/src/test/scala/io/reactivecqrs/testdomain/spec/` show the wiring
-> of every node.
+> of every node, on the test kit's `TestCluster` ([chapter 19](19-testing.md)).
 
 ## What you learned
 

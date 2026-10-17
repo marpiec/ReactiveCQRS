@@ -1,6 +1,6 @@
 package io.reactivecqrs.core.uid
 
-import io.reactivecqrs.testutils.CommonSpec
+import io.reactivecqrs.testkit.CommonSpec
 import org.apache.pekko.actor.Props
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout

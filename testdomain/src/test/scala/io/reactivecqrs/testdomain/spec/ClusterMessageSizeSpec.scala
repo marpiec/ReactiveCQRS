@@ -10,7 +10,7 @@ import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.core.projection.PostgresSubscriptionsState
 import io.reactivecqrs.core.rebuild.{PostgresProjectionRegistry, Projections, ProjectionsSettings}
 import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testutils.TestIds
+import io.reactivecqrs.testkit.TestIds
 import org.apache.pekko.actor.{Actor, ActorRef, ActorSystem, ExtendedActorSystem, Props}
 import org.apache.pekko.cluster.sharding.ShardRegion.{CurrentShardRegionState, GetShardRegionState}
 import org.apache.pekko.pattern.ask
@@ -45,7 +45,7 @@ class ClusterMessageSizeSpec extends AnyFeatureSpec with Matchers with Eventuall
   private val projectionOn = new ConcurrentHashMap[ActorSystem, ActorRef]()
 
   // The projection runs once, on the oldest node; the carts of these scenarios have their owners on the other one.
-  private val nodes = TestCluster.start(2, subscribers = node => {
+  private val nodes = CartCluster.start(2, subscribers = node => {
     val subscriptions = new PostgresSubscriptionsState(node.typesNames).initSchema()
     val projections = new Projections(node.system, ProjectionsSettings(node.eventStore, subscriptions, new PostgresProjectionRegistry().initSchema(),
       Seq(new ShardedCartContext)))
@@ -57,7 +57,7 @@ class ClusterMessageSizeSpec extends AnyFeatureSpec with Matchers with Eventuall
   })
   private val Vector(oldest, other) = nodes
 
-  override def afterAll(): Unit = TestCluster.stop(nodes)
+  override def afterAll(): Unit = CartCluster.stop(nodes)
 
   private def askFor[T](ref: ActorRef, message: Any): T = Await.result(ref ? message, 30.seconds).asInstanceOf[T]
 

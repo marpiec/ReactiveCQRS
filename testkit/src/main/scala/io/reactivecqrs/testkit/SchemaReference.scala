@@ -1,4 +1,4 @@
-package io.reactivecqrs.testutils
+package io.reactivecqrs.testkit
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}

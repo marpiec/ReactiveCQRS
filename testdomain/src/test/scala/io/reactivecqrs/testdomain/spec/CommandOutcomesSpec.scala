@@ -10,7 +10,7 @@ import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{IdsPool, PostgresUidGenerator, UidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
+import io.reactivecqrs.testkit.{CommonSpec, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorIdentity, ActorRef, Identify, Props}
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.testkit.TestProbe

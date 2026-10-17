@@ -69,7 +69,7 @@ class ClusterDeliverySpec extends AnyFeatureSpec with Matchers with Eventually w
   private val projectionOn = new ConcurrentHashMap[ActorSystem, ActorRef]()
   private val sagaOn = new ConcurrentHashMap[ActorSystem, ActorRef]()
 
-  private val nodes = TestCluster.start(3, subscribers = node => {
+  private val nodes = CartCluster.start(3, subscribers = node => {
     val subscriptions = new PostgresSubscriptionsState(node.typesNames).initSchema()
     val registry = new PostgresProjectionRegistry().initSchema()
     val projections = new Projections(node.system, ProjectionsSettings(node.eventStore, subscriptions, registry, Seq(new ShardedCartContext)))
@@ -85,7 +85,7 @@ class ClusterDeliverySpec extends AnyFeatureSpec with Matchers with Eventually w
   })
   private val Vector(nodeA, nodeB, nodeC) = nodes
 
-  override def afterAll(): Unit = TestCluster.stop(nodes)
+  override def afterAll(): Unit = CartCluster.stop(nodes)
 
   private def askFor[T](ref: ActorRef, message: Any): T = Await.result(ref ? message, 30.seconds).asInstanceOf[T]
 

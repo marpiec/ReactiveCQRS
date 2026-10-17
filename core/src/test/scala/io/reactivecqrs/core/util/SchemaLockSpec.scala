@@ -9,7 +9,7 @@ import io.reactivecqrs.core.projection.PostgresSubscriptionsState
 import io.reactivecqrs.core.rebuild.PostgresProjectionRegistry
 import io.reactivecqrs.core.saga.{PostgresSagaSchemaInitializer, PostgresSagaState}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
-import io.reactivecqrs.testutils.TestDatabase
+import io.reactivecqrs.testkit.TestDatabase
 import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.must.Matchers
 

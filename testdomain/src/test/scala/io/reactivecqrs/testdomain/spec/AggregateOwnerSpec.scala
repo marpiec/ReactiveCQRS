@@ -11,7 +11,7 @@ import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
 import io.reactivecqrs.core.eventstore.MemoryEventStoreState
 import io.reactivecqrs.core.uid.{MemoryUidGenerator, UidGeneratorActor}
-import io.reactivecqrs.testutils.{CommonSpec, TestIds}
+import io.reactivecqrs.testkit.{CommonSpec, TestIds}
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout

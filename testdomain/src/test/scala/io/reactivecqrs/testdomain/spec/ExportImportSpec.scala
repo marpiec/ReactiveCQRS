@@ -14,7 +14,7 @@ import io.reactivecqrs.core.space.SpaceFormat.{ExportHeader, ExportedAggregate, 
 import io.reactivecqrs.core.space.{SpaceExport, SpaceFormat, SpaceImport}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
+import io.reactivecqrs.testkit.{CommonSpec, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorRef, PoisonPill, Props}
 import scalikejdbc._
 

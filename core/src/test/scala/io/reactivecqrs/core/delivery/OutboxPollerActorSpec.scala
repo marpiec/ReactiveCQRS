@@ -7,7 +7,7 @@ import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.delivery.OutboxPollerActor.{GetOutboxStatus, OutboxStatus, Poll}
 import io.reactivecqrs.core.eventbus.EventsBusActor.Republish
 import io.reactivecqrs.core.eventstore.{MemoryEventStoreState, WaitingInOutbox}
-import io.reactivecqrs.testutils.{CommonSpec, TestIds}
+import io.reactivecqrs.testkit.{CommonSpec, TestIds}
 import org.apache.pekko.actor.Props
 import org.apache.pekko.testkit.TestProbe
 

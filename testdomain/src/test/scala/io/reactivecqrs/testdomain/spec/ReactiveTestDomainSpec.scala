@@ -17,7 +17,7 @@ import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.core.util.BlockingDispatcher
 import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.{CreateMultipleCarts, MultipleCartCreatorSagaResponse}
 import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCartAggregateContext, _}
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
+import io.reactivecqrs.testkit.{CommonSpec, TestDatabase}
 
 import scala.util.Try
 

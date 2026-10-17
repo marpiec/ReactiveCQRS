@@ -1,19 +1,18 @@
-package io.reactivecqrs.testutils
+package io.reactivecqrs.testkit
 
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.actor.ActorRef
 import org.apache.pekko.util.Timeout
-import org.scalatest.Assertions
 
 import scala.concurrent.Await
 import scala.concurrent.duration._
 
-
+/** `actor ?? message`: asks and waits up to 10 seconds for the answer, as the type the caller expects. */
 trait ActorAskSupport {
   implicit def toActorRefForTest(actor: ActorRef): ActorAsk = new ActorAsk(actor)
 }
 
-class ActorAsk(actor: ActorRef) extends Assertions {
+class ActorAsk(actor: ActorRef) {
 
   val timeout = Timeout(10.seconds)
 

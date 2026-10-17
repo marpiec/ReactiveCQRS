@@ -4,7 +4,7 @@ import io.mpjsons.MPJsons
 import org.scalatest._
 import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.must.Matchers
-import io.reactivecqrs.testutils.TestDatabase
+import io.reactivecqrs.testkit.TestDatabase
 import scalikejdbc._
 
 case class Label(name: String)

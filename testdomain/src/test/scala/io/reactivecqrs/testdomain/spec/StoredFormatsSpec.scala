@@ -7,7 +7,7 @@ import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 import io.reactivecqrs.api.{AggregateVersion, FailureResponse, SuccessResponse}
 import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.CreateMultipleCarts
 import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testutils.SchemaReference
+import io.reactivecqrs.testkit.SchemaReference
 import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.must.Matchers
 

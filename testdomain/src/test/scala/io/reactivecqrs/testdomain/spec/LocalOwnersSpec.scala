@@ -40,7 +40,7 @@ class LocalOwnersSpec extends AnyFeatureSpec with Matchers with GivenWhenThen wi
 
   // A subscriber of the carts' events on each node's bus, in the nodes' order.
   private val subscribers = mutable.Buffer[TestProbe]()
-  private val nodes = TestCluster.start(2, subscribers = node => {
+  private val nodes = CartCluster.start(2, subscribers = node => {
     val subscriber = TestProbe()(node.system)
     subscriber.setAutoPilot((sender: ActorRef, message: Any) => {
       message match {
@@ -54,7 +54,7 @@ class LocalOwnersSpec extends AnyFeatureSpec with Matchers with GivenWhenThen wi
   }, carts = _ => new LocalCartContext)
   private val Vector(nodeA, nodeB) = nodes
 
-  override def afterAll(): Unit = TestCluster.stop(nodes)
+  override def afterAll(): Unit = CartCluster.stop(nodes)
 
   private def askFor[T](ref: ActorRef, message: Any): T = Await.result(ref ? message, 30.seconds).asInstanceOf[T]
 

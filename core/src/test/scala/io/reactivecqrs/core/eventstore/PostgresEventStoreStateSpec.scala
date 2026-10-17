@@ -8,7 +8,7 @@ import io.reactivecqrs.api.{AggregateSquashedException, AggregateType, Aggregate
 import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 import io.reactivecqrs.core.commandhandler.PostgresCommandResponseState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
-import io.reactivecqrs.testutils.TestDatabase
+import io.reactivecqrs.testkit.TestDatabase
 import scalikejdbc._
 
 import scala.concurrent.ExecutionContext.Implicits.global

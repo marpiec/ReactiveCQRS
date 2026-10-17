@@ -1,4 +1,4 @@
-package io.reactivecqrs.testutils
+package io.reactivecqrs.testkit
 
 import java.time.{Clock, Instant, ZoneId, ZoneOffset}
 

@@ -11,7 +11,7 @@ import io.reactivecqrs.core.projection.SubscribableProjectionActor.{CancelProjec
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import org.scalatest.{BeforeAndAfter, GivenWhenThen}
 import org.scalatest.featurespec.AnyFeatureSpecLike
-import io.reactivecqrs.testutils.TestDatabase
+import io.reactivecqrs.testkit.TestDatabase
 import scalikejdbc.DBSession
 
 import scala.concurrent.duration._

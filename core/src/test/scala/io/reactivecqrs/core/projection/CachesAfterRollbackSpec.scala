@@ -5,7 +5,7 @@ import io.reactivecqrs.api.AggregateVersion
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.documentstore.{InCache, MapDocumentStoreCache, Note, PostgresDocumentStore, VersionedDocument}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
-import io.reactivecqrs.testutils.TestDatabase
+import io.reactivecqrs.testkit.TestDatabase
 import org.scalatest.GivenWhenThen
 import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.must.Matchers

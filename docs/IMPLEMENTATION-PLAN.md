@@ -2170,3 +2170,13 @@ Open test-infrastructure items:
 - Each document's space is kept as the `space_id` column keeps it (set at the insert, kept after), and
   `clearSpace` removes that space's documents, in both memory stores. `MemoryDocumentStoreSpec`
   "F156", red before the fix. Book: chapters 16 and 19. The first piece of the test kit (E11).
+
+**17/10/2026: the test kit, published (E11, R20)**
+- `testutils` became `testkit` (`reactivecqrs-testkit`, package `io.reactivecqrs.testkit`), with what
+  an application's tests can use in its main sources, published: `TestDatabase` (its database from
+  `-Dreactivecqrs.test.url`, `.user`, `.password`, the library's as defaults; a URL with parameters
+  takes the schema too), `SchemaReference`, `TestSystems` (a cluster of one on request), `TestCluster`
+  (nodes in one JVM, each built by the application: R20's multi-node part), `TestClock`, `TestIds`,
+  `ActorAskSupport` (without ScalaTest). No test framework in it; the library's `CommonSpec` stays in
+  its test sources. The testdomain's harness is `CartCluster`, on `TestCluster`. Design: M7-release.md,
+  "The test kit". Book: chapters 2, 17, 19 and appendix C; README.

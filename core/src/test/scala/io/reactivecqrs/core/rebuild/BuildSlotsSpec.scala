@@ -1,7 +1,7 @@
 package io.reactivecqrs.core.rebuild
 
 import io.reactivecqrs.core.rebuild.ProjectionSupervisor.{BuildSlotGranted, ReleaseBuildSlot, RequestBuildSlot}
-import io.reactivecqrs.testutils.CommonSpec
+import io.reactivecqrs.testkit.CommonSpec
 import org.apache.pekko.actor.Props
 import org.apache.pekko.testkit.TestProbe
 

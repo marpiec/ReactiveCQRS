@@ -10,7 +10,7 @@ import io.reactivecqrs.core.eventstore.MemoryEventStoreState
 import io.reactivecqrs.core.uid.{MemoryUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testdomain.spec.AggregateOwnerSpec._
-import io.reactivecqrs.testutils.CommonSpec
+import io.reactivecqrs.testkit.CommonSpec
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout

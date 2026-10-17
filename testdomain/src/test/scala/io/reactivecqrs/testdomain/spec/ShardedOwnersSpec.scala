@@ -29,10 +29,10 @@ class ShardedOwnersSpec extends AnyFeatureSpec with Matchers with Eventually wit
   implicit private val timeout: Timeout = Timeout(30.seconds)
 
   // Three nodes; the last one leaves in the last scenario. Owners idle for 5 s are passivated by their shards.
-  private val nodes = TestCluster.start(3, "pekko.cluster.sharding.passivation.default-idle-strategy.idle-entity.timeout = 5s")
+  private val nodes = CartCluster.start(3, "pekko.cluster.sharding.passivation.default-idle-strategy.idle-entity.timeout = 5s")
   private val Vector(nodeA, nodeB, nodeC) = nodes
 
-  override def afterAll(): Unit = TestCluster.stop(nodes)
+  override def afterAll(): Unit = CartCluster.stop(nodes)
 
   private def askFor[T](ref: ActorRef, message: Any): T = Await.result(ref ? message, 30.seconds).asInstanceOf[T]
 

@@ -1,4 +1,4 @@
-package io.reactivecqrs.testutils
+package io.reactivecqrs.testkit
 
 import java.sql.{Connection, DriverManager}
 import java.util.concurrent.ThreadLocalRandom
@@ -6,17 +6,22 @@ import java.util.concurrent.ThreadLocalRandom
 import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
 
 /**
-  * The local PostgreSQL database used by the PostgreSQL-backed specs. Each test run gets its own schema, so results
-  * never depend on what earlier runs left behind, and every run also creates the schema from scratch. Schemas of runs
-  * older than six hours are dropped. `-Dreactivecqrs.test.schema=<name>` uses (and keeps) a fixed schema instead.
+  * The PostgreSQL database for tests that use the store: each test run gets its own schema, so results never depend on
+  * what earlier runs left behind, and every run also creates the schema from scratch. Schemas of runs older than six
+  * hours are dropped, and only they: `test_run_<epoch>_<n>`. `-Dreactivecqrs.test.schema=<name>` uses (and keeps) a
+  * fixed schema instead. The database is `-Dreactivecqrs.test.url`, `.user` and `.password`, by default the library's
+  * own (`reactivecqrs` on `localhost:5432`, user and password `reactivecqrs`): a database for tests only. Suites that
+  * share it run one at a time, as their tables are one schema's.
   */
 object TestDatabase {
 
-  private val url = "jdbc:postgresql://localhost:5432/reactivecqrs"
-  private val user = "reactivecqrs"
-  private val password = "reactivecqrs"
+  private val url = sys.props.getOrElse("reactivecqrs.test.url", "jdbc:postgresql://localhost:5432/reactivecqrs")
+  private val user = sys.props.getOrElse("reactivecqrs.test.user", "reactivecqrs")
+  private val password = sys.props.getOrElse("reactivecqrs.test.password", "reactivecqrs")
 
   private val runSchemaPrefix = "test_run_"
+
+  private def inSchemaUrl(name: String): String = url + (if (url.contains("?")) "&" else "?") + "currentSchema=" + name
   private val keepRunSchemasSeconds = 6 * 3600L
 
   /** The schema of this run (one per test module, since each module loads this object on its own). */
@@ -32,7 +37,7 @@ object TestDatabase {
     } finally {
       connection.close()
     }
-    ConnectionPool.singleton(url + "?currentSchema=" + schema, user, password,
+    ConnectionPool.singleton(inSchemaUrl(schema), user, password,
       ConnectionPoolSettings(initialSize = 5, maxSize = 20, connectionTimeoutMillis = 3000L))
   }
 
@@ -61,7 +66,7 @@ object TestDatabase {
     val other = schema + "_" + suffix
     val connection = DriverManager.getConnection(url, user, password)
     try connection.createStatement().execute("CREATE SCHEMA IF NOT EXISTS " + other) finally connection.close()
-    ConnectionPool.singleton(url + "?currentSchema=" + other, user, password, settings)
-    try block finally ConnectionPool.singleton(url + "?currentSchema=" + schema, user, password, settings)
+    ConnectionPool.singleton(inSchemaUrl(other), user, password, settings)
+    try block finally ConnectionPool.singleton(inSchemaUrl(schema), user, password, settings)
   }
 }

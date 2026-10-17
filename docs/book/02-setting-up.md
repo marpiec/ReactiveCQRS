@@ -31,7 +31,7 @@ CREATE DATABASE reactivecqrs OWNER reactivecqrs;
 ```
 
 These are the very names the library's own test suite expects: a database `reactivecqrs` on
-`localhost:5432`, with user and password `reactivecqrs` (see `TestDatabase` in the `testutils`
+`localhost:5432`, with user and password `reactivecqrs` (see `TestDatabase` in the `testkit`
 module). So this one database serves your experiments and, whenever you like, a run of the
 library's tests. For your real application, pick your own names and a password nobody can guess.
 

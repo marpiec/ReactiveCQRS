@@ -15,7 +15,7 @@ import io.reactivecqrs.core.uid.{IdsPool, PostgresUidGenerator, UidGenerator, Ui
 import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.{CartsCreated, CreateMultipleCarts}
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.core.util.Backoff
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
+import io.reactivecqrs.testkit.{CommonSpec, TestDatabase}
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.testkit.TestProbe
 import scalikejdbc._
