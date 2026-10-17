@@ -1197,8 +1197,9 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Found:** writing the book (M6, 17/10/2026).
 
 #### F153 — `ServeStale` holds only for builds begun when the supervisor starts
-- **Low**, confirmed (by reading) · **Fix in M7** · `ProjectionSupervisor`
+- **Low**, confirmed (red first) · **Fixed in M7** (17/10/2026; `ProjectionsSpec` "F153") · `ProjectionSupervisor`
 - **Symptom:** for a `RebuildProjection` at run time the active instance is already subscribed and keeps taking live events; after a restart during that build it serves stale.
+- **Fix:** with `ServeStale`, a build begun at run time removes the active instance from the buses after the new build joined them, and tells it `ServeUnchanged`: it answers the deliveries still on their way without applying them and asks for no missing versions.
 - **Found:** writing the book (M6, 17/10/2026).
 
 ### Code structure
@@ -1283,7 +1284,7 @@ From §7 of Neula's change requests.
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔, F174 ✔; F155 decided (review 8) |
-| M7 | AR5 (moved from M5 at review 7); F148 ✔, F152 ✔, F153, F156, F157, F160 ✔, F161, F162 ✔, F163, F164 ✔, F165, F166 ✔, F169 ✔ (found writing the book), F170, F171, F173, F175 |
+| M7 | AR5 (moved from M5 at review 7); F148 ✔, F152 ✔, F153 ✔, F156, F157, F160 ✔, F161, F162 ✔, F163, F164 ✔, F165, F166 ✔, F169 ✔ (found writing the book), F170, F171, F173, F175 |
 
 ---
 

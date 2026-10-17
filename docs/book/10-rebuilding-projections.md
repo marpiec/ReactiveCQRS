@@ -241,7 +241,8 @@ deployed version 2. So what about the events that arrive meanwhile? You choose, 
 - **`ServeStale`**: the active build answers from its tables as they are, and takes no events until
   the switch. Choose it when the new code cannot work on the old documents. Say version 3 stores a
   `CartSummary(name, itemsCount)` instead of a `String`: version 3's code cannot read version 2's
-  rows.
+  rows. It holds for every build: one a new version starts, and one you ask for with
+  `RebuildProjection` while the application runs.
 
 ```scala
 projections.start[CartNames]("cart-names", 3, "cartNames", whileBuilding = ServeStale) { build => ... }

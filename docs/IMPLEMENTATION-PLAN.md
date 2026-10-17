@@ -2116,3 +2116,9 @@ Open test-infrastructure items:
   targeted rebuild's) and answers `Waiting` or `NoBuild` without one; `GetBuilds` gives the
   building record with the position the builder saved in the registry. `ProjectionsSpec` "F152",
   red before the fix (the ask went unanswered). Book: chapters 10 and 18, appendix B; SCALING §10.
+
+**17/10/2026: F153, ServeStale for a build begun at run time**
+- With `ServeStale`, a `RebuildProjection` removes the active instance from the buses after the new
+  build joined them, and tells it `ServeUnchanged` (deliveries on their way answered unapplied, no
+  gap requests), as a start during a build leaves it unsubscribed. `ProjectionsSpec` "F153", red
+  before the fix. Book: chapter 10.

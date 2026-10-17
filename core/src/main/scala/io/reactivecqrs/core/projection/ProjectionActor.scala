@@ -50,6 +50,10 @@ case object Activate
 /** The instance's build is retired (D57): its push subscriptions go to `successor`, its parked queries are answered with
   * `None`, and it stops. */
 case class Retire(successor: Option[ActorRef])
+/** The instance serves its tables unchanged while a new build replaces it (`ServeStale` for a build begun at run time,
+  * F153): it was removed from the buses, answers the deliveries still on their way without applying them, and asks for
+  * no missing versions, until a `ConnectedTo` connects it again. */
+case object ServeUnchanged
 
 /** What a targeted rebuild covers (D63, R14): one aggregate, one aggregate type, or one organization's aggregates. */
 sealed trait RebuildTarget
@@ -374,7 +378,13 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     case BindSubscriber(subscriber) => boundSubscriber = Some(subscriber)
     case ConnectedTo(bus) =>
       eventBus = Some(bus)
+      unchanged = false
       loadFailures()
+    case ServeUnchanged =>
+      unchanged = true
+      eventBus = None
+      forget(queues.keys.map(_.aggregateId).toSet)
+      failuresToRetry = Vector.empty
     case Activate =>
       if (!activated) {
         activated = true
@@ -514,6 +524,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   private var failuresToRetry = Vector[Key]()
   private var purged = PurgedIds.empty // R17
   private var eventBus: Option[ActorRef] = None
+  private var unchanged = false // F153: ServeUnchanged
   private var failuresLoaded = false
   private var building: Option[ActorRef] = None // the builder, while the projection is built from the store (D57)
   private var drainTokens = 0
@@ -532,6 +543,9 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       log.warning("Projection " + projectionName + " received a delivery without events for aggregate " + key.aggregateId.asLong)
     } else if (purged.contains(key.aggregateId, System.nanoTime())) {
       // R17: the aggregate's organization was purged; a delivery still on its way writes nothing.
+      delivery.respondTo ! MessageAck(self, key.aggregateId, delivery.versions, key.kind)
+    } else if (unchanged) {
+      // F153: the new build, subscribed before this one left, takes it.
       delivery.respondTo ! MessageAck(self, key.aggregateId, delivery.versions, key.kind)
     } else if (building.isDefined && !removesAggregate(key, delivery)) {
       // D57: the builder reads these events from the store, the bulk pass or the reconciliation after GoLive.

@@ -433,6 +433,32 @@ class ProjectionsSpec extends CommonSpec {
       node.stop()
     }
 
+    Scenario("a build begun at run time with ServeStale leaves the active build unchanged until the switch, as one begun at a start does (F153)") {
+      Given("build 1 live, serving stale while it is built again")
+      var supervisor: ActorRef = null
+      val node = new Node(settings = BuilderSettings(pageSize = 1, chunkEvents = 1))(projections => {
+        supervisor = notesProjection(projections, "m4p-stale", 1, "m4p_stale", whileBuilding = ServeStale, buildDelayMillis = 30); Seq(supervisor)
+      })
+      val note = node.create("note", "one")
+      switchedTo(supervisor, 1)
+      awaitAssert(linesOf(supervisor, note) mustBe Some(NoteLines("note", Vector("one"))), 10.seconds)
+      (1 to 100).foreach(i => node.create("filler " + i))
+
+      When("a rebuild starts at run time, and the note changes meanwhile")
+      supervisor.askActor[RebuildStarted](RebuildProjection)(5.seconds).build mustBe 2
+      node.send(AddBuildNoteLine(userId, note, AggregateVersion(2), "two"))
+
+      Then("the active build does not take the change while the new one builds")
+      Thread.sleep(1000)
+      linesOf(supervisor, note) mustBe Some(NoteLines("note", Vector("one")))
+      builds(supervisor).building.map(_.number) mustBe Some(2)
+
+      And("the new build has it once it took over")
+      switchedTo(supervisor, 2)
+      awaitAssert(linesOf(supervisor, note) mustBe Some(NoteLines("note", Vector("one", "two"))), 10.seconds)
+      node.stop()
+    }
+
     Scenario("a projection 0.12 built is adopted with its tables and subscription rows, not built again (D81)") {
       Given("a projection run unmanaged, as by 0.12, with its version recorded by the 0.12 rebuild")
       val legacyStore = new PostgresDocumentStore[NoteLines]("m4p_legacy", mpjsons, new NoopDocumentStoreCache)

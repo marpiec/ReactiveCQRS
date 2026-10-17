@@ -558,7 +558,16 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       building = Some(b)
       log.info("Projection " + spec.name + " is built again on request (build " + b.record.number + ")")
       connect()
+      if (spec.whileBuilding == ServeStale) serveUnchanged()
       sender() ! RebuildStarted(b.record.number)
+  }
+
+  // F153: as when a start finds a build in progress, the active build serves its tables unchanged while the new one is
+  // built. It leaves the buses after the new build joined them (connect), so every event has a subscriber that takes it.
+  private def serveUnchanged(): Unit = active.filter(_.subscribed).foreach { a =>
+    buses.keys.foreach(_ ! RemoveSubscriber(a.ref))
+    a.ref ! ServeUnchanged
+    active = Some(a.copy(subscribed = false))
   }
 
   private def terminated(ref: ActorRef): Unit = if (buses.contains(ref) || unanswered.contains(ref)) busEnded(ref) else {

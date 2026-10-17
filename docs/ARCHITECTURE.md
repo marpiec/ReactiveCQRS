@@ -1209,7 +1209,9 @@ once the bus runs), puts the build in progress into `BuildFromStore`, and runs i
 other message goes to the instance that **serves**: the active build, or a new projection's
 first build, which serves while it is built. While a new version builds, the active build keeps
 applying live events with the current code (`ServeLive`, so parked queries keep working) or
-serves its tables unchanged (`ServeStale`).
+serves its tables unchanged (`ServeStale`). For a build begun at run time (`RebuildProjection`)
+the active instance, subscribed already, leaves the buses once the new build joined them, and
+answers the deliveries still on their way unapplied (`ServeUnchanged`, F153).
 
 **The switch.** When the builder reports `BuildCaughtUp` and the build has no failed
 subscription (else it is checked again every 30 s; `ToBuildInProgress` reaches its instance for
