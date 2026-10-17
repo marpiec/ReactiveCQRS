@@ -54,12 +54,12 @@ node A                                         node B
 ## Order of the work
 
 1. **Spike** (done): the cluster modules, `ClusterBehaviourSpec`.
-2. **Schema lock (D69, F63)**: every schema initialization (the components' `initSchema()` and
+2. **Schema lock (D69, F63)** (done): every schema initialization (the components' `initSchema()` and
    the document stores' tables) runs one process at a time, under a PostgreSQL advisory lock held
    on a connection of its own, so nodes that start together no longer fail on concurrent DDL. The
    heavy jobs stay separate calls (`buildIndexesConcurrently`, `backfillSpaces`); readiness checks
    the schema (D71, step 7). Needed first: in-JVM nodes start together.
-3. **Serialization (D45, D68)**: one mpjsons-based serializer for every library message and the
+3. **Serialization (D45, D68)** (done): one mpjsons-based serializer for every library message and the
    domain's commands, events, states and query answers; round-trip tests.
 4. **Sharded owners (D43, D72; F46, F99)** with the in-JVM multi-node harness.
 5. **Delivery in the cluster and singletons (D44, D46, D53–D55; F48)**: registration through
@@ -89,6 +89,13 @@ follows.
   snapshot written; the shard keeps the messages that arrive meanwhile for the next owner (what
   the bus's kept messages did). Idle passivation uses the shard's strategy, which replaces the
   bus's keep-alive sweep (F46).
+- **Only the shard keeps messages for a stopping owner**, so every stop goes through it. The
+  shard's own stops (hand-off, idle passivation) send `StopOwner`. A stop the bus asks for (an
+  operator's `PassivateAggregate`, a history change) reaches the owner through the region as a
+  request, which the owner turns into `Passivate(StopOwner)` to its shard (marking itself stale
+  first when the history changed); the shard then keeps what arrives and sends `StopOwner`
+  back. A failed restore asks the same way (D11). An owner started only to receive a stop stops
+  without restoring.
 - **A stop must not write a stale snapshot.** A stale stop (`HistoryChanged`: a rewrite, a
   squash's detach) sent while the owner is already passivating is kept by the shard for the next
   owner, so the old one could write the old state at an unchanged version. Snapshot writes are
@@ -156,16 +163,20 @@ So:
 - **The application's values** (commands, events, states, saga orders and responses, query
   messages and answers) go by their runtime class through mpjsons, as stored events do. A
   top-level `Option`, collection or `Try` carries each element's class.
-- **Library messages that mpjsons cannot type** (the generic deliveries, envelopes with `Any`,
-  `ActorRef`s, `Try` replies, `CustomSuccessResponse[INFO]`) have wire forms of their own: each
-  polymorphic value as its class name with its JSON, an `ActorRef` as its serialized path.
-  Sealed library hierarchies (`DeliveryKind`, `SubscribeRequest`, `RebuildTarget`,
-  `SquashResponse`) by name.
-- **Tolerant reading** (D68): a message reader of its own with `ignoreNonExistingFields`; a field
-  added to a message must be an `Option` or accept its zero value, and an incompatible change
-  gets a new class. Stored events keep the strict reader.
+- **Library messages**, which mpjsons cannot type (the generic deliveries, envelopes with `Any`,
+  `ActorRef`s, `Try` replies, `CustomSuccessResponse[INFO]`), are written field by field with
+  the fields' names, each value tagged: an `ActorRef` as its serialized path, a polymorphic value
+  as its runtime class with its JSON, a case object (`DeliveryKind`, `RebuildTarget`, ...) by
+  name, tuples by position.
+- **Tolerant reading** (D68): a library message is matched by field name (a field the reader
+  lacks is skipped, a missing one takes its Scala default, else `None`, zero or null); the
+  application's JSON is read with `ignoreNonExistingFields`. A field added to a message must be
+  an `Option` or have a default (or accept its zero value), and a changed field type gets a new
+  class. Stored events keep the strict reader.
 - **Exceptions**: the library's own by class with their fields; any other as
-  `RemoteFailure(className, message)`.
+  `RemoteFailure(className, message)`. Pekko binds `java.lang.Throwable` to Java serialization,
+  so the library's exceptions get bindings of their own and keep their class inside a
+  `Status.Failure` too.
 - `SubscriptionType` gets value equality, as a deserialized copy must match the constants.
 
 ## Ids (D39)

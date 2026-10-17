@@ -1495,3 +1495,38 @@ Open test-infrastructure items:
 - Build: the core module gains `pekko-cluster`, `-cluster-sharding`, `-cluster-tools` and
   `-coordination` (1.7.1).
 - `sbt test`: core 220, testdomain 122, all pass.
+
+**17/10/2026: cluster serialization (D45, D68)**
+- `cluster/ClusterSerializer`, bound to `java.io.Serializable` in core's `reference.conf` (Java
+  serialization stays off), is the one serializer of the messages between nodes. Library
+  messages go field by field with their names: an `ActorRef` as its serialized path, a
+  polymorphic field as its runtime class with its JSON (F64), case objects by name, tuples by
+  position. The application's values go as the mpjsons JSON of their runtime class. The
+  library's exceptions keep their class and fields and have bindings of their own, as Pekko
+  binds `java.lang.Throwable` to Java serialization (a `Status.Failure` reply would bring them as
+  `ThrowableNotSerializableException`); any other exception arrives as a `RemoteFailure` with its
+  class name and its message as it was.
+- Tolerant reading (D68): a library message is matched by field name (a field the reader lacks is
+  skipped, a missing one takes its Scala default, else `None`, zero or null), so a library
+  upgrade may add a field with a default in a rolling upgrade; the application's JSON is read
+  with `ignoreNonExistingFields`. A changed field type fails the message (a new class). A message
+  defined inside a class (an actor's own) is refused on the sending node.
+- `SubscriptionType` has value equality: a deserialized copy must equal the constants.
+- Tests: `ClusterSerializationSpec` (testdomain) round-trips the messages of every conversation
+  that crosses nodes (the command bus and owners with the routed queries, the bus and its
+  subscribers, the questions and answers of projections, supervisors, the poller and the
+  scheduler, the application's values, exceptions also inside `Status.Failure`), checks which
+  serializer is chosen and tolerant JSON reading, and sends messages with refs through a second
+  node; `ClusterSerializerSpec` (core) reads messages that another version wrote. Mutations
+  caught: no binding, refs read as dead letters, strict reading, the first exception codec,
+  names never matching, no defaults, no exception bindings, the prefixed remote message, no
+  check on the sender.
+- An exploratory run of the testdomain suites with `pekko.actor.serialize-messages = on` (actors'
+  own messages passed through by a temporary patch): no message that crosses nodes failed;
+  `ResetForRebuild` (a function) and a test's own message did, both local by design. It showed
+  that a `RemoteFailure`'s message carried its class name, which callers comparing messages
+  would see: the class name is a field of its own now. Not a standing setting, as actors' own
+  messages would need markers; the multi-node tests of the next steps send the real traffic.
+- Build: testdomain and bench kept a cached resolution without core's new cluster modules;
+  deleting their `target/scala-2.13/update` refreshed it.
+- `sbt test`: core 224, testdomain 130, all pass.

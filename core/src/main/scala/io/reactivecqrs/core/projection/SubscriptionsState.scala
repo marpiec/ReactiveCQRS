@@ -14,7 +14,15 @@ import scala.jdk.CollectionConverters._
 
 class OptimisticLockingFailed(message: String) extends Exception(message)
 
-class SubscriptionType(val id: Short)
+/** A kind of subscription; equal by its id, so one read from another node is the same kind. */
+class SubscriptionType(val id: Short) extends Serializable {
+  override def equals(other: Any): Boolean = other match {
+    case that: SubscriptionType => that.id == id
+    case _ => false
+  }
+  override def hashCode(): Int = id.toInt
+  override def toString: String = "SubscriptionType(" + id + ")"
+}
 
 object SubscriptionType {
   val AGGREGATES = new SubscriptionType(1)

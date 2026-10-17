@@ -31,7 +31,9 @@ unless the path says `api/` or `testdomain/`).
 | `PostgresEventStoreState.scala`, `PostgresEventStoreSchemaInitializer.scala`, `EventStoreState.scala` | `eventstore/` |
 | `EventsBusActor.scala` | `eventbus/` |
 | `UidGeneratorActor.scala`, `IdPool.scala` (ids from pools fetched ahead, M3) | `uid/` |
-| `BlockingDispatcher.scala` (F27) and `reference.conf` (`reactivecqrs.blocking-dispatcher`) | `util/`, `core/src/main/resources/` |
+| `BlockingDispatcher.scala` (F27) and `reference.conf` (`reactivecqrs.blocking-dispatcher`, the serializer's bindings) | `util/`, `core/src/main/resources/` |
+| `ClusterSerializer.scala` (with `ClusterSerialization` and `RemoteFailure`, M5) | `cluster/` |
+| `SchemaLock.scala` (one schema initialization at a time, F63) | `util/` |
 | `SequenceGate.scala`, `RedeliveryPolicy.scala`, `OutboxPollerActor.scala`, `Republish.scala` (the delivery module, M2) | `delivery/` |
 | `OutboxDeletes.scala` (batched outbox deletes) | `eventstore/` |
 | `Backoff.scala` (retry waits, AR6) | `util/` |
@@ -1125,3 +1127,63 @@ on the live path (F93), so a projection that cannot keep up lets its backlog gro
 | Rebuild logic | `rebuild/ProjectionBuilder` (phases, chunks, reconciliation), `ReplayStates`, `Projections` (`ProjectionSupervisor`, `BuildSlots`), `ProjectionRegistry` | a build must deliver what live delivery delivers (undone events and undos included, D60); the switch is one update; a retired build's tables, versions and failures go together (F94) |
 | Idempotency rules | `commandhandler/Idempotency.scala`, `CommandResponseState` | the response is written in the persist transaction (I2); a taken key and a version conflict both answer with the stored response |
 | Retries and timeouts | `util/Backoff`; `AggregateOwner` (concurrent retries, command timeout), `SagaActor` (write retries), `ProjectionActor` (listener retries), `RedeliveryPolicy`, `PostgresDocumentStore.updateWithRetries` | bounded everywhere; the document-store retry runs inside the listener transaction and must stay immediate (AR6) |
+| New message between nodes | `cluster/ClusterSerializer` (library classes by field name, the application's values through mpjsons, exceptions), the bindings in `reference.conf` | no functions, futures or mutable state in a message that leaves its node; a field added to a library message is an `Option` or has a default, a changed field type needs a new class (D68); a library exception keeps its class only with a field codec and a binding of its own |
+
+---
+
+## 13. The cluster (M5)
+
+M5 runs the library on a Pekko cluster (design: `docs/design/M5-cluster.md`); this section grows
+with that work.
+
+### 13.1 Messages between nodes (D45, D68)
+
+`cluster/ClusterSerializer` is the one serializer of the messages between nodes. `reference.conf`
+binds it to `java.io.Serializable`, so every case class and Scala collection that Pekko has no
+more specific serializer for comes to it (Pekko keeps `Some`, `None`, `Status`, `ActorRef` and its
+own messages); Java serialization stays off. The manifest is the class name; the payload is one
+value, each part written with a tag that says what it is:
+
+- scalars, `Instant`, `UUID`, `BigDecimal`; an `ActorRef` as its serialized path with its node's
+  address, resolved on the reading node;
+- `Option`, `Try`, lists, sets, maps, other sequences (read back as vectors) and tuples, element
+  by element;
+- the library's case classes (`io.reactivecqrs.api.*`, `io.reactivecqrs.core.*`) field by field
+  with the fields' names, rebuilt through their constructor, so a field typed `Any`, a type
+  parameter or an `ActorRef` keeps its value, which mpjsons, typing by the declared type, could
+  not (F64); case objects by name;
+- the library's exceptions that callers match on (`AggregateInIncorrectVersionException` and the
+  others) with their fields. Pekko binds exceptions to Java serialization, so they have bindings
+  of their own and keep their class inside a `Status.Failure` too. Any other exception arrives as
+  a `RemoteFailure` with its class name and message (inside a `Status.Failure`, as Pekko's
+  `ThrowableNotSerializableException`);
+- anything else, the application's commands, events, states, saga orders and responses, query
+  messages and answers, as the JSON of its runtime class through mpjsons, as stored events are.
+  `ClusterSerialization(system).mpjsons` is the instance; a host that registers converters of
+  its own sets one configured the same way.
+
+Reading is tolerant (D68), so nodes of two versions talk during a rolling upgrade. A library
+message is matched by field name: a field the reader does not have is skipped, one it lacks takes
+its Scala default, else `None`, zero or null. The application's JSON is read with
+`ignoreNonExistingFields` (a missing field reads as zero, null or `None`). A field whose type
+changed fails the message; such a change needs a new class. Stored events keep their strict
+reader.
+
+Messages that carry functions (`ResetForRebuild`, `SubscriptionsHandedOver`) stay inside one
+singleton, and an actor's own messages, defined inside its class, hold its instance: neither can
+cross nodes, and the serializer refuses them on the sending node. An exploratory run of the
+testdomain suites with `pekko.actor.serialize-messages = on` found no other message that cannot
+(M5); it is not a standing setting, as those local messages would need markers.
+
+`ClusterSerializationSpec` (testdomain) round-trips the messages of each conversation and sends
+some through a second node; `ClusterSerializerSpec` (core) reads messages that another version
+wrote.
+
+### 13.2 Schema initialization (F63, D69)
+
+Every `initSchema()` and every document store's table creation runs under `util/SchemaLock`: a
+PostgreSQL advisory lock (`pg_try_advisory_lock` on a number of the library's own) held on a
+connection of its own, so processes that start together initialize the schema one at a time
+instead of failing on concurrent DDL. It is reentrant on a thread, as one initialization may
+start another, and gives up after five minutes. The heavy jobs (`buildIndexesConcurrently`,
+`backfillSpaces`) stay separate calls.
