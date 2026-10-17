@@ -103,9 +103,11 @@ class EventsBusActorSpec extends CommonSpec {
 
     Scenario("asks a subscriber again every tick until it answers: an ask can be lost on the way (M5)") {
       val a = TestProbe()
-      newBus() ! RegisterSubscribers(Seq(a.ref))
+      val bus = newBus()
+      bus ! RegisterSubscribers(Seq(a.ref))
       a.expectMsg(GetSubscriptionRequests(a.ref))
       a.expectMsg(1.second, GetSubscriptionRequests(a.ref))
+      system.stop(bus) // it would ask, and warn, every tick for the rest of the run
     }
   }
 
