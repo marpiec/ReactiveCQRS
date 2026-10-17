@@ -2187,3 +2187,9 @@ Open test-infrastructure items:
   (`TestDatabase.inSchema`) where one of its ids is taken, builds the same projection there, and
   compares: the same documents under the moved ids, and the target's own folder untouched. Each
   installation's projection actors stop, waited for, before the pool points elsewhere.
+
+**17/10/2026: the design of the examples and of the book's code**
+- `docs/design/M7-release.md`, "The examples and the book's code": an `examples` module (one package
+  per example, a runnable `main` and a spec each), the book's code blocks marked with the example
+  region they show and checked by `BookSnippetsSpec` (or written from the regions on request), E1
+  first, E4 after the decision on AR5.

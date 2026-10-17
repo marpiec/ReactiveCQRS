@@ -85,6 +85,34 @@ has promised it since M6 ("a test kit for applications is coming in 1.0").
 | Several nodes in one JVM | ports, JMX beans and shutdown hooks collide | port 0, `multi-mbeans-in-same-jvm`, coordinated shutdown without exiting the JVM, as `TestCluster` sets them |
 | The rename of `testutils` | the library's specs and docs name it | one mechanical change of the package; no application depended on it, as it was not published |
 
+## The examples and the book's code (E1–E11)
+
+Refined before they are written (17/10/2026).
+
+- **An `examples` module**, not published, depending on `api`, `core` and the test kit (in its tests):
+  one package per example (`io.reactivecqrs.examples.e1` ...), each with a runnable `main` that
+  sets up what a host sets up and prints what it does, and a spec that runs the same code against
+  the test database and checks its outcome. The examples run in `sbt test` with the other suites, one
+  at a time, both as a single node and as a cluster of one.
+- **The book's code comes from the examples.** A region of an example source between `// #name` and
+  `// #name` is a snippet; a code block in the book preceded by
+  `<!-- snippet: e1/BasicSetup.scala#setup -->` must be that region, character for character after
+  the region's indentation is removed. `BookSnippetsSpec` checks every such block and fails naming
+  the chapter and the snippet; with `-Dreactivecqrs.book.write=true` it writes the regions into the
+  book instead, so a change to an example is carried over by one run and reviewed in the diff. Code
+  blocks without a marker are fragments that illustrate one call (a message, a configuration line);
+  a block a reader would copy to run is a snippet.
+- **Order:** E1 first (it fixes the shape every example follows), then the examples of the chapters
+  in the book's order. E4 (sagas) waits for the decision on AR5; E2's Docker and Kubernetes files
+  are written and read, and run where Docker is.
+
+| Circumstance | What happens | Handled by |
+|---|---|---|
+| An example changes and its chapter does not | a reader copies code that no longer is the example | `BookSnippetsSpec` fails in `sbt test` until the chapter is written again |
+| A snippet region is renamed or removed | its marker in the book names nothing | the spec fails naming the marker |
+| Examples share the test database with the suites | their aggregates and projections mix with the specs' | each example names its own tables and takes its ids from the pools; the specs never count all rows |
+| An example's `main` run by a reader | it needs PostgreSQL and the connection settings | each `main` reads them like `TestDatabase` (system properties, the library's defaults) and says so when it cannot connect |
+
 ## Decisions for the owner
 
 - **F175**: accept that the event key costs about 8 % of the plain write path, as the price of
