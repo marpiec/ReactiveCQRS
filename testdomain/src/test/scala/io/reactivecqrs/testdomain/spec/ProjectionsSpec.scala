@@ -7,7 +7,7 @@ import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCo
 import io.reactivecqrs.core.documentstore.{Document, DocumentStore, NoopDocumentStoreCache, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
-import io.reactivecqrs.core.eventstore.PostgresEventStoreState
+import io.reactivecqrs.core.eventstore.{AggregateScope, EventStoreState, PostgresEventStoreState, StoredAggregate}
 import io.reactivecqrs.core.projection.SubscribableProjectionActor.{SubscribedForProjectionUpdates, SubscriptionUpdated}
 import io.reactivecqrs.core.projection._
 import io.reactivecqrs.core.rebuild.ProjectionBuilder.BuilderSettings
@@ -68,6 +68,59 @@ class ManagedNoteEvents(val subscriptionsState: SubscriptionsState, store: Docum
 /** The same projection, of a class of its own: the class names the subscriptions of a projection 0.12 built. */
 class LegacyNotes(subscriptionsState: SubscriptionsState, store: DocumentStore[NoteLines]) extends ManagedNotes(subscriptionsState, store, shout = false)
 
+/** The store, but a listing of space 77 in pages of 1 000 (a targeted rebuild's) waits after its last page, the empty one,
+  * while `armed`: it counts `listed` down, then waits for `resume`. */
+class PausingListing(mpjsons: MPJsons, typesNamesState: PostgresTypesNamesState) extends PostgresEventStoreState(mpjsons, typesNamesState) {
+   var armed = false
+  val listed = new java.util.concurrent.CountDownLatch(1)
+  val resume = new java.util.concurrent.CountDownLatch(1)
+  override def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int, scope: AggregateScope): Seq[StoredAggregate] = {
+    val page = super.aggregatesOf(types, after, limit, scope)
+    if (armed && limit == 1000 && page.isEmpty && scope == AggregateScope.InSpace(io.reactivecqrs.api.id.SpaceId(77))) {
+      armed = false
+      listed.countDown()
+      resume.await(10, java.util.concurrent.TimeUnit.SECONDS)
+    }
+    page
+  }
+}
+
+case class MemoText(text: String)
+case class GetMemoText(id: AggregateId)
+
+/** Each memo's text, from its events; a memo deleted for good loses its document. */
+class MemoTexts(val subscriptionsState: SubscriptionsState, store: DocumentStore[MemoText]) extends ProjectionActor {
+  protected val listeners = List(EventsListener[Memo] { (id, events) => implicit session =>
+    events.foreach(_.event match {
+      case MemoWritten(text) => store.insertDocument(0, id.asLong, MemoText(text))
+      case _: MemoErased => store.removeDocument(id.asLong)
+      case _ => ()
+    })
+  })
+  override protected def receiveQuery: Receive = {
+    case GetMemoText(id) => sender() ! store.getDocument(id.asLong).map(_.document)
+  }
+  override protected val projectionName: String = "MemoTexts"
+}
+
+case class GetNoteLog(id: AggregateId)
+
+/** Every version of each note; a line "stop" makes the instance stop itself, as a fatal error would. */
+class StoppingNotes(val subscriptionsState: SubscriptionsState, store: DocumentStore[NoteLog], stopped: java.util.concurrent.CountDownLatch) extends ProjectionActor {
+  protected val listeners = List(EventsListener[BuildNote] { (id, events) => implicit session =>
+    store.updateDocument(0, id.asLong, existing => Document(NoteLog(existing.map(_.document.entries).getOrElse(Vector()) ++ events.map(_.version.asInt.toString))))
+    if (events.exists(_.event == BuildNoteLineAdded("stop"))) context.stop(self)
+  })
+  override def postStop(): Unit = {
+    super.postStop()
+    stopped.countDown()
+  }
+  override protected def receiveQuery: Receive = {
+    case GetNoteLog(id) => sender() ! store.getDocument(id.asLong).map(_.document)
+  }
+  override protected val projectionName: String = "StoppingNotes"
+}
+
 class BuildNoteContextV2 extends BuildNoteContext {
   override val version: Int = 2
 }
@@ -89,12 +142,12 @@ class ProjectionsSpec extends CommonSpec {
   private var systems = 0
 
   /** One system on a node: an event bus, a command bus of notes and the managed projections `start` makes. */
-  private class Node(context: AggregateContext[BuildNote] = new BuildNoteContext, settings: BuilderSettings = BuilderSettings(pageSize = 20, chunkEvents = 10))
-                    (start: Projections => Seq[ActorRef]) {
+  private class Node(context: AggregateContext[BuildNote] = new BuildNoteContext, settings: BuilderSettings = BuilderSettings(pageSize = 20, chunkEvents = 10),
+                     registryOf: ProjectionRegistry = registry, storeOf: EventStoreState = eventStore)(start: Projections => Seq[ActorRef]) {
     systems += 1
     val bus: ActorRef = system.actorOf(Props(new EventsBusActor()), "m4p-bus-" + systems)
     val notes: ActorRef = system.actorOf(AggregateCommandBusActor(context, uidGenerator, eventStore, responses, bus))
-    val projections = new ProjectionsOf(new Projections(system, ProjectionsSettings(eventStore, subscriptions, registry, bus, Seq(context), settings,
+    val projections = new ProjectionsOf(new Projections(system, ProjectionsSettings(storeOf, subscriptions, registryOf, bus, Seq(context), settings,
       restartAfter = 1.second)), systems)
     val supervisors: Seq[ActorRef] = start(projections.runtime)
     bus ! RegisterSubscribers(supervisors)
@@ -185,12 +238,148 @@ class ProjectionsSpec extends CommonSpec {
       second.stop()
     }
 
+    Scenario("a registry that fails at the switch: the switch is tried again, and the projection goes on taking events (AR7)") {
+      Given("a registry whose first switch fails")
+      val failing = new PostgresProjectionRegistry {
+        private val failures = new java.util.concurrent.atomic.AtomicInteger(1)
+        override def switch(name: String, build: Int): Boolean =
+          if (failures.getAndDecrement() > 0) throw new IllegalStateException("database unavailable") else super.switch(name, build)
+      }
+      var supervisor: ActorRef = null
+      val node = new Node(registryOf = failing)(projections => { supervisor = notesProjection(projections, "m4p-flaky", 1, "m4p_flaky"); Seq(supervisor) })
+      val note = node.create("note", "one")
+
+      Then("it switches at a later try, and events after it reach the projection")
+      switchedTo(supervisor, 1)
+      node.send(AddBuildNoteLine(userId, note, AggregateVersion(2), "two"))
+      awaitAssert(linesOf(supervisor, note) mustBe Some(NoteLines("note", Vector("one", "two"))), 10.seconds)
+      node.stop()
+    }
+
+    Scenario("a build whose instance cannot start leaves the active build serving and taking events, and starts again (F110)") {
+      Given("version 1, built and live")
+      var v1: ActorRef = null
+      val first = new Node()(projections => { v1 = notesProjection(projections, "m4p-broken", 1, "m4p_broken"); Seq(v1) })
+      val note = first.create("note", "one")
+      switchedTo(v1, 1)
+      first.stop()
+
+      When("version 2 starts, and its build's instance fails to start until its store is repaired")
+      val repaired = new java.util.concurrent.atomic.AtomicBoolean(false)
+      val attempts = new java.util.concurrent.atomic.AtomicInteger(0)
+      var v2: ActorRef = null
+      val second = new Node()(projections => {
+        v2 = projections.start[ManagedNotes]("m4p-broken", 2, "m4p-broken-" + systems) { build =>
+          if (build.number > 1 && attempts.incrementAndGet() > 0 && !repaired.get()) throw new IllegalStateException("its store cannot be made")
+          new ManagedNotes(subscriptions, new PostgresDocumentStore[NoteLines](build.documentStore("m4p_broken"), mpjsons, new NoopDocumentStoreCache), shout = build.version > 1)
+        }
+        Seq(v2)
+      })
+
+      Then("version 1 serves, and takes events, while the build fails and is tried again")
+      awaitAssert(attempts.get() must be >= 2, 10.seconds, 10.millis)
+      second.send(AddBuildNoteLine(userId, note, AggregateVersion(2), "two"))
+      awaitAssert(linesOf(v2, note) mustBe Some(NoteLines("note", Vector("one", "two"))), 10.seconds, 20.millis)
+
+      And("version 2 is built once its store is repaired, and takes over")
+      repaired.set(true)
+      switchedTo(v2, 2)
+      awaitAssert(linesOf(v2, note) mustBe Some(NoteLines("note", Vector("ONE", "TWO"))), 10.seconds)
+      second.stop()
+    }
+
+    Scenario("an instance that stops by itself loses no event: what it did not take stays in the outbox (F110, I3)") {
+      Given("a projection, live, of two notes")
+      val stopped = new java.util.concurrent.CountDownLatch(1)
+      var supervisor: ActorRef = null
+      val node = new Node()(projections => {
+        supervisor = projections.start[StoppingNotes]("m4p-stopping", 1, "m4p-stopping-" + systems) { build =>
+          new StoppingNotes(subscriptions, new PostgresDocumentStore[NoteLog](build.documentStore("m4p_stopping"), mpjsons, new NoopDocumentStoreCache), stopped)
+        }
+        Seq(supervisor)
+      })
+      val (a, c) = (node.create("a"), node.create("c"))
+      switchedTo(supervisor, 1)
+      def logOf(id: AggregateId): Option[NoteLog] = supervisor.askActor[Option[NoteLog]](GetNoteLog(id))(5.seconds)
+      awaitAssert(logOf(c) mustBe Some(NoteLog(Vector("1"))), 10.seconds)
+
+      When("its instance stops by itself, and an event of the other note is stored while it starts again")
+      node.send(AddBuildNoteLine(userId, a, AggregateVersion(1), "stop"))
+      stopped.await(10, java.util.concurrent.TimeUnit.SECONDS) mustBe true
+      node.send(AddBuildNoteLine(userId, c, AggregateVersion(1), "late"))
+
+      Then("once a new instance serves, that event is either applied or still waits in the outbox")
+      awaitAssert(logOf(a).map(_.entries) mustBe Some(Vector("1", "2")), 10.seconds)
+      (logOf(c).exists(_.entries.contains("2")) || eventStore.oldestVersionToPublish(c).contains(AggregateVersion(2))) mustBe true
+
+      And("the projection gets it with the note's next event, from its owner")
+      node.send(AddBuildNoteLine(userId, c, AggregateVersion(2), "next"))
+      awaitAssert(logOf(c) mustBe Some(NoteLog(Vector("1", "2", "3"))), 10.seconds)
+      node.stop()
+    }
+
+    Scenario("an aggregate deleted for good while a projection is built is not left in the new build (F111)") {
+      Given("memos stored before the projection exists, and its build delivering them slowly")
+      val memoContext = new MemoContext
+      val bus = system.actorOf(Props(new EventsBusActor()))
+      val memos = system.actorOf(AggregateCommandBusActor(memoContext, uidGenerator, eventStore, responses, bus))
+      def send(command: AnyRef): Unit = memos.askActor[CustomCommandResponse[_]](command)(10.seconds) mustBe a[SuccessResponse]
+      val ids = (1 to 60).map(_ => AggregateId(System.nanoTime()))
+      ids.foreach(id => send(WriteMemo(userId, id, "memo " + id.asLong)))
+      val firstEvent = DB.readOnly(implicit s => sql"SELECT id FROM events WHERE aggregate_id = ${ids.head.asLong}".map(_.long(1)).single().get)
+      val runtime = new Projections(system, ProjectionsSettings(eventStore, subscriptions, registry, bus, Seq(memoContext),
+        BuilderSettings(pageSize = 1, chunkEvents = 1), restartAfter = 1.second))
+      val supervisor = runtime.start[MemoTexts]("m4p-memos", 1, "m4p-memos") { build =>
+        new MemoTexts(subscriptions, new PostgresDocumentStore[MemoText](build.documentStore("m4p_memos"), mpjsons, new NoopDocumentStoreCache))
+      }
+      bus ! RegisterSubscribers(Seq(supervisor))
+      awaitAssert(registry.projection("m4p-memos").get.building.exists(_.position.position >= firstEvent) mustBe true, 30.seconds, 5.millis)
+
+      When("the first memo, which the build has, is deleted for good")
+      send(EraseMemo(userId, ids.head, AggregateVersion(1)))
+
+      Then("once built, the projection does not have it, and the memo is deleted")
+      switchedTo(supervisor, 1)
+      awaitAssert(supervisor.askActor[Option[MemoText]](GetMemoText(ids.head))(5.seconds) mustBe None, 10.seconds)
+      supervisor.askActor[Option[MemoText]](GetMemoText(ids.last))(5.seconds) mustBe Some(MemoText("memo " + ids.last.asLong))
+      awaitAssert(DB.readOnly(implicit s => sql"SELECT count(*) FROM events WHERE aggregate_id = ${ids.head.asLong}".map(_.int(1)).single().get) mustBe 0, 10.seconds)
+      Seq(supervisor, bus, memos).foreach(system.stop)
+    }
+
+    Scenario("a build retired before a stop let it be dropped is dropped at the next start (F116)") {
+      Given("a projection whose registry switched to another build, stopped before the old one was dropped")
+      var first: ActorRef = null
+      val node = new Node()(projections => { first = notesProjection(projections, "m4p-orphan", 1, "m4p_orphan"); Seq(first) })
+      val note = node.create("note", "x")
+      switchedTo(first, 1)
+      awaitAssert(linesOf(first, note).isDefined mustBe true, 10.seconds)
+      val orphan = registry.projection("m4p-orphan").get.active.get
+      node.stop()
+      registry.startBuild("m4p-orphan", 1, Map.empty)
+      registry.switch("m4p-orphan", 2) mustBe true
+      tableExists("projection_m4p_orphan_v1") mustBe true
+      subscriptions.hasSubscriptions(orphan.subscriber) mustBe true
+
+      When("the projection starts again")
+      var again: ActorRef = null
+      val next = new Node()(projections => { again = notesProjection(projections, "m4p-orphan", 1, "m4p_orphan"); Seq(again) })
+      awaitAssert(builds(again).active.map(_.number) mustBe Some(2), 10.seconds)
+
+      Then("the retired build's tables, versions and registry row are gone")
+      awaitAssert(tableExists("projection_m4p_orphan_v1") mustBe false, 10.seconds)
+      subscriptions.hasSubscriptions(orphan.subscriber) mustBe false
+      registry.builds("m4p-orphan").map(_.number) mustBe Seq(2)
+      next.stop()
+    }
+
     Scenario("a build continues after a stop from the position it saved") {
       Given("many notes, and a build stopped midway")
+      val writer = new Node()(_ => Nil)
+      val ids = (1 to 20).map(n => writer.create("note " + n, "line"))
+      writer.stop()
       var built: ActorRef = null
       val slow = BuilderSettings(pageSize = 2, chunkEvents = 2)
       val first = new Node(settings = slow)(projections => { built = notesProjection(projections, "m4p-resume", 1, "m4p_resume"); Seq(built) })
-      val ids = (1 to 20).map(n => first.create("note " + n, "line"))
       awaitAssert(registry.projection("m4p-resume").get.building.exists(_.position.position > 0) mustBe true, 30.seconds, 20.millis)
       first.stop()
       val stoppedAt = registry.projection("m4p-resume").get.building.get.position
@@ -322,6 +511,45 @@ class ProjectionsSpec extends CommonSpec {
       Then("only organization 7's document is rebuilt")
       linesOf(supervisor, seven) mustBe Some(NoteLines("seven", Vector("x")))
       linesOf(supervisor, eight) mustBe Some(NoteLines("damaged", Vector()))
+      node.stop()
+    }
+
+    Scenario("a targeted rebuild keeps an aggregate made while its target is listed (F112)") {
+      Given("notes of organization 77, live, and a listing of the organization that waits after its first page")
+      val pausing = new PausingListing(mpjsons, typesNamesState)
+      var supervisor: ActorRef = null
+      val node = new Node(storeOf = pausing)(projections => { supervisor = notesProjection(projections, "m4p-race", 1, "m4p_race"); Seq(supervisor) })
+      val first = node.createIn(77, "first", "a")
+      switchedTo(supervisor, 1)
+      awaitAssert(linesOf(supervisor, first).isDefined mustBe true, 10.seconds)
+      pausing.armed = true
+      val requester = TestProbe()
+      requester.send(supervisor, RebuildAggregates(RebuildTarget.OneSpace(io.reactivecqrs.api.id.SpaceId(77))))
+      pausing.listed.await(10, java.util.concurrent.TimeUnit.SECONDS) mustBe true
+
+      When("a note of the organization is made while the listing waits")
+      val made = try {
+        val made = node.createIn(77, "made", "b")
+        scala.util.Try(awaitAssert(linesOf(supervisor, made).isDefined mustBe true, 2.seconds)) // applied meanwhile, unless the projection lists
+        made
+      } finally pausing.resume.countDown()
+
+      Then("once the rebuild ends, the note is there with its line, as is the first")
+      requester.expectMsgType[AggregatesRebuilt](30.seconds)
+      awaitAssert(linesOf(supervisor, made) mustBe Some(NoteLines("made", Vector("b"))), 10.seconds)
+      linesOf(supervisor, first) mustBe Some(NoteLines("first", Vector("a")))
+      node.stop()
+    }
+
+    Scenario("an organization is not rebuilt while aggregates of its types have no space (F49, F112)") {
+      var supervisor: ActorRef = null
+      val node = new Node()(projections => { supervisor = notesProjection(projections, "m4p-no-space", 1, "m4p_no_space"); Seq(supervisor) })
+      val note = node.createIn(5, "five", "x")
+      switchedTo(supervisor, 1)
+      DB.autoCommit(implicit s => sql"UPDATE aggregates SET space_id = -1 WHERE id = ${note.asLong}".update())
+      try {
+        supervisor.askActor[RebuildRefused](RebuildAggregates(RebuildTarget.OneSpace(io.reactivecqrs.api.id.SpaceId(5))))(10.seconds).reason must include("backfillSpaces")
+      } finally DB.autoCommit(implicit s => sql"UPDATE aggregates SET space_id = 5 WHERE id = ${note.asLong}".update())
       node.stop()
     }
 

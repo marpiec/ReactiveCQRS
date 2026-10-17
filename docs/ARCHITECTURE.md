@@ -612,7 +612,10 @@ bus (F79).
 subscriptions of a build it starts later (`AddSubscriptions`) and removes those of a build it
 retires (`RemoveSubscriber`, answered with `SubscriberRemoved`): the deliveries that waited for
 a removed subscriber end for it, and one it was the last to answer acknowledges its owner, so no
-outbox row waits for a retired build (unlike a subscriber that stops, whose rows stay).
+outbox row waits for a retired build (unlike a subscriber that stops, whose rows stay). An
+instance that stopped by itself is removed only once its replacement is subscribed, and with
+`keepOutbox = true`: its deliveries end as a stopped subscriber's do, so their rows stay in the
+outbox and are published again to the replacement (F110).
 
 **Re-publish requests.** `RequestRepublish(subscriber, type, id, from)` from a subscriber
 with a gap or a retry goes to the type's command bus as `RepublishRange(id, from,
@@ -730,7 +733,8 @@ retrying, waitingForGap)`. `RetryFailedSubscription(id)` asks the owner for each
 version again, repeated like a gap, and clears the failure once a batch reaches that version
 (F88); `RetryAllFailedSubscriptions` does it for every failure, 20 per second
 (`failureRetryInterval`); `SkipFailedVersion(id)` marks each failed version as applied without
-applying it and asks once for the versions after it. Failures recorded before a start are
+applying it, from the version the subscription has (below the one before the failure when it
+failed at a squash start, F113), and asks once for the versions after it. Failures recorded before a start are
 loaded when the bus registers the projection and retried the same way
 (`retryFailuresOnStart`).
 
@@ -756,15 +760,19 @@ store can feed it directly, through the same gate, failure records and status:
   retry.
 - `BuildFromStore(builder)`: while the projection is built (D57), deliveries from the bus are
   acknowledged without being applied, as the builder reads their events from the store, and
-  missing versions are asked from the builder instead of the owner. `GoLive` ends that, retries
-  the failures recorded meanwhile, and is answered with `ProjectionLive`.
+  missing versions are asked from the builder instead of the owner. A delivery that removes its
+  aggregate (a permanent delete event, or no state for a state listener) is applied through the
+  gate even then: a permanent delete takes the events out of the store once every subscriber
+  has it, so no builder could give it later (F111). `GoLive` ends that, retries the failures
+  recorded meanwhile, and is answered with `ProjectionLive`.
 
 **Managed by a supervisor** (M4, §8.2). `BindSubscriber(subscriber)` gives the instance its
 build's subscriber identity (otherwise its class name); `ConnectedTo(bus)` tells it the bus that
 delivers to it (it then retries the failures recorded before, as at a start). `rebuilding` is
 true from `BuildFromStore` until `Activate`, when the built instance starts to serve and
-`onActivated()` runs: a listener with side effects checks it, as the events it is given then are
-history. `Retire(successor)` ends a retired build's instance: `onRetired(successor)` runs (a
+`onActivated()` runs, and whenever a listener applies what a builder gives a live instance (a
+targeted rebuild's chunks and handed-over items, F114): a listener with side effects checks it,
+as the events it is given then are history. `Retire(successor)` ends a retired build's instance: `onRetired(successor)` runs (a
 `SubscribableProjectionActor` hands its push subscriptions over, with their filters, which must
 not use the old build's stores), parked queries are answered with `None`, and it stops.
 
@@ -812,9 +820,9 @@ ack and dedup machinery.
 
 Read models are stored as JSONB documents in `projection_<name>` tables (`space_id`, `id`,
 `version`, `document`), with optional indexes on JSON paths created at start-up. The table and
-its column migrations are made in one transaction (F43). A name whose table or index names
-would pass PostgreSQL's 63 characters (which it would cut silently) is refused at once; a
-managed projection's tables carry their build's suffix (§8.2).
+its column migrations are made in one transaction (F43). A name whose table name, or the name of
+one of its indexes, would pass PostgreSQL's 63 characters (which it would cut silently) is
+refused at once (F118); a managed projection's tables carry their build's suffix (§8.2).
 
 - **Optimistic updates.** `updateDocument` and `updateExistingDocument` read the document
   (from the cache or the table), apply `modify` and write the next version
@@ -842,7 +850,9 @@ listener transaction. An unknown subscription is at version zero.
 `lastVersions(subscriber, subscriptionType, ids, cache)` reads many aggregates' versions in
 one query for those not cached: a group of live deliveries caches them (`cache = true`, with
 every subscriber's versions of each aggregate, as `lastVersion` does); a builder's chunks and
-pages leave the cache alone, so a build does not push out what live delivery needs.
+pages leave the cache alone, so a build does not push out what live delivery needs. A read
+that fills the cache is not cached when a commit changed the aggregate's versions while it ran:
+it may have missed that change (F115).
 
 **One mode** (since M4, F3): the database is the source of truth. `newVersion` INSERTs when
 `last == 0`, otherwise `UPDATE … WHERE aggregate_version = last` with a rowcount check, in the
@@ -978,24 +988,41 @@ to the new instance, its parked queries are answered with `None`) and stops; the
 subscription versions and failures are dropped (F94). `GetBuilds` reports the builds.
 
 **Failures.** A builder that stops before it caught up is started again after `restartAfter`
-(10 s) and continues from the saved position; an instance that stops (its stores could not be
-made) makes the supervisor leave the bus with every instance and start again after
-`restartAfter`. `Projections.retire(name)` drops every build of a projection removed from the
-code.
+(10 s) and continues from the saved position; a store that fails for a moment (a lost
+connection, a restart) is read again, and only what cannot be read at all fails a subscription
+(F117). An instance that stops by itself is replaced after `restartAfter` (F110): the build
+in progress alone, while the active build serves on (D57); the active one with every other
+instance, the supervisor starting again. The bus keeps the stopped instances as stopped
+subscribers until their replacements are subscribed, so what they did not take stays in the
+outbox and is published again to the replacements; then they leave it without acknowledging.
+Each child has a name of its own, and a supervisor holds or awaits one build slot at most. The
+supervisor itself never restarts (AR7): a message it fails on (the registry
+or the store unavailable) is logged and answered with `Status.Failure`, as a restart would
+stop its instances and leave the new ones unsubscribed (the bus asks once). A switch that
+fails in the registry is tried again after `restartAfter`; a context check or a targeted rebuild
+the registry could not record waits for the next start. A retired build loses its subscription
+versions and failures before its registry row, and a supervisor drops at its start every build
+of its projection that is neither active nor in progress, so a stop between a switch and the
+drop leaves nothing behind (F116). `Projections.retire(name)` drops every build the registry has
+of a projection removed from the code.
 
 **Targeted rebuild** (D63, R14). `RebuildAggregates(target)` rebuilds in place, on the active
 build, what the projection derived from one aggregate (`OneAggregate`), one of its aggregate types
-(`OneType`) or one organization (`OneSpace`, by `aggregates.space_id`). The supervisor lists the
-target's aggregates, records the target in the registry (a rebuild a stop interrupted runs again
-at the next start), and sends the active instance `ResetForRebuild`: in one transaction the
-projection's `clearForRebuild(target)` removes what it derived (a document, a space's documents)
-and its versions and failures of those aggregates are reset (`SubscriptionsState.resetVersions`).
+(`OneType`) or one organization (`OneSpace`, by `aggregates.space_id`). The supervisor records the
+target in the registry (a rebuild a stop interrupted runs again at the next start), and sends
+the active instance `ResetForRebuild`. The projection lists the target's aggregates then, once
+it applied every delivery taken before, so one made meanwhile is either listed or delivered after
+the reset (F112); in one transaction its `clearForRebuild(target)` removes what it derived (a
+document, a space's documents) and its versions and failures of those aggregates are reset
+(`SubscriptionsState.resetVersions`); the deliveries waiting for them are acknowledged, as the
+builder gives their events again.
 A builder scoped to the target (`AggregateScope.Only` or `InSpace`; no `BuildFromStore`, no
 `GoLive`, as the instance stays live) then delivers their events in commit order and reconciles
 them; live events of those aggregates meanwhile find a gap and are asked from their owners, and
 the gate drops what comes twice. The answer is `AggregatesRebuilt(target, count)`. A projection
 that does not implement `clearForRebuild` refuses (`RebuildRefused`), as does one with a build in
-progress.
+progress, and an organization is not rebuilt while aggregates of the projection's types have no
+space yet.
 
 **Spaces of legacy aggregates** (F49, D38). Rows of `aggregates` from before the `space_id`
 column have `-1`. `PostgresEventStoreState.backfillSpaces(spaceOf)` gives them the space of their

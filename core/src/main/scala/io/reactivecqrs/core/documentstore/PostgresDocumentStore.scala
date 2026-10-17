@@ -28,7 +28,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
   protected val tableNameSQL = SQLSyntax.createUnsafely(projectionTableName)
 
   // PostgreSQL cuts longer names silently, so two tables or indices could get one name, and an index id would be lost.
-  private val longestName = projectionTableName + "_idx_" + indicies.map(_.uniqueId).maxOption.getOrElse(0)
+  private val longestName = (projectionTableName +: indicies.map(index => projectionTableName + "_idx_" + index.uniqueId)).maxBy(_.length)
   if (longestName.length > 63) {
     throw new IllegalArgumentException("Table name " + tableName + " is too long: " + longestName + " has more than 63 characters")
   }

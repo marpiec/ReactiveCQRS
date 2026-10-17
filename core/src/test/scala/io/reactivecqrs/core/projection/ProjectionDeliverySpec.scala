@@ -18,6 +18,7 @@ case class GateNote(text: String)
 case class GateNoteChanged(n: Int) extends Event[GateNote]
 
 case object GetApplied
+case object GetRebuildingSeen
 case object FailingQuery
 
 /** Records what its listeners applied; fails for an aggregate as many times as `failures` says. */
@@ -25,6 +26,7 @@ class RecordingProjection(val subscriptionsState: SubscriptionsState, options: P
                           failures: ConcurrentHashMap[AggregateId, AtomicInteger], slowMillis: Int = 0) extends ProjectionActor(options) {
 
   @volatile private var applied = Vector[(String, AggregateId, Seq[Int])]()
+  @volatile private var rebuildingSeen = Vector[(AggregateId, Boolean)]()
 
   private def failIfAsked(id: AggregateId): Unit =
     Option(failures.get(id)).filter(_.getAndDecrement() > 0).foreach(_ => throw new IllegalStateException("listener failed on " + id.asLong))
@@ -33,7 +35,10 @@ class RecordingProjection(val subscriptionsState: SubscriptionsState, options: P
     EventsListener.noDBSession[GateNote] { (id, events) =>
       if (slowMillis > 0) Thread.sleep(slowMillis)
       failIfAsked(id)
-      synchronized(applied :+= (("events", id, events.map(_.version.asInt))))
+      synchronized {
+        applied :+= (("events", id, events.map(_.version.asInt)))
+        rebuildingSeen :+= id -> rebuilding
+      }
     },
     AggregateListener.noDBSession[GateNote] { (id, version, created, note) =>
       synchronized(applied :+= (("state", id, Seq(version.asInt, if (created) 1 else 0, note.map(_.text.length).getOrElse(-1)))))
@@ -41,8 +46,12 @@ class RecordingProjection(val subscriptionsState: SubscriptionsState, options: P
 
   override protected def receiveQuery: Receive = {
     case GetApplied => sender() ! synchronized(applied)
+    case GetRebuildingSeen => sender() ! synchronized(rebuildingSeen)
     case FailingQuery => throw new IllegalStateException("query failed")
   }
+
+  // It keeps nothing of its own to clear.
+  override protected def clearForRebuild(target: RebuildTarget)(implicit session: scalikejdbc.DBSession): Unit = ()
 
   override protected val projectionName: String = "RecordingProjection"
 }
@@ -242,6 +251,29 @@ class ProjectionDeliverySpec extends CommonSpec {
       f.applied("events") mustBe Seq(a -> Seq(1, 2))
     }
 
+    Scenario("a chunk is history to the listeners of a live projection: rebuilding is true while they apply it (F114)") {
+      val f = new Fixture
+      val (a, b) = (newId(), newId())
+
+      f.chunk(1, eventsItem(a, 1)) mustBe ChunkApplied(1, Nil, 0)
+      f.events(b, 1)
+      f.acked(b)
+
+      f.projection.askActor[Vector[(AggregateId, Boolean)]](GetRebuildingSeen)(3.seconds) mustBe Vector(a -> true, b -> false)
+    }
+
+    Scenario("a reset for a targeted rebuild answers the deliveries waiting for its aggregates, which the builder gives again") {
+      val f = new Fixture
+      val id = newId()
+      f.events(id, 3)
+      f.requestedFrom(id) mustBe 1
+
+      f.builder.send(f.projection, ResetForRebuild(RebuildTarget.OneAggregate(id), () => Seq(id)))
+
+      f.builder.expectMsg(3.seconds, ResetForRebuildDone(1))
+      f.acked(id) mustBe Seq(3)
+    }
+
     Scenario("GoLive retries the subscriptions that failed while the projection was built") {
       val f = new Fixture
       val id = newId()
@@ -405,6 +437,21 @@ class ProjectionDeliverySpec extends CommonSpec {
       f.requestedFrom(id) mustBe 2
       f.state.lastVersion(classOf[RecordingProjection].getName, SubscriptionType.EVENTS, id) mustBe AggregateVersion(1)
       f.applied("events") mustBe empty
+    }
+
+    Scenario("SkipFailedVersion also skips a failure at the squash event a subscription starts at (F113)") {
+      val f = new Fixture
+      val id = newId()
+      f.failTimes(id, 100)
+      f.bus.send(f.projection, IdentifiableEvents[GateNote](noteType, id, Seq(7, 8).map(v =>
+        EventInfo[GateNote](AggregateVersion(v), GateNoteChanged(v), UserId(1), Instant.now)), startsAtSquash = true))
+      f.failedFor(id)
+      f.status().failures.map(_.version.asInt) mustBe Seq(7)
+
+      f.projection.askActor[FailedSubscriptionsHandled](SkipFailedVersion(id))(3.seconds) mustBe FailedSubscriptionsHandled(id, 1)
+
+      f.state.lastVersion(classOf[RecordingProjection].getName, SubscriptionType.EVENTS, id) mustBe AggregateVersion(7)
+      f.status().failures mustBe empty
     }
 
     Scenario("failures recorded before the start are retried when the projection starts") {

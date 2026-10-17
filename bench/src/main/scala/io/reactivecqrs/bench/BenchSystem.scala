@@ -97,11 +97,11 @@ class BenchSystem(name: String, stores: BenchStores, projections: Boolean, manag
 
   private val subscribers = if (!projections) Nil else if (managed) {
     val runtime = new Projections(system, ProjectionsSettings(stores.eventStore, subscriptionsState, stores.registry, eventBus, Seq(context)))
-    List(runtime.start[CountingProjection](name + "Progress", 1, "progressProjection") { build =>
-        new CountingProjection(subscriptionsState, progressStore(build.documentStore(name + "_progress")), name + "Progress", failing)
+    List(runtime.start[ManagedCountingProjection](name + "Progress", 1, "progressProjection") { build =>
+        new ManagedCountingProjection(subscriptionsState, progressStore(build.documentStore(name + "_progress")), name + "Progress", failing)
       },
-      runtime.start[CounterStateProjection](name + "State", 1, "stateProjection") { build =>
-        new CounterStateProjection(subscriptionsState, stateStore(build.documentStore(name + "_state")), name + "State")
+      runtime.start[ManagedCounterStateProjection](name + "State", 1, "stateProjection") { build =>
+        new ManagedCounterStateProjection(subscriptionsState, stateStore(build.documentStore(name + "_state")), name + "State")
       })
   } else {
     List(system.actorOf(Props(new CountingProjection(subscriptionsState, progressStore(name + "_progress"), name + "Progress", failing))
@@ -120,9 +120,10 @@ class BenchSystem(name: String, stores: BenchStores, projections: Boolean, manag
     builds.active.isDefined && builds.building.isEmpty
   }
 
-  /** Increments the events-based projection has applied so far. */
+  /** Increments the events-based projection has applied so far; none before its table exists (a managed build makes it). */
   def projectedIncrements(): Long = DB.readOnly { implicit session =>
-    SQL(s"SELECT coalesce(sum((document->>'increments')::bigint), 0) FROM $progressTable").map(_.long(1)).single().get
+    if (!SQL(s"SELECT to_regclass('$progressTable') IS NOT NULL").map(_.boolean(1)).single().get) 0L
+    else SQL(s"SELECT coalesce(sum((document->>'increments')::bigint), 0) FROM $progressTable").map(_.long(1)).single().get
   }
 
   /** The event bus's deliveries still waiting, and those that ended undelivered. */

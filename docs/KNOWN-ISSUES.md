@@ -379,7 +379,7 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Fix:** at most 10 lines per tick or poll, with a count and the periodic summary for the rest; a failing batch warns once.
 
 #### F93 — No back-pressure on the live path
-- **Medium**, confirmed (measured) · **Throughput part fixed in M4** (17/10/2026: deliveries that arrive together are applied up to 100 aggregates per transaction, their versions read in one query per listener kind (D61 on the live path); measured on one machine, 200 000 events of 20 000 counters with failing listeners in the first 30 s: every event projected after 62 s instead of 96 s, about 3 200 instead of 2 100 events/s; 3 200 commands on 16 counters: 2 600 to 2 900 instead of 1 500 events/s, 3.4 instead of 7.0 statements per command; `ProjectionGroupsSpec`). **Flow control still open**: a projection slower than the commands still lets its mailbox and the bus's deliveries grow (scheduled at review 6) · `EventsBusActor`, `ProjectionActor`
+- **Medium**, confirmed (measured) · **Throughput part fixed in M4** (17/10/2026: deliveries that arrive together are applied up to 100 aggregates per transaction, their versions read in one query per listener kind (D61 on the live path); measured on one machine, 200 000 events of 20 000 counters with failing listeners in the first 30 s: every event projected after 62 s instead of 96 s, about 3 200 instead of 2 100 events/s; 3 200 commands on 16 counters: 2 600 to 2 900 instead of 1 500 events/s, 3.4 instead of 7.0 statements per command; `ProjectionGroupsSpec`). **Flow control still open**: a projection slower than the commands still lets its mailbox and the bus's deliveries grow; scheduled in M5 (review 6) · `EventsBusActor`, `ProjectionActor`
 - **Symptom:** when commands come faster than a projection applies them, its mailbox and the bus's deliveries grow with the lag. Measured: 1 000 000 events at about 12 000 commands/s against projections at about 1 700 events/s ended 10 minutes behind; it fit in a 2 GB heap (peak not measured).
 - **Fix idea:** a window per subscription in the bus; past it, events are left in the outbox and fetched from the store when the subscriber catches up (`RepublishRange`), so memory holds keys, not payloads.
 
@@ -387,6 +387,16 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Low**, likely (found at the M2 simplification pass) · **Fixed in M2** · `SubscribableProjectionActor`
 - **Symptom:** the one-minute `ClearIdleSubscriptions` timer was never cancelled, so a stopped projection (a rebuild's, or one stopped and created again within a system) left a timer sending to dead letters for the life of the actor system. The cache of recent updates (`updatesCacheTTL`) was trimmed only when the next update arrived, so after a burst it kept the burst until then.
 - **Fix:** the timer is cancelled when the projection stops, and each tick also trims the cache to its TTL. No test: neither is visible in the actor's answers.
+
+#### F113 — A failure at a squash start could not be skipped
+- **Medium**, confirmed · **Fixed in M4** (17/10/2026: `SkipFailedVersion` moves the subscription from the version it has to the failed one; `ProjectionDeliverySpec`, red under the old skip) · `ProjectionActor.skipFailedVersions`
+- **Symptom:** a skip moved the subscription from the version before the failed one, but a failure at a squash event the subscription started at (F98) is recorded there while the subscription is at zero, so the compare-and-set failed and the failure stayed, keeping a build from switching and the aggregate's squash and permanent delete waiting.
+- **Found:** M4 close (review 6), audit.
+
+#### F115 — A cache fill could miss a commit made while it read
+- **Medium**, confirmed (a narrow race) · **Fixed in M4** (17/10/2026: a read that fills the cache is not cached when a commit changed the aggregate's versions while it ran; `PostgresSubscriptionsStateSpec`, red when changes are not tracked) · `PostgresSubscriptionsState`
+- **Symptom:** the versions of an aggregate not cached were read outside the monitor and cached after; a commit in between (another projection's new version, a targeted rebuild's reset) changed only cached aggregates, so the read cached an old version: behind the database (a spurious gap, a group applied again one batch at a time), or, after a reset, ahead of it, so the rebuild skipped the aggregate.
+- **Found:** M4 close (review 6), audit.
 
 ### Commands and aggregates
 
@@ -692,6 +702,11 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Low**, likely · **Fixed in M4** (17/10/2026: the table and its column changes run in one transaction; the indexes stay apart, as before) · `PostgresDocumentStore.scala:30-33`
 - **Fix:** run the migration steps in one transaction, following D69 for large tables.
 
+#### F118 — The document store refused valid table names
+- **Low**, confirmed · **Fixed in M4** (17/10/2026: only the names the store makes count, the table and each index; `PostgresDocumentStoreSpec`, red before the fix) · `PostgresDocumentStore`
+- **Symptom:** the guard against names PostgreSQL cuts at 63 characters always counted an index name, so a table name of 47 to 52 characters (58 to 63 with `projection_`) was refused for a store without indexes; with a build's suffix more names passed the limit, and the refusal stopped the build's instance (F110).
+- **Found:** M4 close (review 6), audit.
+
 ### Sagas
 
 #### F17 — Saga uses `ActorContext` off its thread
@@ -814,6 +829,47 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Found:** M2 close (review 4).
 - **Until then:** an operator deletes the rows of the retired projection by its `subscriber_type_id`.
 
+#### F108 — A projection supervisor that failed on a message lost its bus
+- **Medium**, confirmed · **Fixed in M4** (17/10/2026: the supervisor never restarts (AR7): a message it fails on is logged and answered with `Status.Failure`; a switch that fails in the registry is tried again after `restartAfter`; a context check or a targeted rebuild the registry could not record waits for the next start; `ProjectionsSpec`, red before the fix) · `ProjectionSupervisor`
+- **Symptom:** a registry or store error while the supervisor handled a message (the switch, a rebuild request, a targeted rebuild, the context check at start) restarted it. The restarted supervisor made new instances but never subscribed them, as the bus asks a subscriber for its subscriptions once, so the projection took no event until the process restarted while its queries were answered from tables that no longer moved. A targeted rebuild whose end could not be recorded also kept refusing every later one.
+- **Found:** M4 close (review 6), by reading.
+
+#### F109 — A listener that failed while making its work stopped its aggregate in a live group
+- **Medium**, confirmed (new code of M4, `875b1ba`) · **Fixed in M4** (17/10/2026: making the work is part of the batch, so its failure is retried and recorded like any listener failure; `ProjectionGroupsSpec`, red before the fix) · `ProjectionActor.addToGroup`
+- **Symptom:** a listener written as `(id, events) => { ...; session => ... }` that threw before returning its work, with live groups on, threw out of the group's drain: that aggregate's queue stayed at work forever and the other queues due in the same drain were dropped until another delivery came for them.
+- **Found:** M4 close (review 6), by reading.
+
+#### F110 — An instance that stopped by itself took the active build down and let events leave the outbox unseen
+- **High**, confirmed · **Fixed in M4** (17/10/2026: a build whose instance stops starts again alone after a wait, the active build serving on; the instances that stop stay in the bus as stopped subscribers, which keeps their events in the outbox, until their replacements are subscribed, and then leave it without acknowledging (`RemoveSubscriber(keepOutbox = true)`); build slots are held or awaited once per supervisor, and every child has a name of its own; `ProjectionsSpec`, `BuildSlotsSpec`, red before the fix) · `ProjectionSupervisor`, `BuildSlots`, `EventsBusActor`
+- **Symptom:** when any instance of a managed projection stopped by itself (a new build whose stores could not be made, a fatal error), the supervisor removed every instance from the bus, which acknowledged the deliveries they had not applied, stopped the active one too and started over after `restartAfter`, again and again while the cause lasted. Events published meanwhile left the outbox without the projection (I3), the active build stopped serving (D57), and at a start a build that kept failing kept the supervisor from answering the bus, so nothing was published anywhere. A second slot request granted a second builder, and a child created under a name still in use kept the supervisor from starting.
+- **Found:** M4 close (review 6), by both audits.
+
+#### F111 — An aggregate deleted for good during a build stayed in the new build
+- **High**, confirmed · **Fixed in M4** (17/10/2026: while built, a delivery that removes its aggregate, a permanent delete event or no state for a state listener, goes through the gate like a live one, missing versions coming from the builder, instead of being acknowledged unapplied; `ProjectionsSpec`, red before the fix) · `ProjectionActor.receiveDelivery`
+- **Symptom:** the build in progress acknowledged the delete without applying it, as the builder reads the store; the delete then removed the aggregate's events and row, so neither the bulk pass nor the reconciliation could deliver it, and a document the bulk pass had made stayed in the new build.
+- **Found:** M4 close (review 6), audit.
+
+#### F112 — A targeted rebuild of a type or an organization lost aggregates made while it began
+- **High** under load, confirmed · **Fixed in M4** (17/10/2026: the projection lists the target's aggregates when it handles the reset, after every delivery taken before; an organization is not rebuilt while aggregates of its types have no space; the deliveries waiting for reset aggregates are acknowledged, as the builder gives their events again; `ProjectionsSpec`, `ProjectionDeliverySpec`, red before the fix) · `ProjectionSupervisor.rebuildTarget`, `ProjectionActor`
+- **Symptom:** the supervisor listed the aggregates before the reset reached the projection. One made and applied in between lost its document to `clearForRebuild` but kept its version, so the builder found it applied and never gave it back; so did an aggregate still without a space (F49). The queues of reset aggregates were dropped with their deliveries unanswered, which waited for the poller.
+- **Found:** M4 close (review 6), both audits.
+
+#### F114 — A targeted rebuild ran listeners' side effects for history
+- **Medium**, confirmed · **Fixed in M4** (17/10/2026: `rebuilding` is also true while a listener applies what a builder gives, a chunk or an item handed to a queue; `ProjectionDeliverySpec`, red under the old flag) · `ProjectionActor`
+- **Symptom:** a targeted rebuild feeds the live instance, whose `rebuilding` was false, so push updates and other guarded side effects fired again for each historical state of the target.
+- **Note:** a `noDBSession` listener in a chunk that fails runs again when the chunk is applied one item at a time: at least once, as documented.
+- **Found:** M4 close (review 6), audit.
+
+#### F116 — A build retired or abandoned just before a stop was never dropped
+- **Medium**, confirmed · **Fixed in M4** (17/10/2026: a supervisor drops at its start every build of its projection that is neither active nor in progress; a retired build loses its subscription versions and failures before its registry row, so a stop in between leaves it to that sweep; `Projections.retire` drops every build the registry has; `ProjectionsSpec`, red without the sweep) · `ProjectionSupervisor.drop`, `ProjectionRegistry`
+- **Symptom:** a retired build was dropped only from memory, so a stop before the drop left its tables, its versions and its failures, which block permanent deletes and squashes (F94 again); a later build of the same version could reuse its suffix and subscriber, and inherit its versions.
+- **Found:** M4 close (review 6), audit.
+
+#### F117 — A store that failed for a moment failed a build's subscriptions
+- **Medium**, confirmed · **Fixed in M4** (17/10/2026: a read error of the connection, resource or shutdown kind is read again, as a page is, or the builder stops and its supervisor starts it again from the saved position; only what cannot be read at all fails its subscription; `ProjectionBuilderSpec`, red before the fix) · `ProjectionBuilder`
+- **Symptom:** any error while reading an aggregate by version or restoring its state, a lost connection too, was recorded as an unreadable event at the first version asked, and after `GoLive` nothing retried it, so the build waited for an operator before it could switch.
+- **Found:** M4 close (review 6), audit.
+
 ### Code structure
 
 #### F14 — In-memory test doubles are wrong or incomplete
@@ -852,7 +908,7 @@ The library cannot fix these; they are listed so the 1.0 migration does not miss
 | H6 | Medium, suspected | Event listeners of ScreenRelease and ProcessRelease (the two aggregates with undo) must handle undo, since rebuild will deliver it (D60). | M4 |
 | H7 | Medium, likely | The host wiring changes with M2: create one `OutboxPollerActor`; send the bus `RegisterSubscribers` with every projection and listener (with H2); drop `EventBusSubscriptionsManagerApi` and `PostgresEventBusState`; call `PostgresSubscriptionsState.initSchema()`, which creates `subscription_failures`. Show `GetProjectionStatus` failures and offer `RetryFailedSubscription` and `SkipFailedVersion` in the admin tools (R1, R14). `SubscriptionsState`'s six per-kind version methods became `lastVersion` and `newVersion` with a `SubscriptionType`; `ProcessFlowDetailsProjectionSpec` calls the old ones. | M2 (Neula) |
 | H8 | Low, likely | M3 host steps: run `PostgresEventStoreState.buildIndexesConcurrently()` once after the upgrade, in the background (F38); opt in to snapshots (`AggregateContext.snapshots`) for the contexts with long histories (R10); commands give their events a metadata envelope by mixing in `WithMetadata` (R13); a context writes its own rows with its events by mixing in `WithOutboxWriter` (R12); serial mode is `commandProcessing = Serial(...)` (R8), and `CommandRejected` is a new response; `PassivateAggregate(id)` is available for operations. Squash: a context opts in with a squash event (`squash = Some(SquashPolicy(state => SquashEvent(...)))`, a `FirstEvent` its event handlers and projections handle); every squash checks that its event gives the state back exactly (D85), and an event class that leaves data out on purpose mixes in `SquashMayChangeState`; `SquashAggregate(id, upTo)` squashes on request, and a `SquashScheduler` started with `SquashTarget.of(context, commandBus)` squashes by `SquashPolicy.automatic`; contexts with audit duties wait for R11 (M6). A type whose aggregates are duplicated and permanently deleted needs a squash event, or those deletes wait (F76). Dispatcher (F27): create projections with `Props(...).withDispatcher(BlockingDispatcher.id)` and size `reactivecqrs.blocking-dispatcher` near the JDBC pool; the id sequences step by 10 000 from the first start (F23). Subscriptions take no classifier any more (AR8). Until M4, add a projection before squashing the aggregate types it reads (F98). Run the golden event logs with and without snapshots and compare the handlers' results (the plan's M3 check). Type keys (D75): events and projection listeners take a `ClassTag` of the root, so an event class generic in its root needs `[R: ClassTag]` where it had `[R: TypeTag]`; `Event.aggregateRootType` is now `aggregateRootClass`; a key built by hand should be `AggregateType.of[R]` (for a nested root class `Outer.Inner`, as stored); `api.id.LRUCache` is deprecated. | M3 (Neula) |
-| H9 | Medium, likely | M4 host steps: create one `Projections` and start each read model through it (`projections.start[P](name, version, actorName) { build => ... }`), passing the returned supervisor where the projection's `ActorRef` went (query APIs, the REST layer, `RegisterSubscribers`); name every store's table with `build.documentStore(table)` and the state classes' tables and sequences with `build.table`/`build.sequence` (state shared between two projections needs one owner, the other asks it); replace the rebuild-mode constructor flags with `rebuilding` (side effects) and `onActivated()` (state kept in memory while built must not outlive a chunk: a build commits chunk by chunk and resumes); keep the reactors (side effects) unmanaged; drop the offline rebuild run mode, the empty index lists of rebuild mode and the upgrade gate that relied on it. M4 removed the 0.12 replayer and what only it used: `EventsReplayOrchestrator`, `VersionsState` (its `components_versions` table stays, read once to adopt the projections 0.12 built), the command buses' `eventsReplayMode` argument, `DeliveryOptions.maxReplayBuffer` (so `eventBusBufferSize`, H1, goes), the projections' `version`, `onClearProjectionData` and `GetSubscribedAggregates`, and the `replayed` argument of the delivery messages, which tests that build them by hand drop. Live deliveries that arrive together are applied up to 100 aggregates per transaction (`ProjectionActorOptions.maxBatchesPerTransaction`, D61): a listener must never commit or roll back the session it is given. Retire removed projections with `Projections.retire(name)`. Pass the aggregate contexts whose states projections receive. Implement `clearForRebuild` in the projections that need targeted rebuilds (`RebuildAggregates`); before rebuilding an organization, run `PostgresEventStoreState.backfillSpaces` once, with a function for the six deprecated first events that use `SpaceId.unknown` (F49). | M4 (Neula) |
+| H9 | Medium, likely | M4 host steps: create one `Projections` and start each read model through it (`projections.start[P](name, version, actorName) { build => ... }`), passing the returned supervisor where the projection's `ActorRef` went (query APIs, the REST layer, `RegisterSubscribers`); name every store's table with `build.documentStore(table)` and the state classes' tables and sequences with `build.table`/`build.sequence`, and give each build's stores caches of their own, as a cache shared by two builds mixes their documents (state shared between two projections needs one owner, the other asks it); replace the rebuild-mode constructor flags with `rebuilding` (side effects) and `onActivated()` (state kept in memory while built must not outlive a chunk: a build commits chunk by chunk and resumes); keep the reactors (side effects) unmanaged; drop the offline rebuild run mode, the empty index lists of rebuild mode and the upgrade gate that relied on it. M4 removed the 0.12 replayer and what only it used: `EventsReplayOrchestrator`, `VersionsState` (its `components_versions` table stays, read once to adopt the projections 0.12 built), the command buses' `eventsReplayMode` argument, `DeliveryOptions.maxReplayBuffer` (so `eventBusBufferSize`, H1, goes), the projections' `version`, `onClearProjectionData` and `GetSubscribedAggregates`, and the `replayed` argument of the delivery messages, which tests that build them by hand drop. Live deliveries that arrive together are applied up to 100 aggregates per transaction (`ProjectionActorOptions.maxBatchesPerTransaction`, D61): a listener must never commit or roll back the session it is given. Retire removed projections with `Projections.retire(name)`. Pass the aggregate contexts whose states projections receive. Implement `clearForRebuild` in the projections that need targeted rebuilds (`RebuildAggregates`); before rebuilding an organization, run `PostgresEventStoreState.backfillSpaces` once, with a function for the six deprecated first events that use `SpaceId.unknown` (F49). | M4 (Neula) |
 
 ---
 
@@ -879,7 +935,7 @@ From §7 of Neula's change requests.
 | M1 | F7 ✔, F9 ✔, F10 ✔, F12 ✔, F13 ✔, F14 ✔, F16 ✔, F17 ✔, F18 ✔, F19 ✔, F20 ✔, F21 ✔, F24 ✔, F34 ✔, F35 ✔, F36 ✔, F40 ✔, F64 ✔, F66 ✔, F67 ✔, F68 ✔, F69 ✔, F70 ✔, F71 ✔, F73 ✔, F74 ✔, F75 ✔; AR2 ✔, AR3 ✔; checks F49, F51 ✔ (not a problem), F52, F53, F76 (Neula, on a production copy, with `StoredDataCheck` and the F76 query); Neula H3, H4, H5 |
 | M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔, F95 ✔; Neula H2, H7 |
 | M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8 ✔; F8 (contract ✔), F22 ✔, F23 ✔, F25 ✔, F27 ✔, F30 ✔, F31 ✔, F32 ✔, F33 (rest ✔), F38 ✔, F39 ✔, F44 ✔, F50 ✔, F65 ✔, F76 ✔, F78 ✔, F81 ✔, F96 ✔, F97 ✔, F100–F107 ✔; D85 ✔; Neula H8 |
-| M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔; Neula H1, H6, H9 |
+| M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
 | M5 | AR5; F46, F48, F63, F99 (F78 between nodes ✔ in M3) |
 | M6 | F8 (complete) |
 
@@ -1210,3 +1266,80 @@ M3's host steps (H8) and squash's operations notes.
   chain lock and tells running owners (`HistoryChanged`).
 - *Watch*: `SquashMayChangeState` is the one way stored history can give a different state; it
   reaches live owners and snapshots, not projections (D51), which only a rebuild repairs.
+
+### Review 6, 17/10/2026: closing M4 (architecture description, plan and code)
+
+Scope: the projection runtime as built (builds and the registry D57, D70, D81; the builder
+D58–D62; targeted rebuilds D63; the supervisor), the live groups (D61 on the live path), the
+subscription state in one mode (F3), the removal of the 0.12 replayer, `docs/ARCHITECTURE.md`
+§5–§8, and the remaining milestones. Inputs: the bench (`baseline-M4.md` against
+`baseline-M3.md`), the equivalence property test, two read-only audits of the M4 code by
+separate agents (the rebuild package; the live path and its state), and our own reading; every
+finding was checked in the code, and every fix has a test that failed against the code before
+it, or under a mutation that restores the old behaviour.
+
+**Outcome.** The M4 decisions hold (D57–D63, D70, D81), and D61 now covers the live path.
+Refinements: an instance that stops is replaced without acknowledging what it did not take, and
+a build that cannot start leaves the active build serving (F110); a removal during a build
+reaches the build (F111); a targeted rebuild lists its target where it resets it (F112);
+`rebuilding` covers the history a builder gives a live instance (F114). One problem stays open:
+flow control on the live path (F93), which moves to M5.
+
+**Fixed now:** F108–F118: F108 and F109 by our reading, F110–F118 by the audits (F110 and F112
+by both).
+
+**New open issues:** none; F93's flow control is scheduled in M5.
+
+**Measured** (`baseline-M4.md`; single runs on one machine, against `baseline-M3.md`):
+- Rebuild: 112 211 events built in 16.6 s, 6 769 events/s, both projections switched together,
+  peak heap 150 MB (M3's 0.12 replayer: 36.9 s, 3 044 events/s, 167 MB).
+- Delivery soak, 1 000 000 events, a tenth of the listeners failing for 30 s: every event
+  projected 330 s after the load started (M3: 663 s); no delivery waiting, an empty outbox, no
+  recorded failure; 22–23 MB after each of 5 restarts.
+- Commands with two projections, now with their versions in the database: the projections keep
+  pace during the load (2 732 events/s, 0.5 s behind; M3: 1 630 events/s, 1.4 s behind), so they
+  compete with it: 4 780 commands/s (M3: 6 112), and the load with its projection ends after
+  1.2 s instead of 2.0 s. 3.4 statements and 1.0 committed transaction per command (M3: 5.0 and
+  3.0, with subscriptions in memory; 7.0 statements with them in the database before the groups).
+- Commands without subscribers, serial mode, restores and startup: as in M3 (10 691 commands/s,
+  serial 11 176 and 2 384 on one aggregate, a snapshot restore in 1–5 ms, 502/560 ms).
+- Memory soak: 475 403 commands in 60 s, projected 201 s after the load, the heap back at 20 MB.
+
+**Observations:**
+- The audits' findings sit where a managed projection meets failure: an instance that stops
+  (F110), a supervisor that fails (F108), a crash between a switch and a drop (F116), a store
+  that fails for a moment (F117), and where a build runs beside live traffic (F111, F112, F114).
+  The rule now (`ARCHITECTURE.md` §8.2): what a projection has not taken stays in the outbox until
+  a replacement has it; the supervisor never restarts; a build never takes down the active one.
+- The equivalence test caught nothing in the code, but its first version proved too little: the
+  state-only list projection was built from final states (D62), so a squash start was never
+  exercised, and its squashes were refused while their events waited in the outbox. Each test
+  now asserts that the history it generates has every feature, and every new test was run
+  against a mutation of what it checks.
+- The bench's rebuild scenario, rewritten in step 6, had not run until the baseline: its managed
+  projections reused classes the earlier scenarios ran unmanaged, so they were adopted as 0.12
+  builds (D81). Bench changes now run before they are committed.
+- Pushes of a subscribable projection go out before its transaction commits: a failed group,
+  applied again one batch at a time, sends them again, and may announce a write that a later
+  failure rolls back (at least once, as before groups). A drop of a retired build's tables runs
+  on the supervisor's thread, so queries wait for it.
+
+**Plan refinements** (recorded in the implementation plan): M5: flow control per subscription
+(F93), with the delivery across nodes; the sweep of retired builds (F116) must not drop a build
+another node still serves during a rolling upgrade, so it waits for the registry to know every
+node's build; the protocol messages that carry functions (`ResetForRebuild`) stay node-local, as
+the supervisor and its instances are one unit (D53). M6: an organization's targeted rebuild needs
+its aggregates' spaces (refused otherwise, F112). M7: the migration guide carries H9 with the
+removed members of step 6.
+
+**Looking ahead:**
+- *M5 cluster*: the supervisor, its instances and its builder are one unit, the projection's
+  singleton; the bus's subscriber removal with or without the outbox (F110) is what a node
+  leaving needs too. The live groups and the builder's chunks are per instance, so they stay
+  as they are across nodes.
+- *M6*: imports and purges work by organization through the targeted rebuild, which now lists
+  the target where it resets it; a purge of an organization clears its documents in every build
+  the registry lists.
+- *Watch*: listeners that make their work before returning it, and listeners with side effects,
+  are the two shapes the runtime now handles explicitly (F109, F114); a new listener kind must
+  keep both.

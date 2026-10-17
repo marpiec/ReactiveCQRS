@@ -88,3 +88,13 @@ class CounterStateProjection(
 
   override protected def receiveQuery: Receive = PartialFunction.empty
 }
+
+// The managed projections of the rebuild scenario (M4) have classes of their own: the earlier scenarios ran the classes
+// above unmanaged, and a managed projection whose class has subscription rows is adopted as one 0.12 built (D81).
+
+class ManagedCountingProjection(subscriptionsState: SubscriptionsState, documentStore: DocumentStore[CounterProgress], projectionName: String,
+                                failing: AggregateId => Boolean)
+  extends CountingProjection(subscriptionsState, documentStore, projectionName, failing)
+
+class ManagedCounterStateProjection(subscriptionsState: SubscriptionsState, documentStore: DocumentStore[Counter], projectionName: String)
+  extends CounterStateProjection(subscriptionsState, documentStore, projectionName)

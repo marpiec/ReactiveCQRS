@@ -57,12 +57,14 @@ object RebuildTarget {
   case class OneType(aggregateType: AggregateType) extends RebuildTarget
   case class OneSpace(spaceId: SpaceId) extends RebuildTarget
 }
-/** From the supervisor, before a targeted rebuild: in one transaction the projection clears what it derived from the
-  * target (`clearForRebuild`) and forgets its versions of `aggregateIds` (and their failures), so the builder's
-  * deliveries apply anew. Answered with `ResetForRebuildDone`, or `Status.Failure` when the projection does not
-  * implement `clearForRebuild`. */
-case class ResetForRebuild(target: RebuildTarget, aggregateIds: Seq[AggregateId])
-case object ResetForRebuildDone
+/** From the supervisor, before a targeted rebuild: the projection lists the target's aggregates (`aggregatesOf`) once it
+  * applied every delivery taken before, so an aggregate made meanwhile is either listed or delivered after the reset
+  * (F112); then, in one transaction, it clears what it derived from the target (`clearForRebuild`) and forgets its
+  * versions of those aggregates (and their failures), so the builder's deliveries apply anew. Answered with
+  * `ResetForRebuildDone` and how many aggregates it reset, or `Status.Failure` when the projection does not implement
+  * `clearForRebuild`. */
+case class ResetForRebuild(target: RebuildTarget, aggregatesOf: () => Seq[AggregateId])
+case class ResetForRebuildDone(aggregates: Int)
 
 // D57, D58, D61: a projection being built is fed by a builder that reads the event store.
 
@@ -183,10 +185,18 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   protected def subscriberName: String = boundSubscriber.getOrElse(this.getClass.getName)
   private var boundSubscriber: Option[String] = None
 
-  /** True while this instance is built from the store and does not serve yet (D57): a listener with side effects (a
-    * message to another actor, a push update, an email) does nothing then, as the events are history. */
-  protected final def rebuilding: Boolean = !activated
+  /** True while this instance is built from the store and does not serve yet (D57), and while it applies events a
+    * builder gives it again (a targeted rebuild, D63; F114): a listener with side effects (a message to another actor, a
+    * push update, an email) does nothing then, as the events are history. */
+  protected final def rebuilding: Boolean = !activated || applyingHistory.get()
   private var activated = true
+  // Set on the thread that runs a listener (the actor's, or the pool's in parallel mode) while it applies history.
+  private val applyingHistory = ThreadLocal.withInitial[Boolean](() => false)
+
+  private def asHistory[T](history: Boolean)(work: => T): T = {
+    applyingHistory.set(history)
+    try work finally applyingHistory.set(false)
+  }
 
   /** Called when a built instance starts to serve; a projection that kept build-time state in memory finishes it here. */
   protected def onActivated(): Unit = ()
@@ -335,16 +345,21 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         activated = true
         onActivated()
       }
-    case ResetForRebuild(target, aggregateIds) =>
+    case ResetForRebuild(target, aggregatesOf) =>
+      val aggregateIds = aggregatesOf()
       subscriptionsState.localTx { session =>
         clearForRebuild(target)(session)
         subscriptionsState.resetVersions(subscriberName, aggregateIds)(session)
       }
       val reset = aggregateIds.toSet
+      // Their waiting deliveries are answered: the builder gives their events again.
+      queues.filter { case (key, _) => reset.contains(key.aggregateId) }.foreach { case (key, queue) =>
+        queue.pending.foreach(delivery => delivery.respondTo ! MessageAck(self, key.aggregateId, delivery.versions, key.kind))
+      }
       queues --= queues.keys.filter(key => reset.contains(key.aggregateId))
       failed --= failed.keys.filter(key => reset.contains(key.aggregateId))
       failuresToRetry = failuresToRetry.filterNot(key => reset.contains(key.aggregateId))
-      sender() ! ResetForRebuildDone
+      sender() ! ResetForRebuildDone(aggregateIds.size)
     case Retire(successor) =>
       log.info("Projection " + projectionName + " (" + subscriberName + ") is retired")
       onRetired(successor)
@@ -368,7 +383,11 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       case Some((`token`, reason)) => drain(key, queue, gapRecheck = reason == GapRecheck)
       case _ => () // replaced by a later schedule
     })
-    case Applied(key, queueId, batch, outcome) => queues.get(key).filter(_.id == queueId).foreach(queue => afterBatch(key, queue, batch, outcome))
+    case Applied(key, queueId, batch, outcome) => queues.get(key).filter(_.id == queueId) match {
+      case Some(queue) => afterBatch(key, queue, batch, outcome)
+      // Its queue was reset for a targeted rebuild meanwhile, whose builder gives the events again.
+      case None => batch.deliveries.foreach(delivery => delivery.respondTo ! MessageAck(self, key.aggregateId, delivery.versions, key.kind))
+    }
     case FlushGroup =>
       flushRequested = false
       flushGroup()
@@ -415,6 +434,8 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   private case class Batch(aggregateType: AggregateType, applied: AggregateVersion, from: AggregateVersion, to: AggregateVersion,
                            events: Seq[EventInfo[Any]], aggregateRoot: Option[Any], parts: Seq[Pending], covered: Seq[Pending]) {
     def deliveries: Seq[Pending] = parts ++ covered
+    /** Every delivery came from a builder (a chunk's batch has none): the events are history. */
+    def fromBuilder: Boolean = deliveries.forall(_.fromBuilder)
   }
 
   private sealed trait DrainReason
@@ -461,7 +482,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   private def receiveDelivery(key: Key, aggregateType: AggregateType, delivery: Pending): Unit = {
     if (delivery.versions.isEmpty) {
       log.warning("Projection " + projectionName + " received a delivery without events for aggregate " + key.aggregateId.asLong)
-    } else if (building.isDefined) {
+    } else if (building.isDefined && !removesAggregate(key, delivery)) {
       // D57: the builder reads these events from the store, the bulk pass or the reconciliation after GoLive.
       delivery.respondTo ! MessageAck(self, key.aggregateId, delivery.versions, key.kind)
     } else if (failed.contains(key)) {
@@ -470,6 +491,14 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       eventBus = Some(delivery.respondTo)
       enqueue(key, aggregateType, delivery)
     }
+  }
+
+  // F111: a delivery that removes its aggregate is applied even while the projection is built: a permanent delete takes
+  // the aggregate's events out of the store once every subscriber has it, so no builder could deliver it later. A state
+  // listener sees a removal as no state.
+  private def removesAggregate(key: Key, delivery: Pending): Boolean = key.subscriptionType match {
+    case SubscriptionType.AGGREGATES => delivery.aggregateRoot.isEmpty
+    case _ => delivery.events.exists(_.event.isInstanceOf[PermanentDeleteEvent[_]])
   }
 
   private def enqueue(key: Key, aggregateType: AggregateType, delivery: Pending): Unit = {
@@ -659,7 +688,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
   // A state listener is told the aggregate is created when the subscription starts with this batch: at version 1, at
   // the squash event (F98) or with a whole state (D62).
-  private def workOf(key: Key, batch: Batch): Work = {
+  private def workOf(key: Key, batch: Batch): Work = asHistory(batch.fromBuilder) {
     val id = key.aggregateId
     key.subscriptionType match {
       case SubscriptionType.EVENTS =>
@@ -677,7 +706,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   // The listener and the subscription's new version commit together; a listener without a transaction runs first and
   // the version is written after it, so such a listener may see a batch again if that write fails (at least once).
   private def run(work: Work): Unit = if (work.noTransaction) {
-    work.apply(null) // no session: the listener does not write to the database
+    asHistory(work.batch.fromBuilder)(work.apply(null)) // no session: the listener does not write to the database
     subscriptionsState.autoCommit(advance(work.key, work.batch.applied, work.batch.to))
   } else {
     runTogether(Seq(work))
@@ -686,7 +715,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   // Many batches in one transaction (D61): each listener, then its subscription's new version.
   private def runTogether(works: Seq[Work]): Unit = subscriptionsState.localTx { session =>
     works.foreach { work =>
-      work.apply(if (work.noTransaction) null else session)
+      asHistory(work.batch.fromBuilder)(work.apply(if (work.noTransaction) null else session))
       advance(work.key, work.batch.applied, work.batch.to)(session)
     }
   }
@@ -718,14 +747,13 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     self ! FlushGroup
   }
 
-  private def addToGroup(key: Key, queue: Queue, batch: Batch): Unit = {
-    val work = workOf(key, batch)
-    if (work.noTransaction || !grouping) {
-      afterBatch(key, queue, batch, Try(run(work)))
-    } else {
+  // A listener that fails while it makes its work fails the batch, as one that fails in it.
+  private def addToGroup(key: Key, queue: Queue, batch: Batch): Unit = Try(workOf(key, batch)) match {
+    case Failure(e) => afterBatch(key, queue, batch, Failure(e))
+    case Success(work) if work.noTransaction || !grouping => afterBatch(key, queue, batch, Try(run(work)))
+    case Success(work) =>
       group :+= Grouped(queue, work)
       if (group.size >= options.maxBatchesPerTransaction) flushGroup() else requestFlush()
-    }
   }
 
   // Applying a batch may make its queue due again (deliveries that waited behind it), so this goes on until nothing is
@@ -868,7 +896,9 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   private def skipFailedVersions(aggregateId: AggregateId): Int = failed.keys.filter(_.aggregateId == aggregateId).toSeq.count { key =>
     val failure = failed(key)
     Try(subscriptionsState.localTx { session =>
-      advance(key, AggregateVersion(failure.version.asInt - 1), failure.version)(session)
+      // From the version applied, which is below the one before the failure where the failure is at a squash start (F113).
+      val applied = appliedVersion(key)
+      if (applied < failure.version) advance(key, applied, failure.version)(session)
       subscriptionsState.clearFailure(subscriberName, key.subscriptionType, key.aggregateId)(session)
     }) match {
       case Success(_) =>

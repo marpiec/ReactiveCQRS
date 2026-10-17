@@ -124,6 +124,13 @@ class LateRowEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNamesSta
   }
 }
 
+/** The store, but its first read of events by version fails as a lost connection does (F117). */
+class FlakyRangeEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNamesState) extends PostgresEventStoreState(mpjsons, typesNamesState) {
+  private val failures = new AtomicInteger(1)
+  override def readEventsRange[AGGREGATE_ROOT](aggregateId: AggregateId, from: AggregateVersion, to: AggregateVersion): Seq[EventInfo[AGGREGATE_ROOT]] =
+    if (failures.getAndDecrement() > 0) throw new java.sql.SQLException("connection lost", "08006") else super.readEventsRange(aggregateId, from, to)
+}
+
 // D58–D62: a projection built from the store gets what live delivery gave it.
 class ProjectionBuilderSpec extends CommonSpec {
 
@@ -361,6 +368,23 @@ class ProjectionBuilderSpec extends CommonSpec {
       // The damaged note would fail the builds of the scenarios that read every note after this one.
       DB.autoCommit(implicit s => sql"DELETE FROM events WHERE aggregate_id = ${broken.asLong}".update())
       DB.autoCommit(implicit s => sql"DELETE FROM aggregates WHERE id = ${broken.asLong}".update())
+    }
+
+    Scenario("a store that cannot be read for a moment is read again, and fails nothing (F117)") {
+      val liveLogs = logs("m4b_flaky_live")
+      val live = new Live(Seq(onBlocking(Props(new NoteEventsLog("m4b-flaky-live", subscriptions, liveLogs)))))
+      val note = live.create("note")
+      live.add(note, 1, "x")
+      live.delivered(Seq(note))
+
+      val rebuiltLogs = logs("m4b_flaky_rebuilt")
+      val target = onBlocking(Props(new NoteEventsLog("m4b-flaky-rebuilt", subscriptions, rebuiltLogs)))
+      val afterBulk = new MemoryBuildPositions { save(BuildPosition(bulkDone = true, 0L)) } // the reconciliation reads by version
+      build(target, "m4b-flaky-rebuilt", store = new FlakyRangeEventStore(mpjsons, typesNamesState), positions = afterBulk,
+        settings = BuilderSettings(pageSize = 50, chunkEvents = 20, retryAfter = 200.millis))
+
+      documents(rebuiltLogs, Seq(note)) mustBe documents(liveLogs, Seq(note))
+      target.askActor[ProjectionStatus](GetProjectionStatus)(5.seconds).failures mustBe empty
     }
   }
 }

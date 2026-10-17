@@ -63,9 +63,11 @@ object EventsBusActor {
   case class RegisterPublisher(aggregateType: AggregateType, publisher: ActorRef)
 
   // D57: a projection's supervisor adds the subscriptions of a build that starts later, and removes those of a build it
-  // retires: the deliveries waiting for a removed subscriber end for it, so no outbox row waits for it.
+  // retires: the deliveries waiting for a removed subscriber end for it, so no outbox row waits for it. `keepOutbox`: the
+  // subscriber is an instance that stopped, replaced by one subscribed already: its deliveries end without acknowledging
+  // their owners, so their rows stay in the outbox and are published again to the replacement (F110).
   case class AddSubscriptions(requests: Seq[SubscribeRequest])
-  case class RemoveSubscriber(subscriber: ActorRef)
+  case class RemoveSubscriber(subscriber: ActorRef, keepOutbox: Boolean = false)
   case class SubscriberRemoved(subscriber: ActorRef)
 
   // From subscribers: a delivery of one kind applied (or applied before), a delivery the subscriber gave up on (D20a),
@@ -152,9 +154,9 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       startIfRegistered()
     case RegisterPublisher(aggregateType, publisher) => publishers += aggregateType -> publisher
     case AddSubscriptions(requests) => requests.foreach(subscribe)
-    case RemoveSubscriber(subscriber) =>
+    case RemoveSubscriber(subscriber, keepOutbox) =>
       awaitingRegistration -= subscriber
-      removeSubscriber(subscriber)
+      removeSubscriber(subscriber, keepOutbox)
       startIfRegistered()
     case GetDeliveryStatus => sender() ! status
     case Terminated(subscriber) =>
@@ -207,7 +209,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     case Republish(aggregateType, aggregateId) => routeToPublisher(aggregateType, RepublishOutbox(aggregateId))
     case RegisterPublisher(aggregateType, publisher) => publishers += aggregateType -> publisher
     case AddSubscriptions(requests) => requests.foreach(subscribe)
-    case RemoveSubscriber(subscriber) => removeSubscriber(subscriber)
+    case RemoveSubscriber(subscriber, keepOutbox) => removeSubscriber(subscriber, keepOutbox)
     case GetDeliveryStatus => sender() ! status
     case Terminated(subscriber) => subscriberStopped(subscriber)
     case Tick => checkDeadlines()
@@ -306,11 +308,17 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   }
 
   // A removed subscriber takes nothing more, and no delivery waits for it any more: one it was the last to answer is
-  // complete, so its owner is acknowledged (unlike a stopped subscriber's, which keeps its outbox rows).
-  private def removeSubscriber(subscriber: ActorRef): Unit = {
+  // complete, so its owner is acknowledged (unlike a stopped subscriber's, which keeps its outbox rows), unless the
+  // outbox is kept for its replacement: then its deliveries end as a stopped subscriber's do.
+  private def removeSubscriber(subscriber: ActorRef, keepOutbox: Boolean): Unit = {
     context.unwatch(subscriber)
     subscriptions = subscriptions.map { case (aggregateType, requests) => aggregateType -> requests.filterNot(_.subscriber == subscriber) }.filter(_._2.nonEmpty)
     stopped -= subscriber
+    if (keepOutbox) endDeliveries(_.subscriber == subscriber, _ => true) else completeFor(subscriber)
+    sender() ! SubscriberRemoved(subscriber)
+  }
+
+  private def completeFor(subscriber: ActorRef): Unit = {
     var finished = Vector[(Delivery, EventKey)]()
     deliveries.toSeq.foreach { case (key, delivery) =>
       if (delivery.awaiting.exists(_.subscriber == subscriber)) {
@@ -324,7 +332,6 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       }
     }
     completeAll(finished)
-    sender() ! SubscriberRemoved(subscriber)
   }
 
   private def checkDeadlines(): Unit = {

@@ -173,6 +173,28 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, eventsLogger:
 
   private[projection] def cachedAggregates: Int = synchronized(perAggregate.size())
 
+  // F115: aggregates whose versions are being read to fill the cache (how many reads), and those of them that a commit
+  // changed meanwhile, whose reads may have missed it and are not cached. Guarded by the instance monitor.
+  private val loading = mutable.HashMap[AggregateId, Int]()
+  private val changedWhileLoading = mutable.HashSet[AggregateId]()
+
+  private def startLoading(ids: Iterable[AggregateId]): Unit = synchronized(ids.foreach(id => loading(id) = loading.getOrElse(id, 0) + 1))
+
+  // Under the monitor: ends one read of the aggregate; true when nothing changed it while it was read.
+  private def loadedUnchanged(id: AggregateId): Boolean = {
+    val unchanged = !changedWhileLoading.contains(id)
+    loading.get(id) match {
+      case Some(reads) if reads > 1 => loading(id) = reads - 1
+      case _ =>
+        loading -= id
+        changedWhileLoading -= id
+    }
+    unchanged
+  }
+
+  // Under the monitor, with every change of the cached versions after a commit.
+  private def changed(id: AggregateId): Unit = if (loading.contains(id)) changedWhileLoading += id
+
   private def cached(aggregateId: AggregateId): Option[mutable.HashMap[String, AggregateVersion]] = synchronized(Option(perAggregate.get(aggregateId)))
 
   // Single-flight load locks: striped so that concurrent cache-miss loads for the SAME aggregate
@@ -267,13 +289,16 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, eventsLogger:
     val stored = if (missing.isEmpty) {
       Map.empty[AggregateId, AggregateVersion]
     } else if (cache) {
-      val loaded = DB.readOnly { implicit session =>
-        sql"""SELECT aggregate_id, aggregate_version, subscriber_type_id, subscription_type FROM subscriptions WHERE aggregate_id IN (${missing.map(_.asLong)})"""
-          .map(rs => (AggregateId(rs.long(1)), SubscriptionCacheKey.getById(rs.short(3), rs.short(4)), AggregateVersion(rs.int(2)))).list()
-      }.groupBy(_._1)
-      // As `getVersionsForAggregate`: an aggregate cached meanwhile keeps the entry it has.
+      startLoading(missing)
+      val loaded = try storedVersions(missing).groupBy(_._1) catch {
+        case e: Throwable =>
+          synchronized(missing.foreach(loadedUnchanged))
+          throw e
+      }
+      // As `getVersionsForAggregate`: an aggregate cached meanwhile keeps the entry it has, and one a commit changed while
+      // it was read is not cached (F115).
       synchronized {
-        missing.foreach(id => if (!perAggregate.containsKey(id)) {
+        missing.foreach(id => if (loadedUnchanged(id) && !perAggregate.containsKey(id)) {
           perAggregate.put(id, mutable.HashMap(loaded.getOrElse(id, Nil).map { case (_, k, version) => k -> version }: _*))
         })
       }
@@ -286,6 +311,12 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, eventsLogger:
     cached.toMap ++ missing.map(id => id -> stored.getOrElse(id, AggregateVersion.ZERO))
   }
 
+
+  /** Every subscriber's versions of these aggregates, as (aggregate, cache key, version). */
+  protected def storedVersions(aggregateIds: Seq[AggregateId]): List[(AggregateId, String, AggregateVersion)] = DB.readOnly { implicit session =>
+    sql"""SELECT aggregate_id, aggregate_version, subscriber_type_id, subscription_type FROM subscriptions WHERE aggregate_id IN (${aggregateIds.map(_.asLong)})"""
+      .map(rs => (AggregateId(rs.long(1)), SubscriptionCacheKey.getById(rs.short(3), rs.short(4)), AggregateVersion(rs.int(2)))).list()
+  }
 
   // Double-checked population guarded by a per-aggregate single-flight stripe: the DB read happens OUTSIDE
   // the instance monitor so cache-miss reads for different aggregates run concurrently (e.g. across
@@ -306,12 +337,18 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, eventsLogger:
           cached(aggregateId) match {
             case Some(versions) => versions
             case None =>
-              val loaded = lastAggregateVersionFromDB(aggregateId, typesNamesState)
+              startLoading(Seq(aggregateId))
+              val loaded = try lastAggregateVersionFromDB(aggregateId, typesNamesState) catch {
+                case e: Throwable =>
+                  synchronized(loadedUnchanged(aggregateId))
+                  throw e
+              }
               synchronized {
+                val unchanged = loadedUnchanged(aggregateId)
                 Option(perAggregate.get(aggregateId)) match {
                   case Some(existing) => existing
                   case None =>
-                    perAggregate.put(aggregateId, loaded)
+                    if (unchanged) perAggregate.put(aggregateId, loaded) // otherwise read again next time (F115)
                     loaded
                 }
               }
@@ -345,7 +382,10 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, eventsLogger:
     } catch {
       case e: Exception =>
         // The stored version is not the cached one (another writer, a repair): read it again next time (F77).
-        synchronized(perAggregate.remove(aggregateId))
+        synchronized {
+          perAggregate.remove(aggregateId)
+          changed(aggregateId)
+        }
         throw e
     }
     moved.foreach(_ += (aggregateId, key) -> aggregateVersion)
@@ -354,6 +394,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, eventsLogger:
     AfterCommit(session) {
       synchronized {
         Option(perAggregate.get(aggregateId)).foreach(_ += key -> aggregateVersion)
+        changed(aggregateId)
       }
     }
   }
@@ -384,6 +425,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, eventsLogger:
     val ofSubscriber = s"$subscriberTypeId|"
     synchronized {
       perAggregate.values().asScala.foreach(_.filterInPlace((key, _) => !key.startsWith(ofSubscriber)))
+      changedWhileLoading ++= loading.keys
     }
   }
 
@@ -400,7 +442,10 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, eventsLogger:
       sql"""DELETE FROM subscriptions WHERE subscriber_type_id = $subscriber AND aggregate_id IN ($longs)""".update()
       sql"""DELETE FROM subscription_failures WHERE subscriber_type_id = $subscriber AND aggregate_id IN ($longs)""".update()
     }
-    AfterCommit(session)(synchronized(aggregateIds.foreach(perAggregate.remove)))
+    AfterCommit(session)(synchronized(aggregateIds.foreach { id =>
+      perAggregate.remove(id)
+      changed(id)
+    }))
   }
 
   private val INSERT_INTO_SUBSCRIPTIONS = sql"""INSERT INTO subscriptions (id, subscriber_type_id, subscription_type, aggregate_id, aggregate_version) VALUES (nextval('subscriptions_seq'), ?, ?, ?, ?)"""

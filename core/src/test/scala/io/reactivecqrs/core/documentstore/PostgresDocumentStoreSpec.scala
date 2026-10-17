@@ -90,4 +90,19 @@ class PostgresDocumentStoreSpec extends AnyFeatureSpec with GivenWhenThen with B
     }
   }
 
+  // F118: PostgreSQL cuts names past 63 characters; only the names a store makes count.
+  feature("table and index names") {
+    scenario("a table of 63 characters is accepted when the store has no index") {
+      val table = "t" * (63 - "projection_".length)
+      val documentStore = new PostgresDocumentStore[SimpleType](table, mpjsons, new NoopDocumentStoreCache)
+      documentStore.dropTable()
+    }
+
+    scenario("a table whose index name would pass 63 characters is refused") {
+      val table = "t" * (63 - "projection_".length - "_idx_1".length + 1)
+      an[IllegalArgumentException] must be thrownBy new PostgresDocumentStore[SimpleType](table, mpjsons, new NoopDocumentStoreCache,
+        Seq(MultipleLongIndex(1, Seq("field"))))
+    }
+  }
+
 }

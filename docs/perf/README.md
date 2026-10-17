@@ -3,12 +3,13 @@
 Each file here is the report of one run of the `bench` module, the end-to-end load driver of
 the implementation plan (§7). `baseline-M1.md` is the reference that later milestones are
 compared with; `baseline-M2.md` adds the delivery soak of M2; `baseline-M3.md` adds serial command mode and
-restores from snapshots.
+restores from snapshots; `baseline-M4.md` measures the rebuild through managed projections (the builder) and
+the projections' live groups, with every scenario's subscriptions in the database.
 
 ## Running it
 
 ```bash
-sbt "bench/run baseline-M3 soakAggregates=100000 soakEventsPerAggregate=10"
+sbt "bench/run baseline-M4 soakAggregates=100000 soakEventsPerAggregate=10"
 ```
 
 The name becomes the report file, `docs/perf/<name>.md`. Sizes can follow the name as

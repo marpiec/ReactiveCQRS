@@ -54,6 +54,25 @@ class PostgresSubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen w
       state.cachedAggregates mustBe 1 // only the one read before: a batch read fills nothing
     }
 
+    Scenario("a read that a commit changed while it ran is not cached (F115)") {
+      @volatile var whileReading: () => Unit = () => ()
+      val state = new PostgresSubscriptionsState(typesNamesState) {
+        override protected def storedVersions(aggregateIds: Seq[AggregateId]): List[(AggregateId, String, AggregateVersion)] = {
+          val read = super.storedVersions(aggregateIds)
+          whileReading()
+          read
+        }
+      }.initSchema()
+      val id = newAggregateId()
+      advance(state, projection, id, 0, 3)
+
+      whileReading = () => state.localTx(implicit session => state.resetVersions(projection, Seq(id))) // a targeted rebuild resets it
+      state.lastVersions(projection, SubscriptionType.EVENTS, Seq(id), cache = true) mustBe Map(id -> AggregateVersion(3))
+      whileReading = () => ()
+
+      state.lastVersion(projection, SubscriptionType.EVENTS, id) mustBe AggregateVersion.ZERO
+    }
+
     Scenario("versions of many aggregates read for live deliveries are cached, with every subscriber's") {
       val state = newState()
       val (a, b) = (newAggregateId(), newAggregateId())

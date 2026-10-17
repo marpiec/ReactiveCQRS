@@ -245,12 +245,20 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
         val state = if (kinds.exists(_ != SubscriptionType.EVENTS)) Option(states.after(head.aggregateType, head.aggregateId, readable, head.squashedUpTo)) else None
         kinds.map(kind => item(kind, head.aggregateType, head.aggregateId, readable, state, startsAtSquash))
       } catch {
-        case NonFatal(e) => unreadableItems(head, "its state cannot be restored: " + e.getClass.getSimpleName + ": " + e.getMessage)
+        case NonFatal(e) if !transient(e) => unreadableItems(head, "its state cannot be restored: " + e.getClass.getSimpleName + ": " + e.getMessage)
       }
     }
     // A row that cannot be read ends its run; the projection fails the subscription there (F82).
     val forUnreadable = run.find(_.event.isLeft).toSeq.flatMap(bad => unreadableItems(bad, bad.event.left.toOption.get))
     forReadable ++ forUnreadable
+  }
+
+  // F117: a store that cannot be read now (the connection lost, the database restarting or short of resources) is read
+  // again later, as a page is; only what cannot be read at all fails its subscription. In a page this retries the page;
+  // in a gap fill the builder stops and its supervisor starts it again from the saved position.
+  private def transient(e: Throwable): Boolean = e match {
+    case sql: java.sql.SQLException => Option(sql.getSQLState).forall(state => Seq("08", "40", "53", "57").exists(state.startsWith))
+    case _ => Option(e.getCause).exists(cause => (cause ne e) && transient(cause))
   }
 
   private def unreadableItems(at: CommittedEvent, error: String): Seq[ChunkItem] = {
@@ -305,7 +313,7 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
         }
       }
     } catch {
-      case NonFatal(e) =>
+      case NonFatal(e) if !transient(e) =>
         unreadable += 1
         log.error(e, "Building " + subscriberName + ": " + aggregateType.simpleName + " " + id.asLong + " cannot be read from version " + from.asInt)
         Seq(ChunkItem(kind, aggregateType, id, from, from, Nil, None, unreadable = Some(e.getClass.getSimpleName + ": " + e.getMessage)))

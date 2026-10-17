@@ -28,6 +28,10 @@ trait ProjectionRegistry {
 
   def projection(name: String): Option[RegisteredProjection]
 
+  /** Every build of `name` the registry has: the active one, the one in progress, and any retired or abandoned one not
+    * dropped yet (a stop came first, F116). */
+  def builds(name: String): Seq[BuildRecord]
+
   /** Records a projection 0.12 built (D81) as active build 0, with its tables and subscription rows as they are. */
   def adopt(name: String, version: Int, subscriber: String, contexts: Map[String, Int]): BuildRecord
 
@@ -117,6 +121,10 @@ class PostgresProjectionRegistry extends ProjectionRegistry {
       }
   }
 
+  override def builds(name: String): Seq[BuildRecord] = DB.readOnly { implicit session =>
+    sql"""SELECT * FROM projection_builds WHERE name = $name ORDER BY build""".map(build).list()
+  }
+
   override def adopt(name: String, version: Int, subscriber: String, contexts: Map[String, Int]): BuildRecord = DB.localTx { implicit session =>
     sql"""INSERT INTO projections (name, active_build, last_build) VALUES ($name, 0, 0)""".update()
     insertBuild(BuildRecord(name, 0, version, "", subscriber, contexts, BuildPosition(bulkDone = true, 0L)))
@@ -196,16 +204,18 @@ class MemoryProjectionRegistry extends ProjectionRegistry {
 
   private case class Row(active: Option[Int], building: Option[Int], last: Int, pendingTarget: Option[String] = None)
   private val rows = mutable.Map[String, Row]()
-  private val builds = mutable.Map[(String, Int), BuildRecord]()
+  private val records = mutable.Map[(String, Int), BuildRecord]()
   private val objects = mutable.Map[(String, Int), Set[(String, Boolean)]]()
   @volatile var legacy: LegacyVersions = LegacyVersions(Map.empty, Map.empty)
 
   def objectsOf(name: String, build: Int): Set[(String, Boolean)] = synchronized(objects.getOrElse((name, build), Set.empty))
 
   override def projection(name: String): Option[RegisteredProjection] = synchronized {
-    rows.get(name).map(row => RegisteredProjection(name, row.active.flatMap(b => builds.get((name, b))), row.building.flatMap(b => builds.get((name, b))),
+    rows.get(name).map(row => RegisteredProjection(name, row.active.flatMap(b => records.get((name, b))), row.building.flatMap(b => records.get((name, b))),
       row.pendingTarget))
   }
+
+  override def builds(name: String): Seq[BuildRecord] = synchronized(records.collect { case ((n, _), b) if n == name => b }.toSeq.sortBy(_.number))
 
   override def setPendingTarget(name: String, target: Option[String]): Unit = synchronized {
     rows.get(name).foreach(row => rows(name) = row.copy(pendingTarget = target))
@@ -215,7 +225,7 @@ class MemoryProjectionRegistry extends ProjectionRegistry {
     require(!rows.contains(name), "Projection " + name + " is registered already")
     rows(name) = Row(Some(0), None, 0)
     val record = BuildRecord(name, 0, version, "", subscriber, contexts, BuildPosition(bulkDone = true, 0L))
-    builds((name, 0)) = record
+    records((name, 0)) = record
     record
   }
 
@@ -223,11 +233,11 @@ class MemoryProjectionRegistry extends ProjectionRegistry {
     val registered = rows.get(name)
     registered.flatMap(_.building).foreach(b => throw new IllegalStateException("Projection " + name + " is being built already (build " + b + ")"))
     val number = registered.map(_.last + 1).getOrElse(1)
-    val suffix = ProjectionRegistry.suffix(version, number, builds.exists { case ((n, _), b) => n == name && b.version == version })
+    val suffix = ProjectionRegistry.suffix(version, number, records.exists { case ((n, _), b) => n == name && b.version == version })
     rows(name) = registered.map(row => row.copy(active = row.active.orElse(Some(number)), building = Some(number), last = number))
       .getOrElse(Row(Some(number), Some(number), number))
     val record = BuildRecord(name, number, version, suffix, ProjectionRegistry.subscriber(name, suffix), contexts, BuildPosition.Start)
-    builds((name, number)) = record
+    records((name, number)) = record
     record
   }
 
@@ -243,7 +253,7 @@ class MemoryProjectionRegistry extends ProjectionRegistry {
   }
 
   override def savePosition(name: String, build: Int, position: BuildPosition): Unit = synchronized {
-    builds.get((name, build)).foreach(b => builds((name, build)) = b.copy(position = position))
+    records.get((name, build)).foreach(b => records((name, build)) = b.copy(position = position))
   }
 
   override def recordObject(name: String, build: Int, objectName: String, sequence: Boolean): Unit = synchronized {
@@ -252,7 +262,7 @@ class MemoryProjectionRegistry extends ProjectionRegistry {
 
   override def drop(name: String, build: Int): Unit = synchronized {
     objects -= ((name, build))
-    builds -= ((name, build))
+    records -= ((name, build))
   }
 
   override def remove(name: String): Unit = synchronized(rows -= name)

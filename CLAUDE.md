@@ -6,8 +6,8 @@ problems**. Known problems, decisions and the plan of the 1.0 line live in
 `docs/KNOWN-ISSUES.md` and `docs/IMPLEMENTATION-PLAN.md` (§7 below points there);
 `docs/ARCHITECTURE.md` describes how the library works in detail.
 
-> Note: written from a static read of 0.12.44 and updated for the 1.0 line at the end of
-> milestone M1 (16/10/2026). Line numbers drift as files change — re-grep before quoting.
+> Note: written from a static read of 0.12.44 and updated for the 1.0 line through milestone M4
+> (17/10/2026). Line numbers drift as files change — re-grep before quoting.
 
 ---
 
@@ -187,8 +187,11 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
   each read model through `Projections.start`, whose supervisor (the `ActorRef` the host queries) runs one
   instance per build (tables named by the build, D57), builds a new version from the store with
   `ProjectionBuilder` (commit order, replay states, chunks, then GoLive and a reconciliation) while the
-  active build serves, switches in one registry update (D70) and drops the retired build. Projections with
-  side effects stay unmanaged. Design: `docs/design/M4-rebuild.md`.
+  active build serves, switches in one registry update (D70) and drops the retired build (also, at start, any
+  build a stop left undropped). It never restarts (AR7); an instance that stops is replaced, a failing build
+  alone while the active one serves, and the bus keeps what the stopped one did not take in the outbox for its
+  replacement (F110). Targeted rebuilds (`RebuildAggregates`) reset and rebuild one aggregate, type or
+  organization in place. Projections with side effects stay unmanaged. Design: `docs/design/M4-rebuild.md`.
 - **`SagaActor`** — process managers; `CONTINUES`/`REVERTING`/`ERROR` phases.
 - **`UidGeneratorActor`** — hands out id pools (`PostgresUidGenerator` reads
   `NEXTVAL`/`increment_by` from a sequence; pool size = sequence step).

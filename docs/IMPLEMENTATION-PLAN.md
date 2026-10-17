@@ -494,6 +494,16 @@ rolling upgrades from 1.0 on, and a cluster of one that behaves like today's sin
 - Item 4: the squash scheduler (per system since M3, D52) joins the singletons; it already
   reads in futures and asks one squash at a time. Item 8 reads `GetSquashStatus` too.
 
+**Refined at the M4 review** (KNOWN-ISSUES §7, review 6):
+- New item: flow control on the live path (F93), a window per subscription in the bus, with
+  the events past it left in the outbox and fetched again (`RepublishRange`) when the
+  subscriber catches up; it bounds the traffic between nodes too. Measured in M4: groups bring
+  a projection to about 3 000 events/s, a quarter of what the commands give at full load.
+- Item 4: a projection's supervisor, its instances and its builder are one singleton; the
+  messages between them that carry functions (`ResetForRebuild`) stay inside it. The sweep of
+  retired builds at start (F116) must not drop a build that another node still serves during a
+  rolling upgrade.
+
 **Verification**
 
 - In-JVM multi-node tests: a command sent on node A to an aggregate owned by node B
@@ -555,6 +565,11 @@ history rewrites are complete; ephemeral aggregates and retention squash are ava
   (`SquashPolicy.toEvent`) and take the chain lock of F96 whenever they change a base's history.
 - Retention squash (R11) builds on `SquashScheduler` and `squashCandidates` (per-run limit,
   cursor); its audit archive is written in the squash transaction.
+
+**Refined at the M4 review** (KNOWN-ISSUES §7, review 6): imports and purges work by organization
+through the targeted rebuild of one space, which lists its aggregates where it resets them (F112)
+and is refused while aggregates of the projection's types have no space: the backfill (F49) runs
+first. A purge clears the organization's documents in every build the registry lists.
 
 **Verification**
 
@@ -657,6 +672,11 @@ the operator guide explains failed subscriptions (status, retry, retry all, skip
 the dispatcher for projections, the id sequences, squash and its scheduler, snapshots, serial
 mode, metadata, the outbox writer, type keys) and squash's operations notes (VACUUM, D51's
 refusals and what clears them, F98 until M4).
+
+**Refined at the M4 review** (KNOWN-ISSUES §7, review 6): the runbook carries M4's host steps
+(H9: managed projections, one cache per build, the members step 6 removed, the space backfill)
+and the operations of managed projections (`GetBuilds`, `RebuildProjection`, `RebuildAggregates`,
+`ToBuildInProgress`, `Projections.retire`, what a stopped instance or a failing build looks like).
 
 **Verification**
 
@@ -1427,3 +1447,32 @@ Open test-infrastructure items:
   groups, the one-at-a-time fallback, the flush before other messages, the separate `noDBSession`
   runs, the batched reads, or the cache fill of every subscriber's versions, a test fails.
 - `sbt test`: core 205, testdomain 113, all pass.
+
+**17/10/2026: M4 closed (review 6, `baseline-M4`, tag `v1.0.0-M4`)**
+- The plan's M4 verification, item by item:
+  - Equivalence property test (`RebuildEquivalenceSpec`): a seeded random history of two
+    aggregate types of the spec (lists with undo, duplication, deletion and squash; tags renamed)
+    and one projection that combines them in a document per organization, read through a
+    document cache. The build applied live, a build made while the active one serves and the
+    history goes on, and a build stopped midway and started again hold the rows of a reference
+    projection applied live (JSONB documents compared row by row). The history must contain
+    every feature; red under mutations of the undo and duplication replay and the squash start.
+  - Undo and duplication as live: the same test and `ProjectionBuilderSpec`.
+  - Rebuild under live traffic: `ProjectionsSpec` (the old version answers throughout, live with
+    the new code; after the switch no event is missing; the switch is one registry update) and
+    the equivalence test.
+  - Resume: `ProjectionBuilderSpec` (nothing applied twice), `ProjectionsSpec`, the equivalence
+    test; what is repeated is at most the chunks in flight (two by default).
+  - A targeted rebuild changes only its rows: `ProjectionsSpec` (one aggregate, one organization,
+    an aggregate made while its target is listed).
+  - Throughput and memory (`baseline-M4.md`): a rebuild of 112 211 events in 16.6 s, 6 769
+    events/s (M3's replayer: 3 044); the delivery soak of 1 000 000 events projected in 330 s
+    (M3: 663 s); idle heap flat. Left to Neula: timing a full rebuild on a production copy while
+    the server runs (H9).
+- Review 6 (KNOWN-ISSUES §7): two read-only audits and our reading found F108–F118, all fixed
+  with tests that failed before; F93's flow control moved to M5; refinements for M5–M7 recorded
+  above.
+- The bench's rebuild scenario gives its managed projections classes of their own (it had
+  adopted the earlier scenarios' unmanaged ones as 0.12 builds) and polls its table only once it
+  exists.
+- `sbt test`: core 214, testdomain 122, all pass.

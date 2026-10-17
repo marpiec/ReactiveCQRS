@@ -47,10 +47,10 @@ class Projections(actors: ActorRefFactory, val settings: ProjectionsSettings) {
 
   /** Drops every build of a projection removed from the code: its tables, its subscription versions and its failures, which
     * would keep permanent deletes waiting (F94). */
-  def retire(name: String): Unit = settings.registry.projection(name).foreach { registered =>
-    (registered.active ++ registered.building).toSeq.distinct.foreach { build =>
-      settings.registry.drop(name, build.number)
+  def retire(name: String): Unit = {
+    settings.registry.builds(name).foreach { build =>
       settings.subscriptionsState.clearSubscriptionsInfo(build.subscriber)
+      settings.registry.drop(name, build.number)
     }
     settings.registry.remove(name)
   }
@@ -95,6 +95,7 @@ object ProjectionSupervisor {
   private case object Start
   private case object CheckSwitch
   private case object RunTargetedBuilder
+  private case object RestartBuild
 
   private[rebuild] def encode(target: RebuildTarget): String = target match {
     case RebuildTarget.OneAggregate(id) => "aggregate:" + id.asLong
@@ -116,16 +117,21 @@ private[rebuild] object NoPositions extends BuildPositions {
   override def save(position: BuildPosition): Unit = ()
 }
 
-/** At most `slots` builds at once, granted in the order they were asked for. */
+/** At most `slots` builds at once, granted in the order they were asked for; a supervisor holds or waits for one at most. */
 private[rebuild] class BuildSlots(slots: Int) extends Actor {
   private var holders = Set[ActorRef]()
   private val waiting = mutable.Queue[ActorRef]()
 
   override def receive: Receive = {
     case RequestBuildSlot =>
-      context.watch(sender())
-      if (holders.size < slots) grant(sender()) else waiting.enqueue(sender())
-    case ReleaseBuildSlot => release(sender())
+      val supervisor = sender()
+      if (!holders.contains(supervisor) && !waiting.contains(supervisor)) {
+        context.watch(supervisor)
+        if (holders.size < slots) grant(supervisor) else waiting.enqueue(supervisor)
+      }
+    case ReleaseBuildSlot =>
+      waiting.dequeueAll(_ == sender())
+      release(sender())
     case Terminated(supervisor) =>
       waiting.dequeueAll(_ == supervisor)
       release(supervisor)
@@ -162,7 +168,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   private val registry = settings.registry
 
   private case class Instance(record: BuildRecord, ref: ActorRef, subscribed: Boolean)
-  private case class Targeted(target: RebuildTarget, requester: ActorRef, types: Seq[AggregateType], aggregates: Seq[AggregateId], builder: Option[ActorRef])
+  private case class Targeted(target: RebuildTarget, requester: ActorRef, types: Seq[AggregateType], aggregates: Int, builder: Option[ActorRef])
 
   private var active: Option[Instance] = None
   private var building: Option[Instance] = None // the same instance as `active` while a new projection is built first
@@ -173,6 +179,11 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   private var caughtUp = false
   private val retiring = mutable.Map[ActorRef, BuildRecord]()
   private var targeted: Option[Targeted] = None
+  private var buildStopped = false // the build's instance stopped by itself; a new one starts after a wait
+  // F110: instances that stopped, kept in the bus as stopped subscribers (their events stay in the outbox) until their
+  // replacements are subscribed; then they leave it, and their outbox rows go to the replacements.
+  private var replaced = Vector[ActorRef]()
+  private var children = 0 // names each child once, so a new one never meets the name of one still stopping
 
   // AR7: an instance that fails to start (its stores cannot be made) is stopped, not restarted, and the projection
   // starts again after a wait.
@@ -180,9 +191,27 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
 
   override def preStart(): Unit = self ! Start
 
-  override def receive: Receive = starting
+  override def receive: Receive = guarded(starting)
+
+  // AR7: a message the supervisor fails on (the registry or the store unavailable) is logged and answered with the
+  // failure. A restart would stop the instances, and the new ones would never be subscribed: the bus asks once.
+  private def guarded(handler: Receive): Receive = {
+    case message if handler.isDefinedAt(message) =>
+      try handler(message) catch {
+        case NonFatal(e) =>
+          log.error(e, "Projection " + spec.name + " failed on " + message.getClass.getSimpleName)
+          sender() ! Status.Failure(e)
+      }
+  }
 
   private def serving: Option[Instance] = active.orElse(building)
+
+  private def runningBuild: Option[Instance] = building.filterNot(_ => buildStopped)
+
+  private def childName(prefix: String, build: Int): String = {
+    children += 1
+    prefix + "-" + build + "-" + children
+  }
 
   // ************** Start
 
@@ -191,16 +220,21 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       try decideBuilds() catch {
         case NonFatal(e) =>
           log.error(e, "Projection " + spec.name + " could not read its builds; trying again in " + settings.restartAfter)
+          (active ++ building).foreach(i => context.stop(i.ref)) // made before the failure; the next try makes its own
+          active = None
+          building = None
           context.system.scheduler.scheduleOnce(settings.restartAfter, self, Start)(context.dispatcher)
       }
     case Listeners(subscriptions) if serving.isDefined =>
       listeners = subscriptions
-      rebuildForChangedContexts()
+      logged("could not check the versions of its contexts; it checks them at the next start")(rebuildForChangedContexts())
       connect()
-      context.become(running)
+      context.become(guarded(running))
       unstashAll()
       // A targeted rebuild a stop interrupted runs again (a build in progress includes its target anyway).
-      if (building.isEmpty) registry.projection(spec.name).flatMap(_.pendingTarget).flatMap(decode).foreach(target => rebuildTarget(target, context.system.deadLetters))
+      if (building.isEmpty) logged("could not read its pending targeted rebuild; it runs at the next start") {
+        registry.projection(spec.name).flatMap(_.pendingTarget).flatMap(decode).foreach(target => rebuildTarget(target, context.system.deadLetters))
+      }
     case GetSubscriptionRequests =>
       bus = Some(sender())
     case Terminated(ref) => terminated(ref)
@@ -220,6 +254,9 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       registry.startBuild(spec.name, spec.version, runtime.contextVersions)
       registered = registry.projection(spec.name).get
     }
+    // F116: a build retired or abandoned before a stop let it be dropped is dropped now.
+    val kept = (registered.active ++ registered.building).map(_.number).toSet
+    registry.builds(spec.name).filterNot(b => kept.contains(b.number)).foreach(drop)
     active = registered.active.map(instanceOf)
     building = registered.building.map(b => active.filter(_.record.number == b.number).getOrElse(instanceOf(b)))
     log.info("Projection " + spec.name + " " + describe)
@@ -241,7 +278,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
 
   private def instanceOf(record: BuildRecord): Instance = {
     val build = new ProjectionBuild(record, registry)
-    val ref = context.watch(context.actorOf(Props(create(build)).withDispatcher(BlockingDispatcher.id), "build-" + record.number))
+    val ref = context.watch(context.actorOf(Props(create(build)).withDispatcher(BlockingDispatcher.id), childName("build", record.number)))
     ref ! BindSubscriber(record.subscriber)
     Instance(record, ref, subscribed = false)
   }
@@ -260,14 +297,14 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   // The instances that take deliveries are subscribed: the build in progress, and the active build unless it serves
   // unchanged meanwhile. The build in progress acknowledges deliveries unapplied from the start: its builder reads them.
   private def connect(): Unit = {
-    building.foreach(_.ref ! BuildFromStore(self))
+    runningBuild.foreach(_.ref ! BuildFromStore(self))
     subscribeTakers()
-    building.foreach(_ => runtime.slots ! RequestBuildSlot)
+    runningBuild.foreach(_ => runtime.slots ! RequestBuildSlot)
   }
 
   private def subscribeTakers(): Unit = {
     def takesDeliveries(i: Instance) = building.isEmpty || building.exists(_.ref == i.ref) || spec.whileBuilding == ServeLive
-    val takers = (active ++ building).toSeq.distinct.filter(i => !i.subscribed && takesDeliveries(i))
+    val takers = (active ++ runningBuild).toSeq.distinct.filter(i => !i.subscribed && takesDeliveries(i))
     if (takers.nonEmpty) subscribe(takers)
   }
 
@@ -278,6 +315,8 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       if (answeredBus) b ! AddSubscriptions(requests) else b ! SubscriptionRequests(requests)
       answeredBus = true
       markSubscribed(instances)
+      replaced.foreach(old => b ! RemoveSubscriber(old, keepOutbox = true))
+      replaced = Vector.empty
     case None => () // the bus has not asked yet; it is answered when it does
   }
 
@@ -299,18 +338,27 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
     case GetSubscriptionRequests =>
       bus = Some(sender())
       subscribeTakers()
-    case BuildSlotGranted => startBuilder()
+    case BuildSlotGranted =>
+      if (runningBuild.isDefined && builder.isEmpty) startBuilder()
+      else if (builder.isEmpty) runtime.slots ! ReleaseBuildSlot // nothing to build any more
+    case RestartBuild => if (buildStopped) building.foreach { stopped =>
+      buildStopped = false
+      building = Some(instanceOf(stopped.record))
+      connect()
+    }
     case BuildCaughtUp if targeted.exists(_.builder.contains(sender())) => targetRebuilt()
     case BuildCaughtUp =>
       caughtUp = true
       runtime.slots ! ReleaseBuildSlot
       trySwitch()
     case RebuildAggregates(target) => rebuildTarget(target, sender())
-    case ResetForRebuildDone if targeted.isDefined => startTargetedBuilder()
+    case ResetForRebuildDone(aggregates) if targeted.isDefined =>
+      targeted = targeted.map(_.copy(aggregates = aggregates))
+      startTargetedBuilder()
     case RunTargetedBuilder => startTargetedBuilder()
     case Status.Failure(e) if targeted.exists(_.builder.isEmpty) && active.exists(_.ref == sender()) =>
       log.error("Projection " + spec.name + " cannot rebuild " + targeted.get.target + ": " + e.getMessage)
-      registry.setPendingTarget(spec.name, None)
+      clearPendingTarget()
       targeted.get.requester ! RebuildRefused(e.getMessage)
       targeted = None
     case CheckSwitch => trySwitch()
@@ -322,9 +370,9 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       }
     case SubscriberRemoved(old) => retiringActive(old)
     case RebuildProjection => rebuild()
-    case ToBuildInProgress(message) => building match {
+    case ToBuildInProgress(message) => runningBuild match {
       case Some(b) => b.ref.forward(message)
-      case None => sender() ! RebuildRefused("no build is in progress")
+      case None => sender() ! RebuildRefused("no build is running")
     }
     case GetBuilds => sender() ! Builds(spec.name, active.map(_.record), building.map(_.record), caughtUp)
     case request: RequestRepublish => builder.foreach(_.forward(request)) // from the build in progress, before its builder runs
@@ -332,7 +380,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
     case message => serving.foreach(_.ref.forward(message))
   }
 
-  private def startBuilder(): Unit = building.foreach { b =>
+  private def startBuilder(): Unit = runningBuild.foreach { b =>
     val missing = listeners.collect { case (t, kind) if kind != SubscriptionType.EVENTS && !runtime.sources.contains(t) => t.typeName }.distinct
     if (missing.nonEmpty) {
       log.error("Projection " + spec.name + " cannot be built: no aggregate context of " + missing.mkString(", ") + " was given to Projections")
@@ -340,7 +388,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
     } else {
       val positions = new RegistryBuildPositions(registry, spec.name, b.record.number)
       builder = Some(context.watch(context.actorOf(Props(new ProjectionBuilder(b.ref, b.record.subscriber, BuildPlan(listeners), settings.eventStore,
-        settings.subscriptionsState, runtime.sources, positions, self, settings.builder)).withDispatcher(BlockingDispatcher.id), "builder-" + b.record.number)))
+        settings.subscriptionsState, runtime.sources, positions, self, settings.builder)).withDispatcher(BlockingDispatcher.id), childName("builder", b.record.number))))
     }
   }
 
@@ -348,7 +396,13 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   private def trySwitch(): Unit = if (caughtUp) building.foreach(_.ref ! GetProjectionStatus)
 
   private def switchNow(): Unit = building.foreach { b =>
-    if (registry.switch(spec.name, b.record.number)) {
+    val switched = try Some(registry.switch(spec.name, b.record.number)) catch {
+      case NonFatal(e) =>
+        log.error(e, "Projection " + spec.name + " could not switch to build " + b.record.number + "; it tries again in " + settings.restartAfter)
+        context.system.scheduler.scheduleOnce(settings.restartAfter, self, CheckSwitch)(context.dispatcher)
+        None
+    }
+    if (switched.contains(true)) {
       log.info("Projection " + spec.name + " switched to build " + b.record.number + " (version " + b.record.version + ")")
       b.ref ! Activate
       val old = active.filterNot(_.record.number == b.record.number)
@@ -360,7 +414,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
         retiring += o.ref -> o.record
         if (o.subscribed) settings.eventBus ! RemoveSubscriber(o.ref) else o.ref ! Retire(active.map(_.ref))
       }
-    } else {
+    } else if (switched.contains(false)) {
       log.error("Projection " + spec.name + ": build " + b.record.number + " is no longer the build in progress in the registry; it does not switch")
     }
   }
@@ -378,15 +432,19 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
     (building, targeted, active) match {
       case (Some(b), _, _) => requester ! RebuildRefused("build " + b.record.number + " is in progress, and replaces the active one whole")
       case (_, Some(t), _) => requester ! RebuildRefused("the rebuild of " + t.target + " is in progress")
+      case (_, _, Some(_)) if types.nonEmpty && target.isInstanceOf[RebuildTarget.OneSpace] &&
+        settings.eventStore.aggregatesOf(types, AggregateId(Long.MinValue), 1, AggregateScope.InSpace(SpaceId(-1))).nonEmpty =>
+        requester ! RebuildRefused("aggregates of " + types.map(_.simpleName).mkString(", ") + " have no space yet: run backfillSpaces first (F49)")
       case (_, _, Some(a)) if types.nonEmpty =>
-        val aggregates = Iterator.unfold(AggregateId(Long.MinValue)) { after =>
-          val page = settings.eventStore.aggregatesOf(types, after, 1000, scopeOf(target))
-          page.lastOption.map(last => (page.map(_.aggregateId), last.aggregateId))
-        }.flatten.toVector
         registry.setPendingTarget(spec.name, Some(encode(target)))
-        targeted = Some(Targeted(target, requester, types, aggregates, None))
-        log.info("Projection " + spec.name + " rebuilds " + target + ": " + aggregates.size + " aggregates")
-        a.ref ! ResetForRebuild(target, aggregates)
+        targeted = Some(Targeted(target, requester, types, 0, None))
+        log.info("Projection " + spec.name + " rebuilds " + target)
+        val (eventStore, scope) = (settings.eventStore, scopeOf(target))
+        // F112: listed by the projection when it resets, after the deliveries it took before.
+        a.ref ! ResetForRebuild(target, () => Iterator.unfold(AggregateId(Long.MinValue)) { after =>
+          val page = eventStore.aggregatesOf(types, after, 1000, scope)
+          page.lastOption.map(last => (page.map(_.aggregateId), last.aggregateId))
+        }.flatten.toVector)
       case _ => requester ! RebuildRefused(s"$target is not of an aggregate type the projection receives")
     }
   }
@@ -405,10 +463,19 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   }
 
   private def targetRebuilt(): Unit = targeted.foreach { t =>
-    registry.setPendingTarget(spec.name, None)
+    clearPendingTarget()
     log.info("Projection " + spec.name + " rebuilt " + t.target)
-    t.requester ! AggregatesRebuilt(t.target, t.aggregates.size)
+    t.requester ! AggregatesRebuilt(t.target, t.aggregates)
     targeted = None
+  }
+
+  // A target left in the registry runs again at the next start, which repeats a finished rebuild harmlessly.
+  private def clearPendingTarget(): Unit = logged("could not clear its targeted rebuild in the registry; it runs again at the next start") {
+    registry.setPendingTarget(spec.name, None)
+  }
+
+  private def logged(what: String)(work: => Unit): Unit = try work catch {
+    case NonFatal(e) => log.error(e, "Projection " + spec.name + " " + what)
   }
 
   private def rebuild(): Unit = (building, targeted) match {
@@ -436,30 +503,46 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
           runtime.slots ! ReleaseBuildSlot
           context.system.scheduler.scheduleOnce(settings.restartAfter, runtime.slots, RequestBuildSlot)(context.dispatcher, self)
         }
+      case None if building.exists(_.ref == ref) && !active.exists(_.ref == ref) =>
+        // The build's instance stopped by itself (its stores could not be made): the active build serves on (D57), and
+        // the build starts again in a new instance after a wait.
+        log.error("Projection " + spec.name + ": the instance of build " + building.get.record.number + " stopped; it starts again in " + settings.restartAfter)
+        if (building.exists(_.subscribed)) replaced :+= ref
+        builder.foreach(context.stop)
+        builder = None
+        caughtUp = false
+        buildStopped = true
+        runtime.slots ! ReleaseBuildSlot
+        context.system.scheduler.scheduleOnce(settings.restartAfter, self, RestartBuild)(context.dispatcher)
       case None if (active ++ building).exists(_.ref == ref) =>
-        // An instance stopped by itself: the projection starts again, and the bus forgets the stopped instances.
+        // The active instance stopped by itself: every instance starts again after a wait. The bus keeps their
+        // subscriptions as stopped subscribers meanwhile, so no event leaves the outbox without them (F110).
         log.error("Projection " + spec.name + ": an instance stopped; the projection starts again in " + settings.restartAfter)
         (active ++ building).toSeq.distinct.foreach { i =>
-          if (i.subscribed) settings.eventBus ! RemoveSubscriber(i.ref)
+          if (i.subscribed) replaced :+= i.ref
           if (i.ref != ref) context.stop(i.ref)
         }
-        builder.foreach(context.stop)
+        (builder ++ targeted.flatMap(_.builder)).foreach(context.stop)
+        targeted.foreach(t => t.requester ! RebuildRefused("the projection restarts; the rebuild of " + t.target + " runs again then"))
+        targeted = None
         runtime.slots ! ReleaseBuildSlot
         active = None
         building = None
         builder = None
         caughtUp = false
-        context.become(starting)
+        buildStopped = false
+        context.become(guarded(starting))
         context.system.scheduler.scheduleOnce(settings.restartAfter, self, Start)(context.dispatcher)
       case None => ()
     }
   }
 
-  // A retired build's tables, subscription versions and failures go (F94).
+  // A retired build's tables, subscription versions and failures go (F94). Its versions and failures first: a stop between
+  // the two leaves the build in the registry, which is dropped at the next start (F116).
   private def drop(retired: BuildRecord): Unit =
     try {
-      registry.drop(spec.name, retired.number)
       settings.subscriptionsState.clearSubscriptionsInfo(retired.subscriber)
+      registry.drop(spec.name, retired.number)
       log.info("Projection " + spec.name + ": build " + retired.number + " is dropped")
     } catch {
       case NonFatal(e) => log.error(e, "Projection " + spec.name + ": build " + retired.number + " could not be dropped; its tables stay")

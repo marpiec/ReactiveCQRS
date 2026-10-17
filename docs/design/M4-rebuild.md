@@ -87,10 +87,13 @@ passed the projection's before (the REST layer, query APIs, `RegisterSubscribers
 
 ```scala
 val projections = new Projections(system, ProjectionsSettings(eventStore, subscriptionsState, registry, eventBus, contexts))
-val carts: ActorRef = projections.start("ShoppingCartsList", version = 2, "shoppingCartsList") { build =>
-  new ShoppingCartsListProjection(build, new PostgresDocumentStore[String](build.table("carts"), mpjsons, cache))
+val carts: ActorRef = projections.start[ShoppingCartsListProjection]("ShoppingCartsList", version = 2, "shoppingCartsList") { build =>
+  new ShoppingCartsListProjection(subscriptionsState, new PostgresDocumentStore[CartView](build.documentStore("carts"), mpjsons, new CartsCache))
 }
 ```
+
+Each build gets stores, and caches, of its own: a cache keyed by document id, shared by two builds,
+would give one build the other's documents (review 6).
 
 The supervisor reads the registry, creates one projection instance per build it runs (on the
 blocking dispatcher, F27), answers the bus's `GetSubscriptionRequests` with their
@@ -218,3 +221,13 @@ The plan's M4 verification, plus: the builder against both stores (undo, duplica
 squash, a late-committed row, an unreadable row); resume after a stop in each phase; the
 switch under live traffic with parked queries and push subscriptions; adoption of 0.12 tables
 and rows; retirement drops every named table; the targeted rebuild changes only its target.
+
+As built: `ProjectionBuilderSpec` (the builder), `ProjectionsSpec` (builds, the switch, resume,
+adoption, retirement, targeted rebuilds, a failing registry), `ProjectionDeliverySpec` and
+`ProjectionGroupsSpec` (the projection's chunks and live groups), and the equivalence property
+test `RebuildEquivalenceSpec`: a seeded random history of two aggregate types with undo,
+duplication, deletion and squash, applied live by a reference projection, gives the same rows
+(JSONB documents, compared row by row) in the build applied live, in a build made while the
+active one serves and events keep coming, and in a build stopped midway and resumed. Each spec
+was red under mutations of what it checks (the undo and duplication replay, the squash start,
+the reconciliation, the version reset, the groups).

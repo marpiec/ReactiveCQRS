@@ -36,19 +36,25 @@ class CountedReads(typesNamesState: TypesNamesState) extends PostgresSubscriptio
 }
 
 /** Writes each note event it applies to a table, with the transaction that wrote it, and counts the calls of its task
-  * listener, which has no transaction. Its listeners fail for an aggregate as `failures` says, after writing. */
+  * listener, which has no transaction. Its listeners fail for an aggregate as `failures` says, after writing; the note
+  * listener also as `failuresBeforeWork` says, while it makes its work. */
 class TableProjection(val subscriptionsState: SubscriptionsState, failures: ConcurrentHashMap[AggregateId, AtomicInteger],
-                      slow: AtomicReference[AggregateId], taskCalls: ConcurrentHashMap[AggregateId, AtomicInteger])
+                      failuresBeforeWork: ConcurrentHashMap[AggregateId, AtomicInteger], slow: AtomicReference[AggregateId],
+                      taskCalls: ConcurrentHashMap[AggregateId, AtomicInteger])
   extends ProjectionActor(ProjectionActorOptions.DEFAULT.withRetries(Backoff(20.millis, 50.millis, maxAttempts = 3))) {
 
-  private def failIfAsked(id: AggregateId): Unit =
-    Option(failures.get(id)).filter(_.getAndDecrement() > 0).foreach(_ => throw new IllegalStateException("listener failed on " + id.asLong))
+  private def failIfAsked(id: AggregateId, asked: ConcurrentHashMap[AggregateId, AtomicInteger] = failures): Unit =
+    Option(asked.get(id)).filter(_.getAndDecrement() > 0).foreach(_ => throw new IllegalStateException("listener failed on " + id.asLong))
 
   protected val listeners = List(
-    EventsListener[GateNote] { (id, events) => implicit session =>
-      if (slow.get() == id) Thread.sleep(300) // the deliveries sent meanwhile wait in the mailbox
-      events.foreach(e => sql"INSERT INTO groups_spec_applied (aggregate_id, version, txid) VALUES (${id.asLong}, ${e.version.asInt}, txid_current())".update())
-      failIfAsked(id)
+    EventsListener[GateNote] { (id, events) =>
+      failIfAsked(id, failuresBeforeWork)
+      (session: DBSession) => {
+        implicit val s: DBSession = session
+        if (slow.get() == id) Thread.sleep(300) // the deliveries sent meanwhile wait in the mailbox
+        events.foreach(e => sql"INSERT INTO groups_spec_applied (aggregate_id, version, txid) VALUES (${id.asLong}, ${e.version.asInt}, txid_current())".update())
+        failIfAsked(id)
+      }
     },
     EventsListener.noDBSession[GroupTask] { (id, _) =>
       taskCalls.computeIfAbsent(id, _ => new AtomicInteger()).incrementAndGet()
@@ -81,11 +87,12 @@ class ProjectionGroupsSpec extends CommonSpec {
   private class Fixture {
     val subscriptionsState = new CountedReads(typesNamesState)
     val failures = new ConcurrentHashMap[AggregateId, AtomicInteger]()
+    val failuresBeforeWork = new ConcurrentHashMap[AggregateId, AtomicInteger]()
     val taskCalls = new ConcurrentHashMap[AggregateId, AtomicInteger]()
     private val slow = new AtomicReference[AggregateId]()
     val bus = TestProbe()
     val subscriber: String = "ProjectionGroupsSpec-" + System.nanoTime() // no failures of earlier scenarios to retry
-    val projection: ActorRef = system.actorOf(Props(new TableProjection(subscriptionsState, failures, slow, taskCalls)).withDispatcher(BlockingDispatcher.id))
+    val projection: ActorRef = system.actorOf(Props(new TableProjection(subscriptionsState, failures, failuresBeforeWork, slow, taskCalls)).withDispatcher(BlockingDispatcher.id))
     projection ! BindSubscriber(subscriber)
     bus.send(projection, GetSubscriptionRequests)
     bus.expectMsgType[SubscriptionRequests](3.seconds)
@@ -143,6 +150,18 @@ class ProjectionGroupsSpec extends CommonSpec {
 
       f.answers(10) mustBe ((ids.toSet - broken, Set(broken)))
       f.rows(ids).map(_._1).sortBy(_.asLong) mustBe (ids.toSet - broken).toSeq.sortBy(_.asLong) // the group's writes were rolled back
+    }
+
+    Scenario("a listener that fails while it makes its work is retried like any failing batch, and the rest of the group is applied") {
+      val f = new Fixture
+      val ids = newIds(10)
+      f.slowOn(ids.head)
+      f.failuresBeforeWork.put(ids(3), new AtomicInteger(1))
+
+      ids.foreach(f.note(_, 1))
+
+      f.answers(10) mustBe ((ids.toSet, Set.empty))
+      f.rows(ids).map(_._1).sortBy(_.asLong) mustBe ids.sortBy(_.asLong)
     }
 
     Scenario("a message other than a delivery is handled once the deliveries taken before it are applied") {
