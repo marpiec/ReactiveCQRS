@@ -61,7 +61,7 @@ node A                                         node B
    the schema (D71, step 7). Needed first: in-JVM nodes start together.
 3. **Serialization (D45, D68)** (done): one mpjsons-based serializer for every library message and the
    domain's commands, events, states and query answers; round-trip tests.
-4. **Sharded owners (D43, D72; F46, F99)** with the in-JVM multi-node harness.
+4. **Sharded owners (D43, D72; F46, F99)** (done) with the in-JVM multi-node harness; found on the way: F119 (stale snapshots), F120 (a chosen id on two owners).
 5. **Delivery in the cluster and singletons (D44, D46, D53–D55; F48)**: registration through
    proxies, supervisors on every bus, the singletons, saga replies across nodes.
 6. **Ids (D39)**: installation ranges below 2^53.
@@ -100,7 +100,8 @@ follows.
   squash's detach) sent while the owner is already passivating is kept by the shard for the next
   owner, so the old one could write the old state at an unchanged version. Snapshot writes are
   therefore conditional on the aggregate's history being the one the owner restored: a history
-  generation in `aggregates`, raised by every change that rewrites stored history.
+  generation in `aggregates`, raised by every change that deletes snapshots because their state
+  may be wrong (F119).
 - **Acknowledgements.** An owner still publishes to its node's bus with its node's command bus as
   the publisher, which deletes the outbox rows (F91). The command bus forwards the ack to the
   owner only when that owner runs on its node (owners tell their node's bus when they start and
@@ -110,6 +111,23 @@ follows.
   the conflict error.
 - **F99**: a conflict with a commit of the owner's own runs again at once, one at a time; only a
   conflict with another writer waits the back-off.
+
+### Where it could go wrong, and what handles it (step 4, reviewed before committing)
+
+| Circumstance | What happens | Handled by |
+|---|---|---|
+| A stale stop reaches an owner that is already passivating | the shard keeps it for the next owner; the old one writes its passivation snapshot of the old history | the history generation: the write is refused (F119); the next owner gets the stop first and stops without reading |
+| The owner's history changes between reading the generation and reading the events | the state is newer than the generation | the generation is read first: the owner only loses its snapshot writes until it reads again |
+| A `Local` type on several nodes: an undo by one node's owner | another node's owner holds the state of before | the undo raises the generation; that owner's snapshot write is refused |
+| A rewrite now updates `aggregates` rows early in its transaction | a writer waiting on that row inside the same process would deadlock (a test's simulated writer did) | a real other writer is another process and waits for the commit; the test writes before the transaction's first statement |
+| Two owners of one aggregate (a node not yet downed, or `Local` on two nodes) create it under a chosen id | the loser breaks the primary key of `aggregates` | F120: a conflict, matched by table (an older database may name the key otherwise) |
+| An owner runs a long command when a node leaves or a shard moves | Pekko stops the entity after `handoff-timeout` - 5 s, and a leaving node gives its regions 10 s | both 90 s in `reference.conf`, above the default command timeout; the host's process manager must wait longer still |
+| Messages wait in a region during a hand-over | a command runs later than its caller sent it; the caller may time out first | idempotency keys for retries; a deadline from the sending node was left out, as clock skew between nodes could time out everything one node routes |
+| A stop or history change for an owner that is not running | the region starts the owner only to stop it | it stops without reading (cheap); a burst for many duplicates is rare |
+| An ack for an owner that moved to another node | the old node's bus has no owner to pass it to | the outbox poller asks for the rest of the re-publication later |
+| An exception escapes a sharded owner | the shard restarts it (the bus would have stopped it, AR7) | the owner guards its receive; nothing escapes but fatal errors |
+| A rolling upgrade: an envelope without `fresh` | read with the default, `false` | the owner reads its state: correct, only slower |
+| Contended concurrent commands with plain commands committing in between | the command in turn conflicts again | it keeps its place and runs again at once; the command timeout bounds it |
 
 ## Delivery in the cluster (D44, D53, D54)
 

@@ -207,7 +207,7 @@ class SquashSpec extends CommonSpec {
       val cartId = created("apple", "pear", "plum")
       outboxEmpty(cartId)
       val stateClass = classOf[ShoppingCart].getName
-      eventStore.writeSnapshot(cartId, Snapshot(AggregateVersion(4), context.version, 1, restorer.restore(cartId).root), stateClass)
+      eventStore.writeSnapshot(cartId, Snapshot(AggregateVersion(4), context.version, 1, restorer.restore(cartId).root), stateClass, eventStore.historyGeneration(cartId))
       def snapshotVersion: Option[Int] = eventStore.readSnapshot[ShoppingCart](cartId, stateClass).map(_.get.version.asInt)
 
       squash(cartId, 3) mustBe AggregateSquashed(cartId, AggregateVersion(3))
@@ -347,8 +347,8 @@ class SquashSpec extends CommonSpec {
       itemsOf(copyId) mustBe Vector("apple", "fig")
       itemsOf(lateCopyId) mustBe Vector("apple", "pear", "plum")
       val stateClass = classOf[ShoppingCart].getName
-      eventStore.writeSnapshot(cartId, Snapshot(AggregateVersion(4), carts.version, 1, cartsRestorer.restore(cartId).root), stateClass)
-      eventStore.writeSnapshot(lateCopyId, Snapshot(AggregateVersion(1), carts.version, 1, cartsRestorer.restore(lateCopyId).root), stateClass)
+      eventStore.writeSnapshot(cartId, Snapshot(AggregateVersion(4), carts.version, 1, cartsRestorer.restore(cartId).root), stateClass, eventStore.historyGeneration(cartId))
+      eventStore.writeSnapshot(lateCopyId, Snapshot(AggregateVersion(1), carts.version, 1, cartsRestorer.restore(lateCopyId).root), stateClass, eventStore.historyGeneration(lateCopyId))
       outboxEmpty(cartId, copyId, lateCopyId)
 
       squash(cartId, 3, bus = bus) mustBe AggregateSquashed(cartId, AggregateVersion(3))

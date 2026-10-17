@@ -27,6 +27,7 @@ class MemoryEventStoreState extends EventStoreState {
   private var eventIdSeq: Long = 0
   private var snapshots: Map[AggregateId, Snapshot[_]] = Map.empty
   private var squashedVersions: Map[AggregateId, AggregateVersion] = Map.empty
+  private var generations: Map[AggregateId, Int] = Map.empty
 
   override def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] = Try { synchronized {
 
@@ -63,7 +64,7 @@ class MemoryEventStoreState extends EventStoreState {
     }
 
     eventStore += aggregateId -> eventsForAggregate
-    if (eventsEnvelope.events.exists(_.isInstanceOf[UndoEvent[_]])) snapshots -= aggregateId // as in PostgreSQL (D30)
+    if (eventsEnvelope.events.exists(_.isInstanceOf[UndoEvent[_]])) historyChangedFor(Set(aggregateId)) // as in PostgreSQL (D30, F119)
     eventsWithVersions
   }}
 
@@ -148,11 +149,20 @@ class MemoryEventStoreState extends EventStoreState {
   override def readSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, stateClassName: String): Option[Try[Snapshot[AGGREGATE_ROOT]]] =
     synchronized(snapshots.get(aggregateId)).map(snapshot => Try(snapshot.asInstanceOf[Snapshot[AGGREGATE_ROOT]]))
 
-  // As in PostgreSQL: only while the aggregate is stored at that version.
-  override def writeSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, snapshot: Snapshot[AGGREGATE_ROOT], stateClassName: String): Unit =
+  // As in PostgreSQL: only while the aggregate is stored at that version, at the history generation of the state (F119).
+  override def writeSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, snapshot: Snapshot[AGGREGATE_ROOT], stateClassName: String, generation: Int): Unit =
     synchronized {
-      if (eventStore.get(aggregateId).exists(_.lastOption.exists(_.version >= snapshot.version))) snapshots += aggregateId -> snapshot
+      if (eventStore.get(aggregateId).exists(_.lastOption.exists(_.version >= snapshot.version)) && generations.getOrElse(aggregateId, 0) == generation)
+        snapshots += aggregateId -> snapshot
     }
+
+  override def historyGeneration(aggregateId: AggregateId): Int = synchronized(generations.getOrElse(aggregateId, 0))
+
+  // As in PostgreSQL (D30, F119): their snapshots may be wrong; owners holding the states of before must not write them.
+  private def historyChangedFor(aggregateIds: Set[AggregateId]): Unit = {
+    snapshots --= aggregateIds
+    aggregateIds.foreach(id => generations += id -> (generations.getOrElse(id, 0) + 1))
+  }
 
   // The aggregates whose duplication chain includes `aggregateId`, at any depth, as the aggregates rows hold it in PostgreSQL.
   private def duplicatesOf(aggregateId: AggregateId): Set[AggregateId] = {
@@ -225,7 +235,7 @@ class MemoryEventStoreState extends EventStoreState {
       replaceEvent(aggregateId, upTo, squashEvent, Some(userId), Some(metadata))
       eventsToPublish = eventsToPublish.filterNot { case ((id, version), _) => id == aggregateId && version <= upTo }
       // D85: an event that may change the state takes the snapshots of the aggregate and of the duplicates still reading it.
-      if (squashEvent.isInstanceOf[SquashMayChangeState]) snapshots --= duplicatesOf(aggregateId) + aggregateId
+      if (squashEvent.isInstanceOf[SquashMayChangeState]) historyChangedFor(duplicatesOf(aggregateId) + aggregateId)
       else if (snapshots.get(aggregateId).exists(_.version <= upTo)) snapshots -= aggregateId
       squashedVersions += aggregateId -> upTo
     }
@@ -235,7 +245,7 @@ class MemoryEventStoreState extends EventStoreState {
   private def detachDuplicate(duplicate: (AggregateId, FirstEvent[_])): Unit = {
     val (duplicateId, firstEvent) = duplicate
     replaceEvent(duplicateId, AggregateVersion(1), firstEvent, None, None)
-    if (firstEvent.isInstanceOf[SquashMayChangeState]) snapshots -= duplicateId
+    if (firstEvent.isInstanceOf[SquashMayChangeState]) historyChangedFor(Set(duplicateId))
   }
 
   // The event at `version` becomes `event`, keeping its place and time; the user and metadata change when given.
@@ -333,7 +343,7 @@ class MemoryEventStoreState extends EventStoreState {
       entry.version == rewritten.version && entry.event.getClass == rewritten.event.getClass)).foreach { rewritten =>
       throw new RewriteChangesClassException(aggregateId, rewritten.version, rewritten.event.getClass.getName)
     }
-    snapshots --= duplicatesOf(aggregateId) + aggregateId // as in PostgreSQL (D30)
+    historyChangedFor(duplicatesOf(aggregateId) + aggregateId) // as in PostgreSQL (D30, F119)
     events.foreach { rewritten =>
       eventStore += aggregateId -> eventStore.getOrElse(aggregateId, Vector()).map(entry =>
         if (entry.version == rewritten.version) entry.asInstanceOf[EventStoreEntry[AGGREGATE_ROOT]].copy(event = rewritten.event) else entry)

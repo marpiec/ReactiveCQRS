@@ -94,6 +94,22 @@ object OverflowPolicy {
   case object Reject extends OverflowPolicy
 }
 
+/** Where the owners of an aggregate type run (D43). */
+sealed trait Placement
+
+object Placement {
+  /** Each node keeps owners of its own for the aggregates it is asked about; between nodes, the store's version check
+    * decides which command wins. For aggregates of one node (ephemeral ones) and for moving to `Sharded` gradually. */
+  case object Local extends Placement
+
+  /** One owner of each aggregate in the cluster, placed by Cluster Sharding by aggregate id: commands and queries reach it
+    * from any node. The actor system must be a cluster (`pekko.actor.provider = cluster`) of one node or more. The shard
+    * passivates idle owners (`pekko.cluster.sharding.passivation`). About ten shards per node of the largest cluster. */
+  case class Sharded(numberOfShards: Int = 100) extends Placement {
+    require(numberOfShards > 0, "numberOfShards must be positive")
+  }
+}
+
 /** An aggregate type's behaviour. Events are stored under their class name; an event class that must change shape is
   * kept, deprecated, and a new class (`...V2`) takes its place (D29: there is no event versioning). */
 abstract class AggregateContext[AGGREGATE_ROOT : ClassTag] {
@@ -131,6 +147,9 @@ abstract class AggregateContext[AGGREGATE_ROOT : ClassTag] {
 
   /** Opt-in squash of old history into one event (D47–D52); none by default. */
   val squash: Option[SquashPolicy[AGGREGATE_ROOT]] = None
+
+  /** Owners on each node (`Local`, the default) or one owner per aggregate in the cluster (`Sharded`, D43). */
+  val placement: Placement = Placement.Local
 
   val aggregateType: AggregateType = AggregateType.of[AGGREGATE_ROOT]
 

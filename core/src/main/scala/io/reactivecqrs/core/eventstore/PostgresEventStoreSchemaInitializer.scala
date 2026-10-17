@@ -23,6 +23,7 @@ class PostgresEventStoreSchemaInitializer  {
     createSnapshotsTable()
     addEventsMetadataColumn()
     addAggregatesSquashedVersionColumn()
+    addAggregatesHistoryGenerationColumn()
     createEventsAggregateVersionIndexWhenSmall()
     dropOldFunctions()
     createAddEventsFunction()
@@ -153,6 +154,12 @@ class PostgresEventStoreSchemaInitializer  {
     sql"""ALTER TABLE aggregates ADD COLUMN IF NOT EXISTS squashed_version INT""".execute()
   }
 
+  // F119: raised by every change that may make the aggregate's snapshots wrong; a snapshot is written only at the
+  // generation its state was read at. Adding a column with a constant default rewrites nothing.
+  private def addAggregatesHistoryGenerationColumn(): Unit = DB.autoCommit { implicit session =>
+    sql"""ALTER TABLE aggregates ADD COLUMN IF NOT EXISTS history_generation INT NOT NULL DEFAULT 0""".execute()
+  }
+
   // F38: a new or small installation gets the restore index at once; a large one builds it online
   // (`PostgresEventStoreState.buildIndexesConcurrently`), since a plain build would block writes for its duration (D69).
   private def createEventsAggregateVersionIndexWhenSmall(): Unit = DB.autoCommit { implicit session =>
@@ -270,6 +277,7 @@ class PostgresEventStoreSchemaInitializer  {
           |    INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event, metadata) VALUES (event_id, user_id, _aggregate_id, event_time, current_version + 1, event_type_id, 0, event, metadata);
           |    INSERT INTO events_to_publish (event_id, aggregate_id, version, user_id, event_time) VALUES (event_id, _aggregate_id, current_version + 1, user_id, event_time);
           |    DELETE FROM snapshots WHERE aggregate_id = _aggregate_id;
+          |    UPDATE aggregates SET history_generation = history_generation + 1 WHERE id = _aggregate_id AND base_id = _aggregate_id;
           |    RETURN current_version + 1;
           |END;
           |$$

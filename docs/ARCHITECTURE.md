@@ -329,7 +329,7 @@ run works in a new schema (`TestDatabase`).
 | Table | Columns / keys | Role |
 |---|---|---|
 | `events` (`:29-41`) | `id` (from `events_seq`) PK, `user_id`, `aggregate_id`, `event_time TIMESTAMP`, `version`, `event_type_id`, `event_type_version` (always 0, D29), `event TEXT`, since M3 `metadata JSONB` (the envelope, D32; null when none); indexes `(aggregate_id)`, `(aggregate_id, id)`, and `(aggregate_id, version)` built online by `buildIndexesConcurrently()` (F38) | append-only event log |
-| `aggregates` (`:103-115`) | PK `(id, base_id)`, `space_id`, `creation_time`, `type_id`, `base_order`, `base_id`, `base_version`, since M3 `squashed_version` (null unless squashed, D49); indexes `(type_id)`, `(base_id)` | one row per (aggregate, ancestor) in its duplication chain; the own row (`base_id = id`) holds the **current version** used for locking |
+| `aggregates` (`:103-115`) | PK `(id, base_id)`, `space_id`, `creation_time`, `type_id`, `base_order`, `base_id`, `base_version`, since M3 `squashed_version` (null unless squashed, D49), since M5 `history_generation` (F119); indexes `(type_id)`, `(base_id)` | one row per (aggregate, ancestor) in its duplication chain; the own row (`base_id = id`) holds the **current version** used for locking |
 | `noop_events` (`:75-81`) | `id` (= `events.id`) PK, `from_version` | events cancelled by an undo, effective from that version |
 | `snapshots` (since M3) | `aggregate_id` PK, `version`, `context_version`, `schema_version`, `state TEXT`, `created` | the latest performance snapshot of an aggregate (D30, §4.3); disposable |
 | `events_to_publish` (`:83-101`) | `event_id` PK, `aggregate_id`, `version`, `user_id`, `event_time`; index `(aggregate_id, version)` | **outbox**: events not yet confirmed by every subscriber |
@@ -400,10 +400,14 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   and for reads at an instant, it reads every event, never failing because of the snapshot
   (R10). An undo deletes the aggregate's snapshot, a rewrite those of the aggregate and of its
   duplicates, a squash the one at or below its point, a permanent delete its own, each in its
-  transaction; the owner runs all of them, so a snapshot write cannot race them. A snapshot is
-  written only while its aggregate is stored at that version, and an owner whose history
-  changed under it (a delete, a detach, a rewrite or state-changing squash of its base) is
-  stopped without writing one (F100).
+  transaction. Each of those that may make a state wrong (an undo, a rewrite of the aggregate or
+  of its base, a squash or a detach that may change the state) also raises the aggregate's
+  `history_generation`, which a restore reads before the history; a snapshot is written only
+  while its aggregate is stored at that version and its history is at the generation its state
+  was read at (F119), so an owner that stops after such a change, a stale one kept for the next
+  owner by a shard, or another node's owner of a `Local` aggregate writes nothing. An owner
+  whose history changed under it (a delete, a detach, a rewrite or state-changing squash of its
+  base) is also stopped without writing one (F100).
 - `GetAggregateMinVersion(id, v, maxMillis)` waits in the owner until the version is reached
   and is answered then; when `maxMillis` passes first, it is answered with
   `Failure(AggregateInIncorrectVersionException)` (fixed F81).
@@ -412,14 +416,15 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
 
 ### 4.4 Owner lifecycle
 
-- Created lazily by `AggregateCommandBusActor` on the first command, query or re-publish
-  request for an id. The first message restores the state; what waits in the outbox is
-  re-published when the outbox poller asks (D8, F72). An owner made for an id just taken from
-  the pool starts at version 0 without reading.
+- Created lazily on the first command, query or re-publish request for an id: by
+  `AggregateCommandBusActor` for a `Local` type, by its shard for a `Sharded` one (D43, §13.3).
+  The first message restores the state; what waits in the outbox is re-published when the
+  outbox poller asks (D8, F72). A command for an id just taken from the pool says so (`fresh`),
+  and an owner that starts with it begins at version 0 without reading.
 - **Failed restore** (F10, D11): the owner answers commands with `CommandHandlingError` and
   queries with `Failure(AggregateRestoreFailedException)`, and after `failedRestoreRetryAfter`
-  (5 s) asks the command bus to stop it (`OwnerPassivate`); the next request restores again in
-  a new owner.
+  (5 s) asks whoever keeps its messages to stop it (`OwnerPassivate` to the command bus,
+  `Passivate` to its shard); the next request restores again in a new owner.
 - **Stopping (passivation):** the command bus sends `StopOwner` and keeps the messages that
   arrive for that aggregate meanwhile; the owner answers the commands it started (and any
   waiting min-version queries) and stops; once it terminated, a new owner gets the kept
@@ -427,8 +432,8 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   `PassivateAggregate(id)` (operations, tests). When the store changed under the owner (a
   permanent delete; `HistoryChanged` from another owner after a rewrite or a state-changing
   squash of its base, or a detach) the bus sends `StopOwnerStale` instead, also to an owner
-  stopping already: it writes no snapshot (F100). It is Cluster Sharding's passivation (D43,
-  D72), so M5 can put a shard in the bus's place without changing the owner.
+  stopping already: it writes no snapshot (F100). A sharded owner stops the same way through
+  its shard (§13.3).
 - **Dispatchers (F27, since M3):** owners run on `reactivecqrs.blocking-dispatcher` (the
   library's `reference.conf`: a fixed pool of 32 threads, throughput 1; size it near the JDBC
   pool), so persisting stays synchronous on the owner's thread (F69) without holding up the
@@ -438,15 +443,17 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   generator, the saga state, the outbox poller and the squash scheduler. Projections are made
   by the host: `Props(...).withDispatcher(BlockingDispatcher.id)`; one left on the default
   dispatcher logs a warning at start.
-- **Reaping** (`AggregateCommandBusActor.clearOldAggregateRepositories`): at most every 5
+- **Reaping** of a `Local` type's owners (`AggregateCommandBusActor.clearOldAggregateRepositories`; a
+  shard passivates the owners of a `Sharded` type itself): at most every 5
   minutes, and only when a message for some owner arrives. When more than `keepAliveLimit`
   (200) owners are tracked, the least recently used ones idle for more than 2 minutes are
   stopped; any owner idle for more than `maxInactivityMillis` (12 h) too.
 - **Failures (AR7):** the owner never throws from `receive`: a failure that belongs to one
   command or query is answered to its caller; an unexpected failure of the owner itself is
   logged, and its state is read again from the store with the next message. The command bus's
-  supervisor strategy stops a failed owner instead of restarting it (a restart would lose its
-  pending callers). The event bus, the projections and the outbox poller (M2) also answer or
+  supervisor strategy stops a failed `Local` owner instead of restarting it (a restart would lose
+  its pending callers); a shard restarts a failed entity, which the owner's guards leave nothing
+  to do. The event bus, the projections and the outbox poller (M2) also answer or
   log a failing message. `DeathWatch`: the command bus on its owners, the event bus on its
   subscribers.
 
@@ -1091,8 +1098,9 @@ pool does not come. The saga state's JDBC calls run on the blocking dispatcher (
    the duplicates that read below it first, under the chain lock that duplication also takes.
 11. **A running owner never outlives a change of its stored history it cannot see.** A
    permanent delete, a detach, and a rewrite or a state-changing squash of its base stop it
-   with `StopOwnerStale`, which writes no snapshot; snapshots are written only while their
-   aggregate is stored at their version (F100, F101).
+   with `StopOwnerStale` (or, sharded, `PassivateOwner(stale)`), which writes no snapshot;
+   snapshots are written only while their aggregate is stored at their version and its history
+   at the generation their state was read at (F100, F101, F119).
 
 ---
 
@@ -1128,6 +1136,7 @@ on the live path (F93), so a projection that cannot keep up lets its backlog gro
 | Idempotency rules | `commandhandler/Idempotency.scala`, `CommandResponseState` | the response is written in the persist transaction (I2); a taken key and a version conflict both answer with the stored response |
 | Retries and timeouts | `util/Backoff`; `AggregateOwner` (concurrent retries, command timeout), `SagaActor` (write retries), `ProjectionActor` (listener retries), `RedeliveryPolicy`, `PostgresDocumentStore.updateWithRetries` | bounded everywhere; the document-store retry runs inside the listener transaction and must stay immediate (AR6) |
 | New message between nodes | `cluster/ClusterSerializer` (library classes by field name, the application's values through mpjsons, exceptions), the bindings in `reference.conf` | no functions, futures or mutable state in a message that leaves its node; a field added to a library message is an `Option` or has a default, a changed field type needs a new class (D68); a library exception keeps its class only with a field codec and a binding of its own |
+| Owner placement and hand-over (sharding) | `AggregateCommandBusActor.startRegion`, `toOwner`, `stopOwner`, `shardedOwnerStarted`; `AggregateOwner` (`unrestored`, `askToStop`, `PassivateOwner`); the hand-over timeouts in `reference.conf` | only the shard keeps messages for a stopping sharded owner, so every stop goes through it; a hand-over must wait for the command at work (D72): the timeouts stay above the longest command timeout; acknowledgements go only to an owner on the bus's node |
 
 ---
 
@@ -1187,3 +1196,57 @@ connection of its own, so processes that start together initialize the schema on
 instead of failing on concurrent DDL. It is reentrant on a thread, as one initialization may
 start another, and gives up after five minutes. The heavy jobs (`buildIndexesConcurrently`,
 `backfillSpaces`) stay separate calls.
+
+### 13.3 Sharded owners (D43, D72)
+
+A context with `placement = Placement.Sharded(numberOfShards)` has one owner per aggregate in the
+cluster. Every node's command bus of the type starts the type's shard region (`owner-<type name>`,
+`ClusterSharding.start`, the default allocation strategy, which gives new shards only to the
+nodes of the newest app-version, D66), whose entity is the owner, on the blocking dispatcher. The
+bus stays the type's front door on its node (ids, historical reads, outbox deletes, permanent
+deletes) and sends its owners everything as `ToOwner(aggregateId, message)`: the entity id is the
+aggregate id, the shard `abs(id % numberOfShards)`. An owner takes its id from its entity name;
+a command for an id just taken from the pool carries `fresh`, so its owner does not read.
+`Local` (the default) keeps the bus's own owners, one per node, with the store's version check
+deciding between nodes.
+
+- **Owners made on a node use that node's settings:** they publish to that node's event bus
+  with that node's command bus as the publisher, which deletes the outbox rows (F91). They tell
+  that bus they run (`OwnerStarted`), and it passes an acknowledgement on to the owner only
+  while it runs there, so an ack never starts a passivated owner.
+- **Stopping goes through the shard,** the only place that can keep the messages that arrive
+  meanwhile. Its hand-off message, for a rebalance or a node that leaves, and its idle
+  passivation (`pekko.cluster.sharding.passivation`, 120 s by default) send `StopOwner`: the
+  owner finishes the commands it started (a serial queue drains), answers its waiting queries,
+  writes its passivation snapshot and stops. A stop the bus asks for (`PassivateAggregate`, a
+  history change, a permanent delete) reaches the owner through the region as
+  `PassivateOwner(stale)`; the owner marks itself stale when told so and asks its shard
+  (`Passivate(StopOwner)`). An owner started only to be stopped stops without reading. A failed
+  restore asks the shard the same way (D11). A stale request that reaches an owner already
+  passivating is kept for the next one, so its state could be written late as a snapshot: the
+  history generation refuses that write (F119).
+- **A hand-over waits for the command at work:** Pekko stops an entity forcefully 5 s before
+  `handoff-timeout`, and a leaving node hands its shards over within the shutdown phase
+  `cluster-sharding-shutdown-region`; core's `reference.conf` sets both to 90 s, above the
+  default command timeout (60 s). A host with longer command timeouts raises them, and its
+  process manager must give a node longer still to stop (Kubernetes:
+  `terminationGracePeriodSeconds`). Messages for a shard being handed over wait in the sending
+  region and reach the new owner; a command can therefore run later than its caller sent it,
+  and the owner's timeout (R5) counts from its arrival: callers retry with idempotency keys.
+  (A deadline set by the sending node was considered and left out: clock skew between nodes
+  could time out every command one node routes.)
+- **Two owners at once** (a node lost before the split brain resolver downs it, or `Local`
+  owners on two nodes): the store's version check decides, and a first command under a chosen
+  id that loses the race gets the conflict or the stored response (F120).
+- **Contended commands** (F99): a concurrent command that conflicts with a commit of its own
+  owner runs again at once, in turn, and new ones wait behind it while any wait; conflicts the
+  store finds keep the back-off (D37).
+- **What crosses nodes:** the application's commands and their responses go through the cluster
+  serializer (§13.1), as the JSON of their classes: a command of a sharded type must be one
+  mpjsons can write and read by its class.
+
+`ShardedOwnersSpec` runs three nodes in one JVM over one schema (`TestCluster`): commands from
+any node, one owner per aggregate under concurrent commands from every node, outbox deletes,
+acknowledgements, passivation asked on another node, a rewrite that stops a duplicate's owner
+elsewhere, idle passivation, and a node that leaves under load while an owner runs a twelve-second
+command.

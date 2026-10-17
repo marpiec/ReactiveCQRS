@@ -120,7 +120,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 
   override def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit = {
     // The snapshots of the aggregate and of its duplicates may hold the old values (D30).
-    sql"""DELETE FROM snapshots WHERE aggregate_id IN (SELECT id FROM aggregates WHERE base_id = ${aggregateId.asLong})""".update()
+    historyChangedFor(sqls"""SELECT id FROM aggregates WHERE base_id = ${aggregateId.asLong}""")
     // D17: a rewritten event keeps its class, so the history means what it meant; only the stored values change.
     events.foreach { e =>
       val className = e.event.getClass.getName
@@ -211,16 +211,29 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       .single()
   }
 
-  override def writeSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, snapshot: Snapshot[AGGREGATE_ROOT], stateClassName: String): Unit = {
+  override def writeSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, snapshot: Snapshot[AGGREGATE_ROOT], stateClassName: String, generation: Int): Unit = {
     val state = mpjsons.serialize(snapshot.state, stateClassName)
     DB.autoCommit { implicit session =>
-      // Only while the aggregate is stored at that version: an owner that stops after a permanent delete writes nothing.
+      // Only while the aggregate is stored at that version, with the history the state was made from: an owner that
+      // stops after a permanent delete, or after its history changed under it, writes nothing (F119).
       sql"""INSERT INTO snapshots (aggregate_id, version, context_version, schema_version, state, created)
            | SELECT ${aggregateId.asLong}, ${snapshot.version.asInt}, ${snapshot.contextVersion}, ${snapshot.schemaVersion}, $state, current_timestamp
-           | WHERE EXISTS (SELECT 1 FROM aggregates WHERE id = ${aggregateId.asLong} AND base_id = ${aggregateId.asLong} AND base_version >= ${snapshot.version.asInt})
+           | WHERE EXISTS (SELECT 1 FROM aggregates WHERE id = ${aggregateId.asLong} AND base_id = ${aggregateId.asLong} AND base_version >= ${snapshot.version.asInt}
+           |   AND history_generation = $generation)
            | ON CONFLICT (aggregate_id) DO UPDATE SET version = EXCLUDED.version, context_version = EXCLUDED.context_version,
            |   schema_version = EXCLUDED.schema_version, state = EXCLUDED.state, created = EXCLUDED.created""".stripMargin.update()
     }
+  }
+
+  override def historyGeneration(aggregateId: AggregateId): Int = DB.readOnly { implicit session =>
+    sql"""SELECT history_generation FROM aggregates WHERE id = ${aggregateId.asLong} AND base_id = ${aggregateId.asLong}""".map(_.int(1)).single().getOrElse(0)
+  }
+
+  // D30, F119: the snapshots of these aggregates may hold states their history no longer gives: they go, and the
+  // aggregates' history generation moves on, so an owner still holding such a state cannot write it as a snapshot again.
+  private def historyChangedFor(aggregateIds: SQLSyntax)(implicit session: DBSession): Unit = {
+    sql"""DELETE FROM snapshots WHERE aggregate_id IN ($aggregateIds)""".update()
+    sql"""UPDATE aggregates SET history_generation = history_generation + 1 WHERE id = base_id AND id IN ($aggregateIds)""".update()
   }
 
   /** Builds the index of F38, `events(aggregate_id, version)`, without blocking writes to `events` (D69): run it once in
@@ -418,7 +431,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     val updated = sql"""UPDATE events SET event = ${mpjsons.serialize(firstEvent, className)}, event_type_id = ${typesNamesState.typeIdByClassName(className)}
                        | WHERE aggregate_id = $id AND version = 1""".stripMargin.update()
     if (updated != 1) throw new IllegalStateException("Duplicate " + id + " has no event at version 1 to detach")
-    if (firstEvent.isInstanceOf[SquashMayChangeState]) sql"""DELETE FROM snapshots WHERE aggregate_id = $id""".update() // D85
+    if (firstEvent.isInstanceOf[SquashMayChangeState]) historyChangedFor(sqls"""$id""") // D85
     sql"""DELETE FROM aggregates WHERE id = $id AND base_id <> $id""".update()
     sql"""UPDATE aggregates SET base_order = 1 WHERE id = $id AND base_id = $id""".update()
   }
@@ -444,7 +457,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       sql"""DELETE FROM events_to_publish WHERE aggregate_id = $id AND version <= $n""".update()
       // A squash event that may change the state makes every snapshot of the aggregate wrong, and those of the duplicates
       // that still read it (D85); one that gives the state back, only those it replaces.
-      if (squashEvent.isInstanceOf[SquashMayChangeState]) sql"""DELETE FROM snapshots WHERE aggregate_id IN (SELECT id FROM aggregates WHERE base_id = $id)""".update()
+      if (squashEvent.isInstanceOf[SquashMayChangeState]) historyChangedFor(sqls"""SELECT id FROM aggregates WHERE base_id = $id""")
       else sql"""DELETE FROM snapshots WHERE aggregate_id = $id AND version <= $n""".update()
       sql"""DELETE FROM aggregates WHERE id = $id AND base_id <> $id""".update()
       sql"""UPDATE aggregates SET base_order = 1, squashed_version = $n WHERE id = $id AND base_id = $id""".update()

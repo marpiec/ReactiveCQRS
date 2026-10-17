@@ -54,8 +54,14 @@ abstract class EventStoreState {
   def readSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, stateClassName: String): Option[Try[Snapshot[AGGREGATE_ROOT]]]
 
   /** Stores the aggregate's snapshot in a transaction of its own, in place of the one it had; only while the aggregate
-    * is stored at that version or later, so nothing is written for an aggregate deleted for good. */
-  def writeSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, snapshot: Snapshot[AGGREGATE_ROOT], stateClassName: String): Unit
+    * is stored at that version or later, so nothing is written for an aggregate deleted for good, and while its history
+    * is at `generation`, the one the state was read at (F119). */
+  def writeSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, snapshot: Snapshot[AGGREGATE_ROOT], stateClassName: String, generation: Int): Unit
+
+  /** How many times the aggregate's history changed so that its snapshots could be wrong (an undo, a rewrite of it or of
+    * its base, a squash or a detach that may change its state, F119); 0 for an aggregate not stored yet. Read it before
+    * the history, so that a state is never paired with a later generation than its own. */
+  def historyGeneration(aggregateId: AggregateId): Int
 
   // ************** Rebuild (D58, D59)
 

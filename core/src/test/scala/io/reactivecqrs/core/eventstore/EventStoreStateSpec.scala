@@ -285,7 +285,7 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     f.storeEvents(Seq(EventA("one"), EventB(2), EventC(true)))
     val snapshot = Snapshot(AggregateVersion(3), 7, 2, SomeAggregate())
 
-    eventStoreState.writeSnapshot(f.aggregateId, snapshot, stateClass)
+    eventStoreState.writeSnapshot(f.aggregateId, snapshot, stateClass, eventStoreState.historyGeneration(f.aggregateId))
     eventStoreState.readSnapshot[SomeAggregate](f.aggregateId, stateClass).map(_.get) mustBe Some(snapshot)
 
     f.storeEvents(Seq(Undo(1)))
@@ -293,11 +293,39 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
 
     val copyId = AggregateId(System.nanoTime() + 1)
     f.storeEvents(Seq(Copy(SpaceId(1), f.aggregateId, AggregateVersion(4))), copyId, AggregateVersion(0))
-    eventStoreState.writeSnapshot(f.aggregateId, snapshot.copy(version = AggregateVersion(4)), stateClass)
-    eventStoreState.writeSnapshot(copyId, snapshot.copy(version = AggregateVersion(1)), stateClass)
+    eventStoreState.writeSnapshot(f.aggregateId, snapshot.copy(version = AggregateVersion(4)), stateClass, eventStoreState.historyGeneration(f.aggregateId))
+    eventStoreState.writeSnapshot(copyId, snapshot.copy(version = AggregateVersion(1)), stateClass, eventStoreState.historyGeneration(copyId))
+    eventStoreState.readSnapshot[SomeAggregate](f.aggregateId, stateClass).isDefined mustBe true
+    eventStoreState.readSnapshot[SomeAggregate](copyId, stateClass).isDefined mustBe true
     eventStoreState.localTx(session => eventStoreState.overwriteEvents(f.aggregateId, Seq(EventWithVersion(AggregateVersion(1), EventA("rewritten"))))(session))
     eventStoreState.readSnapshot[SomeAggregate](f.aggregateId, stateClass) mustBe None
     eventStoreState.readSnapshot[SomeAggregate](copyId, stateClass) mustBe None
+  }
+
+  // F119: an owner that read its state before such a change, and stops after it, must not write that state back.
+  Scenario("A snapshot of a state read before an undo or a rewrite is not written, also a duplicate's") {
+    val f = new TestFixture(eventStoreState)
+    val stateClass = classOf[SomeAggregate].getName
+    val snapshot = Snapshot(AggregateVersion(2), 7, 2, SomeAggregate())
+    f.storeEvents(Seq(EventA("one"), EventB(2)))
+    val copyId = AggregateId(System.nanoTime() + 1)
+    f.storeEvents(Seq(Copy(SpaceId(1), f.aggregateId, AggregateVersion(2))), copyId, AggregateVersion(0))
+    val readAt = eventStoreState.historyGeneration(f.aggregateId)
+    val copyReadAt = eventStoreState.historyGeneration(copyId)
+
+    eventStoreState.localTx(session => eventStoreState.overwriteEvents(f.aggregateId, Seq(EventWithVersion(AggregateVersion(1), EventA("rewritten"))))(session))
+    eventStoreState.writeSnapshot(f.aggregateId, snapshot, stateClass, readAt)
+    eventStoreState.writeSnapshot(copyId, snapshot.copy(version = AggregateVersion(1)), stateClass, copyReadAt)
+    eventStoreState.readSnapshot[SomeAggregate](f.aggregateId, stateClass) mustBe None
+    eventStoreState.readSnapshot[SomeAggregate](copyId, stateClass) mustBe None
+
+    val rewrittenAt = eventStoreState.historyGeneration(f.aggregateId)
+    f.storeEvents(Seq(Undo(1)))
+    eventStoreState.writeSnapshot(f.aggregateId, snapshot, stateClass, rewrittenAt)
+    eventStoreState.readSnapshot[SomeAggregate](f.aggregateId, stateClass) mustBe None
+
+    eventStoreState.writeSnapshot(f.aggregateId, snapshot.copy(version = AggregateVersion(3)), stateClass, eventStoreState.historyGeneration(f.aggregateId))
+    eventStoreState.readSnapshot[SomeAggregate](f.aggregateId, stateClass).map(_.get.version) mustBe Some(AggregateVersion(3))
   }
 
   // D32, R13: the metadata envelope travels with the events; events stored without one get their user as the actor.

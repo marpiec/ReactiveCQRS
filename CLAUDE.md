@@ -154,9 +154,11 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
 
 ### Key actors
 - **`AggregateCommandBusActor`** (`core/.../commandhandler/`) — one per aggregate
-  type. Keeps one `AggregateOwner` per aggregate; stops idle ones (default keep-alive 200,
-  sweep every 5 min) by passivation: `StopOwner`, keeping the messages that arrive meanwhile
-  for a new owner. Deletes delivered outbox rows (acks come to it, F91).
+  type and node. For a `Local` type (the default) it keeps one `AggregateOwner` per aggregate;
+  stops idle ones (default keep-alive 200, sweep every 5 min) by passivation: `StopOwner`,
+  keeping the messages that arrive meanwhile for a new owner. For a `Sharded` type (M5, D43)
+  it starts the type's shard region and sends its owners everything as `ToOwner`; the shards
+  place, keep and passivate them (`docs/design/M5-cluster.md`, ARCHITECTURE §13.3). Deletes delivered outbox rows (acks come to it, F91).
   Allocates ids from pools of 10 000 fetched ahead (`IdPool`, F23: no `Await`; a command waits
   for a late pool, and a failing generator is answered with `CommandHandlingError`, F75).
 - **`AggregateOwner`** (`core/.../aggregate/`) — the source of truth for one aggregate
@@ -166,7 +168,8 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
   replaying the *entire* event stream; then it keeps them updated. With `commandProcessing = Serial(...)`
   (R8) it runs one command at a time from a bounded queue. A context mixing in
   `WithOutboxWriter` writes rows of its own in the transaction of the events (R12). `aggregateVersionLimit` defaults to
-  10 000 events per aggregate. Design: `docs/design/M3-aggregates.md`.
+  10 000 events per aggregate. A concurrent command that conflicts with its own owner's commit
+  runs again at once, in turn (F99). Design: `docs/design/M3-aggregates.md`.
 - **`EventsBusActor`** — in-memory routing and delivery tracking (deadline, stall
   logging, `GetDeliveryStatus`); routes re-publish requests to the type's command bus;
   adds and removes the subscriptions of managed builds (M4). No flow control yet (F93).
@@ -211,7 +214,9 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
   envelope of D32; null when none).
   Indices: `events(aggregate_id)`, `events(aggregate_id, id)`.
 - **`aggregates`** — PK `(id, base_id)`, plus `space_id, creation_time, type_id,
-  base_order, base_id, base_version, squashed_version` (the squash point, D49, D51). The `base_id`/`base_order`/`base_version`
+  base_order, base_id, base_version, squashed_version` (the squash point, D49, D51),
+  `history_generation` (raised by changes that make snapshots wrong; a snapshot is written only
+  at the generation its state was read at, F119). The `base_id`/`base_order`/`base_version`
   columns implement **duplication chains**: a duplicated aggregate shares history
   with its base up to a version, then diverges. `base_version` is the current
   version and is what the stored procedures compare for optimistic locking.

@@ -134,7 +134,7 @@ behaviour.
 | ID | Decision |
 |---|---|
 | D42 | Cloud runs a multi-node Pekko cluster on one shared database; on-premise is a cluster of one that behaves like today. No separate databases per organization inside one cluster. |
-| D43 | Cluster Sharding places aggregates by aggregate-id hash, opt-in per context; reaping becomes passivation; fairness between organizations is handled by limits, not placement. |
+| D43 | Cluster Sharding places aggregates by aggregate-id hash, opt-in per context; reaping becomes passivation; fairness between organizations is handled by limits, not placement. **Done in M5:** `AggregateContext.placement = Placement.Sharded(numberOfShards)`; each node's command bus starts the type's shard region (`owner-<type>`) and sends everything to its owners through it (`ToOwner`); the shard passivates idle owners (F46); acknowledgements reach an owner only on its own node. `Local` stays the default. |
 | D44 | Delivery stays outbox + push from the aggregate's owner (D8, D20). Pulling one global ordered log is a later performance option. |
 | D45 | Commands, responses, events and states travel between nodes through one Pekko serializer built on mpjsons with the class name as manifest; Java serialization is off. **Done in M5:** `ClusterSerializer`, bound to `java.io.Serializable`, writes the library's messages field by field (an `ActorRef` as its serialized path, a polymorphic value as its runtime class with its JSON), the application's values as the mpjsons JSON of their runtime class, and the library's exceptions with their fields (bound explicitly, so a `Status.Failure` keeps them too); any other exception arrives as a `RemoteFailure`. Messages defined inside an actor class or carrying functions stay on their node. |
 | D68 | That serializer reads messages tolerantly (mpjsons `ignoreNonExistingFields`, defaults for missing fields); stored events keep strict reading; an incompatible message change gets a new class name. **Done in M5:** a library message is matched by field name (a field the reader lacks is skipped, a missing one takes its Scala default, else `None`, zero or null), so a library upgrade can add a field with a default; a changed field type needs a new class. |
@@ -146,7 +146,7 @@ behaviour.
 | D66 | During a rollout work moves only from old to new nodes (`pekko.cluster.app-version` + default shard allocation, which avoids old nodes); singletons move once (oldest node last). Confirm on the chosen Pekko version with a spike. |
 | D67 | A new event class (or `V<n>`, saga order class, squash event class) ships first with its handlers; it is written only after every node runs that version (per-feature write switch, or the next version). |
 | D71 | A node is ready only after its subscriber list is registered, shards and proxies are up and the schema check passed; blocking startup waits (bus init timer and 180 s `Await`, 30 s `EnsureEventsPublished` delay, index builds) are removed or asynchronous. |
-| D72 | Handover passivates an aggregate after its current command; outbox rows stay for the new owner; serial queues drain or reject with a retryable error; sagas resume from their stored step (requires idempotent saga commands, H3). |
+| D72 | Handover passivates an aggregate after its current command; outbox rows stay for the new owner; serial queues drain or reject with a retryable error; sagas resume from their stored step (requires idempotent saga commands, H3). **Done in M5 for owners:** the region's hand-off message is `StopOwner`, so an owner finishes its commands (its serial queue drains) and writes its passivation snapshot before it stops; a stop the bus asks for goes through the shard (`PassivateOwner`), which keeps what arrives meanwhile; `handoff-timeout` and the shutdown phase of the regions are 90 s in core's `reference.conf`, above the default command timeout. Sagas: step 5. |
 | D73 | Every version's upgrade test includes a rolling-upgrade test (old and new in one cluster under load): no lost or doubled command, projections catch up, no deserialization errors, projection switch-over works. |
 
 ### 1.8 Organizations
@@ -468,7 +468,8 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Fix:** D30, opt-in per context (`SnapshotPolicy`). Tests: `SnapshotSpec` (a property test over random histories with undo and duplication, red under two mutations; R10 with 100 000 events; the fallbacks; invalidation), `EventStoreStateSpec` for both stores.
 
 #### F46 — Command-bus child cache reap sorts the whole map
-- **Low**, likely · Fix in **M5** (replaced by passivation, D43) · `AggregateCommandBusActor.scala:168-184`
+- **Low**, likely · **Fixed in M5 for sharded types** (17/10/2026; replaced by passivation, D43) · `AggregateCommandBusActor.clearOldAggregateRepositories`
+- **As fixed:** the owners of a `Sharded` type are passivated by their shards (`pekko.cluster.sharding.passivation`); the bus keeps no children for them and runs no sweep. A `Local` type keeps the sweep, for ephemeral aggregates (M6) and gradual moves. Test: `ShardedOwnersSpec` (an idle owner is passivated by its shard and comes back with its state).
 
 #### F70 — An unknown message restarts the command bus and drops every command in flight
 - **Medium**, confirmed · **Fixed in M1** (16/10/2026) · `AggregateCommandBusActor.receive` (catch-all)
@@ -538,6 +539,22 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Root cause:** expired queries are filtered out of `delayedQueries` without answering them, and only when another query or event arrives.
 - **Found:** plan review at the M1 close.
 - **Fix:** a timer for the nearest deadline answers expired queries with `Failure(AggregateInIncorrectVersionException)`; a stopping owner answers its waiting queries the same way. Test: `AggregateOwnerSpec` "is answered with an error when its time is up" (red with the timer removed).
+
+#### F119 — A stopping owner could write a snapshot of a history that changed under it
+- **Medium**, likely · **Fixed in M5** (17/10/2026) · `AggregateOwner.writeSnapshot`, `EventStoreState.writeSnapshot`
+- **Symptom:** after a rewrite of a base, or a squash or detach that may change the state, the owner of a duplicate that was stopping wrote its state of before as its passivation snapshot, after the change had deleted the snapshots; later restores started from that state. So could another node's owner of a `Local` aggregate after an undo. With sharded owners (D43) the window grows: a stale stop that reaches a passivating owner is kept by its shard for the next owner.
+- **Root cause:** a snapshot write was checked only against the aggregate's version, which these changes leave as it was.
+- **Fix:** `aggregates.history_generation`, raised in the transaction of every change that deletes snapshots because their state may be wrong (an undo, a rewrite of the aggregate or of its base, a squash or a detach that may change the state); the restore reads it before the history, and a snapshot is written only while the generation is the one its state was read at. A state-preserving squash raises nothing.
+- **Test:** `EventStoreStateSpec` "A snapshot of a state read before an undo or a rewrite is not written, also a duplicate's" (both stores; failed without the check in either store, and with a rewrite or an undo that does not raise the generation).
+- **Found:** M5 design of sharded owners.
+
+#### F120 — A first command racing another owner on a chosen id was answered with an error
+- **Low**, confirmed · **Fixed in M5** (17/10/2026) · `AggregateOwner.movedOnWithoutThisOwner`
+- **Symptom:** two owners of one aggregate at once (nodes of a `Local` type, or a hand-over, D43) creating it under a chosen id: the one that lost got `EventHandlingError`, also for an idempotent command whose copy had won.
+- **Root cause:** both found the aggregate missing and inserted it; the loser's insert broke the primary key of `aggregates`, which the owner did not take for a concurrent modification.
+- **Fix:** a unique-key violation on `aggregates` (its only unique key; matched by table, as a database made by an older version may name the key otherwise) counts as a concurrent modification: the owner reads the aggregate again, and the caller gets the stored response of an idempotent command, or the conflict.
+- **Test:** `ChosenIdRaceSpec` (both owners pass the existence check before either inserts, as a table lock holds them until both wait; `EventHandlingError` before the fix).
+- **Found:** plan review at the M1 close (refinement of M5 item 3).
 
 ### Event store and SQL
 
@@ -637,10 +654,11 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **As fixed:** the sequences step by 10 000 (an older one is changed at start; the next pool starts past every pool handed out, so no id is given twice, also with a node still on the old size). The command bus and the saga actor keep their ids in an `IdPool`, which asks for the next pool when a fifth is left; a command or order that arrives while none is at hand waits, with the ones after it, and the actor keeps answering other messages; a pool that does not come fails the waiting ones (F75) and is asked for again with the next. Tests: `IdPoolSpec`; `CommandOutcomesSpec` (a query is answered while a command waits for a slow pool; failed against the old bus), the F75 scenarios.
 
 #### F99 — Contended concurrent commands wait a back-off even for conflicts their owner sees itself
-- **Low** (serial mode is the remedy, R8), confirmed (measured at the M3 close, 16/10/2026) · Fix in **M5** (with the owner as shard entity), or earlier if Neula needs concurrent mode on hot aggregates · `AggregateOwner.conflict`
+- **Low** (serial mode is the remedy, R8), confirmed (measured at the M3 close, 16/10/2026) · **Fixed in M5** (17/10/2026) · `AggregateOwner.ownConflict`, `runContended`
 - **Symptom:** 16 callers sending `ConcurrentCommand`s at once to one aggregate: 738 commands/s, p99 380 ms (`baseline-M3.md`), against 1 166 commands/s and p99 197 ms before the owner (`baseline-M2.md`). The same load in serial mode runs at 2 501 commands/s, p99 11 ms.
 - **Root cause:** every conflict waits D37's jittered back-off (10 ms doubling) before the command runs again, also when the owner itself saw it (another command of the same owner committed first), where no other writer is involved and waiting spreads nothing.
 - **Fix idea:** a command that conflicts with a commit of its own owner runs again as soon as that commit is done, one at a time (serial after a first conflict); conflicts found by the store (another writer) keep the back-off. Measure with the bench's contended scenario; the attempt limit must not fail commands that only waited their turn.
+- **As fixed:** a concurrent command whose handler ran on a version that a commit of its own owner has since passed waits its turn in a queue and runs again on the newer state, one at a time, oldest first; while any wait, new concurrent commands wait behind them, so a contended owner runs serially until its queue is empty. Waiting is not an attempt. Conflicts found by the store keep D37's back-off, and a command back from it waits its turn too. Test: `ContendedCommandsSpec` (40 commands at once to one aggregate: all succeed, at most 80 handler runs; 233 with the back-off). `SerialCommandsSpec`'s comparison now finds no conflict in concurrent mode under 1 000 commands at once. Measured (single runs, this machine, 16 callers, 800 commands): 887 commands/s, p99 36.4 ms, max 48 ms, against M4's 1 133/s, p99 339 ms, max 613 ms; serial mode in the same run 1 646/s, p99 16.9 ms (M4: 2 384/s), so that run was about 30% slower throughout.
 
 #### F27 — Blocking JDBC runs on the default dispatcher
 - **Medium**, likely · **Fixed in M3** (16/10/2026) · persist, restore, projections, futures
@@ -936,7 +954,7 @@ From §7 of Neula's change requests.
 | M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔, F95 ✔; Neula H2, H7 |
 | M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8 ✔; F8 (contract ✔), F22 ✔, F23 ✔, F25 ✔, F27 ✔, F30 ✔, F31 ✔, F32 ✔, F33 (rest ✔), F38 ✔, F39 ✔, F44 ✔, F50 ✔, F65 ✔, F76 ✔, F78 ✔, F81 ✔, F96 ✔, F97 ✔, F100–F107 ✔; D85 ✔; Neula H8 |
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
-| M5 | AR5; F46, F48, F63 ✔, F93 (flow control), F99 (F78 between nodes ✔ in M3) |
+| M5 | AR5; F46 ✔ (sharded types), F48, F63 ✔, F93 (flow control), F99 ✔, F119 ✔, F120 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 (complete) |
 
 ---

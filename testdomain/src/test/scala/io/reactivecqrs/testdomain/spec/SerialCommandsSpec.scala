@@ -67,13 +67,14 @@ class SerialCommandsSpec extends CommonSpec {
       cart.get.aggregateRoot.get.items.size mustBe 1000
     }
 
-    Scenario("for comparison, in concurrent mode the same load ends partly in conflicts") {
+    Scenario("in concurrent mode the same load ends without conflicts too: the commands that conflict run again in turn (F99)") {
       val bus = busOf(new ShoppingCartAggregateContext)
       val cartId = created(bus)
 
       val responses = thousandAtOnce(bus, cartId)
 
-      responses.collect { case e: AggregateConcurrentModificationError => e } must not be empty
+      responses.collect { case e: AggregateConcurrentModificationError => e } mustBe empty
+      responses.collect { case SuccessResponse(_, version) => version.asInt }.sorted mustBe (2 to 1001)
     }
 
     Scenario("a command beyond the queue limit is rejected at once") {

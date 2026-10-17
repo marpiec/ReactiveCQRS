@@ -10,8 +10,9 @@ import org.slf4j.LoggerFactory
 import scala.util.{Failure, Success, Try}
 
 /** An aggregate's version and root as read from the store; the root is null once the aggregate was deleted.
-  * `fromSnapshot`: the version of the snapshot the state was read from, if one was used. */
-case class Restored[AGGREGATE_ROOT](version: AggregateVersion, root: AGGREGATE_ROOT, fromSnapshot: Option[AggregateVersion] = None)
+  * `fromSnapshot`: the version of the snapshot the state was read from, if one was used. `generation`: the history
+  * generation the state was read at, which a snapshot of it must be written with (F119); 0 without snapshots. */
+case class Restored[AGGREGATE_ROOT](version: AggregateVersion, root: AGGREGATE_ROOT, fromSnapshot: Option[AggregateVersion] = None, generation: Int = 0)
 
 /**
   * Reads aggregates of one type from the event store: their state at the newest version, at a version or at an
@@ -34,6 +35,8 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
   /** The aggregate at its newest version, or at `at`. A version counts only the aggregate's own events, not those of
     * the base it was duplicated from. Fails when an event cannot be read or handled. */
   def restore(aggregateId: AggregateId, at: Option[Either[AggregateVersion, Instant]] = None): Restored[AGGREGATE_ROOT] = {
+    // F119: read before the history, so the state is never paired with a later generation than its own.
+    val generation = if (at.isEmpty && snapshots.isDefined) eventStore.historyGeneration(aggregateId) else 0
     usableSnapshot(aggregateId, at) match {
       case Some(snapshot) =>
         var version = snapshot.version
@@ -42,7 +45,7 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
           if (!noop) root = eventHandlers(userId, timestamp, root)(event)
           version = AggregateVersion(eventVersion)
         }
-        Restored(version, root, Some(snapshot.version))
+        Restored(version, root, Some(snapshot.version), generation)
       case None =>
         var version = AggregateVersion.ZERO
         var root = initialState()
@@ -51,7 +54,7 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
           if (!noop) root = eventHandlers(userId, timestamp, root)(event)
           if (eventAggregateId == aggregateId) version = AggregateVersion(eventVersion)
         }
-        Restored(version, root)
+        Restored(version, root, None, generation)
     }
   }
 
@@ -73,10 +76,11 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
     case _ => None
   }
 
-  /** Stores the aggregate's state at `version` as its snapshot, if the context takes snapshots. A failure is logged and
-    * changes nothing else: the aggregate is then restored from an older snapshot or from its events. */
-  def writeSnapshot(aggregateId: AggregateId, version: AggregateVersion, root: AGGREGATE_ROOT): Boolean = snapshots.exists { policy =>
-    Try(eventStore.writeSnapshot(aggregateId, Snapshot(version, contextVersion, policy.schemaVersion, root), stateClassName)) match {
+  /** Stores the aggregate's state at `version` as its snapshot, if the context takes snapshots and the history is still
+    * at `generation`, the one the state was read at (F119). A failure is logged and changes nothing else: the aggregate
+    * is then restored from an older snapshot or from its events. */
+  def writeSnapshot(aggregateId: AggregateId, version: AggregateVersion, root: AGGREGATE_ROOT, generation: Int): Boolean = snapshots.exists { policy =>
+    Try(eventStore.writeSnapshot(aggregateId, Snapshot(version, contextVersion, policy.schemaVersion, root), stateClassName, generation)) match {
       case Success(_) => true
       case Failure(e) =>
         log.warn("Writing the snapshot of aggregate " + aggregateId.asLong + " at version " + version.asInt + " failed", e)

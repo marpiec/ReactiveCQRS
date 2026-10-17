@@ -206,7 +206,7 @@ class ClusterSerializationSpec extends AnyFeatureSpec with Matchers with Eventua
       ).foreach(message => Await.result(echo ? message, 10.seconds) mustBe message)
 
       Await.result(echo ? CommandEnvelope(probe.ref, CommandId(5), "x"), 10.seconds) match {
-        case CommandEnvelope(respondTo, _, _) =>
+        case CommandEnvelope(respondTo, _, _, _) =>
           respondTo ! "reached"
           probe.expectMsg(10.seconds, "reached")
         case other => fail("Unexpected: " + other)

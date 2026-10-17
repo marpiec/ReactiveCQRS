@@ -11,6 +11,7 @@ import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEvent
 import io.reactivecqrs.core.eventstore.{EventStoreState, NewEvents}
 import io.reactivecqrs.core.util.{Backoff, MyActorLogging, RandomUtil}
 import org.apache.pekko.actor.{Actor, ActorRef, Cancellable}
+import org.apache.pekko.cluster.sharding.ShardRegion
 import org.postgresql.util.PSQLException
 
 import scala.collection.mutable
@@ -22,8 +23,13 @@ import scala.util.{Failure, Success, Try}
 
 object AggregateOwner {
 
-  /** A command for the owner's aggregate, with the id the command bus gave it and the caller to answer. */
-  case class CommandEnvelope(respondTo: ActorRef, commandId: CommandId, command: Any)
+  /** A command for the owner's aggregate, with the id the command bus gave it and the caller to answer. `fresh`: the
+    * aggregate id was just taken from the id pool, so an owner that starts with this command has nothing to restore. */
+  case class CommandEnvelope(respondTo: ActorRef, commandId: CommandId, command: Any, fresh: Boolean = false)
+
+  /** A message for the owner of a sharded aggregate (D43), as the command bus sends it to the type's shard region: the
+    * aggregate is the entity. */
+  case class ToOwner(aggregateId: AggregateId, message: Any)
 
   /** The aggregate at its current version: `Success(Aggregate)`, or `Failure` when it cannot be restored. */
   case class GetState(respondTo: ActorRef)
@@ -33,14 +39,22 @@ object AggregateOwner {
     * within `maxMillis` (F81). */
   case class GetStateMinVersion(respondTo: ActorRef, version: AggregateVersion, maxMillis: Int)
 
-  /** From the command bus, which routes nothing more to this owner: it finishes the commands it started and stops
-    * (Cluster Sharding's passivation, D43, D72). */
+  /** From whoever keeps the messages that arrive for this owner while it stops (the command bus, or the shard of a
+    * sharded owner, whose hand-off and passivation message it is): it finishes the commands it started and stops (D43,
+    * D72). */
   case object StopOwner
   /** As `StopOwner`, when the store changed under this owner (a permanent delete, a detach, a squash or a rewrite of
     * its base): its state may no longer be what the history gives, so it writes no snapshot of it. */
   case object StopOwnerStale
   /** To the command bus: this owner asks to be stopped, after a failed restore (D11). */
   case object OwnerPassivate
+
+  /** From the command bus to a sharded owner, through its region: only the shard can keep what arrives while the owner
+    * stops, so the owner asks it to (`Passivate`) and stops on its `StopOwner`. `stale` as for `StopOwnerStale`. */
+  case class PassivateOwner(stale: Boolean)
+  /** To the node's command bus: a sharded owner runs on this node, so the acknowledgements of its publications can
+    * reach it there without waking it when it does not run. */
+  case class OwnerStarted(aggregateId: AggregateId)
 
   /** A squash request (D47) and the caller to answer with a `SquashResponse`. */
   case class Squash(respondTo: ActorRef, request: SquashAggregate)
@@ -53,13 +67,14 @@ object AggregateOwner {
   val defaultConcurrentRetries: Backoff = Backoff(10.millis, 500.millis, maxAttempts = 10, jitter = true)
 }
 
-/** What every owner of one aggregate type shares; the command bus builds it once from the type's context. Acknowledgements
-  * of publications go to `publicationAcks`, the command bus, which outlives the owners (F91). */
+/** What every owner of one aggregate type shares; the command bus of the owner's node builds it once from the type's
+  * context. Acknowledgements of publications go to `commandBus`, which outlives the owners (F91), and so do history
+  * changes for the owners of other aggregates. */
 class OwnerSettings[AGGREGATE_ROOT: ClassTag](context: AggregateContext[AGGREGATE_ROOT],
                                               val eventStore: EventStoreState,
                                               val idempotency: Idempotency,
                                               val eventsBus: ActorRef,
-                                              val publicationAcks: ActorRef,
+                                              val commandBus: ActorRef,
                                               val failedRestoreRetryAfter: FiniteDuration,
                                               val maxRepublishEvents: Int = 1000,
                                               val concurrentRetries: Backoff = AggregateOwner.defaultConcurrentRetries) {
@@ -73,6 +88,7 @@ class OwnerSettings[AGGREGATE_ROOT: ClassTag](context: AggregateContext[AGGREGAT
   val snapshots: Option[SnapshotPolicy] = context.snapshots
   val commandProcessing: CommandProcessing = context.commandProcessing
   val squash: Option[SquashPolicy[AGGREGATE_ROOT]] = context.squash
+  val sharded: Boolean = context.placement.isInstanceOf[Placement.Sharded]
   val outboxWriter: Option[OutboxWriter[AGGREGATE_ROOT]] = context match {
     case withWriter: WithOutboxWriter[AGGREGATE_ROOT @unchecked] => Some(withWriter.outboxWriter)
     case _ => None
@@ -88,10 +104,10 @@ class OwnerSettings[AGGREGATE_ROOT: ClassTag](context: AggregateContext[AGGREGAT
   * otherwise a `ConcurrentCommand` runs again on the new state and any other command gets a conflict (D37). A command
   * that does not finish within the context's timeout is answered with an error and never persisted afterwards (R5).
   *
-  * `fresh`: the aggregate id was just taken from the id pool, so there is nothing to restore.
-  * See docs/design/M3-aggregates.md.
+  * `id`: the aggregate of a local owner; a sharded one (D43) is the shard's entity, named after its aggregate.
+  * See docs/design/M3-aggregates.md and docs/design/M5-cluster.md.
   */
-class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSettings[AGGREGATE_ROOT], fresh: Boolean = false)
+class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id: Option[AggregateId] = None)
   extends Actor with MyActorLogging {
 
   import AggregateOwner._
@@ -100,10 +116,14 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
   // F27: the owner runs on the blocking dispatcher; command handlers are the application's code and run on the default one.
   private val handlersContext: ExecutionContext = context.system.dispatcher
 
+  private val aggregateId: AggregateId = id.getOrElse(AggregateId(self.path.name.toLong))
+
   private var version: AggregateVersion = AggregateVersion.ZERO
   private var root: AGGREGATE_ROOT = initialState()
   // The version of the aggregate's stored snapshot, as far as this owner knows (D30).
   private var snapshotVersion: AggregateVersion = AggregateVersion.ZERO
+  // The history generation the state was read at, which a snapshot of it is written with (F119); 0 for a new aggregate.
+  private var generation: Int = 0
 
   /** A command of this owner, from its arrival until it is answered. `started`: it is under way (checked, its handler
     * running, or waiting to run again); in serial mode a command waits in `queued` until it may start. */
@@ -111,6 +131,12 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
   private val pending = mutable.LinkedHashMap[Long, Pending]() // by command id, oldest first
   private val queued = mutable.Queue[Long]() // serial mode (R8): commands that have not started, oldest first
   private var startingQueued = false
+  // F99: concurrent commands that conflicted with a commit of this owner run again at once, one at a time, oldest first,
+  // and new ones wait behind them while any wait: no other writer is involved, so a back-off would spread nothing.
+  // `rerunning`: the one whose turn it is.
+  private val contended = mutable.Queue[Long]()
+  private var rerunning: Option[Long] = None
+  private var runningContended = false
   private var restoreFailure: Option[AggregateRestoreFailedException] = None
 
   private case class HandlerFinished(commandId: CommandId, result: Try[CustomCommandResult[Any]])
@@ -130,13 +156,23 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
   // The store changed under this owner: its state must not become a snapshot.
   private var stale = false
 
+  override def preStart(): Unit = if (sharded) commandBus ! OwnerStarted(aggregateId)
+
   override def postStop(): Unit = minVersionTimer.foreach(_.cancel())
 
-  override def receive: Receive = if (fresh) restored else unrestored
+  override def receive: Receive = unrestored
 
   // State is restored with the first message, so a failing restore can be answered (F10). An unexpected failure later
-  // forgets the state, which the next message restores again.
+  // forgets the state, which the next message restores again. Nothing needs restoring for a fresh aggregate, nor for an
+  // owner started only to be stopped.
   private def unrestored: Receive = {
+    case envelope: CommandEnvelope if envelope.fresh =>
+      context.become(restored)
+      restored(envelope)
+    case StopOwner | StopOwnerStale if pending.isEmpty && minVersionQueries.isEmpty => context.stop(self)
+    case PassivateOwner(isStale) =>
+      stale ||= isStale
+      askToStop()
     case message =>
       restore() match {
         case None =>
@@ -155,6 +191,7 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
         version = restored.version
         root = restored.root
         snapshotVersion = restored.fromSnapshot.getOrElse(AggregateVersion.ZERO)
+        generation = restored.generation
         restoreFailure = None
         None
       case Failure(e) =>
@@ -177,15 +214,18 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
     case GetStateMinVersion(respondTo, _, _) => respondTo ! Failure(failure)
     case Squash(respondTo, request) => respondTo ! SquashRefused(request.id, "the aggregate cannot be restored: " + failure.getMessage)
     case MinVersionDeadline => answerExpiredMinVersionQueries()
-    case AskToStop => context.parent ! OwnerPassivate
+    case AskToStop | PassivateOwner(_) => askToStop()
     case StopOwner | StopOwnerStale => stopNow(withSnapshot = false)
     case _ => () // nothing to publish without a state
   }
 
+  // Asks whoever keeps the messages that arrive while this owner stops, its shard or the command bus, to stop it.
+  private def askToStop(): Unit = context.parent ! (if (sharded) ShardRegion.Passivate(StopOwner) else OwnerPassivate)
+
   private lazy val restored: Receive = guarded {
     case envelope: CommandEnvelope => start(envelope)
     case HandlerFinished(commandId, result) => handlerFinished(commandId, result)
-    case RunAgain(commandId) => pending.get(commandId.asLong).foreach(attempt)
+    case RunAgain(commandId) => pending.get(commandId.asLong).foreach(command => if (waitsItsTurn(command)) contended.enqueue(commandId.asLong) else attempt(command))
     case CommandTimedOut(commandId) => timedOut(commandId)
     case GetState(respondTo) => respondTo ! Success(aggregate)
     case GetEvents(respondTo) => respondTo ! (if (version == AggregateVersion.ZERO) Success(Nil) else Try(restorer.events(aggregateId)))
@@ -202,6 +242,9 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
       stopping = true
       stale = true
       stopIfDone()
+    case PassivateOwner(isStale) =>
+      stale ||= isStale
+      askToStop()
     case AskToStop => () // left from a failed restore that was followed by a successful one
   }
 
@@ -256,8 +299,34 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
     pending += command.envelope.commandId.asLong -> started
     restoreFailure match {
       case Some(failure) => finishWithError(command.envelope, failure)
+      case None if waitsItsTurn(started) => contended.enqueue(command.envelope.commandId.asLong)
       case None => attempt(started) // the idempotency check runs now, also for a command that waited (D31)
     }
+  }
+
+  private def waitsItsTurn(command: Pending): Boolean =
+    runsAgainOnConflict(command.envelope.command) && (rerunning.isDefined || contended.nonEmpty)
+
+  // F99: the oldest waiting command runs once no other has its turn. One answered at once (a stored response) lets the
+  // next one run in the same loop, without recursion.
+  private def runContended(): Unit = if (!runningContended) {
+    runningContended = true
+    try {
+      while (rerunning.isEmpty && contended.nonEmpty) {
+        val id = contended.dequeue()
+        pending.get(id).foreach { command =>
+          rerunning = Some(id)
+          attempt(command)
+        }
+      }
+    } finally runningContended = false
+  }
+
+  // A command left: answered, or waiting out a back-off. If it had its turn, the next waiting one runs.
+  private def leftItsTurn(commandId: Long): Unit = {
+    contended.dequeueFirst(_ == commandId)
+    if (rerunning.contains(commandId)) rerunning = None
+    runContended()
   }
 
   // A copy of an idempotent command that was applied already is answered with the stored response (D12). A command
@@ -326,7 +395,7 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
     if (events.isEmpty) {
       finish(command.envelope.commandId, successResponse(command.baseVersion, info))
     } else if (command.baseVersion != version) {
-      conflict(command, AggregateConcurrentModificationError(aggregateId, aggregateType, command.baseVersion, version))
+      ownConflict(command, AggregateConcurrentModificationError(aggregateId, aggregateType, command.baseVersion, version))
     } else {
       persist(command, events, rewritten, info)
     }
@@ -382,7 +451,7 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
               case Some(stored) => finish(envelope.commandId, stored)
               case None => finishWithError(envelope, new IllegalStateException("Idempotency key taken but no stored response found"))
             }
-          case Failure(e: PSQLException) if e.getLocalizedMessage.contains("Concurrent aggregate modification exception") =>
+          case Failure(e: PSQLException) if movedOnWithoutThisOwner(e) =>
             // The store moved on without this owner (another writer): reload, so a retry sees the real state (F19).
             restore() match {
               case None => conflict(command, AggregateConcurrentModificationError(aggregateId, aggregateType, command.baseVersion, version))
@@ -395,6 +464,13 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
         }
     }
   }
+
+  // Another writer committed first; or, for a first event, created the aggregate first under the id the command chose
+  // (two owners of it at once: on two nodes of a `Local` type, or in a hand-over, D43). The table's only unique key is
+  // its primary key, whose name a database made by an older version may not share.
+  private def movedOnWithoutThisOwner(e: PSQLException): Boolean =
+    e.getLocalizedMessage.contains("Concurrent aggregate modification exception") ||
+      e.getSQLState == "23505" && Option(e.getServerErrorMessage).exists(_.getTable == "aggregates")
 
   private def nextRoot(userId: UserId, timestamp: Instant, events: Seq[Event[AGGREGATE_ROOT]], readAfterCommit: Boolean): Either[(Exception, Event[AGGREGATE_ROOT]), AGGREGATE_ROOT] = {
     if (events.exists(_.isInstanceOf[DuplicationEvent[_]])) {
@@ -419,7 +495,26 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
       case None if runsAgainOnConflict(envelope.command) && !concurrentRetries.exhausted(command.attempt) =>
         pending += envelope.commandId.asLong -> command.copy(attempt = command.attempt + 1, running = false)
         context.system.scheduler.scheduleOnce(concurrentRetries.delay(command.attempt + 1), self, RunAgain(envelope.commandId))
+        leftItsTurn(envelope.commandId.asLong)
       case None => finish(envelope.commandId, error)
+    }
+  }
+
+  // F99: another command of this owner committed while this one's handler ran. A concurrent command waits its turn and
+  // runs again on the newer state; waiting is not an attempt, so the limit never fails a command that only waited.
+  private def ownConflict(command: Pending, error: AggregateConcurrentModificationError): Unit = {
+    val envelope = command.envelope
+    if (!runsAgainOnConflict(envelope.command)) conflict(command, error)
+    else Try(idempotency.storedResponse(envelope.command)).toOption.flatten match {
+      case Some(stored) => finish(envelope.commandId, stored)
+      case None =>
+        val id = envelope.commandId.asLong
+        pending += id -> command.copy(running = false)
+        if (rerunning.contains(id)) {
+          rerunning = None
+          contended.prepend(id) // a command of another kind committed during its turn: it keeps its place
+        } else contended.enqueue(id)
+        runContended()
     }
   }
 
@@ -430,6 +525,7 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
       " and is not applied, errorId: [" + error.errorId + "]")
     command.envelope.respondTo ! error
     startQueued()
+    leftItsTurn(commandId.asLong)
     stopIfDone()
   }
 
@@ -437,6 +533,7 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
     command.timeout.cancel()
     command.envelope.respondTo ! response
     startQueued()
+    leftItsTurn(commandId.asLong)
     stopIfDone()
   }
 
@@ -496,6 +593,8 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
   private def stopNow(withSnapshot: Boolean): Unit = {
     if (withSnapshot && snapshots.exists(_.onPassivation) && version > snapshotVersion) writeSnapshot()
     queued.clear()
+    contended.clear()
+    rerunning = None
     pending.values.toList.foreach(command => finishWithError(command.envelope, new IllegalStateException("The aggregate's owner stopped")))
     minVersionQueries.foreach(q => q.respondTo ! Failure(new AggregateInIncorrectVersionException(aggregateId, aggregateType, version, q.version)))
     minVersionQueries = Vector.empty
@@ -530,7 +629,7 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
           log.info("Aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " squashed up to version " + upTo.asInt +
             (if (detach.isEmpty) "" else ", detaching " + detach.map(_._1.asLong).mkString(", ")))
           val changed = (reading ++ detach.collect { case (duplicate, _: SquashMayChangeState) => duplicate }).distinct
-          if (changed.nonEmpty) context.parent ! HistoryChanged(changed)
+          if (changed.nonEmpty) commandBus ! HistoryChanged(changed)
           if (changesState) restore()
           else if (snapshotVersion <= upTo) snapshotVersion = AggregateVersion.ZERO
           AggregateSquashed(aggregateId, upTo)
@@ -543,7 +642,7 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
 
   // The duplicates' owners hold states made from the history of before; the command bus stops them without a snapshot.
   private def historyChangedForDuplicates(): Unit = Try(eventStore.duplicatesReading(aggregateId, None)) match {
-    case Success(duplicates) => if (duplicates.nonEmpty) context.parent ! HistoryChanged(duplicates)
+    case Success(duplicates) => if (duplicates.nonEmpty) commandBus ! HistoryChanged(duplicates)
     case Failure(e) => log.error(e, "Reading the duplicates of aggregate " + aggregateId.asLong + " failed; their owners keep the states of before")
   }
 
@@ -556,7 +655,7 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
   }
 
   private def writeSnapshot(): Unit =
-    if (!stale && version > AggregateVersion.ZERO && root != null && restorer.writeSnapshot(aggregateId, version, root)) snapshotVersion = version
+    if (!stale && version > AggregateVersion.ZERO && root != null && restorer.writeSnapshot(aggregateId, version, root, generation)) snapshotVersion = version
 
   // ************** Queries for a version not reached yet (F81)
 
@@ -593,10 +692,10 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
 
   // ************** Publication (D8, D20c)
 
-  // The acknowledgement goes to `publicationAcks` (the command bus), which outlives this owner: delivered rows are
+  // The acknowledgement goes to the command bus of this node, which outlives this owner: delivered rows are
   // deleted even when the owner is stopped (or, later, passivated) before the subscribers caught up (F91).
   private def publish(events: Seq[EventInfo[AGGREGATE_ROOT]]): Unit = {
-    eventsBus.tell(PublishEvents(aggregateType, events, aggregateId, Option(root)), publicationAcks)
+    eventsBus.tell(PublishEvents(aggregateType, events, aggregateId, Option(root)), commandBus)
     answerReachedMinVersionQueries()
   }
 
@@ -614,7 +713,7 @@ class AggregateOwner[AGGREGATE_ROOT](aggregateId: AggregateId, settings: OwnerSe
       val to = AggregateVersion(math.min(version.asInt.toLong, start.asInt.toLong + maxRepublishEvents - 1).toInt)
       val events = eventStore.readEventsRange[AGGREGATE_ROOT](aggregateId, start, to)
       if (events.nonEmpty) {
-        eventsBus.tell(PublishEvents(aggregateType, events, aggregateId, Option(root), onlyTo, startsAtSquash = squashed.contains(start)), publicationAcks)
+        eventsBus.tell(PublishEvents(aggregateType, events, aggregateId, Option(root), onlyTo, startsAtSquash = squashed.contains(start)), commandBus)
         Some(events.last.version)
       } else None
     } else None

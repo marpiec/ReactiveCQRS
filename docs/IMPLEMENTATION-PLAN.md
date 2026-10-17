@@ -1530,3 +1530,43 @@ Open test-infrastructure items:
 - Build: testdomain and bench kept a cached resolution without core's new cluster modules;
   deleting their `target/scala-2.13/update` refreshed it.
 - `sbt test`: core 224, testdomain 130, all pass.
+
+**17/10/2026: sharded owners (D43, D72; F46, F99, F119, F120)**
+- `AggregateContext.placement`: `Local` (the default: the command bus's own owners, one per node)
+  or `Sharded(numberOfShards)`: every node's command bus of the type starts the type's shard
+  region (`owner-<type>`), whose entity is the owner, and sends its owners everything as
+  `ToOwner`. An owner takes its id from its entity name; `fresh` moved from the owner's
+  constructor into `CommandEnvelope`. Sharded owners tell their node's bus they run
+  (`OwnerStarted`), and acknowledgements reach an owner only there.
+- Stopping goes through the shard: `StopOwner` is the region's hand-off message and its idle
+  passivation's (F46, for sharded types); a stop the bus asks for travels as
+  `PassivateOwner(stale)`, which the owner turns into `Passivate(StopOwner)`; an owner started
+  only to stop stops without reading; `HistoryChanged` goes to the node's command bus. Core's
+  `reference.conf` sets `handoff-timeout` and the regions' shutdown phase to 90 s, above the
+  default command timeout, so a hand-over waits for the command at work (D72).
+- F119: `aggregates.history_generation`, raised with every snapshot delete that a possibly
+  wrong state causes; a snapshot is written only at the generation its state was read at.
+- F120: a key violation on `aggregates` (a chosen id created by two owners at once) is a
+  conflict: the stored response or the conflict error, not `EventHandlingError`.
+- F99: a concurrent command that conflicts with its own owner's commit runs again at once, in
+  turn, and new ones wait behind it; measured (single runs, 16 callers, one aggregate): 887
+  commands/s, p99 36 ms, max 48 ms, against M4's 1 133/s, p99 339 ms, max 613 ms; serial mode in
+  the same run 1 646/s (M4: 2 384/s), a run about 30% slower throughout.
+- Tests: `ShardedOwnersSpec` (three nodes in one JVM over one schema, `TestCluster`: commands
+  from any node, one owner per aggregate under concurrent commands from every node, outbox
+  deletes, acknowledgements, passivation asked on another node, a rewrite stopping a
+  duplicate's owner elsewhere, idle passivation, a node leaving under load while an owner runs a
+  twelve-second command); `ChosenIdRaceSpec`; `ContendedCommandsSpec`; `EventStoreStateSpec`'s
+  F119 scenario (both stores). Mutations caught: placement ignored, the owner asking the bus
+  instead of its shard, acknowledgements not passed on, history changes ignored, no generation
+  check (each store), a rewrite or an undo not raising the generation, the key violation as an
+  error (by constraint, then by table), own conflicts backing off, Pekko's hand-over timeouts.
+- At the user's request, the work was reviewed for the circumstances it could fail in before
+  committing (the table in `docs/design/M5-cluster.md`): that review matched F120 by table rather
+  than by the key's name, added the hand-over timeouts with the slow-command test, and left out
+  a deadline set by the sending node (clock skew could time out every command one node routes).
+- Test changes: `ConcurrentModificationSpec`'s simulated other writer commits before a rewrite's
+  first statement (a rewrite now updates the aggregate's row early, and a writer waiting on it
+  from inside the same process deadlocked); `SerialCommandsSpec`'s concurrent-mode comparison now
+  expects no conflict (F99).
+- `sbt test`: core 226, testdomain 141, all pass.
