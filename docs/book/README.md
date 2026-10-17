@@ -32,6 +32,7 @@ your project needs today.
 - **Part V, Living with long histories**: snapshots, squash, the audit archive and history rewrites.
 - **Part VI, Organizations, clusters and production**: organizations (spaces), running on several
   nodes, operating it all, and testing.
+- **Part VII, Scratch paper**: ephemeral aggregates, which live in memory until you keep them.
 - **Appendices**: a glossary, a cheat sheet of messages, and a troubleshooting guide.
 
 ## Icons used in this book
@@ -82,6 +83,10 @@ your project needs today.
 17. [Going Distributed: Running in a Cluster](17-cluster.md)
 18. [Running It in Production](18-production.md)
 19. [Testing Your Domain](19-testing.md)
+
+**Part VII: Scratch paper**
+
+20. [Ephemeral Aggregates: Drafts That Live in Memory](20-ephemeral-aggregates.md)
 
 **Appendices**
 

@@ -18,8 +18,9 @@ case class EventStoreEntry[AGGREGATE_ROOT](userId: UserId, timestamp: Instant, v
                                            metadata: Option[EventMetadata] = None)
 
 // State is read and changed under the object's lock: owners, the outbox poller and the replayer call the store from
-// their own threads. Callbacks run outside the lock, on a snapshot.
-class MemoryEventStoreState extends EventStoreState {
+// their own threads. Callbacks run outside the lock, on a snapshot. `commitOrder`: keep every event in one list in
+// commit order, for rebuilds; an ephemeral store (D77) keeps none, so dropping an aggregate does not walk them all.
+class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState {
 
   private var eventsRows: List[EventRow] = List.empty
   private var eventStore: Map[AggregateId, Vector[EventStoreEntry[_]]] = Map.empty
@@ -57,7 +58,7 @@ class MemoryEventStoreState extends EventStoreState {
       val (event, version) = (entry.event, entry.version)
       eventsForAggregate :+= entry
       eventIdSeq += 1
-      eventsRows ::= EventRow(eventIdSeq, aggregateId, version,
+      if (commitOrder) eventsRows ::= EventRow(eventIdSeq, aggregateId, version,
                     AggregateType.ofClass(event.aggregateRootClass), event, eventsEnvelope.userId, eventsEnvelope.timestamp, eventsEnvelope.metadata)
       val key = (aggregateId, version)
 
@@ -373,6 +374,24 @@ class MemoryEventStoreState extends EventStoreState {
           RewriteCount.fieldsChanged(before, after) ++ RewriteCount.fieldsChanged(beforeMetadata.orNull, afterMetadata.orNull, "metadata.")
         }.toSet)
     }
+  }
+
+  /** Whether the store has events of the aggregate. */
+  def holds(aggregateId: AggregateId): Boolean = synchronized(eventStore.contains(aggregateId))
+
+  /** How many aggregates the store has events of. */
+  def aggregatesHeld: Int = synchronized(eventStore.size)
+
+  /** Drops everything the store keeps of the aggregate (D77: an ephemeral aggregate dropped or materialized). */
+  def forgetAggregate(aggregateId: AggregateId): Unit = synchronized {
+    eventStore -= aggregateId
+    if (commitOrder) eventsRows = eventsRows.filterNot(_.aggregateId == aggregateId)
+    eventsToPublish = eventsToPublish.filterNot { case ((id, _), _) => id == aggregateId }
+    snapshots -= aggregateId
+    squashedVersions -= aggregateId
+    generations -= aggregateId
+    archives -= aggregateId
+    lineage -= aggregateId
   }
 
   override def copiesOf(aggregateId: AggregateId): Seq[AggregateId] = synchronized {

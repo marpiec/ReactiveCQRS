@@ -21,7 +21,7 @@ It was built for, and runs, the Neula platform.
 
 | | |
 |---|---|
-| **[The book: *ReactiveCQRS, Step by Step*](docs/book/README.md)** | Start here. A friendly guide from zero to production in 19 chapters, with examples you can run. |
+| **[The book: *ReactiveCQRS, Step by Step*](docs/book/README.md)** | Start here. A friendly guide from zero to production in 20 chapters, with examples you can run. |
 | [Architecture](docs/ARCHITECTURE.md) | How the library works inside: actors, tables, delivery, rebuilds, the cluster. |
 | [Scaling and limits](docs/SCALING.md) | Behaviour under high volume and load, limits, and recommendations. |
 | [Performance reports](docs/perf/README.md) | Measured numbers from the benchmark module. |
@@ -52,6 +52,8 @@ It was built for, and runs, the Neula platform.
   a complete rewrite that erases a value everywhere the library keeps it, with an audit trail.
 - **Organizations.** Every aggregate belongs to a space (a tenant). An organization can be purged
   completely, or exported from one installation and imported into another.
+- **Ephemeral aggregates.** Drafts that live in one node's memory, writing and publishing nothing, until
+  you keep the ones that matter (`Materialize`).
 - **Clusters.** Runs on one machine or a Pekko Cluster: aggregates owned per node or sharded across
   the cluster, read models running once in the cluster, rolling upgrades.
 - **Measured.** A benchmark module and documented limits for high volumes and loads.

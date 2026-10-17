@@ -12,7 +12,10 @@ import io.reactivecqrs.core.cluster.{Members, MessageSize}
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor._
 import io.reactivecqrs.core.delivery.RepublishRequest
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEventsAck, RegisterPublisher}
-import io.reactivecqrs.core.eventstore.EventStoreState
+import io.reactivecqrs.core.eventbus.EventsBusActor
+import io.reactivecqrs.core.eventstore.{EphemeralEventStoreState, EventStoreState}
+import io.reactivecqrs.core.metrics.ReactiveMetrics
+import io.mpjsons.MPJsons
 import io.reactivecqrs.core.uid.{IdPool, IdRange, NewAggregatesIdsPool, NewCommandsIdsPool, UidGeneratorActor}
 import io.reactivecqrs.core.util.{BlockingDispatcher, MyActorLogging, RandomUtil}
 import org.slf4j.Logger
@@ -47,6 +50,35 @@ object AggregateCommandBusActor {
   case class ForgetAggregates(ids: Seq[AggregateId])
   case class AggregatesForgotten(count: Int)
 
+  /** D77: what makes a command bus ephemeral: where its aggregates are materialized, how many it holds, how long one may
+    * stay unused, and how often it looks. */
+  case class EphemeralMode(persistentBus: ActorRef, maxAggregates: Int, idleTime: FiniteDuration, sweepEvery: FiniteDuration)
+  private case object SweepIdle
+
+  /** D77: ephemeral aggregate ids are `-(token × 2^24 + n)`: |id| stays below 2^53 (D39). */
+  private[reactivecqrs] val EphemeralBlock: Long = 1L << 24
+
+  /** The start token of an ephemeral aggregate id; 0 for any other id. */
+  def ephemeralToken(id: AggregateId): Long = if (id.asLong < 0) (-id.asLong) >> 24 else 0L
+
+  /**
+    * D77: a command bus whose aggregates live in this node's memory only: the same context, run on this node whatever its
+    * placement, with an `EphemeralEventStoreState` (the PostgreSQL store's limits: `eventSizeLimit`,
+    * `eventSizeLimitPerClassName`, `aggregateVersionLimit`), responses in memory and an event bus of its own without
+    * subscribers, so nothing is written to the database or published. New aggregates get negative ids of a random token
+    * drawn at start; an id of another token is answered `EphemeralAggregateLost`, one of this token not held
+    * `EphemeralAggregateUnknown`. `Materialize` stores one through `persistentBus` (the type's persistent command bus).
+    * At most `maxAggregates` (about: in-flight creations are not counted); one unused for `idleTime` is dropped.
+    */
+  def ephemeral[AGGREGATE_ROOT: ClassTag](aggregateContext: AggregateContext[AGGREGATE_ROOT], persistentBus: ActorRef, uidGenerator: ActorRef,
+                                          mpjsons: MPJsons, maxAggregates: Int = 100000, idleTime: FiniteDuration = 12.hours,
+                                          sweepEvery: FiniteDuration = 5.minutes, eventSizeLimit: Int = 100000,
+                                          eventSizeLimitPerClassName: Map[String, Int] = Map.empty, aggregateVersionLimit: Int = 10000): Props =
+    Props(new AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext, uidGenerator,
+      new EphemeralEventStoreState(mpjsons, eventSizeLimit, eventSizeLimitPerClassName, aggregateVersionLimit), new MemoryCommandResponseState(),
+      ActorRef.noSender, keepAliveLimit = 200, maxInactivityMillis = 43200000L, eventsLogger = None, failedRestoreRetryAfter = 5.seconds,
+      ephemeral = Some(EphemeralMode(persistentBus, maxAggregates, idleTime, sweepEvery))))
+
   def apply[AGGREGATE_ROOT: ClassTag](aggregateContext: AggregateContext[AGGREGATE_ROOT],
                                              uidGenerator: ActorRef, eventStoreState: EventStoreState,
                                              commandResponseState: CommandResponseState,
@@ -73,7 +105,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
                                                        val eventBus: ActorRef,
                                                        val keepAliveLimit: Int, val maxInactivityMillis: Long,
                                                        val eventsLogger: Option[Logger],
-                                                       val failedRestoreRetryAfter: FiniteDuration)
+                                                       val failedRestoreRetryAfter: FiniteDuration,
+                                                       ephemeral: Option[AggregateCommandBusActor.EphemeralMode] = None)
                                                         (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT]) extends Actor with MyActorLogging {
 
   private val aggregateType = AggregateType.of[AGGREGATE_ROOT]
@@ -84,8 +117,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   private val idRange = IdRange.of(context.system.settings.config)
   Members(context.system).track(aggregateContext) // D67: the lowest app-version among the cluster's members
   private val messageSize = aggregateContext.placement match { // F121
-    case _: Placement.Sharded => Some(MessageSize(context.system))
-    case Placement.Local => None
+    case _: Placement.Sharded if ephemeral.isEmpty => Some(MessageSize(context.system))
+    case _ => None
   }
   private val aggregateIds = new IdPool
   private val commandIds = new IdPool
@@ -93,15 +126,27 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
 
   private val idempotency = new Idempotency(commandResponseState)
 
-  private val settings = new OwnerSettings[AGGREGATE_ROOT](aggregateContext, eventStoreState, idempotency, eventBus, self, failedRestoreRetryAfter)
+  // D77: an ephemeral bus keeps its aggregates in this node's memory: its own store, an event bus of its own without
+  // subscribers (it acknowledges every publication at once), and negative ids of a token drawn at start.
+  private val ephemeralStore = ephemeral.map(_ => eventStoreState.asInstanceOf[EphemeralEventStoreState])
+  private val events: ActorRef = if (ephemeral.isEmpty) eventBus else {
+    val own = context.actorOf(Props(new EventsBusActor()), "ephemeralEvents")
+    own ! EventsBusActor.RegisterSubscribers(Nil)
+    own
+  }
+  private val token: Long = if (ephemeral.isEmpty) 0L else 1L + Random.nextInt((1 << 29) - 1)
+  private val lastUsed = scala.collection.mutable.Map[Long, Long]() // ephemeral: an aggregate and the nanoTime of its last message
+
+  private val settings = new OwnerSettings[AGGREGATE_ROOT](aggregateContext, eventStoreState, idempotency, events, self, failedRestoreRetryAfter,
+    materializeTo = ephemeral.map(_.persistentBus))
 
   private def ownerProps(id: Option[AggregateId]): Props =
     Props(new AggregateOwner[AGGREGATE_ROOT](settings, id)).withDispatcher(BlockingDispatcher.id)
 
   // D43: this bus's own children, or the entities of the type's shard region.
   private val owners: Owners = aggregateContext.placement match {
-    case Placement.Sharded(numberOfShards) => ShardedOwners.start(context, aggregateType.typeName, ownerProps(None), numberOfShards)
-    case Placement.Local => new LocalOwners(context, id => ownerProps(Some(id)), aggregateTypeSimpleName, keepAliveLimit, maxInactivityMillis, eventsLogger)
+    case Placement.Sharded(numberOfShards) if ephemeral.isEmpty => ShardedOwners.start(context, aggregateType.typeName, ownerProps(None), numberOfShards)
+    case _ => new LocalOwners(context, id => ownerProps(Some(id)), aggregateTypeSimpleName, keepAliveLimit, maxInactivityMillis, eventsLogger)
   }
 
   // AR7: an owner that fails is stopped, never restarted: a restart would lose its pending callers. It is forgotten
@@ -110,7 +155,11 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
 
   override def preStart(): Unit = {
     // The event bus routes re-publish requests for this aggregate type here (D8, D20c).
-    eventBus ! RegisterPublisher(aggregateType, self)
+    events ! RegisterPublisher(aggregateType, self)
+    ephemeral.foreach { mode => // D77: one block of ids for this start
+      aggregateIds.received(-(token * EphemeralBlock + EphemeralBlock - 1), EphemeralBlock)
+      context.system.scheduler.scheduleWithFixedDelay(mode.sweepEvery, mode.sweepEvery, self, SweepIdle)(context.dispatcher)
+    }
     askForIds()
     // Hourly, at a random minute, so the buses of different aggregate types do not all clean up at once.
     val firstCleanUp = (60 + Random.nextInt(3600)).seconds
@@ -130,6 +179,11 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   }
 
   override def receive: Receive = logReceive {
+    case message if ephemeral.isDefined && ephemeralIdOf(message).isDefined => ephemeralMessage(message, ephemeralIdOf(message).get)
+    case message => main(message)
+  }
+
+  private val main: Receive = {
     case c @ (_: FirstCommand[_, _] | _: ConcurrentCommand[_, _] | _: RewriteHistoryCommand[_, _] | _: RewriteHistoryConcurrentCommand[_, _] |
               _: Command[_, _] | ReserveAggregateId) => withIds(c, sender())
     case NewAggregatesIdsPool(from, size) => aggregateIds.received(from, size); serveWaiting(); askForIds()
@@ -148,9 +202,16 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
     case m: RepublishRequest => owners.send(m.aggregateId, m)
     case request: SquashAggregate => owners.send(request.id, Squash(sender(), request))
     case request: RewriteEverywhere => owners.send(request.id, Rewrite(sender(), request)) // D76
+    case request: Materialize => // D77
+      if (ephemeral.isEmpty) sender() ! MaterializeRefused(request.id, "this command bus is not ephemeral")
+      else owners.send(request.id, MaterializeOwner(sender(), request))
+    case EphemeralMaterialized(id) => dropEphemeral(id, "materialized")
+    case SweepIdle => sweepIdle()
     case RemoveExpiredResponses => removeExpiredResponses()
     case PassivateAggregate(id) => owners.stop(id, stale = false)
-    case DeletedPermanently(id, changed) => (id +: changed).foreach(owners.stop(_, stale = true)) // its state is gone
+    case DeletedPermanently(id, changed) =>
+      (id +: changed).foreach(owners.stop(_, stale = true)) // its state is gone
+      lastUsed -= id.asLong
     case HistoryChanged(changed) => changed.foreach(owners.stop(_, stale = true))
     case DetachDuplicates(baseId, duplicates) => detachForPurge(baseId, duplicates, sender())
     case ForgetAggregates(ids) =>
@@ -168,9 +229,78 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
 
   private def withIds(message: Any, respondTo: ActorRef): Unit = refused(message) match {
     case Some(reason) => respondTo ! FailureResponse(List(reason))
-    case None =>
-      if (waitingForIds.nonEmpty || !route(message, respondTo)) waitingForIds :+= (message -> respondTo)
-      askForIds()
+    case None => ephemeralRefusal(message) match {
+      case Some(answer) => respondTo ! answer
+      case None =>
+        if (waitingForIds.nonEmpty || !route(message, respondTo)) waitingForIds :+= (message -> respondTo)
+        askForIds()
+    }
+  }
+
+  // D77: an ephemeral bus gives its own ids, from one block per start, to at most `maxAggregates` aggregates.
+  private def ephemeralRefusal(message: Any): Option[Any] = (ephemeral, message) match {
+    case (None, _) => None
+    case (Some(_), ReserveAggregateId) => Some(Status.Failure(new IllegalArgumentException("Ephemeral aggregate ids are not reserved (D77)")))
+    case (Some(_), c: FirstCommand[_, _]) if c.chosenAggregateId.isDefined =>
+      Some(FailureResponse(List("An ephemeral aggregate gets its id from its command bus (D77)")))
+    case (Some(mode), _: FirstCommand[_, _]) if ephemeralStore.exists(_.aggregatesHeld >= mode.maxAggregates) =>
+      Some(CommandRejected(AggregateId(0), "this node holds its maximum of " + mode.maxAggregates + " ephemeral aggregates of " + aggregateTypeSimpleName))
+    case (Some(_), _: FirstCommand[_, _]) if !aggregateIds.available =>
+      Some(CommandRejected(AggregateId(0), "this start's ephemeral ids of " + aggregateTypeSimpleName + " are spent; a restart brings new ones"))
+    case _ => None
+  }
+
+  private def ephemeralIdOf(message: Any): Option[AggregateId] = message match {
+    case c: Command[_, _] => Some(c.aggregateId)
+    case c: ConcurrentCommand[_, _] => Some(c.aggregateId)
+    case c: RewriteHistoryCommand[_, _] => Some(c.aggregateId)
+    case c: RewriteHistoryConcurrentCommand[_, _] => Some(c.aggregateId)
+    case GetAggregate(id) => Some(id)
+    case GetAggregateMinVersion(id, _, _) => Some(id)
+    case GetAggregateForVersion(id, _) => Some(id)
+    case GetAggregateAtInstant(id, _) => Some(id)
+    case GetEventsForAggregate(id) => Some(id)
+    case GetEventsForAggregateForVersion(id, _) => Some(id)
+    case GetArchivedEvents(id) => Some(id)
+    case request: Materialize => Some(request.id)
+    case request: SquashAggregate => Some(request.id)
+    case request: RewriteEverywhere => Some(request.id)
+    case _ => None
+  }
+
+  // A message for an aggregate this bus holds goes on, and counts as its use; one for another is answered here.
+  private def ephemeralMessage(message: Any, id: AggregateId): Unit =
+    if (id.asLong < 0 && ephemeralToken(id) == token && ephemeralStore.exists(_.holds(id))) {
+      lastUsed(id.asLong) = System.nanoTime()
+      main(message)
+    } else {
+      val lost = id.asLong < 0 && ephemeralToken(id) != token
+      sender() ! (message match {
+        case _: GetAggregate | _: GetAggregateMinVersion | _: GetAggregateForVersion | _: GetAggregateAtInstant | _: GetEventsForAggregate |
+             _: GetEventsForAggregateForVersion | _: GetArchivedEvents =>
+          Failure(if (lost) new EphemeralAggregateLostException(id) else new NoEventsForAggregateException(id, aggregateType))
+        case _: Materialize => MaterializeRefused(id, if (lost) "the ephemeral aggregate is not on this node" else "no such ephemeral aggregate here")
+        case _: SquashAggregate => SquashRefused(id, "no such ephemeral aggregate here")
+        case _: RewriteEverywhere => RewriteRefused(id, "no such ephemeral aggregate here")
+        case _ => if (lost) EphemeralAggregateLost(id) else EphemeralAggregateUnknown(id)
+      })
+    }
+
+  private def dropEphemeral(id: AggregateId, why: String): Unit = ephemeralStore.foreach { store =>
+    owners.stop(id, stale = true)
+    store.forgetAggregate(id)
+    lastUsed -= id.asLong
+    ReactiveMetrics(context.system).metrics.count("reactivecqrs.ephemeral." + why, Map("type" -> aggregateType.simpleName), 1)
+  }
+
+  // Unused for at least the command timeout too: a command is persisted within its timeout or never (R5), so none sent to
+  // an aggregate before it falls idle can store an event after it is dropped.
+  private def sweepIdle(): Unit = ephemeral.foreach { mode =>
+    val now = System.nanoTime()
+    val limit = math.max(mode.idleTime.toNanos, aggregateContext.commandTimeout.toNanos)
+    val idle = lastUsed.collect { case (id, at) if now - at > limit => AggregateId(id) }.toSeq
+    if (idle.nonEmpty) log.info("Dropping " + idle.size + " ephemeral aggregates of " + aggregateTypeSimpleName + " unused for " + mode.idleTime)
+    idle.foreach(dropEphemeral(_, "dropped"))
   }
 
   // D39: a caller may choose a system or legacy id, or one of this installation's range, never another installation's, a
@@ -217,13 +347,15 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
     ready
   }
 
-  private def routeCommand(command: Any, respondTo: ActorRef, aggregateId: AggregateId, fresh: Boolean = false): Unit =
+  private def routeCommand(command: Any, respondTo: ActorRef, aggregateId: AggregateId, fresh: Boolean = false): Unit = {
+    if (fresh && ephemeral.isDefined) lastUsed(aggregateId.asLong) = System.nanoTime()
     owners.send(aggregateId, CommandEnvelope(respondTo, CommandId(commandIds.take()), command, fresh))
+  }
 
   private def askForIds(): Unit = {
     import context.dispatcher
     implicit val timeout: Timeout = Timeout(60.seconds)
-    if (aggregateIds.shouldAsk) (uidGenerator ? UidGeneratorActor.GetNewAggregatesIdsPool).recover { case e => IdsNotReceived(ofAggregates = true, e) }.pipeTo(self)
+    if (ephemeral.isEmpty && aggregateIds.shouldAsk) (uidGenerator ? UidGeneratorActor.GetNewAggregatesIdsPool).recover { case e => IdsNotReceived(ofAggregates = true, e) }.pipeTo(self)
     if (commandIds.shouldAsk) (uidGenerator ? UidGeneratorActor.GetNewCommandsIdsPool).recover { case e => IdsNotReceived(ofAggregates = false, e) }.pipeTo(self)
   }
 

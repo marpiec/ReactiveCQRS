@@ -145,6 +145,9 @@ that entry has the full story.
   aggregates in PostgreSQL, together with the outbox. ([chapter 2](02-setting-up.md))
 - **Eventually consistent**: the read side catches up a moment after a command succeeds, usually
   within milliseconds. ([chapter 1](01-cqrs-without-the-headache.md))
+- **Ephemeral aggregate**: an aggregate of an ephemeral command bus (`AggregateCommandBusActor.ephemeral`),
+  living in one node's memory with a negative id, written and published nowhere until it is
+  materialized. ([chapter 20](20-ephemeral-aggregates.md))
 - **Expected version** (`expectedVersion`): the version a `Command` says it is changing. When the
   aggregate has moved on, the command is answered `AggregateConcurrentModificationError`.
   ([chapter 5](05-command-flavors.md))
@@ -230,6 +233,8 @@ that entry has the full story.
 - **`MessageTooLargeException`**: in a cluster, what an asker gets instead of an answer that is too
   large to travel between nodes (about 248 KiB with Pekko's default frame size).
   ([chapter 17](17-cluster.md))
+- **Materialize**: storing an ephemeral aggregate as a new persistent one, from one squash event of
+  its state. ([chapter 20](20-ephemeral-aggregates.md))
 - **Metadata envelope** (`EventMetadata`): who acted and why: the actor, correlation and causation
   ids, the trace context, the space and entries of your own. It is stored with every event of a
   command that mixes in `WithMetadata`; listeners see it, event handlers do not.

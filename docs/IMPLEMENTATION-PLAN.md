@@ -2020,3 +2020,21 @@ Open test-infrastructure items:
   links to the book and the documentation. `ReadmeQuickStartSpec` compiles and runs its quick start.
 - Writing it found F174: `LICENSE` was the Apache License 2.0 while the POMs said MIT. The user
   chose MIT; `LICENSE` is now the MIT license.
+
+**17/10/2026: ephemeral aggregates (D77, R16)**
+- `AggregateCommandBusActor.ephemeral(context, persistentBus, uidGenerator, mpjsons, ...)`: the command bus
+  with its owners on its node, an `EphemeralEventStoreState` (the in-memory store without its
+  commit-order list, with PostgreSQL's size and version limits, refusing copies, squash and
+  rewrites), responses in memory and an event bus of its own without subscribers. Ids
+  `-(token × 2^24 + n)` with a random token per start (changed from the start-second sketch: two
+  nodes started in one second shared every id; |id| stays below 2^53, D39); `EphemeralAggregateLost`
+  and `EphemeralAggregateUnknown` answered by the bus. `Materialize` makes the squash event of the
+  state, rejects commands until the answer, and stores it through the persistent bus with
+  `StoreFirstEvent`, idempotent under the ephemeral id. `maxAggregates`; an idle sweep that waits the
+  command timeout too, found by the test: a command could otherwise write into a dropped aggregate.
+- Tests: `EphemeralAggregatesSpec` (commands, the optimistic lock, nothing written, materialization
+  with the same state, lost and unknown ids, commands held during a materialization, refused and
+  accepted answers, idempotence, no squash event, the size limit, the maximum, the idle drop),
+  `ClusterSerializationSpec` (the new messages). Eight mutations, each caught.
+- Docs: the book's chapter 20 (a part of its own), ARCHITECTURE §4.10, KNOWN-ISSUES (D77, H11),
+  SCALING, the design note, the README, appendices A and B, CLAUDE.md.

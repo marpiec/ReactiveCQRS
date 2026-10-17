@@ -25,3 +25,11 @@ case class EventHandlingError(eventName: String, errorId: String, commandId: Com
 /** The command was not run: the aggregate's queue of waiting commands was full (serial command processing, R8).
   * Sending it again later may succeed. */
 case class CommandRejected(aggregateId: AggregateId, reason: String) extends CustomCommandResponse[Nothing]
+
+/** D77: the ephemeral aggregate is not on this node: the node restarted since it was made, or the command reached another
+  * node than the one holding it. Its state is gone from here. */
+case class EphemeralAggregateLost(aggregateId: AggregateId) extends CustomCommandResponse[Nothing]
+
+/** D77: this node holds no ephemeral aggregate of that id: it was never made, was dropped while idle, or was
+  * materialized (`Materialize`). */
+case class EphemeralAggregateUnknown(aggregateId: AggregateId) extends CustomCommandResponse[Nothing]

@@ -94,7 +94,10 @@ class ClusterSerializationSpec extends AnyFeatureSpec with Matchers with Eventua
         EventHandlingError("ItemAdded", "e-2", CommandId(5)), CommandRejected(id, "full"),
         Success(Aggregate[ShoppingCart](id, v3, Some(state))), Success(events.toList),
         AggregateSquashed(id, v3), SquashRefused(id, "waiting"),
-        Rewrite(ref, RewriteEverywhere(id, EraseNote("secret"), UserId(1))), HistoryRewritten(id, 2, 1, Set("notes", "text")), RewriteRefused(id, "D17")
+        Rewrite(ref, RewriteEverywhere(id, EraseNote("secret"), UserId(1))), HistoryRewritten(id, 2, 1, Set("notes", "text")), RewriteRefused(id, "D17"),
+        MaterializeOwner(ref, Materialize(AggregateId(-5), UserId(1))), Materialized(AggregateId(-5), id), MaterializeRefused(AggregateId(-5), "no"),
+        EphemeralMaterialized(AggregateId(-5)), EphemeralAggregateLost(AggregateId(-5)), EphemeralAggregateUnknown(AggregateId(-6)),
+        StoreFirstEvent[ShoppingCart](UserId(1), CartSquashed(SpaceId(0), "cart", Vector(Item(1, "apple"))), Some(MaterializationKey(AggregateId(-5))))
       ).foreach(message => roundTrip(message) mustBe message)
     }
 

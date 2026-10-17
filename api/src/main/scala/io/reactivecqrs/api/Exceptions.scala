@@ -6,6 +6,10 @@ import io.reactivecqrs.api.id.AggregateId
 
 class NoEventsForAggregateException(val aggregateId: AggregateId, val aggregateType: AggregateType) extends Exception("No events for aggregate " + aggregateId.asLong)
 
+/** D77: a query for an ephemeral aggregate that is not on this node (it restarted, or the query reached another node). */
+class EphemeralAggregateLostException(val aggregateId: AggregateId)
+  extends Exception("Ephemeral aggregate " + aggregateId.asLong + " is not on this node: it restarted since, or the aggregate is another node's")
+
 /** The aggregate's stored events could not be restored; requests fail at once until a later retry succeeds. */
 class AggregateRestoreFailedException(val aggregateId: AggregateId, val aggregateType: AggregateType, cause: Throwable)
   extends Exception("Restoring aggregate " + aggregateId.asLong + " of type " + aggregateType.typeName + " failed: " + cause.getMessage, cause)

@@ -506,3 +506,59 @@ and as base, keeping its audit rows.
 | The materialized event breaks the target's rules (size, space, serialization) | the persistent store refuses it | `Materialize` answers the refusal; the ephemeral aggregate stays |
 | A memory store accepts what PostgreSQL would not | events that cannot be persisted | the ephemeral bus applies the same checks (space, size of the serialized JSON) |
 | Many ephemeral aggregates | memory | `maxAggregates` and the idle time |
+
+### Refined before building (17/10/2026)
+
+The interface, as a host sees it:
+
+```scala
+val drafts = system.actorOf(AggregateCommandBusActor.ephemeral(orderContext, persistentBus = orders, uidGenerator, mpjsons), "orderDrafts")
+drafts ? CreateOrder(user, ...)              // SuccessResponse(Id(-38654705663), Version(1)): a negative id
+drafts ? AddLine(user, draftId, version, ...) // as on a persistent order
+drafts ? Materialize(draftId, user)          // Materialized(draftId, Id(1000000001234)): stored, the draft dropped
+```
+
+- **Ids** (changed from the first sketch): `-(token × 2^24 + n)`, with a random 29-bit `token` that the
+  ephemeral bus picks when it starts and `n < 2^24` (16 777 216 aggregates per start). So |id| stays
+  below 2^53, as D39 requires for Neula's UI, and two starts, or two nodes started in the same second,
+  share a token once in 2^29 pairs (estimated), where the start-second form shared every id. An id
+  of another token is answered `EphemeralAggregateLost` (another start, or another node); an id of
+  this token that the bus does not hold (never made, dropped while idle, materialized)
+  `EphemeralAggregateUnknown`; a query for either fails with `EphemeralAggregateLostException` or
+  `NoEventsForAggregateException`. The pool is one block: the bus refuses new aggregates once it
+  is spent.
+- **The bus**: `AggregateCommandBusActor.ephemeral(context, persistentBus, uidGenerator, mpjsons, ...)`
+  is the same bus with its owners on this node whatever the context's placement, an
+  `EphemeralEventStoreState`, responses in memory, no outbox writer, and an `EventsBusActor` of its
+  own without subscribers, which acknowledges every publication at once. Command ids come from the
+  uid generator, as for any bus.
+- **The store** keeps each aggregate's events in memory, under one lock, without the commit-order
+  list and the outbox of the test double (reads by version and instant work; rebuilds never read
+  it), and checks what PostgreSQL would: a first event's space, each event's JSON size through the
+  host's `MPJsons` (the same limits), the version limit. Squash, duplication, archive and history
+  rewrites are refused for ephemeral aggregates.
+- **Materialize(id, userId)**: the owner refuses without a squash policy; otherwise it builds its
+  state's squash event, checked as a squash checks it (D85), stops taking commands (they are
+  answered `CommandRejected`, which may be sent again), and sends the persistent bus
+  `StoreFirstEvent(userId, event, MaterializationKey(id))`: a library first command written as
+  given, without the context's handlers, idempotent under the ephemeral id, so that a retry never
+  stores two copies. On `SuccessResponse(newId, _)` the ephemeral aggregate is dropped and the caller
+  gets `Materialized(id, newId)`; on a refusal or no answer within the context's command timeout
+  the owner takes commands again and the caller gets `MaterializeRefused(id, reason)`.
+- **Bounds**: `maxAggregates` (100 000 by default): new ones are answered `CommandRejected`; an
+  aggregate unused for `idleTime` (12 hours by default) is dropped by a sweep every five minutes,
+  logged and counted (`reactivecqrs.ephemeral.dropped`).
+
+| Circumstance | What happens | Handled by |
+|---|---|---|
+| The node restarts | the aggregates are gone | `EphemeralAggregateLost` for their ids (another token) |
+| A command reaches another node | that node holds nothing of it | `EphemeralAggregateLost` (another token); the host routes by node |
+| `Materialize` while commands arrive | a command could change the state being stored | commands are rejected (retryable) until the answer |
+| The persistent bus answers late | the materialization may have been stored after all | `StoreFirstEvent` is idempotent under the ephemeral id: sent again, it answers the same new id |
+| The squash event breaks the persistent store's rules | refused | `MaterializeRefused` with the reason; the ephemeral aggregate stays |
+| 10 000 commands at once on ephemeral aggregates | one lock over the store | each section is short and in memory (no I/O under the lock) |
+| An ephemeral aggregate of 10 000 events | memory, restores | the version limit (10 000 by default); its owner keeps it like any other |
+
+Built as refined (17/10/2026), with one addition found by its test: the sweep drops an aggregate only
+once it has been unused for the context's command timeout too, as a command routed before could
+still write into it until then (R5).

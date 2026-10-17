@@ -211,6 +211,10 @@ Estimated from the measured numbers. None of this was run at this scale.
   about 4 GB for 10 million events, estimated). The import reads the file twice and holds the
   aggregates' ids and the remapped ones; it writes in transactions of at most 10 000 events. Its
   duration grows with the events (not measured).
+- **Ephemeral aggregates** (D77, since M6). They live in the node's heap as event objects: memory
+  grows with the aggregates held times their events (at most `maxAggregates`, 100 000 by default,
+  and the version limit each). One lock guards the store, held for in-memory work only; each event
+  is serialized once on the way in, to check its size as PostgreSQL would. A restart loses them.
 - **Erasure, the complete rewrite** (D76, since M6). One aggregate's rewrite reads its events and
   archive once and writes the changed ones in one transaction, in its owner, which holds its
   commands meanwhile (seconds for 50 000 events, estimated). Copies are rewritten one at a time, and

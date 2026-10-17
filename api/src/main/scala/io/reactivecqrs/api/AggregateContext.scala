@@ -58,6 +58,25 @@ case class HistoryRewritten(id: AggregateId, events: Int, archived: Int, fields:
   * makes an event larger than the store allows; or the aggregate cannot be read. */
 case class RewriteRefused(id: AggregateId, reason: String) extends RewriteResponse
 
+/** D77: stores an ephemeral aggregate (one of an ephemeral command bus, whose ids are negative) as a new persistent
+  * aggregate, whose first event is the context's squash event of its state; the ephemeral one is then dropped. Sent to
+  * the ephemeral bus; answered `Materialized` with the new id, or `MaterializeRefused` (it stays): without a squash
+  * policy, while commands run on it, or when the persistent store refuses the event. */
+case class Materialize(id: AggregateId, userId: UserId)
+sealed trait MaterializeResponse
+case class Materialized(id: AggregateId, persistentId: AggregateId) extends MaterializeResponse
+case class MaterializeRefused(id: AggregateId, reason: String) extends MaterializeResponse
+
+/** D77: the idempotency key of a materialization, so that one ephemeral aggregate is never stored twice. */
+case class MaterializationKey(ephemeralId: AggregateId) extends CommandIdempotencyId {
+  override def asDbKey: String = "materialize|" + ephemeralId.asLong
+}
+
+/** D77: writes `event` as the first event of a new aggregate, as given, without the context's command handlers: what a
+  * materialization sends the persistent command bus. Idempotent under its key. */
+case class StoreFirstEvent[AGGREGATE_ROOT](userId: UserId, event: FirstEvent[AGGREGATE_ROOT], idempotencyId: Option[MaterializationKey])
+  extends FirstCommand[AGGREGATE_ROOT, CustomCommandResponse[_]] with IdempotentCommand[MaterializationKey]
+
 /**
   * Squash (D47, D48), opt-in per context: `toEvent` makes the context's squash event from the aggregate's state at the
   * squash point. It is an ordinary event class of the context, a `FirstEvent` whose event handler gives that state back,

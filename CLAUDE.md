@@ -344,6 +344,7 @@ behaviour under high volume and load, with recommendations, is in `docs/SCALING.
 | Limits, throttling and failure under load | `docs/SCALING.md`, `docs/perf/load-M5.md` |
 | Purging an organization | `core/.../space/SpacePurge.scala`, ARCHITECTURE §4.7 |
 | Moving an organization between installations | `core/.../space/{SpaceExport,SpaceImport,SpaceFormat}.scala`, ARCHITECTURE §4.8 |
+| Ephemeral aggregates (drafts in memory) | `AggregateCommandBusActor.ephemeral`, `core/.../eventstore/EphemeralEventStoreState.scala`, `AggregateOwner.materialize`, ARCHITECTURE §4.10 |
 | Erasure: the complete rewrite | `core/.../rewrite/HistoryRewriter.scala`, `AggregateOwner.rewriteHistory`, `PostgresEventStoreState.rewriteEverywhere`, ARCHITECTURE §4.9 |
 | How a user uses the library (the user docs) | `docs/book/` (a step-by-step book; how to write for it: `docs/book/STYLE.md`) |
 | The cluster: placement, members, singletons, messages between nodes | `core/.../cluster/*` (`Members`, `Singletons`, `ClusterSerializer`, `MessageSize`), `ARCHITECTURE.md` §13, `docs/design/M5-cluster.md`; multi-node tests `testdomain/.../spec/TestCluster.scala` |

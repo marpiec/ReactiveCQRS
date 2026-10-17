@@ -514,7 +514,5 @@ of one must behave exactly like a single node.
 - `SchemaReference` guards stored formats, a round trip through the serializer guards messages
   between nodes, and `TestCluster` shows how to run several nodes in one test.
 
-That is the end of the chapters. The appendices are for looking things up:
-[the glossary](appendix-a-glossary.md),
-[the cheat sheet of messages and answers](appendix-b-cheat-sheet.md), and
-[troubleshooting](appendix-c-troubleshooting.md).
+Next: [chapter 20](20-ephemeral-aggregates.md), the last one, is about aggregates that live only in
+memory: drafts you keep when they matter.
