@@ -302,7 +302,8 @@ The catalogue of known problems that used to live here moved to `docs/KNOWN-ISSU
 status, the decisions (D-numbers), the invariants (I1–I9) and the architecture reviews
 (AR-numbers). `docs/IMPLEMENTATION-PLAN.md` orders the work into milestones M1–M7 and keeps
 a progress log. Before changing behaviour, check both: a problem may already be fixed, or
-planned in a way that the change must follow. Measured performance is in `docs/perf/`.
+planned in a way that the change must follow. Measured performance is in `docs/perf/`;
+behaviour under high volume and load, with recommendations, is in `docs/SCALING.md`.
 
 ---
 
@@ -320,3 +321,4 @@ planned in a way that the change must follow. Measured performance is in `docs/p
 | Process managers | `core/.../saga/*` |
 | Full wiring of a system | `testdomain/.../spec/ReactiveTestDomainSpec.scala` |
 | Replay / rebuild | `core/.../rebuild/*` (M4), `docs/design/M4-rebuild.md` |
+| Limits, throttling and failure under load | `docs/SCALING.md`, `docs/perf/load-M5.md` |

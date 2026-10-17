@@ -1633,3 +1633,20 @@ Open test-infrastructure items:
   `EventsBusActorSpec`. Mutations caught: no persist guard, every node taken to run every
   version. The test cluster gained per-node app-versions and contexts, and nodes that join later.
 - `sbt test`: core 238, testdomain 148, all pass.
+
+**17/10/2026: high volume and load (docs/SCALING.md)**
+- Asked for at M5: how the library throttles, what it holds in memory and how it fails or stalls
+  with 10 000 command requests at once, aggregates of 50 000 events and 100 million events, and
+  what a host should do. Two bench scenarios were added (`burst`, `long`) and run as
+  `docs/perf/load-M5.md`; `docs/SCALING.md` covers the throttling points with their defaults,
+  each scenario (measured where the bench ran it, estimated with the arithmetic otherwise), the
+  messages between nodes, memory per node, the signals to watch and recommendations.
+- Measured: 10 000 commands at once all succeed (on new aggregates in 2.3 s, on existing ones in
+  0.9 s, on one aggregate in 3.8 s); serial mode answers the 8 997 past its queue at once with
+  `CommandRejected`; an aggregate of 50 000 events restores in 392 ms, or 12 ms from a snapshot.
+- New issues: F121 (messages between nodes above Artery's 256 KiB frame are dropped silently: a
+  re-publication part of 1 000 events is 470 KiB), F122 (the outbox poll groups the whole outbox
+  and keeps every waiting aggregate in memory), F123 (given-up aggregates wait for the poller's
+  next start), F124 (a commit-order build walks every type's events, M6), F125 (the
+  per-aggregate limit lets one event too many through). F121, F122, F123 and F125 are fixed in
+  M5, F122 and F123 with the flow control of F93.

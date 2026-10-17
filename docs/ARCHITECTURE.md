@@ -10,7 +10,8 @@ to the library's behaviour.
 > that code at each milestone review. Where a milestone changed the code, references name
 > methods; the remaining line numbers are from `4b5060f` and may have drifted
 > by a few lines. Defaults and limits quoted below are the literal values in the code;
-> measured performance is in `docs/perf/`.
+> measured performance is in `docs/perf/`. How the library behaves under high volume and
+> load (where it throttles, memory, how it fails or stalls, what to do) is in `docs/SCALING.md`.
 >
 > **Naming.** There is no `events_queue` table or class. The publication queue is the
 > **`events_to_publish`** table (a transactional outbox). The 0.12 bus cursor, the
