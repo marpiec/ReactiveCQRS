@@ -575,7 +575,8 @@ and the pure `RedeliveryPolicy` decides:
 | a newer oldest version (the older rows were delivered) | a fresh set of attempts | |
 
 At most 1 000 aggregates are re-published per poll, the longest waiting first, so a backlog
-after an outage does not start every owner at once. The poller sends `Republish(type, id)`
+after an outage does not start every owner at once; while others are due, retries of given-up
+aggregates take at most half of them (F141). The poller sends `Republish(type, id)`
 to the bus, which passes `RepublishOutbox(id)` to the type's command bus (registered with
 `RegisterPublisher`), which passes it to the owner (creating it if needed; re-publications
 count as activity for reaping). The owner re-publishes from its oldest outbox version to its
@@ -960,8 +961,9 @@ handlers. It runs on the blocking dispatcher and reads synchronously on its own 
    state. A projection whose listeners all take the state only (D62) gets one item per
    aggregate instead, its final state (`aggregatesOf` pages through the aggregates), which
    starts its subscription. A page is at most `pageSize` events and `pageBytes` (64 MB) of them, a
-   chunk about `chunkEvents` (1 000) events and at most `chunkBytes` (16 MB), at least one event
-   each (F126); a page its bytes cut short is not taken for the last. Chunks go two in
+   chunk at most `chunkEvents` (1 000) events and `chunkBytes` (16 MB), at least one event each
+   (F126): a run of one aggregate ends where it would pass them, and a chunk ends before an item
+   that would not fit (F140). A page its bytes cut short is not taken for the last. Chunks go two in
    flight, so the next page is read while the projection applies a chunk in one transaction
    (D61, §6.3). The projection acknowledges the bus's deliveries without applying them
    meanwhile (`BuildFromStore`).
@@ -969,8 +971,10 @@ handlers. It runs on the blocking dispatcher and reads synchronously on its own 
    from the projection's `ProjectionLive` on, it applies the bus's deliveries.
 3. **Reconciliation.** `aggregatesOf` pages through every aggregate of the plan's types, and
    `SubscriptionsState.lastVersions` reads the projection's versions of a page at once; an
-   aggregate behind gets its missing versions, read by version (`readEventsRange`, a range from
-   below the squash point starting at the squash event, F98), with the state at its version.
+   aggregate behind gets its missing versions, read by version in parts of a chunk (a range from
+   below the squash point starting at the squash event, F98; a part left empty by a squash since
+   the aggregate was listed goes on from the new squash point, F139), each part with the state at
+   the range's end, restored once (F140).
    This covers the events committed after the bulk pass read past them and rows that became
    visible late (row ids are not commit order between concurrent transactions). Then the
    builder sends `BuildCaughtUp` to `reportTo`.

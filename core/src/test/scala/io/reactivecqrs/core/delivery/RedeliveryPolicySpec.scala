@@ -100,6 +100,20 @@ class RedeliveryPolicySpec extends AnyFeatureSpec with Matchers {
       third.republish.map(_.aggregateId.asLong) mustBe Seq(5)
       decide(rows, third.memory, startedAt, at(3.minutes + 10.seconds), limited).republish.map(_.aggregateId.asLong) mustBe Seq(1, 2)
     }
+
+    Scenario("retries of given-up aggregates take at most half the budget while newer rows are due, so those still get their attempts (F141)") {
+      val limited = options.copy(maxRepublishPerPoll = 4)
+      val now = at(2.hours)
+      val givenUp = (1 to 6).map(n => waiting(n, 1, at(1.minute))) // waiting longest, their retries due
+      val memory = givenUp.map(w => w.aggregateId -> Tracked(w, at(1.minute), attemptsMade = 2, gaveUp = true, lastTry = Some(at(1.hour)))).toMap
+      val fresh = (7 to 9).map(n => waiting(n, 1, now.minusSeconds(200))) // their first re-publication due
+
+      val first = decide(givenUp ++ fresh, memory, startedAt, now, limited)
+      val second = decide(givenUp ++ fresh, first.memory, startedAt, now.plusSeconds(30), limited)
+
+      first.republish.map(_.aggregateId.asLong) mustBe Seq(1, 2, 7, 8)
+      second.republish.map(_.aggregateId.asLong) mustBe Seq(3, 4, 5, 9) // what attempts leave goes to retries
+    }
   }
 
   Feature("Memory") {

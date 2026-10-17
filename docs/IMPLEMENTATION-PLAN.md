@@ -1731,7 +1731,7 @@ Open test-infrastructure items:
   conflicts in concurrent mode, queues in serial mode, hand-overs of sharded owners; and
   recommends moving long work out of the command, or giving it its own threads and timeouts.
 
-**17/10/2026: audit of delivery and the cluster at the M5 close (F128, F129, F130)**
+**17/10/2026: audit of delivery and the cluster at the M5 close (F128–F141)**
 - Two audits (delivery and flow control; the cluster) before closing M5, each finding checked
   against the code before fixing. In the bus and flow control: a re-publication could send a
   subscription added later a message with a hole, which the sequence gate applies as a range, so
@@ -1756,3 +1756,8 @@ Open test-infrastructure items:
 - Tests: `LocalOwnersSpec` (two nodes, four scenarios), `MembersSpec`, `RollingUpgradeSpec` (the
   removed projection), `SubscribableSpec`, `PermanentDeleteSpec`, `SagaCallerPathSpec`; each red
   under a mutation that restores the old code.
+- The builder and the poller: a range read by version stopped at a squash far above its start
+  (F139); bulk runs and ranges are cut to fit a chunk, chunks end before an item that would not
+  fit, and a range restores its state once (F140); retries of given-up aggregates take at most
+  half of a poll's budget while others are due (F141). Tests: `ProjectionBuilderSpec` (two
+  scenarios), `RedeliveryPolicySpec`; each red under its mutation.

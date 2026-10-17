@@ -442,6 +442,12 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Fix:** a renewal of an unknown subscription (expired, or held by an instance that stopped) is answered with `ProjectionSubscriptionsCancelled(List(id))`, so the listener subscribes again. Test: `SubscribableSpec` (red before).
 - **Found:** M5 close, audit of the cluster.
 
+#### F141 — Retries of given-up aggregates could take a poll's whole budget
+- **Low**, confirmed (by reading; reproduced in `RedeliveryPolicySpec`) · **Fixed in M5** (17/10/2026) · `RedeliveryPolicy.decide`
+- **Symptom:** a poll re-publishes at most 1 000 aggregates, the longest waiting first, and since F123 given-up aggregates are retried every 30 minutes. Behind a subscriber stopped for long (its rows never go), 60 000 given-up aggregates or more took every poll's budget, so newer rows' attempts at 3 and 6 minutes waited without end and were never reported as undelivered. Each retry also re-publishes to every subscriber, which acknowledge duplicates, and restores an owner.
+- **Fix:** while other aggregates are due, retries take at most half the budget; each kind takes what the other leaves. Test: `RedeliveryPolicySpec` (red before).
+- **Found:** M5 close, audit of delivery.
+
 ### Commands and aggregates
 
 #### F7 — Event timestamps differ between live delivery and the store
@@ -994,6 +1000,18 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Fix idea:** the aggregate type (and space) on the events' rows, or an index that reaches a type's events in id order, so the pass reads only its own events; an expand step with an online backfill (D69).
 - **Found:** high-load analysis at M5 (docs/SCALING.md).
 
+#### F139 — A range read by version stopped at a squash far above its start
+- **Medium**, low likelihood, confirmed (reproduced in `ProjectionBuilderSpec`) · **Fixed in M5** (17/10/2026) · `ProjectionBuilder.itemsFrom`
+- **Symptom:** the reconciliation and gap fills read an aggregate's missing range in parts from the projection's version, and stopped at the first empty part. Since F126 a part is a window of versions; when the aggregate had been squashed far above that version (more than a part's events, for example by the squash scheduler during a long build), the first window held nothing, as the versions below the squash event are gone, and the aggregate got no item: the build switched in with it stale until its next event, or a gap fill ended as a recorded failure.
+- **Fix:** a range starts at the squash point when it is below it, and an empty part looks at the squash point again, so a squash made after the aggregate was listed is found too. Test: `ProjectionBuilderSpec` "a range from far below the squash point starts at the squash event" (both builds red before).
+- **Found:** M5 close, audit of delivery.
+
+#### F140 — The builder's chunks could hold a whole page, and a long range restored its state once per part
+- **Low**, confirmed · **Fixed in M5** (17/10/2026) · `ProjectionBuilder.committed`, `itemsFrom`, `chunked`
+- **Symptom:** in the bulk pass, consecutive events of one aggregate in a page became one item, and a chunk ended only after an item took it past `chunkEvents` or `chunkBytes`: a chunk could hold up to a page (1 000 events, 64 MB), against the 16 MB that ARCHITECTURE §8.1 promised. A range read by version (the reconciliation, gap fills) restored the aggregate's state for each part, for a listener of events with state: ten restores, each a replay, for 10 000 events.
+- **Fix:** a run ends where it would pass a chunk's events or bytes, and a range is read in parts of a chunk's events; a chunk ends before an item that would not fit, so it holds at most `chunkEvents` and `chunkBytes` (one event larger than that goes alone). A range restores its state once, at its end, and every part carries it, as an owner's re-published parts do. Test: `ProjectionBuilderSpec` "a long run of one aggregate is cut to fit chunks" (chunk sizes, and one restore; each red under its own mutation).
+- **Found:** M5 close, audit of delivery.
+
 #### F132 — `Projections.retire` dropped a projection that nodes of the older version still ran
 - **Medium**, confirmed (reproduced in `RollingUpgradeSpec`) · **Fixed in M5** (17/10/2026) · `Projections.retire`, `Members.olderVersionsRun`
 - **Symptom:** every node calls `retire` for a projection removed from its code as it starts, and it dropped the tables, subscription rows and registry entry at once. In a rolling upgrade the first node of the new version dropped the projection while its singleton still served on the oldest node, of the old version: queries failed, and its listeners wrote new failure rows after the drop, which kept permanent deletes waiting until a later restart retired it again. Against expand-then-contract (D69) and zero-downtime upgrades (D65).
@@ -1067,7 +1085,7 @@ From §7 of Neula's change requests.
 | M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔, F95 ✔; Neula H2, H7 |
 | M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8 ✔; F8 (contract ✔), F22 ✔, F23 ✔, F25 ✔, F27 ✔, F30 ✔, F31 ✔, F32 ✔, F33 (rest ✔), F38 ✔, F39 ✔, F44 ✔, F50 ✔, F65 ✔, F76 ✔, F78 ✔, F81 ✔, F96 ✔, F97 ✔, F100–F107 ✔; D85 ✔; Neula H8 |
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
-| M5 | AR5; F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔ (F78 between nodes ✔ in M3) |
+| M5 | AR5; F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 (complete), F124 |
 
 ---

@@ -432,6 +432,11 @@ The audit at the M5 close found circumstances the table missed:
 - The window is one bus's: a projection's singleton that takes events from the buses of several
   nodes can hold one window from each. Documented (SCALING §5); a window across nodes would need
   the subscriber to grant credit, which waits for a need.
+- The builder: a range read by version stopped at a squash far above its start (F139); a run of
+  one aggregate in a page made one item, so a chunk could hold the whole page, and a range read in
+  parts restored its state per part (F140).
+- The poller: retries of given-up aggregates could take a poll's whole budget, so newer rows'
+  attempts waited; they take at most half while others are due (F141).
 
 Tests: `FlowControlSpec` (the window, holding, pulls, expiry), `EventsBusActorSpec` (a slow
 subscriber gets its window and the rest by pulls, a fast one is not held back, an aggregate stays

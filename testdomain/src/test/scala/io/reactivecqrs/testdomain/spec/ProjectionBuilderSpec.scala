@@ -1,5 +1,6 @@
 package io.reactivecqrs.testdomain.spec
 
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.{AtomicInteger, AtomicReference}
 
 import io.mpjsons.MPJsons
@@ -9,7 +10,7 @@ import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCo
 import io.reactivecqrs.core.documentstore.{Document, DocumentStore, NoopDocumentStoreCache, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
-import io.reactivecqrs.core.eventstore.{AggregateScope, CommittedEvent, CommittedPage, EventStoreState, PostgresEventStoreState}
+import io.reactivecqrs.core.eventstore.{AggregateScope, CommittedEvent, CommittedPage, EventStoreState, PostgresEventStoreState, StoredAggregate}
 import io.reactivecqrs.core.projection._
 import io.reactivecqrs.core.rebuild.ProjectionBuilder._
 import io.reactivecqrs.core.rebuild.{ProjectionBuilder, ReplaySource}
@@ -17,7 +18,7 @@ import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.core.util.BlockingDispatcher
 import io.reactivecqrs.testutils.{CommonSpec, TestDatabase}
-import org.apache.pekko.actor.{ActorRef, Props}
+import org.apache.pekko.actor.{Actor, ActorRef, Props}
 import org.apache.pekko.testkit.TestProbe
 import scalikejdbc._
 
@@ -131,6 +132,32 @@ class FlakyRangeEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNames
     if (failures.getAndDecrement() > 0) throw new java.sql.SQLException("connection lost", "08006") else super.readPart(aggregateId, from, to, maxBytes)
 }
 
+/** The store, but the aggregates it lists show no squash point, as if each was squashed after it was listed. */
+class StaleSquashEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNamesState) extends PostgresEventStoreState(mpjsons, typesNamesState) {
+  override def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int, scope: AggregateScope): Seq[StoredAggregate] =
+    super.aggregatesOf(types, after, limit, scope).map(_.copy(squashedUpTo = None))
+}
+
+/** Counts the states it restores, per aggregate. */
+class CountingReplaySource(context: AggregateContext[_], eventStore: EventStoreState) extends ReplaySource(context.asInstanceOf[AggregateContext[Any]], eventStore) {
+  private val restored = new ConcurrentLinkedQueue[AggregateId]()
+  def restoresOf(id: AggregateId): Int = restored.toArray.count(_ == id)
+  override def stateAt(id: AggregateId, version: Option[AggregateVersion]): Any = {
+    restored.add(id)
+    super.stateAt(id, version)
+  }
+}
+
+/** Passes everything on to the projection, recording how many events each chunk holds. */
+class ChunkRecorder(projection: ActorRef, chunkEvents: ConcurrentLinkedQueue[Int]) extends Actor {
+  override def receive: Receive = {
+    case chunk: ApplyChunk =>
+      chunkEvents.add(chunk.items.map(_.events.size).sum)
+      projection.forward(chunk)
+    case other => projection.forward(other)
+  }
+}
+
 // D58–D62: a projection built from the store gets what live delivery gave it.
 class ProjectionBuilderSpec extends CommonSpec {
 
@@ -172,16 +199,18 @@ class ProjectionBuilderSpec extends CommonSpec {
   }
 
   private def builderOf(target: ActorRef, identity: String, reporter: ActorRef, store: EventStoreState = eventStore,
-                        positions: BuildPositions = new MemoryBuildPositions, settings: BuilderSettings = BuilderSettings(pageSize = 50, chunkEvents = 20)): ActorRef = {
+                        positions: BuildPositions = new MemoryBuildPositions, settings: BuilderSettings = BuilderSettings(pageSize = 50, chunkEvents = 20),
+                        replaySources: Map[AggregateType, ReplaySource] = sources): ActorRef = {
     val plan = BuildPlan(target.askActor[Listeners](GetListeners)(5.seconds).subscriptions)
-    onBlocking(Props(new ProjectionBuilder(target, identity, plan, store, subscriptions, sources, positions, reporter, settings)))
+    onBlocking(Props(new ProjectionBuilder(target, identity, plan, store, subscriptions, replaySources, positions, reporter, settings)))
   }
 
   /** Builds `target` from the store and waits until it caught up. */
   private def build(target: ActorRef, identity: String, store: EventStoreState = eventStore, positions: BuildPositions = new MemoryBuildPositions,
-                    settings: BuilderSettings = BuilderSettings(pageSize = 50, chunkEvents = 20)): Unit = {
+                    settings: BuilderSettings = BuilderSettings(pageSize = 50, chunkEvents = 20),
+                    replaySources: Map[AggregateType, ReplaySource] = sources): Unit = {
     val reporter = TestProbe()
-    builderOf(target, identity, reporter.ref, store, positions, settings)
+    builderOf(target, identity, reporter.ref, store, positions, settings, replaySources)
     reporter.expectMsg(60.seconds, BuildCaughtUp)
   }
 
@@ -412,6 +441,66 @@ class ProjectionBuilderSpec extends CommonSpec {
 
       documents(rebuiltLogs, Seq(note)) mustBe documents(liveLogs, Seq(note))
       target.askActor[ProjectionStatus](GetProjectionStatus)(5.seconds).failures mustBe empty
+    }
+  }
+
+  Feature("Ranges read by version, and the size of chunks (F139, F140)") {
+
+    Scenario("a range from far below the squash point starts at the squash event, also when the squash came after the aggregate was listed (F139)") {
+      Given("a note squashed at version 6 and written to after")
+      val liveLogs = logs("m4b_squash_hole_live")
+      val live = new Live(Seq(onBlocking(Props(new NoteEventsLog("m4b-squash-hole-live", subscriptions, liveLogs)))))
+      val note = live.create("squashed far")
+      (1 to 6).foreach(v => live.add(note, v, "line " + v))
+      live.delivered(Seq(note))
+      live.notes.askActor[SquashResponse](SquashAggregate(note, AggregateVersion(6)))(10.seconds) mustBe AggregateSquashed(note, AggregateVersion(6))
+      live.add(note, 7, "after")
+      live.delivered(Seq(note))
+
+      When("projections are built by their reconciliation, reading two aggregates and two versions at a time")
+      def afterBulk = new MemoryBuildPositions { save(BuildPosition(bulkDone = true, 0L)) }
+      val small = BuilderSettings(pageSize = 2, chunkEvents = 2)
+      val (known, stale) = (logs("m4b_squash_hole_known"), logs("m4b_squash_hole_stale"))
+      build(onBlocking(Props(new NoteEventsLog("m4b-squash-hole-known", subscriptions, known))), "m4b-squash-hole-known", positions = afterBulk, settings = small)
+      build(onBlocking(Props(new NoteEventsLog("m4b-squash-hole-stale", subscriptions, stale))), "m4b-squash-hole-stale",
+        store = new StaleSquashEventStore(mpjsons, typesNamesState), positions = afterBulk, settings = small)
+
+      Then("each has the squash event and what followed it")
+      val expected = Vector("6:BuildNoteSquashed", "7:BuildNoteLineAdded", "8:BuildNoteLineAdded")
+      documents(known, Seq(note))(note).entries mustBe expected
+      documents(stale, Seq(note))(note).entries mustBe expected
+    }
+
+    Scenario("a long run of one aggregate is cut to fit chunks, and a range read by version restores its state once (F140)") {
+      Given("a note with ten lines")
+      val (liveLogs, liveViews) = (logs("m4b_long_run_live"), views("m4b_long_run_live_view"))
+      val live = new Live(Seq(onBlocking(Props(new NoteEventsLog("m4b-long-run-live", subscriptions, liveLogs))),
+        onBlocking(Props(new NoteViews("m4b-long-run-live-view", subscriptions, liveViews)))))
+      val note = live.create("long")
+      (1 to 10).foreach(v => live.add(note, v, "line " + v))
+      live.delivered(Seq(note))
+      val settings = BuilderSettings(pageSize = 50, chunkEvents = 4)
+
+      When("a log is built in chunks of four events")
+      val chunkSizes = new ConcurrentLinkedQueue[Int]()
+      val rebuiltLogs = logs("m4b_long_run_rebuilt")
+      val logProjection = onBlocking(Props(new NoteEventsLog("m4b-long-run-rebuilt", subscriptions, rebuiltLogs)))
+      build(system.actorOf(Props(new ChunkRecorder(logProjection, chunkSizes))), "m4b-long-run-rebuilt", settings = settings)
+
+      Then("no chunk holds more, and the log is the live one")
+      chunkSizes.toArray.map(_.asInstanceOf[Int]).max must be <= 4
+      documents(rebuiltLogs, Seq(note)) mustBe documents(liveLogs, Seq(note))
+
+      When("a view is built by its reconciliation, reading the note in parts of four events")
+      val counting = new CountingReplaySource(noteContext, eventStore)
+      val rebuiltViews = views("m4b_long_run_rebuilt_view")
+      def afterBulk = new MemoryBuildPositions { save(BuildPosition(bulkDone = true, 0L)) }
+      build(onBlocking(Props(new NoteViews("m4b-long-run-rebuilt-view", subscriptions, rebuiltViews))), "m4b-long-run-rebuilt-view",
+        positions = afterBulk, settings = settings, replaySources = Map(AggregateType.of[BuildNote] -> counting))
+
+      Then("its state was restored once, and the view is the live one")
+      counting.restoresOf(note) mustBe 1
+      documents(rebuiltViews, Seq(note)) mustBe documents(liveViews, Seq(note))
     }
   }
 }

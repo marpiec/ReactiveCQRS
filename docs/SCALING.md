@@ -193,8 +193,12 @@ Estimated from the measured numbers. None of this was run at this scale.
   every 30 s, which is cheap while the outbox is near empty (normal running) and grows with a
   backlog after an outage. Since M5 it keeps only the 100 000 aggregates waiting longest (F122),
   and it tries given-up aggregates again every 30 minutes, so a subscriber that is back without
-  a restart gets them (F123). Aggregates past the oldest 100 000 wait until those are delivered,
-  and subscribers' gap requests fill any aggregate that gets new events.
+  a restart gets them (F123). Each such retry re-publishes to every subscriber (the others
+  acknowledge duplicates) and restores an owner; while newer rows are due, retries take at most
+  half of a poll's 1 000 (F141). Aggregates past the oldest 100 000 wait until those are delivered,
+  and subscribers' gap requests fill any aggregate that gets new events. Rows that wait only for a
+  subscriber that stopped go once the node restarts without it, or once it is removed from the
+  buses (`RemoveSubscriber`).
 - **Hot tables.** `aggregates` (one update per command) and `subscriptions` (one update per event
   per projection) churn the same way.
 
@@ -465,6 +469,7 @@ Recorded in [KNOWN-ISSUES](KNOWN-ISSUES.md):
 | F121: messages between nodes could exceed Artery's frame and were dropped silently | fixed in M5 |
 | F122: the outbox poll kept every waiting aggregate in memory | fixed in M5 (the grouping still reads the whole outbox) |
 | F123: given-up aggregates waited for the poller's next start | fixed in M5 |
+| F141: retries of given-up aggregates could take a poll's whole budget | fixed in M5 |
 | F124: a commit-order build walks the events of every type to find its own | M6 |
 | F125: the per-aggregate limit let one event too many through | fixed in M5 |
 | F126: batches counted in events held whatever their events weighed | fixed in M5 (restore fetches stay 1 000 rows: hosts with large events lower them) |

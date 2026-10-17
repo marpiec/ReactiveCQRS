@@ -82,7 +82,8 @@ case object ProjectionLive
   * `ChunkApplied`. */
 case class ApplyChunk(id: Long, items: Seq[ChunkItem])
 /** One subscription's versions `first` to `last` of one aggregate: its events (none for a state listener) and the
-  * aggregate's state after `last`. `startsSequence`: nothing before `first` is needed: it is the aggregate's squash event
+  * aggregate's state after `last` (for a part of a longer range read by version, after the range, as an owner's
+  * re-published parts carry). `startsSequence`: nothing before `first` is needed: it is the aggregate's squash event
   * (F98), or the item holds the aggregate's whole state (D62). `unreadable`: the event at `first` cannot be read from
   * the store, so the subscription fails there (D20a) instead of stopping the build (F82). `bytes`: its events' stored
   * sizes, which bound a chunk (F126); 0 when not known. */

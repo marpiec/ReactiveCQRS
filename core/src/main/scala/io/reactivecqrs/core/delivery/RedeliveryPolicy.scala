@@ -35,8 +35,14 @@ object RedeliveryPolicy {
 
   def decide(waiting: Seq[WaitingInOutbox], memory: Map[AggregateId, Tracked], startedAt: Instant, now: Instant, options: Options): Decision = {
     val steps = waiting.map(w => step(w, memory.get(w.aggregateId).filter(_.waiting.oldestVersion == w.oldestVersion), startedAt, now, options))
-    val (republishNow, republishLater) = steps.filter(_.republish).sortBy(_.waiting.since).splitAt(options.maxRepublishPerPoll)
-    val postponed = republishLater.map(_.waiting.aggregateId).toSet
+    // F141: retries of given-up aggregates take at most half the budget while others are due, so a large given-up backlog
+    // (a subscriber stopped for long) never keeps the attempts of newer rows waiting; each takes what the other leaves.
+    val budget = options.maxRepublishPerPoll
+    val (retries, attempts) = steps.filter(_.republish).sortBy(_.waiting.since).partition(_.before.exists(_.gaveUp))
+    val attemptsNow = attempts.take(budget - math.min(retries.size, budget / 2))
+    val retriesNow = retries.take(budget - attemptsNow.size)
+    val republishNow = (attemptsNow ++ retriesNow).sortBy(_.waiting.since)
+    val postponed = (attempts.drop(attemptsNow.size) ++ retries.drop(retriesNow.size)).map(_.waiting.aggregateId).toSet
 
     // A postponed aggregate keeps its state from before this poll, so it is due again at the next one.
     val next = steps.flatMap { s =>

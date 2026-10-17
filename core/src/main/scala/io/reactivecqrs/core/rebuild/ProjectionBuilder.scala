@@ -223,18 +223,22 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
   // ************** The bulk pass
 
   // Consecutive events of one aggregate become one run, delivered to each of its listener kinds. A run ends where a
-  // version is missing (a row committed late), so the projection sees the gap and it is read again by version.
+  // version is missing (a row committed late), so the projection sees the gap and it is read again by version, and
+  // where it fills a chunk, so it fits one (F140).
   private def committed(rows: Seq[CommittedEvent]): (Seq[(ChunkItem, Long)], Long, Int) = {
     val items = Vector.newBuilder[(ChunkItem, Long)]
     var run = Vector[CommittedEvent]()
+    var runBytes = 0L
     def endRun(): Unit = if (run.nonEmpty) {
-      val bytes = run.map(_.size.toLong).sum
-      items ++= itemsOf(run).map(item => item.copy(bytes = bytes) -> run.last.id)
+      items ++= itemsOf(run).map(item => item.copy(bytes = runBytes) -> run.last.id)
       run = Vector.empty
+      runBytes = 0L
     }
     rows.foreach { row =>
-      if (run.nonEmpty && (run.head.aggregateId != row.aggregateId || run.last.event.isLeft || row.version.asInt != run.last.version.asInt + 1)) endRun()
+      if (run.nonEmpty && (run.head.aggregateId != row.aggregateId || run.last.event.isLeft || row.version.asInt != run.last.version.asInt + 1 ||
+        run.size >= settings.chunkEvents || runBytes + row.size > settings.chunkBytes)) endRun()
       run :+= row
+      runBytes += row.size
     }
     endRun()
     (items.result(), rows.lastOption.map(_.id).getOrElse(position), rows.size)
@@ -311,20 +315,28 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
         val current = version.orElse(eventStore.aggregatesOf(Seq(aggregateType), AggregateId(id.asLong - 1), 1).find(_.aggregateId == id).map(_.version))
         current.toSeq.map(v => ChunkItem(kind, aggregateType, id, from, v, Nil, Option(sources(aggregateType).stateAt(id, Some(v))), startsSequence = true))
       } else {
-        // In parts of at most a chunk's bytes and a page's events (F126), one item each.
+        // In parts of at most a chunk's events and bytes (F126, F140), one item each. Nothing is stored below the squash
+        // point: the range starts at it, and goes on from it when a squash since then left a part empty.
         var parts = Vector[ChunkItem]()
-        var next = from
+        var squashed = squashedUpTo
+        var next = squashed.filter(_ > from).getOrElse(from)
         var more = true
         while (more) {
-          val part = eventStore.readPart[Any](id, next, AggregateVersion((next.asInt.toLong + settings.pageSize - 1).min(Int.MaxValue).toInt), settings.chunkBytes)
-          if (part.isEmpty) more = false else {
+          val part = eventStore.readPart[Any](id, next, AggregateVersion((next.asInt.toLong + settings.chunkEvents - 1).min(Int.MaxValue).toInt), settings.chunkBytes)
+          if (part.isEmpty) {
+            squashed = eventStore.squashedVersion(id)
+            if (squashed.exists(_ > next)) next = squashed.get else more = false
+          } else {
             val events = part.map(_._1)
-            val state = if (kind == SubscriptionType.AGGREGATES_WITH_EVENTS) Option(sources(aggregateType).stateAt(id, Some(events.last.version))) else None
-            parts :+= item(kind, aggregateType, id, events, state, squashedUpTo.contains(events.head.version)).copy(bytes = part.map(_._2.toLong).sum)
+            parts :+= item(kind, aggregateType, id, events, None, squashed.contains(events.head.version)).copy(bytes = part.map(_._2.toLong).sum)
             next = events.last.version.increment
           }
         }
-        parts
+        // Every part carries the state after the last, restored once, as an owner's re-published parts do.
+        if (kind == SubscriptionType.AGGREGATES_WITH_EVENTS && parts.nonEmpty) {
+          val state = Option(sources(aggregateType).stateAt(id, Some(parts.last.last)))
+          parts.map(_.copy(aggregateRoot = state))
+        } else parts
       }
     } catch {
       case NonFatal(e) if !transient(e) =>
@@ -345,8 +357,8 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
     chunked(items.map(_ -> -1L), -1L).reverseIterator.foreach(ready.prepend)
   }
 
-  // Items in chunks of about `chunkEvents` events and `chunkBytes` of them (F126), each with the position reached once
-  // it is applied.
+  // Items in chunks of at most `chunkEvents` events and `chunkBytes` of them (F126, F140), each with the position reached
+  // once it is applied. An item fits a chunk (runs and parts are cut so), except one event larger than its bytes.
   private def chunked(items: Seq[(ChunkItem, Long)], reached: Long): Seq[(ApplyChunk, Long)] = {
     val chunks = Vector.newBuilder[(ApplyChunk, Long)]
     var current = Vector[(ChunkItem, Long)]()
@@ -360,10 +372,11 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
       bytes = 0L
     }
     items.foreach { case (item, at) =>
+      val itemEvents = math.max(item.events.size, 1)
+      if (events + itemEvents > settings.chunkEvents || bytes + item.bytes > settings.chunkBytes) endChunk()
       current :+= item -> at
-      events += math.max(item.events.size, 1)
+      events += itemEvents
       bytes += item.bytes
-      if (events >= settings.chunkEvents || bytes >= settings.chunkBytes) endChunk()
     }
     endChunk()
     val result = chunks.result()
