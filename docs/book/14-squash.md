@@ -219,7 +219,8 @@ the squash event.
 > asked for the squash (`SquashAggregate.userId`), at the time of the event it replaces. If your
 > event handlers copy the user or the time into the state ("last changed by Bob"), the squash event
 > must carry those values itself and its handler must take them from there. Otherwise the check
-> refuses the squash, or lets it pass only when the right person happens to ask.
+> refuses the squash (always for automatic squashes, which ask as user 0), or lets it pass only when
+> the right person happens to ask. The refusal reminds you of this (issue F155).
 
 ### Leaving data out on purpose
 

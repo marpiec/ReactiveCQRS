@@ -104,7 +104,8 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
     restored <- Try(eventHandlers(userId.getOrElse(replaced.userId), replaced.timestamp, initialState())(event)).toEither
       .left.map(e => "the event handlers fail on the squash event " + event.getClass.getSimpleName + ": " + e)
     _ <- Either.cond(restored == expected || event.isInstanceOf[SquashMayChangeState], (),
-      "the squash event " + event.getClass.getSimpleName + " does not give back the state it replaces (D85)")
+      "the squash event " + event.getClass.getSimpleName + " does not give back the state it replaces (D85); a user or a time the " +
+        "state keeps must be in the event, and its handler must take them from it, not from its parameters (F155)")
   } yield event
 
   /** For each duplicate, the checked squash event of its state at version 1 that detaches it (D50, F76); Left: why the

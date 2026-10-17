@@ -110,6 +110,14 @@ class CompleteRewriteSpec extends CommonSpec {
       folders.askActor[SquashResponse](SquashAggregate(base, AggregateVersion(3), user))(10.seconds) mustBe AggregateSquashed(base, AggregateVersion(3))
       awaitAssert(doc(attached) mustBe Some(FolderDoc("Alpha", Vector("secret", "public", "secret"))), 20.seconds, 50.millis)
 
+      val ids = Seq(base, attached, detached).map(_.asLong)
+      def rowsHolding(value: String): Long = DB.readOnly(implicit session => sql"""SELECT
+        |   (SELECT count(*) FROM events WHERE aggregate_id IN ($ids) AND position($value IN event) > 0)
+        | + (SELECT count(*) FROM events_archive WHERE aggregate_id IN ($ids) AND position($value IN event) > 0)
+        | + (SELECT count(*) FROM snapshots WHERE aggregate_id IN ($ids) AND position($value IN state) > 0)""".stripMargin
+        .map(_.long(1)).single().get)
+      rowsHolding("secret") must be > 0L
+
       When("the note is erased from the folder and from everything copied from it")
       val report = rewrite(base, EraseNote("secret"))
 
@@ -123,6 +131,9 @@ class CompleteRewriteSpec extends CommonSpec {
       eventStore.readArchive[Folder](base).map(_.info.event) mustBe Seq(NoteAdded("erased"), NoteAdded("public"))
       Seq(base, attached, detached).map(doc) mustBe Seq(Some(FolderDoc("Alpha", Vector("erased", "public"))),
         Some(FolderDoc("Alpha", Vector("erased", "public", "erased"))), Some(FolderDoc("Alpha", Vector("erased"))))
+
+      And("no stored row of theirs holds it: events, archive, snapshots")
+      rowsHolding("secret") mustBe 0L
 
       And("each aggregate's rewrite left an audit row naming the fields it changed, never the value")
       DB.readOnly(implicit session => sql"""SELECT aggregate_id, fields, events, archived, change_class FROM history_rewrites
