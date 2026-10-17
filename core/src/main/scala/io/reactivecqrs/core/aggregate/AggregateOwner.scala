@@ -415,12 +415,16 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     }
   }
 
-  // R9: a command without events writes nothing and changes nothing.
+  // R9: a command without events writes nothing and changes nothing. D38: a new aggregate belongs to an organization,
+  // the space of its first event (0 for the platform); one without a space could be neither purged nor moved with it.
   private def persistOrAnswer(command: Pending, events: Seq[Event[AGGREGATE_ROOT]], rewritten: Iterable[EventWithVersion[AGGREGATE_ROOT]], info: AnyRef): Unit = {
     if (events.isEmpty) {
       finish(command.envelope.commandId, successResponse(command.baseVersion, info))
     } else if (command.baseVersion != version) {
       ownConflict(command, AggregateConcurrentModificationError(aggregateId, aggregateType, command.baseVersion, version))
+    } else if (version == AggregateVersion.ZERO && events.head.isInstanceOf[FirstEvent[_]] && events.head.asInstanceOf[FirstEvent[_]].spaceId.asLong < 0) {
+      finish(command.envelope.commandId, FailureResponse(List("A new aggregate needs a space (D38): " + events.head.getClass.getSimpleName +
+        " gives " + events.head.asInstanceOf[FirstEvent[_]].spaceId + "; use SpaceId(0) for the platform")))
     } else notWrittenYet(events) match {
       case Some(reason) => finish(command.envelope.commandId, CommandRejected(aggregateId, reason)) // D67: may be sent again later
       case None => persist(command, events, rewritten, info)

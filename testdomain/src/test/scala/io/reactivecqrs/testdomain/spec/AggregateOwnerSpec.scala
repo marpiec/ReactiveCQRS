@@ -11,7 +11,7 @@ import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
 import io.reactivecqrs.core.eventstore.MemoryEventStoreState
 import io.reactivecqrs.core.uid.{MemoryUidGenerator, UidGeneratorActor}
-import io.reactivecqrs.testutils.CommonSpec
+import io.reactivecqrs.testutils.{CommonSpec, TestIds}
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
@@ -27,8 +27,14 @@ object AggregateOwnerSpec {
     def spaceId: SpaceId = SpaceId(0)
   }
   case class Counted(by: Int) extends Event[Tally]
+  case class TallyStartedIn(space: Long) extends FirstEvent[Tally] {
+    def spaceId: SpaceId = SpaceId(space)
+  }
 
   case class StartTally(userId: UserId) extends FirstCommand[Tally, CustomCommandResponse[_]]
+  case class StartTallyIn(userId: UserId, space: Long, chosen: AggregateId) extends FirstCommand[Tally, CustomCommandResponse[_]] {
+    override def chosenAggregateId: Option[AggregateId] = Some(chosen)
+  }
   case class Count(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, times: Int)
     extends Command[Tally, CustomCommandResponse[_]]
   /** Counts once the test completes the promise registered under `key`. */
@@ -47,6 +53,7 @@ object AggregateOwnerSpec {
 
     override def commandHandlers = tally => {
       case _: StartTally => CommandSuccess(TallyStarted())
+      case c: StartTallyIn => CommandSuccess(TallyStartedIn(c.space))
       case c: Count => CommandSuccess((1 to c.times).map(_ => Counted(1)))
       case c: CountWhenReleased =>
         import scala.concurrent.ExecutionContext.Implicits.global
@@ -54,7 +61,7 @@ object AggregateOwnerSpec {
     }
 
     override def eventHandlers = (_, _, tally) => {
-      case _: TallyStarted => handledEvents.incrementAndGet(); tally
+      case _: TallyStarted | _: TallyStartedIn => handledEvents.incrementAndGet(); tally
       case c: Counted => handledEvents.incrementAndGet(); tally.copy(count = tally.count + c.by)
     }
   }
@@ -134,6 +141,20 @@ class AggregateOwnerSpec extends CommonSpec {
       val counted: CustomCommandResponse[_] = commandBus ?? Count(userId, id, AggregateVersion(1), 2)
       counted mustBe SuccessResponse(id, AggregateVersion(3))
       Await.result(query, 5.seconds).asInstanceOf[Try[Aggregate[Tally]]].get.aggregateRoot mustBe Some(Tally(2))
+    }
+  }
+
+  Feature("A new aggregate's organization (D38)") {
+
+    Scenario("a first event without a space is refused, and nothing is stored") {
+      val id = AggregateId(TestIds.aggregate())
+      val refused: CustomCommandResponse[_] = commandBus ?? StartTallyIn(userId, SpaceId.unknown.asLong, id)
+      refused mustBe a[FailureResponse]
+      refused.asInstanceOf[FailureResponse].exceptions.head must include("space")
+      state(id).version mustBe AggregateVersion.ZERO
+
+      val inPlatform: CustomCommandResponse[_] = commandBus ?? StartTallyIn(userId, 0, id) // space 0 is the platform
+      inPlatform mustBe SuccessResponse(id, AggregateVersion(1))
     }
   }
 
