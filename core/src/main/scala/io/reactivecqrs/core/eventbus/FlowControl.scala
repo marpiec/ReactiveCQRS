@@ -12,7 +12,8 @@ import scala.collection.mutable
   * `windowBytes` of their stored sizes (F126) in messages not yet answered, whichever comes first. A live publication
   * that does not fit is held, and its aggregate is behind for that subscriber (every later event of it is held too, so
   * the subscriber never sees a gap of the bus's making) until the bus pulls it: asks its owner to re-publish it to that
-  * subscriber, once the subscriber's events in flight are down to half the window. Its memory is bounded by the window,
+  * subscriber, once the subscriber's events in flight are down to half the window; while aggregates are behind, live
+  * publications take at most that half, so the pulls always find the other. Its memory is bounded by the window,
   * the aggregates behind and `maxPulls`; the payloads of held events stay in the store. Not thread-safe: part of the
   * bus's state.
   */
@@ -33,18 +34,23 @@ final class FlowControl[S](window: Int, windowBytes: Long, maxPulls: Int, pullTi
   private val subscribers = mutable.HashMap[S, Subscriber]()
 
   /** Whether a live publication of `events` events of `aggregateId`, of `bytes` stored, goes to `subscriber` now; if
-    * not, it is held. With nothing in flight to the subscriber, a publication goes whatever its size. */
+    * not, it is held. What pulls asked for and have not got yet counts as in flight: it is on its way. While aggregates
+    * are behind, a live publication takes at most half the window: pulls start at half and take the rest, so the
+    * oldest held aggregates move however busy the others are. With nothing in flight or asked for, a publication goes
+    * whatever its size. */
   def admits(subscriber: S, aggregateId: AggregateId, events: Int, bytes: Long): Boolean = subscribers.get(subscriber).forall { s =>
-    !s.behind.contains(aggregateId) && !s.pulling.contains(aggregateId) && (s.sent.isEmpty || s.fits(events, bytes))
+    val share = if (s.behind.isEmpty) 1 else 2
+    !s.behind.contains(aggregateId) && !s.pulling.contains(aggregateId) && (s.sent.isEmpty && s.pulling.isEmpty ||
+      s.events + s.pullingEvents + events <= window / share && s.bytes + s.pullingBytes + bytes <= windowBytes / share)
   }
 
   /** Versions `from` to `upTo` of the aggregate, of `bytes` stored, are held for `subscriber`. */
   def hold(subscriber: S, aggregateType: AggregateType, aggregateId: AggregateId, from: Int, upTo: Int, bytes: Long, now: Long): Unit = {
     val s = subscribers.getOrElseUpdate(subscriber, new Subscriber)
     s.pulling.get(aggregateId) match {
-      case Some(p) => s.pulling(aggregateId) = p.copy(behind = p.behind.including(from, upTo, bytes)) // past the part being pulled
+      case Some(p) => s.pulling(aggregateId) = p.copy(behind = p.behind.including(from, upTo, bytes, now)) // past the part being pulled
       case None =>
-        s.behind(aggregateId) = s.behind.get(aggregateId).map(_.including(from, upTo, bytes)).getOrElse(Behind(aggregateType, from, upTo, bytes, now))
+        s.behind(aggregateId) = s.behind.get(aggregateId).map(_.including(from, upTo, bytes, now)).getOrElse(Behind(aggregateType, from, upTo, bytes, now))
     }
   }
 
@@ -63,16 +69,16 @@ final class FlowControl[S](window: Int, windowBytes: Long, maxPulls: Int, pullTi
     forgetIfIdle(subscriber, s)
   }
 
-  /** Versions up to `last` of the aggregate, of `bytes` stored, were re-published to `subscriber` (a pull, or a gap it
-    * asked for): they are no longer behind, and what was held past them is behind again. */
-  def republished(subscriber: S, aggregateId: AggregateId, last: Int, bytes: Long, now: Long): Unit = subscribers.get(subscriber).foreach { s =>
+  /** Versions up to `last` of the aggregate were re-published to `subscriber` (a pull, or a gap it asked for): they are
+    * no longer behind, and what was held past them is behind again. */
+  def republished(subscriber: S, aggregateId: AggregateId, last: Int): Unit = subscribers.get(subscriber).foreach { s =>
     s.pulling.remove(aggregateId).foreach { p =>
       s.pullingEvents -= p.events
       s.pullingBytes -= p.bytes
-      if (p.behind.upTo > last) s.behind(aggregateId) = p.behind.after(last, bytes, now)
+      if (p.behind.upTo > last) s.behind(aggregateId) = p.behind.after(last)
     }
     s.behind.get(aggregateId).filter(_.from <= last).foreach { b =>
-      if (b.upTo > last) s.behind(aggregateId) = b.after(last, bytes, b.since) else s.behind.remove(aggregateId)
+      if (b.upTo > last) s.behind(aggregateId) = b.after(last) else s.behind.remove(aggregateId)
     }
     forgetIfIdle(subscriber, s)
   }
@@ -86,8 +92,9 @@ final class FlowControl[S](window: Int, windowBytes: Long, maxPulls: Int, pullTi
       val oldest = s.behind.iterator
       while (oldest.hasNext && s.pulling.size < maxPulls && s.fits(s.pullingEvents, s.pullingBytes)) {
         val (aggregateId, behind) = oldest.next()
-        val events = math.min(behind.upTo - behind.from + 1, maxPartEvents)
-        val bytes = math.min(behind.bytes, maxPartBytes)
+        val held = behind.upTo - behind.from + 1
+        val events = math.min(held, maxPartEvents)
+        val bytes = math.min(behind.bytes * events / held, maxPartBytes)
         s.pulling(aggregateId) = Pulling(behind, events, bytes, now)
         s.pullingEvents += events
         s.pullingBytes += bytes
@@ -103,8 +110,8 @@ final class FlowControl[S](window: Int, windowBytes: Long, maxPulls: Int, pullTi
   def withBehind: Iterable[S] = subscribers.collect { case (subscriber, s) if s.behind.nonEmpty => subscriber }
 
   /** Messages not answered by the deadline are taken off (lost: their deliveries end then too), and pulls not answered
-    * within the pull timeout are behind again. An aggregate held since the deadline is dropped: its held deliveries
-    * ended then, so its pulls may be answered through another node's bus (its owner moved), never this one; the
+    * within the pull timeout are behind again. An aggregate last held a deadline ago is dropped: its held deliveries
+    * ended by then, so its pulls may be answered through another node's bus (its owner moved), never this one; the
     * subscriber's gap requests and the outbox poller deliver it instead. */
   def expire(now: Long): Unit = subscribers.toSeq.foreach { case (subscriber, s) =>
     var oldest = s.sent.headOption
@@ -118,9 +125,9 @@ final class FlowControl[S](window: Int, windowBytes: Long, maxPulls: Int, pullTi
       s.pulling.remove(aggregateId)
       s.pullingEvents -= p.events
       s.pullingBytes -= p.bytes
-      if (now - p.behind.since < deadlineNanos) s.behind(aggregateId) = p.behind
+      if (now - p.behind.heldAt < deadlineNanos) s.behind(aggregateId) = p.behind
     }
-    s.behind.filterInPlace { case (_, b) => now - b.since < deadlineNanos }
+    s.behind.filterInPlace { case (_, b) => now - b.heldAt < deadlineNanos }
     forgetIfIdle(subscriber, s)
   }
 
@@ -146,12 +153,20 @@ object FlowControl {
 
   case class Sent(events: Int, bytes: Long, at: Long)
 
-  /** Versions `from` to `upTo`, of `bytes` stored, held for a subscriber since `since`. */
-  case class Behind(aggregateType: AggregateType, from: Int, upTo: Int, bytes: Long, since: Long) {
-    def including(otherFrom: Int, otherUpTo: Int, moreBytes: Long): Behind =
-      copy(from = math.min(from, otherFrom), upTo = math.max(upTo, otherUpTo), bytes = bytes + moreBytes)
-    /** What is left after versions up to `last`, of `sentBytes`, were re-published. */
-    def after(last: Int, sentBytes: Long, at: Long): Behind = copy(from = last + 1, bytes = math.max(bytes - sentBytes, 0L), since = at)
+  /** Versions `from` to `upTo`, of about `bytes` stored, held for a subscriber; `heldAt`: the latest hold, a deadline
+    * after which every delivery held for it has ended. */
+  case class Behind(aggregateType: AggregateType, from: Int, upTo: Int, bytes: Long, heldAt: Long) {
+    /** Versions `otherFrom` to `otherUpTo`, of `moreBytes`, held too at `at`. Only versions new to the range add their
+      * share of the bytes: an event held again (re-published from the outbox while held) counts once. */
+    def including(otherFrom: Int, otherUpTo: Int, moreBytes: Long, at: Long): Behind = {
+      val below = math.max(math.min(otherUpTo, from - 1) - otherFrom + 1, 0)
+      val above = math.max(otherUpTo - math.max(otherFrom, upTo + 1) + 1, 0)
+      copy(from = math.min(from, otherFrom), upTo = math.max(upTo, otherUpTo),
+        bytes = bytes + moreBytes * (below + above) / (otherUpTo - otherFrom + 1), heldAt = at)
+    }
+    /** What is left after versions up to `last` were re-published: the versions after it, with their share of the bytes. */
+    def after(last: Int): Behind =
+      if (last < from) this else copy(from = last + 1, bytes = bytes * (upTo - last) / (upTo - from + 1))
   }
 
   case class Pulling(behind: Behind, events: Int, bytes: Long, at: Long)

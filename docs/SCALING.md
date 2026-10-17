@@ -230,9 +230,14 @@ Two single runs on one machine, so take the comparison as indicative.
 and 64 MB of their stored sizes not yet answered (`DeliveryOptions.window`, `windowBytes`). The
 bus holds what does not fit: the events wait in the store, and the bus keeps a delivery (keys
 only) per event held. Once the projection has answered half its window, the bus asks the owners
-of the held aggregates to re-publish them to it, oldest first, at most 100 at once. A fast
-projection next to a slow one is not held back. When the slow one has a held event, the owner is
-acknowledged and the outbox row goes, as for any delivery.
+of the held aggregates to re-publish them to it, oldest first, at most 100 at once; while it has
+aggregates held, new events take at most half its window, so the held ones always move (F130). A
+fast projection next to a slow one is not held back. When the slow one has a held event, the owner
+is acknowledged and the outbox row goes, as for any delivery.
+
+The window is each node's bus's: a projection's singleton takes events from the bus of every
+node, so its mailbox can hold one window per node (3 nodes: up to 30 000 events and 192 MB).
+Size `window` and `windowBytes` for the number of nodes.
 
 **How it fails.**
 - The bus's keys for held events grow with the lag until the deadline: at most the commit rate
@@ -250,7 +255,8 @@ acknowledged and the outbox row goes, as for any delivery.
 - **Leave headroom between the command rate and the slowest projection's rate.**
 - **For a projection far behind, rebuild it** rather than letting it catch up through the bus.
 - **Size the window for the projection:** a larger one lets a projection take more at once (larger
-  groups) at the cost of mailbox memory; a smaller one keeps memory low.
+  groups) at the cost of mailbox memory; a smaller one keeps memory low. In a cluster, divide what
+  one projection may hold by the number of nodes.
 
 ## 6. Messages between nodes
 
@@ -411,7 +417,7 @@ Pekko's default dispatcher has 12 threads on the measured machine; since M5, han
 | --- | --- | --- |
 | Owners | the state plus the actor, per aggregate touched recently | local: idle owners stopped by the 5-minute sweep; sharded: after 120 s idle |
 | Commands in flight | 8 to 15 KB each, upper bound (section 2); about 12 MB for one carrying a 5 MB document (section 7) | none in the library: bound them at the edge, by bytes for large ones |
-| Bus deliveries and projection mailboxes | the window: at most 10 000 events and 64 MB of them per subscriber; a delivery (keys, about 200 bytes) per event held, until the deadline (section 5) | `DeliveryOptions.window`, `windowBytes`, `deadline` |
+| Bus deliveries and projection mailboxes | the window: at most 10 000 events and 64 MB of them per subscriber and node; a delivery (keys, about 200 bytes) per event held, until the deadline (section 5) | `DeliveryOptions.window`, `windowBytes`, `deadline` |
 | `GetEventsForAggregate` answers | the whole history: 168 MB for 50 000 events (measured) | none |
 | A restore | transient: 52 MB for 50 000 events, 146 MB for 500 000 (measured peaks) | one per owner restoring, at most 32 at once |
 | A rebuild | 150 MB peak for 112 211 events (measured, baseline-M4) | pages, 2 chunks in flight, 10 000 replay states, each the size of a state |

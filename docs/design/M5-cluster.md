@@ -414,6 +414,22 @@ Built as designed, with three things found on the way:
   parts of a chunk's bytes now, one item each. The whole range is still read before its items are
   chunked, so a very long missing range of large events is held at once (documented).
 
+The audit at the M5 close found circumstances the table missed:
+- A subscriber with aggregates behind took live publications of others up to its whole window,
+  and pulls start at half: under steady load the held ones waited for the deadline. While
+  aggregates are behind, a live publication now takes at most half the window, so pulls always
+  find the other half, and what pulls asked for counts as in flight until it comes (F130).
+- An aggregate held again was dropped a deadline after its first hold, while later held
+  deliveries still waited; it is now dropped a deadline after its latest hold. Events held again
+  counted their bytes again; only versions new to a range count now, and a part and what it leaves
+  each take their share. A held delivery that its pull sent was logged as stalled at once; it
+  stalls from when it was sent (F130).
+- A re-publication could send a subscription added later versions with a hole in one message,
+  which the sequence gate applies as a range: messages hold consecutive versions only (F128).
+- The window is one bus's: a projection's singleton that takes events from the buses of several
+  nodes can hold one window from each. Documented (SCALING §5); a window across nodes would need
+  the subscriber to grant credit, which waits for a need.
+
 Tests: `FlowControlSpec` (the window, holding, pulls, expiry), `EventsBusActorSpec` (a slow
 subscriber gets its window and the rest by pulls, a fast one is not held back, an aggregate stays
 held while pulled, bytes count), `DeliveryEndToEndSpec` (a slow projection behind real owners),

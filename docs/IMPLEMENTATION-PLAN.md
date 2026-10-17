@@ -1730,3 +1730,15 @@ Open test-infrastructure items:
 - SCALING §8 explains a 5-minute handler: the 60 s timeout, the caller's own timeout, threads,
   conflicts in concurrent mode, queues in serial mode, hand-overs of sharded owners; and
   recommends moving long work out of the command, or giving it its own threads and timeouts.
+
+**17/10/2026: audit of delivery and the cluster at the M5 close (F128, F129, F130)**
+- Two audits (delivery and flow control; the cluster) before closing M5, each finding checked
+  against the code before fixing. In the bus and flow control: a re-publication could send a
+  subscription added later a message with a hole, which the sequence gate applies as a range, so
+  a version was never applied (F128, high); a singleton's proxy was asked once for its new
+  instances, and a lost ask left them unsubscribed until a restart (F129); flow control let live
+  traffic starve the held aggregates, did not count what pulls asked for, dropped an aggregate a
+  deadline after its first hold, counted bytes held again twice, and logged pulled deliveries as
+  stalled at once (F130). The window is one bus's: documented (SCALING §5).
+- Tests: `EventsBusActorSpec` (three scenarios) and `FlowControlSpec` (five), each red under a
+  mutation that restores the old rule.

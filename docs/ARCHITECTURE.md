@@ -651,13 +651,19 @@ for it as held, not sent, and its aggregate is behind for it, so every later eve
 aggregate is held too and the subscriber never sees a gap of the bus's making. Once at most
 half the window is in flight, the bus **pulls** the aggregates behind, oldest first: it sends
 `RepublishRange` to their owners for that subscriber, at most 100 at once and about as many
-events and bytes as the window has room for, counting each as a part of the owners' size. A
+events and bytes as the window has room for, counting each as a part of the owners' size
+(its share of the bytes held). What pulls asked for counts as in flight until it comes, and
+while aggregates are behind a live publication takes at most half the window, so the pulls
+always find the other half and the oldest held move however busy the rest is (F130). A
 part that ends before the last held version leaves the rest behind; a pull unanswered within
-a minute is asked again. A re-publication to one subscriber, a pull or a gap fill, goes
-whatever the window. A held delivery completes when the subscriber answers the pulled part, so
-the owner is acknowledged and its outbox rows go as soon as the slow subscriber has them; the
-payloads in between stay in the store, and the bus keeps keys only. `DeliveryStatus.held` and
-`.behind` show it, and the summary line names the subscribers behind.
+a minute is asked again; an aggregate last held a deadline ago is dropped (its held deliveries
+have ended). A re-publication to one subscriber, a pull or a gap fill, goes whatever the window,
+in runs of consecutive versions (F128). A held delivery completes when the subscriber answers
+the pulled part, so the owner is acknowledged and its outbox rows go as soon as the slow
+subscriber has them; the payloads in between stay in the store, and the bus keeps keys only.
+`DeliveryStatus.held` and `.behind` show it, and the summary line names the subscribers behind.
+The window is one bus's: a subscriber that takes events from the buses of several nodes (a
+projection's singleton) can hold one window from each.
 
 **Failures inside the bus (AR7).** A message the bus fails on (a malformed one) is logged and
 dropped. A restart would lose every delivery and the subscriptions.

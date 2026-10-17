@@ -135,8 +135,9 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   /** One event's delivery to its subscriptions: sent to those `awaiting` an answer, `held` for those whose window was
     * full (F93). `publisher` is set for full publications only: a re-publication to one subscriber never acknowledges the
     * owner, so it cannot delete outbox rows others still wait for. `incomplete` marks a delivery that some subscription
-    * did not take (deadline, a stopped subscriber): its outbox row must stay. */
-  private case class Delivery(aggregateType: AggregateType, publisher: Option[ActorRef], firstSent: Long, awaiting: Set[Target],
+    * did not take (deadline, a stopped subscriber): its outbox row must stay. Its deadline counts from `firstSent`, a
+    * stall from `lastSent`: then, or when it was sent last to a subscription it was held for. */
+  private case class Delivery(aggregateType: AggregateType, publisher: Option[ActorRef], firstSent: Long, lastSent: Long, awaiting: Set[Target],
                               held: Set[Target], incomplete: Boolean, stallLogged: Boolean, permanentDelete: Boolean) {
     def waitsFor(target: Target): Boolean = awaiting.contains(target) || held.contains(target)
     def done: Boolean = awaiting.isEmpty && held.isEmpty
@@ -288,6 +289,9 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     case GetDeliveryStatus => sender() ! status
     case Terminated(subscriber) => stoppedOrUnregistered(subscriber)
     case Tick =>
+      // F129: a registered subscriber asked again (its singleton moved) is asked every tick until it answers, as at the
+      // start: the first ask can be lost, sent to an instance that is stopping or dropped from a proxy's full buffer.
+      askedAgain.foreach(r => r ! GetSubscriptionRequests(r))
       flow.expire(System.nanoTime())
       flow.withBehind.toSeq.foreach(pull)
       checkDeadlines()
@@ -345,13 +349,16 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
         case None =>
           // An event not waiting yet goes to every live subscription, sent or held. A stopped subscriber takes nothing,
           // so its events stay in the outbox until it is back after a restart.
-          val delivery = Delivery(aggregateType, if (onlyTo.isEmpty) Some(publisher) else None, now, sentTo, heldFor,
+          val delivery = Delivery(aggregateType, if (onlyTo.isEmpty) Some(publisher) else None, now, now, sentTo, heldFor,
             incomplete = ofStopped.nonEmpty, stallLogged = false, permanentDelete = event.event.isInstanceOf[PermanentDeleteEvent[_]])
           if (delivery.done) finished :+= (delivery -> key) else deliveries += key -> delivery
         case Some(waiting) =>
-          // What was held for a subscriber that takes it now (a pull's part) is sent.
+          // What was held for a subscriber that takes it now (a pull's part) is sent: it may stall from now on, not from
+          // when it was held.
           val nowSent = waiting.held.intersect(sentTo)
-          if (nowSent.nonEmpty) deliveries += key -> waiting.copy(awaiting = waiting.awaiting ++ nowSent, held = waiting.held -- nowSent)
+          if (nowSent.nonEmpty) {
+            deliveries += key -> waiting.copy(awaiting = waiting.awaiting ++ nowSent, held = waiting.held -- nowSent, lastSent = now, stallLogged = false)
+          }
       }
     }
 
@@ -359,12 +366,15 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     val measured = new Measured(aggregateRoot)
     sends.foreach { case (s, forSubscription) =>
       val startsHere = startsAtSquash && forSubscription.head.version == events.head.version
-      partsFor(s, forSubscription, measured).zipWithIndex.foreach { case (part, i) =>
+      // F128: a message holds consecutive versions only. What a subscription is sent of a re-publication can have holes
+      // (versions whose deliveries do not wait for it, as it subscribed after them), and a subscriber applies a message
+      // from its first version to its last: it would step over a hole. Apart, the hole is a gap it asks for.
+      consecutive(forSubscription).flatMap(run => partsFor(s, run, measured)).zipWithIndex.foreach { case (part, i) =>
         s.subscriber ! messageFor(s, aggregateType, aggregateId, part, aggregateRoot, startsHere && i == 0)
         flow.sent(s.subscriber, SentKey(aggregateId, part.head.version.asInt, s.kind), part.size, bytes(part), now)
       }
     }
-    onlyTo.foreach(subscriber => flow.republished(subscriber, aggregateId, events.last.version.asInt, bytes(events), now))
+    onlyTo.foreach(subscriber => flow.republished(subscriber, aggregateId, events.last.version.asInt))
     eventsLogger.filter(_.isDebugEnabled).foreach(_.debug("EventBus publishing " + aggregateId.asLong + ": " + events.map(_.version.asInt).mkString(",") +
       " to " + sends.map(_._1.subscriber.path.name).mkString(", ") + (if (holds.isEmpty) "" else "; held for " + holds.map(_._1.subscriber.path.name).mkString(", "))))
 
@@ -375,6 +385,11 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   private def pull(subscriber: ActorRef): Unit =
     flow.pulls(subscriber, options.pullPartEvents, options.pullPartBytes, System.nanoTime()).foreach { p =>
       routeToPublisher(p.aggregateType, RepublishRange(p.aggregateId, AggregateVersion(p.from), subscriber))
+    }
+
+  private def consecutive(events: Seq[EventInfo[Any]]): Seq[Seq[EventInfo[Any]]] =
+    events.foldLeft(Vector[Vector[EventInfo[Any]]]()) { (runs, event) =>
+      if (runs.nonEmpty && runs.last.last.version.asInt + 1 == event.version.asInt) runs.init :+ (runs.last :+ event) else runs :+ Vector(event)
     }
 
   /** The sizes of one publication's events and state, each measured once, and only when a subscriber on another node
@@ -512,7 +527,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     // One line per stalled delivery, at most a few per tick: under overload the summary says the rest. A delivery held
     // for a full window is not stalled: it waits for its pull (F93), and the summary counts it.
     val stallAfter = options.stallAfter.toNanos
-    deliveries.toSeq.filter { case (_, delivery) => !delivery.stallLogged && delivery.awaiting.nonEmpty && now - delivery.firstSent >= stallAfter }
+    deliveries.toSeq.filter { case (_, delivery) => !delivery.stallLogged && delivery.awaiting.nonEmpty && now - delivery.lastSent >= stallAfter }
       .zipWithIndex.foreach { case ((key, delivery), index) =>
         if (index < options.stallLinesPerTick) {
           log.warning("Delivery waits for " + options.stallAfter + ": " + delivery.aggregateType.simpleName + " " + key.aggregateId.asLong +
@@ -522,7 +537,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       }
     if (now - lastSummary >= options.summaryInterval.toNanos) {
       lastSummary = now
-      val stalled = deliveries.values.filter(d => d.awaiting.nonEmpty && now - d.firstSent >= stallAfter).toSeq
+      val stalled = deliveries.values.filter(d => d.awaiting.nonEmpty && now - d.lastSent >= stallAfter).toSeq
       if (stalled.nonEmpty) {
         log.warning(s"${stalled.size} deliveries wait longer than ${options.stallAfter}, by subscriber: " +
           stalled.flatMap(_.awaiting).groupBy(_.subscriber.path.name).map { case (name, waits) => name + " " + waits.size }.mkString(", "))

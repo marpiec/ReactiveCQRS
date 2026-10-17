@@ -418,6 +418,24 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Fix:** after the report, a given-up aggregate is re-published again every `retryGivenUpEvery` (30 minutes), within the per-poll limit. Test: `RedeliveryPolicySpec` (re-published at 41 and 71 minutes after giving up at 11; red before).
 - **Found:** high-load analysis at M5 (docs/SCALING.md).
 
+#### F128 — A re-publication could send a subscription versions with a hole in one message
+- **High**, confirmed (by reading `SequenceGate`; reproduced in `EventsBusActorSpec`) · **Fixed in M5** (17/10/2026) · `EventsBusActor.publish`
+- **Symptom:** a full re-publication (the outbox's) sends each subscription only the versions whose deliveries wait for it, or have none. A subscription added after an event that still waits for the others (a new build's, D57; a singleton's new instance, M5) was sent, for versions 1 to 3 where version 2 waited for another subscriber only, one message of versions 1 and 3. The sequence gate takes a message as a range: it applied 1 and 3 and recorded 3, so version 2 was never applied in that read model, and nothing reported it.
+- **Fix:** each subscription's events are split into runs of consecutive versions before the parts (F121); a run after a hole is a gap the subscriber asks for (D20c). Test: `EventsBusActorSpec` "sends each subscription consecutive versions only" (red before).
+- **Found:** M5 close, audit of delivery.
+
+#### F129 — A singleton's proxy was asked once for its new subscribers
+- **Medium**, likely (the ask can be lost; not seen) · **Fixed in M5** (17/10/2026) · `EventsBusActor`
+- **Symptom:** when a projection's instance stops (its singleton moves), the bus asks the registered proxy again for its subscriptions, once. The proxy drops what its buffer cannot hold while the singleton moves, and the ask can reach the supervisor that is stopping. Lost, the bus never subscribed the new instance: that node's events of its types stayed in the outbox, and its gap requests to owners on that node were re-published to no subscriber, until the node restarted.
+- **Fix:** a registered subscriber asked again is asked every tick until it answers, as at the start. Test: `EventsBusActorSpec` "the proxy is asked again every tick until it answers" (red before).
+- **Found:** M5 close, audit of the cluster.
+
+#### F130 — Flow control let live traffic starve what it held, and its accounting drifted
+- **Medium**, confirmed (by reading; each part reproduced in `FlowControlSpec` or `EventsBusActorSpec`) · **Fixed in M5** (17/10/2026) · `FlowControl`, `EventsBusActor`
+- **Symptom:** (1) A subscriber with aggregates behind kept taking live publications of others up to its whole window, while pulls start only at half of it: under steady load the held aggregates waited until the deadline and then for the poller, minutes later. (2) Live publications could take the room that pulls had asked for, so the subscriber held more than its window once the pulled parts came. (3) An aggregate held again was dropped a deadline after its first hold, while what was held later still waited, so its next live event made the subscriber ask for a gap. (4) Events held again (re-published from the outbox while held) counted their bytes again, and a pull counted every byte held as coming in its part, so pulls asked for more room than they brought and fewer ran at once. (5) A held delivery that its pull sent was logged as stalled at once, its wait counted from when it was held.
+- **Fix:** while aggregates are behind, a live publication takes at most half the window, so pulls always find the other half; what pulls asked for counts as in flight; an aggregate stays behind a deadline after its latest hold; only versions new to a held range add their share of the bytes, and a part and what it leaves each count their share; a delivery stalls from when it was last sent. Tests: `FlowControlSpec` (five scenarios), `EventsBusActorSpec` "a held delivery stalls from when its pull sends it"; each red under a mutation that restores the old rule.
+- **Found:** M5 close, audit of delivery.
+
 ### Commands and aggregates
 
 #### F7 — Event timestamps differ between live delivery and the store
@@ -1000,7 +1018,7 @@ From §7 of Neula's change requests.
 | M2 | AR6 (M2 part ✔), AR7 (event bus and projections ✔); F1 ✔, F2 ✔, F4 ✔, F5 ✔, F6 ✔, F11 ✔, F15 ✔, F26 ✔, F28 (coalesced ✔), F29 ✔, F33 (part ✔), F37 ✔, F41 ✔, F42 ✔, F45 ✔, F47 ✔, F72 ✔, F77 ✔, F79 ✔, F80 ✔, F83 ✔, F84 ✔, F85 ✔, F86 ✔, F87 ✔, F88 ✔, F89 ✔, F90 ✔, F91 ✔, F92 ✔, F95 ✔; Neula H2, H7 |
 | M3 | AR1 ✔, AR4 ✔, AR6 (executor retry ✔), AR7 (owner and command bus ✔); AR8 ✔; F8 (contract ✔), F22 ✔, F23 ✔, F25 ✔, F27 ✔, F30 ✔, F31 ✔, F32 ✔, F33 (rest ✔), F38 ✔, F39 ✔, F44 ✔, F50 ✔, F65 ✔, F76 ✔, F78 ✔, F81 ✔, F96 ✔, F97 ✔, F100–F107 ✔; D85 ✔; Neula H8 |
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
-| M5 | AR5; F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔ (F78 between nodes ✔ in M3) |
+| M5 | AR5; F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 (complete), F124 |
 
 ---

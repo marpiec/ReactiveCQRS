@@ -9,6 +9,7 @@ import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.testutils.CommonSpec
 import org.apache.pekko.actor.{ActorRef, Props}
+import org.apache.pekko.event.Logging
 import org.apache.pekko.testkit.TestProbe
 
 import scala.concurrent.duration._
@@ -142,6 +143,20 @@ class EventsBusActorSpec extends CommonSpec {
       delivered(after) mustBe Seq(3)
       statusOf(bus).stopped mustBe empty
       owner.expectNoMessage(300.millis)
+    }
+
+    Scenario("the proxy is asked again every tick until it answers: an ask can be lost while the singleton moves (F129)") {
+      val (proxy, supervisor, before, after) = (TestProbe(), TestProbe(), TestProbe(), TestProbe())
+      val bus = busBehindProxy(proxy, supervisor, before)
+      proxy.ignoreNoMsg()
+      system.stop(before.ref)
+      proxy.expectMsg(3.seconds, GetSubscriptionRequests(proxy.ref)) // lost on the way
+      proxy.expectMsg(1.second, GetSubscriptionRequests(proxy.ref))
+
+      bus.tell(SubscriptionRequests(Seq(SubscribeForEvents(cartType, after.ref)), proxy.ref), supervisor.ref)
+      statusOf(bus)
+      proxy.receiveWhile(100.millis) { case _: GetSubscriptionRequests => () } // asked before the answer came
+      proxy.expectNoMessage(300.millis)
     }
   }
 
@@ -298,6 +313,29 @@ class EventsBusActorSpec extends CommonSpec {
       (toA.events.map(_.version.asInt), toA.startsAtSquash) mustBe ((Seq(5), false)) // a has 4 already
       val toB = b.expectMsgType[IdentifiableEvents[Any]](3.seconds)
       (toB.events.map(_.version.asInt), toB.startsAtSquash) mustBe ((Seq(4, 5), true))
+    }
+
+    Scenario("sends each subscription consecutive versions only: what it is not sent is a gap it asks for, never one it steps over (F128)") {
+      val (a, b, owner) = (TestProbe(), TestProbe(), TestProbe())
+      val bus = busWith(a)
+      val id = newId()
+      publish(bus, owner, id, 1)
+      delivered(a) mustBe Seq(1)
+      ack(bus, a, id, 1)
+      acked(owner) mustBe Seq(1) // its outbox row goes with the next batch
+      publish(bus, owner, id, 2)
+      delivered(a) mustBe Seq(2)
+
+      Given("a subscription added while version 2 waits for the first subscriber only")
+      bus ! AddSubscriptions(Seq(SubscribeForEvents(cartType, b.ref)))
+
+      When("the outbox is re-published with a new event")
+      publish(bus, owner, id, 1, 2, 3)
+
+      Then("the added subscription gets versions 1 and 3 apart")
+      delivered(b) mustBe Seq(1)
+      delivered(b) mustBe Seq(3)
+      delivered(a) mustBe Seq(1, 2, 3)
     }
   }
 
@@ -480,6 +518,28 @@ class EventsBusActorSpec extends CommonSpec {
       bus.tell(PublishEvents[Any](cartType, events(1), y, Some(BusCart("cart")), sizes = Seq(600)), owner.ref)
       slow.expectNoMessage(300.millis) // 1 200 bytes would be in flight
       statusOf(bus).held mustBe 1
+    }
+
+    Scenario("a held delivery stalls from when its pull sends it, not from when it was held") {
+      val (slow, owner, commandBus, warnings) = (TestProbe(), TestProbe(), TestProbe(), TestProbe())
+      val bus = windowedBus(1, Long.MaxValue, slow)
+      bus ! RegisterPublisher(cartType, commandBus.ref)
+      val (x, y) = (newId(), newId())
+      publish(bus, owner, x, 1)
+      deliveredTo(slow) mustBe (x -> Seq(1))
+      publish(bus, owner, y, 1)
+      slow.expectNoMessage(options.stallAfter + 100.millis) // y is held longer than a stall
+
+      ack(bus, slow, x, 1)
+      commandBus.expectMsg(3.seconds, RepublishRange(y, AggregateVersion(1), slow.ref))
+      system.eventStream.subscribe(warnings.ref, classOf[Logging.Warning])
+      try {
+        publishTo(bus, owner, y, slow.ref, 1)
+        deliveredTo(slow) mustBe (y -> Seq(1))
+        def aboutY(message: Any) = message.toString.contains(" " + y.asLong + " version 1 to")
+        warnings.receiveWhile(options.stallAfter - 100.millis) { case w: Logging.Warning => w.message }.filter(aboutY) mustBe empty
+        warnings.fishForMessage(3.seconds) { case w: Logging.Warning => aboutY(w.message) }
+      } finally system.eventStream.unsubscribe(warnings.ref)
     }
   }
 }
