@@ -721,7 +721,7 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Found:** writing the book (M6, 17/10/2026).
 
 #### F165 — `io.reactivecqrs.api.Nothing` hides `scala.Nothing` after `import io.reactivecqrs.api._`
-- **Low**, confirmed · **Fix in M7** (API clean-up, a rename) · `api/.../CustomCommandResponse.scala`
+- **Low**, confirmed · **Fix in M7** (API clean-up: renamed to `NoInfo`, the owner's decision of 17/10/2026) · `api/.../CustomCommandResponse.scala`
 - **Found:** writing the book (M6, 17/10/2026).
 
 ### Event store and SQL
@@ -846,7 +846,7 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Found:** the short JSON keys bench (M6, 17/10/2026).
 
 #### F175 — The event key of F124 costs about 8 % of the plain write path
-- **Medium** (performance), measured · **Decide in M7** · `add_event`, `add_events` (`PostgresEventStoreSchemaInitializer`)
+- **Medium** (performance), measured · **Accepted** (the owner, 17/10/2026: the cost shows on the bare write path only, with no measured difference under two projections; rebuilds by type and organization stay proportional to their own events) · `add_event`, `add_events` (`PostgresEventStoreSchemaInitializer`)
 - **Symptom:** at the M6 close, M6 and the M5 tag run alternately the same day (two runs each): commands without subscribers 9 196 and 8 423/s against 10 140 and 9 010/s, serial mode 11 044 and 11 747/s against 12 805 and 12 414/s; with two projections no difference. M6 with the key's insert taken out of the procedures ran at M5's level (9 918 and 12 206/s). Each event writes one more row with three index entries (its primary key, `(type_id, id)`, `(space_id, type_id, id)`). F124's log had found "nothing measurable".
 - **Options:** accept it as the price of builds by type and organization that read only their events (F124); or slim the key: one index fewer if a build of a space reads `(space_id, id)` and filters the types, which costs the space's other types' keys; or the type and space as columns of `events` with the same two indexes, which saves the key's row and primary key but rewrites the events table (D69).
 - **Found:** the M6 close's bench (17/10/2026).
@@ -1289,7 +1289,7 @@ From §7 of Neula's change requests.
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔, F174 ✔; F155 decided (review 8) |
-| M7 | AR5 (moved from M5 at review 7); F148 ✔, F152 ✔, F153 ✔, F156 ✔, F157 ✔, F160 ✔, F161 ✔, F162 ✔, F163 ✔, F164 ✔, F165, F166 ✔, F169 ✔ (found writing the book), F170 ✔, F171 ✔, F173 ✔, F175 |
+| M7 | AR5 (moved from M5 at review 7); F148 ✔, F152 ✔, F153 ✔, F156 ✔, F157 ✔, F160 ✔, F161 ✔, F162 ✔, F163 ✔, F164 ✔, F165, F166 ✔, F169 ✔ (found writing the book), F170 ✔, F171 ✔, F173 ✔, F175 (accepted) |
 
 ---
 
@@ -1366,7 +1366,7 @@ these modules to the command bus.
 - **Proposal:** a `SagaDefinition` (name, `handleOrder`, `handleRevert`) run by a
   framework-owned saga runner; the caller to answer is kept as a serialized `ActorRef`
   instead of a path string, which also works across nodes (D45).
-- **When:** M7, with the migration guide for Neula's sagas (moved from M5 at review 7: the runner already runs as a singleton and answers across nodes, F137).
+- **When:** M7, with the migration guide for Neula's sagas (moved from M5 at review 7: the runner already runs as a singleton and answers across nodes, F137). The owner confirmed on 17/10/2026: now, before 1.0.
 
 #### AR6 — Retry and back-off rules are repeated with different shapes
 - **Finding:** the executor retries concurrent commands (10 attempts, 10–500 ms with

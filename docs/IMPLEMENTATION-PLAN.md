@@ -2202,3 +2202,10 @@ Open test-infrastructure items:
   `BookSnippetsSpec`: a book code block marked `<!-- snippet: e1/BasicSetup.scala#wiring -->` must be
   that region of the example; the checker's own scenario covers a differing block, a missing region
   and a missing source, and the writing of regions into a chapter. No chapter is marked yet.
+
+**17/10/2026: the owner's decisions**
+- F175 accepted (the event key's cost on the bare write path, explained with the measurements and
+  the two ways to slim it); AR5 now, in M7 (a saga runner of the library, with the migration of
+  Neula's sagas; a design first); F165: `io.reactivecqrs.api.Nothing` renamed to `NoInfo`. Still the
+  owner's: JDK 21 on the build machine (D74; until then Java 17 bytecode, which Neula's Java 21
+  runs) and the rehearsal on a production copy.
