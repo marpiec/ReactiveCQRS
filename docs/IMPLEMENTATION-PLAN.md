@@ -2095,3 +2095,9 @@ Open test-infrastructure items:
   carried out at once, not at the poller's next turn (up to 30 minutes). `ProjectionDeliverySpec`
   "F166", red before the fix; the rest of the way (bus, command bus, owner, delete) is covered by
   `EventsBusActorSpec` and `PermanentDeleteSpec`. Book: chapter 9.
+
+**17/10/2026: F169, the outbox status counts what waits**
+- `OutboxStatus.waiting` is the number of aggregates the last poll read, as the
+  `reactivecqrs.outbox.waiting` gauge is; it was the poller's tracked aggregates, which leave out new
+  ones postponed beyond `maxRepublishPerPoll`. `OutboxPollerActorSpec` (new, against a stub outbox),
+  red before the fix. Book: appendix B.

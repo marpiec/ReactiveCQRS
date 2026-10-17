@@ -17,7 +17,8 @@ object OutboxPollerActor {
   /** Reads the outbox now; the poller's timer sends it, and tests can too. */
   case object Poll
   case object GetOutboxStatus
-  /** `waiting`: aggregates with rows in the outbox at the last poll; `gaveUp`: those reported as undelivered. */
+  /** `waiting`: aggregates with rows in the outbox at the last poll (at most `maxTracked`); `gaveUp`: those reported as
+    * undelivered. */
   case class OutboxStatus(waiting: Int, gaveUp: Seq[WaitingInOutbox])
   private case class Read(result: Try[Seq[WaitingInOutbox]])
 }
@@ -42,6 +43,7 @@ class OutboxPollerActor(eventStore: EventStoreState, eventBus: ActorRef, options
   private val startedAt = clock.instant()
   private val maxLinesPerPoll = 10
   private var memory = Map[AggregateId, RedeliveryPolicy.Tracked]()
+  private var lastWaiting = 0 // F169: the memory leaves out new aggregates postponed beyond a poll's re-publications
   private var reading = false
 
   private val polls = context.system.scheduler.scheduleWithFixedDelay(options.firstPollAfter, options.pollInterval, self, Poll)
@@ -53,7 +55,7 @@ class OutboxPollerActor(eventStore: EventStoreState, eventBus: ActorRef, options
     case Read(result) =>
       reading = false
       poll(result)
-    case GetOutboxStatus => sender() ! OutboxStatus(memory.size, memory.values.filter(_.gaveUp).map(_.waiting).toSeq)
+    case GetOutboxStatus => sender() ! OutboxStatus(lastWaiting, memory.values.filter(_.gaveUp).map(_.waiting).toSeq)
   }
 
   // F27: the read runs on the blocking dispatcher; its result comes back as a message.
@@ -74,6 +76,7 @@ class OutboxPollerActor(eventStore: EventStoreState, eventBus: ActorRef, options
         log.error(s"${decision.gaveUp.size - maxLinesPerPoll} more aggregates are undelivered after ${options.redelivery.giveUpAfter}")
       }
       memory = decision.memory
+      lastWaiting = waiting.size
       // R19: the outbox's levels at each poll.
       val metrics = ReactiveMetrics(context.system).metrics
       metrics.gauge("reactivecqrs.outbox.waiting", Map.empty, waiting.size)

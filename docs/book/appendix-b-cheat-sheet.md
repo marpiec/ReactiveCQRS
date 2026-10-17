@@ -134,7 +134,7 @@ One per system. Messages from `io.reactivecqrs.core.delivery.OutboxPollerActor._
 
 | You send | You get back | Good to know |
 |---|---|---|
-| `GetOutboxStatus` | `OutboxStatus(waiting, gaveUp)` | `waiting`: how many aggregates with events in the outbox the poller tracks since its last poll (at most 100 000). `gaveUp`: those reported undelivered, each `WaitingInOutbox(aggregateType, aggregateId, oldestVersion, since)`. |
+| `GetOutboxStatus` | `OutboxStatus(waiting, gaveUp)` | `waiting`: how many aggregates had events waiting in the outbox at the poller's last poll (it reads at most 100 000). `gaveUp`: those reported undelivered, each `WaitingInOutbox(aggregateType, aggregateId, oldestVersion, since)`. |
 | `Poll` | Nothing | Reads the outbox now. Its own timer sends it every 30 seconds, the first time 10 seconds after start. |
 
 ---
