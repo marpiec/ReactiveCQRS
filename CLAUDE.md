@@ -281,7 +281,7 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
   they close over actor state.
 - **Blocking work** (JDBC) runs on `reactivecqrs.blocking-dispatcher` (`BlockingDispatcher`, F27): owners
   run on it; other actors run their JDBC in futures on it and get the result back as a message.
-  Command handlers run on the default dispatcher. Never touch `context` from a callback.
+  Command handlers run on `reactivecqrs.handler-dispatcher` (F127), off the default one. Never touch `context` from a callback.
 - **`sender()` capture**: never call `sender()` inside a `Future`/callback; capture
   it into a val first.
 - **SQL** is written with ScalikeJDBC. Two styles coexist: the `sql"..."`
