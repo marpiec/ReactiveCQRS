@@ -626,6 +626,10 @@ installations.
 GitHub documentation alone; the 0.12.47 → 1.0 migration is rehearsed on production data;
 1.0 is released.
 
+Design, with the order of the work, the owner's decisions and the failure circumstances:
+`docs/design/M7-release.md` (17/10/2026). Code first (the findings left for M7), then the test kit,
+the examples and the documentation, so that they describe the final API.
+
 **Work items**
 
 1. **README** (GitHub landing page, written in M6): brought to the release: when to use the
@@ -2057,3 +2061,11 @@ Open test-infrastructure items:
   F173, F175. F175 corrects F124's log: the event key costs about 8 % of the plain write path.
 - `baseline-M6` against `baseline-M5`, with same-day alternating runs of the M5 tag: see review 8.
 - `sbt test`: core 301, testdomain 184, all pass, also as a cluster of one.
+
+### M7
+
+**17/10/2026: the M7 design**
+- `docs/design/M7-release.md`: the order (the findings, the test kit, the examples, the book with
+  code from the examples, Scaladoc, the contributor documents, the runbook and its rehearsal, Java
+  21, the release), the decisions that are the owner's (F175, AR5's scope, JDK 21 on the build
+  machine, the rehearsal on a production copy, F165's rename) and the failure circumstances.
