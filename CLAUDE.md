@@ -6,7 +6,7 @@ problems**. Known problems, decisions and the plan of the 1.0 line live in
 `docs/KNOWN-ISSUES.md` and `docs/IMPLEMENTATION-PLAN.md` (§7 below points there);
 `docs/ARCHITECTURE.md` describes how the library works in detail.
 
-> Note: written from a static read of 0.12.44 and updated for the 1.0 line through milestone M5
+> Note: written from a static read of 0.12.44 and updated for the 1.0 line through milestone M6
 > (17/10/2026). Line numbers drift as files change — re-grep before quoting.
 
 ---

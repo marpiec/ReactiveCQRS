@@ -837,6 +837,12 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Verified:** `EXPLAIN ANALYZE` on the bench's data before and after; the specs pass unchanged (the plans changed, not the rows); the rebuild of `docs/perf/jsonnames-M6.md` ran with the fix.
 - **Found:** the short JSON keys bench (M6, 17/10/2026).
 
+#### F175 — The event key of F124 costs about 8 % of the plain write path
+- **Medium** (performance), measured · **Decide in M7** · `add_event`, `add_events` (`PostgresEventStoreSchemaInitializer`)
+- **Symptom:** at the M6 close, M6 and the M5 tag run alternately the same day (two runs each): commands without subscribers 9 196 and 8 423/s against 10 140 and 9 010/s, serial mode 11 044 and 11 747/s against 12 805 and 12 414/s; with two projections no difference. M6 with the key's insert taken out of the procedures ran at M5's level (9 918 and 12 206/s). Each event writes one more row with three index entries (its primary key, `(type_id, id)`, `(space_id, type_id, id)`). F124's log had found "nothing measurable".
+- **Options:** accept it as the price of builds by type and organization that read only their events (F124); or slim the key: one index fewer if a build of a space reads `(space_id, id)` and filters the types, which costs the space's other types' keys; or the type and space as columns of `events` with the same two indexes, which saves the key's row and primary key but rewrites the events table (D69).
+- **Found:** the M6 close's bench (17/10/2026).
+
 #### F170 — Each event in a delivery between nodes carries about 275 bytes besides its JSON
 - **Low** (performance), measured · **Fix in M7** · `ClusterSerializer` (D68)
 - **Symptom:** the cluster serializer writes the library's case classes field by field with their class and field names (D68), so that a node of another version can read them. In an `IdentifiableEvents`, each `EventInfo` repeats its class name and five field names, `AggregateVersion` and `UserId` as named products, and the event's full class name: 273 to 278 bytes per event besides the event's JSON (measured, `docs/perf/jsonnames-M6.md`), more than a small event's whole JSON (104 to 239 characters there). A delivery part (half of the 248 KiB frame, F121) holds 248 such events of 239 characters; with an envelope of about 30 bytes it would hold about 470 (estimated). More parts mean more messages and acknowledgements.
@@ -1269,7 +1275,7 @@ From §7 of Neula's change requests.
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔, F174 ✔; F155 decided (review 8) |
-| M7 | AR5 (moved from M5 at review 7); F148, F152, F153, F156, F157, F160, F161, F162, F163, F164, F165, F166, F169 (found writing the book), F170, F171, F173 |
+| M7 | AR5 (moved from M5 at review 7); F148, F152, F153, F156, F157, F160, F161, F162, F163, F164, F165, F166, F169 (found writing the book), F170, F171, F173, F175 |
 
 ---
 
@@ -1779,3 +1785,74 @@ for hosts in the test kit (R20); the runbook carries H10 and the cluster's opera
 - *Watch*: a new kind of message between nodes must fit the frame (F121) and keep consecutive
   versions (F128); a new background job must run once (a singleton or the schema lock) and
   respect the write switch.
+
+### Review 8, 17/10/2026: closing M6 (architecture description, plan and code)
+
+Scope: organizations and data lifecycle as built: the required space and the commit-order pass by
+type and space (D38, F124), the archive and retention squash (R11, D52), the purge (R17, D56),
+export and import (D40), the complete rewrite (D76, R15), ephemeral aggregates (D77, R16);
+`docs/ARCHITECTURE.md` §4.6–§4.10; the book (`docs/book/`, 20 chapters) and the README; the short
+JSON keys measurement (IMPLEMENTATION-PLAN §7.1). Inputs: the bench (`baseline-M6.md` against
+`baseline-M5.md`, and `jsonnames-M6.md`), the full suites in both modes after every work item,
+mutation checks of every work item, the book (writing it found F147–F169), and our own reading.
+
+**Outcome.** The M6 decisions hold. Refinements:
+- Organizations: every new aggregate has a space (D38); the purge, the export and the targeted
+  rebuild of one space all work by space, the commit-order pass reads only the keys of the types
+  and space it builds (F124), and its page no longer depends on the planner's estimate (F172).
+- The history of an aggregate now has four places, and every operation that changes or moves it
+  covers each: the events (with squash events), the archive (R11), the snapshots (through the
+  history generation, F119) and the copies (attached through the chain rows, detached through the
+  lineage that every detach records, D76). Purge, export and import, the complete rewrite and the
+  permanent delete were checked against that list.
+- Erasure (D76): data in, the context's function out (`historyChanges`), so a host writes what an
+  erasure means once per type; the library reaches what it stores and names what it cannot (other
+  aggregates' events, saga orders, stored responses, logs, exported files).
+- Ephemeral aggregates (D77) are the usual owners on a store of their own: the same rules, limits
+  and answers, nothing written. Their ids changed from the first sketch (start second) to a random
+  token per start, as D39 bounds ids at 2^53 for Neula's UI and two nodes may start in one second.
+- F155 decided: D85 holds; a squash event carries the users and times its state keeps.
+
+**Fixed in M6:** F8 (complete), F124, F143–F147, F149–F151, F154, F158, F159, F167, F168, F172,
+F174. Found and recorded for M7: F148, F152, F153, F156, F157, F160–F166, F169 (the book), F170,
+F171, F173 (the measurement), F175 (the close's bench).
+
+**Deferred, with reasons:**
+- A test that an imported organization's projections, rebuilt, equal the source's (the plan's
+  first verification item): the states of every aggregate are compared through the id remap
+  (`ExportImportSpec`), and a projection is a function of the events, which are compared too; a
+  test across two schemas with managed projections running asynchronously needs the test kit's
+  second-installation support (M7, E-items).
+- The docker-compose verification of the cluster stays with M7's E2 (no Docker here).
+
+**Measured** (single runs on one machine, the same day):
+- `baseline-M6` (one run) against `baseline-M5`: commands without subscribers 9 156/s (M5: 9 123/s);
+  with two projections 4 658/s (5 250/s), p99 8.8 ms (7.2 ms), the projections 2 698 events/s,
+  0.5 s behind; one contended aggregate 1 640/s (1 753/s); serial mode 9 573/s (10 698/s) and
+  1 922/s on one aggregate (2 031/s); rebuild 6 695 events/s (6 544/s); a restore of 500 000
+  events 2.07 s (3.4 s in M5's full run); the memory soak 651 861 commands, projected 107 s after
+  the load (97 s), 129 MB right after it and 23 MB idle; the delivery soak's 1 000 000 events all
+  projected 250 s after the load started (257 s), nothing waiting, 26 MB after each of five
+  restarts; startup 719 and 793 ms (668 and 767 ms).
+- Same day, M6 and the M5 tag alternately, two runs each: with two projections level (M6 5 127
+  and 5 138/s, M5 4 967 and 5 166/s); without subscribers 9 196 and 8 423/s against 10 140 and
+  9 010/s (about −8 %); serial mode 11 044 and 11 747/s against 12 805 and 12 414/s (about −10 %);
+  contended −3 %, serial on one aggregate −5 %. M6 with the event key's insert taken out of the
+  procedures: 9 918/s without subscribers and 12 206/s in serial mode, M5's level. So F124's event
+  key costs about 8 % of the plain write path (F175); its log said "nothing measurable".
+- `jsonnames-M6`: short keys −56 % JSON, −34 % events table, deserialization −54 %; commands and
+  rebuilds unchanged. F172: a rebuild's page took 786 ms over 2 000 000 analyzed events, 5 ms
+  since.
+
+**Observations:**
+- The measurement found what the specs could not: a plan that changes once PostgreSQL analyzes
+  the tables (F172). Specs run on small, fresh schemas, where the planner's guesses are harmless;
+  the bench's data is the first place where a misestimate costs. The rule: queries that join an
+  aggregate's own row look it up by key, and every new query of the builder or a walk is checked
+  with `EXPLAIN ANALYZE` on the bench's data.
+- Writing the book was a review: twenty-three findings, three of them fixed the same day, the
+  rest recorded with their milestone. The book stays current with each change (the working rule).
+
+**Next:** M7, the release: the test kit (with a second installation), the API clean-up (F157,
+F165), the remaining findings, Java 21, the README brought to the release, the book polished, the
+delivery envelope between nodes (F170) and the walk over a type's aggregates (F173); AR5.

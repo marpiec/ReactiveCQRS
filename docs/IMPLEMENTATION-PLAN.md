@@ -2038,3 +2038,22 @@ Open test-infrastructure items:
   `ClusterSerializationSpec` (the new messages). Eight mutations, each caught.
 - Docs: the book's chapter 20 (a part of its own), ARCHITECTURE §4.10, KNOWN-ISSUES (D77, H11),
   SCALING, the design note, the README, appendices A and B, CLAUDE.md.
+
+**17/10/2026: M6 closed (review 8, `baseline-M6`, tag `v1.0.0-M6`)**
+- The plan's M6 verification, item by item:
+  - Export and import: `ExportImportSpec` compares every aggregate's state through the id remap and
+    reports the references to aggregates neither exported nor in the target; that the space's
+    projections, rebuilt, equal the source's is not tested yet (it needs a second installation in
+    the test kit, M7), and holds as long as states and events do.
+  - Purge: `PurgeSpec` counts the space's rows in every framework table and projection
+    (`StoredDataCheck.spaceRows`), none left, other organizations unchanged.
+  - Rewrite: `CompleteRewriteSpec` scans the events, archive, snapshots and the host's outbox-hook
+    rows of the aggregate and its copies for the erased value (present before, absent after),
+    checks the rebuilt projection and the audit rows, which hold no value.
+  - Ephemeral: `EphemeralAggregatesSpec` counts the writing statements while an ephemeral cart
+    takes commands (none), restores the materialized cart to the same state, and reports lost ids.
+  - Retention squash: `SquashSpec` (R11) and `StoredDataCheck.usersOf`.
+- Review 8 (KNOWN-ISSUES §7): F155 decided (D85 holds); found and recorded for M7: F170, F171,
+  F173, F175. F175 corrects F124's log: the event key costs about 8 % of the plain write path.
+- `baseline-M6` against `baseline-M5`, with same-day alternating runs of the M5 tag: see review 8.
+- `sbt test`: core 301, testdomain 184, all pass, also as a cluster of one.

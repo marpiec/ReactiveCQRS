@@ -58,19 +58,33 @@ class EphemeralAggregatesSpec extends CommonSpec {
   private def materialize(bus: ActorRef, id: AggregateId): MaterializeResponse = bus.askActor[MaterializeResponse](Materialize(id, user))(10.seconds)
   private def storedEvents(): Long = DB.readOnly(implicit session => sql"SELECT count(*) FROM events".map(_.long(1)).single().get)
 
+  // The statements that write, run by anyone in this JVM while `block` runs.
+  private def writesDuring[A](block: => A): (A, Long) = {
+    val writes = new java.util.concurrent.atomic.AtomicLong()
+    val previous = GlobalSettings.queryCompletionListener
+    GlobalSettings.queryCompletionListener = (sql, params, millis) => {
+      previous(sql, params, millis)
+      if (sql.trim.toUpperCase.matches("(?s)(INSERT|UPDATE|DELETE).*")) writes.incrementAndGet()
+    }
+    try (block, writes.get) finally GlobalSettings.queryCompletionListener = previous
+  }
+
   Feature("Ephemeral aggregates (D77)") {
 
     Scenario("answer commands as persistent ones do, write nothing, and materialize into a persistent aggregate of the same state") {
       val drafts = ephemeralBus()
       val before = storedEvents()
 
-      val id = created(drafts)
+      val ((id, draft), writes) = writesDuring {
+        val id = created(drafts)
+        send(drafts, AddItem(user, id, AggregateVersion(1), "apple")) mustBe SuccessResponse(id, AggregateVersion(2))
+        send(drafts, AddItem(user, id, AggregateVersion(2), "pear")) mustBe SuccessResponse(id, AggregateVersion(3))
+        send(drafts, AddItem(user, id, AggregateVersion(2), "late")) mustBe an[AggregateConcurrentModificationError]
+        (id, cart(drafts, id).get)
+      }
+      writes mustBe 0L
       id.asLong must be < 0L
       math.abs(id.asLong) must be < (1L << 53) // D39: the UI reads ids as JavaScript numbers
-      send(drafts, AddItem(user, id, AggregateVersion(1), "apple")) mustBe SuccessResponse(id, AggregateVersion(2))
-      send(drafts, AddItem(user, id, AggregateVersion(2), "pear")) mustBe SuccessResponse(id, AggregateVersion(3))
-      send(drafts, AddItem(user, id, AggregateVersion(2), "late")) mustBe an[AggregateConcurrentModificationError]
-      val draft = cart(drafts, id).get
       draft.aggregateRoot.get.items.map(_.name) mustBe Vector("apple", "pear")
       storedEvents() mustBe before
 

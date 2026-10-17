@@ -8,8 +8,9 @@ the projections' live groups, with every scenario's subscriptions in the databas
 scenarios with the cluster libraries and flow control (F93). M5's high-load scenarios have reports of their own:
 `load-M5.md` (10 000 commands at once, an aggregate of 50 000 events), `large-M5.md` (documents of 5 MB),
 `flow-M5.md` (the soak with flow control), `heavy-M5.md` and `heavy-before-F127.md` (handlers that hold their
-threads); `docs/SCALING.md` reads them. `jsonnames-M6.md` compares short JSON keys (mpjsons `@jsonName`) with
-descriptive ones (§7.1), with its findings and a recommendation.
+threads); `docs/SCALING.md` reads them. `baseline-M6.md` runs the M5 scenarios again at the M6 close (organizations,
+the complete rewrite, ephemeral aggregates and F172 in the code). `jsonnames-M6.md` compares short JSON keys
+(mpjsons `@jsonName`) with descriptive ones (§7.1), with its findings and a recommendation.
 
 ## Running it
 

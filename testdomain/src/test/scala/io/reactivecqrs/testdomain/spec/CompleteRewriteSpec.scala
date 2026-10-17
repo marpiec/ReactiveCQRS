@@ -3,6 +3,7 @@ package io.reactivecqrs.testdomain.spec
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
+import io.reactivecqrs.core.aggregate.{OutboxWriter, WithOutboxWriter}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.documentstore.{Document, DocumentStore, NoopDocumentStoreCache, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus.EventsBusActor
@@ -29,7 +30,20 @@ case class Recolour(text: String) extends HistoryChange
 
 // It handles every Folder event of the specs (MovableFolderContext), as its projection builds over every folder of the
 // run's schema, those of the other specs too.
-class ErasableFolders extends MovableFolderContext {
+// Its outbox writer keeps each note in a table of the host's own, and erases it there with the events (D76).
+class ErasableFolders extends MovableFolderContext with WithOutboxWriter[Folder] {
+  override val outboxWriter: OutboxWriter[Folder] = new OutboxWriter[Folder] {
+    override def write(aggregateId: AggregateId, version: AggregateVersion, events: Seq[EventInfo[Folder]])(implicit session: DBSession): Unit =
+      events.foreach(_.event match {
+        case NoteAdded(text) => sql"INSERT INTO rewrite_spec_notes (aggregate_id, note) VALUES (${aggregateId.asLong}, $text)".update()
+        case _ => ()
+      })
+    override def rewrite(aggregateId: AggregateId, change: HistoryChange)(implicit session: DBSession): Unit = change match {
+      case EraseNote(text) => sql"UPDATE rewrite_spec_notes SET note = 'erased' WHERE aggregate_id = ${aggregateId.asLong} AND note = $text".update()
+      case _ => ()
+    }
+  }
+
   override def historyChanges: HistoryChange => PartialFunction[Event[Folder], Event[Folder]] = {
     case EraseNote(text) => {
       case NoteAdded(`text`) => NoteAdded("erased")
@@ -61,6 +75,7 @@ class ErasableFolderNotes(val subscriptionsState: SubscriptionsState, store: Doc
 class CompleteRewriteSpec extends CommonSpec {
 
   TestDatabase.init()
+  DB.autoCommit(implicit session => sql"CREATE TABLE IF NOT EXISTS rewrite_spec_notes (aggregate_id BIGINT NOT NULL, note TEXT NOT NULL)".execute())
 
   private val mpjsons = new MPJsons
   private val typesNamesState = new PostgresTypesNamesState().initSchema()
@@ -114,7 +129,8 @@ class CompleteRewriteSpec extends CommonSpec {
       def rowsHolding(value: String): Long = DB.readOnly(implicit session => sql"""SELECT
         |   (SELECT count(*) FROM events WHERE aggregate_id IN ($ids) AND position($value IN event) > 0)
         | + (SELECT count(*) FROM events_archive WHERE aggregate_id IN ($ids) AND position($value IN event) > 0)
-        | + (SELECT count(*) FROM snapshots WHERE aggregate_id IN ($ids) AND position($value IN state) > 0)""".stripMargin
+        | + (SELECT count(*) FROM snapshots WHERE aggregate_id IN ($ids) AND position($value IN state) > 0)
+        | + (SELECT count(*) FROM rewrite_spec_notes WHERE aggregate_id IN ($ids) AND note = $value)""".stripMargin
         .map(_.long(1)).single().get)
       rowsHolding("secret") must be > 0L
 
@@ -132,7 +148,7 @@ class CompleteRewriteSpec extends CommonSpec {
       Seq(base, attached, detached).map(doc) mustBe Seq(Some(FolderDoc("Alpha", Vector("erased", "public"))),
         Some(FolderDoc("Alpha", Vector("erased", "public", "erased"))), Some(FolderDoc("Alpha", Vector("erased"))))
 
-      And("no stored row of theirs holds it: events, archive, snapshots")
+      And("no stored row of theirs holds it: events, archive, snapshots, the host's own rows")
       rowsHolding("secret") mustBe 0L
 
       And("each aggregate's rewrite left an audit row naming the fields it changed, never the value")

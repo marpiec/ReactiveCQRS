@@ -206,8 +206,8 @@ sbt -Dreactivecqrs.test.clusterOfOne=true test
 
 ## Project status
 
-Version 1.0 is in development, on the `1.0.0-SNAPSHOT` line: milestones M1 to M5 are done and M6
-(organizations and data lifecycle) is in progress. See the
+Version 1.0 is in development, on the `1.0.0-SNAPSHOT` line: milestones M1 to M6 are done, and M7
+(the release: test kit, API clean-up, the remaining findings) is next. See the
 [implementation plan](docs/IMPLEMENTATION-PLAN.md) for what each milestone holds, and
 [known issues](docs/KNOWN-ISSUES.md) for what is still open.
 
