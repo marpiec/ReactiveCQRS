@@ -2180,3 +2180,10 @@ Open test-infrastructure items:
   `ActorAskSupport` (without ScalaTest). No test framework in it; the library's `CommonSpec` stays in
   its test sources. The testdomain's harness is `CartCluster`, on `TestCluster`. Design: M7-release.md,
   "The test kit". Book: chapters 2, 17, 19 and appendix C; README.
+
+**17/10/2026: M6's verification gap closed with the second installation**
+- `ExportImportSpec` builds a managed projection of an organization's folders in the source
+  installation, exports and imports the organization into a second installation
+  (`TestDatabase.inSchema`) where one of its ids is taken, builds the same projection there, and
+  compares: the same documents under the moved ids, and the target's own folder untouched. Each
+  installation's projection actors stop, waited for, before the pool points elsewhere.

@@ -9,6 +9,13 @@ import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 import io.reactivecqrs.core.aggregate.AggregateRestorer
+import io.reactivecqrs.core.cluster.Singletons
+import io.reactivecqrs.core.documentstore.{NoopDocumentStoreCache, PostgresDocumentStore}
+import io.reactivecqrs.core.eventbus.EventsBusActor
+import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
+import io.reactivecqrs.core.projection.PostgresSubscriptionsState
+import io.reactivecqrs.core.rebuild.ProjectionBuilder.{BuildStatus, GetBuildStatus}
+import io.reactivecqrs.core.rebuild.{PostgresProjectionRegistry, Projections, ProjectionsSettings}
 import io.reactivecqrs.core.eventstore.{NewEvents, PostgresEventStoreState}
 import io.reactivecqrs.core.space.SpaceFormat.{ExportHeader, ExportedAggregate, ExportedEvent, Line}
 import io.reactivecqrs.core.space.{SpaceExport, SpaceFormat, SpaceImport}
@@ -16,7 +23,11 @@ import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testkit.{CommonSpec, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorRef, PoisonPill, Props}
+import org.apache.pekko.testkit.TestProbe
 import scalikejdbc._
+
+import scala.concurrent.Await
+import scala.concurrent.duration._
 
 // D40: moving an organization between installations.
 case class NotesUndone(eventsCount: Int) extends UndoEvent[Folder]
@@ -56,13 +67,41 @@ class ExportImportSpec extends CommonSpec {
     try block(generator) finally generator ! PoisonPill
   }
 
+  /** The folders' notes as a managed projection builds them from the store of the schema the pool points to, read with
+    * `read` once `ready` holds and no build runs; stopped, with all its actors, before the pool may point elsewhere. */
+  private def folderNotes[A](name: String, ready: (AggregateId => Option[FolderDoc]) => Unit)(read: (AggregateId => Option[FolderDoc]) => A): A = {
+    val typesNames = new PostgresTypesNamesState().initSchema()
+    val store = new PostgresEventStoreState(mpjsons, typesNames).initSchema()
+    val subscriptions = new PostgresSubscriptionsState(typesNames).initSchema()
+    val bus = system.actorOf(Props(new EventsBusActor()), name + "-bus")
+    val notes = new Projections(system, ProjectionsSettings(store, subscriptions, new PostgresProjectionRegistry().initSchema(), Seq(context),
+      restartAfter = 1.second)).start[ErasableFolderNotes]("folder-notes", 1, name + "-notes") { build =>
+      new ErasableFolderNotes(subscriptions, new PostgresDocumentStore[FolderDoc](build.documentStore("folder_notes"), mpjsons, new NoopDocumentStoreCache))
+    }
+    bus ! RegisterSubscribers(Seq(notes))
+    def doc(id: AggregateId): Option[FolderDoc] = notes.askActor[Option[FolderDoc]](GetFolderDoc(id))(5.seconds)
+    try {
+      awaitAssert(ready(doc), 60.seconds, 100.millis)
+      awaitAssert(Seq("CaughtUp", "NoBuild") must contain (notes.askActor[BuildStatus](GetBuildStatus)(5.seconds).phase), 60.seconds, 100.millis)
+      read(doc)
+    } finally {
+      // The supervisor, or in a cluster its singleton's manager, ends after its instances and builder.
+      val supervisor = if (Singletons.isCluster(system)) Await.result(system.actorSelection("/user/" + name + "-notes").resolveOne(5.seconds), 5.seconds) else notes
+      val watcher = TestProbe()
+      watcher.watch(supervisor)
+      Singletons.stop(system, notes)
+      watcher.expectTerminated(supervisor, 30.seconds)
+      system.stop(bus)
+    }
+  }
+
   Feature("Moving an organization between installations (D40)") {
 
     Scenario("an organization exported from one installation is imported into another, ids it has already moved, references following") {
       Given("an organization with a squashed, archived and undone history, copies within it, one detached, and a copy of another organization's folder")
       val space = 7000000000L + System.nanoTime() % 1000000L
       val (here, elsewhere, into) = (SpaceId(space), SpaceId(space + 1), SpaceId(space + 2))
-      val List(outside, folder, copy, theirs, early) = List.fill(5)(AggregateId(TestIds.aggregate()))
+      val Seq(outside, folder, copy, theirs, early) = Vector.fill(5)(AggregateId(TestIds.aggregate())): @unchecked
       stored(source, outside, 0, FolderCreated(elsewhere, "Outside"), NoteAdded("x"))
       stored(source, folder, 0, FolderCreated(here, "Alpha"), NoteAdded("one"), NoteAdded("two"), FolderLinked(outside, user))
       stored(source, copy, 0, FolderCopied(here, folder, AggregateVersion(2)))
@@ -118,10 +157,44 @@ class ExportImportSpec extends CommonSpec {
       Files.delete(file)
     }
 
+    Scenario("a projection of the organization, built in the other installation, holds what the source's holds, under the moved ids (D40)") {
+      Given("an organization's folders, a copy and an undone note, and their projection in the source installation")
+      val space = 7100000000L + System.nanoTime() % 1000000L
+      val (here, into) = (SpaceId(space), SpaceId(space + 1))
+      val Seq(folder, copy, other) = Vector.fill(3)(AggregateId(TestIds.aggregate())): @unchecked
+      stored(source, folder, 0, FolderCreated(here, "Alpha"), NoteAdded("one"), NoteAdded("two"))
+      stored(source, copy, 0, FolderCopied(here, folder, AggregateVersion(2)))
+      stored(source, copy, 1, NoteAdded("own"))
+      stored(source, other, 0, FolderCreated(here, "Beta"), NoteAdded("x"), NotesUndone(1))
+      delivered(folder, copy, other)
+      val ids = Seq(folder, copy, other)
+      val expected = Seq(FolderDoc("Alpha", Vector("one", "two")), FolderDoc("Alpha", Vector("one", "own")), FolderDoc("Beta", Vector.empty))
+      val inSource = folderNotes("source", doc => ids.map(doc).flatten mustBe expected)(doc => ids.map(doc))
+      inSource mustBe expected.map(Some(_))
+
+      When("it is exported and imported into an installation that holds one of its ids")
+      val file = Files.createTempFile("space-", ".jsonl")
+      val writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8)
+      try new SpaceExport(source, Seq(context)).write(here, writer).complete mustBe true finally writer.close()
+      TestDatabase.inSchema("projected") {
+        val target = new PostgresEventStoreState(new MPJsons, new PostgresTypesNamesState().initSchema()).initSchema()
+        stored(target, folder, 0, FolderCreated(SpaceId(999), "Taken"))
+        val imported = withUidGenerator(generator => new SpaceImport(target, generator).read(file, into))
+        imported.complete mustBe true
+        val moved = ids.map(id => imported.remapped.getOrElse(id, id))
+        moved.head must not be folder
+
+        Then("the projection built there holds the same documents under the moved ids, and the other installation's own")
+        val inTarget = folderNotes("target", doc => moved.map(doc).flatten mustBe expected)(doc => (moved.map(doc), doc(folder)))
+        inTarget mustBe ((inSource, Some(FolderDoc("Taken", Vector.empty))))
+      }
+      Files.delete(file)
+    }
+
     Scenario("an export that cannot detach a copy of another organization's folder, and an import of classes this installation lacks, are refused") {
       val space = 7100000000L + System.nanoTime() % 1000000L
       val (here, elsewhere) = (SpaceId(space), SpaceId(space + 1))
-      val List(outside, theirs) = List.fill(2)(AggregateId(TestIds.aggregate()))
+      val Seq(outside, theirs) = Vector.fill(2)(AggregateId(TestIds.aggregate())): @unchecked
       stored(source, outside, 0, FolderCreated(elsewhere, "Outside"))
       stored(source, theirs, 0, FolderCopied(here, outside, AggregateVersion(1)))
 
