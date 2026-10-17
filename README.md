@@ -187,6 +187,7 @@ cluster, one chapter at a time.
 | `api` | The public API a domain author uses: `AggregateContext`, commands, events, results, ids. |
 | `core` | The machinery: owners and command buses, the event store, delivery, projections, rebuilds, sagas, the document store, organizations, the cluster. |
 | `testdomain` | A worked example (shopping carts and more) and the library's end-to-end tests. |
+| `examples` | The book's examples, each runnable and tested (`sbt "examples/runMain io.reactivecqrs.examples.e1.BasicSetup"`). Not published. |
 | `testkit` | The test kit, published for your tests: a database schema per test run, the golden test of stored formats, actor systems that run as a cluster of one, several nodes in one JVM, a test clock. |
 | `bench` | The benchmark and load driver (`sbt "bench/run <report-name>"`, reports in [docs/perf](docs/perf/README.md)). Not published. |
 

@@ -2193,3 +2193,12 @@ Open test-infrastructure items:
   per example, a runnable `main` and a spec each), the book's code blocks marked with the example
   region they show and checked by `BookSnippetsSpec` (or written from the regions on request), E1
   first, E4 after the decision on AR5.
+
+**17/10/2026: the examples module and E1**
+- `examples` (not published): E1, a basic single-node setup (the pool, the tables, one aggregate
+  type, one projection, a command and a query that waits for its own write), runnable
+  (`sbt "examples/runMain io.reactivecqrs.examples.e1.BasicSetup"`, run once against a schema of its
+  own: "Some(CartSummary(Groceries,1,2))") and tested by `BasicSetupSpec`. `BookSnippets` and
+  `BookSnippetsSpec`: a book code block marked `<!-- snippet: e1/BasicSetup.scala#wiring -->` must be
+  that region of the example; the checker's own scenario covers a differing block, a missing region
+  and a missing source, and the writing of regions into a chapter. No chapter is marked yet.
