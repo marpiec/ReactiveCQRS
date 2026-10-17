@@ -56,6 +56,18 @@ class RecordingProjection(val subscriptionsState: SubscriptionsState, options: P
   override protected val projectionName: String = "RecordingProjection"
 }
 
+/** Declares two listeners of one kind for one type, of which only one could be called (F164). */
+class TwiceListeningProjection(val subscriptionsState: SubscriptionsState) extends ProjectionActor(ProjectionActorOptions.DEFAULT) {
+  protected val listeners = List(
+    EventsListener.noDBSession[GateNote] { (_, _) => () },
+    AggregateListener.noDBSession[GateNote] { (_, _, _, _) => () },
+    EventsListener.noDBSession[GateNote] { (_, _) => () })
+
+  override protected def receiveQuery: Receive = PartialFunction.empty
+
+  override protected val projectionName: String = "TwiceListeningProjection"
+}
+
 /** A store whose failure records fail until `storable`, as during a database outage. */
 class UnstorableFailures extends MemorySubscriptionsState {
   @volatile var storable = false
@@ -530,6 +542,18 @@ class ProjectionDeliverySpec extends CommonSpec {
 
       f.events(id, 1)
       f.acked(id) mustBe Seq(1)
+    }
+  }
+
+  Feature("Declared listeners") {
+
+    Scenario("two listeners of one kind for one aggregate type are refused: the bus gets the failure, not the subscriptions (F164)") {
+      val bus = TestProbe()
+      val projection = system.actorOf(Props(new TwiceListeningProjection(new MemorySubscriptionsState)))
+      bus.send(projection, GetSubscriptionRequests(projection))
+      val refusal = bus.expectMsgType[Status.Failure](3.seconds).cause.getMessage
+      refusal must include ("2 EventsListeners of " + noteType.typeName)
+      refusal must not include "AggregateListener"
     }
   }
 }

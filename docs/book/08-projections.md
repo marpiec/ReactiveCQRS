@@ -101,8 +101,10 @@ Which should you pick?
 > (chapter 9). The test domain's events-based cart list only prints an apology when it sees an
 > undo: working out what was undone is your job with events, and nobody's job with states.
 
-Two small rules: one listener per kind per aggregate type (list two `EventsListener[ShoppingCart]`
-and only the last one counts), and the type must be a real class, as `Any` and `Nothing` are refused.
+Two small rules: one listener per kind per aggregate type, and the type must be a real class. List
+two `EventsListener[ShoppingCart]`, or one for `Any` or `Nothing`, and the projection refuses to
+start: the bus never gets its subscriptions and keeps waiting, and the log says why ("Projection ...
+declares 2 EventsListeners of ...").
 
 ## Where read models live: document stores
 

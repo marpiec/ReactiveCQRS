@@ -465,7 +465,8 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Found:** writing the book (M6, 17/10/2026).
 
 #### F164 — A second listener of one kind for one type silently replaces the first
-- **Low**, confirmed (by reading) · **Fix in M7** (refused at start) · `ProjectionActor` (the listener maps)
+- **Low**, confirmed (red first) · **Fixed in M7** (17/10/2026: refused at start; `ProjectionDeliverySpec` "F164") · `ProjectionActor` (the listener maps)
+- **Fix:** the listeners are checked with the rule against `Any` and `Nothing`: two of one kind for one type fail the projection's answer to the bus (or to its supervisor), which names them; the bus keeps waiting and logs the cause (F162).
 - **Found:** writing the book (M6, 17/10/2026).
 
 #### F169 — `OutboxStatus.waiting` can count fewer aggregates than wait
@@ -1277,7 +1278,7 @@ From §7 of Neula's change requests.
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔, F174 ✔; F155 decided (review 8) |
-| M7 | AR5 (moved from M5 at review 7); F148 ✔, F152, F153, F156, F157, F160, F161, F162 ✔, F163, F164, F165, F166, F169 (found writing the book), F170, F171, F173, F175 |
+| M7 | AR5 (moved from M5 at review 7); F148 ✔, F152, F153, F156, F157, F160, F161, F162 ✔, F163, F164 ✔, F165, F166, F169 (found writing the book), F170, F171, F173, F175 |
 
 ---
 

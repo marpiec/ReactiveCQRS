@@ -2082,3 +2082,9 @@ Open test-infrastructure items:
   its subscribers, asked every tick until they answer, and warns that they missed what was published
   before; a `Status.Failure` answer is logged with its cause, not stashed, and the subscriber asked
   again. Three scenarios in `EventsBusActorSpec`, red before the fix. Book: chapter 18 and appendix C.
+
+**17/10/2026: F164, two listeners of one kind for one type refused**
+- A projection with two listeners of one kind for one aggregate type answers the bus's question
+  (or its supervisor's) with a failure naming them, as one with a listener for `Any` does; the bus
+  keeps waiting and logs the cause. Before, the second silently replaced the first.
+  `ProjectionDeliverySpec` "F164", red before the fix. Book: chapter 8.

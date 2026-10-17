@@ -336,6 +336,21 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     if (listeners.exists(l => l.aggregateType == AggregateType.of[Any] || l.aggregateType == AggregateType.of[Nothing])) {
       throw new IllegalArgumentException("Listeners cannot have type defined as Nothing, Any or _ but were: " + listeners.map(_.aggregateType.typeName))
     }
+    // F164: a second listener of a kind for a type would replace the first in the maps, silently.
+    val repeated = listeners.groupBy(l => (kindOf(l), l.aggregateType.typeName)).collect {
+      case ((kind, typeName), declared) if declared.size > 1 => s"${declared.size} ${kind}s of $typeName"
+    }
+    if (repeated.nonEmpty) {
+      throw new IllegalArgumentException("Projection " + projectionName + " declares " + repeated.toSeq.sorted.mkString(", ") +
+        ", of which only one would be called: give each aggregate type one listener of each kind")
+    }
+  }
+
+  private def kindOf(listener: Listener[Any]): String = listener match {
+    case _: EventsListener[_] => "EventsListener"
+    case _: AggregateListener[_] => "AggregateListener"
+    case _: AggregateWithEventsListener[_] => "AggregateWithEventsListener"
+    case other => other.getClass.getName
   }
 
   protected def receiveUpdate: Receive = {
