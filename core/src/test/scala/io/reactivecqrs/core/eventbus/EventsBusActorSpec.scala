@@ -44,7 +44,14 @@ class EventsBusActorSpec extends CommonSpec {
       subscriber.expectMsg(GetSubscriptionRequests(subscriber.ref))
       subscriber.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, subscriber.ref)), subscriber.ref))
     }
+    answered(bus, subscribers: _*)
     bus
+  }
+
+  /** Once the bus took the answers, drops the asks that a tick sent before an answer arrived: none come after. */
+  private def answered(bus: ActorRef, subscribers: TestProbe*): Unit = {
+    statusOf(bus)
+    subscribers.foreach(_.receiveWhile(1.second, idle = 20.millis) { case _: GetSubscriptionRequests => () })
   }
 
   private def delivered(subscriber: TestProbe): Seq[Int] =
@@ -73,6 +80,7 @@ class EventsBusActorSpec extends CommonSpec {
       a.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, a.ref)), a.ref))
       b.expectMsg(GetSubscriptionRequests(b.ref))
       b.ignoreMsg { case _: GetSubscriptionRequests => true } // asked again every tick until it answers
+      answered(bus, a)
       val id = newId()
 
       publish(bus, owner, id, 1)
@@ -219,6 +227,7 @@ class EventsBusActorSpec extends CommonSpec {
       bus ! RegisterSubscribers(Seq(a.ref))
       a.expectMsg(GetSubscriptionRequests(a.ref))
       a.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, a.ref), SubscribeForAggregates(cartType, a.ref)), a.ref))
+      answered(bus, a)
       val id = newId()
 
       publish(bus, owner, id, 1)
@@ -438,6 +447,7 @@ class EventsBusActorSpec extends CommonSpec {
         subscriber.expectMsg(GetSubscriptionRequests(subscriber.ref))
         subscriber.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, subscriber.ref)), subscriber.ref))
       }
+      answered(bus, subscribers: _*)
       bus
     }
 

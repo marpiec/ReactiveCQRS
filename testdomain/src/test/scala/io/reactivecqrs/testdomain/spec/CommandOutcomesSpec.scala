@@ -177,15 +177,15 @@ class CommandOutcomesSpec extends CommonSpec {
     }
   }
 
-  Feature("Where the work runs (F27)") {
-    Scenario("an owner persists, and applies events, on the blocking dispatcher; command handlers run on the default one") {
+  Feature("Where the work runs (F27, F127)") {
+    Scenario("an owner persists, and applies events, on the blocking dispatcher; command handlers run on the handlers' one") {
       val probe = new ThreadsProbeContext
       val bus = system.actorOf(AggregateCommandBusActor(probe, uidGenerator, eventStore, commandResponseState, eventBus))
       val started: CustomCommandResponse[_] = bus ?? StartThreadsProbe(userId)
       started mustBe a[SuccessResponse]
 
       probe.eventHandlerThread.get must include("reactivecqrs.blocking-dispatcher")
-      probe.commandHandlerThread.get must include("pekko.actor.default-dispatcher")
+      probe.commandHandlerThread.get must include("reactivecqrs.handler-dispatcher")
     }
   }
 
