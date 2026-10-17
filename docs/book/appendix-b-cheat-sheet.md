@@ -216,7 +216,7 @@ One per system. Messages from `io.reactivecqrs.core.aggregate.SquashScheduler._`
 
 ---
 
-## Saga runners (`SagaActor`)
+## Saga runners (`SagaRunner`)
 
 Messages from `io.reactivecqrs.core.saga._`.
 

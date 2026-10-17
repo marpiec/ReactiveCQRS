@@ -11,7 +11,7 @@ import io.reactivecqrs.core.documentstore.{Document, DocumentStore, NoopDocument
 import io.reactivecqrs.core.projection.{PostgresSubscriptionsState, ProjectionActor, SubscriptionsState}
 import io.reactivecqrs.core.rebuild.ProjectionSupervisor.{Builds, GetBuilds, RebuildProjection, RebuildStarted}
 import io.reactivecqrs.core.rebuild.{PostgresProjectionRegistry, Projections, ProjectionsSettings}
-import io.reactivecqrs.core.saga.PostgresSagaState
+import io.reactivecqrs.core.saga.{PostgresSagaState, SagaRunner}
 import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.{CartsCreated, CreateMultipleCarts}
 import io.reactivecqrs.testdomain.shoppingcart._
 import org.apache.pekko.actor.{ActorRef, ActorSystem, Props}
@@ -80,7 +80,8 @@ class ClusterDeliverySpec extends AnyFeatureSpec with Matchers with Eventually w
     Singletons.start(node.system, "outboxPoller", Props(new OutboxPollerActor(node.eventStore, node.eventBus, poller)))
     val sagaState = new PostgresSagaState(node.mpjsons, node.typesNames)
     sagaState.initSchema()
-    sagaOn.put(node.system, Singletons.start(node.system, "cartsSaga", Props(new MultipleCartCreatorSaga(sagaState, node.uidGenerator, node.carts))))
+    sagaOn.put(node.system, SagaRunner.start(node.system, new MultipleCartCreatorSaga(node.carts)(node.system.dispatcher, Timeout(60.seconds)),
+      node.uidGenerator, sagaState, Some("cartsSaga")))
     Seq(carts)
   })
   private val Vector(nodeA, nodeB, nodeC) = nodes

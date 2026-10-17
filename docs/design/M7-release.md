@@ -113,6 +113,35 @@ Refined before they are written (17/10/2026).
 | Examples share the test database with the suites | their aggregates and projections mix with the specs' | each example names its own tables and takes its ids from the pools; the specs never count all rows |
 | An example's `main` run by a reader | it needs PostgreSQL and the connection settings | each `main` reads them like `TestDatabase` (system properties, the library's defaults) and says so when it cannot connect |
 
+## Saga definitions run by the library (AR5)
+
+Decided by the owner on 17/10/2026: built in M7. Refined before it is written.
+
+- **A `SagaDefinition`** is a saga as data and functions, as an `AggregateContext` is an aggregate:
+  its `name` (the key its stored sagas are kept under), `handleOrder(step)` and `handleRevert(step)`
+  (partial functions from an order to a `Future` of the step's outcome), and optionally
+  `spaceOf(order)` (R17) and `persistRetries`. What its steps need (command buses, an
+  `ExecutionContext`, an ask `Timeout`) it takes in its constructor. It is not an actor: its code
+  cannot touch the runner's state or `context` (F17's kind of bug), and one instance serves every
+  saga of its name, so it keeps no mutable state of its own.
+- **`SagaRunner`**, the library's actor, runs one definition: `SagaRunner.props(definition,
+  uidGenerator, state)`, or `SagaRunner.start(system, definition, uidGenerator, state)`, which starts
+  it as a cluster singleton named after the definition (D46). It is today's state machine (steps and
+  writes come back as messages, writes retried with back-off, sagas resumed at their stored step,
+  the caller kept with its node's address, F137), unchanged.
+- **`SagaActor` stays, deprecated**, on the same state machine (the subclass is its own definition),
+  so Neula upgrades to 1.0 with its sagas as they are and moves them one at a time; it goes after
+  1.0. The migration guide shows the move, which keeps each saga's `name` and order classes, so the
+  sagas stored under it resume under the runner.
+
+| Circumstance | What happens | Handled by |
+|---|---|---|
+| A saga moved to a definition under another name | its stored sagas are never resumed | the name is the stored key: the guide says to keep it; a spec resumes a saga stored by a `SagaActor` under the definition of its name |
+| A definition with mutable state | steps of several sagas run at once on futures and race | documented, as for aggregate handlers: no mutable state in a definition |
+| A step that blocks a thread | it holds the dispatcher the host gave it | documented: a step starts its work and returns the future |
+| A `SagaActor` and a runner of one name during a rolling upgrade | both would resume the same rows | the singleton runs on one node at a time; the stored format is the same for both |
+| A step whose future never completes | the saga waits at that step until the runner starts again | as today; the step's own asks have timeouts, which fail it |
+
 ## Decisions for the owner
 
 Decided on 17/10/2026: F175 accepted, AR5 now, F165 renamed to `NoInfo`.

@@ -33,7 +33,8 @@ Everything below lives in `io.reactivecqrs.core.saga`, except `SagaStep`, which 
 
 | Part | What it is |
 | --- | --- |
-| `SagaActor` | the class you extend; one actor runs every saga of its kind |
+| `SagaDefinition` | what you write: the saga's name, its steps and its reverts, as data and functions |
+| `SagaRunner` | the library's actor that runs a definition: one actor for every saga of its name |
 | order, `SagaOrder` | the message a caller sends to start a saga |
 | internal order, `SagaInternalOrder` | the message a saga hands itself for its next step (a `SagaOrder` is one too) |
 | step | one call of your `handleOrder` (or `handleRevert`) with one order |
@@ -88,13 +89,11 @@ hands it to itself, and it carries the carts made so far. Every order has a `use
 > **Remember:** the order carries everything the next step, or a revert, will need. The orders are
 > what the saga stores; nothing else survives a restart.
 
-### The class
+### The definition
 
 ```scala
-class MultipleCartCreatorSaga(val state: SagaState, val uidGenerator: ActorRef, shoppingCartCommandBus: ActorRef)
-  extends SagaActor {
-
-  import context.dispatcher
+class MultipleCartCreatorSaga(shoppingCartCommandBus: ActorRef)(implicit executionContext: ExecutionContext,
+                                                                timeout: Timeout) extends SagaDefinition {
 
   override val name = "MultipleCartCreatorSaga"
 
@@ -112,17 +111,18 @@ class MultipleCartCreatorSaga(val state: SagaState, val uidGenerator: ActorRef, 
 }
 ```
 
-Every saga gives the runner three values and two functions:
+A definition gives the runner a name and two functions:
 
-- `state`: where progress is stored.
-- `uidGenerator`: the uid generator actor your command buses use (chapter 4). Saga ids come from it.
 - `name`: the name of this kind of saga. Its rows in the `sagas` table are found by it.
 - `handleOrder(sagaStep)`: a `ReceiveOrder`, that is a
   `PartialFunction[SagaInternalOrder, Future[SagaHandlingStatus]]`.
 - `handleRevert(sagaStep)`: a `ReceiveRevert`, a
   `PartialFunction[SagaInternalOrder, Future[SagaRevertHandlingStatus]]`.
 
-`import context.dispatcher` gives the `Future`s an execution context to run their `map`s on.
+What its steps need it takes in its constructor: here the cart command bus, the `ExecutionContext`
+its `Future`s run their `map`s on, and the `Timeout` its commands wait for their answers. A
+definition is not an actor. The runner calls its functions, and one definition serves every saga of
+its name at once, so it keeps nothing in fields of its own.
 
 ### A step
 
@@ -147,9 +147,9 @@ private def createShoppingCart(sagaStep: SagaStep, userId: UserId, cartName: Str
 ```
 
 A cart is made, and more are to come: continue, with the new cart added to the list. The last cart
-is made: succeed, with the whole list. The cart is refused: fail. The `?` uses the saga's own
-implicit timeout of 60 seconds, from `SagaActor`. `Some(sagaStep)` is the idempotency id of the
-command; it gets a section of its own below.
+is made: succeed, with the whole list. The cart is refused: fail. The `?` uses the `timeout` the
+definition was given. `Some(sagaStep)` is the idempotency id of the command; it gets a section of its
+own below.
 
 (`handleCreateMultipleCarts` calls this method when `cartsCount > 0`. Otherwise it returns
 `Future.successful(SagaSucceded(CartsCreationFailure(List("No carts to create"))))` at once: the
@@ -217,14 +217,18 @@ step has a `SagaStep` of its own.
    sagaState.initSchema()
    ```
 
-2. **Start the saga actor**, as `ReactiveTestDomainSpec` does:
+2. **Start its runner**, as `ReactiveTestDomainSpec` does:
 
    ```scala
-   val cartsSaga: ActorRef = system.actorOf(
-     Props(new MultipleCartCreatorSaga(sagaState, uidGenerator, carts)), "cartsSaga")
+   import io.reactivecqrs.core.saga.SagaRunner
+
+   val cartsSaga: ActorRef = system.actorOf(SagaRunner.props(
+     new MultipleCartCreatorSaga(carts)(system.dispatcher, Timeout(60.seconds)), uidGenerator, sagaState), "cartsSaga")
    ```
 
-   It needs no special dispatcher: it runs its database writes on the blocking dispatcher by itself.
+   The runner takes the definition, the uid generator actor your command buses use (chapter 4), from
+   which saga ids come, and the saga state. It needs no special dispatcher: it runs its database
+   writes on the blocking dispatcher by itself.
 
 3. **Send it orders**, and wait for the response:
 
@@ -272,32 +276,32 @@ When the job is done (`SagaSucceded`, or a revert that has finished), the row is
 
 A write that fails, because the database is away for a moment, is tried again: after 100 ms, then
 twice as long each time, up to 30 seconds, ten attempts in all. If every attempt fails, the saga
-stays at its last stored step until the next start. The rule is the `persistRetries` value of
-`SagaActor`, a `Backoff` (from `io.reactivecqrs.core.util`) you can override; this is the default:
+stays at its last stored step until the next start. The rule is the `persistRetries` value of the
+definition, a `Backoff` (from `io.reactivecqrs.core.util`) you can override; this is the default:
 
 ```scala
-override protected val persistRetries: Backoff = Backoff(100.millis, 30.seconds, maxAttempts = 10)
+override val persistRetries: Backoff = Backoff(100.millis, 30.seconds, maxAttempts = 10)
 ```
 
 ## After a restart
 
-When a saga actor starts, it reads every stored saga of its `name` and continues each one from its
-stored step and phase. A saga that was creating carts goes on creating them; one that was reverting
+When a saga runner starts, it reads every stored saga of its definition's `name` and continues each
+one from its stored step and phase. A saga that was creating carts goes on creating them; one that was reverting
 goes on reverting.
 
 The step that was running when the application stopped runs **again**, and its command may already
 have been applied. That is the subject of the next section.
 
 > **Warning:** the saga's `name` and its order classes are stored. Do not change the `name` while
-> sagas are in flight (their rows would no longer be found), and never give two saga actors the same
+> sagas are in flight (their rows would no longer be found), and never give two definitions the same
 > one. Treat order classes like event classes (chapter 6): a saga whose stored order no longer reads
 > does not resume (the runner logs it as an error and goes on with the others).
 > `StoredDataCheck` (chapter 18) reads every stored order on a copy of your production data.
 
-> **Warning:** `handleOrder` and `handleRevert` run on the saga actor itself, which serves every
-> saga of its kind. They should only start the work and return the `Future`: do the waiting inside
-> it. And keep no state in the actor's fields: the `Future`'s callbacks run elsewhere, and only the
-> orders survive a restart.
+> **Warning:** the runner calls `handleOrder` and `handleRevert` on its own thread, which serves
+> every saga of its name. They should only start the work and return the `Future`: do the waiting
+> inside it. And keep no state in the definition's fields: the steps of many sagas run at once, and
+> only the orders survive a restart.
 
 ## Steps that may run twice: `SagaStep`
 
@@ -345,7 +349,8 @@ import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.saga._
 import org.apache.pekko.actor.ActorRef
 import org.apache.pekko.pattern.ask
-import scala.concurrent.Future
+import org.apache.pekko.util.Timeout
+import scala.concurrent.{ExecutionContext, Future}
 
 object CheckoutSaga {
   case class Checkout(userId: UserId, stockId: AggregateId, paymentId: AggregateId, items: Int, amountCents: Long)
@@ -357,10 +362,9 @@ object CheckoutSaga {
   case class CheckoutRefused(reasons: List[String]) extends SagaResponse
 }
 
-class CheckoutSaga(val state: SagaState, val uidGenerator: ActorRef, stock: ActorRef, payments: ActorRef)
-  extends SagaActor {
+class CheckoutSaga(stock: ActorRef, payments: ActorRef)(implicit executionContext: ExecutionContext, timeout: Timeout)
+  extends SagaDefinition {
   import CheckoutSaga._
-  import context.dispatcher
 
   override val name = "CheckoutSaga"
 
@@ -419,19 +423,18 @@ conflict, and the revert ends there, leaving the older carts in place. A compens
 
 ## Sagas in a cluster
 
-A saga runner must run once in the whole cluster. Start it with `Singletons.start` on every node,
+A saga runner must run once in the whole cluster. Start it with `SagaRunner.start` on every node,
 and send orders to the proxy it returns (chapter 17 explains singletons):
 
 ```scala
-import io.reactivecqrs.core.cluster.Singletons
-
-val cartsSaga: ActorRef = Singletons.start(system, "cartsSaga",
-  Props(new MultipleCartCreatorSaga(sagaState, uidGenerator, carts)))
+val cartsSaga: ActorRef = SagaRunner.start(system,
+  new MultipleCartCreatorSaga(carts)(system.dispatcher, Timeout(60.seconds)), uidGenerator, sagaState)
 ```
 
-On an actor system that is not a cluster, `Singletons.start` simply starts the actor. In a cluster,
-orders and responses travel between nodes, so they must be classes the library's serializer can
-write and read (chapter 17).
+The singleton is named after the definition's `name` (pass `actorName` when the name is not a valid
+actor name). On an actor system that is not a cluster, `SagaRunner.start` simply starts the actor.
+In a cluster, orders and responses travel between nodes, so they must be classes the library's
+serializer can write and read (chapter 17).
 
 ## Sagas of an organization
 
@@ -442,7 +445,7 @@ carried its shop, as `shop: SpaceId`:
 ```scala
 import io.reactivecqrs.api.id.SpaceId
 
-override protected def spaceOf(order: SagaInternalOrder): Option[SpaceId] = order match {
+override def spaceOf(order: SagaInternalOrder): Option[SpaceId] = order match {
   case o: Checkout => Some(o.shop)
   case _ => None
 }
@@ -450,11 +453,28 @@ override protected def spaceOf(order: SagaInternalOrder): Option[SpaceId] = orde
 
 The space is stored with the saga when it starts. `None`, the default, keeps a saga out of purges.
 
-**Coming in 1.0:** a simpler way to write a saga, with the library owning the runner and you
-describing the steps. This chapter shows what is built today.
+## Moving a saga written as a `SagaActor`
 
-> **Under the hood:** every step result and every write of progress comes back to the saga actor as
-> a message, so all decisions are taken on its thread; the writes run on the blocking dispatcher.
+Before 1.0 a saga was an actor: a class extending `SagaActor`, giving `state`, `uidGenerator`, `name`
+and the two functions. It still runs in 1.0, on the same runner inside, but it is deprecated: its
+code shares the runner's actor, so it can touch what only the runner should. Move each one in five
+small changes:
+
+1. `extends SagaActor` becomes `extends SagaDefinition`.
+2. `val state` and `val uidGenerator` leave the constructor: they go to `SagaRunner.props` or
+   `SagaRunner.start`.
+3. What the steps used from the actor comes in through the constructor: `import context.dispatcher`
+   becomes an implicit `ExecutionContext`, and the actor's 60-second ask timeout an implicit
+   `Timeout`.
+4. `override protected` on `spaceOf` or `persistRetries` becomes `override`.
+5. Where the saga was started, `Props(new MySaga(state, uidGenerator, ...))` becomes
+   `SagaRunner.props(new MySaga(...)(system.dispatcher, Timeout(60.seconds)), uidGenerator, state)`.
+
+Keep the `name` and the order classes: they are what the stored sagas are kept under, and the sagas
+in flight resume under the runner of the same name. `SagaRunnerSpec` checks exactly that.
+
+> **Under the hood:** every step result and every write of progress comes back to the runner as a
+> message, so all decisions are taken on its thread; the writes run on the blocking dispatcher.
 > Saga ids come from pools fetched ahead from the uid generator. In a cluster the runner stores its
 > caller's address with the node's address, so it answers from whichever node it runs on (D46, F136,
 > F137). The full story: [ARCHITECTURE.md, section 9](../ARCHITECTURE.md).
@@ -463,6 +483,8 @@ describing the steps. This chapter shows what is built today.
 
 - A saga drives a job across aggregates one step at a time: each step sends one command and returns
   `SagaContinues`, `SagaSucceded` or `SagaFailed`.
+- You write a `SagaDefinition` (a name, steps and reverts); the library's `SagaRunner` runs it,
+  started with `SagaRunner.props` or, once in a cluster, `SagaRunner.start`.
 - Everything a later step or a revert needs travels in the orders, because the orders are what is
   stored.
 - On failure the caller is answered at once, and `handleRevert` undoes the earlier steps, starting

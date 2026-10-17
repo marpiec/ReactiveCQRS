@@ -12,7 +12,7 @@ import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.{MessageAck, RegisterSubscribers}
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection._
-import io.reactivecqrs.core.saga.{PostgresSagaState, SagaActor, SagaHandlingStatus, SagaInternalOrder, SagaOrder, SagaState}
+import io.reactivecqrs.core.saga.{PostgresSagaState, SagaDefinition, SagaHandlingStatus, SagaInternalOrder, SagaOrder, SagaRunner}
 import io.reactivecqrs.core.space.{PurgeHook, PurgeReport, SpacePurge}
 import io.reactivecqrs.core.tools.StoredDataCheck
 import io.reactivecqrs.core.types.PostgresTypesNamesState
@@ -94,11 +94,11 @@ class UnclearableFolders(val subscriptionsState: SubscriptionsState) extends Pro
 
 /** A saga that waits forever in its first step, so its row stays, tagged with the order's organization. */
 case class WaitInSpace(userId: UserId, space: SpaceId) extends SagaOrder
-class WaitingSaga(val state: SagaState, val uidGenerator: ActorRef) extends SagaActor {
+class WaitingSaga extends SagaDefinition {
   override val name = "PurgeSpecWaitingSaga"
   override def handleOrder(sagaStep: SagaStep): ReceiveOrder = { case _: WaitInSpace => Promise[SagaHandlingStatus]().future }
   override def handleRevert(sagaStep: SagaStep): ReceiveRevert = PartialFunction.empty
-  override protected def spaceOf(order: SagaInternalOrder): Option[SpaceId] = order match {
+  override def spaceOf(order: SagaInternalOrder): Option[SpaceId] = order match {
     case w: WaitInSpace => Some(w.space)
     case _ => None
   }
@@ -123,7 +123,7 @@ class PurgeSpec extends CommonSpec {
   eventBus ! RegisterSubscribers(List(folders))
   private val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(new FolderContext, uidGenerator, eventStore, responses, eventBus))
   private val folderType = AggregateType.of[Folder]
-  private val saga = system.actorOf(Props(new WaitingSaga(sagaState, uidGenerator)))
+  private val saga = system.actorOf(SagaRunner.props(new WaitingSaga, uidGenerator, sagaState))
 
   DB.autoCommit { implicit session => sql"CREATE TABLE IF NOT EXISTS purge_spec_rows (aggregate_id BIGINT NOT NULL)".execute() }
   private val hook = new PurgeHook {

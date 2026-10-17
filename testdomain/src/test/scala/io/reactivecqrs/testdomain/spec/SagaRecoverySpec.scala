@@ -18,6 +18,7 @@ import io.reactivecqrs.core.util.Backoff
 import io.reactivecqrs.testkit.{CommonSpec, TestDatabase}
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.testkit.TestProbe
+import org.apache.pekko.util.Timeout
 import scalikejdbc._
 
 import scala.concurrent.duration._
@@ -71,10 +72,11 @@ class SagaRecoverySpec extends CommonSpec {
   private val userId = UserId(1)
 
   /** A cart-creating saga under its own name, so it never resumes sagas left by other specs. */
-  private def newSaga(sagaName: String, state: SagaState, uids: ActorRef = uidGenerator): ActorRef = system.actorOf(Props(new MultipleCartCreatorSaga(state, uids, commandBus) {
-    override val name: String = sagaName
-    override protected val persistRetries: Backoff = Backoff(20.millis, 20.millis, maxAttempts = 3)
-  }))
+  private def newSaga(sagaName: String, state: SagaState, uids: ActorRef = uidGenerator): ActorRef =
+    system.actorOf(SagaRunner.props(new MultipleCartCreatorSaga(commandBus)(system.dispatcher, Timeout(60.seconds)) {
+      override val name: String = sagaName
+      override val persistRetries: Backoff = Backoff(20.millis, 20.millis, maxAttempts = 3)
+    }, uids, state))
 
   private def unique(text: String): String = text + " " + UUID.randomUUID()
 

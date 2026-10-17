@@ -2,12 +2,13 @@ package io.reactivecqrs.testdomain.shoppingcart
 
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.actor.ActorRef
+import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api.{CustomCommandResponse, FailureResponse, SagaStep, SuccessResponse}
 import io.reactivecqrs.api.id.{AggregateIdWithVersion, UserId}
 import io.reactivecqrs.core.saga._
 import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.{CartsCreated, CartsCreationFailure, CreateMultipleCarts, CreateRemainingCarts}
 
-import scala.concurrent.Future
+import scala.concurrent.{ExecutionContext, Future}
 
 
 object MultipleCartCreatorSaga {
@@ -22,9 +23,9 @@ object MultipleCartCreatorSaga {
 
 }
 
-class MultipleCartCreatorSaga(val state: SagaState, val uidGenerator: ActorRef, shoppingCartCommandBus: ActorRef) extends SagaActor {
-
-  import context.dispatcher
+/** Creates a number of carts, one per step, and deletes those it created when one cannot be created (AR5: a definition,
+  * which `SagaRunner` runs). Its futures run on `executionContext`; its commands wait `timeout` for their answers. */
+class MultipleCartCreatorSaga(shoppingCartCommandBus: ActorRef)(implicit executionContext: ExecutionContext, timeout: Timeout) extends SagaDefinition {
 
   override val name = "MultipleCartCreatorSaga"
 
@@ -61,6 +62,8 @@ class MultipleCartCreatorSaga(val state: SagaState, val uidGenerator: ActorRef, 
           SagaSucceded(CartsCreated(AggregateIdWithVersion(c.aggregateId, c.aggregateVersion) :: createdCarts))
         case c: FailureResponse =>
           SagaFailed(CartsCreationFailure(c.exceptions))
+        case other =>
+          SagaFailed(CartsCreationFailure(List("The cart was not created: " + other)))
       }
   }
 
@@ -75,6 +78,8 @@ class MultipleCartCreatorSaga(val state: SagaState, val uidGenerator: ActorRef, 
           SagaRevertSucceded
         case c: FailureResponse =>
           SagaRevertFailed(c.exceptions)
+        case other =>
+          SagaRevertFailed(List("The cart was not deleted: " + other))
       }
   }
 

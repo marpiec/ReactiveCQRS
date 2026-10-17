@@ -2,6 +2,7 @@ package io.reactivecqrs.testdomain.spec
 
 import org.apache.pekko.actor.{ActorRef, ActorSystem, Props}
 import org.apache.pekko.serialization.SerializationExtension
+import org.apache.pekko.util.Timeout
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
@@ -11,7 +12,7 @@ import io.reactivecqrs.core.documentstore.{MemoryDocumentStore, NoopDocumentStor
 import io.reactivecqrs.core.eventbus._
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection.PostgresSubscriptionsState
-import io.reactivecqrs.core.saga.PostgresSagaState
+import io.reactivecqrs.core.saga.{PostgresSagaState, SagaRunner}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.core.util.BlockingDispatcher
@@ -19,6 +20,7 @@ import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.{CreateMu
 import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCartAggregateContext, _}
 import io.reactivecqrs.testkit.{CommonSpec, TestDatabase}
 
+import scala.concurrent.duration._
 import scala.util.Try
 
 
@@ -56,9 +58,8 @@ class ReactiveTestDomainSpec extends CommonSpec {
     val sagaState = new PostgresSagaState(mpjsons, typesNamesState)
     sagaState.initSchema()
 
-    val multipleCartCreatorSaga: ActorRef = system.actorOf(
-      Props(new MultipleCartCreatorSaga(sagaState, uidGenerator, shoppingCartCommandBus))
-    )
+    val multipleCartCreatorSaga: ActorRef = system.actorOf(SagaRunner.props(
+      new MultipleCartCreatorSaga(shoppingCartCommandBus)(system.dispatcher, Timeout(60.seconds)), uidGenerator, sagaState))
     val subscriptionsState = new PostgresSubscriptionsState(typesNamesState)
     subscriptionsState.initSchema()
 

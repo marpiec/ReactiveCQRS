@@ -152,7 +152,8 @@ val cartItems: ActorRef = projections.start[ClusterCartsProjection]("cluster-car
 Singletons.start(system, "outboxPoller", Props(new OutboxPollerActor(eventStore, eventBus)))
 val sagaState = new PostgresSagaState(mpjsons, typesNames)
 sagaState.initSchema()
-val cartsSaga: ActorRef = Singletons.start(system, "cartsSaga", Props(new MultipleCartCreatorSaga(sagaState, uidGenerator, carts)))
+val cartsSaga: ActorRef = SagaRunner.start(system, new MultipleCartCreatorSaga(carts)(system.dispatcher, Timeout(60.seconds)),
+  uidGenerator, sagaState, actorName = Some("cartsSaga"))
 
 // Every node registers the projection's proxy on its own bus
 eventBus ! RegisterSubscribers(Seq(cartItems))

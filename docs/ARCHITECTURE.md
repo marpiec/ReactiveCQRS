@@ -40,7 +40,7 @@ unless the path says `api/` or `testdomain/`).
 | `Backoff.scala` (retry waits, AR6) | `util/` |
 | `ProjectionActor.scala`, `SubscriptionsState.scala`, `SubscribableProjectionActor.scala`, `AggregateListenerActor.scala` | `projection/` |
 | `ProjectionBuilder.scala`, `ReplayStates.scala` (with `ReplaySource`), `Projections.scala` (the runtime and `ProjectionSupervisor`), `ProjectionRegistry.scala`, `ProjectionBuild.scala` (M4) | `rebuild/` |
-| `SagaActor.scala`, `PostgresSagaState.scala`, `PostgresSagaSchemaInitializer.scala` | `saga/` |
+| `SagaDefinition.scala`, `SagaRunner.scala`, `SagaActor.scala` (deprecated), `PostgresSagaState.scala`, `PostgresSagaSchemaInitializer.scala` | `saga/` |
 | `PostgresDocumentStore.scala`, `DocumentStoreCache.scala` | `documentstore/` |
 | `AfterCommit.scala` (cache updates after commit) | `util/` |
 | `StoredDataCheck.scala` (dry run of stored JSON, D78) | `tools/` |
@@ -594,7 +594,7 @@ cleared the space, what failed or refused, what remains (`complete` when nothing
    to stop it, without a restore) and each projection forgets them (`PurgedAggregates`, §6.1);
    their answers pace the batches.
 4. **Passes** repeat while one purged aggregates, at most three.
-5. **Sagas** tagged with the space (`SagaActor.spaceOf`, stored in `sagas.space_id`) are deleted.
+5. **Sagas** tagged with the space (`SagaDefinition.spaceOf`, stored in `sagas.space_id`) are deleted.
 6. **Projections** get `PurgeSpace(space)`: `clearForRebuild(OneSpace(space))` in one
    transaction. A purge run again clears them again, even when it finds nothing to delete.
 
@@ -1281,8 +1281,13 @@ it first.
 
 ## 9. Sagas (brief)
 
-`SagaActor` (`SagaActor.scala`) is a process manager: `SagaOrder` → `handleOrder(step)`
-returns `SagaContinues | SagaSucceded | SagaFailed` (failure switches to the `REVERTING`
+A saga is a `SagaDefinition` (`SagaDefinition.scala`, AR5, D86): its `name`, `handleOrder(step)`,
+`handleRevert(step)` and optionally `spaceOf` and `persistRetries`, as data and functions, with what
+its steps need taken in its constructor; the library's `SagaRunner` (`SagaRunner.scala`) runs one
+definition, started with `SagaRunner.props` or, once in a cluster, `SagaRunner.start` (a singleton
+named after the definition). `SagaActor`, the actor a saga extended before 1.0, is deprecated and
+runs on the same state machine (`SagaRunning`), being its own definition. A process manager:
+`SagaOrder` → `handleOrder(step)` returns `SagaContinues | SagaSucceded | SagaFailed` (failure switches to the `REVERTING`
 phase and calls `handleRevert`). Progress is stored in `sagas` (`PostgresSagaState.scala`)
 and reloaded at start. Each step passes `SagaStep(sagaId, step)` as the idempotency key of
 the commands it sends, so a resumed saga doesn't repeat a command
@@ -1292,9 +1297,9 @@ the others resume (F151). Since M6 a saga can say which organization an order be
 purge of that organization deletes the saga (§4.7).
 
 Since 1.0 (fixed F35, F17, F36, F34) every step result and every write of saga progress
-comes back to the actor as a message, so all decisions run on the actor's thread;
+comes back to the runner as a message, so all decisions run on the runner's thread;
 `handleOrder` and `handleRevert` are called there too and must only start the work and
-return a Future. A failed write is retried with back-off (`persistRetries`, a `Backoff` from 100 ms,
+return a Future. A definition is not an actor, so its code cannot touch the runner's state. A failed write is retried with back-off (`persistRetries`, a `Backoff` from 100 ms,
 doubling up to 30 s, 10 attempts; the last wait is 25.6 s). After that the saga stays at
 its last stored step and resumes from it at the next start, which repeats that step; its
 commands must therefore be idempotent. An order that cannot be stored at all, or gets no saga
@@ -1385,7 +1390,7 @@ path (F93) came in M5 (§5.2).
 | Projection progress storage | `SubscriptionsState` | CAS semantics; same-session atomicity; the bounded cache and its eviction on a failed CAS (F29, F77); one transaction may move a subscription several times (D61); failures (D20a) |
 | Rebuild logic | `rebuild/ProjectionBuilder` (phases, chunks, reconciliation), `ReplayStates`, `Projections` (`ProjectionSupervisor`, `BuildSlots`), `ProjectionRegistry` | a build must deliver what live delivery delivers (undone events and undos included, D60); the switch is one update; a retired build's tables, versions and failures go together (F94) |
 | Idempotency rules | `commandhandler/Idempotency.scala`, `CommandResponseState` | the response is written in the persist transaction (I2); a taken key and a version conflict both answer with the stored response |
-| Retries and timeouts | `util/Backoff`; `AggregateOwner` (concurrent retries, command timeout), `SagaActor` (write retries), `ProjectionActor` (listener retries), `RedeliveryPolicy`, `PostgresDocumentStore.updateWithRetries` | bounded everywhere; the document-store retry runs inside the listener transaction and must stay immediate (AR6) |
+| Retries and timeouts | `util/Backoff`; `AggregateOwner` (concurrent retries, command timeout), `SagaRunner` (write retries), `ProjectionActor` (listener retries), `RedeliveryPolicy`, `PostgresDocumentStore.updateWithRetries` | bounded everywhere; the document-store retry runs inside the listener transaction and must stay immediate (AR6) |
 | New message between nodes | `cluster/ClusterSerializer` (library classes by field name, the application's values through mpjsons, exceptions), the bindings in `reference.conf` | no functions, futures or mutable state in a message that leaves its node; a field added to a library message is an `Option` or has a default, a changed field type needs a new class (D68); a library exception keeps its class only with a field codec and a binding of its own |
 | Owner placement and hand-over (sharding) | `commandhandler/Owners.scala` (`LocalOwners`, `ShardedOwners`, `ShardedOwners.start`); `AggregateOwner` (`unrestored`, `askToStop`, `PassivateOwner`); the hand-over timeouts in `reference.conf` | only the shard keeps messages for a stopping sharded owner, so every stop goes through it; a hand-over must wait for the command at work (D72): the timeouts stay above the longest command timeout; acknowledgements go only to an owner on the bus's node |
 

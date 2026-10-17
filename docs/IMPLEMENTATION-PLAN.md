@@ -2216,3 +2216,12 @@ Open test-infrastructure items:
   class (a plain success is answered with `SuccessResponse`; the schema references name none), so
   stored data reads as before; Neula's signatures that name `api.Nothing` change (H12). `ApiSurfaceSpec`
   checks the old name is gone. Book: chapter 3.
+
+**17/10/2026: AR5, sagas as definitions run by the library (D86)**
+- `SagaDefinition` (name, `handleOrder`, `handleRevert`, `spaceOf`, `persistRetries`), not an actor, with
+  what its steps need in its constructor; `SagaRunner` (`props`, `start` as a singleton named after the
+  definition) runs it on the state machine of before, now `SagaRunning`; `SagaActor` deprecated on the
+  same machine, so 0.12's sagas run unchanged and move under the same name. The testdomain's sagas
+  are definitions; `SagaRunnerSpec` (new) runs a definition's saga, a deprecated `SagaActor`'s, and
+  resumes a saga a `SagaActor` stored under the definition of its name. Design: M7-release.md, "Saga
+  definitions run by the library". Book: chapter 12 (with the move in five changes), 17, appendices.

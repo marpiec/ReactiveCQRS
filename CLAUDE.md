@@ -210,7 +210,10 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
   alone while the active one serves, and the bus keeps what the stopped one did not take in the outbox for its
   replacement (F110). Targeted rebuilds (`RebuildAggregates`) reset and rebuild one aggregate, type or
   organization in place. Projections with side effects stay unmanaged. Design: `docs/design/M4-rebuild.md`.
-- **`SagaActor`** — process managers; `CONTINUES`/`REVERTING`/`ERROR` phases.
+- **`SagaRunner` / `SagaDefinition`** — process managers (AR5, D86): the author writes a
+  `SagaDefinition` (name, steps, reverts), the library's `SagaRunner` runs it; `CONTINUES`/`REVERTING`/
+  `ERROR` phases. `SagaActor` (the 0.12 way, subclassing the runner) is deprecated and runs on the same
+  state machine, `SagaRunning`.
 - **`UidGeneratorActor`** — hands out id pools (`PostgresUidGenerator` reads
   `NEXTVAL`/`increment_by` from a sequence; pool size = sequence step).
 

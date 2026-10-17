@@ -29,7 +29,7 @@ class SagaCallerPathSpec extends AnyFeatureSpec with Matchers with BeforeAndAfte
       runner.expectMsg("order")
       val caller = runner.lastSender
 
-      val path = SagaActor.callerPath(system, caller)
+      val path = SagaRunner.callerPath(system, caller)
 
       path must include("@127.0.0.1:")
       system.asInstanceOf[ExtendedActorSystem].provider.resolveActorRef(path).path mustBe caller.path

@@ -307,9 +307,9 @@ that entry has the full story.
 
 ## S
 
-- **Saga** (`SagaActor`): a process manager for work that spans several aggregates. It runs steps,
-  stores its progress after each one, and runs revert steps when a step fails.
-  ([chapter 12](12-sagas.md))
+- **Saga** (`SagaDefinition`, run by `SagaRunner`): a process manager for work that spans several
+  aggregates. It runs steps, stores its progress after each one, and runs revert steps when a step
+  fails. `SagaActor`, the way to write one before 1.0, is deprecated. ([chapter 12](12-sagas.md))
 - **Saga step** (`SagaStep`): a saga's id and step number. It is the idempotency key of the
   commands a step sends, so a saga resumed after a crash never applies a command twice.
   ([chapter 12](12-sagas.md))

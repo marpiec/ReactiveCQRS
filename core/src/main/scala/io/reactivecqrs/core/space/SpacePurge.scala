@@ -178,7 +178,7 @@ class SpacePurge(eventStore: PostgresEventStoreState, commandBuses: Map[Aggregat
       Future.sequence(owners ++ told).map(failures => (rows, ids.size, failures.flatten.toMap))
     }
 
-  // R17: sagas tagged with the space (SagaActor.spaceOf); untagged ones are not purged.
+  // R17: sagas tagged with the space (SagaDefinition.spaceOf); untagged ones are not purged.
   private def deleteSagas(space: SpaceId): Map[String, Long] = DB.autoCommit { implicit session =>
     val tagged = sql"""SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
                      |  AND table_name = 'sagas' AND column_name = 'space_id')""".stripMargin.map(_.boolean(1)).single().getOrElse(false)
