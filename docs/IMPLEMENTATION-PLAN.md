@@ -2152,3 +2152,8 @@ Open test-infrastructure items:
   → 0.94 ms, one space 94 → 10 ms. `buildIndexesConcurrently` now builds each index through one
   helper. `PostgresEventStoreStateSpec` "F173" (the index, at start and online), red before the fix;
   `EventStoreStateSpec` checks a page of several types in id order. Book: chapter 18; H12.
+
+**17/10/2026: F157, the dead API removed**
+- `OnConcurrentModification` (`Retry`, `Fail`) and `SimulateEvent` are gone; a scan of Neula's code found
+  no use. `NoEventsForAggregateException` stays, thrown since D77. `ApiSurfaceSpec` (new) checks that the
+  classes do not exist, red before the removal.

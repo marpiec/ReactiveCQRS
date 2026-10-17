@@ -85,7 +85,7 @@ class ClusterSerializationSpec extends AnyFeatureSpec with Matchers with Eventua
         CommandEnvelope(ref, CommandId(5), AddItem(UserId(1), id, v3, "pear")),
         GetState(ref), GetStateMinVersion(ref, v3, 1000), OwnerPassivate, PassivateAggregate(id), ReserveAggregateId,
         GetAggregate(id), GetAggregateMinVersion(id, v3, 1000), GetAggregateForVersion(id, v3), GetAggregateAtInstant(id, now),
-        GetEventsForAggregate(id), GetEventsForAggregateForVersion(id, v3), SimulateEvent[ShoppingCart](id, v3, ItemAdded("x")),
+        GetEventsForAggregate(id), GetEventsForAggregateForVersion(id, v3),
         Squash(ref, SquashAggregate(id, v3, UserId(1), Some(EventMetadata.ofUser(UserId(1))))),
         StopOwner, StopOwnerStale, HistoryChanged(Seq(id, AggregateId(8))),
         RepublishOutbox(id), RepublishRange(id, v3, ref), PublishEventsAck(id, Seq(v3), Some(v3)),

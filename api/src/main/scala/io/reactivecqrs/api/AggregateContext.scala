@@ -28,8 +28,6 @@ case class GetEventsForAggregateForVersion(id: AggregateId, version: AggregateVe
   * The reply is an `AggregateId`, taken from the same pool as the ids the bus assigns itself. */
 case object ReserveAggregateId
 
-case class SimulateEvent[AGGREGATE_ROOT](id: AggregateId, version: AggregateVersion, event: Event[AGGREGATE_ROOT])
-
 /** Replaces the aggregate's events 1..`upTo` with one squash event at `upTo` (D47); the version does not change. Answered
   * with `AggregateSquashed` or `SquashRefused`. `userId` and `metadata` are stored with the squash event. */
 case class SquashAggregate(id: AggregateId, upTo: AggregateVersion, userId: UserId = UserId(0), metadata: Option[EventMetadata] = None)
