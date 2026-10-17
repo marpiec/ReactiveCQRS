@@ -5,22 +5,23 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.time.{Instant, LocalDate}
 import java.util.concurrent.atomic.AtomicLong
-import java.util.concurrent.{ConcurrentHashMap, Executors}
+import java.util.concurrent.{ConcurrentHashMap, ConcurrentLinkedQueue, CountDownLatch, Executors, TimeUnit}
 
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
+import io.reactivecqrs.core.cluster.ClusterSerializer
 import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.PassivateAggregate
 import io.reactivecqrs.core.eventstore.NewEvents
-import org.apache.pekko.actor.{ActorRef, Props}
+import org.apache.pekko.actor.{ActorRef, ExtendedActorSystem, Props}
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
 import scalikejdbc._
 
 import scala.collection.mutable.ListBuffer
-import scala.concurrent.Await
+import scala.concurrent.{Await, ExecutionContext}
 import scala.concurrent.duration._
 import scala.jdk.CollectionConverters._
-import scala.util.Try
+import scala.util.{Failure, Success, Try}
 
 /**
   * The performance baseline of docs/IMPLEMENTATION-PLAN.md §7, run end to end against PostgreSQL:
@@ -41,6 +42,8 @@ object Baseline {
                     soakEventsPerAggregate: Int = 10,
                     soakFailingSeconds: Int = 30,
                     restartCycles: Int = 5,
+                    burstCommands: Int = 10000,
+                    longAggregateEvents: Int = 50000,
                     scenarios: Set[String] = Set.empty)
 
   private def configFrom(arguments: Seq[String]): Config = {
@@ -53,7 +56,8 @@ object Baseline {
       named.get("restoreSizes").map(_.split(",").toSeq.map(_.trim.toInt)).getOrElse(defaults.restoreSizes),
       int("soakSeconds", defaults.soakSeconds), int("soakAggregates", defaults.soakAggregates),
       int("soakEventsPerAggregate", defaults.soakEventsPerAggregate), int("soakFailingSeconds", defaults.soakFailingSeconds),
-      int("restartCycles", defaults.restartCycles),
+      int("restartCycles", defaults.restartCycles), int("burstCommands", defaults.burstCommands),
+      int("longAggregateEvents", defaults.longAggregateEvents),
       named.get("scenarios").map(_.split(",").map(_.trim).toSet).getOrElse(defaults.scenarios))
   }
 
@@ -71,7 +75,7 @@ object Baseline {
       val stores = new BenchStores
       report.environment(DatabaseCounters.serverVersion())
 
-      // `scenarios=commands,contended,serial,rebuild,restore,soak,deliverySoak` runs only those; all by default.
+      // `scenarios=commands,contended,serial,rebuild,restore,soak,deliverySoak,burst,long` runs only those; all by default.
       def runs(scenario: String): Boolean = config.scenarios.isEmpty || config.scenarios.contains(scenario)
       if (runs("commands")) {
         val withProjections = startup(stores, report)
@@ -96,6 +100,8 @@ object Baseline {
       if (runs("restore")) restore(stores, config, report)
       if (runs("soak")) soak(stores, config, report)
       if (runs("deliverySoak")) deliverySoak(stores, config, report)
+      if (runs("burst")) burst(stores, config, report)
+      if (runs("long")) longAggregate(stores, config, report)
     } finally {
       BenchDatabase.drop()
     }
@@ -333,6 +339,118 @@ object Baseline {
 
   /** Writes an aggregate's history straight to the event store, as already published: each batch removes its outbox rows in
     * its own transaction, so no outbox scan starts an actor for the aggregate while it is being written. */
+  // ---- high volume and load (docs/SCALING.md) ----
+
+  /** `burstCommands` commands sent at once, without waiting for answers, as that many clients would: on as many new
+    * aggregates, on those aggregates again, and on one aggregate in concurrent and in serial mode. */
+  private def burst(stores: BenchStores, config: Config, report: Report): Unit = {
+    val note = "n" * config.noteSize
+    val n = config.burstCommands
+    val plain = new BenchSystem("burst", stores, projections = false)
+    val made = new ConcurrentLinkedQueue[AggregateId]()
+    val onNew = sendAtOnce(n, s"$n new aggregates (FirstCommand)")(_ => (plain.counters, CreateCounter(userId))) {
+      case SuccessResponse(id, _) => made.add(id)
+      case _ => ()
+    }
+    val counters = made.asScala.toVector
+    val onExisting = sendAtOnce(counters.size, s"${counters.size} existing aggregates, one command each")(i => (plain.counters, Increment(userId, counters(i), note)))(_ => ())
+    val onOne = sendAtOnce(n, "one aggregate, concurrent mode (F99)")(_ => (plain.counters, Increment(userId, counters.head, note)))(_ => ())
+    plain.shutdown()
+    val serial = new BenchSystem("burst-serial", stores, projections = false, context = new SerialCounterContext)
+    val hot = created(serial)
+    val onOneSerial = sendAtOnce(n, "one aggregate, serial mode (R8, at most 1 000 waiting)")(_ => (serial.counters, Increment(userId, hot, note)))(_ => ())
+    serial.shutdown()
+    report.section(s"$n commands at once", Seq("Target", "Outcomes", "All answered after", "Throughput", "Latency p50 / p95 / p99 / max", "Heap before / peak"),
+      Seq(onNew, onExisting, onOne, onOneSerial),
+      s"Every command is sent at once, with no client waiting for an answer before the next; no subscribers. The command timeout is 60 s; " +
+        s"the blocking dispatcher has 32 threads and the JDBC pool ${BenchDatabase.poolSize} connections.")
+  }
+
+  private def sendAtOnce(count: Int, target: String)(command: Int => (ActorRef, AnyRef))(onAnswer: CustomCommandResponse[_] => Unit): Seq[String] = {
+    val latencies = new Latencies
+    val outcomes = new Outcomes
+    val heapBefore = Heap.usedAfterGc()
+    Heap.resetPeak()
+    val answered = new CountDownLatch(count)
+    val started = System.nanoTime()
+    (0 until count).foreach { i =>
+      val (bus, message) = command(i)
+      val sent = System.nanoTime()
+      (bus ? message)(askTimeout).onComplete { result =>
+        latencies.record(System.nanoTime() - sent)
+        result match {
+          case Success(response: CustomCommandResponse[_]) =>
+            outcomes.add(response)
+            onAnswer(response)
+          case Success(other) => outcomes.addName(other.getClass.getSimpleName)
+          case Failure(e) => outcomes.addName(e.getClass.getSimpleName)
+        }
+        answered.countDown()
+      }(ExecutionContext.global)
+    }
+    answered.await(10, TimeUnit.MINUTES)
+    val nanos = System.nanoTime() - started
+    Seq(target, outcomes.summary, millis(nanos), f"${count / seconds(nanos)}%.0f commands/s", latencySummary(latencies), s"${Heap.mb(heapBefore)} / ${Heap.mb(Heap.peak())}")
+  }
+
+  /** One aggregate with `longAggregateEvents` events: its restore, a command on it, every event in one answer, its
+    * snapshot, and the size of the messages that would carry it between nodes (Artery's frame is 256 KiB by default). */
+  private def longAggregate(stores: BenchStores, config: Config, report: Report): Unit = {
+    val note = "n" * config.noteSize
+    val size = config.longAggregateEvents
+    val system = new BenchSystem("long", stores, projections = false, context = new SnapshottingCounterContext)
+    val id = AggregateId(3100000000L)
+    val writeStarted = System.nanoTime()
+    writeHistory(stores, id, size, note)
+    val writeNanos = System.nanoTime() - writeStarted
+
+    val heapBefore = Heap.usedAfterGc()
+    Heap.resetPeak()
+    val restoreStarted = System.nanoTime()
+    val restored = Try(Await.result((system.counters ? GetAggregate(id))(Timeout(10.minutes)), 11.minutes).asInstanceOf[Try[Aggregate[Counter]]].get)
+    val restoreNanos = System.nanoTime() - restoreStarted
+    val restorePeak = Heap.peak()
+
+    val commandStarted = System.nanoTime()
+    val answer = send(system.counters, Increment(userId, id, note))
+    val commandNanos = System.nanoTime() - commandStarted
+
+    Heap.resetPeak()
+    val eventsStarted = System.nanoTime()
+    val events = Try(Await.result((system.counters ? GetEventsForAggregate(id))(Timeout(10.minutes)), 11.minutes).asInstanceOf[Try[List[EventInfo[Counter]]]].get)
+    val eventsNanos = System.nanoTime() - eventsStarted
+    val eventsPeak = Heap.peak()
+
+    val serializer = new ClusterSerializer(system.system.asInstanceOf[ExtendedActorSystem])
+    def kib(message: AnyRef): String = Try(serializer.toBinary(message).length).map { bytes =>
+      if (bytes < 10240) s"$bytes bytes" else f"${bytes / 1024.0}%.0f KiB"
+    }.getOrElse("not serializable")
+    val all = events.getOrElse(Nil)
+    val counterType = AggregateType.of[Counter]
+
+    system.counters ! PassivateAggregate(id)
+    awaitUntil(1.minute)(DB.readOnly { implicit session => sql"SELECT count(*) FROM snapshots WHERE aggregate_id = ${id.asLong}".map(_.int(1)).single().get } == 1)
+    val snapshotStarted = System.nanoTime()
+    val again = Try(Await.result((system.counters ? GetAggregate(id))(Timeout(1.minute)), 2.minutes).asInstanceOf[Try[Aggregate[Counter]]].get)
+    val snapshotNanos = System.nanoTime() - snapshotStarted
+    system.shutdown()
+
+    val (tableBytes, rowCount) = DB.readOnly { implicit session =>
+      sql"SELECT pg_total_relation_size('events'), (SELECT count(*) FROM events)".map(rs => (rs.long(1), rs.long(2))).single().get
+    }
+    report.section(s"An aggregate with $size events", Seq("Measure", "Value"), Seq(
+      Seq("history written directly through the event store", s"${millis(writeNanos)} (${f"${size / seconds(writeNanos)}%.0f"} events/s)"),
+      Seq("restore by a new owner, every event", s"${millis(restoreNanos)}; ${restored.map(a => "version " + a.version.asInt).getOrElse("failed")}; heap ${Heap.mb(heapBefore)} / ${Heap.mb(restorePeak)}"),
+      Seq("a command on it after the restore", s"${millis(commandNanos)}: ${answer.getClass.getSimpleName}"),
+      Seq("every event in one answer (GetEventsForAggregate)", s"${millis(eventsNanos)}; ${all.size} events; heap peak ${Heap.mb(eventsPeak)}"),
+      Seq("that answer, serialized for another node", kib(Success(all))),
+      Seq("a re-publication part of 1 000 events, serialized", kib(IdentifiableEvents[Counter](counterType, id, all.take(1000)))),
+      Seq("one event's delivery, serialized", kib(IdentifiableEvents[Counter](counterType, id, all.take(1)))),
+      Seq("restore from its snapshot (D30)", s"${millis(snapshotNanos)}; ${again.map(a => "version " + a.version.asInt).getOrElse("failed")}"),
+      Seq("events table with its indexes, per event", f"${tableBytes.toDouble / rowCount}%.0f bytes ($rowCount events, ${tableBytes / 1024 / 1024} MB)")),
+      s"Events carry a ${config.noteSize}-character note. The event store of the bench has no limit of events per aggregate; the library's default is 10 000.")
+  }
+
   private def writeHistory(stores: BenchStores, id: AggregateId, events: Int, note: String): Unit = {
     var version = 0
     while (version < events) {
@@ -386,7 +504,8 @@ object Baseline {
 
   private class Outcomes {
     private val counts = new ConcurrentHashMap[String, AtomicLong]()
-    def add(response: CustomCommandResponse[_]): Unit = counts.computeIfAbsent(response.getClass.getSimpleName, _ => new AtomicLong()).incrementAndGet()
+    def add(response: CustomCommandResponse[_]): Unit = addName(response.getClass.getSimpleName)
+    def addName(name: String): Unit = counts.computeIfAbsent(name, _ => new AtomicLong()).incrementAndGet()
     def summary: String = counts.asScala.toSeq.sortBy(_._1).map { case (k, v) => s"$k ${v.get}" }.mkString(", ")
   }
 

@@ -22,6 +22,7 @@ import scala.concurrent.duration._
 
 /** The benchmark database: its own schema in the configured database, dropped at the end unless kept. */
 object BenchDatabase {
+  val poolSize = 40
 
   val url: String = sys.props.getOrElse("bench.url", "jdbc:postgresql://localhost:5432/reactivecqrs")
   private val user = sys.props.getOrElse("bench.user", "reactivecqrs")
@@ -33,7 +34,7 @@ object BenchDatabase {
     Class.forName("org.postgresql.Driver")
     withPlainConnection(_.createStatement().execute("CREATE SCHEMA " + schema))
     ConnectionPool.singleton(url + "?currentSchema=" + schema, user, password,
-      ConnectionPoolSettings(initialSize = 10, maxSize = 40, connectionTimeoutMillis = 5000L))
+      ConnectionPoolSettings(initialSize = 10, maxSize = poolSize, connectionTimeoutMillis = 5000L))
   }
 
   def drop(): Unit = {
