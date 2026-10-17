@@ -240,6 +240,10 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
   event_time`. The outbox: owners publish what they committed, delivered rows are
   deleted in batches (F26), the outbox poller re-publishes waiting ones. Indexed on
   `(aggregate_id, version)`.
+- **`event_keys`** (M6, F124) — `id PK (→ events.id, cascade), type_id, space_id`: each
+  event's aggregate type and space, written by the procedures, so a build of some types or of
+  one organization reads only its events; `schema_steps` records when `backfillEventKeys()`
+  gave every older event its key (until then builds walk `events`).
 
 ### Event bus tables (unused since 1.0)
 - **`event_bus`** (the 0.12 cursor of the last published version per aggregate) and

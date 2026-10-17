@@ -5,7 +5,7 @@ import java.util.concurrent.{CountDownLatch, TimeUnit}
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.{AggregateSquashedException, AggregateType, AggregateVersion, Event, TooManyEventsException}
-import io.reactivecqrs.api.id.SpaceId
+import io.reactivecqrs.api.id.{AggregateId, SpaceId}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.testutils.TestDatabase
 import scalikejdbc._
@@ -270,5 +270,80 @@ class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStore
       Await.result(squashing, 10.seconds).left.toOption.get must include("the duplicates of the aggregate changed meanwhile")
       base.getEvents() mustBe Seq(EventA("one"), EventB(2), EventC(true))
     } finally DB.autoCommit(implicit session => sql"DELETE FROM aggregates WHERE id = $copyId".update())
+  }
+
+  // F124: the keys of the commit-order pass by type and space.
+  private def keysOf(id: AggregateId): Seq[(Int, Long, Boolean)] = DB.readOnly { implicit session =>
+    sql"""SELECT e.version, k.space_id, k.type_id = a.type_id FROM events e JOIN event_keys k ON k.id = e.id
+         | JOIN aggregates a ON a.id = e.aggregate_id AND a.base_id = e.aggregate_id
+         | WHERE e.aggregate_id = ${id.asLong} ORDER BY e.version""".stripMargin.map(rs => (rs.int(1), rs.long(2), rs.boolean(3))).list()
+  }
+
+  private def orphanKeys(): Long = DB.readOnly { implicit session =>
+    sql"""SELECT count(*) FROM event_keys k WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.id = k.id)""".map(_.long(1)).single().get
+  }
+
+  Scenario("each event gets a key of its aggregate's type and space from every procedure, and the key goes with its event (F124)") {
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one"), EventB(2), EventB(3)))
+    f.storeEvents(Seq(Undo(1)))
+    val copy = newId()
+    f.storeEvents(Seq(Copy(SpaceId(7), f.aggregateId, AggregateVersion(2))), copy, AggregateVersion.ZERO)
+
+    keysOf(f.aggregateId) mustBe Seq((1, 0L, true), (2, 0L, true), (3, 0L, true), (4, 0L, true))
+    keysOf(copy) mustBe Seq((1, 7L, true))
+
+    published(f.aggregateId, copy)
+    eventStoreState.deleteAggregatePermanently(copy, Nil) mustBe Right(())
+    squash(f, 2) mustBe Right(())
+    keysOf(f.aggregateId).map(_._1) mustBe Seq(2, 3, 4)
+    orphanKeys() mustBe 0L
+  }
+
+  Scenario("the keys of events from before are backfilled; a store reads through them only once every event has one (F124)") {
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one"), EventB(2), EventB(3)))
+    val types = Seq(AggregateType.of[SomeAggregate])
+    val platform = AggregateScope.InSpace(SpaceId(0))
+    def store = new PostgresEventStoreState(new MPJsons, new PostgresTypesNamesState) // reads the step afresh
+    def page(on: PostgresEventStoreState): Seq[Long] = on.readCommittedPage(types, 0L, 1000000, platform, Long.MaxValue).events.map(_.id)
+
+    Given("events written before the keys: theirs missing, the step not recorded")
+    DB.autoCommit { implicit session =>
+      sql"DELETE FROM event_keys WHERE id IN (SELECT id FROM events WHERE aggregate_id = ${f.aggregateId.asLong})".update()
+      sql"DELETE FROM schema_steps WHERE name = 'event_keys'".update()
+    }
+    val walked = page(store)
+    walked must contain allElementsOf DB.readOnly { implicit session =>
+      sql"SELECT id FROM events WHERE aggregate_id = ${f.aggregateId.asLong}".map(_.long(1)).list()
+    }
+
+    When("the backfill runs, a few ids at a time")
+    store.backfillEventKeys(batchSize = 2) mustBe EventKeysBackfill(3, 0)
+    keysOf(f.aggregateId).map(_._2) mustBe Seq(0L, 0L, 0L)
+
+    Then("a store reads through the keys, with the same pages")
+    val keyed = store
+    page(keyed) mustBe walked
+    DB.autoCommit { implicit session => // a key that says another space shows which way a store reads
+      sql"UPDATE event_keys SET space_id = 99 WHERE id = (SELECT id FROM events WHERE aggregate_id = ${f.aggregateId.asLong} AND version = 3)".update()
+    }
+    page(keyed).size mustBe walked.size - 1
+    DB.autoCommit { implicit session =>
+      sql"UPDATE event_keys SET space_id = 0 WHERE id = (SELECT id FROM events WHERE aggregate_id = ${f.aggregateId.asLong} AND version = 3)".update()
+    }
+  }
+
+  Scenario("the space backfill gives the keys of an aggregate's events its space too (F124)") {
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one"), EventB(2)))
+    DB.autoCommit { implicit session =>
+      sql"UPDATE aggregates SET space_id = -1 WHERE id = ${f.aggregateId.asLong}".update()
+      sql"UPDATE event_keys SET space_id = -1 WHERE id IN (SELECT id FROM events WHERE aggregate_id = ${f.aggregateId.asLong})".update()
+    }
+
+    eventStoreState.asInstanceOf[PostgresEventStoreState].backfillSpaces()
+
+    keysOf(f.aggregateId).map(_._2) mustBe Seq(0L, 0L)
   }
 }

@@ -1815,3 +1815,28 @@ Open test-infrastructure items:
   100 ms slower, from the cluster libraries' configuration (found by elimination).
 - `docs/perf/README.md` describes the M5 reports and the same-day comparison.
 - `sbt test`: core 274, testdomain 164, all pass, also as a cluster of one.
+
+### M6
+
+**17/10/2026: the M6 design, the surveys, and fixes they found (F143, F144, F145)**
+- Three read-only surveys (the tables and how an organization's rows are found; the squash,
+  detach and rewrite machinery; ids, mpjsons and running in memory) fed
+  `docs/design/M6-organizations.md`: what each operation touches, the order of the work (the
+  archive before the purge, the export and the rewrite, which cover it), and the failure
+  circumstances of each.
+- Found and fixed on the way: a permanent delete detached duplicates whose first event subscribers
+  did not have yet (F143; acknowledged outbox rows are now deleted before the check); owners of
+  contexts without snapshots never matched the stored history generation after an undo, so a
+  `Local` owner on a node that is not alone restored before every read (F144, a regression of
+  F131); commands on another node's `Local` owner ran on a state changed without a new version
+  (F145). Recorded for the rewrite step: a rewrite without a new event is dropped (F146).
+- A new aggregate's first event must give a space; the owner refuses one without (D38).
+
+**17/10/2026: the commit-order pass by type and space (F124)**
+- `event_keys` (each event's aggregate type and space, written by the procedures, deleted with
+  the event) and `schema_steps`; `backfillEventKeys()` for the rows from before; the page reads
+  one index scan per type (in a space by its space) once the step is recorded, and named
+  aggregates through `events (aggregate_id, id)`. An index on `aggregates (space_id)`. Measured
+  first: the extra insert per event cost nothing measurable.
+- Tests: `PostgresEventStoreStateSpec` (three scenarios, each red under its mutation); the builder,
+  rebuild and equivalence specs read through the keys.

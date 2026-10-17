@@ -190,8 +190,11 @@ Estimated from the measured numbers. None of this was run at this scale.
     aggregates interleave, the build slows down by one restore per miss (not measured). Projections
     that need only the latest state build from final states instead (D62): one restore per
     aggregate.
-  - The commit-order read joins every event to its aggregate to filter by type. A projection whose
-    types hold a small share of the store still walks most of the store (F124).
+  - The commit-order read reads only its types' events (or its organization's) through
+    `event_keys` (F124, since M6), once `backfillEventKeys()` has given every event from before
+    a key; until then it walks the store up to its position. The keys cost about 40 bytes a row
+    before their two indexes (estimated: about 4 GB per 100 million events with them); writing
+    them cost nothing measurable (within the runs' spread, `docs/design/M6-organizations.md`).
 - **The outbox.** `events_to_publish` takes an insert and a delete per event. Autovacuum must keep
   up with it, or the table and its index bloat. The outbox poller still groups the whole outbox
   every 30 s, which is cheap while the outbox is near empty (normal running) and grows with a
@@ -474,7 +477,7 @@ Recorded in [KNOWN-ISSUES](KNOWN-ISSUES.md):
 | F122: the outbox poll kept every waiting aggregate in memory | fixed in M5 (the grouping still reads the whole outbox) |
 | F123: given-up aggregates waited for the poller's next start | fixed in M5 |
 | F141: retries of given-up aggregates could take a poll's whole budget | fixed in M5 |
-| F124: a commit-order build walks the events of every type to find its own | M6 |
+| F124: a commit-order build walks the events of every type to find its own | fixed in M6 (after `backfillEventKeys()` on an existing installation) |
 | F125: the per-aggregate limit let one event too many through | fixed in M5 |
 | F126: batches counted in events held whatever their events weighed | fixed in M5 (restore fetches stay 1 000 rows: hosts with large events lower them) |
 | F127: command handlers ran on Pekko's default dispatcher, so a slow handler stalled the buses and projections | fixed in M5 |

@@ -18,6 +18,9 @@ import scala.util.Try
   * gave one. */
 case class SpaceBackfill(filled: Int, left: Seq[AggregateId])
 
+/** What the event keys backfill did (F124): keys written, and events still without one (an aggregate row missing). */
+case class EventKeysBackfill(written: Long, missing: Long)
+
 /** @param outboxDeleteDelay how long delivered outbox rows wait, at most, to be deleted together with others (F26) */
 class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState, fetchSize: Int = 1000,
                               eventSizeLimit: Int = 100000, aggregateVersionLimit: Int = 10000,
@@ -258,6 +261,58 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       .map(_.boolean(1)).single().getOrElse(false)
     if (invalid) sql"""DROP INDEX CONCURRENTLY IF EXISTS events_aggregate_version_idx""".execute()
     sql"""CREATE INDEX CONCURRENTLY IF NOT EXISTS events_aggregate_version_idx ON events (aggregate_id, version)""".execute()
+    // M6: an organization's aggregates, for its purge and export (D38).
+    val spaceIndexInvalid = sql"""SELECT NOT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+                                 | JOIN pg_namespace n ON n.oid = c.relnamespace
+                                 | WHERE c.relname = 'aggregates_space_idx' AND n.nspname = current_schema()""".stripMargin
+      .map(_.boolean(1)).single().getOrElse(false)
+    if (spaceIndexInvalid) sql"""DROP INDEX CONCURRENTLY IF EXISTS aggregates_space_idx""".execute()
+    sql"""CREATE INDEX CONCURRENTLY IF NOT EXISTS aggregates_space_idx ON aggregates (space_id)""".execute()
+  }
+
+  /**
+    * F124: gives the events written before `event_keys` their keys (their aggregate's type and space), in id order, a
+    * batch of `batchSize` ids per transaction, from the first event without one, and once every event has one, records
+    * the step, from which builds read by type and space. Online and idempotent (D69): run it in the background once every
+    * node runs this version (a node of the previous one, started again, would write events without keys); stopped, it is
+    * run again. Returns the keys it wrote and the events still without one (those of a missing aggregate row).
+    */
+  def backfillEventKeys(batchSize: Int = 10000): EventKeysBackfill = {
+    val (first, last) = DB.readOnly { implicit session =>
+      (sql"""SELECT min(e.id) FROM events e WHERE NOT EXISTS (SELECT 1 FROM event_keys k WHERE k.id = e.id)""".map(_.longOpt(1)).single().flatten,
+        sql"""SELECT coalesce(max(id), 0) FROM events""".map(_.long(1)).single().get)
+    }
+    var written = 0L
+    var after = first.map(_ - 1).getOrElse(last)
+    while (after < last) {
+      val upTo = math.min(after + batchSize, last)
+      written += DB.localTx { implicit session =>
+        sql"""INSERT INTO event_keys (id, type_id, space_id)
+             | SELECT e.id, a.type_id, a.space_id FROM events e JOIN aggregates a ON a.id = e.aggregate_id AND a.base_id = e.aggregate_id
+             | WHERE e.id > $after AND e.id <= $upTo ON CONFLICT (id) DO NOTHING""".stripMargin.update()
+      }
+      after = upTo
+    }
+    val missing = DB.readOnly { implicit session =>
+      sql"""SELECT count(*) FROM events e WHERE NOT EXISTS (SELECT 1 FROM event_keys k WHERE k.id = e.id)""".map(_.long(1)).single().get
+    }
+    if (missing == 0) DB.autoCommit { implicit session =>
+      sql"""INSERT INTO schema_steps (name, completed) VALUES ('event_keys', current_timestamp) ON CONFLICT (name) DO NOTHING""".update()
+    }
+    EventKeysBackfill(written, missing)
+  }
+
+  // F124: the step is looked for again at most once a minute until it is found; it is never undone.
+  @volatile private var eventKeysComplete = false
+  @volatile private var eventKeysCheckedAt = Long.MinValue
+
+  private def eventKeysReady()(implicit session: DBSession): Boolean = eventKeysComplete || {
+    val now = System.nanoTime()
+    if (eventKeysCheckedAt == Long.MinValue || now - eventKeysCheckedAt >= 60L * 1000000000L) {
+      eventKeysCheckedAt = now
+      eventKeysComplete = Try(exists(sql"""SELECT EXISTS (SELECT 1 FROM schema_steps WHERE name = 'event_keys')""")).getOrElse(false)
+    }
+    eventKeysComplete
   }
 
   // The aggregate's own row of its chain gives the type: a duplicate's events are read under it, not its base.
@@ -266,10 +321,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   // says how many rows the page had before the cut.
   override def readCommittedPage(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope, maxBytes: Long): CommittedPage =
     if (types.isEmpty) CommittedPage(Seq.empty, cut = false) else DB.readOnly { implicit session =>
-      val rows = sql"""WITH page AS (SELECT e.id, octet_length(e.event) AS size
-           |     FROM events e JOIN aggregates a ON a.id = e.aggregate_id AND a.base_id = e.aggregate_id
-           |     WHERE e.id > $after AND a.type_id IN (${typeIds(types)}) ${scoped(scope)}
-           |     ORDER BY e.id LIMIT $limit),
+      val rows = sql"""WITH page AS (${pageOf(types, after, limit, scope)}),
            |   kept AS (SELECT id, size FROM (SELECT id, size, sum(size) OVER (ORDER BY id) AS up_to, row_number() OVER (ORDER BY id) AS n FROM page) p
            |     WHERE up_to <= $maxBytes OR n = 1)
            |SELECT e.id, a.type_id, e.aggregate_id, e.version, e.event_type_id, e.event_type_version, e.event, e.user_id, e.event_time,
@@ -284,6 +336,30 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       }.list()
       CommittedPage(rows.map(_._1), cut = rows.headOption.exists { case (_, pageRows) => pageRows > rows.size })
     }
+
+  // The ids and sizes of the next `limit` events of `types` in `scope` after `after`, in commit order. F124: named
+  // aggregates are read through `events (aggregate_id, id)`; once every event has a key, the others through
+  // `event_keys`, one subquery per type (each at most a page, by `(type_id, id)` or `(space_id, type_id, id)`), merged
+  // by id. Before that, `events` is walked up to the page's last row.
+  private def pageOf(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope)(implicit session: DBSession): SQLSyntax = scope match {
+    case AggregateScope.Only(ids) if ids.nonEmpty =>
+      sqls"""SELECT e.id, octet_length(e.event) AS size FROM events e JOIN aggregates a ON a.id = e.aggregate_id AND a.base_id = e.aggregate_id
+            | WHERE e.aggregate_id IN (${ids.toSeq.map(_.asLong)}) AND e.id > $after AND a.type_id IN (${typeIds(types)})
+            | ORDER BY e.id LIMIT $limit""".stripMargin
+    case AggregateScope.All | AggregateScope.InSpace(_) if eventKeysReady() =>
+      val inSpace = scope match {
+        case AggregateScope.InSpace(spaceId) => sqls"AND space_id = ${spaceId.asLong}"
+        case _ => sqls""
+      }
+      val perType = typeIds(types).map(typeId => sqls"(SELECT id FROM event_keys WHERE type_id = $typeId $inSpace AND id > $after ORDER BY id LIMIT $limit)")
+      sqls"""SELECT k.id, octet_length(e.event) AS size FROM (SELECT id FROM (${sqls.join(perType, sqls"UNION ALL")}) u ORDER BY id LIMIT $limit) k
+            | JOIN events e ON e.id = k.id""".stripMargin
+    case _ =>
+      sqls"""SELECT e.id, octet_length(e.event) AS size
+            | FROM events e JOIN aggregates a ON a.id = e.aggregate_id AND a.base_id = e.aggregate_id
+            | WHERE e.id > $after AND a.type_id IN (${typeIds(types)}) ${scoped(scope)}
+            | ORDER BY e.id LIMIT $limit""".stripMargin
+  }
 
   override def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[StoredAggregate] =
     if (types.isEmpty) Seq.empty else DB.readOnly { implicit session =>
@@ -328,7 +404,11 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       }
       DB.localTx { implicit session =>
         spaces.foreach {
-          case (id, Some(space)) => sql"""UPDATE aggregates SET space_id = ${space.asLong} WHERE id = ${id.asLong} AND space_id = -1""".update()
+          case (id, Some(space)) =>
+            // F124: the keys of its events carry its space too.
+            if (sql"""UPDATE aggregates SET space_id = ${space.asLong} WHERE id = ${id.asLong} AND space_id = -1""".update() > 0) {
+              sql"""UPDATE event_keys SET space_id = ${space.asLong} WHERE id IN (SELECT id FROM events WHERE aggregate_id = ${id.asLong})""".update()
+            }
           case _ => ()
         }
       }
@@ -377,7 +457,12 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   private def detachingAll(found: Seq[AggregateId], detach: Seq[(AggregateId, FirstEvent[_])]): Either[String, Unit] =
     Either.cond(found.toSet == detach.map(_._1).toSet, (), "the duplicates of the aggregate changed meanwhile")
 
-  override def deleteAggregatePermanently(aggregateId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])]): Either[String, Unit] = localTx { implicit session =>
+  override def deleteAggregatePermanently(aggregateId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])]): Either[String, Unit] = {
+    outboxDeletes.flushNow() // acknowledged rows go first, so the outbox checks see only what still waits
+    localTx { implicit session => deletingPermanently(aggregateId, detach) }
+  }
+
+  private def deletingPermanently(aggregateId: AggregateId, detach: Seq[(AggregateId, FirstEvent[_])])(implicit session: DBSession): Either[String, Unit] = {
     val id = aggregateId.asLong
     lockChain(id)
     for {
@@ -407,8 +492,10 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   private def squashedPoint(id: Long)(implicit session: DBSession): Option[Int] =
     sql"""SELECT squashed_version FROM aggregates WHERE id = $id AND base_id = $id""".map(_.intOpt(1)).single().flatten
 
-  override def squashBlocker(aggregateId: AggregateId, upTo: AggregateVersion): Option[String] =
+  override def squashBlocker(aggregateId: AggregateId, upTo: AggregateVersion): Option[String] = {
+    outboxDeletes.flushNow()
     DB.readOnly(implicit session => blocker(aggregateId.asLong, upTo.asInt))
+  }
 
   // D51. The duplicates the squash detaches count too: their first event changes.
   private def blocker(id: Long, n: Int)(implicit session: DBSession): Option[String] = {

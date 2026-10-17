@@ -25,11 +25,14 @@ class PostgresEventStoreSchemaInitializer  {
     addAggregatesSquashedVersionColumn()
     addAggregatesHistoryGenerationColumn()
     createEventsAggregateVersionIndexWhenSmall()
+    createAggregatesSpaceIndexWhenSmall()
+    createEventKeysTable()
     dropOldFunctions()
     createAddEventsFunction()
     createAddEventFunction()
     createAddUndoEventFunction()
     createAddDuplicationEventFunction()
+    completeEventKeysWhenNoEvents()
   }
 
 
@@ -169,6 +172,33 @@ class PostgresEventStoreSchemaInitializer  {
     }
   }
 
+  // M6: an organization is found through its aggregates' space (D38); built online on a large installation (D69).
+  private def createAggregatesSpaceIndexWhenSmall(): Unit = DB.autoCommit { implicit session =>
+    val estimatedRows = sql"""SELECT reltuples::bigint FROM pg_class WHERE oid = 'aggregates'::regclass""".map(_.long(1)).single().getOrElse(0L)
+    if (estimatedRows < 100000L) {
+      sql"""CREATE INDEX IF NOT EXISTS aggregates_space_idx ON aggregates (space_id)""".execute()
+    }
+  }
+
+  // F124: each event's aggregate type and space, so a build of some types, or of one space, reads only their events in
+  // commit order. The procedures write a key with each event, and the cascade deletes it with the event. The rows from
+  // before get theirs from `PostgresEventStoreState.backfillEventKeys`, an online job (D69), which records the step in
+  // `schema_steps` once every event has a key; until then builds read as before.
+  private def createEventKeysTable(): Unit = DB.autoCommit { implicit session =>
+    sql"""CREATE TABLE IF NOT EXISTS schema_steps (name VARCHAR(128) NOT NULL PRIMARY KEY, completed TIMESTAMP NOT NULL)""".execute()
+    sql"""CREATE TABLE IF NOT EXISTS event_keys (id BIGINT NOT NULL PRIMARY KEY REFERENCES events (id) ON DELETE CASCADE,
+         |  type_id SMALLINT NOT NULL, space_id BIGINT NOT NULL)""".stripMargin.execute()
+    sql"""CREATE INDEX IF NOT EXISTS event_keys_type_idx ON event_keys (type_id, id)""".execute()
+    sql"""CREATE INDEX IF NOT EXISTS event_keys_space_idx ON event_keys (space_id, type_id, id)""".execute()
+  }
+
+  // An installation without events has none to backfill. Checked once the procedures write keys, so an event written
+  // before them by a node of the previous version is never taken for keyed.
+  private def completeEventKeysWhenNoEvents(): Unit = DB.autoCommit { implicit session =>
+    sql"""INSERT INTO schema_steps (name, completed) SELECT 'event_keys', current_timestamp WHERE NOT EXISTS (SELECT 1 FROM events)
+         | ON CONFLICT (name) DO NOTHING""".stripMargin.update()
+  }
+
   // Signatures of earlier versions only: the current functions are replaced in place, so a node starting never drops a
   // function that other nodes are using (the migration runner of M5 takes this over).
   private def dropOldFunctions(): Unit = DB.autoCommit { implicit session =>
@@ -211,12 +241,14 @@ class PostgresEventStoreSchemaInitializer  {
           |    n INT := array_length(_events, 1);
           |    current_version INT;
           |    event_id BIGINT;
+          |    _space BIGINT;
           |BEGIN
-          |    UPDATE aggregates SET base_version = base_version + n WHERE id = _aggregate_id AND base_id = _aggregate_id RETURNING base_version - n INTO current_version;
+          |    UPDATE aggregates SET base_version = base_version + n WHERE id = _aggregate_id AND base_id = _aggregate_id RETURNING base_version - n, space_id INTO current_version, _space;
           |    IF NOT FOUND THEN
           |        IF _expected_version = 0 AND _space_ids[1] >= 0 THEN
           |            INSERT INTO aggregates (space_id, id, creation_time, type_id, base_order, base_id, base_version) VALUES (_space_ids[1], _aggregate_id, current_timestamp, _aggregate_type_id, 1, _aggregate_id, n);
           |            current_version := 0;
+          |            _space := _space_ids[1];
           |        ELSIF _space_ids[1] = -1 THEN
           |            RAISE EXCEPTION 'Space incorrect defined for aggregate not found, id %, aggregate_type_id %. Maybe FirstEvent was not used.', _aggregate_id, _aggregate_type_id;
           |        ELSE
@@ -230,6 +262,7 @@ class PostgresEventStoreSchemaInitializer  {
           |        event_id := nextval('events_seq');
           |        INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event, metadata) VALUES (event_id, _user_id, _aggregate_id, _event_time, current_version + i, _event_type_ids[i], 0, _events[i], _metadata);
           |        INSERT INTO events_to_publish (event_id, aggregate_id, version, user_id, event_time) VALUES (event_id, _aggregate_id, current_version + i, _user_id, _event_time);
+          |        INSERT INTO event_keys (id, type_id, space_id) VALUES (event_id, _aggregate_type_id, _space);
           |    END LOOP;
           |    RETURN current_version + n;
           |END;
@@ -251,8 +284,9 @@ class PostgresEventStoreSchemaInitializer  {
           |    squashed INT;
           |    first_undone INT;
           |    event_id BIGINT;
+          |    _space BIGINT;
           |BEGIN
-          |    UPDATE aggregates SET base_version = base_version + 1 WHERE id = _aggregate_id AND base_id = _aggregate_id RETURNING base_version - 1, squashed_version INTO current_version, squashed;
+          |    UPDATE aggregates SET base_version = base_version + 1 WHERE id = _aggregate_id AND base_id = _aggregate_id RETURNING base_version - 1, squashed_version, space_id INTO current_version, squashed, _space;
           |    IF NOT FOUND THEN
           |        IF expected_version = 0 THEN
           |            RAISE EXCEPTION 'Cannot undo event for non existing aggregate';
@@ -276,6 +310,7 @@ class PostgresEventStoreSchemaInitializer  {
           |    INSERT INTO noop_events (id, from_version) VALUES (event_id, current_version + 1);
           |    INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event, metadata) VALUES (event_id, user_id, _aggregate_id, event_time, current_version + 1, event_type_id, 0, event, metadata);
           |    INSERT INTO events_to_publish (event_id, aggregate_id, version, user_id, event_time) VALUES (event_id, _aggregate_id, current_version + 1, user_id, event_time);
+          |    INSERT INTO event_keys (id, type_id, space_id) VALUES (event_id, aggregate_type_id, _space);
           |    DELETE FROM snapshots WHERE aggregate_id = _aggregate_id;
           |    UPDATE aggregates SET history_generation = history_generation + 1 WHERE id = _aggregate_id AND base_id = _aggregate_id;
           |    RETURN current_version + 1;
@@ -324,6 +359,7 @@ class PostgresEventStoreSchemaInitializer  {
           |    event_id := nextval('events_seq');
           |    INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event, metadata) VALUES (event_id, user_id, aggregate_id, event_time, current_version + 1, event_type_id, 0, event, metadata);
           |    INSERT INTO events_to_publish (event_id, aggregate_id, version, user_id, event_time) VALUES (event_id, aggregate_id, current_version + 1, user_id, event_time);
+          |    INSERT INTO event_keys (id, type_id, space_id) VALUES (event_id, aggregate_type_id, new_space_id);
           |    RETURN current_version + 1;
           |END;
           |$$

@@ -330,10 +330,12 @@ run works in a new schema (`TestDatabase`).
 | Table | Columns / keys | Role |
 |---|---|---|
 | `events` (`:29-41`) | `id` (from `events_seq`) PK, `user_id`, `aggregate_id`, `event_time TIMESTAMP`, `version`, `event_type_id`, `event_type_version` (always 0, D29), `event TEXT`, since M3 `metadata JSONB` (the envelope, D32; null when none); indexes `(aggregate_id)`, `(aggregate_id, id)`, and `(aggregate_id, version)` built online by `buildIndexesConcurrently()` (F38) | append-only event log |
-| `aggregates` (`:103-115`) | PK `(id, base_id)`, `space_id`, `creation_time`, `type_id`, `base_order`, `base_id`, `base_version`, since M3 `squashed_version` (null unless squashed, D49), since M5 `history_generation` (F119); indexes `(type_id)`, `(base_id)` | one row per (aggregate, ancestor) in its duplication chain; the own row (`base_id = id`) holds the **current version** used for locking |
+| `aggregates` (`:103-115`) | PK `(id, base_id)`, `space_id`, `creation_time`, `type_id`, `base_order`, `base_id`, `base_version`, since M3 `squashed_version` (null unless squashed, D49), since M5 `history_generation` (F119); indexes `(type_id)`, `(base_id)`, and since M6 `(space_id)` (an organization's aggregates, built online on a large installation) | one row per (aggregate, ancestor) in its duplication chain; the own row (`base_id = id`) holds the **current version** used for locking |
 | `noop_events` (`:75-81`) | `id` (= `events.id`) PK, `from_version` | events cancelled by an undo, effective from that version |
 | `snapshots` (since M3) | `aggregate_id` PK, `version`, `context_version`, `schema_version`, `state TEXT`, `created` | the latest performance snapshot of an aggregate (D30, §4.3); disposable |
 | `events_to_publish` (`:83-101`) | `event_id` PK, `aggregate_id`, `version`, `user_id`, `event_time`; index `(aggregate_id, version)` | **outbox**: events not yet confirmed by every subscriber |
+| `event_keys` (since M6) | `id` PK (→ `events.id`, deleted with it), `type_id`, `space_id` of the event's aggregate; indexes `(type_id, id)`, `(space_id, type_id, id)` | the commit-order pass by type and organization (F124): written by the three procedures with each event; the rows from before by `backfillEventKeys()` |
+| `schema_steps` (since M6) | `name` PK, `completed` | online steps that have completed (D69): `event_keys` once every event has a key |
 | `types_names` (`TypesNamesState.scala`) | `id SMALLINT`, unique `name` | class-name ↔ id dictionary (aggregates, events, subscribers, responses) |
 | `commands_responses` (`CommandResponseState.scala`) | `id`, `key` (unique), `handling_timestamp` (indexed, for retention), `response`, `response_type_id`, and since 1.0 `info`, `info_type_id` (the info of a `CustomSuccessResponse`, F64) | idempotent responses (D12) |
 
@@ -949,7 +951,10 @@ handlers. It runs on the blocking dispatcher and reads synchronously on its own 
 
 1. **Bulk pass.** `readCommittedPage(types, after, limit, scope, maxBytes)` pages through the events of the plan's
    types in commit order (`events.id`, D59), each under its own aggregate (a duplicate's own
-   events, not its base's), undone events and undo events included (D60), with the aggregate's
+   events, not its base's); since M6 (F124) it reads only those events: through `event_keys`, one
+   index scan per type (in an organization, by its space), once every event has a key, and named
+   aggregates through `events (aggregate_id, id)`. Before the keys' backfill completed, it walks
+   `events` up to the page's last row, as before; undone events and undo events included (D60), with the aggregate's
    squash point. Consecutive rows of one aggregate with consecutive versions form a run; each
    run becomes one `ChunkItem` per listener kind, with the state after its last version for
    state listeners. `ReplayStates` keeps those states for at most `maxReplayStates` (10 000)

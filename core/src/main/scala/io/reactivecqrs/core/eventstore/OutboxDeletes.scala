@@ -45,7 +45,11 @@ private[eventstore] class OutboxDeletes(maxDelay: FiniteDuration, maxRows: Int)(
   private def scheduleFlush(after: FiniteDuration): Unit =
     if (flushScheduled.compareAndSet(false, true)) executor.schedule(flushTask, after.toMillis, TimeUnit.MILLISECONDS)
 
-  private def flush(): Unit = {
+  /** Deletes the rows that wait, on the caller's thread, after a flush already under way: a check of the outbox right
+    * after an acknowledgement then sees what the acknowledgement deleted (F143). */
+  def flushNow(): Unit = flush()
+
+  private def flush(): Unit = synchronized {
     flushScheduled.set(false) // rows added from here on schedule the next flush
     var batch = Vector[(Long, Int)]()
     var row = waiting.poll()
