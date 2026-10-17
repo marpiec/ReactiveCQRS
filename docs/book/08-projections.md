@@ -465,7 +465,8 @@ case GetCartSummaryAtLeast(cartId, version) =>
 `delayIfNotAvailable(respondTo, search, forMaximumMillis)` runs `search` at once. A `Some` goes to
 `respondTo` straight away. A `None` parks the query: the projection runs the search again after it
 applies updates, and answers as soon as it finds something. When 2 000 milliseconds pass without
-luck, it answers `None`. On the calling side:
+luck, it searches one last time and answers what it finds, `None` if still nothing. On the calling
+side:
 
 ```scala
 send(AddItem(alice, cartId, AggregateVersion(2), "bread")) match {
@@ -488,23 +489,18 @@ For a heavier search you can hand the work to a `Future`:
 
 | Method | `search` returns | The answer |
 |---|---|---|
-| `delayIfNotAvailable(respondTo, search, maxMillis)` | `Option[T]` | `Some(t)`, or `None` at the deadline |
-| `delayIfNotAvailableAsync(respondTo, search, maxMillis)` | `Future[Option[T]]` | `Some(t)`, or `None` at the deadline |
-| `delayIfNotAvailableAsyncCustom(respondTo, search, found, maxMillis)` | `Future[T]`, plus `found: T => Boolean` | the `T` once `found` says yes, or `None` at the deadline |
+| `delayIfNotAvailable(respondTo, search, maxMillis)` | `Option[T]` | `Some(t)`, or the last search's answer at the deadline |
+| `delayIfNotAvailableAsync(respondTo, search, maxMillis)` | `Future[Option[T]]` | `Some(t)`, or the last search's answer at the deadline |
+| `delayIfNotAvailableAsyncCustom(respondTo, search, found, maxMillis)` | `Future[T]`, plus `found: T => Boolean` | the `T` once `found` says yes, or the last search's `T` at the deadline |
 
 Each one also comes in a form that takes the deadline as an `Instant` instead of milliseconds. A
 search that throws, or a `Future` that fails, is answered with `Status.Failure`.
 
-> **Warning:** the custom variant answers with your `T` when it succeeds, but with `None` when time
-> runs out. The caller must be ready for both: a plain `mapTo[T]` fails on the `None`.
-
 > **Under the hood:** a parked query waits inside the projection (as a private `SyncDelayedQuery`,
 > `AsyncDelayedQuery` or `AsyncDelayedQueryCustom`; you never create those yourself). It is searched
-> again once per burst of applied updates, not once per update, and at its deadline it is answered
-> `None` without another search. The async variants park a query only once its `Future` has
-> answered, so an update applied while that `Future` ran is noticed only with the next update; for a
-> lookup by key, the plain variant is the safe choice. See
-> [ARCHITECTURE.md, section 6.5](../ARCHITECTURE.md).
+> again once per burst of applied updates, not once per update, and at its deadline it gets one last
+> search. An async search still running when an update is applied runs again once it answers, so
+> it never misses that update. See [ARCHITECTURE.md, section 6.5](../ARCHITECTURE.md).
 
 ## Options worth knowing
 

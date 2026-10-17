@@ -68,6 +68,31 @@ class TwiceListeningProjection(val subscriptionsState: SubscriptionsState) exten
   override protected val projectionName: String = "TwiceListeningProjection"
 }
 
+case class FindNoteVersion(id: AggregateId, waitMillis: Int)
+case class FindNoteVersionOrZero(id: AggregateId, waitMillis: Int)
+
+/** Each note's last version, in memory; its searches read at once and answer `searchMillis` later, so an update can be
+  * applied while a search is under way (F163). */
+class SearchedNotes(val subscriptionsState: SubscriptionsState, searchMillis: Long) extends ProjectionActor {
+  private val versions = new ConcurrentHashMap[AggregateId, Integer]()
+  private implicit val searches: scala.concurrent.ExecutionContext = context.dispatcher
+
+  protected val listeners = List(EventsListener.noDBSession[GateNote] { (id, events) => versions.put(id, events.last.version.asInt) })
+
+  private def search(id: AggregateId): () => scala.concurrent.Future[Option[Int]] = () => {
+    val found = Option(versions.get(id)).map(_.intValue)
+    scala.concurrent.Future { Thread.sleep(searchMillis); found }
+  }
+
+  override protected def receiveQuery: Receive = {
+    case FindNoteVersion(id, wait) => delayIfNotAvailableAsync[Int](sender(), search(id), wait)
+    case FindNoteVersionOrZero(id, wait) =>
+      delayIfNotAvailableAsyncCustom[Int](sender(), () => search(id)().map(_.getOrElse(0)), (version: Int) => version > 0, wait)
+  }
+
+  override protected val projectionName: String = "SearchedNotes"
+}
+
 /** A store whose failure records fail until `storable`, as during a database outage. */
 class UnstorableFailures extends MemorySubscriptionsState {
   @volatile var storable = false
@@ -565,6 +590,28 @@ class ProjectionDeliverySpec extends CommonSpec {
 
       f.events(id, 1)
       f.acked(id) mustBe Seq(1)
+    }
+
+    Scenario("a delayed query whose search is under way when the update is applied gets the update, not the deadline's answer (F163)") {
+      val bus = TestProbe()
+      val projection = system.actorOf(Props(new SearchedNotes(new MemorySubscriptionsState, searchMillis = 300)))
+      val (id, asker) = (newId(), TestProbe())
+
+      asker.send(projection, FindNoteVersion(id, 3000))
+      Thread.sleep(50) // the search has read, and answers later
+      bus.send(projection, IdentifiableEvents[GateNote](noteType, id, Seq(EventInfo[GateNote](AggregateVersion(1), GateNoteChanged(1), UserId(1), Instant.now))))
+
+      asker.expectMsg(2.seconds, Some(1))
+    }
+
+    Scenario("at its deadline a delayed query is answered with a last search; the custom one with what that search found, of its type (F163)") {
+      val projection = system.actorOf(Props(new SearchedNotes(new MemorySubscriptionsState, searchMillis = 10)))
+      val asker = TestProbe()
+
+      asker.send(projection, FindNoteVersionOrZero(newId(), 300))
+      asker.expectMsg(3.seconds, 0)
+      asker.send(projection, FindNoteVersion(newId(), 300))
+      asker.expectMsg(3.seconds, None)
     }
   }
 

@@ -26,8 +26,9 @@ sealed trait DelayedQuery {
   val respondTo: ActorRef
 }
 private case class SyncDelayedQuery(until: Instant, respondTo: ActorRef, search: () => Option[Any]) extends DelayedQuery
-private case class AsyncDelayedQuery(until: Instant, respondTo: ActorRef, search: () => Future[Option[Any]]) extends DelayedQuery
-private case class AsyncDelayedQueryCustom[T](until: Instant, respondTo: ActorRef, search: () => Future[T], found: T => Boolean) extends DelayedQuery
+/** `searchedAt`: the count of applied updates when its search began (F163). */
+private case class AsyncDelayedQuery(until: Instant, respondTo: ActorRef, search: () => Future[Option[Any]], searchedAt: Long) extends DelayedQuery
+private case class AsyncDelayedQueryCustom[T](until: Instant, respondTo: ActorRef, search: () => Future[T], found: T => Boolean, searchedAt: Long) extends DelayedQuery
 
 /** The aggregate types and listener kinds of a projection, one per listener: what a build delivers (D58). */
 case object GetListeners
@@ -455,12 +456,8 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       sender() ! FailedSubscriptionsRetried(count)
     case SkipFailedVersion(aggregateId) => sender() ! FailedSubscriptionsHandled(aggregateId, skipFailedVersions(aggregateId))
     case RetryNextFailure => retryNextFailure()
-    case q: AsyncDelayedQuery =>
-      delayedQueries ::= q
-      scheduleNearest()
-    case q: AsyncDelayedQueryCustom[_] =>
-      delayedQueries ::= q
-      scheduleNearest()
+    case q: AsyncDelayedQuery => parkOrSearchAgain(q, q.searchedAt)(delayIfNotAvailableAsync(q.respondTo, q.search, q.until))
+    case q: AsyncDelayedQueryCustom[_] => parkOrSearchAgain(q, q.searchedAt)(delayIfNotAvailableAsyncCustom(q.respondTo, q.search, q.found, q.until))
     case ReplayQueries =>
       queriesReplayRequested = false
       replayQueries()
@@ -1043,9 +1040,11 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
   private var delayedQueries = List[DelayedQuery]()
   private var queriesReplayRequested = false
+  private var updatesApplied = 0L // F163
 
   // F28: one replay of the waiting queries for a burst of applied updates, not one per update.
   private def requestQueriesReplay(): Unit = {
+    updatesApplied += 1
     if (delayedQueries.nonEmpty && !queriesReplayRequested) {
       queriesReplayRequested = true
       self ! ReplayQueries
@@ -1068,13 +1067,35 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
             case q: AsyncDelayedQueryCustom[_] => delayIfNotAvailableAsyncCustom(q.respondTo, q.search, q.found, q.until)
           }
         } else {
-          query.respondTo ! None
+          answerAtDeadline(query)
         }
       })
 
       scheduleNearest()
     }
   }
+
+  // F163: a search under way when an update was applied may have missed it, and no replay was asked for its query, which
+  // was not parked yet: it searches again.
+  private def parkOrSearchAgain(query: DelayedQuery, searchedAt: Long)(searchAgain: => Unit): Unit =
+    if (searchedAt < updatesApplied) searchAgain else {
+      delayedQueries ::= query
+      scheduleNearest()
+    }
+
+  // F163: at its deadline a query is answered with a last search, what an update with no replay for it may have changed;
+  // the custom variant answers what that search found, of its type, as on success.
+  private def answerAtDeadline(query: DelayedQuery): Unit = query match {
+    case q: SyncDelayedQuery => q.respondTo ! Try(q.search()).fold(Status.Failure(_), identity)
+    case q: AsyncDelayedQuery => answerWith(q.respondTo, q.search)
+    case q: AsyncDelayedQueryCustom[_] => answerWith(q.respondTo, q.search)
+  }
+
+  private def answerWith(respondTo: ActorRef, search: () => Future[Any]): Unit =
+    (try search() catch { case NonFatal(e) => Future.failed(e) }).onComplete {
+      case Success(result) => respondTo ! result
+      case Failure(e) => respondTo ! Status.Failure(e)
+    }(context.system.dispatcher)
 
 
   protected def delayIfNotAvailable[T](respondTo: ActorRef, search: () => Option[T], forMaximumMillis: Int): Unit = {
@@ -1103,17 +1124,19 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   }
 
   protected def delayIfNotAvailableAsync[T](respondTo: ActorRef, search: () => Future[Option[T]], until: Instant): Unit = {
+    val searchedAt = updatesApplied
     search().onComplete {
       case Success(result@Some(_)) => respondTo ! result
-      case Success(None) => self ! AsyncDelayedQuery(until, respondTo, search)
+      case Success(None) => self ! AsyncDelayedQuery(until, respondTo, search, searchedAt)
       case Failure(ex) => respondTo ! Status.Failure(ex)
     }(context.system.dispatcher)
   }
 
   protected def delayIfNotAvailableAsyncCustom[T](respondTo: ActorRef, search: () => Future[T], found: T => Boolean, until: Instant): Unit = {
+    val searchedAt = updatesApplied
     search().onComplete {
       case Success(result) if found(result) => respondTo ! result
-      case Success(result) => self ! AsyncDelayedQueryCustom[T](until, respondTo, search, found)
+      case Success(_) => self ! AsyncDelayedQueryCustom[T](until, respondTo, search, found, searchedAt)
       case Failure(ex) => respondTo ! Status.Failure(ex)
     }(context.system.dispatcher)
   }

@@ -1015,7 +1015,9 @@ not use the old build's stores), parked queries are answered with `None`, and it
 
 `delayIfNotAvailable[Async|AsyncCustom](respondTo, search, maxMillis)` answers when `search`
 succeeds, otherwise parks the query and re-runs it after applied updates (once per burst,
-F28) or at its deadline, then replies `None`. A search that throws is answered with the
+F28); at its deadline it answers a last search's result (the custom variant its `T`). An async
+search under way when an update is applied (counted, `updatesApplied`) runs again when it
+answers, rather than being parked (F163). A search that throws is answered with the
 failure (F80). This lets a caller query a document right after a command, before the
 projection has caught up.
 

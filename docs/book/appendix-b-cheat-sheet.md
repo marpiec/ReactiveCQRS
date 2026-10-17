@@ -159,9 +159,9 @@ call, with `sender()` as `respondTo`:
 
 | You call | The asker gets |
 |---|---|
-| `delayIfNotAvailable(respondTo, search, forMaximumMillis)`, with `search: () => Option[T]` | `Some(result)` as soon as `search` finds it (it runs again after each applied update); `None` when `forMaximumMillis` has passed; `Status.Failure(e)` if `search` throws |
+| `delayIfNotAvailable(respondTo, search, forMaximumMillis)`, with `search: () => Option[T]` | `Some(result)` as soon as `search` finds it (it runs again after each applied update); when `forMaximumMillis` has passed, the answer of one last search (`None` if still nothing); `Status.Failure(e)` if `search` throws |
 | `delayIfNotAvailableAsync(respondTo, search, forMaximumMillis)`, with `search: () => Future[Option[T]]` | The same |
-| `delayIfNotAvailableAsyncCustom(respondTo, search, found, forMaximumMillis)`, with `search: () => Future[T]` and `found: T => Boolean` | The result itself, a `T` (not wrapped), once `found(result)` is true; `None` at the deadline; `Status.Failure(e)` on a failure |
+| `delayIfNotAvailableAsyncCustom(respondTo, search, found, forMaximumMillis)`, with `search: () => Future[T]` and `found: T => Boolean` | The result itself, a `T` (not wrapped), once `found(result)` is true; at the deadline the `T` of one last search; `Status.Failure(e)` on a failure |
 
 ```scala
 override protected def receiveQuery: Receive = {

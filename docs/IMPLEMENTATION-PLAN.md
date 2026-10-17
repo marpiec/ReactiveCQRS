@@ -2129,3 +2129,9 @@ Open test-infrastructure items:
   `sendUpdate` pushes through it. Each subscription's filter runs on its own; an id used again
   replaces its subscription and tells the listener it replaced. `SubscribablePushSpec` (new, four
   scenarios, serial and parallel), red before the fix. Book: chapter 11.
+
+**17/10/2026: F163, delayed queries with a Future**
+- The projection counts applied updates; an async search that answers "not yet" after one was
+  applied runs again instead of being parked. At its deadline every delayed query gets a last
+  search, and the custom variant answers its `T` rather than `None`. `ProjectionDeliverySpec`
+  "F163" (two scenarios), red before the fix. Book: chapter 8 and appendix B.
