@@ -1708,3 +1708,10 @@ Open test-infrastructure items:
   nodes. The table is ARCHITECTURE §14. Tracing stays with the metadata envelope (R13).
 - Test: `MetricsSpec` (a running system; red when the host's metrics are not used). `sbt test`: core 260,
   testdomain 156.
+
+**17/10/2026: Scala 3 groundwork (D75)**
+- `StoredDataCheck.ProjectionTable` takes a `ClassTag` and reads by class name. What still uses
+  Scala 2's `TypeTag` is bound to mpjsons, which reads by it: the document store's typed reads and
+  `SubscribableProjectionActor`'s update keys (a `ClassTag` would erase type arguments and mix the
+  subscriptions of `List[A]` and `List[B]`). They move when mpjsons is replaced, a step of its own
+  after 1.0 (recorded with D75). `StoredDataCheckSpec` passes.

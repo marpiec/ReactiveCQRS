@@ -70,7 +70,8 @@ node A                                         node B
 8. **Metrics (D56, R19)** with a no-op default (done).
 9. **Flow control (F93)** (done, with the issues the high-load analysis found: F121 messages that fit the
    frame, F122 and F123 in the outbox poller, F126 batches by bytes).
-10. **Scala 3 groundwork (D75)**: the remaining `TypeTag` uses.
+10. **Scala 3 groundwork (D75)**: the remaining `TypeTag` uses (done for `StoredDataCheck`; the document
+    store and `SubscribableProjectionActor` stay with mpjsons, which reads by `TypeTag`, until it is replaced).
 
 Each step ends with `sbt test` green, the docs updated and a commit; the plan's M5 verification
 follows.

@@ -6,7 +6,7 @@ import io.reactivecqrs.core.types.TypesNamesState
 import scalikejdbc._
 
 import scala.collection.mutable
-import scala.reflect.runtime.universe._
+import scala.reflect.{ClassTag, classTag}
 import scala.util.{Failure, Success, Try}
 
 /**
@@ -24,9 +24,9 @@ import scala.util.{Failure, Success, Try}
 object StoredDataCheck {
 
   /** A projection table, named as its document store was (without the `projection_` prefix), with its document class. */
-  case class ProjectionTable[T <: AnyRef: TypeTag](name: String) {
-    private[tools] def read(mpjsons: MPJsons, json: String): Unit = mpjsons.deserialize[T](json)
-    private[tools] def className: String = typeOf[T].dealias.typeSymbol.fullName
+  case class ProjectionTable[T <: AnyRef: ClassTag](name: String) {
+    private[tools] def read(mpjsons: MPJsons, json: String): Unit = mpjsons.deserialize[T](json, className)
+    private[tools] def className: String = classTag[T].runtimeClass.getName // D75: by class, not by Scala 2 reflection
   }
 
   case class ClassResult(table: String, className: String, rows: Long, unreadable: Long, examples: Seq[String])
