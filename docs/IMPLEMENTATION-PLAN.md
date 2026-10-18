@@ -2256,3 +2256,9 @@ Open test-infrastructure items:
   (`WithMetadata`: the actor, the case as correlation id, the W3C trace context); a read of the history
   and an audit-trail projection read it from each event, and an event stored without one reads as
   its user. A runnable main and `MetadataSpec`.
+
+**18/10/2026: E8, ephemeral aggregates**
+- E8 (`examples/.../e8`, on E5's shopping lists): an ephemeral bus next to the type's bus; a draft list
+  under a negative id with nothing in `events`, materialized from the type's squash event into a stored
+  list at version 1, after which the draft's id is `EphemeralAggregateUnknown`. A runnable main and
+  `DraftsSpec`.
