@@ -2268,3 +2268,10 @@ Open test-infrastructure items:
   empty space of the same installation, where every id it brings is taken and moves (`SpaceImport`,
   `remapped`), and purged (`SpacePurge`; `StoredDataCheck.spaceRows` counts nothing left), the other
   organization as it was. A runnable main and `OrganizationsSpec`.
+
+**18/10/2026: E10, rebuilding projections**
+- E10 (`examples/.../e10`, on E1's carts): `CartNames`, a managed projection, released at version 1 and
+  then at version 2 (names in capitals), each release in an actor system of its own as a redeploy
+  starts the application again. Version 2 is built in tables of its own while version 1 serves, and
+  takes over (`GetBuilds`); a cart's document damaged by hand-written SQL is repaired by
+  `RebuildAggregates(OneAggregate)`. A runnable main and `RebuildSpec`, also as a cluster of one.
