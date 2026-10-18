@@ -2250,3 +2250,9 @@ Open test-infrastructure items:
   give five tickets and three "Sold out"; sixty at once overflow the queue of twenty, the rest
   answered `CommandRejected`), and each booking's ticket row written with its event (`WithOutboxWriter`).
   A runnable main and `CommandsSpec`, stable over three runs and as a cluster of one.
+
+**18/10/2026: E7, metadata**
+- E7 (`examples/.../e7`): a support ticket opened by a user and noted by an assistant with an envelope
+  (`WithMetadata`: the actor, the case as correlation id, the W3C trace context); a read of the history
+  and an audit-trail projection read it from each event, and an event stored without one reads as
+  its user. A runnable main and `MetadataSpec`.
