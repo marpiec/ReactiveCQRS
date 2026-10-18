@@ -133,8 +133,16 @@ Fixes from [the risk assessment of 1.0.0](docs/RISK-ASSESSMENT.md), in the order
   - Smaller: draft responses kept for `idleTime`; size markers answered by the saga runner and projections; a refused
     rewrite without events answered at once; document-cache clears also after the commit; cached push updates replayed
     by type.
-  - Left open, each with its reason in KNOWN-ISSUES: F202 (a workaround in chapter 10), F227, F238, F239, F241, F242,
-    F243, F262, F274.
+  - Left open, each with its reason in KNOWN-ISSUES: F238, F239, F243, F274.
+- **Quick wins among the findings left open** (F202, F217, F227, F241, F242, F262, chapters 10, 11 and 16):
+  - After a rollback that abandons a `ServeStale` build, the active build catches up by itself with what was committed
+    meanwhile; `RebuildAggregates` is no longer needed.
+  - **Upgrade step:** run `PostgresDocumentStore.buildSpaceIndexesConcurrently()` once, in the background, so a purge
+    or rebuild of one organization no longer scans whole document tables; new tables get the index as they are made.
+  - **Changed:** only a push subscription's own listener renews or cancels it; a persistent command bus refuses a
+    `StoreFirstEvent` that does not come from a materialization.
+  - `afterCommit` in a listener's first part waits for the commit of its second; an oversized message between nodes
+    is written no further than the limit.
 
 ## 1.0.0 (18/10/2026)
 

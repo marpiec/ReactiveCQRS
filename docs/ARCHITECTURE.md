@@ -1311,7 +1311,8 @@ suffix, its class name as subscriber, D81): at the version `components_versions`
 instance (a child) per build it needs: the active build, and the build in progress. A build
 starts when the code's version differs from the active build's, when the version of a context
 whose states the projection receives differs from the one the active build recorded (D63), or
-on `RebuildProjection`; a build of a version the code no longer has is abandoned and dropped.
+on `RebuildProjection`; a build of a version the code no longer has is abandoned and dropped. When the active build
+served unchanged meanwhile (`ServeStale`), it then catches up through a reconciliation-only builder (F202).
 It binds each instance to its build (`BindSubscriber`), subscribes the instances that take
 deliveries (`ConnectedTo`, answering the bus's `GetSubscriptionRequests`, or `AddSubscriptions`
 once the bus runs), puts the build in progress into `BuildFromStore`, and runs its

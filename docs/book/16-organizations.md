@@ -275,13 +275,18 @@ other production steps; here is what they mean for organizations.
 
    <!-- snippet: e9/OrganizationsSpec.scala#buildIndexes -->
    ```scala
+   import io.reactivecqrs.core.documentstore.PostgresDocumentStore
+
    eventStore.buildIndexesConcurrently()
+   PostgresDocumentStore.buildSpaceIndexesConcurrently()
    ```
 
-   It builds the index restores read through, and the one that finds an organization's aggregates,
-   with PostgreSQL's `CREATE INDEX CONCURRENTLY`. It does nothing when they exist, and builds again
-   an index that an interrupted run left invalid. (A new or small database gets them as its schema is
-   created.)
+   The first builds the index restores read through, and the one that finds an organization's
+   aggregates, with PostgreSQL's `CREATE INDEX CONCURRENTLY`. The second does the same for the
+   document tables: each gets an index on its space, by which a purge and a rebuild of one
+   organization clear it. Both do nothing when the indexes exist, and build again an index that an
+   interrupted run left invalid. (A new or small database gets them as its schema is created, and a
+   new document table as it is created.)
 
 3. **Give old aggregates their space:**
 
@@ -543,8 +548,8 @@ to look at; they are left as they are.
 - Keep the space in the state when a squash event or a state-listening projection needs it.
 - Documents carry the space (`insertDocument(space.asLong, key, document)`), so one organization's
   documents can be cleared (`clearSpace`) and rebuilt (`RebuildAggregates(RebuildTarget.OneSpace(space))`).
-- An installation with older data runs `buildIndexesConcurrently`, `backfillSpaces` and
-  `backfillEventKeys` once, online.
+- An installation with older data runs `buildIndexesConcurrently`, `buildSpaceIndexesConcurrently`,
+  `backfillSpaces` and `backfillEventKeys` once, online.
 - `SpacePurge` removes an organization: it checks first, detaches other organizations' copies,
   deletes in small transactions with your `PurgeHook`s, clears the projections, and reports; run it
   again until `complete`, and verify with `StoredDataCheck.spaceRows`.

@@ -12,6 +12,33 @@ import io.reactivecqrs.core.util.SqlLogging.withoutValues
 
 object PostgresDocumentStoreTrait {
   private[documentstore] val log = org.slf4j.LoggerFactory.getLogger(classOf[PostgresDocumentStore[_]])
+
+  /** F217: the index on `space_id` of `table`, with whether it is valid; none when the table has none. */
+  private[documentstore] def spaceIndexes(table: String)(implicit session: DBSession): List[(String, Boolean)] =
+    sql"""SELECT c.relname, i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+         | JOIN pg_class t ON t.oid = i.indrelid JOIN pg_namespace n ON n.oid = t.relnamespace
+         | JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = i.indkey[0]
+         | WHERE t.relname = $table AND n.nspname = current_schema() AND i.indnatts = 1 AND i.indexprs IS NULL
+         | AND a.attname = 'space_id'""".stripMargin.map(rs => (rs.string(1), rs.boolean(2))).list()
+}
+
+/** The document tables' tools. */
+object PostgresDocumentStore {
+
+  /** F217: gives each document table of the current schema without one an index on `space_id`, by which an
+    * organization's purge and targeted rebuild delete, built with `CREATE INDEX CONCURRENTLY`, so writes go on. A table
+    * gets it as it is created; run this once, in the background, for tables created before 1.0.1. An index that an
+    * interrupted build left invalid is built again. Returns the tables it indexed. */
+  def buildSpaceIndexesConcurrently(): Seq[String] = DB.autoCommit { implicit session =>
+    val tables = sql"""SELECT table_name FROM information_schema.columns WHERE table_schema = current_schema() AND column_name = 'space_id'"""
+      .map(_.string(1)).list().filter(table => table.startsWith("projection_") && table.matches("[a-z0-9_]+"))
+    tables.filterNot(table => PostgresDocumentStoreTrait.spaceIndexes(table).exists(_._2)).map { table =>
+      PostgresDocumentStoreTrait.spaceIndexes(table).foreach { case (invalid, _) => SQL(s"DROP INDEX CONCURRENTLY IF EXISTS $invalid").execute.apply() }
+      PostgresDocumentStoreTrait.log.info("Building an index on space_id of " + table)
+      SQL(s"CREATE INDEX CONCURRENTLY ON $table (space_id)").execute.apply()
+      table
+    }
+  }
 }
 
 sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
@@ -43,7 +70,12 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
   init()
 
   protected def init(): Unit = SchemaLock {
-    DB.autoCommit(implicit session => createTableIfNotExists())
+    DB.autoCommit { implicit session =>
+      val existed = Ddl.has(projectionTableName)
+      createTableIfNotExists()
+      // F217: a new table is indexed at once; an older one by `PostgresDocumentStore.buildSpaceIndexesConcurrently`.
+      if (!existed && PostgresDocumentStoreTrait.spaceIndexes(projectionTableName).isEmpty) sql"""CREATE INDEX ON $tableNameSQL (space_id)""".execute()
+    }
     // F43: the columns change in one transaction; F185: only when they are not as they should be (Ddl).
     Ddl.change("migrating " + projectionTableName,
       implicit session => Ddl.hasColumn(projectionTableName, "space_id") && !Ddl.hasColumn(projectionTableName, "metadata")) { implicit session =>

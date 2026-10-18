@@ -283,13 +283,18 @@ zobaczysz, co znaczą dla organizacji.
 
    <!-- snippet: e9/OrganizationsSpec.scala#buildIndexes -->
    ```scala
+   import io.reactivecqrs.core.documentstore.PostgresDocumentStore
+
    eventStore.buildIndexesConcurrently()
+   PostgresDocumentStore.buildSpaceIndexesConcurrently()
    ```
 
-   Buduje indeks, przez który czyta odtwarzanie agregatów, i indeks, który znajduje agregaty
-   organizacji, poleceniem PostgreSQL `CREATE INDEX CONCURRENTLY`. Gdy indeksy już istnieją, nic nie
-   robi, a indeks, który przerwane uruchomienie zostawiło jako nieprawidłowy, buduje od nowa. (Nowa
-   albo mała baza danych dostaje je przy tworzeniu schematu.)
+   Pierwsze wywołanie buduje indeks, przez który czyta odtwarzanie agregatów, i indeks, który
+   znajduje agregaty organizacji, poleceniem PostgreSQL `CREATE INDEX CONCURRENTLY`. Drugie robi to
+   samo dla tabel dokumentów: każda dostaje indeks na przestrzeni, po której czyszczą ją usunięcie i
+   przebudowa jednej organizacji. Gdy indeksy już istnieją, oba nic nie robią, a indeks, który
+   przerwane uruchomienie zostawiło jako nieprawidłowy, budują od nowa. (Nowa albo mała baza danych
+   dostaje je przy tworzeniu schematu, a nowa tabela dokumentów przy swoim utworzeniu.)
 
 3. **Nadaj starym agregatom przestrzeń:**
 
@@ -560,8 +565,8 @@ Przejrzyj je; import zostawia je takie, jakie są.
 - Dokumenty niosą przestrzeń (`insertDocument(space.asLong, key, document)`), więc dokumenty jednej
   organizacji można wyczyścić (`clearSpace`) i przebudować
   (`RebuildAggregates(RebuildTarget.OneSpace(space))`).
-- Instalacja ze starszymi danymi uruchamia raz, online, `buildIndexesConcurrently`, `backfillSpaces`
-  i `backfillEventKeys`.
+- Instalacja ze starszymi danymi uruchamia raz, online, `buildIndexesConcurrently`,
+  `buildSpaceIndexesConcurrently`, `backfillSpaces` i `backfillEventKeys`.
 - `SpacePurge` usuwa organizację: najpierw sprawdza, odłącza kopie należące do innych organizacji,
   usuwa w małych transakcjach razem z twoimi `PurgeHook`, czyści projekcje i składa raport;
   uruchamiaj je ponownie aż do `complete` i sprawdź wynik przez `StoredDataCheck.spaceRows`.

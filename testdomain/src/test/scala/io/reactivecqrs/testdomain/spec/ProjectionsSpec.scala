@@ -362,7 +362,7 @@ class ProjectionsSpec extends CommonSpec {
       second.send(AddBuildNoteLine(userId, a, AggregateVersion(2), "two"))
       awaitAssert(linesOf(v2, a).map(_.lines.map(_.toLowerCase)) mustBe Some(Vector("one", "two")), 10.seconds)
       DB.readOnly(implicit s => sql"SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema() AND tablename = 'projection_m4p_index_v1'"
-        .map(_.int(1)).single().get) mustBe 1 // its primary key only
+        .map(_.int(1)).single().get) mustBe 2 // its primary key and its space_id index (F217) only
       second.stop()
     }
 
@@ -524,6 +524,34 @@ class ProjectionsSpec extends CommonSpec {
       switchedTo(supervisor, 2)
       awaitAssert(linesOf(supervisor, note) mustBe Some(NoteLines("note", Vector("one", "two"))), 10.seconds)
       node.stop()
+    }
+
+    Scenario("F202 after a rollback abandons a build that the active one served unchanged for, the active one catches up") {
+      Given("version 1 live, serving stale while version 2 is built, and a note changed meanwhile")
+      var v1: ActorRef = null
+      val first = new Node()(projections => { v1 = notesProjection(projections, "m4p-rollback", 1, "m4p_rollback", whileBuilding = ServeStale); Seq(v1) })
+      val note = first.create("note", "one")
+      switchedTo(v1, 1)
+      awaitAssert(linesOf(v1, note) mustBe Some(NoteLines("note", Vector("one"))), 10.seconds)
+      (1 to 100).foreach(i => first.create("filler " + i))
+      first.stop()
+      var v2: ActorRef = null
+      val second = new Node(settings = BuilderSettings(pageSize = 1, chunkEvents = 1))(projections => {
+        v2 = notesProjection(projections, "m4p-rollback", 2, "m4p_rollback", whileBuilding = ServeStale, buildDelayMillis = 30); Seq(v2)
+      })
+      awaitAssert(builds(v2).building.map(_.number) mustBe Some(2), 10.seconds)
+      second.send(AddBuildNoteLine(userId, note, AggregateVersion(2), "two"))
+      Thread.sleep(500)
+      linesOf(v2, note) mustBe Some(NoteLines("note", Vector("one"))) // served unchanged
+      second.stop()
+
+      When("the code goes back to version 1")
+      var back: ActorRef = null
+      val third = new Node()(projections => { back = notesProjection(projections, "m4p-rollback", 1, "m4p_rollback", whileBuilding = ServeStale); Seq(back) })
+
+      Then("version 1 serves, with the change it missed")
+      awaitAssert(linesOf(back, note) mustBe Some(NoteLines("note", Vector("one", "two"))), 20.seconds)
+      third.stop()
     }
 
     Scenario("a projection 0.12 built is adopted with its tables and subscription rows, not built again (D81)") {

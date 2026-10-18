@@ -183,7 +183,7 @@ Messages from `io.reactivecqrs.core.projection.SubscribableProjectionActor._`.
 |---|---|
 | Your own subscribe message, which the projection handles in `receiveSubscriptionRequest` by calling `handleSubscribe(subscriptionId, listener, filter)` | The listener gets `SubscribedForProjectionUpdates(subscriptionId)`, then `SubscriptionUpdated(subscriptionId, data)` for every update (`sendUpdate`) the filter turns into `Some(data)` |
 | `RenewSubscription(subscriptionId)` | Nothing while the projection knows the subscription; `ProjectionSubscriptionsCancelled(List(subscriptionId))` when it does not (subscribe again) |
-| `CancelProjectionSubscriptions(subscriptions)` | `ProjectionSubscriptionsCancelled(subscriptions)` |
+| `CancelProjectionSubscriptions(subscriptions)` | `ProjectionSubscriptionsCancelled(subscriptions)`, without those of another subscriber, which stay |
 
 A push subscription that is not renewed for 10 minutes expires.
 

@@ -2720,3 +2720,13 @@ Open test-infrastructure items:
   small changes).
 - Left open, each with its reason in KNOWN-ISSUES: F202 (workaround in chapter 10), F227, F238, F239, F241, F242, F243,
   F262, F274. Still open from the plan: F215, F217 (part), F270, F271 (documented).
+
+
+**18/10/2026: the quick wins among the findings left open**
+- Fixed: F202 (the active build catches up by itself after a `ServeStale` rollback), F227 (a message is written no
+  further than the limit), F241 (only a subscription's listener renews or cancels it), F242 (`StoreFirstEvent` only
+  through a materialization), F262 (`afterCommit` in a listener's first part waits for the commit), and F217's
+  `space_id` index (new document tables get it; `PostgresDocumentStore.buildSpaceIndexesConcurrently()` for older
+  ones). Each with a test red under a mutation, except F227 (a memory property).
+- Still open, each with its reason in KNOWN-ISSUES: F215, F217 (the paging of the reset and the drop), F238, F239,
+  F243, F270, F271, F274.

@@ -271,9 +271,9 @@ Obie wartości znajdziesz w `io.reactivecqrs.core.rebuild.ProjectionSupervisor`.
 
 > **Ostrzeżenie:** przy `ServeStale` aktywna budowa nie przyjmuje zdarzeń, dopóki buduje się nowa. Jeśli
 > przed przełączeniem wrócisz do starszego kodu, nowa budowa zostanie porzucona, a aktywna znów obsłuży
-> zdarzenia na żywo, ale bez tego, co zatwierdzono w międzyczasie: agregat nadrobi to dopiero przy
-> swoim następnym zdarzeniu. Po takim powrocie wyślij `RebuildAggregates(RebuildTarget.OneType(...))`
-> dla każdego typu projekcji.
+> zdarzenia na żywo. Sama nadrobi wtedy to, co zatwierdzono w międzyczasie, przez uzgadnianie każdego
+> agregatu swoich typów; dopóki ono trwa, agregat zmieniony w międzyczasie może być jeszcze podawany w
+> starej postaci. Nie musisz niczego wysyłać.
 
 > **Wskazówka:** funkcja dostaje budowę, a budowa zna własną wersję (`build.version`). Instancja
 > zrobiona dla aktywnej budowy wersji 1 zachowuje się jak wersja 1, dopóki buduje się wersja 2.

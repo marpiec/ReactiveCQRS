@@ -101,13 +101,14 @@ class ClusterSerializerSpec extends AnyFeatureSpec with Matchers with BeforeAndA
 
   Feature("Messages larger than a message between nodes may be (F121)") {
 
-    Scenario("one larger than the limit is read on the receiving node as a failure naming its class and size") {
+    Scenario("one larger than the limit is read on the receiving node as a failure naming its class, written no further than the limit (F227)") {
       val serializer = new ClusterSerializer(smallFrame)
       val large = OldShape(1, "x" * 100000, Nil)
       val size = serializer.sizeOf(large)
       size must be > 100000
       serializer.fromBinary(serializer.toBinary(large), classOf[OldShape].getName) match {
-        case Status.Failure(e: MessageTooLargeException) => (e.className, e.size, e.limit) mustBe ((classOf[OldShape].getName, size, 56 * 1024))
+        // F227: written only up to the limit, so the size it names is "more than the limit"
+        case Status.Failure(e: MessageTooLargeException) => (e.className, e.size, e.limit) mustBe ((classOf[OldShape].getName, 56 * 1024 + 1, 56 * 1024))
         case other => fail("Not a failure: " + other)
       }
       val fitting = OldShape(1, "x" * 1000, Nil)

@@ -93,7 +93,10 @@ class OrganizationsSpec extends CommonSpec {
         report.aggregatesWithoutSpace mustBe 0L
 
         // #buildIndexes
+        import io.reactivecqrs.core.documentstore.PostgresDocumentStore
+
         eventStore.buildIndexesConcurrently()
+        PostgresDocumentStore.buildSpaceIndexesConcurrently()
         // #buildIndexes
 
         // #backfillSpaces

@@ -63,6 +63,10 @@ object AggregateCommandBusActor {
                            token: Option[Long] = None, ids: Long = EphemeralBlock)
   private case object SweepIdle
 
+  /** D77, F242: a materialization's first event, as an ephemeral aggregate's owner sends it to the persistent bus. A
+    * persistent bus stores a `StoreFirstEvent` only so: one sent on its own is refused, as it skips the command handlers. */
+  private[reactivecqrs] case class StoreMaterialized(store: StoreFirstEvent[_])
+
   /** D77: ephemeral aggregate ids are `-(token × 2^24 + n)`: |id| stays below 2^53 (D39). */
   private[reactivecqrs] val EphemeralBlock: Long = 1L << 24
 
@@ -205,6 +209,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   }
 
   private val main: Receive = {
+    case StoreMaterialized(store) => withIds(store, sender())
+    case _: StoreFirstEvent[_] => sender() ! FailureResponse(List("StoreFirstEvent is taken only from an ephemeral command bus's materialization (F242)"))
     case c @ (_: FirstCommand[_, _] | _: ConcurrentCommand[_, _] | _: RewriteHistoryCommand[_, _] | _: RewriteHistoryConcurrentCommand[_, _] |
               _: Command[_, _] | ReserveAggregateId) => withIds(c, sender())
     case NewAggregatesIdsPool(from, size) => aggregateIds.received(from, size); serveWaiting(); askForIds()

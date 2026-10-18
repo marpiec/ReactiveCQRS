@@ -8,7 +8,7 @@ import io.reactivecqrs.api.id.{AggregateId, AggregateIdWithVersion, CommandId, S
 import io.reactivecqrs.core.aggregate.AggregateOwner._
 import io.reactivecqrs.core.aggregate.SquashScheduler.{GetSquashStatus, SquashStatus}
 import io.reactivecqrs.core.cluster.{ClusterSerialization, ClusterSerializer, RemoteFailure}
-import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.PassivateAggregate
+import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{PassivateAggregate, StoreMaterialized}
 import io.reactivecqrs.core.delivery.OutboxPollerActor.{GetOutboxStatus, OutboxStatus}
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
@@ -97,7 +97,7 @@ class ClusterSerializationSpec extends AnyFeatureSpec with Matchers with Eventua
         Rewrite(ref, RewriteEverywhere(id, EraseNote("secret"), UserId(1))), HistoryRewritten(id, 2, 1, Set("notes", "text")), RewriteRefused(id, "D17"),
         MaterializeOwner(ref, Materialize(AggregateId(-5), UserId(1))), Materialized(AggregateId(-5), id), MaterializeRefused(AggregateId(-5), "no"),
         EphemeralMaterialized(AggregateId(-5)), EphemeralAggregateLost(AggregateId(-5)), EphemeralAggregateUnknown(AggregateId(-6)),
-        StoreFirstEvent[ShoppingCart](UserId(1), CartSquashed(SpaceId(0), "cart", Vector(Item(1, "apple"))), Some(MaterializationKey(AggregateId(-5), "start")))
+        StoreMaterialized(StoreFirstEvent[ShoppingCart](UserId(1), CartSquashed(SpaceId(0), "cart", Vector(Item(1, "apple"))), Some(MaterializationKey(AggregateId(-5), "start"))))
       ).foreach(message => roundTrip(message) mustBe message)
     }
 

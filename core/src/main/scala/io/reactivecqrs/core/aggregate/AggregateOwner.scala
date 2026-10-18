@@ -6,7 +6,7 @@ import java.time.temporal.ChronoUnit
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.cluster.Members
-import io.reactivecqrs.core.commandhandler.{Idempotency, IdempotencyKeyRefused, IdempotencyKeyTakenException}
+import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, Idempotency, IdempotencyKeyRefused, IdempotencyKeyTakenException}
 import io.reactivecqrs.core.delivery.{NothingToRepublish, RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
 import io.reactivecqrs.core.eventstore.{EventStoreState, HistoryChangedException, NewEvents}
@@ -819,7 +819,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
 
   private def sendMaterialize(under: Materializing): Unit = {
     implicit val timeout: Timeout = Timeout(commandTimeout)
-    (materializeTo.get ? under.request).recover { case e => e }(handlersContext).foreach(answer => self ! MaterializeAnswer(answer))(handlersContext)
+    (materializeTo.get ? AggregateCommandBusActor.StoreMaterialized(under.request)).recover { case e => e }(handlersContext).foreach(answer => self ! MaterializeAnswer(answer))(handlersContext)
   }
 
   private def materializeAnswered(answer: Any): Unit = materializing.foreach { under =>

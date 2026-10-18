@@ -240,6 +240,25 @@ class PostgresDocumentStoreSpec extends AnyFeatureSpec with GivenWhenThen with B
     }
   }
 
+  Feature("The index on space_id (F217)") {
+    Scenario("F217 a new table gets it; an older one gets it from the tool, built concurrently, once") {
+      val store = new PostgresDocumentStore[Label]("f217_spaces", mpjsons, new NoopDocumentStoreCache)
+      try {
+        def indexes = DB.readOnly(implicit session => PostgresDocumentStoreTrait.spaceIndexes("projection_f217_spaces"))
+        indexes.map(_._2) mustBe List(true)
+
+        Given("a table created before 1.0.1, without it")
+        DB.autoCommit(implicit session => SQL("DROP INDEX " + indexes.head._1).execute.apply())
+        indexes mustBe empty
+
+        Then("the tool builds it, and leaves it the next time")
+        PostgresDocumentStore.buildSpaceIndexesConcurrently() must contain("projection_f217_spaces")
+        indexes.map(_._2) mustBe List(true)
+        PostgresDocumentStore.buildSpaceIndexesConcurrently() must not contain "projection_f217_spaces"
+      } finally store.dropTable()
+    }
+  }
+
   Feature("Indexes whose definition changed (F171)") {
     def definitionOf(index: String): Option[String] = DB.readOnly { implicit session =>
       SQL(s"SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND indexname = '$index'").map(_.string(1)).single()

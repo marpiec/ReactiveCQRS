@@ -187,7 +187,7 @@ Komunikaty z `io.reactivecqrs.core.projection.SubscribableProjectionActor._`.
 |---|---|
 | Twój własny komunikat subskrypcji, który projekcja obsługuje w `receiveSubscriptionRequest`, wywołując `handleSubscribe(subscriptionId, listener, filter)` | Listener dostaje `SubscribedForProjectionUpdates(subscriptionId)`, a potem `SubscriptionUpdated(subscriptionId, data)` przy każdej aktualizacji (`sendUpdate`), którą filtr zamieni w `Some(data)` |
 | `RenewSubscription(subscriptionId)` | Nic, dopóki projekcja zna subskrypcję; `ProjectionSubscriptionsCancelled(List(subscriptionId))`, gdy jej nie zna (zasubskrybuj ponownie) |
-| `CancelProjectionSubscriptions(subscriptions)` | `ProjectionSubscriptionsCancelled(subscriptions)` |
+| `CancelProjectionSubscriptions(subscriptions)` | `ProjectionSubscriptionsCancelled(subscriptions)`, bez subskrypcji innego subskrybenta, które zostają |
 
 Subskrypcja push, której nikt nie odnowi przez 10 minut, wygasa.
 

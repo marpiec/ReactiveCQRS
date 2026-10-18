@@ -257,6 +257,10 @@ Subscriptions live in the projection's memory, not in the database, and they do 
 - **`CancelProjectionSubscriptions(ids)`** ends subscriptions and is answered with
   `ProjectionSubscriptionsCancelled(ids)`. Ids the projection does not know are simply ignored. The
   session sends it as it stops, so the answer goes nowhere, which is fine.
+- Only a subscription's own subscriber (the `listener` it was registered with) renews or cancels it.
+  Anyone else's `RenewSubscription` is answered as for an unknown id, and its cancel leaves the
+  subscription alone and leaves its id out of the answer. So an actor that learnt another user's
+  subscription id cannot end that user's updates.
 
 The time to live is a constructor parameter of `SubscribableProjectionActor`, in milliseconds, which
 the live carts pass on. For 5 minutes instead of 10:

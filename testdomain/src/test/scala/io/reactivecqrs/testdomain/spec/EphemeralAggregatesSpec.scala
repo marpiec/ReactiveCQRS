@@ -5,7 +5,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 import java.time.Instant
 
-import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{EphemeralBlock, EphemeralMode}
+import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.{EphemeralBlock, EphemeralMode, StoreMaterialized}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, MemoryCommandResponseState, PostgresCommandResponseState}
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
@@ -131,7 +131,7 @@ class EphemeralAggregatesSpec extends CommonSpec {
       val requester = TestProbe()
 
       requester.send(drafts, Materialize(id, user))
-      persistent.expectMsgType[StoreFirstEvent[ShoppingCart]](5.seconds).idempotencyId.map(_.ephemeralId) mustBe Some(id)
+      persistent.expectMsgType[StoreMaterialized](5.seconds).store.idempotencyId.map(_.ephemeralId) mustBe Some(id)
       send(drafts, AddItem(user, id, AggregateVersion(1), "meanwhile")) mustBe a[CommandRejected]
       persistent.reply(FailureResponse(List("refused")))
       requester.expectMsgType[MaterializeRefused](5.seconds).reason must include("refused")
@@ -139,18 +139,26 @@ class EphemeralAggregatesSpec extends CommonSpec {
       And("refused, it stays and takes commands again; stored, it is dropped")
       send(drafts, AddItem(user, id, AggregateVersion(1), "after")) mustBe SuccessResponse(id, AggregateVersion(2))
       requester.send(drafts, Materialize(id, user))
-      persistent.expectMsgType[StoreFirstEvent[ShoppingCart]](5.seconds)
+      persistent.expectMsgType[StoreMaterialized](5.seconds)
       persistent.reply(SuccessResponse(AggregateId(77), AggregateVersion(1)))
       requester.expectMsg(5.seconds, Materialized(id, AggregateId(77)))
       awaitAssert(send(drafts, AddItem(user, id, AggregateVersion(2), "x")) mustBe EphemeralAggregateUnknown(id), 5.seconds, 50.millis)
       system.stop(drafts)
     }
 
+    Scenario("F242 a StoreFirstEvent sent on its own, not by a materialization, is refused") {
+      val key = Some(MaterializationKey(AggregateId(-TestIds.aggregate()), "start"))
+      send(carts, StoreFirstEvent[ShoppingCart](user, CartSquashed(SpaceId(0), "Forged", Vector.empty), key)) match {
+        case FailureResponse(reasons) => reasons.mkString must include("F242")
+        case other => fail("Not refused: " + other)
+      }
+    }
+
     Scenario("a materialization is stored once however often it is sent, and refused without a squash event") {
       val key = Some(MaterializationKey(AggregateId(-TestIds.aggregate()), "start"))
-      val first = send(carts, StoreFirstEvent[ShoppingCart](user, CartSquashed(SpaceId(0), "Twice", Vector.empty), key))
+      val first = send(carts, StoreMaterialized(StoreFirstEvent[ShoppingCart](user, CartSquashed(SpaceId(0), "Twice", Vector.empty), key)))
       first mustBe a[SuccessResponse]
-      send(carts, StoreFirstEvent[ShoppingCart](user, CartSquashed(SpaceId(0), "Twice", Vector.empty), key)) mustBe first
+      send(carts, StoreMaterialized(StoreFirstEvent[ShoppingCart](user, CartSquashed(SpaceId(0), "Twice", Vector.empty), key))) mustBe first
 
       val drafts = ephemeralBus(context = new UnsquashableCarts)
       val id = created(drafts)
@@ -175,7 +183,7 @@ class EphemeralAggregatesSpec extends CommonSpec {
       val (first, second) = (TestProbe(), TestProbe())
 
       first.send(drafts, Materialize(id, user))
-      val sent = persistent.expectMsgType[StoreFirstEvent[ShoppingCart]](5.seconds)
+      val sent = persistent.expectMsgType[StoreMaterialized](5.seconds)
       first.expectMsgType[MaterializeRefused](5.seconds).reason must include("not known")
       send(drafts, AddItem(user, id, AggregateVersion(1), "after the timeout")) mustBe a[CommandRejected]
       persistent.expectMsg(5.seconds, sent) // the same state, under the same key
@@ -245,7 +253,7 @@ class EphemeralAggregatesSpec extends CommonSpec {
       try {
         val requester = TestProbe()
         requester.send(drafts, Materialize(materialized, user))
-        persistent.expectMsgType[StoreFirstEvent[ShoppingCart]](5.seconds)
+        persistent.expectMsgType[StoreMaterialized](5.seconds)
         persistent.reply(SuccessResponse(AggregateId(78), AggregateVersion(1)))
         requester.expectMsg(5.seconds, Materialized(materialized, AggregateId(78)))
         Thread.sleep(200) // the bus drops the materialized one, and its metrics throw

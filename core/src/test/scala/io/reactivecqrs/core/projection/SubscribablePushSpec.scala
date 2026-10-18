@@ -18,17 +18,23 @@ case class PushedNote(text: String)
 case class PushedNoteWritten(text: String) extends Event[PushedNote]
 case class SubscribeToTexts(subscriptionId: String, listener: ActorRef, filter: String => Option[String])
 
-/** Pushes each written text to its subscribers; its listener fails after pushing, as many times as `failures` says. */
-class PushingProjection(val subscriptionsState: SubscriptionsState, failures: AtomicInteger, parallel: Int)
+/** Pushes each written text to its subscribers; its listener fails after pushing, as many times as `failures` says.
+  * `early`: it pushes in its first part, outside the transaction (F262). */
+class PushingProjection(val subscriptionsState: SubscriptionsState, failures: AtomicInteger, parallel: Int, early: Boolean = false)
   extends SubscribableProjectionActor(options = ProjectionActorOptions.DEFAULT.withRetries(Backoff(20.millis, 50.millis, maxAttempts = 5))
     .copy(parallelUpdateProcessing = parallel)) {
 
-  protected val listeners = List(EventsListener[PushedNote] { (_, events) => _ =>
-    events.foreach(_.event match {
-      case PushedNoteWritten(text) => sendUpdate(text)
-      case _ => ()
-    })
-    if (failures.getAndDecrement() > 0) throw new IllegalStateException("listener failed after pushing")
+  private def push(events: Seq[EventInfo[PushedNote]]): Unit = events.foreach(_.event match {
+    case PushedNoteWritten(text) => sendUpdate(text)
+    case _ => ()
+  })
+
+  protected val listeners = List(EventsListener[PushedNote] { (_, events) =>
+    if (early) push(events)
+    _ => {
+      if (!early) push(events)
+      if (failures.getAndDecrement() > 0) throw new IllegalStateException("listener failed after pushing")
+    }
   })
 
   override protected def receiveSubscriptionRequest: Receive = {
@@ -45,9 +51,9 @@ class SubscribablePushSpec extends CommonSpec {
 
   private val noteType = AggregateType.of[PushedNote]
 
-  private class Fixture(failures: Int = 0, parallel: Int = 0) {
+  private class Fixture(failures: Int = 0, parallel: Int = 0, early: Boolean = false) {
     val bus = TestProbe()
-    val projection: ActorRef = system.actorOf(Props(new PushingProjection(new MemorySubscriptionsState, new AtomicInteger(failures), parallel)))
+    val projection: ActorRef = system.actorOf(Props(new PushingProjection(new MemorySubscriptionsState, new AtomicInteger(failures), parallel, early)))
 
     def subscribe(subscriptionId: String, listener: TestProbe, filter: String => Option[String] = Some(_)): Unit = {
       projection ! SubscribeToTexts(subscriptionId, listener.ref, filter)
@@ -77,6 +83,17 @@ class SubscribablePushSpec extends CommonSpec {
 
     Scenario("the same with listeners in parallel, on threads of their own") {
       val f = new Fixture(failures = 2, parallel = 2)
+      val listener = TestProbe()
+      f.subscribe("s-1", listener)
+
+      f.written("hello")
+
+      listener.expectMsg(3.seconds, SubscriptionUpdated("s-1", "hello"))
+      listener.expectNoMessage(300.millis)
+    }
+
+    Scenario("F262 an update pushed in a listener's first part, outside its transaction, is pushed once, after the commit") {
+      val f = new Fixture(failures = 2, early = true)
       val listener = TestProbe()
       f.subscribe("s-1", listener)
 

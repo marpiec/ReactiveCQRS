@@ -856,8 +856,17 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   private case class Work(key: Key, batch: Batch, noTransaction: Boolean, apply: DBSession => Unit)
 
   // A state listener is told the aggregate is created when the subscription starts with this batch: at version 1, at
-  // the squash event (F98) or with a whole state (D62).
-  private def workOf(key: Key, batch: Batch): Work = asHistory(batch.fromBuilder) {
+  // the squash event (F98) or with a whole state (D62). F262: what the listener's first part (F109) asks to run after the
+  // commit goes with its work, into the transaction of its second part; work made again leaves it behind.
+  private def workOf(key: Key, batch: Batch): Work = {
+    val early = mutable.ArrayBuffer[() => Unit]()
+    val outer = afterCommitActions.get
+    afterCommitActions.set(early)
+    val work = try madeWork(key, batch) finally afterCommitActions.set(outer)
+    if (early.isEmpty) work else work.copy(apply = session => { early.foreach(action => afterCommit(action())); work.apply(session) })
+  }
+
+  private def madeWork(key: Key, batch: Batch): Work = asHistory(batch.fromBuilder) {
     val id = key.aggregateId
     key.subscriptionType match {
       case SubscriptionType.EVENTS =>
@@ -894,8 +903,8 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   private val afterCommitActions = new ThreadLocal[mutable.ArrayBuffer[() => Unit]]
 
   /** Runs `action` once the transaction of the listener calling it has committed, and never if it rolls back: a batch
-    * may be tried several times, or applied again on its own after its group failed (D61). Outside a listener's
-    * transaction it runs at once. Subscribable projections push their updates this way (F161). */
+    * may be tried several times, or applied again on its own after its group failed (D61). In either part of a two-part
+    * listener (F109, F262); outside a listener it runs at once. Subscribable projections push their updates this way (F161). */
   protected def afterCommit(action: => Unit): Unit = Option(afterCommitActions.get) match {
     case Some(actions) => actions += (() => action)
     case None => action

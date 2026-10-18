@@ -240,10 +240,31 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
       renewer.expectMsg(2 seconds, ProjectionSubscriptionsCancelled(List("held by an instance that stopped")))
 
       And("a renewal of a subscription it holds is not answered")
-      f.simpleListenerProbe.send(f.simpleProjectionActor, SubscribeForAll("held", f.simpleListener))
-      f.simpleListenerProbe.expectMsgAnyClassOf(2 seconds, classOf[SubscribedForProjectionUpdates])
+      renewer.send(f.simpleProjectionActor, SubscribeForAll("held", renewer.ref))
+      renewer.expectMsg(2 seconds, SubscribedForProjectionUpdates("held"))
       renewer.send(f.simpleProjectionActor, RenewSubscription("held"))
       renewer.expectNoMessage(500 millis)
+    }
+
+    Scenario("F241 only a subscription's listener renews or cancels it") {
+      val f = fixture
+      val code = "own " + System.nanoTime()
+      val listener = TestProbe()
+      val stranger = TestProbe()
+      listener.send(f.simpleProjectionActor, SubscribeForAll(code, listener.ref))
+      listener.expectMsg(2 seconds, SubscribedForProjectionUpdates(code))
+
+      When("another sender cancels and renews it")
+      stranger.send(f.simpleProjectionActor, CancelProjectionSubscriptions(List(code, "unknown")))
+      stranger.expectMsg(2 seconds, ProjectionSubscriptionsCancelled(List("unknown")))
+      stranger.send(f.simpleProjectionActor, RenewSubscription(code))
+      stranger.expectMsg(2 seconds, ProjectionSubscriptionsCancelled(List(code)))
+
+      Then("the subscription stays its listener's")
+      listener.send(f.simpleProjectionActor, RenewSubscription(code))
+      listener.expectNoMessage(500 millis)
+      listener.send(f.simpleProjectionActor, CancelProjectionSubscriptions(List(code)))
+      listener.expectMsg(2 seconds, ProjectionSubscriptionsCancelled(List(code)))
     }
   }
 }

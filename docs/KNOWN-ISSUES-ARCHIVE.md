@@ -8,6 +8,18 @@ lists them all. Each entry is as it was when it was closed. Severity and confide
 
 ### Delivery and subscriptions
 
+#### F241 — Any sender can cancel, renew or take over a push subscription by its id
+- **Low**, likely · **Fixed for 1.0.1** (18/10/2026, the quick wins after the risk assessment) · `SubscribableProjectionActor`
+- **Fix:** only a subscription's listener renews or cancels it: another sender's renewal is answered as for an unknown id, and its cancel leaves the subscription and its id out of the answer (logged). Left: a subscribe with an id in use still replaces the subscription (F161), which a client that reconnects with a new actor relies on; ids should stay generated, as the book's pattern does.
+- **Test:** `SubscribableSpec` "F241 only a subscription's listener renews or cancels it": red under a mutation of either check.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F262 — A listener's `afterCommit` called in the first part of a two-part listener runs before the commit, and again when the work is remade
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, the quick wins after the risk assessment) · `ProjectionActor.workOf`
+- **Fix:** what a listener's first part asks to run after the commit goes with its work and joins the transaction of its second part; work that is made again (a retry, a group run again one batch at a time) leaves the earlier actions behind.
+- **Test:** `SubscribablePushSpec` "F262 an update pushed in a listener's first part …": red under a mutation.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F263 — An oversized request is replaced by a marker that never reaches the asker, who waits out its full timeout
 - **Low**, possible · **Fixed for 1.0.1** (18/10/2026, after step 4 of the risk assessment; `SagaFaultsSpec` "F263", red under a mutation) · `SagaRunning`, `ProjectionSupervisor`
 - **Fix:** the saga runner and the projection supervisor answer the size marker (`Status.Failure(MessageTooLargeException)`) to its sender, as the command bus already did.
@@ -425,6 +437,12 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Found:** writing E10 (M7, 18/10/2026).
 
 ### Commands and aggregates
+
+#### F242 — `StoreFirstEvent` is accepted by any persistent bus, and stores any first event without the command handlers
+- **Low**, likely · **Fixed for 1.0.1** (18/10/2026, the quick wins after the risk assessment) · `AggregateCommandBusActor.StoreMaterialized`
+- **Fix:** an ephemeral aggregate's owner sends its first event wrapped in `StoreMaterialized`, private to the library; a persistent bus refuses a `StoreFirstEvent` sent on its own with a `FailureResponse`. Defence in depth: code inside the library's packages, or reflection, can still make the wrapper.
+- **Test:** `EphemeralAggregatesSpec` "F242 a StoreFirstEvent sent on its own …": red under a mutation.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
 
 #### F251 — Waiting min-version queries are unbounded in number and duration, and each publish scans them all
 - **Low**, unlikely · **Fixed for 1.0.1** (18/10/2026, after step 4 of the risk assessment; `OwnerFaultsSpec` "F251", red under a mutation) · `AggregateOwner.minVersionQuery`
@@ -972,6 +990,11 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 
 ### Performance and runtime
 
+#### F227 — An oversized cluster message is serialized in full before the marker replaces it
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, the quick wins after the risk assessment; a memory property, no test of its own) · `ClusterSerializer.Bounded`
+- **Fix:** a message is written into a buffer that stops at the limit, so an oversized one costs at most the limit's bytes before the marker replaces it. The marker now names its size as one byte past the limit ("at least"), not the full size.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F224 — An ephemeral bus keeps every idempotent response in memory for 30 days, whatever happens to its drafts
 - **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, after step 4 of the risk assessment; a one-line change, no test of its own) · `AggregateCommandBusActor.ephemeral`
 - **Fix:** an ephemeral bus keeps its responses for its `idleTime`, as long as a draft lives unused, not 30 days. Left: the hourly removal still walks every response under the store's lock.
@@ -1284,6 +1307,12 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Fix:** `schemaname = current_schema()`, `to_regclass(…)` and `'events'::regclass`, so the library works in whatever schema the connection's `search_path` selects. Also `countAllEvents` treats the `-1` estimate of a never-analyzed table (PostgreSQL 14+) like 0 and counts exactly.
 
 ### Rebuild
+
+#### F202 — With `ServeStale`, an abandoned build leaves the active build missing every event committed during the build
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, the quick wins after the risk assessment) · `ProjectionSupervisor.catchUp`, `ReconcileOnly`
+- **Fix:** when a start abandons a build that the active build served unchanged for (`ServeStale`), the supervisor runs a reconciliation-only builder against the active build once its instances are up: every aggregate of its types whose version is behind the store's is applied. A catch-up that stops is run again after `restartAfter`; one cut short by a stop of the node is not recorded, and that start's aggregates catch up with their next events, as before. Chapter 10 no longer asks for `RebuildAggregates` after a rollback.
+- **Test:** `ProjectionsSpec` "F202 after a rollback abandons a build …": red without the catch-up.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
 
 #### F203 — Build table and sequence names are not checked against PostgreSQL's 63-byte limit: two builds can share one table, and retiring one drops the live table
 - **High**, unlikely · **Fixed for 1.0.1** (18/10/2026, step 4 of the risk assessment; `ProjectionRegistrySpec` "F203", red under a mutation) · `ProjectionBuild.fits`

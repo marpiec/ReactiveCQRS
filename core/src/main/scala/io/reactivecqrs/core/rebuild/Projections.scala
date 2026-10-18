@@ -134,6 +134,7 @@ object ProjectionSupervisor {
   private case object Start
   private case object CheckSwitch
   private case object RunTargetedBuilder
+  private case object CatchUp
   private case object RestartBuild
 
   private[rebuild] def encode(target: RebuildTarget): String = target match {
@@ -148,6 +149,12 @@ object ProjectionSupervisor {
     case Array("space", id) => Some(RebuildTarget.OneSpace(SpaceId(id.toLong)))
     case _ => None
   }
+}
+
+/** F202: a catch-up builder starts at the reconciliation: what the build lacks, aggregate by aggregate. */
+private[rebuild] object ReconcileOnly extends BuildPositions {
+  override def read(): BuildPosition = BuildPosition(bulkDone = true, 0L)
+  override def save(position: BuildPosition): Unit = ()
 }
 
 /** A targeted rebuild's builder reads nothing back after a stop: the rebuild runs again whole. */
@@ -228,6 +235,9 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   private var caughtUp = false
   private val retiring = mutable.Map[ActorRef, BuildRecord]()
   private var targeted: Option[Targeted] = None // the job running
+  // F202: the active build served unchanged (ServeStale) while a build was abandoned: it catches up with what it missed.
+  private var catchUpDue = false
+  private var catchingUp: Option[ActorRef] = None
   private var jobs = Vector[Job]() // the jobs waiting, in order
   private var buildStopped = false // the build's instance stopped by itself; a new one starts after a wait
   // F110: instances that stopped, kept in the bus as stopped subscribers (their events stay in the outbox) until their
@@ -291,6 +301,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
         saveJobs()
         runNextJob()
       }
+      catchUp()
     case GetSubscriptionRequests(registered) => asked(sender(), registered) // answered once the instances are known
     case Terminated(ref) => terminated(ref)
     case _ => stash()
@@ -307,6 +318,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
     registered.building.filter(_.version != spec.version).foreach { stale =>
       log.info("Projection " + spec.name + " abandons build " + stale.number + " of version " + stale.version + ": the code is at version " + spec.version)
       registry.abandon(spec.name, stale.number)
+      catchUpDue = spec.whileBuilding == ServeStale && registered.active.isDefined
       drop(stale)
       registered = registry.projection(spec.name).get
     }
@@ -406,6 +418,10 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       building = Some(instanceOf(stopped.record))
       connect()
     }
+    case BuildCaughtUp if catchingUp.contains(sender()) =>
+      log.info("Projection " + spec.name + ": the active build caught up with what it missed while the abandoned build was built")
+      catchingUp = None
+    case CatchUp => catchUp()
     case BuildCaughtUp if targeted.exists(_.builder.contains(sender())) => targetRebuilt()
     case BuildCaughtUp =>
       caughtUp = true
@@ -608,6 +624,17 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
     case RebuildTarget.OneSpace(spaceId) => AggregateScope.InSpace(spaceId)
   }
 
+  // F202: the active build takes what was committed while it served unchanged, by a reconciliation of every aggregate of
+  // its types: the deliveries it acknowledged then were never applied. Not recorded: a stop meanwhile leaves it to the
+  // aggregates' next events, as before.
+  private def catchUp(): Unit = if (catchUpDue && building.isEmpty) active.foreach { a =>
+    catchUpDue = false
+    log.warning("Projection " + spec.name + ": the active build served unchanged while an abandoned build was built; it catches up")
+    catchingUp = Some(context.watch(context.actorOf(Props(new ProjectionBuilder(a.ref, a.record.subscriber, BuildPlan(listeners), settings.eventStore,
+      settings.subscriptionsState, runtime.sources, ReconcileOnly, self, settings.builder, Some(AggregateScope.All))).withDispatcher(BlockingDispatcher.id),
+      childName("catch-up", a.record.number))))
+  }
+
   private def startTargetedBuilder(): Unit = for (t <- targeted; instance <- instanceOfJob(t.job)) {
     val plan = BuildPlan(listeners.filter { case (aggregateType, _) => t.types.contains(aggregateType) })
     val builder = context.watch(context.actorOf(Props(new ProjectionBuilder(instance.ref, instance.record.subscriber, plan, settings.eventStore,
@@ -652,6 +679,11 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   private def terminated(ref: ActorRef): Unit = if (buses.contains(ref) || unanswered.contains(ref)) busEnded(ref) else {
     retiring.remove(ref) match {
       case Some(retired) => drop(retired)
+      case None if catchingUp.contains(ref) =>
+        log.warning("Projection " + spec.name + ": the active build's catch-up stopped; it runs again in " + settings.restartAfter)
+        catchingUp = None
+        catchUpDue = true
+        context.system.scheduler.scheduleOnce(settings.restartAfter, self, CatchUp)(context.dispatcher)
       case None if targeted.exists(_.builder.contains(ref)) =>
         log.warning("Projection " + spec.name + ": the rebuild of " + targeted.get.target + " stopped; it runs again in " + settings.restartAfter)
         targeted = targeted.map(_.copy(builder = None))

@@ -266,9 +266,9 @@ Both live in `io.reactivecqrs.core.rebuild.ProjectionSupervisor`.
 
 > **Warning:** with `ServeStale`, the active build takes no events while the new one is built. If you
 > roll back to the older code before the switch, the new build is abandoned and the active build
-> serves live again, but without what was committed meanwhile: an aggregate catches up only with its
-> next event. After such a rollback, send `RebuildAggregates(RebuildTarget.OneType(...))` for each of
-> the projection's types.
+> serves live again. It then catches up with what was committed meanwhile by itself, through a
+> reconciliation of every aggregate of its types; until that ends, an aggregate changed meanwhile may
+> still be served as it was. You do not need to send anything.
 
 > **Tip:** the function is given the build, and the build knows its own version (`build.version`).
 > An instance made for the active build of version 1 keeps version 1's behaviour while version 2

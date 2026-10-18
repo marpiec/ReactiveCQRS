@@ -76,10 +76,9 @@ class ClusterSerializer(system: ExtendedActorSystem) extends SerializerWithStrin
 
   override def manifest(o: AnyRef): String = o.getClass.getName
 
-  override def toBinary(o: AnyRef): Array[Byte] = {
-    val bytes = written(o)
-    if (bytes.length <= limit) bytes else tooLarge(o.getClass.getName, bytes.length)
-  }
+  // F227: the writing stops once it passes the limit, so an oversized message is not kept whole before the marker.
+  override def toBinary(o: AnyRef): Array[Byte] =
+    try written(o) catch { case ClusterSerializer.PastLimit => tooLarge(o.getClass.getName, limit + 1) }
 
   override def fromBinary(bytes: Array[Byte], manifest: String): AnyRef =
     new ClusterSerializer.Reader(new DataInputStream(new ByteArrayInputStream(bytes)), system, ClusterSerialization(system).mpjsons).read().asInstanceOf[AnyRef]
@@ -92,7 +91,7 @@ class ClusterSerializer(system: ExtendedActorSystem) extends SerializerWithStrin
   }
 
   private def written(o: AnyRef): Array[Byte] = {
-    val bytes = new ByteArrayOutputStream()
+    val bytes = new ClusterSerializer.Bounded(limit)
     val out = new DataOutputStream(bytes)
     new ClusterSerializer.Writer(out, ClusterSerialization(system).mpjsons).write(o)
     out.flush()
@@ -106,7 +105,7 @@ class ClusterSerializer(system: ExtendedActorSystem) extends SerializerWithStrin
     val last = lastLogged.get(className)
     if (last == null || now - last > 10000000000L) {
       lastLogged.put(className, now)
-      log.error("A {} of {} bytes is too large to be sent between nodes; the limit is {} bytes (from pekko.remote.artery.advanced." +
+      log.error("A {} of at least {} bytes is too large to be sent between nodes; the limit is {} bytes (from pekko.remote.artery.advanced." +
         "maximum-frame-size). Its recipient receives a MessageTooLargeException instead. Others of the class in the next 10 s are not logged.",
         className, size, limit)
     }
@@ -120,6 +119,15 @@ class ClusterSerializer(system: ExtendedActorSystem) extends SerializerWithStrin
 
 /** The kinds of values the serializer writes, and how. */
 object ClusterSerializer {
+
+  /** F227: bytes written past the limit. */
+  private[cluster] object PastLimit extends RuntimeException(null, null, false, false)
+
+  /** F227: the bytes of a message, which refuses to grow past `limit`. */
+  private[cluster] final class Bounded(limit: Int) extends ByteArrayOutputStream {
+    override def write(b: Int): Unit = { if (count + 1 > limit) throw PastLimit; super.write(b) }
+    override def write(b: Array[Byte], off: Int, len: Int): Unit = { if (count + len > limit) throw PastLimit; super.write(b, off, len) }
+  }
 
   // The value's kind, written before it.
   private final val Null = 0

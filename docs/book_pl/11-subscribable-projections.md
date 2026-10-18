@@ -263,6 +263,11 @@ Subskrypcje żyją w pamięci projekcji, a nie w bazie danych, i nie żyją wiec
   `ProjectionSubscriptionsCancelled(ids)`. Identyfikatory, których projekcja nie zna, są po prostu
   pomijane. Sesja wysyła ten komunikat, gdy się zatrzymuje, więc odpowiedź trafia donikąd, i to nie
   szkodzi.
+- Subskrypcję odnawia i anuluje tylko jej własny subskrybent (`listener`, z którym ją zarejestrowano).
+  Na `RenewSubscription` od kogokolwiek innego odpowiedź jest taka jak dla nieznanego
+  identyfikatora, a jego anulowanie zostawia subskrypcję w spokoju i pomija jej identyfikator w
+  odpowiedzi. Aktor, który poznał identyfikator subskrypcji innego użytkownika, nie zatrzyma więc
+  jego aktualizacji.
 
 Czas życia to parametr konstruktora `SubscribableProjectionActor`, w milisekundach, który projekcja
 koszyków na żywo przekazuje dalej. Dla 5 minut zamiast 10:

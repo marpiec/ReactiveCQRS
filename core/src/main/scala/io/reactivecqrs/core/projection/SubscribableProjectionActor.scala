@@ -23,10 +23,11 @@ object SubscribableProjectionActor {
   /** To a subscriber: its subscription is registered under `subscriptionId`. */
   case class SubscribedForProjectionUpdates(subscriptionId: String)
 
-  /** Ends these subscriptions; answered `ProjectionSubscriptionsCancelled`. */
+  /** Ends these subscriptions; answered `ProjectionSubscriptionsCancelled` with those it ended or did not know. Only a
+    * subscription's own listener ends it (F241). */
   case class CancelProjectionSubscriptions(subscriptions: List[String])
 
-  /** Keeps a subscription alive for another `subscriptionTTL`. */
+  /** Keeps a subscription alive for another `subscriptionTTL`; from anyone but its listener, answered as cancelled (F241). */
   case class RenewSubscription(subscriptionId: String)
 
   /** To a subscriber: these subscriptions ended (cancelled, or their id was taken by another subscriber). */
@@ -73,8 +74,11 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
   /** `receiveSubscriptionRequest` and the library's subscription messages. */
   protected def receiveSubscription: Receive = receiveSubscriptionRequest orElse {
     case CancelProjectionSubscriptions(subscriptionsToCancel) =>
-      subscriptionsToCancel.foreach(handleUnsubscribe)
-      sender() ! ProjectionSubscriptionsCancelled(subscriptionsToCancel)
+      // F241: another's subscription is left as it is: a sender that learnt an id cannot end its updates.
+      val (others, own) = subscriptionsToCancel.partition(id => subscriptions.get(id).exists(_.listener != sender()))
+      if (others.nonEmpty) log.warning("Projection " + projectionName + ": " + sender() + " may not cancel subscriptions of another listener: " + others.mkString(", "))
+      own.foreach(handleUnsubscribe)
+      sender() ! ProjectionSubscriptionsCancelled(own)
     case RenewSubscription(subscriptionId) => renewSubscription(subscriptionId)
     case ClearIdleSubscriptions => clearIdleSubscriptions()
     case SendUpdate(u, typeName) => deliverUpdate(u, typeName)
@@ -187,8 +191,9 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
 
   // F133: a subscription this instance does not know expired, or was held by an instance that stopped (the projection's
   // singleton moved, M5): the renewer is told it is cancelled, so it subscribes again instead of waiting for updates.
+  // F241: so is one that is not the subscription's listener, which keeps it from keeping another's subscription alive.
   private def renewSubscription(subscriptionId: String): Unit = {
-    subscriptions.get(subscriptionId) match {
+    subscriptions.get(subscriptionId).filter(_.listener == sender()) match {
       case None => sender() ! ProjectionSubscriptionsCancelled(List(subscriptionId))
       case Some(subscription) => subscriptions += subscriptionId -> subscription.copy(renewal = Instant.now())
     }
