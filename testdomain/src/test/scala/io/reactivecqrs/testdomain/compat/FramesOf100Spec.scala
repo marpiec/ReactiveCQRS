@@ -41,7 +41,7 @@ class FramesOf100Spec extends AnyFeatureSpec with Matchers with BeforeAndAfterAl
 
   // Name, then the serializer's id and the manifest, or "unsendable" and the error.
   private val index: Seq[(String, String, String)] = new String(resource("index.tsv"), StandardCharsets.UTF_8).split("\n").toSeq
-    .filter(_.nonEmpty).map(_.split("\t")).map(row => (row(0), row(1), row.lift(2).getOrElse("")))
+    .map(_.stripSuffix("\r")).filter(_.nonEmpty).map(_.split("\t")).map(row => (row(0), row(1), row.lift(2).getOrElse("")))
 
   private def read(name: String, serializerId: String, manifest: String): AnyRef =
     Serialization.withTransportInformation(system.asInstanceOf[ExtendedActorSystem]) { () =>

@@ -1,2 +1,4 @@
 # Shell scripts keep LF line endings on every checkout: bash reads a CR as part of each command.
 *.sh text eol=lf
+# Frames written by an older version: their bytes as they were, never a line ending converted.
+testdomain/src/test/resources/compat/** -text
