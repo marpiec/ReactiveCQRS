@@ -48,11 +48,11 @@ class FaultySagaState(underlying: SagaState, loadFailures: Int, updateFailures: 
   override def createSaga(name: String, sagaId: SagaId, respondTo: String, order: SagaInternalOrder, spaceId: Option[SpaceId], orderKey: Option[String]) =
     underlying.createSaga(name, sagaId, respondTo, order, spaceId, orderKey)
   override def updateSaga(name: String, sagaId: SagaId, order: SagaInternalOrder, phase: SagaPhase, step: Int,
-                          from: Option[(SagaPhase, Int)], answer: Option[SagaResponse]) =
+                          from: (SagaPhase, Int), answer: Option[SagaResponse]) =
     if (updates.incrementAndGet() <= updateFailures) throw new IllegalStateException("database unavailable")
     else underlying.updateSaga(name, sagaId, order, phase, step, from, answer)
-  override def deleteSaga(name: String, sagaId: SagaId, from: Option[(SagaPhase, Int)]) = underlying.deleteSaga(name, sagaId, from)
-  override def finishSaga(name: String, sagaId: SagaId, answer: Option[SagaResponse], from: Option[(SagaPhase, Int)]) =
+  override def deleteSaga(name: String, sagaId: SagaId, from: (SagaPhase, Int)) = underlying.deleteSaga(name, sagaId, from)
+  override def finishSaga(name: String, sagaId: SagaId, answer: Option[SagaResponse], from: (SagaPhase, Int)) =
     underlying.finishSaga(name, sagaId, answer, from)
   override def removeFinished(name: String, olderThan: FiniteDuration) = underlying.removeFinished(name, olderThan)
   override def loadAllSagas(name: String, handler: StoredSaga => Unit): Unit =
@@ -109,7 +109,7 @@ class SagaFaultsSpec extends CommonSpec {
       sagas.tell(Pay(user, k, 10), first.ref)
       awaitAssert(payments.steps.get mustBe 1, 5.seconds, 20.millis)
       sagas.tell(Pay(user, k, 10), second.ref)
-      sagas.askFor[SagaStatus](GetSagaStatus).running mustBe 1
+      awaitAssert(sagas.askFor[SagaStatus](GetSagaStatus).running mustBe 1, 5.seconds, 20.millis) // the repeat joined
       hold.countDown()
 
       first.expectMsg(10.seconds, Paid(10, 1))
@@ -119,7 +119,7 @@ class SagaFaultsSpec extends CommonSpec {
       rows(name).size mustBe 1
     }
 
-    Scenario("F232 orders wait for the first load, and a load while a saga runs does not start it twice") {
+    Scenario("F232 a load while a saga runs, also one that ends after its order came, does not start it twice") {
       val (hold, name) = (new CountDownLatch(1), newName())
       val payments = new Payments(name, hold = Some(hold))
       val sagas = runner(payments, new FaultySagaState(sagaState, loadFailures = 2, updateFailures = 0))

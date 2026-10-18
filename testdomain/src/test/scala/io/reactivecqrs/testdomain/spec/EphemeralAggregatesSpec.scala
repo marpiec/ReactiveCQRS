@@ -147,7 +147,7 @@ class EphemeralAggregatesSpec extends CommonSpec {
     }
 
     Scenario("a materialization is stored once however often it is sent, and refused without a squash event") {
-      val key = Some(MaterializationKey(AggregateId(-TestIds.aggregate())))
+      val key = Some(MaterializationKey(AggregateId(-TestIds.aggregate()), "start"))
       val first = send(carts, StoreFirstEvent[ShoppingCart](user, CartSquashed(SpaceId(0), "Twice", Vector.empty), key))
       first mustBe a[SuccessResponse]
       send(carts, StoreFirstEvent[ShoppingCart](user, CartSquashed(SpaceId(0), "Twice", Vector.empty), key)) mustBe first

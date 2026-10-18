@@ -2,7 +2,7 @@ package io.reactivecqrs.core.commandhandler
 
 import java.time.Instant
 import java.util.UUID
-import org.apache.pekko.actor.{Actor, ActorRef, OneForOneStrategy, Props, Status, SupervisorStrategy, Terminated}
+import org.apache.pekko.actor.{Actor, ActorRef, OneForOneStrategy, Props, Status, SupervisorStrategy, Terminated, Timers}
 import org.apache.pekko.pattern.{ask, pipe}
 import org.apache.pekko.util.Timeout
 import io.reactivecqrs.api._
@@ -120,7 +120,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
                                                        val eventsLogger: Option[Logger],
                                                        val failedRestoreRetryAfter: FiniteDuration,
                                                        ephemeral: Option[AggregateCommandBusActor.EphemeralMode] = None)
-                                                        (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT]) extends Actor with MyActorLogging {
+                                                        (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT]) extends Actor with Timers with MyActorLogging {
 
   private val aggregateType = AggregateType.of[AGGREGATE_ROOT]
   /** The aggregate root class's simple name, for messages and logs. */
@@ -171,14 +171,18 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   // when it terminates, and the next request creates a new one.
   override val supervisorStrategy: SupervisorStrategy = OneForOneStrategy() { case _ => SupervisorStrategy.Stop }
 
+  // Also after a restart (rare: `receive` catches what its work throws, F257), with timers a restart cancels. An
+  // ephemeral bus then starts anew: its store, its drafts and its token are new.
   override def preStart(): Unit = {
     // The event bus routes re-publish requests for this aggregate type here (D8, D20c).
     events ! RegisterPublisher(aggregateType, self)
-    startEphemeral()
+    ephemeral.foreach { mode => // D77: one block of ids for this start
+      aggregateIds.received(-(token * EphemeralBlock + mode.ids - 1), mode.ids)
+      timers.startTimerWithFixedDelay(SweepIdle, SweepIdle, mode.sweepEvery)
+    }
     askForIds()
     // Hourly, at a random minute, so the buses of different aggregate types do not all clean up at once.
-    val firstCleanUp = (60 + Random.nextInt(3600)).seconds
-    context.system.scheduler.scheduleWithFixedDelay(firstCleanUp, 1.hour, self, RemoveExpiredResponses)(context.dispatcher)
+    timers.startTimerWithFixedDelay(RemoveExpiredResponses, RemoveExpiredResponses, (60 + Random.nextInt(3600)).seconds, 1.hour)
   }
 
   private def removeExpiredResponses(): Unit = {
@@ -189,24 +193,11 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
     }
   }
 
-  // D77: one block of ids for this start.
-  private def startEphemeral(): Unit = ephemeral.foreach { mode =>
-    aggregateIds.received(-(token * EphemeralBlock + mode.ids - 1), mode.ids)
-    context.system.scheduler.scheduleWithFixedDelay(mode.sweepEvery, mode.sweepEvery, self, SweepIdle)(context.dispatcher)
-  }
-
-  // The schedules of the last start go on. An ephemeral bus starts anew: its store and its drafts are gone (F257).
-  override def postRestart(reason: Throwable): Unit = {
-    startEphemeral()
-    askForIds()
-  }
-
   // F257: nothing a message does throws out of the bus: a restart would stop its owners with the commands in flight, and
   // an ephemeral bus's drafts with them.
   override def receive: Receive = logReceive { case message =>
     try {
-      if (ephemeral.isDefined && ephemeralIdOf(message).isDefined) ephemeralMessage(message, ephemeralIdOf(message).get)
-      else main(message)
+      ephemeralIdOf(message).filter(_ => ephemeral.isDefined).fold(main(message))(ephemeralMessage(message, _))
     } catch {
       case NonFatal(e) => log.error(e, "Handling a message of class " + message.getClass.getName + " failed; it is dropped")
     }
@@ -274,8 +265,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
       Some(FailureResponse(List("An ephemeral aggregate gets its id from its command bus (D77)")))
     case (Some(mode), _: FirstCommand[_, _]) if ephemeralStore.exists(_.aggregatesHeld >= mode.maxAggregates) =>
       Some(CommandRejected(AggregateId(0), "this node holds its maximum of " + mode.maxAggregates + " ephemeral aggregates of " + aggregateTypeSimpleName))
-    case (Some(_), _: FirstCommand[_, _]) if !aggregateIds.available => Some(idsSpent)
-    case _ => None
+    case _ => None // spent ids: `route` refuses (F236)
   }
 
   private def idsSpent = CommandRejected(AggregateId(0), "this start's ephemeral ids of " + aggregateTypeSimpleName + " are spent; a new start of the node brings new ones")

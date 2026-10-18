@@ -287,7 +287,7 @@ val delivery = Await.result((eventBus ? GetDeliveryStatus).mapTo[DeliveryStatus]
 | Pole | Znaczenie |
 |---|---|
 | `waiting` | dostarczenia czekające na odpowiedź |
-| `undelivered` | 100 ostatnich dostarczeń zakończonych po upływie terminu, każde jako `Undelivered(aggregateType, aggregateId, version, subscriber, kind, at)`; `undeliveredTotal` mówi, ile jest przechowywanych (do 1 000) |
+| `undelivered` | 100 ostatnich dostarczeń zakończonych po upływie terminu, każde jako `Undelivered(aggregateType, aggregateId, version, subscriber, kind, at)`; pozostałe zlicza log |
 | `stopped` | subskrybenci, którzy się zatrzymali (dalej w tym rozdziale) |
 | `held`, `behind` | kontrola przepływu (dalej w tym rozdziale) |
 

@@ -3,7 +3,7 @@ package io.reactivecqrs.core.saga
 import io.reactivecqrs.core.util.SchemaLock
 
 import io.mpjsons.MPJsons
-import io.reactivecqrs.api.id.{SagaId, SpaceId, UserId}
+import io.reactivecqrs.api.id.{SagaId, SpaceId}
 import io.reactivecqrs.core.types.TypesNamesState
 import org.slf4j.LoggerFactory
 import scalikejdbc._
@@ -48,11 +48,11 @@ class PostgresSagaState(mpjsons: MPJsons, typesNamesState: TypesNamesState) exte
 
   private def readAnswer(json: String, typeId: Int): SagaResponse = mpjsons.deserialize[SagaResponse](json, typesNamesState.classNameById(typeId.toShort))
 
-  // F232: with `from`, only a saga still at that phase and step changes.
-  private def at(from: Option[(SagaPhase, Int)]): SQLSyntax = from.fold(sqls"")(f => sqls"AND phase = ${f._1.name} AND step = ${f._2}")
+  // F232: only a saga still at the phase and step `from` changes.
+  private def at(from: (SagaPhase, Int)): SQLSyntax = sqls"AND phase = ${from._1.name} AND step = ${from._2}"
 
   override def updateSaga(name: String, sagaId: SagaId, order: SagaInternalOrder, phase: SagaPhase, step: Int,
-                          from: Option[(SagaPhase, Int)], answer: Option[SagaResponse]): Boolean = DB.autoCommit { implicit session =>
+                          from: (SagaPhase, Int), answer: Option[SagaResponse]): Boolean = DB.autoCommit { implicit session =>
     val (answerJson, answerType) = writtenAnswer(answer)
     sql"""UPDATE sagas SET update_time = current_timestamp, saga_order = ${mpjsons.serialize(order, order.getClass.getName)},
          |  order_type_id = ${typesNamesState.typeIdByClass(order.getClass)}, phase = ${phase.name}, step = $step,
@@ -60,11 +60,11 @@ class PostgresSagaState(mpjsons: MPJsons, typesNamesState: TypesNamesState) exte
          | WHERE name = $name AND saga_id = ${sagaId.asLong} ${at(from)}""".stripMargin.update() == 1
   }
 
-  override def deleteSaga(name: String, sagaId: SagaId, from: Option[(SagaPhase, Int)]): Boolean = DB.autoCommit { implicit session =>
+  override def deleteSaga(name: String, sagaId: SagaId, from: (SagaPhase, Int)): Boolean = DB.autoCommit { implicit session =>
     sql"""DELETE FROM sagas WHERE name = $name AND saga_id = ${sagaId.asLong} ${at(from)}""".update() == 1
   }
 
-  override def finishSaga(name: String, sagaId: SagaId, answer: Option[SagaResponse], from: Option[(SagaPhase, Int)]): Boolean =
+  override def finishSaga(name: String, sagaId: SagaId, answer: Option[SagaResponse], from: (SagaPhase, Int)): Boolean =
     DB.autoCommit { implicit session =>
       val (answerJson, answerType) = writtenAnswer(answer)
       sql"""UPDATE sagas SET update_time = current_timestamp, phase = ${FINISHED.name},
@@ -86,7 +86,7 @@ class PostgresSagaState(mpjsons: MPJsons, typesNamesState: TypesNamesState) exte
         .foreach { rs =>
           val sagaId = SagaId(rs.long(1))
           Try((mpjsons.deserialize[SagaInternalOrder](rs.string(6), typesNamesState.classNameById(rs.short(7))), SagaPhase.byName(rs.string(4)))) match {
-            case Success((order, phase)) => handler(StoredSaga(sagaId, UserId(rs.long(2)), rs.string(3), phase, rs.int(5), order, rs.stringOpt(8)))
+            case Success((order, phase)) => handler(StoredSaga(sagaId, rs.string(3), phase, rs.int(5), order, rs.stringOpt(8)))
             case Failure(e) => log.error("Saga " + name + " " + sagaId.asLong + " is not resumed: its stored order or phase cannot be read", Errors.redacted(e))
           }
         }

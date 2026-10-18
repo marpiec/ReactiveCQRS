@@ -459,6 +459,8 @@ class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState
     }.sortBy(w => (w.since, w.aggregateId.asLong)).take(limit)
   }
 
+  override def readNewestWaitingInOutbox(limit: Int): Seq[WaitingInOutbox] = readWaitingInOutbox().reverse.take(limit)
+
   // The sizes are not known here (0), so every event of the range fits.
   override def readPart[AGGREGATE_ROOT](aggregateId: AggregateId, from: AggregateVersion, to: AggregateVersion,
                                         maxBytes: Long): Seq[(EventInfo[AGGREGATE_ROOT], Int)] = {

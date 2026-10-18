@@ -29,16 +29,16 @@ class PostgresSagaStateSpec extends AnyFeatureSpec with Matchers {
     Scenario("updating or deleting a saga that is not stored reports that it was not found (F36)") {
       val name = sagaName()
 
-      state.updateSaga(name, SagaId(1), order, CONTINUES, 1) mustBe false
-      state.deleteSaga(name, SagaId(1)) mustBe false
+      state.updateSaga(name, SagaId(1), order, CONTINUES, 1, (CONTINUES, 0)) mustBe false
+      state.deleteSaga(name, SagaId(1), (CONTINUES, 0)) mustBe false
     }
 
     Scenario("updating and deleting a stored saga reports success") {
       val name = sagaName()
       state.createSaga(name, SagaId(1), "respondTo", order)
 
-      state.updateSaga(name, SagaId(1), order, REVERTING, 2) mustBe true
-      state.deleteSaga(name, SagaId(1)) mustBe true
+      state.updateSaga(name, SagaId(1), order, REVERTING, 2, (CONTINUES, 0)) mustBe true
+      state.deleteSaga(name, SagaId(1), (REVERTING, 2)) mustBe true
     }
   }
 
@@ -82,12 +82,12 @@ class PostgresSagaStateSpec extends AnyFeatureSpec with Matchers {
     Scenario("F232 a write from a phase and step the saga is no longer at changes nothing") {
       val name = sagaName()
       state.createSaga(name, SagaId(1), "respondTo", order)
-      state.updateSaga(name, SagaId(1), order, CONTINUES, 1, Some((CONTINUES, 0))) mustBe true
+      state.updateSaga(name, SagaId(1), order, CONTINUES, 1, (CONTINUES, 0)) mustBe true
 
-      state.updateSaga(name, SagaId(1), order, REVERTING, 1, Some((CONTINUES, 0))) mustBe false
-      state.deleteSaga(name, SagaId(1), Some((CONTINUES, 0))) mustBe false
-      state.finishSaga(name, SagaId(1), None, Some((CONTINUES, 0))) mustBe false
-      state.deleteSaga(name, SagaId(1), Some((CONTINUES, 1))) mustBe true
+      state.updateSaga(name, SagaId(1), order, REVERTING, 1, (CONTINUES, 0)) mustBe false
+      state.deleteSaga(name, SagaId(1), (CONTINUES, 0)) mustBe false
+      state.finishSaga(name, SagaId(1), None, (CONTINUES, 0)) mustBe false
+      state.deleteSaga(name, SagaId(1), (CONTINUES, 1)) mustBe true
     }
 
     Scenario("F207 a second saga of an order key gives the first, and its answer once it has one; finished sagas go after a while") {
@@ -95,7 +95,7 @@ class PostgresSagaStateSpec extends AnyFeatureSpec with Matchers {
       state.createSaga(name, SagaId(1), "respondTo", order, orderKey = Some("key-1")) mustBe NewSaga
       state.createSaga(name, SagaId(2), "respondTo", order, orderKey = Some("key-1")) mustBe SagaOfKey(SagaId(1), None)
 
-      state.finishSaga(name, SagaId(1), Some(TestSagaAnswer("done")), Some((CONTINUES, 0))) mustBe true
+      state.finishSaga(name, SagaId(1), Some(TestSagaAnswer("done")), (CONTINUES, 0)) mustBe true
       state.createSaga(name, SagaId(3), "respondTo", order, orderKey = Some("key-1")) mustBe SagaOfKey(SagaId(1), Some(TestSagaAnswer("done")))
       var loaded = 0
       state.loadAllSagas(name, _ => loaded += 1)

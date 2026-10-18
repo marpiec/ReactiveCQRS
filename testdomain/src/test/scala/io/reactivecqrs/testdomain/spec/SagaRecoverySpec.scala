@@ -39,14 +39,14 @@ class FlakySagaState(underlying: SagaState, createFailures: Int, updateFailures:
   }
 
   override def updateSaga(name: String, sagaId: SagaId, order: SagaInternalOrder, phase: SagaPhase, step: Int,
-                          from: Option[(SagaPhase, Int)], answer: Option[SagaResponse]) = {
+                          from: (SagaPhase, Int), answer: Option[SagaResponse]) = {
     if (updates.incrementAndGet() <= updateFailures) throw new IllegalStateException("database unavailable")
     underlying.updateSaga(name, sagaId, order, phase, step, from, answer)
   }
 
-  override def deleteSaga(name: String, sagaId: SagaId, from: Option[(SagaPhase, Int)]) = underlying.deleteSaga(name, sagaId, from)
+  override def deleteSaga(name: String, sagaId: SagaId, from: (SagaPhase, Int)) = underlying.deleteSaga(name, sagaId, from)
 
-  override def finishSaga(name: String, sagaId: SagaId, answer: Option[SagaResponse], from: Option[(SagaPhase, Int)]) =
+  override def finishSaga(name: String, sagaId: SagaId, answer: Option[SagaResponse], from: (SagaPhase, Int)) =
     underlying.finishSaga(name, sagaId, answer, from)
 
   override def removeFinished(name: String, olderThan: scala.concurrent.duration.FiniteDuration) = underlying.removeFinished(name, olderThan)

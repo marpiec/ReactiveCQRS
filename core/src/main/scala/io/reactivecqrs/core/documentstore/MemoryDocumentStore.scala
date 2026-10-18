@@ -45,13 +45,8 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef] {
         case (_, None) => -1
         case (Some(x), Some(y)) => if (numbers) BigDecimal(x).compare(BigDecimal(y)) else x.compareTo(y)
       }
-    val comparisons = sortBy.map {
-      case SortAscInt(path) => compare(path, numbers = true) _
-      case SortAscLong(path) => compare(path, numbers = true) _
-      case SortAscText(path) => compare(path, numbers = false) _
-      case SortDescInt(path) => (a: Document[T], b: Document[T]) => -compare(path, numbers = true)(a, b)
-      case SortDescLong(path) => (a: Document[T], b: Document[T]) => -compare(path, numbers = true)(a, b)
-      case SortDescText(path) => (a: Document[T], b: Document[T]) => -compare(path, numbers = false)(a, b)
+    val comparisons = sortBy.map(Sort.of).map { case (path, cast, descending) =>
+      (a: Document[T], b: Document[T]) => (if (descending) -1 else 1) * compare(path, numbers = cast.isDefined)(a, b)
     }
     documents.sortBy(_._1).sortWith { (a, b) => comparisons.iterator.map(_(a._2, b._2)).find(_ != 0).exists(_ < 0) }
   }

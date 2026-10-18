@@ -114,6 +114,18 @@ class TooManyDocumentsException(table: String, maxRows: Int) extends RuntimeExce
 /** An order of a query's results, by the value at a path. */
 sealed trait Sort
 
+private[documentstore] object Sort {
+  /** The path a sort reads, the cast it compares as (`int`, `bigint`; none for text), and whether largest first. */
+  def of(sort: Sort): (Seq[String], Option[String], Boolean) = sort match {
+    case SortAscInt(path) => (path, Some("int"), false)
+    case SortDescInt(path) => (path, Some("int"), true)
+    case SortAscLong(path) => (path, Some("bigint"), false)
+    case SortDescLong(path) => (path, Some("bigint"), true)
+    case SortAscText(path) => (path, None, false)
+    case SortDescText(path) => (path, None, true)
+  }
+}
+
 object SortAscInt {
   /** By the number in the top-level field `name`, smallest first. */
   def apply(name: String): Sort = SortAscInt(Seq(name))

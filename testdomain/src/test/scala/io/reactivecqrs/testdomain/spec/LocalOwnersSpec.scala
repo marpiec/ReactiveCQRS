@@ -135,6 +135,25 @@ class LocalOwnersSpec extends AnyFeatureSpec with Matchers with GivenWhenThen wi
       restores.timed("reactivecqrs.restore").size mustBe 1
     }
 
+    Scenario("F214 an owner reading what the other node keeps writing catches up by the new events, without a restore") {
+      val cart = sharedCart("alternating")
+      val restores = new RecordingMetrics
+      ReactiveMetrics(nodeB.system).use(restores)
+      (1 to 5).foreach { i => // a cart holds 5 items at most
+        addItem(nodeA, cart, i, "item " + i) mustBe SuccessResponse(cart, AggregateVersion(i + 1))
+        cartOn(nodeB, cart).aggregateRoot.get.items.map(_.name).last mustBe "item " + i
+      }
+      restores.timed("reactivecqrs.restore") mustBe empty
+    }
+
+    Scenario("F213 a command expecting a version above the stored one is a conflict at once, without a restore") {
+      val cart = create(nodeA, "far ahead")
+      val restores = new RecordingMetrics
+      ReactiveMetrics(nodeA.system).use(restores)
+      (1 to 5).foreach(_ => addItem(nodeA, cart, 1000, "x") mustBe an[AggregateConcurrentModificationError])
+      restores.timed("reactivecqrs.restore") mustBe empty
+    }
+
     Scenario("a command runs on what the other node changed without a new version: a duplicate whose base was rewritten (F145)") {
       val base = create(nodeA, "before")
       val copy = askFor[CustomCommandResponse[_]](nodeA.carts, DuplicateShoppingCart(UserId(1), base, AggregateVersion(1))) match {

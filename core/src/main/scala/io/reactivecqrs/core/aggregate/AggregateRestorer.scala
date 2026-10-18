@@ -54,12 +54,7 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
     val generation = if (at.isEmpty) stored else 0
     usableSnapshot(aggregateId, at) match {
       case Some(snapshot) =>
-        var version = snapshot.version
-        var root = snapshot.state
-        eventStore.readAndProcessOwnEvents[AGGREGATE_ROOT](aggregateId, snapshot.version, at.flatMap(_.left.toOption)) { (userId, timestamp, event, eventVersion, noop) =>
-          if (!noop) root = eventHandlers(userId, timestamp, root)(event)
-          version = AggregateVersion(eventVersion)
-        }
+        val (version, root) = applyAfter(aggregateId, snapshot.version, snapshot.state, at.flatMap(_.left.toOption))
         Restored(version, root, Some(snapshot.version), generation)
       case None =>
         var version = AggregateVersion.ZERO
@@ -71,6 +66,22 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
         }
         Restored(version, root, None, generation)
     }
+  }
+
+  /** F214: `root` at `version` brought up to the newest version, by the own events after it alone: for an owner whose
+    * history the store has not changed since it read it (the same generation: no undo, rewrite or squash since). */
+  def caughtUp(aggregateId: AggregateId, version: AggregateVersion, root: AGGREGATE_ROOT): (AggregateVersion, AGGREGATE_ROOT) =
+    applyAfter(aggregateId, version, root, None)
+
+  // `root` at `version` with the own events after it applied, up to `upTo` or the newest.
+  private def applyAfter(aggregateId: AggregateId, version: AggregateVersion, root: AGGREGATE_ROOT,
+                         upTo: Option[AggregateVersion]): (AggregateVersion, AGGREGATE_ROOT) = {
+    var (newest, state) = (version, root)
+    eventStore.readAndProcessOwnEvents[AGGREGATE_ROOT](aggregateId, version, upTo) { (userId, timestamp, event, eventVersion, noop) =>
+      if (!noop) state = eventHandlers(userId, timestamp, state)(event)
+      newest = AggregateVersion(eventVersion)
+    }
+    (newest, state)
   }
 
   // Reads at an instant do not use snapshots: a snapshot does not record when its version was reached.

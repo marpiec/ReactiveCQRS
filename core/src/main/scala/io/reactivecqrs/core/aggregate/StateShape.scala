@@ -2,7 +2,6 @@ package io.reactivecqrs.core.aggregate
 
 import java.lang.reflect.{Field, Modifier, ParameterizedType, Type, WildcardType}
 import java.security.MessageDigest
-import java.util.concurrent.ConcurrentHashMap
 
 import scala.collection.mutable
 
@@ -15,11 +14,12 @@ import scala.collection.mutable
   */
 object StateShape {
 
-  private val shapes = new ConcurrentHashMap[String, String]()
+  /** The shape of a class that cannot be loaded: no snapshot has it, a snapshot of 1.0.0 ("") either, so none is used. */
+  val Unknown = "unknown"
 
-  /** The shape of the class named, or "" when it cannot be loaded. */
-  def of(className: String): String = if (className.isEmpty) "" else shapes.computeIfAbsent(className, name =>
-    scala.util.Try(Class.forName(name, false, getClass.getClassLoader)).map(shapeOf).getOrElse(""))
+  /** The shape of the class named (its restorer keeps it). */
+  def of(className: String): String =
+    scala.util.Try(Class.forName(className, false, getClass.getClassLoader)).map(shapeOf).getOrElse(Unknown)
 
   private def shapeOf(root: Class[_]): String =
     MessageDigest.getInstance("SHA-256").digest(describe(root).getBytes("UTF-8")).take(16).map(b => "%02x".format(b & 0xff)).mkString

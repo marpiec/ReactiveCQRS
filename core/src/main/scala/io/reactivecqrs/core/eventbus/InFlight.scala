@@ -51,6 +51,6 @@ private[eventbus] final class InFlight[K, D](firstSent: D => Long, lastSent: D =
     found.result()
   }
 
-  /** The keys of those that `p` selects; every delivery is visited (a subscriber's stop or removal). */
-  def keysWhere(p: D => Boolean): Seq[K] = all.iterator.collect { case (key, delivery) if p(delivery) => key }.toVector
+  /** Those that `p` selects; every delivery is visited (a subscriber's stop or removal). */
+  def entriesWhere(p: D => Boolean): Seq[(K, D)] = all.iterator.filter { case (_, delivery) => p(delivery) }.toVector
 }

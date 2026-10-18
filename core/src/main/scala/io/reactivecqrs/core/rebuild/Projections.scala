@@ -546,7 +546,6 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       val forBuild = building.filterNot(b => active.exists(_.ref == b.ref)).map(_.record.number)
       if (active.isDefined) addJob(Job(target, None, Vector(requester)))
       forBuild.foreach(n => addJob(Job(target, Some(n), if (active.isDefined) Vector.empty else Vector(requester))))
-      if (active.isEmpty && forBuild.isEmpty) addJob(Job(target, building.map(_.record.number), Vector(requester))) // a first build
       saveJobs()
       runNextJob()
     }
@@ -560,7 +559,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
 
   private def instanceOfJob(job: Job): Option[Instance] = job.build match {
     case None => active
-    case Some(n) => building.filter(_.record.number == n).orElse(active.filter(_.record.number == n))
+    case Some(n) => building.filter(_.record.number == n)
   }
 
   // The next job that can run: the active build's at once, a build's once it caught up. A build's whose build is gone is

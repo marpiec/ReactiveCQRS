@@ -8,7 +8,7 @@ import io.mpjsons.MPJsons
 import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.types.TypesNamesState
-import io.reactivecqrs.core.util.{AfterCommit, Ddl}
+import io.reactivecqrs.core.util.AfterCommit
 import scalikejdbc._
 
 import scala.concurrent.duration._
@@ -286,7 +286,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   def buildIndexesConcurrently(): Unit = DB.autoCommit { implicit session =>
     // F198: unique, replacing the plain one, unless some aggregate has two events of one version: those are named by
     // StoredDataCheck, and the plain index serves restores meanwhile.
-    if (Ddl.has(PostgresEventStoreSchemaInitializer.UniqueVersions) || !PostgresEventStoreSchemaInitializer.versionsRepeat()) {
+    if (PostgresEventStoreSchemaInitializer.versionsCanBeUnique()) {
       buildConcurrently(PostgresEventStoreSchemaInitializer.UniqueVersions, sqls"events (aggregate_id, version)", unique = true)
       sql"""DROP INDEX CONCURRENTLY IF EXISTS events_aggregate_version_idx""".execute()
     } else {

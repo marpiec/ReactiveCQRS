@@ -508,11 +508,11 @@ class EventsBusActorSpec extends CommonSpec {
       status.undelivered.map(u => (u.aggregateId, u.version.asInt, u.subscriber, u.kind)) must contain((id, 7, a.ref.path.name, EventsDelivery))
     }
 
-    Scenario("F228 the status lists the latest 100 undelivered, and says how many there are") {
+    Scenario("F228 the status lists the latest 100 undelivered") {
       val (silent, owner) = (TestProbe(), TestProbe())
       val bus = busWith(silent)
       (1 to 150).foreach(_ => publish(bus, owner, newId(), 1))
-      awaitAssert(statusOf(bus).undeliveredTotal mustBe 150, 5.seconds, 100.millis)
+      awaitAssert(statusOf(bus).waiting mustBe 0, 5.seconds, 100.millis)
       statusOf(bus).undelivered.size mustBe 100
     }
 

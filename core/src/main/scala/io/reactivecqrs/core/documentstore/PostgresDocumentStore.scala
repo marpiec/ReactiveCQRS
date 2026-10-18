@@ -235,26 +235,20 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     SQL("SELECT id, " + partsQuery + " FROM " + projectionTableName + whereClause(searchParams.where) + orderAndPage(searchParams))
   }
 
-  // F211: a query without a limit reads one row more than the store's `maxRows`, so that more fail (`capped`).
+  // F211: a query without a limit reads one row more than the store's `maxRows`, so that more fail (`run`).
   private def orderAndPage(query: DocumentStoreQuery): String = {
-    val order = if (query.sortBy.isEmpty) "" else query.sortBy.map({
-      case SortAscInt(path) => "(document #> " + JsonPath.literal(path) + ")::int ASC"
-      case SortDescInt(path) => "(document #> " + JsonPath.literal(path) + ")::int DESC"
-      case SortAscLong(path) => "(document #> " + JsonPath.literal(path) + ")::bigint ASC"
-      case SortDescLong(path) => "(document #> " + JsonPath.literal(path) + ")::bigint DESC"
-      case SortAscText(path) => "document #>> " + JsonPath.literal(path) + " ASC"
-      case SortDescText(path) => "document #>> " + JsonPath.literal(path) + " DESC"
-    }).mkString(" ORDER BY ", ", ", "")
+    val order = if (query.sortBy.isEmpty) "" else query.sortBy.map(Sort.of).map { case (path, cast, descending) =>
+      cast.fold("document #>> " + JsonPath.literal(path))(c => "(document #> " + JsonPath.literal(path) + ")::" + c) + (if (descending) " DESC" else " ASC")
+    }.mkString(" ORDER BY ", ", ", "")
     val limit = if (query.limit >= 0) query.limit.toLong else maxRows.toLong + 1
     order + " LIMIT " + limit + (if (query.offset > 0) " OFFSET " + query.offset else "")
   }
 
-  private def capped[R](query: DocumentStoreQuery, rows: List[R]): List[R] =
-    if (query.limit < 0 && rows.size > maxRows) throw new TooManyDocumentsException(tableName, maxRows) else rows
-
   // Runs a query of `createQuery` or `createPartsQuery` with its values bound, reading each row with `read`.
-  private def run[R](searchParams: DocumentStoreQuery, query: SQL[Nothing, NoExtractor])(read: WrappedResultSet => R)(implicit session: DBSession): List[R] =
-    capped(searchParams, query.bind(getAllValues(searchParams.where): _*).map(read).list())
+  private def run[R](searchParams: DocumentStoreQuery, query: SQL[Nothing, NoExtractor])(read: WrappedResultSet => R)(implicit session: DBSession): List[R] = {
+    val rows = query.bind(getAllValues(searchParams.where): _*).map(read).list()
+    if (searchParams.limit < 0 && rows.size > maxRows) throw new TooManyDocumentsException(tableName, maxRows) else rows
+  }
 
   def findDocument(searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, Document[T])] = inSession { implicit session =>
     val loaded = run(searchParams, createQuery(searchParams))(rs => rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3))))

@@ -71,7 +71,7 @@ object AggregateOwner {
   private case class MaterializeAnswer(answer: Any)
   private case object MaterializeAgain
   /** F208: a materialization's request, sent again with its key until the persistent bus answers it, and its callers. */
-  private case class Materializing(request: AnyRef, callers: Vector[ActorRef], attempt: Int, inFlight: Boolean)
+  private case class Materializing(request: StoreFirstEvent[_], callers: Vector[ActorRef], attempt: Int)
   private val materializeRetries = Backoff(1.second, 30.seconds, Int.MaxValue)
   /** To the command bus: the histories of these aggregates changed under their owners (a squash or a rewrite of their
     * base, a detach, D85): the owners, if running, stop without a snapshot, and new ones read the histories again. */
@@ -293,7 +293,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     case Rewrite(respondTo, request) => respondTo ! rewriteHistory(request) // it reads the state again after it
     case MaterializeOwner(respondTo, request) => materialize(respondTo, request)
     case MaterializeAnswer(answer) => materializeAnswered(answer)
-    case MaterializeAgain => materializing.filterNot(_.inFlight).foreach(sendMaterialize)
+    case MaterializeAgain => materializing.foreach(sendMaterialize)
     case StopOwner =>
       stopping = true
       stopIfDone()
@@ -324,15 +324,29 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
 
   // F131: the owners of a `Local` aggregate on other nodes write it without this one. Before it answers what must be
   // current (the state, a version asked for, a re-publication, a squash), the owner compares the stored version and
-  // history generation with its own, and restores the aggregate when they differ. A sharded owner is the aggregate's
-  // only one, and so is the owner on a node that is alone: they never ask.
-  private def caughtUp(): Option[AggregateRestoreFailedException] =
-    if (sharded || members.alone || eventStore.storedVersion(aggregateId).getOrElse((AggregateVersion.ZERO, 0)) == ((version, generation))) None
-    else restore() match {
-      case None =>
-        answerReachedMinVersionQueries()
-        None
-      case failure => failure
+  // history generation with its own, one key lookup, and catches up when they differ: by the events after its version
+  // when only they are new (F214), else by a restore. A sharded owner is the aggregate's only one, and so is the owner on
+  // a node that is alone: they ask only when told a newer version exists (`always`, F213). A lookup that fails fails
+  // the request asking, and the state stays (F231).
+  private def caughtUp(always: Boolean = false): Option[AggregateRestoreFailedException] =
+    if (!always && (sharded || members.alone)) None
+    else Try(eventStore.storedVersion(aggregateId).getOrElse((AggregateVersion.ZERO, 0))) match {
+      case Failure(e) =>
+        log.warning("Reading the stored version of aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " failed: " + Errors.describe(e))
+        Some(new AggregateRestoreFailedException(aggregateId, aggregateType, Errors.redacted(e)))
+      case Success(stored) if stored == ((version, generation)) => None
+      case Success((storedVersion, storedGeneration)) =>
+        // The same generation: no undo, rewrite or state-changing squash since (a plain squash event gives the state
+        // it replaces, so applying it on the owner's state is right).
+        val incremental = if (storedGeneration != generation || storedVersion <= version || version == AggregateVersion.ZERO) None
+          else Try(restorer.caughtUp(aggregateId, version, root)).toOption.filter(_._1 == storedVersion)
+        incremental.foreach { case (newest, state) => version = newest; root = state }
+        (if (incremental.isDefined) None else restore()) match {
+          case None =>
+            answerReachedMinVersionQueries()
+            None
+          case failure => failure
+        }
     }
 
   // ************** Commands
@@ -409,7 +423,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
   // expecting a version above the owner's means another writer moved the aggregate on: it is reloaded first (F19). An
   // owner that may share its aggregate catches up first too (F145): another node's change may have kept the version
   // (a rewrite of its base, a squash that changes the state), and the command must not run on the state of before.
-  private def attempt(command: Pending): Unit = {
+  private def attempt(command: Pending): Unit = if (pastDeadline(command)) timedOut(command.envelope.commandId) else {
     val envelope = command.envelope
     // F252: a key the store cannot keep fails the command before it runs, not when its response is stored.
     idempotency.keyRefusal(envelope.command).map(Failure(_)).getOrElse(Try(idempotency.storedResponse(envelope.command))) match {
@@ -418,7 +432,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
       case Success(Some(stored)) => finish(envelope.commandId, stored)
       case Success(None) =>
         val expected = expectedVersion(envelope.command)
-        val reloadFailure = if (expected.exists(_ > version)) restore() else caughtUp()
+        val reloadFailure = caughtUp(always = expected.exists(_ > version))
         reloadFailure match {
           case Some(failure) => pendingFailed(envelope.commandId, failure)
           case None => expected match {
@@ -494,7 +508,12 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
   // The event handlers run once, on a copy, before the commit (F25); undo and duplication events, and rewrites, read
   // the state from the store after it instead. Every failure is thrown inside the transaction, so nothing of the
   // command is stored (F68), and every outcome answers the command (AR3).
-  private def persist(command: Pending, events: Seq[Event[AGGREGATE_ROOT]], rewritten: Iterable[EventWithVersion[AGGREGATE_ROOT]], info: AnyRef): Unit = {
+  // F229: a command is never persisted, nor read for, after its timeout: its timer's message may wait in the mailbox
+  // behind other commands' database work, and its caller has been told, or will be, that it was not applied.
+  private def pastDeadline(command: Pending): Boolean = System.nanoTime() - command.arrived >= commandTimeout.toNanos
+
+  private def persist(command: Pending, events: Seq[Event[AGGREGATE_ROOT]], rewritten: Iterable[EventWithVersion[AGGREGATE_ROOT]], info: AnyRef): Unit =
+    if (pastDeadline(command)) timedOut(command.envelope.commandId) else {
     val envelope = command.envelope
     val userId = userIdOf(envelope.command)
     val timestamp = Instant.now.truncatedTo(ChronoUnit.MICROS) // what PostgreSQL keeps, so a restore reads the same (F7)
@@ -764,22 +783,21 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     case (_, None) => respondTo ! MaterializeRefused(aggregateId, "squash is not enabled for " + aggregateType.simpleName +
       ", so its state has no event to be stored as")
     case _ if materializing.isDefined => // the same state is being stored: this caller hears the outcome too
-      val under = materializing.get.copy(callers = materializing.get.callers :+ respondTo)
-      materializing = Some(under)
-      if (!under.inFlight) sendMaterialize(under)
+      materializing = materializing.map(under => under.copy(callers = under.callers :+ respondTo))
     case _ if pending.nonEmpty =>
       respondTo ! MaterializeRefused(aggregateId, "commands are under way on it; send it again")
     case (Some(_), Some(policy)) =>
       restorer.squashEvent(aggregateId, version, policy, Some(request.userId), Some(root)) match {
         case Left(reason) => respondTo ! MaterializeRefused(aggregateId, reason)
         case Right(event) =>
-          sendMaterialize(Materializing(StoreFirstEvent[AGGREGATE_ROOT](request.userId, event, Some(MaterializationKey(aggregateId, ephemeralStart))),
-            Vector(respondTo), attempt = 1, inFlight = false))
+          val under = Materializing(StoreFirstEvent[AGGREGATE_ROOT](request.userId, event, Some(MaterializationKey(aggregateId, ephemeralStart))),
+            Vector(respondTo), attempt = 1)
+          materializing = Some(under)
+          sendMaterialize(under)
       }
   }
 
   private def sendMaterialize(under: Materializing): Unit = {
-    materializing = Some(under.copy(inFlight = true))
     implicit val timeout: Timeout = Timeout(commandTimeout)
     (materializeTo.get ? under.request).recover { case e => e }(handlersContext).foreach(answer => self ! MaterializeAnswer(answer))(handlersContext)
   }
@@ -799,7 +817,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
           under.attempt + "), sent again in " + next + ": " + Errors.describe(e))
         under.callers.foreach(_ ! MaterializeRefused(aggregateId, "the persistent command bus did not answer: " + Errors.describe(e) +
           "; the outcome is not known yet, the aggregate takes no commands until it is, and Materialize gets it"))
-        materializing = Some(under.copy(callers = Vector.empty, attempt = under.attempt + 1, inFlight = false))
+        materializing = Some(under.copy(callers = Vector.empty, attempt = under.attempt + 1))
         context.system.scheduler.scheduleOnce(next, self, MaterializeAgain)
       case other =>
         materializing = None
@@ -828,10 +846,9 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
         if (changed) log.info("Aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " rewritten by " + request.change.getClass.getSimpleName +
           ": " + count.events + " events (" + count.unreadable + " unreadable), " + count.archived + " archived, fields " + count.fields.toSeq.sorted.mkString(", "))
         // F194: the duplicates are told every time, so a run again repairs a notice a failure lost; and this owner reads
-        // its state again when the stored history is not the one it holds: a rewrite of a base it reads changed it.
+        // its state again (also when only a base it reads was rewritten, and after a failed restore).
         historyChangedForDuplicates()
-        val behind = !eventStore.storedVersion(aggregateId).contains((version, generation))
-        if ((changed || behind || restoreFailure.isDefined) && restore().isEmpty) context.become(restored)
+        if (restore().isEmpty) context.become(restored)
         HistoryRewritten(aggregateId, count.events, count.archived, count.fields, count.unreadable)
       case Success(Left(reason)) => RewriteRefused(aggregateId, reason)
       case Failure(e) =>

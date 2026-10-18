@@ -1,12 +1,11 @@
 package io.reactivecqrs.core.saga
 
-import io.reactivecqrs.api.id.{SagaId, SpaceId, UserId}
+import io.reactivecqrs.api.id.{SagaId, SpaceId}
 
 import scala.concurrent.duration.FiniteDuration
 
-/** A saga as stored: its id, user, where to answer, phase, step, order and order key (F207). */
-case class StoredSaga(sagaId: SagaId, userId: UserId, respondTo: String, phase: SagaPhase, step: Int, order: SagaInternalOrder,
-                      orderKey: Option[String] = None)
+/** A saga as stored: its id, where to answer, phase, step, order and order key (F207). */
+case class StoredSaga(sagaId: SagaId, respondTo: String, phase: SagaPhase, step: Int, order: SagaInternalOrder, orderKey: Option[String] = None)
 
 /** What storing a new saga did. */
 sealed trait SagaCreation
@@ -24,16 +23,16 @@ abstract class SagaState {
                  orderKey: Option[String] = None): SagaCreation
 
   /** Stores a saga's progress, and, for a keyed saga, the answer its caller was given (F207); false when the saga is not
-    * stored, or (with `from`) not at that phase and step (F232). */
+    * stored at `from`, the phase and step the runner moves it from (F232). */
   def updateSaga(name: String, sagaId: SagaId, order: SagaInternalOrder, phase: SagaPhase, step: Int,
-                 from: Option[(SagaPhase, Int)] = None, answer: Option[SagaResponse] = None): Boolean
+                 from: (SagaPhase, Int), answer: Option[SagaResponse] = None): Boolean
 
-  /** Removes a finished saga; false when it is not stored, or (with `from`) not at that phase and step. */
-  def deleteSaga(name: String, sagaId: SagaId, from: Option[(SagaPhase, Int)] = None): Boolean
+  /** Removes a finished saga; false when it is not stored at `from`. */
+  def deleteSaga(name: String, sagaId: SagaId, from: (SagaPhase, Int)): Boolean
 
   /** F207: marks a keyed saga finished, keeping its row and the answer its caller was given (`answer`, or the one stored
     * before) for repeated orders, until `removeFinished`; false as `updateSaga`. */
-  def finishSaga(name: String, sagaId: SagaId, answer: Option[SagaResponse], from: Option[(SagaPhase, Int)] = None): Boolean
+  def finishSaga(name: String, sagaId: SagaId, answer: Option[SagaResponse], from: (SagaPhase, Int)): Boolean
 
   /** Removes the finished sagas of `name` older than `olderThan`; returns how many. */
   def removeFinished(name: String, olderThan: FiniteDuration): Int

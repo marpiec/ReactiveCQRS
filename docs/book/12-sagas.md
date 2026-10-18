@@ -501,11 +501,12 @@ actor name). On an actor system that is not a cluster, `SagaRunner.start` simply
 In a cluster, orders and responses travel between nodes, so they must be classes the library's
 serializer can write and read (chapter 17).
 
-When the runner starts, or moves to another node, orders wait until it has read the stored sagas,
-and a saga it runs already is never started a second time. Each write of progress names the phase
+When the runner starts, or moves to another node, it reads the stored sagas and runs them on, and a
+saga it runs already is never started a second time. Each write of progress names the phase
 and step it moves from, so a stale copy of a saga (an old runner's late write) stops instead of
-writing over a newer one. `GetSagaStatus` (in `SagaRunner`) answers how many sagas run, how many
-orders wait, and how many sagas cannot be stored right now.
+writing over a newer one. `GetSagaStatus` (in `SagaRunner`) answers how many sagas run and how many
+orders wait for a saga id; a saga that cannot be stored right now shows in the metric
+`reactivecqrs.saga.write.failed` and the log.
 
 ## Sagas of an organization
 

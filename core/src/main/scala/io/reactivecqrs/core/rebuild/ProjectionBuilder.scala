@@ -110,10 +110,10 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
   // Chunks to send with the position the bulk pass reaches once each is applied, and those sent, oldest first.
   private val ready = mutable.Queue[(ApplyChunk, Long)]()
   private val inFlight = mutable.Queue[(ApplyChunk, Long)]()
-  // F223: what the reconciliation and the gaps lack, read one aggregate at a time when nothing else is ready to send, so
-  // memory holds a few chunks, not every missing event of a page; the gaps and the chunks to send again go first.
+  // F223: what the gaps and the reconciliation lack (the gaps first), read a chunk's worth of aggregates at a time when
+  // nothing else is ready, so memory holds a few chunks, not every missing event of a page. Its chunks, and those to send
+  // again, go before a bulk page's (`first`); they save no position.
   private val work = mutable.Queue[() => Seq[ChunkItem]]()
-  private val gapWork = mutable.Queue[() => Seq[ChunkItem]]()
   private val first = mutable.Queue[(ApplyChunk, Long)]()
   private var chunkIds = 0L
   private var outstanding = 0 // items the projection handed to its queues, not answered yet
@@ -200,21 +200,20 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
     }
   }
 
-  private def nothingToSend: Boolean = first.isEmpty && ready.isEmpty && work.isEmpty && gapWork.isEmpty
+  private def nothingToSend: Boolean = first.isEmpty && ready.isEmpty && work.isEmpty
 
-  // The next chunk to send: one sent before and not taken, a gap's, a page's, or one made from the next aggregate behind.
+  // The next chunk to send: one sent before and not taken, one made from the next aggregates missing versions, a page's.
   private def nextChunk(): Option[(ApplyChunk, Long)] = {
-    while (first.isEmpty && gapWork.nonEmpty) chunked(aChunkOf(gapWork).map(_ -> -1L), -1L).foreach(first.enqueue) // a gap saves no position
-    while (first.isEmpty && ready.isEmpty && work.nonEmpty) chunked(aChunkOf(work).map(_ -> 0L), 0L).foreach(ready.enqueue)
+    while (first.isEmpty && work.nonEmpty) chunked(aChunkOfWork().map(_ -> -1L), -1L).foreach(first.enqueue)
     if (first.nonEmpty) Some(first.dequeue()) else if (ready.nonEmpty) Some(ready.dequeue()) else None
   }
 
   // The items of the next aggregates waiting, until they fill a chunk: small aggregates share one.
-  private def aChunkOf(waiting: mutable.Queue[() => Seq[ChunkItem]]): Seq[ChunkItem] = {
+  private def aChunkOfWork(): Seq[ChunkItem] = {
     val items = Vector.newBuilder[ChunkItem]
     var (events, bytes) = (0, 0L)
-    while (waiting.nonEmpty && events < settings.chunkEvents && bytes < settings.chunkBytes) {
-      val made = waiting.dequeue()()
+    while (work.nonEmpty && events < settings.chunkEvents && bytes < settings.chunkBytes) {
+      val made = work.dequeue()()
       items ++= made
       events += made.map(item => math.max(item.events.size, 1)).sum
       bytes += made.map(_.bytes).sum
@@ -298,7 +297,7 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
         val state = if (kinds.exists(_ != SubscriptionType.EVENTS)) Option(states.after(head.aggregateType, head.aggregateId, readable, head.squashedUpTo)) else None
         kinds.map(kind => item(kind, head.aggregateType, head.aggregateId, readable, state, startsAtSquash))
       } catch {
-        case NonFatal(e) if !transient(e) => unreadableItems(head, "its state cannot be restored: " + Errors.describe(e))
+        case NonFatal(e) if !Errors.transient(e) => unreadableItems(head, "its state cannot be restored: " + Errors.describe(e))
       }
     }
     // A row that cannot be read ends its run; the projection fails the subscription there (F82).
@@ -309,7 +308,6 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
   // F117: a store that cannot be read now (the connection lost, the database restarting or short of resources) is read
   // again later, as a page is; only what cannot be read at all fails its subscription. In a page this retries the page;
   // in a gap fill the builder stops and its supervisor starts it again from the saved position.
-  private def transient(e: Throwable): Boolean = Errors.transient(e)
 
   private def unreadableItems(at: CommittedEvent, error: String): Seq[ChunkItem] = {
     unreadable += 1
@@ -381,7 +379,7 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
         } else parts
       }
     } catch {
-      case NonFatal(e) if !transient(e) =>
+      case NonFatal(e) if !Errors.transient(e) =>
         unreadable += 1
         log.error(e, "Building " + subscriberName + ": " + aggregateType.simpleName + " " + id.asLong + " cannot be read from version " + from.asInt)
         Seq(ChunkItem(kind, aggregateType, id, from, from, Nil, None, unreadable = Some(Errors.describe(e))))
@@ -391,8 +389,8 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
   // rest of that aggregate's runs in later chunks may be gaps too, and are read again the same way.
   private def fill(gaps: Seq[(AggregateType, AggregateId, AggregateVersion)]): Unit = if (gaps.nonEmpty) {
     gapsFilled += gaps.size
-    gaps.distinct.foreach { case (aggregateType, id, from) =>
-      gapWork.enqueue(() => {
+    gaps.distinct.reverseIterator.foreach { case (aggregateType, id, from) =>
+      work.prepend(() => {
         val squashed = eventStore.squashedVersion(id)
         plan.kindsOf(aggregateType).flatMap(kind => itemsFrom(aggregateType, id, kind, from, squashed))
       })

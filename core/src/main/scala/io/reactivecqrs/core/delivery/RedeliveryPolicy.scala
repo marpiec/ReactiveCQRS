@@ -81,16 +81,17 @@ object RedeliveryPolicy {
     } else if (due > tracked.attemptsMade) {
       // one re-publication, however many attempts fell due since the last poll
       Step(w, before, tracked.copy(attemptsMade = due, lastTry = Some(now)), republish = true, gaveUp = false)
-    } else if (due == options.attemptsAfter.size && elapsed >= options.giveUpAfter && lastTriedLongAgo(tracked, now, options)) {
+    } else if (due == options.attemptsAfter.size && lastTriedLongAgo(tracked, now, options)) {
       Step(w, before, tracked.copy(gaveUp = true, lastTry = Some(now)), republish = false, gaveUp = true)
     } else {
       Step(w, before, tracked, republish = false, gaveUp = false)
     }
   }
 
-  // F268: the last re-publication has had the time the last of the attempts gets before the give-up.
+  // The last re-publication has had the time the last attempt gets before the give-up (`giveUpAfter` after the first,
+  // without attempts), also for an aggregate first seen late, re-published once for all its attempts (F268).
   private def lastTriedLongAgo(tracked: Tracked, now: Instant, options: Options): Boolean = {
     val lastGets = options.giveUpAfter - options.attemptsAfter.lastOption.getOrElse(0.seconds)
-    tracked.lastTry.forall(at => Duration.between(at, now).toMillis.millis >= lastGets)
+    Duration.between(tracked.lastTry.getOrElse(tracked.firstAttempt), now).toMillis.millis >= lastGets
   }
 }

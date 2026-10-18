@@ -48,7 +48,7 @@ class InFlightSpec extends AnyFeatureSpec with Matchers {
       f.put(4, D(8, 8, held = true))
       f.remove(4)
       (f.heldSize, f.size) mustBe ((0, 3))
-      f.keysWhere(_.first >= 6).toSet mustBe Set(1, 3)
+      f.entriesWhere(_.first >= 6).map(_._1).toSet mustBe Set(1, 3)
     }
   }
 }

@@ -284,7 +284,7 @@ val delivery = Await.result((eventBus ? GetDeliveryStatus).mapTo[DeliveryStatus]
 | Field | Meaning |
 |---|---|
 | `waiting` | deliveries waiting for an answer |
-| `undelivered` | the latest 100 that ended at the deadline, each an `Undelivered(aggregateType, aggregateId, version, subscriber, kind, at)`; `undeliveredTotal` says how many are kept (up to 1 000) |
+| `undelivered` | the latest 100 that ended at the deadline, each an `Undelivered(aggregateType, aggregateId, version, subscriber, kind, at)`; the log counts the others |
 | `stopped` | subscribers that stopped (later in this chapter) |
 | `held`, `behind` | flow control (later in this chapter) |
 

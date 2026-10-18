@@ -101,7 +101,7 @@ One per node. Messages from `io.reactivecqrs.core.eventbus.EventsBusActor._`.
 | You send | You get back | Good to know |
 |---|---|---|
 | `RegisterSubscribers(subscribers)` | Nothing | Send it once at start, with every projection, listener actor and managed projection's supervisor. The bus asks each for its subscriptions and publishes nothing until all have answered; meanwhile it logs every 5 seconds whom it waits for. `RegisterSubscribers(Nil)` starts a bus without subscribers. |
-| `GetDeliveryStatus` | `DeliveryStatus(waiting, undelivered, stopped, held, behind, undeliveredTotal)` | Answered even while the bus waits for its subscribers. See below. |
+| `GetDeliveryStatus` | `DeliveryStatus(waiting, undelivered, stopped, held, behind)` | Answered even while the bus waits for its subscribers. See below. |
 
 The fields of `DeliveryStatus`:
 
@@ -110,8 +110,7 @@ The fields of `DeliveryStatus`:
   each `Undelivered(aggregateType, aggregateId, version, subscriber, kind, at)`;
 - `stopped: Seq[String]`: subscribers that stopped; their events stay in the outbox;
 - `held: Int`: deliveries held back because a subscriber's window was full;
-- `behind: Map[String, Int]`: for each subscriber that is behind, how many aggregates are held for it;
-- `undeliveredTotal: Int`: how many ended undelivered are kept (up to 1 000).
+- `behind: Map[String, Int]`: for each subscriber that is behind, how many aggregates are held for it.
 
 ### If you write a subscriber by hand
 

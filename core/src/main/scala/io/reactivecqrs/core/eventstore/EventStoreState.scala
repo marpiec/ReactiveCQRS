@@ -74,7 +74,7 @@ abstract class EventStoreState {
     persist(aggregateId, eventsEnvelope).map(_.map(stored => (stored.event, stored.version)))
   /** The aggregate's history generation and its type's name, from its own row (F197); the type is None when the store
     * does not know it. */
-  def generationAndType(aggregateId: AggregateId): (Int, Option[String]) = (historyGeneration(aggregateId), None)
+  def generationAndType(aggregateId: AggregateId): (Int, Option[String])
   /** Writes these events over the stored ones of their versions (a history-rewriting command). With `expected`, the
     * version and history generation the command's state was read at, it throws `HistoryChangedException` when the
     * stored aggregate differs (F195). */
@@ -203,7 +203,7 @@ abstract class EventStoreState {
   def readWaitingInOutbox(limit: Int = Int.MaxValue): Seq[WaitingInOutbox]
 
   /** F260: as `readWaitingInOutbox`, those waiting the shortest first. */
-  def readNewestWaitingInOutbox(limit: Int): Seq[WaitingInOutbox] = readWaitingInOutbox().takeRight(limit).reverse
+  def readNewestWaitingInOutbox(limit: Int): Seq[WaitingInOutbox]
 
   /** The aggregate's own events with versions `from` to `to`, in order, undone ones included, as live delivery sent
     * them (D60), each with its stored size, and no more than `maxBytes` of them, but at least one: a re-publication's

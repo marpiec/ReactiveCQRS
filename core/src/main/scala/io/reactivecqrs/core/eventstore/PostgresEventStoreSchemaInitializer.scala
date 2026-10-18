@@ -13,6 +13,9 @@ private[eventstore] object PostgresEventStoreSchemaInitializer {
   /** Whether some aggregate has two stored events of one version. */
   def versionsRepeat()(implicit session: DBSession): Boolean =
     sql"SELECT EXISTS (SELECT 1 FROM events GROUP BY aggregate_id, version HAVING count(*) > 1)".map(_.boolean(1)).single().contains(true)
+
+  /** Whether the unique index is there, or can be built: no version is stored twice. */
+  def versionsCanBeUnique()(implicit session: DBSession): Boolean = Ddl.has(UniqueVersions) || !versionsRepeat()
 }
 
 /** Creates the event store's tables, indexes and procedures, when missing (`PostgresEventStoreState.initSchema`). */
@@ -162,8 +165,7 @@ class PostgresEventStoreSchemaInitializer  {
   // have such a pair, the plain index stays (StoredDataCheck names them), and so does it on a large installation until
   // `buildIndexesConcurrently` replaces it.
   private def createEventsAggregateVersionIndexWhenSmall(): Unit = if (small("events")) {
-    val unique = DB.readOnly(implicit session => Ddl.has(PostgresEventStoreSchemaInitializer.UniqueVersions) ||
-      !PostgresEventStoreSchemaInitializer.versionsRepeat())
+    val unique = DB.readOnly(implicit session => PostgresEventStoreSchemaInitializer.versionsCanBeUnique())
     if (unique) {
       Ddl.createIndex(PostgresEventStoreSchemaInitializer.UniqueVersions,
         s"CREATE UNIQUE INDEX IF NOT EXISTS ${PostgresEventStoreSchemaInitializer.UniqueVersions} ON events (aggregate_id, version)")

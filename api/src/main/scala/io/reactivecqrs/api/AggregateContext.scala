@@ -92,13 +92,14 @@ case class Materialize(id: AggregateId, userId: UserId)
 sealed trait MaterializeResponse
 /** The ephemeral aggregate `id` is stored as `persistentId`, and dropped. */
 case class Materialized(id: AggregateId, persistentId: AggregateId) extends MaterializeResponse
-/** Nothing was stored, for `reason`; the ephemeral aggregate stays. */
+/** Nothing was stored, for `reason`, or (F208) the outcome is not known yet, which `reason` says: the ephemeral aggregate
+  * stays, and takes no commands until a `Materialize` sent again learns the outcome. */
 case class MaterializeRefused(id: AggregateId, reason: String) extends MaterializeResponse
 
 /** D77: the idempotency key of a materialization, so that one ephemeral aggregate is never stored twice. `start`: the
   * random value of the ephemeral bus's start (F209), as ids repeat across starts. */
-case class MaterializationKey(ephemeralId: AggregateId, start: String = "") extends CommandIdempotencyId {
-  override def asDbKey: String = "materialize|" + (if (start.isEmpty) "" else start + "|") + ephemeralId.asLong
+case class MaterializationKey(ephemeralId: AggregateId, start: String) extends CommandIdempotencyId {
+  override def asDbKey: String = "materialize|" + start + "|" + ephemeralId.asLong
 }
 
 /** D77: writes `event` as the first event of a new aggregate, as given, without the context's command handlers: what a

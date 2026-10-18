@@ -103,7 +103,7 @@ Jedna na węzeł. Komunikaty z `io.reactivecqrs.core.eventbus.EventsBusActor._`.
 | Wysyłasz | Dostajesz | Warto wiedzieć |
 |---|---|---|
 | `RegisterSubscribers(subscribers)` | Nic | Wyślij raz na starcie, ze wszystkimi projekcjami, aktorami-listenerami i nadzorcami projekcji zarządzanych. Szyna pyta każdego o subskrypcje i niczego nie publikuje, dopóki wszyscy nie odpowiedzą; w tym czasie co 5 sekund zapisuje w logu, na kogo czeka. `RegisterSubscribers(Nil)` uruchamia szynę bez subskrybentów. |
-| `GetDeliveryStatus` | `DeliveryStatus(waiting, undelivered, stopped, held, behind, undeliveredTotal)` | Szyna odpowiada nawet wtedy, gdy jeszcze czeka na subskrybentów. Szczegóły niżej. |
+| `GetDeliveryStatus` | `DeliveryStatus(waiting, undelivered, stopped, held, behind)` | Szyna odpowiada nawet wtedy, gdy jeszcze czeka na subskrybentów. Szczegóły niżej. |
 
 Pola `DeliveryStatus`:
 
@@ -113,8 +113,7 @@ Pola `DeliveryStatus`:
 - `stopped: Seq[String]`: subskrybenci, którzy się zatrzymali; ich zdarzenia zostają w outboxie;
 - `held: Int`: dostarczenia wstrzymane, bo okno subskrybenta było pełne;
 - `behind: Map[String, Int]`: dla każdego subskrybenta, który zostaje w tyle, liczba agregatów
-  wstrzymanych dla niego;
-- `undeliveredTotal: Int`: ile przechowywanych jest dostarczeń zakończonych bez odpowiedzi (do 1 000).
+  wstrzymanych dla niego.
 
 ### Jeśli piszesz subskrybenta samodzielnie
 

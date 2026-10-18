@@ -829,7 +829,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   }
 
   private var lastTransientLog = 0L
-  private val TransientLogInterval = 60L * 1000000000L
+  private val TransientLogInterval = 1.minute.toNanos
 
   // F201: a retried failure whose version is applied is cleared; until its record goes, the queue keeps it, so the clear
   // is tried again (a record left behind would come back at the next start as a gap that never fills).

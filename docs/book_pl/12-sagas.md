@@ -517,11 +517,12 @@ nazwą aktora). W systemie aktorów, który nie jest klastrem, `SagaRunner.start
 aktora. W klastrze zlecenia i odpowiedzi podróżują między węzłami, więc muszą być klasami, które
 serializer biblioteki potrafi zapisać i odczytać (rozdział 17).
 
-Gdy runner startuje albo przenosi się na inny węzeł, zlecenia czekają, aż przeczyta zapisane sagi, a
-sagi, którą już wykonuje, nigdy nie uruchamia drugi raz. Każdy zapis postępu podaje fazę i krok, z
+Gdy runner startuje albo przenosi się na inny węzeł, czyta zapisane sagi i prowadzi je dalej, a sagi,
+którą już wykonuje, nigdy nie uruchamia drugi raz. Każdy zapis postępu podaje fazę i krok, z
 których przechodzi, więc nieaktualna kopia sagi (spóźniony zapis starego runnera) zatrzymuje się,
-zamiast nadpisać nowszą. `GetSagaStatus` (w `SagaRunner`) odpowiada, ile sag działa, ile zleceń czeka i
-ile sag nie da się w tej chwili zapisać.
+zamiast nadpisać nowszą. `GetSagaStatus` (w `SagaRunner`) odpowiada, ile sag działa i ile zleceń czeka na
+identyfikator sagi; sagę, której nie da się w tej chwili zapisać, widać w metryce
+`reactivecqrs.saga.write.failed` i w logu.
 
 ## Sagi organizacji
 

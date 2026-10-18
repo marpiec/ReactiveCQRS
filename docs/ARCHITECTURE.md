@@ -1023,7 +1023,7 @@ Draining a queue, with `applied` the subscription's stored version:
 **Failed subscriptions** (D20a). `GetProjectionStatus` → `ProjectionStatus(name, failures,
 retrying, waitingForGap, failuresTotal)`: the oldest 100 failures, errors cut to 500 characters,
 and at most 1 000 aggregates per list, so the answer crosses nodes (F228; `DeliveryStatus` lists the
-latest 100 undelivered with `undeliveredTotal`). `RetryFailedSubscription(id)` asks the owner for each failed
+latest 100 undelivered only, the log counting the rest). `RetryFailedSubscription(id)` asks the owner for each failed
 version again, repeated like a gap, and clears the failure once a batch reaches that version
 (F88); `RetryAllFailedSubscriptions` does it for every failure, 20 per second
 (`failureRetryInterval`); `SkipFailedVersion(id)` marks each failed version as applied without
@@ -1414,12 +1414,13 @@ stored response and the saga goes on; a step throws `SagaStepNotDone` for an ans
 `SagaFailed` only for a refusal. A caller hears an outcome only once it is stored: the move to `REVERTING` or the
 finish (F206). A failed write is retried with back-off (`persistRetries`, a `Backoff` from 100 ms, doubling up to 30 s,
 10 attempts); a progress write is then tried again at the longest delay for as long as the runner runs (an error
-log, `reactivecqrs.saga.write.failed`, `GetSagaStatus.failingWrites`), never dropped; only a new saga whose first
+log, `reactivecqrs.saga.write.failed`), never dropped; only a new saga whose first
 write fails every attempt is refused (`SagaFailureResponse`, as is an order that gets no saga id, F75). Creates are
 `ON CONFLICT DO NOTHING`, so an attempt that committed without an answer counts as stored. Every progress write and
 finish names the phase and step it moves from (a compare-and-set); a write that finds the saga elsewhere stops that
-copy (F232). Orders wait until the runner's first load has read all pending sagas (retried without limit), and a
-load skips the sagas the runner already runs, so `LoadPendingSagas` never starts one twice (F75, F232). A stored
+copy (F232). A new saga counts as running from before its create is written, and a load (retried without limit)
+skips the sagas the runner runs, so `LoadPendingSagas` never starts one twice (F75, F232). The runner catches what a
+message's handling throws, and after a restart takes orders without loading again (its sagas still answer it). A stored
 order or phase that no longer reads is logged and left out (F151, F252). The table has a unique index on
 `(name, saga_id)`, built `CONCURRENTLY`. Saga ids come from pools fetched ahead (F23); an order that arrives while none
 is at hand waits for the pool, and is refused if the pool does not come. The saga state's JDBC calls run on the

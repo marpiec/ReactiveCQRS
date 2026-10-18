@@ -14,6 +14,7 @@ import io.reactivecqrs.core.util.{BlockingDispatcher, MyActorLogging}
 
 import scala.collection.mutable
 import scala.concurrent.{ExecutionContext, Future}
+import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 import scala.concurrent.duration._
 import io.reactivecqrs.core.util.Errors
@@ -32,23 +33,19 @@ object SagaRunner {
             actorName: Option[String] = None): ActorRef =
     Singletons.start(system, actorName.getOrElse(definition.name), props(definition, uidGenerator, state))
 
-  /** A saga to run from its stored step, as the runner loads it. */
-  case class SagaPersisted(sagaId: SagaId, respondTo: String, order: SagaInternalOrder, phase: SagaPhase, step: Int,
-                           orderKey: Option[String] = None)
-
   /** Loads the sagas stored unfinished and resumes those this runner does not run already (F232); the runner sends it
-    * to itself at start, and orders wait until that first load is done. */
+    * to itself at start. */
   case object LoadPendingSagas
 
   /** Asks the runner for its `SagaStatus` (F206). */
   case object GetSagaStatus
-  /** `running`: sagas under way here; `waiting`: orders waiting for the first load or for saga ids; `failingWrites`:
-    * sagas whose progress cannot be stored now (they are tried again until it can). */
-  case class SagaStatus(name: String, running: Int, waiting: Int, failingWrites: Int)
+  /** `running`: sagas under way here; `waiting`: orders waiting for saga ids. A write that keeps
+    * failing shows as the metric `reactivecqrs.saga.write.failed`. */
+  case class SagaStatus(running: Int, waiting: Int)
 
   private[saga] case class LoadPendingSagasAttempt(attempt: Int)
   private[saga] case class LoadFailed(attempt: Int)
-  private[saga] case class Loaded(sagas: Vector[SagaPersisted])
+  private[saga] case class Loaded(sagas: Vector[StoredSaga])
   private[saga] case object RemoveFinished
 
   private[saga] case class RunningSaga(sagaId: SagaId, respondTo: String, order: SagaInternalOrder, phase: SagaPhase, step: Int,
@@ -119,22 +116,18 @@ abstract class SagaRunning extends Actor with MyActorLogging {
   private val sagaIds = new IdPool
   private var waitingForIds = Vector[(SagaOrder, ActorRef)]()
 
-  // F232: orders wait for the first load, and a saga under way here is not started again by a load.
-  private var loaded = false
-  private var beforeLoad = Vector[(SagaOrder, ActorRef)]()
+  // F232: the sagas under way here, from before their create is stored, which a load does not start again.
   private val running = mutable.Set[SagaId]()
   // F207: callers of a keyed order that joined a saga under way, answered with its caller.
   private val joined = mutable.Map[SagaId, Vector[String]]()
-  // F206: sagas whose last write failed, for the status.
-  private val failingWrites = mutable.Set[SagaId]()
 
   // All rows are read before any saga starts, so a load that fails part-way and is retried starts no saga twice. The
   // read runs off the actor's thread and touches no actor state.
   private def loadPendingSagas(attempt: Int): Unit = {
     val name = sagaName
     Future {
-      var stored = Vector[SagaPersisted]()
-      state.loadAllSagas(name, saga => stored :+= SagaPersisted(saga.sagaId, saga.respondTo, saga.order, saga.phase, saga.step, saga.orderKey))
+      var stored = Vector[StoredSaga]()
+      state.loadAllSagas(name, saga => stored :+= saga)
       stored
     }(blocking).onComplete {
       case Success(stored) => self ! Loaded(stored)
@@ -150,54 +143,47 @@ abstract class SagaRunning extends Actor with MyActorLogging {
     context.system.scheduler.scheduleWithFixedDelay(1.minute, 1.day, self, RemoveFinished)
   }
 
-  // After a restart the running sagas still send their results to this actor; loading the stored ones again would
-  // start them a second time (F75).
+  // A restart is rare (`receive` catches what its work throws): the running sagas still send their results to this
+  // actor, so the stored ones are not loaded again, which would start them a second time (F75).
   override def postRestart(reason: Throwable): Unit = {
     log.warning("Saga actor " + sagaName + " restarted after: " + Errors.describe(reason))
+    askForIds()
   }
 
-  override def receive: Receive = {
+  override def receive: Receive = { case message =>
+    try handle(message) catch {
+      case NonFatal(e) => log.error(e, "Saga actor " + sagaName + " failed on a message of class " + message.getClass.getName + "; it is dropped")
+    }
+  }
+
+  private def handle(message: Any): Unit = message match {
     case LoadPendingSagas => loadPendingSagas(1)
     case LoadPendingSagasAttempt(attempt) => loadPendingSagas(attempt)
-    case LoadFailed(attempt) =>
-      // The first load is tried until it succeeds: orders wait for it.
-      context.system.scheduler.scheduleOnce(definition.persistRetries.delay(math.min(attempt + 1, definition.persistRetries.maxAttempts)), self,
-        LoadPendingSagasAttempt(attempt + 1))
+    case LoadFailed(attempt) => // a load is tried until it succeeds
+      context.system.scheduler.scheduleOnce(definition.persistRetries.delay(attempt + 1), self, LoadPendingSagasAttempt(attempt + 1))
     case Loaded(stored) => sagasLoaded(stored)
     case m: SagaOrder =>
-      if (loaded) {
-        waitingForIds :+= (m -> sender())
-        startWaiting()
-        askForIds()
-      } else beforeLoad :+= (m -> sender())
+      waitingForIds :+= (m -> sender())
+      startWaiting()
+      askForIds()
     case NewSagasIdsPool(from, size) =>
       sagaIds.received(from, size)
       startWaiting()
       askForIds()
     case SagaIdsNotReceived(e) => sagaIdsNotReceived(e)
-    case m: SagaPersisted => resume(m)
     case StepCompleted(saga, result) => handleStepResult(saga, result)
     case RevertStepCompleted(saga, result) => handleRevertStepResult(saga, result)
-    case RunAgain(saga) => if (running.contains(saga.sagaId)) runStep(saga)
+    case RunAgain(saga) => runStep(saga)
     case WriteCompleted(pending, attempt, result) => handleWriteResult(pending, attempt, result)
     case RetryWrite(pending, attempt) => write(pending, attempt)
     case RemoveFinished => removeFinished()
-    case GetSagaStatus => sender() ! SagaStatus(sagaName, running.size, beforeLoad.size + waitingForIds.size, failingWrites.size)
+    case GetSagaStatus => sender() ! SagaStatus(running.size, waitingForIds.size)
     case m => log.warning("Received incorrect message of type: [" + m.getClass.getName + "]")
   }
 
-  private def sagasLoaded(stored: Vector[SagaPersisted]): Unit = {
-    stored.foreach(resume)
-    if (!loaded) {
-      loaded = true
-      waitingForIds ++= beforeLoad
-      beforeLoad = Vector.empty
-      startWaiting()
-      askForIds()
-    }
-  }
+  private def sagasLoaded(stored: Vector[StoredSaga]): Unit = stored.foreach(resume)
 
-  private def resume(saga: SagaPersisted): Unit =
+  private def resume(saga: StoredSaga): Unit =
     if (running.contains(saga.sagaId)) log.info("Saga " + sagaName + " " + saga.sagaId.asLong + " runs here already; it is not loaded again")
     else {
       log.info("Continuing saga " + sagaName + " " + saga.sagaId.asLong + " at step " + saga.step)
@@ -215,7 +201,9 @@ abstract class SagaRunning extends Actor with MyActorLogging {
     if (key.exists(_.length > MaxOrderKeyLength)) {
       respondTo ! SagaFailureResponse(List("The order key has " + key.get.length + " characters; at most " + MaxOrderKeyLength + " are stored"))
     } else {
-      write(CreateSaga(RunningSaga(SagaId(sagaIds.take()), callerPath(context.system, respondTo), order, CONTINUES, 0, key)))
+      val sagaId = SagaId(sagaIds.take())
+      running += sagaId // a load that reads its row before its create is answered does not start it twice (F232)
+      write(CreateSaga(RunningSaga(sagaId, callerPath(context.system, respondTo), order, CONTINUES, 0, key)))
     }
   }
 
@@ -306,11 +294,11 @@ abstract class SagaRunning extends Actor with MyActorLogging {
     Future[Any] {
       pending match {
         case _: CreateSaga => state.createSaga(name, saga.sagaId, saga.respondTo, saga.order, space, saga.orderKey)
-        case p: StoreProgress => state.updateSaga(name, saga.sagaId, saga.order, saga.phase, saga.step, Some(p.from),
+        case p: StoreProgress => state.updateSaga(name, saga.sagaId, saga.order, saga.phase, saga.step, p.from,
           if (saga.orderKey.isDefined) p.answer else None)
         case p: FinishSaga =>
-          if (saga.orderKey.isDefined) state.finishSaga(name, saga.sagaId, p.answer, Some(p.from)) // F207: kept, with its answer
-          else state.deleteSaga(name, saga.sagaId, Some(p.from))
+          if (saga.orderKey.isDefined) state.finishSaga(name, saga.sagaId, p.answer, p.from) // F207: kept, with its answer
+          else state.deleteSaga(name, saga.sagaId, p.from)
       }
     }(blocking).onComplete(result => self ! WriteCompleted(pending, attempt, result))
   }
@@ -318,20 +306,20 @@ abstract class SagaRunning extends Actor with MyActorLogging {
   private def handleWriteResult(pending: SagaWrite, attempt: Int, result: Try[Any]): Unit = {
     val saga = pending.saga
     val retries = definition.persistRetries
-    if (result.isSuccess) failingWrites -= saga.sagaId
     result match {
-      case Success(NewSaga) =>
-        running += saga.sagaId
-        runStep(saga)
+      case Success(NewSaga) => runStep(saga)
       case Success(SagaOfKey(_, Some(answer))) => // F207: a repeated order of a saga done
+        running -= saga.sagaId
         respondTo(saga.respondTo) ! answer
       case Success(SagaOfKey(other, None)) if running.contains(other) => // F207: a repeated order joins the saga under way
+        running -= saga.sagaId
         joined(other) = joined.getOrElse(other, Vector.empty) :+ saga.respondTo
         log.info("An order of saga " + sagaName + " repeats the key of saga " + other.asLong + ", and joins it")
       case Success(SagaOfKey(other, None)) if !retries.exhausted(attempt) =>
         // Read before that saga stored its answer, which came after: read again (or it runs in another runner).
         context.system.scheduler.scheduleOnce(retries.delay(attempt + 1), self, RetryWrite(pending, attempt + 1))
       case Success(SagaOfKey(other, None)) =>
+        running -= saga.sagaId
         respondTo(saga.respondTo) ! SagaFailureResponse(List("The order key belongs to saga " + other.asLong + ", which does not run here"))
       case Success(true) =>
         pending.answer.foreach(respond(saga, _)) // F206: once the saga's outcome is stored
@@ -341,26 +329,24 @@ abstract class SagaRunning extends Actor with MyActorLogging {
         }
       case Success(_) =>
         // F232: the stored saga is not where this copy is: another copy moved it on (a load, an old runner, a split).
+        // Its joined callers ask again: their repeat gets the outcome, or joins the copy that runs.
         running -= saga.sagaId
-        val from = pending match {
-          case p: StoreProgress => p.from
-          case p: FinishSaga => p.from
-          case _ => saga.at
-        }
-        log.warning("Saga " + sagaName + " " + saga.sagaId.asLong + " is not stored at " + from._1.name + " step " + from._2 +
-          " any more (moved on by another copy, or removed); this copy stops")
+        joined.remove(saga.sagaId).foreach(_.foreach(respondTo(_) ! SagaFailureResponse(List("Saga " + saga.sagaId.asLong +
+          " moved on in another runner; send the order again for its outcome"))))
+        log.warning("Saga " + sagaName + " " + saga.sagaId.asLong + " is no longer stored where this copy left it (moved on by another copy, " +
+          "or removed); this copy stops")
       case Failure(e) if !retries.exhausted(attempt) =>
         log.warning("Storing saga " + sagaName + " " + saga.sagaId.asLong + " failed (attempt " + attempt + " of " + retries.maxAttempts + "): " + Errors.describe(e))
         context.system.scheduler.scheduleOnce(retries.delay(attempt + 1), self, RetryWrite(pending, attempt + 1))
       case Failure(e) => pending match {
         case _: CreateSaga =>
+          running -= saga.sagaId
           log.error(e, "Saga " + sagaName + " could not be stored, its order is refused")
           respondTo(saga.respondTo) ! SagaFailureResponse(List("The saga could not be stored: " + Errors.describe(e)))
         case _ =>
           // F206: never dropped while this runner lives: tried again at the longest delay until it is stored.
-          if (!failingWrites.contains(saga.sagaId) || attempt % 10 == 0)
+          if (attempt == retries.maxAttempts || attempt % 10 == 0)
             log.error(e, "Storing saga " + sagaName + " " + saga.sagaId.asLong + " failed " + attempt + " times; it is tried again every " + retries.max)
-          failingWrites += saga.sagaId
           metrics.count("reactivecqrs.saga.write.failed", tags, 1L)
           context.system.scheduler.scheduleOnce(retries.max, self, RetryWrite(pending, attempt + 1))
       }

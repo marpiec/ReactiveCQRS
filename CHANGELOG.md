@@ -64,10 +64,10 @@ Fixes from [the risk assessment of 1.0.0](docs/RISK-ASSESSMENT.md), in the order
     only for a refusal; the book's sagas do so.
   - A caller hears a saga's outcome only once it is stored; a progress write that keeps failing is tried again for
     as long as the runner runs (`reactivecqrs.saga.write.failed`), never dropped. `GetSagaStatus` reports running
-    sagas, waiting orders and failing writes.
+    sagas and waiting orders.
   - Orders extending `IdempotentSagaOrder` carry an `orderKey`: a repeat joins the saga under way or gets its stored
     answer, kept `answersKeptFor` (30 days). New columns and a unique index on `sagas`, added at start.
-  - Orders wait for the runner's first load, a load does not start a running saga again, and writes compare the
+  - A load does not start a running saga again (nor one just created), and writes compare the
     stored phase and step.
   - **Source change** for a host with its own `SagaState`: `createSaga` takes the order key and returns
     `SagaCreation`, writes take the phase and step they move from, new `finishSaga` and `removeFinished`,
@@ -93,7 +93,8 @@ Fixes from [the risk assessment of 1.0.0](docs/RISK-ASSESSMENT.md), in the order
   - A subscriber that answers nothing past the deadline gets one message per deadline, not a new window.
   - In a cluster, a state listener's window counts the state each message carries.
   - The reconciliation and gap fills read the aggregates behind as they send them.
-  - Status answers list at most 100 items, with totals (`gaveUpTotal`, `undeliveredTotal`, `failuresTotal`).
+  - Status answers list at most 100 items, with totals (`gaveUpTotal`, `failuresTotal`); the bus keeps its latest 100
+    undelivered.
   - **Changed:** managed projection instances are named `<projection>-build-<n>-<k>`: the `bus.behind` gauge's tag
     and the log lines name the projection (metric series are renamed).
   - The outbox poller reads the newest waiting aggregates too when more than `maxTracked` wait; one it first sees

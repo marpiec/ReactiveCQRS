@@ -25,7 +25,7 @@ lists them all. Each entry is as it was when it was closed. Severity and confide
 
 #### F228 — Status answers grow without bound, and fail between nodes during incidents
 - **Low**, possible · **Fixed for 1.0.1** (18/10/2026, step 4; `EventsBusActorSpec` "F228", red under a mutation) · `OutboxStatus`, `DeliveryStatus`, `ProjectionStatus`
-- **Fix:** each answer lists at most 100 items with a total (`gaveUpTotal`, `undeliveredTotal`, `failuresTotal`), errors cut to 500 characters, and at most 1 000 aggregate ids per list, so it fits a message between nodes. Left: no paged queries for the rest; the logs and gauges name them.
+- **Fix:** each answer lists at most 100 items with a total where one is known (`gaveUpTotal`, `failuresTotal`; the bus keeps only its latest 100 undelivered), errors cut to 500 characters, and at most 1 000 aggregate ids per list, so it fits a message between nodes. Left: no paged queries for the rest; the logs and gauges name them.
 - **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
 
 #### F258 — Managed projection instances share actor names, so lag signals and logs collide
@@ -1058,7 +1058,7 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 
 #### F206 — A saga answered "failed" can run forward to success at the runner's next start, days later
 - **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 3; `SagaFaultsSpec` "F206" and `PostgresSagaStateSpec`, red under a mutation) · `SagaRunning`, `PostgresSagaState`
-- **Fix:** a caller hears a saga's outcome only once it is stored (the move to `REVERTING`, the finish); a progress write that keeps failing is tried again at `persistRetries`' longest delay for as long as the runner runs, with an error and a metric (`reactivecqrs.saga.write.failed`), never dropped. A create is `ON CONFLICT DO NOTHING`, an earlier attempt's row counting as stored. `GetSagaStatus` reports running sagas, waiting orders and failing writes. Left: a new saga whose first write fails every retry is still refused, so one whose commit was stored but not acknowledged on its last attempt runs at the next start; and the runner's in-flight writes are not drained before it stops (the compare-and-set writes of F232 stop a late one).
+- **Fix:** a caller hears a saga's outcome only once it is stored (the move to `REVERTING`, the finish); a progress write that keeps failing is tried again at `persistRetries`' longest delay for as long as the runner runs, with an error and a metric (`reactivecqrs.saga.write.failed`), never dropped. A create is `ON CONFLICT DO NOTHING`, an earlier attempt's row counting as stored. `GetSagaStatus` reports running sagas and waiting orders. Left: a new saga whose first write fails every retry is still refused, so one whose commit was stored but not acknowledged on its last attempt runs at the next start; and the runner's in-flight writes are not drained before it stops (the compare-and-set writes of F232 stop a late one).
 - **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
 
 #### F207 — Saga orders cannot be made idempotent, so a caller that retries during a singleton move starts the saga twice
@@ -1068,7 +1068,7 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 
 #### F232 — One saga can run twice at once in one runner, and saga rows have no compare-and-set to stop the stale copy
 - **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 3; `SagaFaultsSpec` "F232", `PostgresSagaStateSpec` "F232", red under a mutation) · `SagaRunning`, `PostgresSagaState`
-- **Fix:** orders wait until the runner's first load is done (it is tried until it succeeds); the runner keeps the ids of the sagas it runs and ignores loads of them, so `LoadPendingSagas` (kept public) resumes only sagas not under way; every progress write and finish names the phase and step it moves from, and a write that finds the saga elsewhere stops that copy.
+- **Fix:** the runner keeps the ids of the sagas it runs, a new one from before its create is written, and ignores loads of them (a load is tried until it succeeds), so `LoadPendingSagas` (kept public) resumes only sagas not under way; every progress write and finish names the phase and step it moves from, and a write that finds the saga elsewhere stops that copy.
 - **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
 
 #### F17 — Saga uses `ActorContext` off its thread

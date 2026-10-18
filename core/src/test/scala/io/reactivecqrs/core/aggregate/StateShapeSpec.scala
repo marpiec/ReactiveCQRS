@@ -22,7 +22,7 @@ class StateShapeSpec extends CommonSpec {
     }
 
     Scenario("is empty for a class that cannot be loaded") {
-      StateShape.of("com.example.Missing") mustBe ""
+      StateShape.of("com.example.Missing") mustBe StateShape.Unknown
     }
   }
 }
