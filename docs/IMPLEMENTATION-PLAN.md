@@ -2588,3 +2588,16 @@ Open test-infrastructure items:
   5–8 %) is profiled after it.
 - After the tag, master moves to `1.0.1-SNAPSHOT`, so a later build does not publish as 1.0.0; the README
   and the books keep the released coordinates.
+
+**18/10/2026: the risk assessment of 1.0.0**
+- At the owner's request, a deep reading of the released code for how it could fail: ten areas read in parallel
+  against the 184 known issues, the findings merged and the serious ones checked again in the code. No test was
+  written or run, as asked.
+- `docs/RISK-ASSESSMENT.md`: 90 new findings (F185–F274; 27 High, 50 Medium, 13 Low, none Critical), each with its
+  scenario, mechanism, validation, fix and regression test; ten compound failure chains; the missing kinds of tests;
+  a remediation plan in four steps. Closed issues found incomplete continue under new numbers (F48, F119, F121, F145
+  and others, listed in its §14). Each area's working notes are in `docs/risk-assessment/`.
+- The themes: personal data in logs and failure records out of erasure's reach (F190, F191); erasures reported
+  complete while values remain (F192–F195); starts and rolling upgrades that can stall the cluster (F185, F187–F189);
+  no database timeouts (F186); organization export and import (F198–F200); sagas' failure semantics (F205–F207).
+- KNOWN-ISSUES §3 records them, open; its index has a row for them.

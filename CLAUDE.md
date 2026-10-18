@@ -334,7 +334,10 @@ status, the decisions (D-numbers), the invariants (I1–I9) and the architecture
 F-number named in the code). `docs/IMPLEMENTATION-PLAN.md` orders the work into milestones M1–M7 and keeps
 a progress log. Before changing behaviour, check both: a problem may already be fixed, or
 planned in a way that the change must follow. Measured performance is in `docs/perf/`;
-behaviour under high volume and load, with recommendations, is in `docs/SCALING.md`.
+behaviour under high volume and load, with recommendations, is in `docs/SCALING.md`. The risk assessment of
+1.0.0 (`docs/RISK-ASSESSMENT.md`, 18/10/2026) traces 90 open failure scenarios (F185–F274): each one's mechanism,
+validation, fix and regression test, the compound failures they make together, and the order to fix them in (§13);
+each area's working notes are in `docs/risk-assessment/`.
 
 ---
 

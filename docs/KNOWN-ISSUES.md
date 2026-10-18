@@ -192,7 +192,8 @@ Changes must keep these true (from `ARCHITECTURE.md` §10, extended by the decis
 
 The issues still open. The 180 closed ones (fixed, accepted, decided or found not to be a problem) are in
 [`KNOWN-ISSUES-ARCHIVE.md`](KNOWN-ISSUES-ARCHIVE.md), by area, as they were recorded; a number named in the code or in
-the other documents (`F99`) is found there.
+the other documents (`F99`) is found there. F185–F274 were found by the risk assessment of 1.0.0 (18/10/2026), at the end of this
+section.
 
 ### Performance and runtime
 
@@ -220,6 +221,283 @@ the other documents (`F99`) is found there.
 - **Symptom:** the build resolves mpjsons 0.7.0 from this machine's local Maven repository (`~/.m2`). No resolver of the build has it: Maven Central has no mpjsons at all (404, 18/10/2026), Bintray closed in 2021, and the old Sonatype releases repository only redirects to a path that does not exist. A fresh machine (a CI runner, a contributor, a Docker build) cannot build the library, and an application that depends on ReactiveCQRS 1.0 must get mpjsons 0.7.0 from somewhere. E2's image avoids it by copying the jars the host resolved (`examples/stageE2`).
 - **Options:** publish mpjsons 0.7.0 to Maven Central; or to Neula's Nexus, where ReactiveCQRS is published, and add that Nexus to the build's resolvers (with credentials); in both cases drop the two dead resolvers (Bintray, the old Sonatype one).
 - **Found:** running E2 with Docker (M7, 18/10/2026).
+
+### Found by the risk assessment of 18/10/2026
+
+Ninety issues found by a deep reading of 1.0.0 for failure scenarios: [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md) holds each
+one's scenario, mechanism, validation, fix and regression test under the same number, the compound failures they make
+together, and the order to fix them in. None is reproduced yet: "likely" is traced in the code, "suspected" also depends
+on a dependency's behaviour, timing or configuration; "scenario" says how probable its trigger is.
+
+#### F185 — Every node start takes exclusive locks on the event tables, with no lock timeout
+- **High**, likely · scenario possible · Open · details under F185 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F186 — No statement, socket or lock timeouts: a hung connection pins owners and threads, and silently stops re-delivery
+- **High**, suspected · scenario possible · Open · details under F186 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F187 — A release that adds a singleton cannot finish a readiness-gated rolling upgrade
+- **High**, likely · scenario likely · Open · details under F187 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F188 — The event bus waits forever for a subscriber that cannot answer, and stashes every publication meanwhile
+- **High**, likely · scenario possible · Open · details under F188 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F189 — The active build's instance runs the new code's store setup on the old tables; when that fails, the projection and its node's bus stay down
+- **High**, likely · scenario possible · Open · details under F189 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F190 — Failed SQL statements are logged with their values: events, documents and saga orders reach the logs
+- **High**, suspected · scenario likely · Open · details under F190 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F191 — Exception texts carry event, state, order and document values into logs, replies, `subscription_failures` and the bus's warnings
+- **High**, likely · scenario likely · Open · details under F191 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F192 — An erasure that could not rebuild a projection reports "complete" when run again; a build in progress switches in with the erased values
+- **High**, likely · scenario possible · Open · details under F192 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F193 — Squashing a duplicate drops its link to its base, so a later erasure of the base never reaches it
+- **High**, suspected · scenario possible · Open · details under F193 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F194 — After its base is erased, an attached duplicate is reported unchanged and never rebuilt; a lost history notice is never repaired
+- **High**, likely · scenario likely · Open · details under F194 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F195 — A history change that keeps the version is not seen at persist: a command running across an erasure writes the erased values back
+- **High**, likely · scenario possible · Open · details under F195 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F196 — A snapshot of a state class that gained a field is restored with zero, false or null in that field, silently
+- **High**, suspected · scenario possible · Open · details under F196 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F197 — An aggregate id of another type is restored by the wrong context, which then writes into it
+- **High**, likely · scenario possible · Open · details under F197 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F198 — An organization export is not one snapshot: a write during it gives two events at one version after the import
+- **High**, likely · scenario possible · Open · details under F198 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F199 — The organization import cannot tell a complete file from a truncated or inconsistent one, and trusts its references and class names
+- **High**, likely · scenario unlikely · Open · details under F199 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F200 — The organization purge does not guard the platform space (0) or the legacy space (-1)
+- **High**, likely · scenario unlikely · Open · details under F200 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F201 — A stale failure record becomes a false "versions missing" failure; skipping it moves the subscription past the aggregate, and the next event is acknowledged unapplied
+- **High**, likely · scenario unlikely · Open · details under F201 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F202 — With `ServeStale`, an abandoned build leaves the active build missing every event committed during the build
+- **High**, likely · scenario unlikely · Open · details under F202 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F203 — Build table and sequence names are not checked against PostgreSQL's 63-byte limit: two builds can share one table, and retiring one drops the live table
+- **High**, likely · scenario unlikely · Open · details under F203 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F204 — The id generator trusts its configuration: a too-high installation number or a lowered sequence step hands out wrong or duplicate ids
+- **High**, likely · scenario unlikely · Open · details under F204 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F205 — A saga step whose command timed out is reverted, but the command can still be applied later, and nothing undoes it
+- **High**, likely · scenario possible · Open · details under F205 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F206 — A saga answered "failed" can run forward to success at the runner's next start, days later
+- **High**, likely · scenario possible · Open · details under F206 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F207 — Saga orders cannot be made idempotent, so a caller that retries during a singleton move starts the saga twice
+- **High**, likely · scenario possible · Open · details under F207 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F208 — A materialization that timed out lets the draft change again; the next one returns the older stored copy and drops the draft with its newer edits
+- **High**, likely · scenario possible · Open · details under F208 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F209 — Ephemeral id tokens repeat across starts, so materialization keys collide within the response retention
+- **High**, likely · scenario unlikely · Open · details under F209 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F210 — Document-store JSON paths and sort fields are written into SQL unescaped
+- **High**, likely · scenario unlikely · Open · details under F210 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F211 — Document-store finders without a limit read the whole read model into memory
+- **High**, likely · scenario possible · Open · details under F211 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F212 — Every bus tick scans and copies all deliveries, so a long lag slows the node's only bus
+- **Medium**, likely · scenario possible · Open · details under F212 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F213 — A command expecting a version above the owner's forces a full restore on every attempt
+- **Medium**, likely · scenario possible · Open · details under F213 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F214 — A `Local` owner on several nodes replays its whole aggregate before each read or command that follows another node's write
+- **Medium**, likely · scenario possible · Open · details under F214 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F215 — Operations on a base with many copies replay the base once per copy and hold every copy's row lock throughout
+- **Medium**, suspected · scenario possible · Open · details under F215 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F216 — Push subscriptions do not scale: every update runs every filter of its type, expiry and cancel are linear, and nothing is bounded
+- **Medium**, likely · scenario possible · Open · details under F216 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F217 — A large targeted rebuild, a purge's last step, or a retired build's drop each runs as one long operation on the projection's thread
+- **Medium**, likely · scenario possible · Open · details under F217 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F218 — The `Local` owners' sweep passivates in unpaced bursts, and each stop writes a snapshot on the shared blocking dispatcher
+- **Medium**, suspected · scenario possible · Open · details under F218 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F219 — `AfterCommit` keeps JVM-wide maps behind one monitor, on every projection's transaction path
+- **Medium**, likely · scenario possible · Open · details under F219 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F220 — `backfillEventKeys` on a large store: a row lock and WAL per old event, a later full re-freeze, long scans that hold back vacuum, and runs that abort on concurrent deletes
+- **Medium**, suspected · scenario likely · Open · details under F220 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F221 — A subscriber stalled past the deadline is sent another window every deadline, so its mailbox is not bounded by the window
+- **Medium**, likely · scenario possible · Open · details under F221 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F222 — The byte window ignores the aggregate states that state subscriptions carry, and on another node each message holds its own copy
+- **Medium**, likely · scenario possible · Open · details under F222 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F223 — The reconciliation and gap fills hold every missing event of a page of up to 1 000 aggregates in memory at once
+- **Medium**, suspected · scenario possible · Open · details under F223 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F224 — An ephemeral bus keeps every idempotent response in memory for 30 days, whatever happens to its drafts
+- **Medium**, likely · scenario possible · Open · details under F224 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F225 — The organization export builds every cross-space detach event before writing, and binds their ids in one IN list
+- **Medium**, likely · scenario possible · Open · details under F225 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F226 — The organization import's write batches are bounded by count only
+- **Medium**, likely · scenario possible · Open · details under F226 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F227 — An oversized cluster message is serialized in full before the marker replaces it
+- **Medium**, likely · scenario unlikely · Open · details under F227 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F228 — Status answers grow without bound, and fail between nodes during incidents
+- **Low**, likely · scenario possible · Open · details under F228 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F229 — The command timeout does not bound the answer time, and commands are persisted after their deadline
+- **Medium**, likely · scenario possible · Open · details under F229 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F230 — Registering a type name takes a second connection under a JVM-wide lock, from inside open transactions
+- **Medium**, suspected · scenario possible · Open · details under F230 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F231 — A failed version lookup in `caughtUp()` strands commands and queries, and drops the owner's state
+- **Medium**, likely · scenario possible · Open · details under F231 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F232 — One saga can run twice at once in one runner, and saga rows have no compare-and-set to stop the stale copy
+- **Medium**, likely · scenario possible · Open · details under F232 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F233 — Readiness says "ready" before the node has started, and stays ready while it shuts down
+- **Medium**, likely · scenario possible · Open · details under F233 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F234 — Asynchronous delayed queries ignore their deadline while updates keep coming, and a search that throws drops every parked query
+- **Medium**, likely · scenario possible · Open · details under F234 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F235 — A switch that the registry reports as not done leaves the supervisor stuck until a restart
+- **Medium**, likely · scenario unlikely · Open · details under F235 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F236 — On an ephemeral bus, a first command served after the ids ran out blocks every later command for good
+- **Medium**, likely · scenario unlikely · Open · details under F236 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F237 — The snapshot generation guard is not atomic: a snapshot can be written over a history that changed meanwhile
+- **Medium**, suspected · scenario unlikely · Open · details under F237 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F238 — A node's subscription version cache goes stale for subscribers whose writer runs elsewhere
+- **Medium**, likely · scenario unlikely · Open · details under F238 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F239 — Ask paths are reused after a node restarts at the same address, so a late answer can reach another caller
+- **Low**, likely · scenario unlikely · Open · details under F239 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F240 — The cluster serializer's reader trusts its payload: it loads any class named in the bytes and allocates unchecked lengths
+- **Medium**, likely · scenario unlikely · Open · details under F240 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F241 — Any sender can cancel, renew or take over a push subscription by its id
+- **Low**, likely · scenario possible · Open · details under F241 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F242 — `StoreFirstEvent` is accepted by any persistent bus, and stores any first event without the command handlers
+- **Low**, likely · scenario unlikely · Open · details under F242 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F243 — A conflict answer reveals another organization's aggregate and its version
+- **Low**, likely · scenario possible · Open · details under F243 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F244 — The version limit is checked on events that add no version: long aggregates can be neither erased, squashed nor permanently deleted
+- **Medium**, likely · scenario possible · Open · details under F244 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F245 — An unreadable stored event makes its aggregate impossible to erase
+- **Medium**, likely · scenario possible · Open · details under F245 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F246 — The squash scheduler assumes event times grow with event ids; an import, or a node with a wrong clock, makes it squash history the policy keeps
+- **Medium**, likely · scenario possible · Open · details under F246 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F247 — The SMALLINT type-id space is consumed by every build, and by every node's first sight of a name
+- **Medium**, likely · scenario unlikely · Open · details under F247 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F248 — An organization import keeps ids that the target's own generator will hand out later
+- **Medium**, likely · scenario unlikely · Open · details under F248 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F249 — With large-message destinations configured, the command size check uses the large frame for every destination
+- **Medium**, suspected · scenario possible · Open · details under F249 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F250 — Fatal errors in handlers or restores are not contained, so a poison aggregate can crash-loop nodes
+- **Medium**, suspected · scenario unlikely · Open · details under F250 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F251 — Waiting min-version queries are unbounded in number and duration, and each publish scans them all
+- **Low**, likely · scenario unlikely · Open · details under F251 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F252 — Values the library does not check before it uses them
+- **Low**, likely · scenario possible · Open · details under F252 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F253 — A commit whose outcome is unknown is answered "nothing was stored"
+- **Medium**, likely · scenario possible · Open · details under F253 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F254 — Transient database errors become durable recorded failures in live projections
+- **Medium**, likely · scenario possible · Open · details under F254 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F255 — A subscriber that stops before answering is dropped silently, and the node reports ready
+- **Medium**, likely · scenario unlikely · Open · details under F255 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F256 — Ephemeral buses call the context's outbox writer with no session, on an in-memory store that never rolls back
+- **Medium**, likely · scenario possible · Open · details under F256 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F257 — An ephemeral bus that restarts loses its drafts, then refuses every new draft until the node restarts
+- **Medium**, likely · scenario unlikely · Open · details under F257 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F258 — Managed projection instances share actor names, so lag signals and logs collide
+- **Medium**, likely · scenario likely · Open · details under F258 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F259 — After a targeted reset, a live event of a target aggregate re-runs side effects for its whole history
+- **Medium**, likely · scenario possible · Open · details under F259 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F260 — A stopped subscriber that is not removed makes the poller's work futile, and starves other aggregates' re-delivery
+- **Medium**, likely · scenario possible · Open · details under F260 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F261 — Deleting an aggregate's idempotent responses removes their deduplication too, so a retried keyed creation creates it again
+- **Medium**, likely · scenario possible · Open · details under F261 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F262 — A listener's `afterCommit` called in the first part of a two-part listener runs before the commit, and again when the work is remade
+- **Medium**, likely · scenario unlikely · Open · details under F262 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F263 — An oversized request is replaced by a marker that never reaches the asker, who waits out its full timeout
+- **Low**, likely · scenario possible · Open · details under F263 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F264 — Deliveries created by a re-publication to one subscriber never acknowledge the owner, and a later full publication does not adopt them
+- **Low**, likely · scenario possible · Open · details under F264 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F265 — A rewrite without a new event that the store refuses strands its caller until the timeout, and its cause is never logged
+- **Low**, likely · scenario possible · Open · details under F265 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F266 — `clearSpace` and `clearAllData` evict the document cache before the commit, not after
+- **Low**, likely · scenario unlikely · Open · details under F266 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F267 — The push updates cache replays one type's updates through another type's filter
+- **Low**, likely · scenario possible · Open · details under F267 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F268 — Aggregates first re-published late are reported "Undelivered" 30 s later
+- **Low**, likely · scenario likely · Open · details under F268 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F269 — Any node's start replaces the stored procedures with its own version's bodies
+- **Medium**, likely · scenario possible · Open · details under F269 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F270 — Clocks and time zones: node clocks drive re-delivery, give-ups, instant reads and the squash policy, and several timestamps are written in the session's zone
+- **Medium**, likely · scenario possible · Open · details under F270 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F271 — New application message classes are dropped by old nodes during a rolling upgrade
+- **Medium**, likely · scenario possible · Open · details under F271 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F272 — Mismatched defaults: a 32-thread blocking dispatcher against an 8-connection default pool, no validation query, and driver defaults that hang or log values
+- **Medium**, likely · scenario possible · Open · details under F272 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F273 — The memory document store ignores sort, offset and limit
+- **Medium**, likely · scenario likely · Open · details under F273 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+
+#### F274 — The memory event store diverges from PostgreSQL exactly where several of these findings live
+- **Medium**, likely · scenario likely · Open · details under F274 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 ## 4. Issues on the Neula side
 
@@ -269,6 +547,7 @@ From §7 of Neula's change requests.
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔, F174 ✔; F155 decided (review 8) |
 | M7 | AR5 ✔ (moved from M5 at review 7; D86); F148 ✔, F152 ✔, F153 ✔, F156 ✔, F157 ✔, F160 ✔, F161 ✔, F162 ✔, F163 ✔, F164 ✔, F165 ✔, F166 ✔, F169 ✔ (found writing the book), F170 ✔, F171 ✔, F173 ✔, F175 (accepted), F176 ✔ (found writing E10), F177 ✔ (found writing E11), F178 ✔ (found running E2 in Docker), F179 (deferred: the owner publishes mpjsons later), F180 ✔ (found running E2 on Kubernetes), F181 ✔ (found writing chapter 6's spec), F182 ✔ (found by E2's fault tests in Docker), F183 ✔ (found writing the Scaladoc), F184 (open, found by review 9's bench) |
+| After 1.0 | F185–F274, open (the risk assessment of 18/10/2026, [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md) §13 orders them) |
 
 ---
 
