@@ -46,9 +46,11 @@ class ShoppingCartContext extends AggregateContext[ShoppingCart] {
   override def commandHandlers = cart => {
     case c: CreateShoppingCart =>
       CommandSuccess(ShoppingCartCreated(c.name))
+    // #addItemRule
     case c: AddItem =>
       if (cart.items.size >= 5) CommandFailure("Cannot have more than 5 items in your cart")
       else CommandSuccess(ItemAdded(c.name))
+    // #addItemRule
     case c: RemoveItem =>
       if (cart.items.exists(_.id == c.id)) CommandSuccess(ItemRemoved(c.id))
       else CommandFailure("There is no item " + c.id + " in the cart")

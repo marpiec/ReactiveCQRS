@@ -5,6 +5,7 @@ import io.reactivecqrs.api.id.SpaceId
 import CommandsHandlers._
 import EventsHandlers._
 
+// The regions (`// #name`) are code blocks of the book, docs/book (BookSnippetsSpec checks them).
 class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
 
   override val version: Int = 1
@@ -15,11 +16,17 @@ class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
     case c: DuplicateShoppingCart => duplicateShoppingCart(c)
     case c: AddItem => addItem(c.userId, c.aggregateId, c.expectedVersion, shoppingCart)(c)
     case c: AddItemConcurrently => CommandSuccess(ItemAdded(c.name))
+    // #addItems
     case c: AddItems => CommandSuccess(c.names.map(ItemAdded))
+    // #addItems
     case c: AddItemOnBehalf => CommandSuccess(ItemAdded(c.name))
     case c: CreateShoppingCartWithId => CommandSuccess(ShoppingCartCreated(c.name))
+    // #receipt
     case c: AddItemWithReceipt => CommandSuccess(ItemAdded(c.name), ItemReceipt(c.name))
+    // #receipt
+    // #checkCart
     case _: CheckCart => CommandSuccess(Seq.empty[Event[ShoppingCart]])
+    // #checkCart
     case c: RemoveItem => removeItem(c)
     case c: DeleteShoppingCart => deleteShoppingCart(c)
     case c: UndoShoppingCartChange => undoShoppingCartChange(c)

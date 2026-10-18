@@ -102,6 +102,13 @@ Refined before they are written (17/10/2026).
   book instead, so a change to an example is carried over by one run and reviewed in the diff. Code
   blocks without a marker are fragments that illustrate one call (a message, a configuration line);
   a block a reader would copy to run is a snippet.
+- **The chapters that use the test domain's cart** (5 to 7 and 13 to 15; decided 18/10/2026): the cart's
+  own classes are regions of the test domain's sources, which are the snippet checker's third root, so
+  the book shows the cart the library's specs run. The chapters' other code is regions of specs in
+  `examples/src/test/.../cart/`, each region followed by the lines that check what the chapter says it
+  answers, as mdoc would; the examples module depends on the test domain for them. The test domain is
+  not copied into examples of its own: E5, E6 and E7 stay complete programs of their topics (lists,
+  concerts, tickets), which the chapters point to.
 - **Order:** E1 first (it fixes the shape every example follows), then the examples of the chapters
   in the book's order. E4 (sagas) waits for the decision on AR5; E2's Docker and Kubernetes files
   are written and read, and run where Docker is.

@@ -33,9 +33,9 @@ test surface.
 |--------|------|---------|
 | `api` | `api/` | Public domain API: `Aggregate`, `Event`, `Command`, results, ids. Depends only on Pekko. |
 | `core` | `core/` | All the machinery: actors, event store, event bus, projections, sagas, document store, uid generator. Depends on `api`. |
-| `testdomain` | `testdomain/` | Example shopping-cart domain + integration specs. Depends on `api`, `core`. |
+| `testdomain` | `testdomain/` | Example shopping-cart domain + integration specs; its cart's regions (`// #name`) are code of the book's chapters 5–7 and 13–15. Depends on `api`, `core`. |
 | `testkit` | `testkit/` | The published test kit (M7, E11): `TestDatabase` (a new schema per test run), `SchemaReference`, `TestSystems` (cluster of one), `TestCluster` (nodes in one JVM), `TestClock`, `TestIds`, `askFor` (typed asks, F177); the library's ScalaTest base `CommonSpec` in its test sources. |
-| `examples` | `examples/` | The book's examples E1–E11 (M7), each with a runnable `main` and a spec (E11, testing, is specs only); E2's Docker and Kubernetes files in `examples/deploy/e2`; `BookSnippetsSpec` checks that the book's marked code blocks are their regions. Not published. |
+| `examples` | `examples/` | The book's examples E1–E11 (M7), each with a runnable `main` and a spec (E11, testing, is specs only); E2's Docker and Kubernetes files in `examples/deploy/e2`; the specs of the cart chapters (`cart/`, chapters 5–7 and 13–15) run their blocks against the test domain's cart, which it depends on; `BookSnippetsSpec` checks that the book's marked code blocks are their regions. Not published. |
 | `bench` | `bench/` | Performance bench and load driver (`sbt "bench/run <name>"`, reports in `docs/perf/`). Not published. |
 | `utils` | `utils/` | Present in tree; commented out / mostly unused in `build.sbt`. |
 

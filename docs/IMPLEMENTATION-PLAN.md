@@ -2403,3 +2403,14 @@ Open test-infrastructure items:
 - The README's quick start was a hand-copied cart without a read model; it is now E1 whole: the cart,
   its read model, `BasicSetup`'s wiring, and its command and query. `Carts.scala` has its imports in a
   region of their own, which chapter 3 shows before the events.
+
+**18/10/2026: chapter 5's code is compiled and its answers checked**
+- The chapters that use the test domain's cart (5 to 7 and 13 to 15) take the cart's classes from the
+  test domain's sources (the snippet checker's third root), and their other code from specs in
+  `examples/src/test/.../cart/`, each region followed by the lines that check what the chapter says it
+  answers (M7 design, decided this day). The test domain is the cart the library's specs run, so it
+  is not copied; the examples module depends on it. Chapter 5 is the first: 19 of its 20 blocks are
+  regions (the one left shows the library's own `IdempotentCommand`), and `CommandKindsSpec` checks
+  every answer the chapter names, the rejection of serial processing and the refused ids included.
+- The outbox hook was mentioned in the book but taught nowhere: chapter 5 has a section on it now,
+  with E6's ticket writer, and points to E6 as the program that puts the chapter's tools together.

@@ -46,6 +46,7 @@ class ConcertContext extends AggregateContext[Concert] with WithOutboxWriter[Con
   // One booking at a time per concert; at most 20 wait, one more is answered CommandRejected at once.
   override val commandProcessing: CommandProcessing = CommandProcessing.Serial(maxQueuePerAggregate = 20)
 
+  // #outboxWriter
   // A ticket to email for each booking, in the transaction of its event: both are stored, or neither.
   override def outboxWriter: OutboxWriter[Concert] = new OutboxWriter[Concert] {
     override def write(concertId: AggregateId, version: AggregateVersion, events: Seq[EventInfo[Concert]])(implicit session: DBSession): Unit =
@@ -55,5 +56,6 @@ class ConcertContext extends AggregateContext[Concert] with WithOutboxWriter[Con
         case _ => ()
       })
   }
+  // #outboxWriter
 }
 // #context

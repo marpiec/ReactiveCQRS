@@ -3,13 +3,19 @@ package io.reactivecqrs.testdomain.shoppingcart
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 
+// The regions (`// #name`) are code blocks of the book, docs/book (BookSnippetsSpec checks them).
 
-case class CreateShoppingCart(idempotencyId: Option[SagaStep], userId: UserId, name: String) extends FirstCommand[ShoppingCart, CustomCommandResponse[_]] with IdempotentCommand[SagaStep]
+// #create
+case class CreateShoppingCart(idempotencyId: Option[SagaStep], userId: UserId, name: String)
+  extends FirstCommand[ShoppingCart, CustomCommandResponse[_]] with IdempotentCommand[SagaStep]
+// #create
 
 case class DuplicateShoppingCart(userId: UserId, baseAggregateId: AggregateId, baseAggregateVersion: AggregateVersion) extends FirstCommand[ShoppingCart, CustomCommandResponse[_]]
 
+// #addItem
 case class AddItem(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
                    name: String) extends Command[ShoppingCart, CustomCommandResponse[_]]
+// #addItem
 /** Adds an item for someone else: its event carries a metadata envelope (R13). */
 case class AddItemOnBehalf(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, name: String, metadata: EventMetadata)
   extends Command[ShoppingCart, CustomCommandResponse[_]] with WithMetadata
@@ -17,9 +23,12 @@ case class AddItemOnBehalf(userId: UserId, aggregateId: AggregateId, expectedVer
 case class AddItems(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, names: Seq[String])
   extends Command[ShoppingCart, CustomCommandResponse[_]]
 
+// #concurrently
 // No expected version: the framework uses the current one and retries on a concurrent change.
-case class AddItemConcurrently(userId: UserId, aggregateId: AggregateId, name: String, idempotencyId: Option[ClientKey] = None)
+case class AddItemConcurrently(userId: UserId, aggregateId: AggregateId, name: String,
+                               idempotencyId: Option[ClientKey] = None)
   extends ConcurrentCommand[ShoppingCart, CustomCommandResponse[_]] with IdempotentCommand[ClientKey]
+// #concurrently
 
 case class RemoveItem(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
                       id: Int) extends Command[ShoppingCart, CustomCommandResponse[_]]
@@ -36,16 +45,20 @@ case class RewriteCartName(userId: UserId, aggregateId: AggregateId, expectedVer
   override def eventsTypes = Set(classOf[ShoppingCartCreated])
 }
 
+// #clientKey
 /** A key chosen by the caller, the way a client retrying a request would send it. */
 case class ClientKey(value: String) extends CommandIdempotencyId {
   override def asDbKey: String = value
 }
+// #clientKey
 
+// #createWithId
 /** Creates a cart under an id the caller reserved beforehand, so a retry cannot create a second cart. */
 case class CreateShoppingCartWithId(idempotencyId: Option[ClientKey], userId: UserId, cartId: AggregateId, name: String)
   extends FirstCommand[ShoppingCart, CustomCommandResponse[_]] with IdempotentCommand[ClientKey] {
   override def chosenAggregateId: Option[AggregateId] = Some(cartId)
 }
+// #createWithId
 
 /** Adds an item and answers with a receipt, so the stored response carries custom info. */
 case class AddItemWithReceipt(idempotencyId: Option[ClientKey], userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,

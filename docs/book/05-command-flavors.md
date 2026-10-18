@@ -5,7 +5,8 @@ of command. ReactiveCQRS has a few more, and each one answers a different questi
 "what if someone changed it while I was looking?", "what if my request arrives twice?". By the end
 of this chapter you will know every kind of command, which one to pick, what each answer from the
 command bus means, and what to do when a command handler is slow. You will also meet the switch that
-makes an aggregate take its commands one at a time.
+makes an aggregate take its commands one at a time, and a way to write rows of your own together
+with the events.
 
 ---
 
@@ -29,6 +30,7 @@ Each kind is an abstract class in `io.reactivecqrs.api`, and every command case 
 one of them. The first type parameter is the aggregate's state class; the second names the kind of
 response. The test domain always writes `CustomCommandResponse[_]` there, and so can you:
 
+<!-- snippet: shoppingcart/Commands.scala#addItem -->
 ```scala
 case class AddItem(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
                    name: String) extends Command[ShoppingCart, CustomCommandResponse[_]]
@@ -37,10 +39,11 @@ case class AddItem(userId: UserId, aggregateId: AggregateId, expectedVersion: Ag
 From here on, the examples use the test domain's cart (`io.reactivecqrs.testdomain.shoppingcart`),
 the bigger sibling of the one you wrote in chapter 3: the same state, plus the extra commands and
 events that this chapter and the next are about. Its `CreateShoppingCart` has one more field,
-explained below. To run the examples, work inside this repository, as the specs in
-`testdomain/src/test/` do, or copy the classes you need into your own package. The setup, with the
-command bus wired as in chapter 4:
+explained below. Every block of this chapter that sends something runs in `CommandKindsSpec`
+(`examples/src/test/scala/io/reactivecqrs/examples/cart/`), right before the lines that check its
+answers; `sbt "examples/testOnly *CommandKindsSpec"` runs it. The examples import
 
+<!-- snippet: cart/CommandKindsSpec.scala#imports -->
 ```scala
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
@@ -49,8 +52,13 @@ import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
 import scala.concurrent.Future
 import scala.concurrent.duration._
+```
 
-// system and commandBus: the actor system and the carts' command bus from chapter 4
+and start from this setup, in a class that has the actor system (`system`) and the carts' command
+bus of chapter 4 (`commandBus`):
+
+<!-- snippet: cart/CommandKindsSpec.scala#setup -->
+```scala
 import system.dispatcher                             // runs the map and foreach callbacks below
 implicit val timeout: Timeout = Timeout(70.seconds)  // longer than the command timeout; see "Slow handlers"
 
@@ -62,6 +70,7 @@ val bob = UserId(2)
 
 You met this one in chapters 3 and 4. The test domain's version has one more field:
 
+<!-- snippet: shoppingcart/Commands.scala#create -->
 ```scala
 case class CreateShoppingCart(idempotencyId: Option[SagaStep], userId: UserId, name: String)
   extends FirstCommand[ShoppingCart, CustomCommandResponse[_]] with IdempotentCommand[SagaStep]
@@ -73,8 +82,10 @@ A `FirstCommand` has no aggregate id, because the aggregate does not exist yet. 
 a new id from a pool of ids it fetches ahead, your handler runs on the context's
 `initialAggregateRoot`, and the answer tells you which id the new cart got:
 
+<!-- snippet: cart/CommandKindsSpec.scala#create -->
 ```scala
-(commandBus ? CreateShoppingCart(None, alice, "Groceries")).mapTo[CustomCommandResponse[_]].foreach {
+val answer = (commandBus ? CreateShoppingCart(None, alice, "Groceries")).mapTo[CustomCommandResponse[_]]
+answer.foreach {
   case SuccessResponse(cartId, version) => println(s"New cart $cartId at $version")  // version: AggregateVersion(1)
   case other                            => println(s"No cart: $other")
 }
@@ -100,6 +111,7 @@ cart's owner stores anything, it compares that version with the cart's:
 - **different:** nothing is stored, and you get `AggregateConcurrentModificationError`. Usually your
   handler does not even run.
 
+<!-- snippet: cart/CommandKindsSpec.scala#addItem -->
 ```scala
 def addItem(cartId: AggregateId, seen: AggregateVersion, item: String): Future[String] =
   (commandBus ? AddItem(bob, cartId, seen, item)).mapTo[CustomCommandResponse[_]].map {
@@ -134,6 +146,7 @@ A cart that does not exist gets the same error, with `was` equal to `AggregateVe
 A family shopping list on the fridge: you write "milk" at the bottom. You don't care what the others
 added since you last looked; milk is needed either way.
 
+<!-- snippet: shoppingcart/Commands.scala#concurrently -->
 ```scala
 // No expected version: the framework uses the current one and retries on a concurrent change.
 case class AddItemConcurrently(userId: UserId, aggregateId: AggregateId, name: String,
@@ -146,8 +159,9 @@ it is right now. If another command's events are stored while your handler runs,
 your result away and runs your handler again, on the newer state. You get one answer: success, at
 whatever version your events landed on.
 
+<!-- snippet: cart/CommandKindsSpec.scala#concurrent -->
 ```scala
-commandBus ? AddItemConcurrently(alice, cartId, "milk")
+val milk = commandBus ? AddItemConcurrently(alice, cartId, "milk")
 // answers SuccessResponse(cartId, AggregateVersion(n)), n being the version the milk landed on
 ```
 
@@ -192,13 +206,16 @@ the id of the aggregate it creates.
 
 The test domain has such a command:
 
+<!-- snippet: shoppingcart/Commands.scala#createWithId -->
 ```scala
+/** Creates a cart under an id the caller reserved beforehand, so a retry cannot create a second cart. */
 case class CreateShoppingCartWithId(idempotencyId: Option[ClientKey], userId: UserId, cartId: AggregateId, name: String)
   extends FirstCommand[ShoppingCart, CustomCommandResponse[_]] with IdempotentCommand[ClientKey] {
   override def chosenAggregateId: Option[AggregateId] = Some(cartId)
 }
 ```
 
+<!-- snippet: cart/CommandKindsSpec.scala#reserve -->
 ```scala
 val created: Future[CustomCommandResponse[_]] = for {
   cartId   <- (commandBus ? ReserveAggregateId).mapTo[AggregateId]
@@ -256,6 +273,7 @@ trait IdempotentCommand[IID <: CommandIdempotencyId] {
 
 The key is any class with an `asDbKey: String`. The test domain has one for clients:
 
+<!-- snippet: shoppingcart/Commands.scala#clientKey -->
 ```scala
 /** A key chosen by the caller, the way a client retrying a request would send it. */
 case class ClientKey(value: String) extends CommandIdempotencyId {
@@ -269,6 +287,7 @@ cannot apply a step twice.
 
 Here is a plum added twice with one key:
 
+<!-- snippet: cart/CommandKindsSpec.scala#plum -->
 ```scala
 val key = Some(ClientKey(java.util.UUID.randomUUID().toString))  // one key per user action
 val addPlum = AddItemWithReceipt(key, alice, cartId, AggregateVersion(1), "plum")
@@ -293,6 +312,7 @@ The rules:
   hour. A copy that arrives later runs as a new command. Set another period when you create the
   response state:
 
+  <!-- snippet: cart/CommandKindsSpec.scala#retention -->
   ```scala
   val responses = new PostgresCommandResponseState(mpjsons, typesNames, retention = 7.days).initSchema()
   ```
@@ -318,6 +338,7 @@ everyday ones to the more unusual.
 `CommandSuccess(ItemAdded(c.name))` stores one event. A handler may also return several, which get
 consecutive versions:
 
+<!-- snippet: shoppingcart/ShoppingCartAggregateContext.scala#addItems -->
 ```scala
 case c: AddItems => CommandSuccess(c.names.map(ItemAdded))
 ```
@@ -329,11 +350,11 @@ at all: if the second one cannot be stored, the first is not stored either.
 ### Success with something extra
 
 Sometimes the caller needs more than the new version: a receipt, a computed number, a generated
-code. Pass it as the second argument:
+code. Pass it as the second argument. The test domain's receipt is a case class of its own,
+`ItemReceipt(itemName: String)`:
 
+<!-- snippet: shoppingcart/ShoppingCartAggregateContext.scala#receipt -->
 ```scala
-case class ItemReceipt(itemName: String)
-
 case c: AddItemWithReceipt => CommandSuccess(ItemAdded(c.name), ItemReceipt(c.name))
 ```
 
@@ -345,6 +366,7 @@ of a plain `SuccessResponse`.
 A rule says no: return `CommandFailure` with a message. Nothing is stored, and the caller gets the
 message back. Your cart from chapter 3 enforces its house rule this way:
 
+<!-- snippet: e1/Carts.scala#addItemRule -->
 ```scala
 case c: AddItem =>
   if (cart.items.size >= 5) CommandFailure("Cannot have more than 5 items in your cart")
@@ -359,6 +381,7 @@ business rules; save exceptions for things that are really broken.
 Some commands look and find nothing to change: a recurring check, or a request that is already
 satisfied. Return a success without events:
 
+<!-- snippet: shoppingcart/ShoppingCartAggregateContext.scala#checkCart -->
 ```scala
 case _: CheckCart => CommandSuccess(Seq.empty[Event[ShoppingCart]])
 ```
@@ -373,6 +396,7 @@ A handler that has to wait for something, say a stock service, returns `AsyncCom
 `Future` of one of the results above. The test domain's `AddItem` handler is written this way. Here
 is a variation that asks a stock service of your own first:
 
+<!-- snippet: cart/CommandKindsSpec.scala#stock -->
 ```scala
 import java.util.concurrent.Executors
 import scala.concurrent.{ExecutionContext, Future}
@@ -459,6 +483,7 @@ the aggregate's owner takes the command. When it passes, the caller gets `Comman
 the command is dead: if the handler finishes later, its result is thrown away and nothing is stored.
 You can give a context more time:
 
+<!-- snippet: cart/CommandKindsSpec.scala#patient -->
 ```scala
 class PatientCarts extends ShoppingCartAggregateContext {
   override val commandTimeout: FiniteDuration = 2.minutes
@@ -492,6 +517,7 @@ and settles clashes afterwards: with an error for a `Command`, with another run 
 like the one at a post office counter: everyone waits their turn, and each sees exactly what the one
 before them left behind.
 
+<!-- snippet: cart/CommandKindsSpec.scala#busy -->
 ```scala
 class BusyCarts extends ShoppingCartAggregateContext {
   override val commandProcessing: CommandProcessing = CommandProcessing.Serial(maxQueuePerAggregate = 100)
@@ -522,6 +548,47 @@ Pick `Serial` for aggregates that many clients write at the same time, for handl
 that must not run twice, and when a quick "busy, try again" suits your clients better than a long
 wait.
 
+## Rows of your own, in the same transaction
+
+Sometimes a command must leave something behind besides its events: a ticket to e-mail, a message
+for another system, a job to run later. A projection ([chapter 8](08-projections.md)) writes such
+things after the events are stored, so it may be a moment late. An **outbox writer** writes them in
+the very transaction that stores the events, so both are stored or neither. A context mixes in
+`WithOutboxWriter` and gives the writer. E6's concerts have one
+(`class ConcertContext extends AggregateContext[Concert] with WithOutboxWriter[Concert]`); it writes
+a ticket row for every booked seat:
+
+<!-- snippet: e6/Concerts.scala#outboxWriter -->
+```scala
+// A ticket to email for each booking, in the transaction of its event: both are stored, or neither.
+override def outboxWriter: OutboxWriter[Concert] = new OutboxWriter[Concert] {
+  override def write(concertId: AggregateId, version: AggregateVersion, events: Seq[EventInfo[Concert]])(implicit session: DBSession): Unit =
+    events.foreach(_.event match {
+      case SeatBooked(customer) =>
+        sql"INSERT INTO e6_tickets (concert_id, version, customer) VALUES (${concertId.asLong}, ${version.asInt}, $customer)".update()
+      case _ => ()
+    })
+}
+```
+
+What the writer can count on:
+
+- It gets the aggregate's id, its version after the events, the events with their versions, users
+  and times (`EventInfo`), and the session of the transaction. Write with ScalikeJDBC in that
+  session, never in a transaction of your own.
+- If it throws, its rows and the events are rolled back together, and the caller gets
+  `EventHandlingError`.
+- A command that stores no events does not call it, and neither does a copy of an idempotent
+  command that was applied already, so each row is written once.
+- The rows are yours: your own code reads them and deletes them, say a job that sends the e-mails.
+  When a history rewrite erases data ([chapter 15](15-rewriting-history.md)), the writer's `rewrite`
+  method changes its rows too.
+
+> **Tip:** E6 (`examples/src/main/scala/io/reactivecqrs/examples/e6/`) puts this chapter's tools
+> together in one program: concerts whose seats are booked one at a time (`Serial`), scheduled with
+> a key the client chooses (an idempotent command), each booking writing its ticket row. Run it with
+> `sbt "examples/runMain io.reactivecqrs.examples.e6.CommandsSetup"`.
+
 ## Correcting the past
 
 Sometimes the past itself has to change: a customer asks for their name to be removed from every
@@ -549,5 +616,6 @@ events, plus new events that record the change. The cart's `RewriteCartName` ren
   outside the command.
 - `CommandProcessing.Serial` runs an aggregate's commands one at a time and answers `CommandRejected`
   when its queue is full.
+- An outbox writer (`WithOutboxWriter`) writes rows of your own in the transaction of the events.
 
 Next: [chapter 6](06-events.md) looks closely at what commands leave behind: events.

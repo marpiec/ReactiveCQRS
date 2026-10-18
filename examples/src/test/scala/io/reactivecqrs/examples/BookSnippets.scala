@@ -4,10 +4,10 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.{Files, Path}
 
 /**
-  * The book's code is the examples' code (M7). A region of an example source between two lines `// #name` is a snippet;
-  * a code block of a chapter right after a line `<!-- snippet: e1/BasicSetup.scala#wiring -->` (a path under one of
-  * the examples' source roots, the first that has it) must be that region, without the indentation the region's lines share. Regions may nest; marker
-  * lines belong to none. `check` lists the blocks that differ, `write` puts the regions into the chapters.
+  * The book's code is the examples' code (M7). A region of a source between two lines `// #name` is a snippet; a code
+  * block of a chapter right after a line `<!-- snippet: e1/BasicSetup.scala#wiring -->` (a path under one of the
+  * source roots, the first that has it: the examples', then the test domain's) must be that region, without the
+  * indentation the region's lines share. Regions may nest; marker lines belong to none. `check` lists the blocks that differ, `write` puts the regions into the chapters.
   */
 object BookSnippets {
 
