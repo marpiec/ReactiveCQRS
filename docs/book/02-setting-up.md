@@ -165,17 +165,10 @@ as a parameter, so it comes first.
 
 ### All five, in order
 
-This is the order the library's own wiring uses (`ReactiveTestDomainSpec` in the `testdomain`
-module):
+This is the order E1's `SetupCheck` uses, the program at the end of this chapter:
 
+<!-- snippet: e1/SetupCheck.scala#tables -->
 ```scala
-import io.mpjsons.MPJsons
-import io.reactivecqrs.core.commandhandler.PostgresCommandResponseState
-import io.reactivecqrs.core.eventstore.PostgresEventStoreState
-import io.reactivecqrs.core.projection.PostgresSubscriptionsState
-import io.reactivecqrs.core.saga.PostgresSagaState
-import io.reactivecqrs.core.types.PostgresTypesNamesState
-
 val mpjsons = new MPJsons
 
 val typesNames = new PostgresTypesNamesState().initSchema()
@@ -335,12 +328,11 @@ lazy val app = project.dependsOn(domain).settings(
 
 ## Checking that it all works
 
-Let's prove the workshop is ready before we build anything in it. This little program does steps 3
-and 4 and nothing else:
+Let's prove the workshop is ready before we build anything in it. This little program, E1's
+`SetupCheck`, does steps 3 and 4 and nothing else:
 
+<!-- snippet: e1/SetupCheck.scala#check -->
 ```scala
-package com.example.shop
-
 import io.mpjsons.MPJsons
 import io.reactivecqrs.core.commandhandler.PostgresCommandResponseState
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
@@ -350,29 +342,44 @@ import io.reactivecqrs.core.types.PostgresTypesNamesState
 import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
 
 object SetupCheck {
+
+  final case class Tables(eventStore: PostgresEventStoreState, responses: PostgresCommandResponseState,
+                          sagaState: PostgresSagaState, subscriptions: PostgresSubscriptionsState)
+
   def main(args: Array[String]): Unit = {
     Class.forName("org.postgresql.Driver")
     ConnectionPool.singleton("jdbc:postgresql://localhost:5432/reactivecqrs", "reactivecqrs", "reactivecqrs",
       ConnectionPoolSettings(initialSize = 5, maxSize = 32, connectionTimeoutMillis = 3000L))
     try {
-      val mpjsons = new MPJsons
-      val typesNames = new PostgresTypesNamesState().initSchema()
-      new PostgresEventStoreState(mpjsons, typesNames).initSchema()
-      new PostgresCommandResponseState(mpjsons, typesNames).initSchema()
-      new PostgresSagaState(mpjsons, typesNames).initSchema()
-      new PostgresSubscriptionsState(typesNames).initSchema()
+      initTables()
       println("The tables are ready.")
     } finally {
       ConnectionPool.closeAll()
     }
   }
+
+  def initTables(): Tables = {
+    val mpjsons = new MPJsons
+
+    val typesNames = new PostgresTypesNamesState().initSchema()
+    val eventStore = new PostgresEventStoreState(mpjsons, typesNames).initSchema()
+    val responses = new PostgresCommandResponseState(mpjsons, typesNames).initSchema()
+
+    val sagaState = new PostgresSagaState(mpjsons, typesNames)
+    sagaState.initSchema()   // this one returns nothing, so it takes a line of its own
+
+    val subscriptions = new PostgresSubscriptionsState(typesNames).initSchema()
+    Tables(eventStore, responses, sagaState, subscriptions)
+  }
 }
 ```
 
-Run it with `sbt "runMain com.example.shop.SetupCheck"`. It prints `The tables are ready.`, and
-`\dt` in `psql` lists thirteen tables: `aggregates`, `commands_responses`, `event_keys`, `events`,
-`events_archive`, `events_to_publish`, `noop_events`, `sagas`, `schema_steps`, `snapshots`,
-`subscription_failures`, `subscriptions` and `types_names`. All empty, all waiting.
+Put it in your project's package and run it with `sbt "runMain com.example.shop.SetupCheck"` (in this
+repository, `sbt "examples/runMain io.reactivecqrs.examples.e1.SetupCheck"`). It prints `The tables are
+ready.`, and `\dt` in `psql` lists fifteen tables: `aggregate_lineage`, `aggregates`,
+`commands_responses`, `event_keys`, `events`, `events_archive`, `events_to_publish`,
+`history_rewrites`, `noop_events`, `sagas`, `schema_steps`, `snapshots`, `subscription_failures`,
+`subscriptions` and `types_names`. All empty, all waiting. (`SetupCheckSpec` checks this list.)
 
 Now run it a second time. Same message, no errors, nothing changed: that is the idempotence of
 step 4 in action.
