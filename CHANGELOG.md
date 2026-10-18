@@ -88,6 +88,17 @@ Fixes from [the risk assessment of 1.0.0](docs/RISK-ASSESSMENT.md), in the order
     constructor parameter), instead of reading them all into memory. Page with `limit` and `offset`; for a small read
     model, `DocumentStoreQuery.Unbounded` or `findAll()`.
   - `MemoryDocumentStore` sorts, pages and limits as the PostgreSQL store does.
+- **Delivery under load** (F212, F221, F222, F223, F228, F258, F260, F264, F268, chapter 9 and appendix B):
+  - A bus tick visits only the deliveries that expire or stall, not every one waiting.
+  - A subscriber that answers nothing past the deadline gets one message per deadline, not a new window.
+  - In a cluster, a state listener's window counts the state each message carries.
+  - The reconciliation and gap fills read the aggregates behind as they send them.
+  - Status answers list at most 100 items, with totals (`gaveUpTotal`, `undeliveredTotal`, `failuresTotal`).
+  - **Changed:** managed projection instances are named `<projection>-build-<n>-<k>`: the `bus.behind` gauge's tag
+    and the log lines name the projection (metric series are renamed).
+  - The outbox poller reads the newest waiting aggregates too when more than `maxTracked` wait; one it first sees
+    late is no longer reported undelivered 30 s after its re-publication; a full publication acknowledges events a
+    re-publication to one subscriber left waiting.
 
 ## 1.0.0 (18/10/2026)
 

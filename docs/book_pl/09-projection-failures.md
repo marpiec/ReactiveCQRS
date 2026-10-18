@@ -157,7 +157,9 @@ Odpowiedź to `ProjectionStatus(projectionName, failures, retrying, waitingForGa
 
 Trzy puste listy znaczą, że wszystko w porządku. Awarie są przechowywane w tabeli
 `subscription_failures`, więc przetrwają restart: koszyk, który utknął, stoi w miejscu, dopóki ktoś
-czegoś z tym nie zrobi.
+czegoś z tym nie zrobi. Żeby odpowiedź zawsze mogła do ciebie dotrzeć, także z innego węzła klastra,
+zawiera 100 najstarszych awarii, z błędem każdej przyciętym do 500 znaków, a `failuresTotal` mówi, ile
+ich jest; dwie pozostałe listy mają najwyżej po 1 000 koszyków.
 
 > **Wskazówka:** podepnij `GetProjectionStatus` każdej projekcji pod panel administracyjny albo health
 > check. Więcej o obserwowaniu działającego systemu znajdziesz w rozdziale 18.
@@ -285,7 +287,7 @@ val delivery = Await.result((eventBus ? GetDeliveryStatus).mapTo[DeliveryStatus]
 | Pole | Znaczenie |
 |---|---|
 | `waiting` | dostarczenia czekające na odpowiedź |
-| `undelivered` | ostatnie dostarczenia zakończone po upływie terminu (przechowywanych jest do 1 000), każde jako `Undelivered(aggregateType, aggregateId, version, subscriber, kind, at)` |
+| `undelivered` | 100 ostatnich dostarczeń zakończonych po upływie terminu, każde jako `Undelivered(aggregateType, aggregateId, version, subscriber, kind, at)`; `undeliveredTotal` mówi, ile jest przechowywanych (do 1 000) |
 | `stopped` | subskrybenci, którzy się zatrzymali (dalej w tym rozdziale) |
 | `held`, `behind` | kontrola przepływu (dalej w tym rozdziale) |
 
@@ -337,7 +339,11 @@ val outboxPoller = system.actorOf(Props(new OutboxPollerActor(eventStore, eventB
 
 Wartości domyślne: `firstPollAfter` 10 sekund, `pollInterval` 30 sekund, `maxTracked` 100 000, a w
 `RedeliveryPolicy.Options`: `attemptsAfter` 3 i 6 minut, `giveUpAfter` 10 minut,
-`maxRepublishPerPoll` 1 000 i `retryGivenUpEvery` 30 minut.
+`maxRepublishPerPoll` 1 000 i `retryGivenUpEvery` 30 minut. Gdy czeka więcej koszyków niż `maxTracked`,
+poller czyta też 50 000 najnowszych, więc koszyki czekające na subskrybenta, którego długo nie ma, nie
+zasłonią nowszego zgubionego dostarczenia. Koszyk, który poller zobaczy po raz pierwszy późno, dostaje
+po swojej ponownej publikacji tyle samo czasu co każdy inny, zanim zostanie zgłoszony.
+`OutboxStatus.gaveUp` wymienia 100 czekających najdłużej, a `gaveUpTotal` liczy wszystkie.
 
 > **Pamiętaj:** listener, który zawodzi na dobre, *nie* zatrzymuje wierszy w outboxie: jego
 > `MessageFailed` też jest odpowiedzią. Poller jest od ciszy (zgubionych wiadomości, maszyn, które
@@ -364,10 +370,16 @@ kuchni, aż zrobi się miejsce. Szyna zdarzeń robi to samo z projekcją, która
   Dopóki jakieś koszyki są wstrzymane, nowe zdarzenia zajmują najwyżej połowę okna, więc wstrzymane
   wciąż posuwają się naprzód.
 - Szybka projekcja obok wolnej nie jest przez nią spowalniana: każdy subskrybent ma własne okno.
+- Projekcja, która przez cały termin nie odpowiada na nic, nie dostaje nowego okna: to, co do niej
+  wysłano, liczy się dalej, dopóki nie odpowie na coś wysłanego później. W tym czasie dostaje jeden
+  komunikat na termin, więc zgubione komunikaty nie mogą jej odciąć na dobre.
+- W klastrze listener stanów na innym węźle dostaje w każdym komunikacie kopię stanu koszyka, więc
+  okno liczy też rozmiar stanu.
 
 `GetDeliveryStatus` pokazuje to wszystko: `held` liczy wstrzymane dostarczenia, a `behind` przypisuje
 każdemu subskrybentowi ze wstrzymanymi koszykami ich liczbę. Subskrybentów, którzy zostali w tyle,
-wymienia też pięciominutowe podsumowanie szyny.
+wymienia też pięciominutowe podsumowanie szyny. Instancja zarządzanej projekcji nosi nazwę projekcji
+(`carts-build-2-1`), więc te nazwy, metryka `bus.behind` i logi odróżniają projekcje od siebie.
 
 Żeby dać projekcjom większe albo mniejsze okno, przekaż szynie `DeliveryOptions`, na przykład
 `DeliveryOptions(window = 20000, windowBytes = 128L * 1024 * 1024)`. Większe okno pozwala projekcji

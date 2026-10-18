@@ -877,12 +877,16 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 
   // One query for all aggregate types (F37); the aggregate's own row of its chain gives the type. The limit bounds what
   // the poller holds, not the grouping, which still reads every row (F122: cheap while the outbox is near empty).
-  override def readWaitingInOutbox(limit: Int = Int.MaxValue): Seq[WaitingInOutbox] = DB.readOnly { implicit session =>
+  override def readWaitingInOutbox(limit: Int = Int.MaxValue): Seq[WaitingInOutbox] = waitingInOutbox(limit, sqls"since, events_to_publish.aggregate_id")
+
+  override def readNewestWaitingInOutbox(limit: Int): Seq[WaitingInOutbox] = waitingInOutbox(limit, sqls"since DESC, events_to_publish.aggregate_id DESC")
+
+  private def waitingInOutbox(limit: Int, order: SQLSyntax): Seq[WaitingInOutbox] = DB.readOnly { implicit session =>
     sql"""SELECT aggregates.type_id, events_to_publish.aggregate_id, MIN(events_to_publish.version), MIN(events_to_publish.event_time) AS since
          | FROM events_to_publish
          | JOIN aggregates ON aggregates.id = events_to_publish.aggregate_id AND aggregates.base_id = aggregates.id
          | GROUP BY aggregates.type_id, events_to_publish.aggregate_id
-         | ORDER BY since, events_to_publish.aggregate_id LIMIT $limit""".stripMargin
+         | ORDER BY $order LIMIT $limit""".stripMargin
       .map(rs => WaitingInOutbox(AggregateType(typesNamesState.classNameById(rs.short(1))), AggregateId(rs.long(2)),
         AggregateVersion(rs.int(3)), utcTime(rs.underlying, 4)))
       .list()

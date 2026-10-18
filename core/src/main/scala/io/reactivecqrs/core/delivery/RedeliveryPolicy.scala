@@ -10,7 +10,9 @@ import scala.concurrent.duration._
 /**
   * When to ask an aggregate's owner to re-publish what waits in its outbox (D8, D20b). The first attempt is the live
   * publication at commit; re-publications follow it after each of `attemptsAfter` (3 and 6 minutes). Once they are
-  * made and `giveUpAfter` (10 minutes) has passed, the aggregate is reported once as undelivered, and re-published
+  * made, `giveUpAfter` (10 minutes) has passed, and the last of them is as old as the last one would be then (4 minutes:
+  * one first seen late, re-published once for all its attempts, gets that long too, F268), the aggregate is reported
+  * once as undelivered, and re-published
   * again every `retryGivenUpEvery` (30 minutes): its subscriber may be back without a restart (F123). Rows written
   * before this process started get a fresh set of attempts, the first one at once, because nothing delivers them
   * otherwise.
@@ -26,7 +28,7 @@ object RedeliveryPolicy {
                      maxRepublishPerPoll: Int = 1000, retryGivenUpEvery: FiniteDuration = 30.minutes)
 
   /** What the policy remembers about one aggregate between polls; `firstAttempt` is the live publication, or the first
-    * re-publication for rows from before the start. */
+    * re-publication for rows from before the start; `lastTry`, its last re-publication. */
   case class Tracked(waiting: WaitingInOutbox, firstAttempt: Instant, attemptsMade: Int, gaveUp: Boolean, lastTry: Option[Instant] = None)
 
   /** A poll's decision: what to re-publish now, what to report as undelivered, and what to remember for the next poll. */
@@ -59,7 +61,7 @@ object RedeliveryPolicy {
   // A newer oldest version than the one tracked means the older rows were delivered: these rows get attempts of their own.
   private def step(w: WaitingInOutbox, before: Option[Tracked], startedAt: Instant, now: Instant, options: Options): Step = before match {
     case None if w.since.isBefore(startedAt) =>
-      Step(w, None, Tracked(w, now, attemptsMade = 0, gaveUp = false), republish = true, gaveUp = false)
+      Step(w, None, Tracked(w, now, attemptsMade = 0, gaveUp = false, lastTry = Some(now)), republish = true, gaveUp = false)
     case None =>
       continue(w, None, Tracked(w, w.since, attemptsMade = 0, gaveUp = false), now, options)
     case Some(tracked) =>
@@ -78,11 +80,17 @@ object RedeliveryPolicy {
       }
     } else if (due > tracked.attemptsMade) {
       // one re-publication, however many attempts fell due since the last poll
-      Step(w, before, tracked.copy(attemptsMade = due), republish = true, gaveUp = false)
-    } else if (due == options.attemptsAfter.size && elapsed >= options.giveUpAfter) {
+      Step(w, before, tracked.copy(attemptsMade = due, lastTry = Some(now)), republish = true, gaveUp = false)
+    } else if (due == options.attemptsAfter.size && elapsed >= options.giveUpAfter && lastTriedLongAgo(tracked, now, options)) {
       Step(w, before, tracked.copy(gaveUp = true, lastTry = Some(now)), republish = false, gaveUp = true)
     } else {
       Step(w, before, tracked, republish = false, gaveUp = false)
     }
+  }
+
+  // F268: the last re-publication has had the time the last of the attempts gets before the give-up.
+  private def lastTriedLongAgo(tracked: Tracked, now: Instant, options: Options): Boolean = {
+    val lastGets = options.giveUpAfter - options.attemptsAfter.lastOption.getOrElse(0.seconds)
+    tracked.lastTry.forall(at => Duration.between(at, now).toMillis.millis >= lastGets)
   }
 }

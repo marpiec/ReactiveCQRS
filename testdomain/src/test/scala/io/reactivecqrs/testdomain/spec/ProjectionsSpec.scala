@@ -25,6 +25,7 @@ import scalikejdbc._
 import scala.concurrent.duration._
 
 case class GetNoteLines(id: AggregateId)
+case object GetInstanceName
 case object GetAllNoteLines
 case class SubscribeToNotes(subscriptionId: String, listener: ActorRef)
 
@@ -52,6 +53,7 @@ class ManagedNotes(val subscriptionsState: SubscriptionsState, store: DocumentSt
   }
   override protected def receiveQuery: Receive = {
     case GetNoteLines(id) => sender() ! store.getDocument(id.asLong).map(_.document)
+    case GetInstanceName => sender() ! self.path.name
     case GetAllNoteLines => sender() ! store.findAll().map { case (id, doc) => AggregateId(id) -> doc.document }
   }
   override protected def receiveSubscriptionRequest: Receive = {
@@ -198,6 +200,20 @@ class ProjectionsSpec extends CommonSpec {
   private def tableExists(table: String): Boolean = DB.readOnly(implicit s => sql"SELECT to_regclass($table) IS NOT NULL".map(_.boolean(1)).single().get)
 
   Feature("A managed projection (D57, D70)") {
+
+    Scenario("F258 the instances of two projections have names of their own, which name the projection") {
+      var supervisors = Seq.empty[ActorRef]
+      val node = new Node()(projections => {
+        supervisors = Seq(notesProjection(projections, "m4p-named-a", 1, "m4p_named_a"), notesProjection(projections, "m4p-named-b", 1, "m4p_named_b"))
+        supervisors
+      })
+      supervisors.foreach(switchedTo(_, 1))
+
+      val names = supervisors.map(_.askFor[String](GetInstanceName, 5.seconds))
+      names.distinct.size mustBe 2
+      names.head must startWith("m4p-named-a-")
+      node.stop()
+    }
 
     Scenario("a new projection is built from the store first, serving meanwhile, and is live afterwards") {
       Given("notes stored before the projection exists")

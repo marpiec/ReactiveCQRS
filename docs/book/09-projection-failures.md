@@ -154,7 +154,10 @@ The answer is `ProjectionStatus(projectionName, failures, retrying, waitingForGa
 - **`waitingForGap`**: the carts waiting for missing versions (later in this chapter).
 
 Three empty lists mean all is well. The failures live in the `subscription_failures` table, so they
-survive restarts: a stuck cart stays stuck until somebody does something about it.
+survive restarts: a stuck cart stays stuck until somebody does something about it. So that the answer
+can always reach you, also from another node of a cluster, it lists the oldest 100 failures, each
+error cut to 500 characters, and `failuresTotal` says how many there are; the other two lists hold
+at most 1 000 carts each.
 
 > **Tip:** put `GetProjectionStatus` behind an admin page or a health check, for every projection.
 > Chapter 18 has more on watching a running system.
@@ -281,7 +284,7 @@ val delivery = Await.result((eventBus ? GetDeliveryStatus).mapTo[DeliveryStatus]
 | Field | Meaning |
 |---|---|
 | `waiting` | deliveries waiting for an answer |
-| `undelivered` | the latest ones that ended at the deadline (up to 1 000 are kept), each an `Undelivered(aggregateType, aggregateId, version, subscriber, kind, at)` |
+| `undelivered` | the latest 100 that ended at the deadline, each an `Undelivered(aggregateType, aggregateId, version, subscriber, kind, at)`; `undeliveredTotal` says how many are kept (up to 1 000) |
 | `stopped` | subscribers that stopped (later in this chapter) |
 | `held`, `behind` | flow control (later in this chapter) |
 
@@ -332,7 +335,11 @@ val outboxPoller = system.actorOf(Props(new OutboxPollerActor(eventStore, eventB
 
 The defaults: `firstPollAfter` 10 seconds, `pollInterval` 30 seconds, `maxTracked` 100 000, and in
 `RedeliveryPolicy.Options`: `attemptsAfter` 3 and 6 minutes, `giveUpAfter` 10 minutes,
-`maxRepublishPerPoll` 1 000 and `retryGivenUpEvery` 30 minutes.
+`maxRepublishPerPoll` 1 000 and `retryGivenUpEvery` 30 minutes. When more carts than `maxTracked` wait,
+the poller reads the 50 000 newest too, so carts waiting for a subscriber that stays away cannot hide
+a newer lost delivery. A cart the poller first sees late gets as much time after its re-publication
+as any other before it is reported. `OutboxStatus.gaveUp` lists the 100 waiting longest, and
+`gaveUpTotal` counts them all.
 
 > **Remember:** a listener that fails for good does *not* keep outbox rows waiting: its
 > `MessageFailed` is an answer. The poller is there for silence (lost messages, crashed machines,
@@ -358,9 +365,16 @@ The event bus does the same for a projection that cannot keep up:
   publish them again to that projection, oldest first, at most 100 carts at a time. While carts are
   held, new events take at most half the window, so the held ones keep moving.
 - A fast projection next to a slow one is not held back: every subscriber has a window of its own.
+- A projection that answers nothing for the whole deadline gets no new window: what it was sent
+  still counts until it answers something sent later. It gets one message per deadline meanwhile, so
+  messages that were lost cannot keep it shut out.
+- In a cluster, a state listener on another node gets a copy of the cart's state in every message,
+  so the window counts the state's size too.
 
 `GetDeliveryStatus` shows it all: `held` counts the deliveries held, and `behind` maps each
 subscriber with carts held to how many. The bus's 5-minute summary names the subscribers behind too.
+A managed projection's instance is named after the projection (`carts-build-2-1`), so these names,
+the `bus.behind` metric and the logs tell the projections apart.
 
 To give your projections a bigger or a smaller window, pass `DeliveryOptions` to the bus, for example
 `DeliveryOptions(window = 20000, windowBytes = 128L * 1024 * 1024)`. A bigger window lets a

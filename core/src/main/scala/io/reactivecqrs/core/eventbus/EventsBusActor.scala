@@ -109,8 +109,10 @@ object EventsBusActor {
   case object GetDeliveryStatus
   /** `waiting`: deliveries in flight; `undelivered`: the latest ones that ended at the deadline; `stopped`: subscribers
     * that stopped, whose events stay in the outbox until the next start; `held`: deliveries held for a subscriber whose
-    * window was full, and `behind`: per such subscriber, the aggregates held for it (F93). */
-  case class DeliveryStatus(waiting: Int, undelivered: Seq[Undelivered], stopped: Seq[String], held: Int = 0, behind: Map[String, Int] = Map.empty)
+    * window was full, and `behind`: per such subscriber, the aggregates held for it (F93). `undelivered` holds the latest
+    * 100, `undeliveredTotal` how many are kept (at most 1 000): an answer stays small enough for another node (F228). */
+  case class DeliveryStatus(waiting: Int, undelivered: Seq[Undelivered], stopped: Seq[String], held: Int = 0, behind: Map[String, Int] = Map.empty,
+                            undeliveredTotal: Int = 0)
   /** A delivery that ended at its deadline without an answer: its row stays in the outbox for the poller. */
   case class Undelivered(aggregateType: AggregateType, aggregateId: AggregateId, version: AggregateVersion, subscriber: String, kind: DeliveryKind, at: Instant)
 
@@ -164,11 +166,12 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   private case class Delivery(aggregateType: AggregateType, publisher: Option[ActorRef], firstSent: Long, lastSent: Long, awaiting: Set[Target],
                               held: Set[Target], incomplete: Boolean, stallLogged: Boolean, permanentDelete: Boolean) {
     def waitsFor(target: Target): Boolean = awaiting.contains(target) || held.contains(target)
+    def waitsForAny(target: Target => Boolean): Boolean = awaiting.exists(target) || held.exists(target)
     def done: Boolean = awaiting.isEmpty && held.isEmpty
     def without(target: Target => Boolean): Delivery = copy(awaiting = awaiting.filterNot(target), held = held.filterNot(target))
   }
 
-  private val deliveries = mutable.HashMap[EventKey, Delivery]()
+  private val deliveries = new InFlight[EventKey, Delivery](_.firstSent, _.lastSent, d => d.awaiting.nonEmpty && !d.stallLogged, _.held.nonEmpty) // F212
   private var subscriptions = Map[AggregateType, Vector[SubscribeRequest]]()
   private var publishers = Map[AggregateType, ActorRef]()
   private var stopped = Set[ActorRef]()
@@ -412,7 +415,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   private def sampleLevels(): Unit = {
     val metrics = ReactiveMetrics(context.system).metrics
     metrics.gauge("reactivecqrs.bus.waiting", Map.empty, deliveries.size)
-    metrics.gauge("reactivecqrs.bus.held", Map.empty, deliveries.valuesIterator.count(_.held.nonEmpty))
+    metrics.gauge("reactivecqrs.bus.held", Map.empty, deliveries.heldSize)
     val behind = flow.status
     subscriptions.valuesIterator.flatten.map(_.subscriber).toSet.foreach { (subscriber: ActorRef) =>
       metrics.gauge("reactivecqrs.bus.behind", Map("subscriber" -> subscriber.path.name), behind.get(subscriber).map(_.aggregatesBehind.toLong).getOrElse(0L))
@@ -434,15 +437,22 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     def bytes(of: Seq[EventInfo[Any]]): Long = of.map(e => bytesOf(e.version.asInt)).sum
 
     // A new event goes to every subscription; an event that still waits goes again only to the subscriptions it waits
-    // for, sent or held. A re-publication to one subscriber sends it everything it asked for.
+    // for, sent or held. A re-publication to one subscriber sends it everything it asked for. What only such a
+    // re-publication left waiting (no publisher) a full one adopts, as a new event (F264).
     def wanted(s: SubscribeRequest, event: EventInfo[Any]): Boolean =
-      onlyTo.isDefined || deliveries.get(EventKey(aggregateId, event.version)).forall(_.waitsFor(Target(s.subscriber, s.kind)))
+      onlyTo.isDefined || deliveries.get(EventKey(aggregateId, event.version)).forall(d => d.publisher.isEmpty || d.waitsFor(Target(s.subscriber, s.kind)))
     val forEach = live.map(s => s -> events.filter(e => wanted(s, e))).filter(_._2.nonEmpty)
+
+    // F222: a message to a subscriber on another node carries its own copy of the state, which its window counts too;
+    // on this node the messages share one.
+    val measured = new Measured(aggregateRoot)
+    def stateBytes(s: SubscribeRequest): Long =
+      if (s.kind != EventsDelivery && aggregateRoot.isDefined && messageSize.onAnotherNode(s.subscriber)) measured.state.toLong else 0L
 
     // F93: a subscriber takes a live publication while it fits its window, its messages of every kind together; for one
     // whose window is full, it is held. A re-publication to one subscriber (a pull, or a gap it asked for) goes as it is.
     val admitted = forEach.groupBy(_._1.subscriber).map { case (subscriber, wanting) =>
-      subscriber -> (onlyTo.isDefined || flow.admits(subscriber, aggregateId, wanting.map(_._2.size).sum, wanting.map(w => bytes(w._2)).sum))
+      subscriber -> (onlyTo.isDefined || flow.admits(subscriber, aggregateId, wanting.map(_._2.size).sum, wanting.map(w => bytes(w._2) + stateBytes(w._1)).sum))
     }
     val (sends, holds) = forEach.partition { case (s, _) => admitted(s.subscriber) }
     holds.groupBy(_._1.subscriber).foreach { case (subscriber, held) =>
@@ -463,19 +473,22 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
           // so its events stay in the outbox until it is back after a restart.
           val delivery = Delivery(aggregateType, if (onlyTo.isEmpty) Some(publisher) else None, now, now, sentTo, heldFor,
             incomplete = ofStopped.nonEmpty || unanswered.nonEmpty, stallLogged = false, permanentDelete = event.event.isInstanceOf[PermanentDeleteEvent[_]])
-          if (delivery.done) finished :+= (delivery -> key) else deliveries += key -> delivery
+          if (delivery.done) finished :+= (delivery -> key) else deliveries.put(key, delivery)
+        case Some(waiting) if onlyTo.isEmpty && waiting.publisher.isEmpty =>
+          // F264: its owner hears of it when every subscription has it, as of a new event.
+          deliveries.put(key, waiting.copy(publisher = Some(publisher), firstSent = now, lastSent = now, awaiting = waiting.awaiting ++ sentTo,
+            held = waiting.held -- sentTo ++ heldFor, incomplete = waiting.incomplete || ofStopped.nonEmpty || unanswered.nonEmpty, stallLogged = false))
         case Some(waiting) =>
           // What was held for a subscriber that takes it now (a pull's part) is sent: it may stall from now on, not from
           // when it was held.
           val nowSent = waiting.held.intersect(sentTo)
           if (nowSent.nonEmpty) {
-            deliveries += key -> waiting.copy(awaiting = waiting.awaiting ++ nowSent, held = waiting.held -- nowSent, lastSent = now, stallLogged = false)
+            deliveries.put(key, waiting.copy(awaiting = waiting.awaiting ++ nowSent, held = waiting.held -- nowSent, lastSent = now, stallLogged = false))
           }
       }
     }
 
     // A subscription that is sent a later part of the events than the first does not start at the squash event.
-    val measured = new Measured(aggregateRoot)
     sends.foreach { case (s, forSubscription) =>
       val startsHere = startsAtSquash && forSubscription.head.version == events.head.version
       // F128: a message holds consecutive versions only. What a subscription is sent of a re-publication can have holes
@@ -483,7 +496,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       // from its first version to its last: it would step over a hole. Apart, the hole is a gap it asks for.
       consecutive(forSubscription).flatMap(run => partsFor(s, run, measured)).zipWithIndex.foreach { case (part, i) =>
         s.subscriber ! messageFor(s, aggregateType, aggregateId, part, aggregateRoot, startsHere && i == 0)
-        flow.sent(s.subscriber, SentKey(aggregateId, part.head.version.asInt, s.kind), part.size, bytes(part), now)
+        flow.sent(s.subscriber, SentKey(aggregateId, part.head.version.asInt, s.kind), part.size, bytes(part) + stateBytes(s), now)
       }
     }
     onlyTo.foreach(subscriber => flow.republished(subscriber, aggregateId, events.last.version.asInt))
@@ -559,10 +572,10 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       deliveries.get(key).foreach { delivery =>
         val rest = delivery.without(_ == target)
         if (rest.done) {
-          deliveries -= key
+          deliveries.remove(key)
           finished :+= (rest -> key)
         } else {
-          deliveries += key -> rest
+          deliveries.put(key, rest)
         }
       }
     }
@@ -594,7 +607,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       else log.error("Subscriber " + subscriber.path + " stopped; its events stay in the outbox until the next start")
       stopped += subscriber
       flow.remove(subscriber)
-      endDeliveries(_.subscriber == subscriber, _ => true)
+      endDeliveries(_.subscriber == subscriber)
     }
   }
 
@@ -613,20 +626,18 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     stopped -= subscriber
     flow.remove(subscriber)
     noLongerUnanswered(subscriber)
-    if (keepOutbox) endDeliveries(_.subscriber == subscriber, _ => true) else completeFor(subscriber)
+    if (keepOutbox) endDeliveries(_.subscriber == subscriber) else completeFor(subscriber)
   }
 
   private def completeFor(subscriber: ActorRef): Unit = {
     var finished = Vector[(Delivery, EventKey)]()
-    deliveries.toSeq.foreach { case (key, delivery) =>
-      if (delivery.awaiting.exists(_.subscriber == subscriber) || delivery.held.exists(_.subscriber == subscriber)) {
-        val rest = delivery.without(_.subscriber == subscriber)
-        if (rest.done) {
-          deliveries -= key
-          finished :+= (rest -> key)
-        } else {
-          deliveries += key -> rest
-        }
+    deliveries.keysWhere(_.waitsForAny(_.subscriber == subscriber)).foreach { key =>
+      val rest = deliveries.get(key).get.without(_.subscriber == subscriber)
+      if (rest.done) {
+        deliveries.remove(key)
+        finished :+= (rest -> key)
+      } else {
+        deliveries.put(key, rest)
       }
     }
     completeAll(finished)
@@ -635,7 +646,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   private def checkDeadlines(): Unit = {
     val now = System.nanoTime()
     val deadline = options.deadline.toNanos
-    val expired = deliveries.filter { case (_, delivery) => now - delivery.firstSent >= deadline }.toSeq
+    val expired = deliveries.firstSentBy(now - deadline)
     if (expired.nonEmpty) {
       val ended = expired.flatMap { case (key, delivery) => (delivery.awaiting ++ delivery.held).toSeq.map(target => (key, delivery, target)) }
       ended.take(options.stallLinesPerTick).foreach { case (key, delivery, target) =>
@@ -650,20 +661,18 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
         undelivered.enqueue(Undelivered(delivery.aggregateType, key.aggregateId, key.version, target.subscriber.path.name, target.kind, Instant.now))
       }
       while (undelivered.size > undeliveredKept) undelivered.dequeue()
-      val expiredKeys = expired.map(_._1).toSet
-      endDeliveries(_ => true, expiredKeys.contains)
+      endDeliveries(_ => true, Some(expired.map(_._1)))
     }
 
     // One line per stalled delivery, at most a few per tick: under overload the summary says the rest. A delivery held
     // for a full window is not stalled: it waits for its pull (F93), and the summary counts it.
     val stallAfter = options.stallAfter.toNanos
-    deliveries.toSeq.filter { case (_, delivery) => !delivery.stallLogged && delivery.awaiting.nonEmpty && now - delivery.lastSent >= stallAfter }
-      .zipWithIndex.foreach { case ((key, delivery), index) =>
+    deliveries.lastSentBy(now - stallAfter).zipWithIndex.foreach { case ((key, delivery), index) =>
         if (index < options.stallLinesPerTick) {
           log.warning("Delivery waits for " + options.stallAfter + ": " + delivery.aggregateType.simpleName + " " + key.aggregateId.asLong +
             " version " + key.version.asInt + " to " + delivery.awaiting.map(t => t.subscriber.path.name + " (" + t.kind + ")").mkString(", "))
         }
-        deliveries += key -> delivery.copy(stallLogged = true)
+        deliveries.put(key, delivery.copy(stallLogged = true))
       }
     if (now - lastSummary >= options.summaryInterval.toNanos) {
       lastSummary = now
@@ -680,22 +689,24 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     }
   }
 
-  private def endDeliveries(target: Target => Boolean, selected: EventKey => Boolean): Unit = {
+  // The deliveries of `keys` (all of them, when none are given) end for the targets `target` selects.
+  private def endDeliveries(target: Target => Boolean, keys: Option[Seq[EventKey]] = None): Unit = {
     var finished = Vector[(Delivery, EventKey)]()
-    deliveries.toSeq.foreach { case (key, delivery) =>
-      if (selected(key) && (delivery.awaiting.exists(target) || delivery.held.exists(target))) {
+    keys.getOrElse(deliveries.keysWhere(_.waitsForAny(target))).foreach { key =>
+      deliveries.get(key).filter(_.waitsForAny(target)).foreach { delivery =>
         val ended = delivery.without(target).copy(incomplete = true)
         if (ended.done) {
-          deliveries -= key
+          deliveries.remove(key)
           finished :+= (ended -> key)
         } else {
-          deliveries += key -> ended
+          deliveries.put(key, ended)
         }
       }
     }
     completeAll(finished)
   }
 
-  private def status: DeliveryStatus = DeliveryStatus(deliveries.size, undelivered.toList, stopped.toSeq.map(_.path.name).sorted,
-    deliveries.values.count(_.held.nonEmpty), flow.status.collect { case (s, f) if f.aggregatesBehind > 0 => s.path.name -> f.aggregatesBehind })
+  private def status: DeliveryStatus = DeliveryStatus(deliveries.size, undelivered.toList.takeRight(100), stopped.toSeq.map(_.path.name).sorted,
+    deliveries.heldSize, flow.status.collect { case (s, f) if f.aggregatesBehind > 0 => s.path.name -> f.aggregatesBehind },
+    undelivered.size)
 }

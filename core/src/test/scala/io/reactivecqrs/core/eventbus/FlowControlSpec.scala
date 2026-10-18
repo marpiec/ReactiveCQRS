@@ -152,7 +152,7 @@ class FlowControlSpec extends AnyFeatureSpec with Matchers {
 
   Feature("What goes unanswered") {
 
-    Scenario("a message not answered by the deadline is taken off, so a lost one cannot keep the window shut") {
+    Scenario("a message not answered by the deadline lets one message through, so a lost one cannot keep the window shut") {
       val f = flow
       f.sent("s", key(1, 1), 4, 100, 0)
       f.admits("s", id(2), 1, 1) mustBe false
@@ -160,6 +160,17 @@ class FlowControlSpec extends AnyFeatureSpec with Matchers {
       f.admits("s", id(2), 1, 1) mustBe false
       f.expire(600 * second)
       f.admits("s", id(2), 1, 1) mustBe true
+    }
+
+    Scenario("F221 a message past the deadline still counts, until the subscriber answers one sent after it") {
+      val f = flow
+      f.sent("s", key(1, 1), 4, 100, 0)
+      f.expire(600 * second)
+      f.sent("s", key(2, 1), 1, 1, 600 * second) // the one message that goes with nothing in flight
+      f.admits("s", id(3), 1, 1) mustBe false // the first is presumed in the mailbox
+      f.answered("s", key(2, 1)) // so it has passed the first
+      f.admits("s", id(3), 1, 1) mustBe true
+      f.status.get("s") mustBe None
     }
 
     Scenario("a pull not answered in time is behind again") {
@@ -192,7 +203,7 @@ class FlowControlSpec extends AnyFeatureSpec with Matchers {
       f.expire(600 * second)
       f.status("s").aggregatesBehind mustBe 1
       f.expire(1100 * second)
-      f.status.get("s") mustBe None
+      f.status("s").aggregatesBehind mustBe 0 // the message past the deadline still counts (F221)
     }
 
     Scenario("a subscriber removed leaves nothing behind") {

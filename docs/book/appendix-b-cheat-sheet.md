@@ -101,16 +101,17 @@ One per node. Messages from `io.reactivecqrs.core.eventbus.EventsBusActor._`.
 | You send | You get back | Good to know |
 |---|---|---|
 | `RegisterSubscribers(subscribers)` | Nothing | Send it once at start, with every projection, listener actor and managed projection's supervisor. The bus asks each for its subscriptions and publishes nothing until all have answered; meanwhile it logs every 5 seconds whom it waits for. `RegisterSubscribers(Nil)` starts a bus without subscribers. |
-| `GetDeliveryStatus` | `DeliveryStatus(waiting, undelivered, stopped, held, behind)` | Answered even while the bus waits for its subscribers. See below. |
+| `GetDeliveryStatus` | `DeliveryStatus(waiting, undelivered, stopped, held, behind, undeliveredTotal)` | Answered even while the bus waits for its subscribers. See below. |
 
 The fields of `DeliveryStatus`:
 
 - `waiting: Int`: deliveries in flight (sent or held, not yet answered);
-- `undelivered: Seq[Undelivered]`: the latest deliveries that nobody answered within 10 minutes,
+- `undelivered: Seq[Undelivered]`: the latest 100 deliveries that nobody answered within 10 minutes,
   each `Undelivered(aggregateType, aggregateId, version, subscriber, kind, at)`;
 - `stopped: Seq[String]`: subscribers that stopped; their events stay in the outbox;
 - `held: Int`: deliveries held back because a subscriber's window was full;
-- `behind: Map[String, Int]`: for each subscriber that is behind, how many aggregates are held for it.
+- `behind: Map[String, Int]`: for each subscriber that is behind, how many aggregates are held for it;
+- `undeliveredTotal: Int`: how many ended undelivered are kept (up to 1 000).
 
 ### If you write a subscriber by hand
 
@@ -135,7 +136,7 @@ One per system. Messages from `io.reactivecqrs.core.delivery.OutboxPollerActor._
 
 | You send | You get back | Good to know |
 |---|---|---|
-| `GetOutboxStatus` | `OutboxStatus(waiting, gaveUp)` | `waiting`: how many aggregates had events waiting in the outbox at the poller's last poll (it reads at most 100 000). `gaveUp`: those reported undelivered, each `WaitingInOutbox(aggregateType, aggregateId, oldestVersion, since)`. |
+| `GetOutboxStatus` | `OutboxStatus(waiting, gaveUp, gaveUpTotal)` | `waiting`: how many aggregates had events waiting in the outbox at the poller's last poll (it reads at most 100 000, and the 50 000 newest beyond). `gaveUp`: the 100 reported undelivered that wait longest, each `WaitingInOutbox(aggregateType, aggregateId, oldestVersion, since)`; `gaveUpTotal`: all of them. |
 | `Poll` | Nothing | Reads the outbox now. Its own timer sends it every 30 seconds, the first time 10 seconds after start. |
 
 ---
@@ -147,7 +148,7 @@ supervisor if it is managed: the supervisor passes them on.
 
 | You send | You get back | Good to know |
 |---|---|---|
-| `GetProjectionStatus` | `ProjectionStatus(projectionName, failures, retrying, waitingForGap)` | `failures`: each `SubscriptionFailure(subscriptionType, aggregateType, aggregateId, version, error, since)`; `retrying` and `waitingForGap`: aggregate ids. |
+| `GetProjectionStatus` | `ProjectionStatus(projectionName, failures, retrying, waitingForGap, failuresTotal)` | `failures`: the oldest 100, each `SubscriptionFailure(subscriptionType, aggregateType, aggregateId, version, error, since)` with its error cut to 500 characters; `failuresTotal`: all of them; `retrying` and `waitingForGap`: at most 1 000 aggregate ids each. |
 | `RetryFailedSubscription(aggregateId)` | `FailedSubscriptionsHandled(aggregateId, count)` | Asks the owner for the failed versions again; each failure is cleared once its version is applied. `count`: the failed subscriptions of that aggregate (one per listener kind). |
 | `RetryAllFailedSubscriptions` | `FailedSubscriptionsRetried(count)` | Retries every failure, 20 per second. |
 | `SkipFailedVersion(aggregateId)` | `FailedSubscriptionsHandled(aggregateId, count)` | Marks each failed version as applied without applying it, then carries on from the next version. |

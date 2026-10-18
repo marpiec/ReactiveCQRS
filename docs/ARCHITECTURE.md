@@ -776,8 +776,11 @@ Lifecycle of one event:
 **Re-delivery** has a single owner, the `OutboxPollerActor` (D8). Every 30 s (the first poll
 10 s after start) it reads the aggregates with waiting rows in one query for all types
 (`readWaitingInOutbox`, F37), at most 100 000 of them, those waiting longest first, so what it
-holds no longer grows with the outbox (`maxTracked`, F122; the query still groups every row),
-and the pure `RedeliveryPolicy` decides:
+holds no longer grows with the outbox (`maxTracked`, F122; the query still groups every row).
+When there are more, it reads the newest `maxTracked / 2` too, so aggregates that wait for a
+subscriber that stays away cannot hide a newer lost delivery (F260). The pure `RedeliveryPolicy`
+decides (an aggregate first seen late, re-published once for all its attempts, is given up only as
+long after that as the last attempt gets, F268):
 
 | Rows | Re-publication | Then |
 |---|---|---|
@@ -796,7 +799,8 @@ consistent range. A range longer than 1 000 events or 16 MB of stored events goe
 (F83, F126; the store cuts a range by the events' stored sizes, `readPart`): the owner sends
 the next part of its outbox when the bus acknowledges the previous one, and a subscriber
 filling a gap asks for each next part itself; parts before the last carry the current state too.
-`GetOutboxStatus` reports the waiting and the given-up aggregates; the log names at most 10 of
+`GetOutboxStatus` reports the waiting and the given-up aggregates (the 100 waiting longest, and
+how many: an answer stays within a message between nodes, F228); the log names at most 10 of
 them per poll.
 
 ### 5.2 `EventsBusActor`
@@ -850,9 +854,13 @@ Only a delivery ended by acks and failures acknowledges the owner, grouped per o
 aggregate; one ended by the deadline or a stop keeps its outbox rows. An event published
 again while its delivery waits goes only to the subscribers it waits for. A re-publication
 to one subscriber (`PublishEvents(onlyTo = Some(s))`) never acknowledges the owner, so it
-cannot delete rows that others still wait for. Events nobody subscribed to are acknowledged
+cannot delete rows that others still wait for; a full publication of an event whose delivery only
+such a re-publication made adopts it, as a new event, so its owner is acknowledged (F264). Events nobody subscribed to are acknowledged
 at once. A delivery waiting longer than a minute is logged once (at most 10 lines per tick),
-and waiting deliveries are summed up every 5 minutes (F92). Timers are `Tick` messages to the
+and waiting deliveries are summed up every 5 minutes (F92). The deliveries are kept in first-sent
+order with a queue of their last sends and a count of the held ones (`eventbus/InFlight`), so a tick
+visits only what expires or stalls (F212). A managed projection's instances are named after the
+projection (`<name>-build-<n>-<k>`), which the status, gauges and logs use (F258). Timers are `Tick` messages to the
 bus (F79).
 
 **Subscribers that come and go (M4).** After the start, a projection's supervisor adds the
@@ -874,9 +882,13 @@ subscriber)`; the owner re-publishes `from` to its current version to that subsc
 messages not yet answered: its mailbox holds them, so the window is the subscriber's, across its
 kinds. The owner passes the sizes the store reported (`PublishEvents.sizes`); one not known
 counts as 1 KB. Each message sent is recorded by aggregate, first version and kind, and the
-answer naming them takes it off; a record older than the deadline is taken off too, so a lost
-message cannot keep the window shut. With nothing in flight, one publication goes whatever its
-size. A live publication that does not fit is **held** for that subscriber: its deliveries wait
+answer naming them takes it off. A record older than the deadline is presumed in the mailbox: it
+still counts until the subscriber answers a message sent after it, which it can only have reached
+past it (one sender's messages keep their order), so a subscriber that answers nothing gets no new
+window every deadline (F221). With nothing in flight, one publication goes whatever its size, so
+lost messages cannot keep the window shut: a stalled subscriber gets one message per deadline. To a
+state listener on another node, each message carries its own copy of the state, whose measured size
+counts in the window too (F222). A live publication that does not fit is **held** for that subscriber: its deliveries wait
 for it as held, not sent, and its aggregate is behind for it, so every later event of that
 aggregate is held too and the subscriber never sees a gap of the bus's making. Once at most
 half the window is in flight, the bus **pulls** the aggregates behind, oldest first: it sends
@@ -1009,7 +1021,9 @@ Draining a queue, with `applied` the subscription's stored version:
    re-publication runs up to its version and may hold that live version too.
 
 **Failed subscriptions** (D20a). `GetProjectionStatus` → `ProjectionStatus(name, failures,
-retrying, waitingForGap)`. `RetryFailedSubscription(id)` asks the owner for each failed
+retrying, waitingForGap, failuresTotal)`: the oldest 100 failures, errors cut to 500 characters,
+and at most 1 000 aggregates per list, so the answer crosses nodes (F228; `DeliveryStatus` lists the
+latest 100 undelivered with `undeliveredTotal`). `RetryFailedSubscription(id)` asks the owner for each failed
 version again, repeated like a gap, and clears the failure once a batch reaches that version
 (F88); `RetryAllFailedSubscriptions` does it for every failure, 20 per second
 (`failureRetryInterval`); `SkipFailedVersion(id)` marks each failed version as applied without
@@ -1251,7 +1265,9 @@ handlers. It runs on the blocking dispatcher and reads synchronously on its own 
 
 **Missing versions.** A run ends where a version is missing, so the projection reports the
 gap (`ChunkApplied.gaps`, or `RequestRepublish` from a queue while it is built), and the
-builder reads it again by version, ahead of everything else.
+builder reads it again by version, ahead of everything else. The reconciliation and the gaps
+queue what is missing per aggregate and read it when nothing else is ready to send, a chunk's worth
+of aggregates at a time, so memory holds a few chunks, not every missing event of a page (F223).
 
 **Resume (D61).** After each applied chunk of the bulk pass, its position (the last row id, or
 aggregate id for final states) is saved through `BuildPositions`; once the pass ends, that it

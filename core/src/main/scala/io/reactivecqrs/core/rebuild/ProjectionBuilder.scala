@@ -110,6 +110,11 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
   // Chunks to send with the position the bulk pass reaches once each is applied, and those sent, oldest first.
   private val ready = mutable.Queue[(ApplyChunk, Long)]()
   private val inFlight = mutable.Queue[(ApplyChunk, Long)]()
+  // F223: what the reconciliation and the gaps lack, read one aggregate at a time when nothing else is ready to send, so
+  // memory holds a few chunks, not every missing event of a page; the gaps and the chunks to send again go first.
+  private val work = mutable.Queue[() => Seq[ChunkItem]]()
+  private val gapWork = mutable.Queue[() => Seq[ChunkItem]]()
+  private val first = mutable.Queue[(ApplyChunk, Long)]()
   private var chunkIds = 0L
   private var outstanding = 0 // items the projection handed to its queues, not answered yet
 
@@ -154,7 +159,7 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
     case Status.Failure(e) =>
       // The projection could not take a chunk (its store is down): the chunks in flight are sent again, after a wait.
       log.warning("Projection " + subscriberName + " failed on a chunk, sending it again in " + settings.retryAfter + ": " + Errors.describe(e))
-      inFlight.reverseIterator.foreach(sent => ready.prepend(sent)) // re-sent in their order
+      inFlight.reverseIterator.foreach(sent => first.prepend(sent)) // re-sent first, in their order
       inFlight.clear()
       retryLater()
     case Retry =>
@@ -173,15 +178,17 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
   private def pump(): Unit = if (!waitingToRetry) {
     var more = true
     while (more) {
-      while (inFlight.size < settings.chunksInFlight && ready.nonEmpty) {
-        val sent = ready.dequeue()
+      var next = if (inFlight.size < settings.chunksInFlight) nextChunk() else None
+      while (next.isDefined) {
+        val sent = next.get
         target ! sent._1
         eventsSent += sent._1.items.map(item => math.max(item.events.size, 1)).sum
         inFlight.enqueue(sent)
+        next = if (inFlight.size < settings.chunksInFlight) nextChunk() else None
       }
-      more = inFlight.size < settings.chunksInFlight && ready.isEmpty && !readAll && readNextPage()
+      more = inFlight.size < settings.chunksInFlight && nothingToSend && !readAll && readNextPage()
     }
-    if (readAll && ready.isEmpty && inFlight.isEmpty && outstanding == 0) phase match {
+    if (readAll && nothingToSend && inFlight.isEmpty && outstanding == 0) phase match {
       case Bulk => goLive()
       case Reconciling =>
         phase = CaughtUp
@@ -191,6 +198,28 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
         context.stop(self) // with its replay states
       case _ => ()
     }
+  }
+
+  private def nothingToSend: Boolean = first.isEmpty && ready.isEmpty && work.isEmpty && gapWork.isEmpty
+
+  // The next chunk to send: one sent before and not taken, a gap's, a page's, or one made from the next aggregate behind.
+  private def nextChunk(): Option[(ApplyChunk, Long)] = {
+    while (first.isEmpty && gapWork.nonEmpty) chunked(aChunkOf(gapWork).map(_ -> -1L), -1L).foreach(first.enqueue) // a gap saves no position
+    while (first.isEmpty && ready.isEmpty && work.nonEmpty) chunked(aChunkOf(work).map(_ -> 0L), 0L).foreach(ready.enqueue)
+    if (first.nonEmpty) Some(first.dequeue()) else if (ready.nonEmpty) Some(ready.dequeue()) else None
+  }
+
+  // The items of the next aggregates waiting, until they fill a chunk: small aggregates share one.
+  private def aChunkOf(waiting: mutable.Queue[() => Seq[ChunkItem]]): Seq[ChunkItem] = {
+    val items = Vector.newBuilder[ChunkItem]
+    var (events, bytes) = (0, 0L)
+    while (waiting.nonEmpty && events < settings.chunkEvents && bytes < settings.chunkBytes) {
+      val made = waiting.dequeue()()
+      items ++= made
+      events += made.map(item => math.max(item.events.size, 1)).sum
+      bytes += made.map(_.bytes).sum
+    }
+    items.result()
   }
 
   private def goLive(): Unit = {
@@ -311,10 +340,11 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
       val applied = subscriptionsState.lastVersions(subscriberName, kind, ofType.map(_.aggregateId))
       ofType.collect { case a if a.version > applied(a.aggregateId) => (a, kind, applied(a.aggregateId)) }
     }
-    val items = missing.flatMap { case (aggregate, kind, applied) =>
-      itemsFrom(aggregate.aggregateType, aggregate.aggregateId, kind, AggregateVersion(applied.asInt + 1), aggregate.squashedUpTo, Some(aggregate.version))
+    missing.foreach { case (aggregate, kind, applied) =>
+      work.enqueue(() => itemsFrom(aggregate.aggregateType, aggregate.aggregateId, kind, AggregateVersion(applied.asInt + 1), aggregate.squashedUpTo,
+        Some(aggregate.version)))
     }
-    (items.map(_ -> 0L), aggregates.lastOption.map(_.aggregateId.asLong).getOrElse(position), aggregates.size)
+    (Nil, aggregates.lastOption.map(_.aggregateId.asLong).getOrElse(position), aggregates.size)
   }
 
   // The versions of one aggregate from `from` on, read by version; a range from below the squash point starts at the
@@ -361,12 +391,12 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
   // rest of that aggregate's runs in later chunks may be gaps too, and are read again the same way.
   private def fill(gaps: Seq[(AggregateType, AggregateId, AggregateVersion)]): Unit = if (gaps.nonEmpty) {
     gapsFilled += gaps.size
-    val items = gaps.distinct.flatMap { case (aggregateType, id, from) =>
-      val squashed = eventStore.squashedVersion(id)
-      plan.kindsOf(aggregateType).flatMap(kind => itemsFrom(aggregateType, id, kind, from, squashed))
+    gaps.distinct.foreach { case (aggregateType, id, from) =>
+      gapWork.enqueue(() => {
+        val squashed = eventStore.squashedVersion(id)
+        plan.kindsOf(aggregateType).flatMap(kind => itemsFrom(aggregateType, id, kind, from, squashed))
+      })
     }
-    // A filled gap does not move the bulk pass: it saves no position.
-    chunked(items.map(_ -> -1L), -1L).reverseIterator.foreach(ready.prepend)
   }
 
   // Items in chunks of at most `chunkEvents` events and `chunkBytes` of them (F126, F140), each with the position reached

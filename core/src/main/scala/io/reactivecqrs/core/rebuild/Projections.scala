@@ -1,5 +1,7 @@
 package io.reactivecqrs.core.rebuild
 
+import java.net.URLEncoder
+
 import io.reactivecqrs.api.{AggregateContext, AggregateType}
 import io.reactivecqrs.api.id.{AggregateId, SpaceId}
 import io.reactivecqrs.core.cluster.{Members, Singletons}
@@ -256,9 +258,11 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
 
   private def runningBuild: Option[Instance] = building.filterNot(_ => buildStopped)
 
+  // F258: the projection's name first, so the bus's status, gauges and logs, which name a subscriber by its actor's name,
+  // tell the projections apart; a name an actor path cannot hold is encoded.
   private def childName(prefix: String, build: Int): String = {
     children += 1
-    prefix + "-" + build + "-" + children
+    URLEncoder.encode(spec.name, "UTF-8") + "-" + prefix + "-" + build + "-" + children
   }
 
   // ************** Start

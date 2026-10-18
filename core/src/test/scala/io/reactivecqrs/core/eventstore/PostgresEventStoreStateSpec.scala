@@ -220,6 +220,7 @@ class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStore
     val all = eventStoreState.readWaitingInOutbox()
     all mustBe all.sortBy(w => (w.since, w.aggregateId.asLong))
     eventStoreState.readWaitingInOutbox(2) mustBe all.take(2)
+    eventStoreState.readNewestWaitingInOutbox(2) mustBe all.reverse.take(2) // F260
   }
 
   // F38, D69: the restore index is built online, once; running it again does nothing. F198: it is unique, replacing the

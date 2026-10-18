@@ -44,8 +44,11 @@ case class Listeners(subscriptions: Seq[(AggregateType, SubscriptionType)])
 /** Asks a projection for its `ProjectionStatus`. */
 case object GetProjectionStatus
 /** `retrying`: aggregates whose listener failed and is retried now; `waitingForGap`: aggregates waiting for missing
-  * versions to be re-published. */
-case class ProjectionStatus(projectionName: String, failures: Seq[SubscriptionFailure], retrying: Seq[AggregateId], waitingForGap: Seq[AggregateId])
+  * versions to be re-published. An answer stays small enough for another node (F228): `failures` holds the first 100,
+  * oldest first, each error cut to 500 characters, and `failuresTotal` counts them all; the lists of aggregates hold at
+  * most 1 000 each. */
+case class ProjectionStatus(projectionName: String, failures: Seq[SubscriptionFailure], retrying: Seq[AggregateId], waitingForGap: Seq[AggregateId],
+                            failuresTotal: Int = 0)
 // D57, D70: a managed projection runs one instance per build, under its supervisor.
 
 /** From the supervisor, before anything else: the name the instance's subscriptions are stored under (its build's). */
@@ -1111,9 +1114,14 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     }
   }
 
-  private def status: ProjectionStatus = ProjectionStatus(projectionName, failed.values.toSeq ++ queues.values.flatMap(_.retryOf),
-    queues.collect { case (key, queue) if queue.failedAttempts > 0 || queue.retryOf.isDefined => key.aggregateId }.toSeq.distinct,
-    queues.collect { case (key, queue) if queue.gapRequestedFrom.isDefined && queue.retryOf.isEmpty => key.aggregateId }.toSeq.distinct)
+  private def status: ProjectionStatus = {
+    val failures = failed.values.toSeq ++ queues.values.flatMap(_.retryOf)
+    ProjectionStatus(projectionName,
+      failures.sortBy(f => (f.since, f.aggregateId.asLong)).take(100).map(f => f.copy(error = f.error.take(500))),
+      queues.collect { case (key, queue) if queue.failedAttempts > 0 || queue.retryOf.isDefined => key.aggregateId }.toSeq.distinct.take(1000),
+      queues.collect { case (key, queue) if queue.gapRequestedFrom.isDefined && queue.retryOf.isEmpty => key.aggregateId }.toSeq.distinct.take(1000),
+      failures.size)
+  }
 
   protected def receiveQuery: Receive
 

@@ -43,6 +43,15 @@ class RedeliveryPolicySpec extends AnyFeatureSpec with Matchers {
 
   Feature("Rows written while the process runs") {
 
+    Scenario("F268 one first seen late is re-published once, and given up only as long after it as the last attempt gets") {
+      val row = waiting(1, 4, at(1.minute))
+
+      val (republished, gaveUp, _) = pollEvery30Seconds(Seq(row), 12.minutes, 20.minutes) // first seen 11 minutes old
+
+      republished mustBe Seq(12.minutes -> 1L)
+      gaveUp mustBe Seq(16.minutes -> 1L)
+    }
+
     Scenario("are re-published at 3 and 6 minutes, and given up once at 10 minutes") {
       val row = waiting(1, 4, at(1.minute))
 

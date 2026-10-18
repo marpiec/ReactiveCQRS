@@ -271,7 +271,12 @@ only) per event held. Once the projection has answered half its window, the bus 
 of the held aggregates to re-publish them to it, oldest first, at most 100 at once; while it has
 aggregates held, new events take at most half its window, so the held ones always move (F130). A
 fast projection next to a slow one is not held back. When the slow one has a held event, the owner
-is acknowledged and the outbox row goes, as for any delivery.
+is acknowledged and the outbox row goes, as for any delivery. A projection that answers nothing for
+the whole deadline (blocked on a lock or an external call) gets one message per deadline, not a new
+window: what it was sent counts until it answers something sent later (F221). A state listener on
+another node has the state's size counted in its window for each message, as each holds its own
+copy (F222). A bus tick visits only the deliveries that expire or stall, not every one waiting
+(F212).
 
 The window is each node's bus's: a projection's singleton takes events from the bus of every
 node, so its mailbox can hold one window per node (3 nodes: up to 30 000 events and 192 MB).

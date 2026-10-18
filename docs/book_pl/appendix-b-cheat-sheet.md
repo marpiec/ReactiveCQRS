@@ -103,17 +103,18 @@ Jedna na węzeł. Komunikaty z `io.reactivecqrs.core.eventbus.EventsBusActor._`.
 | Wysyłasz | Dostajesz | Warto wiedzieć |
 |---|---|---|
 | `RegisterSubscribers(subscribers)` | Nic | Wyślij raz na starcie, ze wszystkimi projekcjami, aktorami-listenerami i nadzorcami projekcji zarządzanych. Szyna pyta każdego o subskrypcje i niczego nie publikuje, dopóki wszyscy nie odpowiedzą; w tym czasie co 5 sekund zapisuje w logu, na kogo czeka. `RegisterSubscribers(Nil)` uruchamia szynę bez subskrybentów. |
-| `GetDeliveryStatus` | `DeliveryStatus(waiting, undelivered, stopped, held, behind)` | Szyna odpowiada nawet wtedy, gdy jeszcze czeka na subskrybentów. Szczegóły niżej. |
+| `GetDeliveryStatus` | `DeliveryStatus(waiting, undelivered, stopped, held, behind, undeliveredTotal)` | Szyna odpowiada nawet wtedy, gdy jeszcze czeka na subskrybentów. Szczegóły niżej. |
 
 Pola `DeliveryStatus`:
 
 - `waiting: Int`: dostarczenia w drodze (wysłane albo wstrzymane, jeszcze bez odpowiedzi);
-- `undelivered: Seq[Undelivered]`: ostatnie dostarczenia, na które nikt nie odpowiedział w ciągu
+- `undelivered: Seq[Undelivered]`: 100 ostatnich dostarczeń, na które nikt nie odpowiedział w ciągu
   10 minut, każde jako `Undelivered(aggregateType, aggregateId, version, subscriber, kind, at)`;
 - `stopped: Seq[String]`: subskrybenci, którzy się zatrzymali; ich zdarzenia zostają w outboxie;
 - `held: Int`: dostarczenia wstrzymane, bo okno subskrybenta było pełne;
 - `behind: Map[String, Int]`: dla każdego subskrybenta, który zostaje w tyle, liczba agregatów
-  wstrzymanych dla niego.
+  wstrzymanych dla niego;
+- `undeliveredTotal: Int`: ile przechowywanych jest dostarczeń zakończonych bez odpowiedzi (do 1 000).
 
 ### Jeśli piszesz subskrybenta samodzielnie
 
@@ -138,7 +139,7 @@ Jeden na system. Komunikaty z `io.reactivecqrs.core.delivery.OutboxPollerActor._
 
 | Wysyłasz | Dostajesz | Warto wiedzieć |
 |---|---|---|
-| `GetOutboxStatus` | `OutboxStatus(waiting, gaveUp)` | `waiting`: ile agregatów miało zdarzenia czekające w outboxie przy ostatnim przeglądzie pollera (czyta najwyżej 100 000). `gaveUp`: agregaty zgłoszone jako niedostarczone, każdy jako `WaitingInOutbox(aggregateType, aggregateId, oldestVersion, since)`. |
+| `GetOutboxStatus` | `OutboxStatus(waiting, gaveUp, gaveUpTotal)` | `waiting`: ile agregatów miało zdarzenia czekające w outboxie przy ostatnim przeglądzie pollera (czyta najwyżej 100 000, a ponad to 50 000 najnowszych). `gaveUp`: 100 zgłoszonych jako niedostarczone, które czekają najdłużej, każdy jako `WaitingInOutbox(aggregateType, aggregateId, oldestVersion, since)`; `gaveUpTotal`: wszystkie. |
 | `Poll` | Nic | Czyta outbox od razu. Własny timer pollera wysyła ten komunikat co 30 sekund, pierwszy raz 10 sekund po starcie. |
 
 ---
@@ -150,7 +151,7 @@ zarządzana, do jej nadzorcy: nadzorca przekaże je dalej.
 
 | Wysyłasz | Dostajesz | Warto wiedzieć |
 |---|---|---|
-| `GetProjectionStatus` | `ProjectionStatus(projectionName, failures, retrying, waitingForGap)` | `failures`: każdą awarię jako `SubscriptionFailure(subscriptionType, aggregateType, aggregateId, version, error, since)`; `retrying` i `waitingForGap`: identyfikatory agregatów. |
+| `GetProjectionStatus` | `ProjectionStatus(projectionName, failures, retrying, waitingForGap, failuresTotal)` | `failures`: 100 najstarszych awarii, każdą jako `SubscriptionFailure(subscriptionType, aggregateType, aggregateId, version, error, since)` z błędem przyciętym do 500 znaków; `failuresTotal`: wszystkie; `retrying` i `waitingForGap`: najwyżej po 1 000 identyfikatorów agregatów. |
 | `RetryFailedSubscription(aggregateId)` | `FailedSubscriptionsHandled(aggregateId, count)` | Prosi właściciela ponownie o nieudane wersje; każda awaria znika, gdy jego wersja zostanie zastosowana. `count`: nieudane subskrypcje tego agregatu (po jednej na rodzaj listenera). |
 | `RetryAllFailedSubscriptions` | `FailedSubscriptionsRetried(count)` | Ponawia wszystkie awarie, 20 na sekundę. |
 | `SkipFailedVersion(aggregateId)` | `FailedSubscriptionsHandled(aggregateId, count)` | Oznacza każdą nieudaną wersję jako zastosowaną, nie stosując jej, i kontynuuje od następnej wersji. |

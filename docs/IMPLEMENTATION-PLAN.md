@@ -2683,3 +2683,13 @@ Open test-infrastructure items:
   paging through one `orderAndPage` (two copies before). F273: the memory store sorts, pages, limits and caps.
 - Each fix red under a mutation (four). Chapters 8 and 19 (EN, PL; chapter 8 no longer says the memory store ignores
   spaces), ARCHITECTURE §6.8, SCALING §9.
+
+**18/10/2026: the risk assessment, step 4, item 14: delivery under load**
+- F212: `eventbus/InFlight` keeps the deliveries in first-sent order with a queue of last sends and a held count; a
+  tick visits what expires or stalls. F221: messages past the deadline stay counted until a later one is answered;
+  one message per deadline with nothing in flight (the first version kept none, which a lost message would shut out
+  for good; `FlowControlSpec` showed it). F222: remote state listeners count the state per message.
+- F223: the builder queues work per aggregate behind and reads a chunk's worth when nothing is ready. F228: statuses
+  capped at 100 items with totals. F258: instances named after their projection. F260: the poller reads the newest
+  half too. F264: full publications adopt deliveries without a publisher. F268: `lastTry` gates the give-up.
+- Each fix red under a mutation (nine). Chapter 9 and appendix B (EN, PL), ARCHITECTURE §5, §8, SCALING §5.

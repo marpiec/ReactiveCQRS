@@ -40,6 +40,20 @@ class OutboxPollerActorSpec extends CommonSpec {
 
       poller.askFor[OutboxStatus](GetOutboxStatus, 3.seconds).waiting mustBe 5
     }
+
+    Scenario("F260 beyond the aggregates tracked, the newest are read too: those that wait longest cannot hide a newer one") {
+      val before = Instant.now.minusSeconds(3600)
+      val waiting = (1 to 5).map(i => WaitingInOutbox(noteType, AggregateId(TestIds.aggregate()), AggregateVersion(1), before.plusSeconds(i)))
+      val outbox = new MemoryEventStoreState {
+        override def readWaitingInOutbox(limit: Int): Seq[WaitingInOutbox] = waiting.take(limit)
+      }
+      val bus = TestProbe()
+      val poller = system.actorOf(Props(new OutboxPollerActor(outbox, bus.ref, OutboxPollerOptions(firstPollAfter = 1.hour,
+        pollInterval = 1.hour, maxTracked = 4))))
+
+      poller ! Poll
+      bus.receiveN(5, 3.seconds).collect { case r: Republish => r.aggregateId }.toSet mustBe waiting.map(_.aggregateId).toSet
+    }
   }
 
   Feature("A read that does not end") {

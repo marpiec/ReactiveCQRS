@@ -368,6 +368,22 @@ class EventsBusActorSpec extends CommonSpec {
       acked(owner) mustBe Seq(1)
     }
 
+    Scenario("F264 happens for what a re-publication to one subscriber left, once a full publication adopted it") {
+      val (a, b, owner, republisher) = (TestProbe(), TestProbe(), TestProbe(), TestProbe())
+      val bus = busWith(a, b)
+      val id = newId()
+
+      publishTo(bus, republisher, id, a.ref, 1)
+      delivered(a) mustBe Seq(1)
+      publish(bus, owner, id, 1)
+      delivered(b) mustBe Seq(1)
+      ack(bus, a, id, 1)
+      ack(bus, b, id, 1)
+
+      acked(owner) mustBe Seq(1)
+      republisher.expectNoMessage(100.millis)
+    }
+
     Scenario("never happens for a re-publication to one subscriber") {
       val (a, owner) = (TestProbe(), TestProbe())
       val bus = busWith(a)
@@ -490,6 +506,14 @@ class EventsBusActorSpec extends CommonSpec {
       val status = statusOf(bus)
       status.waiting mustBe 0
       status.undelivered.map(u => (u.aggregateId, u.version.asInt, u.subscriber, u.kind)) must contain((id, 7, a.ref.path.name, EventsDelivery))
+    }
+
+    Scenario("F228 the status lists the latest 100 undelivered, and says how many there are") {
+      val (silent, owner) = (TestProbe(), TestProbe())
+      val bus = busWith(silent)
+      (1 to 150).foreach(_ => publish(bus, owner, newId(), 1))
+      awaitAssert(statusOf(bus).undeliveredTotal mustBe 150, 5.seconds, 100.millis)
+      statusOf(bus).undelivered.size mustBe 100
     }
 
     Scenario("a subscriber that stops ends its deliveries without an ack; the others keep flowing, and later events stay in the outbox for it") {
@@ -648,6 +672,27 @@ class EventsBusActorSpec extends CommonSpec {
       owner.expectNoMessage(300.millis)
       republisher.expectNoMessage(100.millis)
       statusOf(bus) mustBe DeliveryStatus(0, Nil, Nil, 0, Map.empty)
+    }
+
+    Scenario("F221 a subscriber that answers nothing past the deadline gets no new window until it answers") {
+      val (stalled, owner) = (TestProbe(), TestProbe())
+      val bus = system.actorOf(Props(new EventsBusActor(options.copy(deadline = 400.millis, window = 5))))
+      bus ! RegisterSubscribers(Seq(stalled.ref))
+      stalled.expectMsg(GetSubscriptionRequests(stalled.ref))
+      stalled.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, stalled.ref)), stalled.ref))
+      answered(bus, stalled)
+
+      (1 to 30).foreach { _ =>
+        publish(bus, owner, newId(), 1)
+        Thread.sleep(100)
+      }
+      val received = stalled.receiveWhile(500.millis) { case m: IdentifiableEvents[Any @unchecked] => m.aggregateId }
+      received.size must be < 15 // the window, then one a deadline; without the bound, a window each deadline
+
+      ack(bus, stalled, received.last, 1) // it passed them all
+      val later = newId()
+      publish(bus, owner, later, 1)
+      stalled.expectMsgType[IdentifiableEvents[Any]](3.seconds).aggregateId mustBe later
     }
 
     Scenario("a fast subscriber is not held back by a slow one") {

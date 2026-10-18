@@ -14,20 +14,24 @@ import scala.collection.mutable
   * the subscriber never sees a gap of the bus's making) until the bus pulls it: asks its owner to re-publish it to that
   * subscriber, once the subscriber's events in flight are down to half the window; while aggregates are behind, live
   * publications take at most that half, so the pulls always find the other. Its memory is bounded by the window,
-  * the aggregates behind and `maxPulls`; the payloads of held events stay in the store. Not thread-safe: part of the
-  * bus's state.
+  * the aggregates behind and `maxPulls`; the payloads of held events stay in the store. A message not answered by the
+  * deadline still counts (it may well be in the mailbox) until the subscriber answers one sent after it: a mailbox
+  * keeps the order of one sender's messages, so it has passed it then (F221). With nothing in flight, one message goes
+  * all the same, so lost messages cannot keep the window shut: a subscriber that answers nothing gets one message a
+  * deadline, not a window. Not thread-safe: part of the bus's state.
   */
 final class FlowControl[S](window: Int, windowBytes: Long, maxPulls: Int, pullTimeoutNanos: Long, deadlineNanos: Long) {
 
   private final class Subscriber {
     val sent = mutable.LinkedHashMap[SentKey, Sent]() // oldest send first: a message sent again moves to the end
+    val presumed = mutable.LinkedHashMap[SentKey, Sent]() // past the deadline, presumed in the mailbox (F221)
     var events = 0L
     var bytes = 0L
     val behind = mutable.LinkedHashMap[AggregateId, Behind]() // held first, pulled first
     val pulling = mutable.HashMap[AggregateId, Pulling]()
     var pullingEvents = 0L
     var pullingBytes = 0L
-    def idle: Boolean = sent.isEmpty && behind.isEmpty && pulling.isEmpty
+    def idle: Boolean = sent.isEmpty && presumed.isEmpty && behind.isEmpty && pulling.isEmpty
     def fits(moreEvents: Long, moreBytes: Long): Boolean = events + moreEvents <= window && bytes + moreBytes <= windowBytes
   }
 
@@ -57,15 +61,19 @@ final class FlowControl[S](window: Int, windowBytes: Long, maxPulls: Int, pullTi
   /** A message of `events` events, of `bytes` stored, was sent to `subscriber`. */
   def sent(subscriber: S, key: SentKey, events: Int, bytes: Long, now: Long): Unit = {
     val s = subscribers.getOrElseUpdate(subscriber, new Subscriber)
-    s.sent.remove(key).foreach(earlier => take(s, earlier))
+    s.sent.remove(key).orElse(s.presumed.remove(key)).foreach(earlier => take(s, earlier))
     s.sent(key) = Sent(events, bytes, now)
     s.events += events
     s.bytes += bytes
   }
 
-  /** `subscriber` answered the message `key`; an answer to a message not known changes nothing. */
+  /** `subscriber` answered the message `key`, and so has passed the messages past the deadline sent before it; an
+    * answer to a message not known changes nothing. */
   def answered(subscriber: S, key: SentKey): Unit = subscribers.get(subscriber).foreach { s =>
-    s.sent.remove(key).foreach(sent => take(s, sent))
+    s.sent.remove(key).orElse(s.presumed.remove(key)).foreach { answered =>
+      take(s, answered)
+      while (s.presumed.headOption.exists(_._2.at <= answered.at)) take(s, s.presumed.remove(s.presumed.head._1).get)
+    }
     forgetIfIdle(subscriber, s)
   }
 
@@ -109,7 +117,7 @@ final class FlowControl[S](window: Int, windowBytes: Long, maxPulls: Int, pullTi
   /** The subscribers with aggregates behind. */
   def withBehind: Iterable[S] = subscribers.collect { case (subscriber, s) if s.behind.nonEmpty => subscriber }
 
-  /** Messages not answered by the deadline are taken off (lost: their deliveries end then too), and pulls not answered
+  /** Messages not answered by the deadline are presumed in the mailbox (their deliveries end then), and pulls not answered
     * within the pull timeout are behind again. An aggregate last held a deadline ago is dropped: its held deliveries
     * ended by then, so its pulls may be answered through another node's bus (its owner moved), never this one; the
     * subscriber's gap requests and the outbox poller deliver it instead. */
@@ -118,7 +126,7 @@ final class FlowControl[S](window: Int, windowBytes: Long, maxPulls: Int, pullTi
     while (oldest.exists { case (_, sent) => now - sent.at >= deadlineNanos }) {
       val (key, sent) = oldest.get
       s.sent.remove(key)
-      take(s, sent)
+      s.presumed(key) = sent
       oldest = s.sent.headOption
     }
     s.pulling.toSeq.filter { case (_, p) => now - p.at >= pullTimeoutNanos }.foreach { case (aggregateId, p) =>

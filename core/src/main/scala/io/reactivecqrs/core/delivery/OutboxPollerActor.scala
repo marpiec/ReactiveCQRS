@@ -19,9 +19,10 @@ object OutboxPollerActor {
   case object Poll
   /** Asks the poller for its `OutboxStatus`. */
   case object GetOutboxStatus
-  /** `waiting`: aggregates with rows in the outbox at the last poll (at most `maxTracked`); `gaveUp`: those reported as
-    * undelivered. */
-  case class OutboxStatus(waiting: Int, gaveUp: Seq[WaitingInOutbox])
+  /** `waiting`: aggregates with rows in the outbox at the last poll (at most `maxTracked`, and half as many newest);
+    * `gaveUp`: the first 100 of those reported as undelivered, the longest waiting first, and `gaveUpTotal` all of
+    * them: an answer stays small enough for another node (F228). */
+  case class OutboxStatus(waiting: Int, gaveUp: Seq[WaitingInOutbox], gaveUpTotal: Int = 0)
   private case class Read(number: Int, result: Try[Seq[WaitingInOutbox]])
 }
 
@@ -30,7 +31,9 @@ object OutboxPollerActor {
   * @param firstPollAfter gives the host time to start its command buses, which the bus routes re-publications to
   * @param pollInterval how often it reads the outbox
   * @param redelivery when it has an aggregate's events re-published, and when it gives up
-  * @param maxTracked how many waiting aggregates a poll reads and keeps track of at most, the oldest first
+  * @param maxTracked how many waiting aggregates a poll reads and keeps track of at most, the oldest first; when there
+  *                   are more, it reads half as many of the newest too, so aggregates waiting for a subscriber that
+  *                   stays away cannot keep a newer lost delivery from being re-published (F260)
   * @param readTimeout how long a read may run before a poll gives it up, logs it and reads again (F186)
   */
 case class OutboxPollerOptions(firstPollAfter: FiniteDuration = 10.seconds,
@@ -52,6 +55,7 @@ class OutboxPollerActor(eventStore: EventStoreState, eventBus: ActorRef, options
 
   private val startedAt = clock.instant()
   private val maxLinesPerPoll = 10
+  private val StatusItems = 100
   private var memory = Map[AggregateId, RedeliveryPolicy.Tracked]()
   private var lastWaiting = 0 // F169: the memory leaves out new aggregates postponed beyond a poll's re-publications
   private val reads = new ReadWatch(options.readTimeout)
@@ -69,12 +73,20 @@ class OutboxPollerActor(eventStore: EventStoreState, eventBus: ActorRef, options
       read(number)
     }
     case Read(number, result) => if (reads.ended(number)) poll(result)
-    case GetOutboxStatus => sender() ! OutboxStatus(lastWaiting, memory.values.filter(_.gaveUp).map(_.waiting).toSeq)
+    case GetOutboxStatus =>
+      val gaveUp = memory.values.filter(_.gaveUp).map(_.waiting).toSeq
+      sender() ! OutboxStatus(lastWaiting, gaveUp.sortBy(w => (w.since, w.aggregateId.asLong)).take(StatusItems), gaveUp.size)
   }
 
   // F27: the read runs on the blocking dispatcher; its result comes back as a message.
   private def read(number: Int): Unit =
-    Future(eventStore.readWaitingInOutbox(options.maxTracked))(BlockingDispatcher(context.system)).onComplete(result => self ! Read(number, result))
+    Future {
+      val oldest = eventStore.readWaitingInOutbox(options.maxTracked)
+      if (oldest.size < options.maxTracked) oldest else {
+        val known = oldest.map(_.aggregateId).toSet
+        oldest ++ eventStore.readNewestWaitingInOutbox(options.maxTracked / 2).filterNot(w => known.contains(w.aggregateId))
+      }
+    }(BlockingDispatcher(context.system)).onComplete(result => self ! Read(number, result))
 
   // A failed read is logged and retried at the next poll (AR7: a throw would restart the poller and forget the attempts).
   private def poll(result: Try[Seq[WaitingInOutbox]]): Unit = result match {

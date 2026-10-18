@@ -8,6 +8,46 @@ lists them all. Each entry is as it was when it was closed. Severity and confide
 
 ### Delivery and subscriptions
 
+#### F212 — Every bus tick scans and copies all deliveries, so a long lag slows the node's only bus
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4 of the risk assessment; `InFlightSpec` "F212", red under a mutation) · `eventbus/InFlight`, `EventsBusActor`
+- **Fix:** the bus keeps its deliveries in `InFlight`: in first-sent order (a deadline takes the expired ones from the head), with a queue of last sends (a stall check takes the old ones from its head) and a count of the held ones (the gauge). Ending deliveries visits the expired keys only; a subscriber's stop or removal still visits every delivery, without copying them. Left: the 5-minute summary still walks every delivery, and the flow control's aggregates behind are filtered in place each tick.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F221 — A subscriber stalled past the deadline is sent another window every deadline, so its mailbox is not bounded by the window
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4; `EventsBusActorSpec` and `FlowControlSpec` "F221", red under a mutation) · `FlowControl`
+- **Fix:** a message not answered by the deadline is presumed in the mailbox and still counts until the subscriber answers one sent after it (one sender's messages keep their order). With nothing in flight one message still goes, so lost messages cannot shut a subscriber out: a stalled one gets one message per deadline, not a window.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F222 — The byte window ignores the aggregate states that state subscriptions carry, and on another node each message holds its own copy
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4; `ClusterMessageSizeSpec` "F222", two nodes, red under a mutation) · `EventsBusActor.publish`
+- **Fix:** for a state listener on another node, each message counts the state's measured size (measured once per publication) in the window's bytes, when admitted and when sent. On one node the messages share the state and nothing is added.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F228 — Status answers grow without bound, and fail between nodes during incidents
+- **Low**, possible · **Fixed for 1.0.1** (18/10/2026, step 4; `EventsBusActorSpec` "F228", red under a mutation) · `OutboxStatus`, `DeliveryStatus`, `ProjectionStatus`
+- **Fix:** each answer lists at most 100 items with a total (`gaveUpTotal`, `undeliveredTotal`, `failuresTotal`), errors cut to 500 characters, and at most 1 000 aggregate ids per list, so it fits a message between nodes. Left: no paged queries for the rest; the logs and gauges name them.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F258 — Managed projection instances share actor names, so lag signals and logs collide
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 4; `ProjectionsSpec` "F258", red under a mutation) · `ProjectionSupervisor.childName`
+- **Fix:** instances and builders are named `<projection>-build-<n>-<k>` (the name URL-encoded), so `DeliveryStatus.behind`, the `bus.behind` gauge's tag and the log lines tell projections apart. Metric series of managed projections are renamed.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F260 — A stopped subscriber that is not removed makes the poller's work futile, and starves other aggregates' re-delivery
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4; `OutboxPollerActorSpec` "F260", red under a mutation) · `OutboxPollerActor`, `EventStoreState.readNewestWaitingInOutbox`
+- **Fix:** when more than `maxTracked` aggregates wait, the poller also reads the newest `maxTracked / 2`, so a newer lost delivery is re-published even while the oldest are all waiting for a subscriber that stays away. Left: a stopped subscriber of types that write more than about 50 000 distinct aggregates within the re-publication delay still clogs the newest set; the restores wasted on its aggregates remain, and its stop is logged as an error.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F264 — Deliveries created by a re-publication to one subscriber never acknowledge the owner, and a later full publication does not adopt them
+- **Low**, possible · **Fixed for 1.0.1** (18/10/2026, step 4; `EventsBusActorSpec` "F264", red under a mutation) · `EventsBusActor.publish`
+- **Fix:** a full publication adopts an event whose delivery has no publisher: it goes to every live subscription as a new event would, the delivery takes the publisher and a new deadline, and the owner is acknowledged once all answered.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F268 — Aggregates first re-published late are reported "Undelivered" 30 s later
+- **Low**, likely · **Fixed for 1.0.1** (18/10/2026, step 4; `RedeliveryPolicySpec` "F268", red under a mutation) · `RedeliveryPolicy`
+- **Fix:** each re-publication is remembered (`lastTry`), and an aggregate is given up only when its last one is as old as the last attempt would be at the give-up (`giveUpAfter` minus the last of `attemptsAfter`: 4 minutes).
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F201 — A stale failure record becomes a false "versions missing" failure; skipping it moves the subscription past the aggregate, and the next event is acknowledged unapplied
 - **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 2 of the risk assessment; `ProjectionDeliverySpec` "F201", two scenarios, red under three mutations) · `ProjectionActor`, `AggregateOwner`
 - **Fix:** a retried failure whose version the subscription has applied is cleared at once, and a retried failure keeps its place in its queue until its record is deleted (the clear is tried again). An owner asked for versions beyond its own answers `NothingToRepublish(id, version)`, which closes the gap and clears a failure of versions that never existed. A skip of a "versions from N are missing" failure marks nothing and asks from N again. A failed load of the failure records is tried again, and `ServeUnchanged` keeps the failures. The owner's answer is covered by reading; the projection's handling of it by the spec.
@@ -1114,6 +1154,11 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Fix:** `schemaname = current_schema()`, `to_regclass(…)` and `'events'::regclass`, so the library works in whatever schema the connection's `search_path` selects. Also `countAllEvents` treats the `-1` estimate of a never-analyzed table (PostgreSQL 14+) like 0 and counts exactly.
 
 ### Rebuild
+
+#### F223 — The reconciliation and gap fills hold every missing event of a page of up to 1 000 aggregates in memory at once
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4 of the risk assessment; `ProjectionBuilderSpec` "F223", red under a mutation) · `ProjectionBuilder`
+- **Fix:** the reconciliation and the gaps queue a small piece of work per aggregate behind, and read it only when nothing else is ready to send, a chunk's worth of aggregates at a time (gaps and chunks to send again first). Memory holds the chunks in flight and the next one, plus one aggregate's missing versions at most. Left: one aggregate's whole backlog (up to the version limit) is still read at once.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
 
 #### F192 — An erasure that could not rebuild a projection reports "complete" when run again; a build in progress switches in with the erased values
 - **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 2 of the risk assessment; `CompleteRewriteSpec` "F192", three scenarios, each red under a mutation that takes its fix out) · `HistoryRewriter`, `ProjectionSupervisor`

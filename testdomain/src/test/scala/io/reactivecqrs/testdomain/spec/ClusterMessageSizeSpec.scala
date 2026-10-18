@@ -7,6 +7,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.cluster.Readiness
 import io.reactivecqrs.core.documentstore.{NoopDocumentStoreCache, PostgresDocumentStore}
+import io.reactivecqrs.core.eventbus.{DeliveryOptions, EventsBusActor}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.core.projection.PostgresSubscriptionsState
 import io.reactivecqrs.core.rebuild.{PostgresProjectionRegistry, Projections, ProjectionsSettings}
@@ -27,6 +28,11 @@ import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.jdk.CollectionConverters._
 import scala.util.Try
+
+/** Counts the states it receives, and answers none. */
+class SilentStateSubscriber(received: java.util.concurrent.atomic.AtomicInteger) extends Actor {
+  override def receive: Receive = { case _: AggregateWithType[_] => received.incrementAndGet() }
+}
 
 /** Records the versions of each delivery it receives, and acknowledges it. */
 class DeliveryRecorder(received: ConcurrentLinkedQueue[Seq[Int]]) extends Actor {
@@ -99,6 +105,25 @@ class ClusterMessageSizeSpec extends AnyFeatureSpec with Matchers with Eventuall
       eventually(received.asScala.flatten.toSet mustBe (1 to 1000).toSet)
       received.size must be > 1
       other.eventBus ! RemoveSubscriber(remote)
+    }
+
+    Scenario("F222 the window of a subscriber on another node counts the states its messages carry") {
+      val received = new java.util.concurrent.atomic.AtomicInteger()
+      val silent = oldest.system.actorOf(Props(new SilentStateSubscriber(received)))
+      val remote = other.system.asInstanceOf[ExtendedActorSystem].provider.resolveActorRef(Serialization.serializedActorPath(silent))
+      val bus = other.system.actorOf(Props(new EventsBusActor(DeliveryOptions(windowBytes = 400 * 1024))))
+      bus ! RegisterSubscribers(Nil)
+      bus ! AddSubscriptions(Seq(SubscribeForAggregates(AggregateType.of[ShoppingCart], remote)))
+
+      val state = ShoppingCart("large", names(500, 200, "item").zipWithIndex.map { case (name, i) => Item(i, name) }) // about 100 KB
+      (1 to 10).foreach { _ =>
+        val event = EventInfo[ShoppingCart](AggregateVersion(1), ItemAdded("x"), UserId(1), Instant.now)
+        bus ! PublishEvents(AggregateType.of[ShoppingCart], Seq(event), AggregateId(TestIds.aggregate()), Some(state))
+      }
+
+      Thread.sleep(2000)
+      received.get must (be >= 1 and be <= 4) // 400 KB of states; without them counted, all ten
+      other.system.stop(bus)
     }
 
     Scenario("a command with many events reaches a projection on another node") {

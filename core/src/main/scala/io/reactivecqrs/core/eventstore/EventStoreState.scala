@@ -202,6 +202,9 @@ abstract class EventStoreState {
   /** The aggregates with rows waiting in the outbox, for the outbox poller (D8): at most `limit`, those waiting longest first (F122). */
   def readWaitingInOutbox(limit: Int = Int.MaxValue): Seq[WaitingInOutbox]
 
+  /** F260: as `readWaitingInOutbox`, those waiting the shortest first. */
+  def readNewestWaitingInOutbox(limit: Int): Seq[WaitingInOutbox] = readWaitingInOutbox().takeRight(limit).reverse
+
   /** The aggregate's own events with versions `from` to `to`, in order, undone ones included, as live delivery sent
     * them (D60), each with its stored size, and no more than `maxBytes` of them, but at least one: a re-publication's
     * part (F126). */

@@ -132,6 +132,15 @@ class FlakyRangeEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNames
     if (failures.getAndDecrement() > 0) throw new java.sql.SQLException("connection lost", "08006") else super.readPart(aggregateId, from, to, maxBytes)
 }
 
+/** The store, counting the ranges of versions read. */
+class CountingPartsEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNamesState) extends PostgresEventStoreState(mpjsons, typesNamesState) {
+  val parts = new AtomicInteger()
+  override def readPart[AGGREGATE_ROOT](aggregateId: AggregateId, from: AggregateVersion, to: AggregateVersion, maxBytes: Long): Seq[(EventInfo[AGGREGATE_ROOT], Int)] = {
+    parts.incrementAndGet()
+    super.readPart(aggregateId, from, to, maxBytes)
+  }
+}
+
 /** The store, but the aggregates it lists show no squash point, as if each was squashed after it was listed. */
 class StaleSquashEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNamesState) extends PostgresEventStoreState(mpjsons, typesNamesState) {
   override def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int, scope: AggregateScope): Seq[StoredAggregate] =
@@ -361,6 +370,30 @@ class ProjectionBuilderSpec extends CommonSpec {
       val unsquashed = all.filterNot(_ == squashed)
       documents(rebuiltLogs, unsquashed) mustBe documents(liveLogs, unsquashed)
       documents(rebuiltLogs, Seq(squashed))(squashed).entries mustBe Vector("2:BuildNoteSquashed", "3:BuildNoteLineAdded")
+    }
+
+    Scenario("F223 the reconciliation reads the aggregates behind as it sends them, not a whole page at once") {
+      val live = new Live(Nil)
+      (1 to 30).foreach { i =>
+        val id = live.create("lazy " + i)
+        live.add(id, 1, "a")
+        live.add(id, 2, "b")
+      }
+      val listing = onBlocking(Props(new NoteEventsLog("m4b-lazy", subscriptions, logs("m4b_lazy_log"))))
+      val plan = BuildPlan(listing.askFor[Listeners](GetListeners, 5.seconds).subscriptions)
+      system.stop(listing)
+      val (projection, counting) = (TestProbe(), new CountingPartsEventStore(mpjsons, typesNamesState))
+      val afterBulk = new MemoryBuildPositions { save(BuildPosition(bulkDone = true, 0L)) }
+      onBlocking(Props(new ProjectionBuilder(projection.ref, "m4b-lazy", plan, counting, subscriptions, sources, afterBulk, TestProbe().ref,
+        BuilderSettings(pageSize = 1000, chunkEvents = 6, chunksInFlight = 2))))
+
+      projection.expectMsg(5.seconds, GoLive)
+      projection.reply(ProjectionLive)
+      projection.expectMsgType[ApplyChunk](10.seconds)
+      projection.expectMsgType[ApplyChunk](10.seconds)
+      projection.expectNoMessage(500.millis) // two chunks in flight, not answered
+
+      counting.parts.get must be < 10 // a few aggregates of three events; without the cursor, every one behind
     }
 
     Scenario("a row committed after later ones is read again by version when the projection finds the gap") {
