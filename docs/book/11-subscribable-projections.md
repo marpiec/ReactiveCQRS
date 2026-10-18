@@ -59,10 +59,12 @@ The messages a subscriber sends and receives live in the `SubscribableProjection
 ## Building a live cart page, step by step
 
 We reuse `CartSummary` from chapter 8 (name, item count and the cart's version) and everything
-chapter 4 wired up.
+chapter 4 wired up. The code is in `examples/src/test/scala/io/reactivecqrs/examples/cart/`:
+`LiveCarts.scala`, and `LiveUpdatesSpec`, which opens a page and checks what it shows.
 
 1. **Write down the update and the messages.**
 
+   <!-- snippet: cart/LiveCarts.scala#messages -->
    ```scala
    import io.reactivecqrs.api.id.AggregateId
 
@@ -76,13 +78,18 @@ chapter 4 wired up.
 
 2. **Write the projection.**
 
+   <!-- snippet: cart/LiveCarts.scala#projection -->
    ```scala
+   import java.time.Duration
    import io.reactivecqrs.core.documentstore.{Document, DocumentStore}
    import io.reactivecqrs.core.projection.{SubscribableProjectionActor, SubscriptionsState}
    import io.reactivecqrs.testdomain.shoppingcart.ShoppingCart
 
    class LiveCartsProjection(val subscriptionsState: SubscriptionsState,
-                             store: DocumentStore[CartSummary]) extends SubscribableProjectionActor {
+                             store: DocumentStore[CartSummary],
+                             updatesCacheTTL: Duration = Duration.ZERO,
+                             subscriptionTTL: Int = SubscribableProjectionActor.defaultSubscriptionTTL)
+     extends SubscribableProjectionActor(updatesCacheTTL, subscriptionTTL) {
 
      override protected val projectionName: String = "LiveCarts"
 
@@ -99,7 +106,8 @@ chapter 4 wired up.
      override protected def receiveSubscriptionRequest: Receive = {
        case WatchCart(subscriptionId, cartId) =>
          handleSubscribe[CartPageUpdate, CartPageUpdate](subscriptionId, sender(),
-           update => if (update.cartId == cartId) Some(update) else None)
+           filter = update => if (update.cartId == cartId) Some(update) else None,
+           missedUpdatesFilter = update => update.cartId == cartId)
      }
 
      override protected def receiveQuery: Receive = {
@@ -120,9 +128,12 @@ chapter 4 wired up.
    - The filter keeps the updates of the one cart this subscriber watches.
    - The listener is `sender()`: whoever sent `WatchCart` gets the updates. The projection confirms
      with `SubscribedForProjectionUpdates(subscriptionId)`, sent to that listener.
+   - The last two constructor parameters keep the library's defaults here, and `missedUpdatesFilter`
+     matters only with a cache: both come at the end of this chapter.
 
 3. **Start it and register it**, exactly as in chapter 8, with a table of its own:
 
+   <!-- snippet: cart/LiveUpdatesSpec.scala#start -->
    ```scala
    val liveCarts = system.actorOf(
      Props(new LiveCartsProjection(subscriptionsState,
@@ -139,6 +150,7 @@ chapter 4 wired up.
    subscribes when it starts, passes the news on to the browser, renews the subscription, and
    cancels it when it stops:
 
+   <!-- snippet: cart/LiveCarts.scala#session -->
    ```scala
    import java.util.UUID
    import org.apache.pekko.actor.{Actor, ActorRef, Timers}
@@ -191,11 +203,17 @@ chapter 4 wired up.
    }
    ```
 
-   When a page opens, start a session; when it closes, stop it:
+   When a page opens, start a session,
 
+   <!-- snippet: cart/LiveUpdatesSpec.scala#openSession -->
    ```scala
    val session = system.actorOf(Props(new CartPageSession(liveCarts, cartId, update => browser.send(update))))
-   // ... and when the page closes:
+   ```
+
+   and when it closes, stop it:
+
+   <!-- snippet: cart/LiveUpdatesSpec.scala#closeSession -->
+   ```scala
    system.stop(session)
    ```
 
@@ -236,13 +254,14 @@ Subscriptions live in the projection's memory, not in the database, and they do 
   `ProjectionSubscriptionsCancelled(ids)`. Ids the projection does not know are simply ignored. The
   session sends it as it stops, so the answer goes nowhere, which is fine.
 
-The time to live is a constructor parameter, in milliseconds:
+The time to live is a constructor parameter of `SubscribableProjectionActor`, in milliseconds, which
+the live carts pass on. For 5 minutes instead of 10:
 
+<!-- snippet: cart/LiveUpdatesSpec.scala#ttl -->
 ```scala
-class LiveCartsProjection(val subscriptionsState: SubscriptionsState, store: DocumentStore[CartSummary])
-  extends SubscribableProjectionActor(subscriptionTTL = 5 * 60 * 1000) { // 5 minutes instead of 10
-  // ... as before
-}
+val patientLiveCarts = Props(new LiveCartsProjection(subscriptionsState,
+  new PostgresDocumentStore[CartSummary]("live_carts", mpjsons, new NoopDocumentStoreCache),
+  subscriptionTTL = 5 * 60 * 1000)) // 5 minutes instead of 10
 ```
 
 > **Remember:** renew well within the time to live (every 3 minutes for 10, say), and treat
@@ -254,21 +273,28 @@ Sometimes a subscriber arrives a moment too late: a page that sends a command an
 after it may miss the push of its own change. For that, a subscribable projection can keep a short
 memory of the updates it sent, and replay them to new subscribers. Two things switch it on: the
 constructor's `updatesCacheTTL`, a `java.time.Duration` (`Duration.ZERO`, the default, keeps
-nothing), and a `missedUpdatesFilter` in `handleSubscribe`, which picks the remembered updates this
-subscriber wants (by default, none):
+nothing), which the live carts pass on,
 
+<!-- snippet: cart/LiveUpdatesSpec.scala#cache -->
 ```scala
-class LiveCartsProjection(val subscriptionsState: SubscriptionsState, store: DocumentStore[CartSummary])
-  extends SubscribableProjectionActor(updatesCacheTTL = java.time.Duration.ofSeconds(30)) {
+val cachingLiveCarts = system.actorOf(
+  Props(new LiveCartsProjection(subscriptionsState,
+    new PostgresDocumentStore[CartSummary]("cached_live_carts", mpjsons, new NoopDocumentStoreCache),
+    updatesCacheTTL = java.time.Duration.ofSeconds(30)))
+    .withDispatcher(BlockingDispatcher.id),
+  "CachingLiveCarts")
+```
 
-  // ... listeners and queries as before
+and a `missedUpdatesFilter` in `handleSubscribe`, which picks the remembered updates this subscriber
+wants (by default, none). The live carts' subscription has one:
 
-  override protected def receiveSubscriptionRequest: Receive = {
-    case WatchCart(subscriptionId, cartId) =>
-      handleSubscribe[CartPageUpdate, CartPageUpdate](subscriptionId, sender(),
-        filter = update => if (update.cartId == cartId) Some(update) else None,
-        missedUpdatesFilter = update => update.cartId == cartId)
-  }
+<!-- snippet: cart/LiveCarts.scala#subscribe -->
+```scala
+override protected def receiveSubscriptionRequest: Receive = {
+  case WatchCart(subscriptionId, cartId) =>
+    handleSubscribe[CartPageUpdate, CartPageUpdate](subscriptionId, sender(),
+      filter = update => if (update.cartId == cartId) Some(update) else None,
+      missedUpdatesFilter = update => update.cartId == cartId)
 }
 ```
 
