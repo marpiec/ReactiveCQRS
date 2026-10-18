@@ -191,10 +191,11 @@ Projection e10-cart-names: build 1 is dropped
 You can also ask the supervisor. `GetBuilds` is answered with `Builds(name, active, building,
 caughtUp)`:
 
+<!-- snippet: e10/RebuildSpec.scala#getBuilds -->
 ```scala
 import io.reactivecqrs.core.rebuild.ProjectionSupervisor._
 
-(cartNames ? GetBuilds).mapTo[Builds]
+val builds = (cartNames ? GetBuilds).mapTo[Builds]
 // while it builds:  active = build 1, building = build 2
 // after the switch: active = build 2, building = None
 ```
@@ -223,10 +224,11 @@ def switchedTo(shop: Shop, version: Int, deadline: Deadline)(implicit timeout: T
 
 To watch a build at work, ask the same supervisor for `GetBuildStatus`:
 
+<!-- snippet: e10/RebuildSpec.scala#buildStatus -->
 ```scala
 import io.reactivecqrs.core.rebuild.ProjectionBuilder.{BuildStatus, GetBuildStatus}
 
-(cartNames ? GetBuildStatus).mapTo[BuildStatus]
+val buildStatus = (cartNames ? GetBuildStatus).mapTo[BuildStatus]
 // BuildStatus("Bulk", 182044, 91000, 0, 0, 0): reading the store, 91 000 events sent so far
 ```
 
@@ -308,8 +310,9 @@ At most two builds run at once (`buildsAtOnce`); the others wait for their turn.
 Fixed a bug in a listener without changing anything else? Ask for a fresh build of the same
 version:
 
+<!-- snippet: e10/RebuildSpec.scala#rebuild -->
 ```scala
-cartNames ? RebuildProjection
+val started = cartNames ? RebuildProjection
 // answers RebuildStarted(2): build 2 of version 1, in tables with the suffix "_v1_b2"
 ```
 
@@ -330,6 +333,7 @@ warning and looks again every 30 seconds. The active build serves as usual meanw
 To reach the build in progress, wrap your message in `ToBuildInProgress`. The supervisor forwards it
 to the build instead of the active one:
 
+<!-- snippet: e10/RebuildSpec.scala#toBuild -->
 ```scala
 import io.reactivecqrs.core.projection.{GetProjectionStatus, RetryAllFailedSubscriptions, SkipFailedVersion}
 
@@ -359,17 +363,30 @@ override protected def clearForRebuild(target: RebuildTarget)(implicit session: 
 }
 ```
 
-Then ask the supervisor:
+Then ask the supervisor, for one cart,
 
+<!-- snippet: e10/RebuildSpec.scala#oneCart -->
+```scala
+val one = cartNames ? RebuildAggregates(RebuildTarget.OneAggregate(cartId))
+// answers AggregatesRebuilt(RebuildTarget.OneAggregate(cartId), 1)
+```
+
+for every cart,
+
+<!-- snippet: e10/RebuildSpec.scala#everyCart -->
 ```scala
 import io.reactivecqrs.api.AggregateType
+
+val everyCart = cartNames ? RebuildAggregates(RebuildTarget.OneType(AggregateType.of[ShoppingCart]))
+```
+
+or for every cart of one organization (chapter 16), one rebuild at a time:
+
+<!-- snippet: e10/RebuildSpec.scala#organization -->
+```scala
 import io.reactivecqrs.api.id.SpaceId
 
-cartNames ? RebuildAggregates(RebuildTarget.OneAggregate(cartId))
-// answers AggregatesRebuilt(RebuildTarget.OneAggregate(cartId), 1)
-
-cartNames ? RebuildAggregates(RebuildTarget.OneType(AggregateType.of[ShoppingCart])) // every cart
-cartNames ? RebuildAggregates(RebuildTarget.OneSpace(SpaceId(7)))                    // organization 7
+val organization = cartNames ? RebuildAggregates(RebuildTarget.OneSpace(SpaceId(7)))
 ```
 
 What happens:
@@ -434,6 +451,7 @@ Removed a projection from the code? Its builds' tables and bookkeeping stay in t
 you retire it, including its failure records, which would otherwise hold up permanent deletes of
 the aggregates they name. Call this when the application starts:
 
+<!-- snippet: e10/RebuildSpec.scala#retire -->
 ```scala
 projections.retire("e10-cart-names")
 ```
