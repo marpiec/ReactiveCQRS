@@ -98,9 +98,18 @@ case class ExpectedMultipleLongValues(path: Seq[String], values: Iterable[Long])
 import scala.reflect.runtime.universe._
 
 object DocumentStoreQuery {
-  /** The documents for which every condition of `where` holds, in no particular order, all of them. */
+  /** F211: a store's `maxRows` by default. */
+  val MaxRows: Int = 100000
+  /** A limit for a query that must find every document, however many there are: for small read models only. */
+  val Unbounded: Int = Int.MaxValue
+  /** The documents for which every condition of `where` holds, in no particular order, all of them up to the store's
+    * `maxRows`. */
   def basic(where: Seq[ExpectedValue]): DocumentStoreQuery = DocumentStoreQuery(where, Seq.empty, 0, -1)
 }
+
+/** F211: a query without a limit found more than the store's `maxRows` documents; none are returned. */
+class TooManyDocumentsException(table: String, maxRows: Int) extends RuntimeException("A query of " + table + " without a limit finds more than " +
+  maxRows + " documents; give it a limit and page with an offset, or DocumentStoreQuery.Unbounded for a small read model")
 
 /** An order of a query's results, by the value at a path. */
 sealed trait Sort
@@ -148,7 +157,8 @@ object SortDescText {
 case class SortDescText(path: Seq[String]) extends Sort
 
 /** A query of a store: the documents for which every condition of `where` holds, ordered by `sortBy`, from `offset`,
-  * at most `limit` of them (`-1`: all). */
+  * at most `limit` of them. `-1`: all of them, up to the store's `maxRows` (100 000 by default), beyond which the query
+  * fails with `TooManyDocumentsException` (F211); `DocumentStoreQuery.Unbounded`: all of them. */
 case class DocumentStoreQuery(where: Seq[ExpectedValue],
                               sortBy: Seq[Sort],
                               offset: Int,
@@ -179,7 +189,8 @@ sealed trait NoCallerSession {
   */
 sealed abstract class AbstractDocumentStore[T <: AnyRef] {
 
-  /** The documents whose text at `path` is `value`, by key. */
+  /** The documents whose text at `path` is `value`, by key. This finder and the others without a limit fail with
+    * `TooManyDocumentsException` beyond the store's `maxRows` (F211). */
   def findDocumentByPath(path: Seq[String], value: String)(implicit session: DBSession = null): Map[Long, Document[T]] =
     findDocument(DocumentStoreQuery.basic(Seq(ExpectedSingleTextValue(path, value)))).toMap
 

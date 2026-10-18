@@ -938,6 +938,21 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 
 ### Document store
 
+#### F210 — Document-store JSON paths and sort fields are written into SQL unescaped
+- **High**, unlikely · **Fixed for 1.0.1** (18/10/2026, step 4 of the risk assessment; `PostgresDocumentStoreSpec` "F210", red under a mutation) · `JsonPath`, `PostgresDocumentStore`
+- **Fix:** every path (conditions, sorts, parts, index definitions) goes through `JsonPath.literal`: a text-array literal whose elements are quoted as PostgreSQL quotes them and whose quotes are doubled, so a name can neither end the literal nor split into two (`a,b` is one key). Paths stay literals, not bound parameters, so expression indexes keep matching, and an index's definition reads as the store made it (it is not built again at each start).
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F211 — Document-store finders without a limit read the whole read model into memory
+- **High**, possible · **Fixed for 1.0.1** (18/10/2026, step 4; `PostgresDocumentStoreSpec` "F211", `MemoryDocumentStoreSpec` "F273", red under a mutation) · `PostgresDocumentStore`, `MemoryDocumentStore`, `DocumentStoreQuery`
+- **Fix:** a query without a limit (`-1`, `DocumentStoreQuery.basic`, the convenience finders) reads at most the store's `maxRows` + 1 (100 000 by default, a constructor parameter) and fails with `TooManyDocumentsException` when there are more, instead of truncating silently. `DocumentStoreQuery.Unbounded` and `findAll()` stay unbounded, for small read models. Neula's queries that find more than 100 000 documents must page or say `Unbounded`.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F273 — The memory document store ignores sort, offset and limit
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 4; `MemoryDocumentStoreSpec` and `PostgresDocumentStoreSpec` "F273", against the same expectations, red under a mutation) · `MemoryDocumentStore`
+- **Fix:** the memory store sorts (numbers by value, texts by their characters, a missing value last ascending and first descending, ties by key), skips the offset, applies the limit and the store's `maxRows`, and limits `findDocumentByObjectInArray`. Left: texts compare by code point, where PostgreSQL may use the database's collation.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F16 — Document cache can be ahead of the database after a rollback
 - **High**, confirmed · **Fixed in M1** (16/10/2026) · `PostgresDocumentStore`
 - **Fix:** every cache write goes through `cacheAfterCommit`: inside an `AfterCommit.localTx` (which every projection update is) the entry is dropped at once and stored after the commit; an older version never replaces a newer one. Outside such a transaction caching is immediate, as before. Test: `CachesAfterRollbackSpec` (document scenarios; both rollback ones failed before the fix).

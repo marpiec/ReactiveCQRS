@@ -47,6 +47,16 @@ class MemoryDocumentStoreSpec extends AnyFeatureSpecLike with GivenWhenThen with
     }
   }
 
+  Feature("Order, offset and limit, as PostgreSQL keeps them (F273)") {
+    Scenario("F273 sorted, paged queries, and a query without a limit beyond maxRows") {
+      val store = new MemoryDocumentStore[Item](maxRows = 4)
+      OrderedItems.all.foreach { case (key, item) => store.insertDocument(0, key, item)(NoSession) }
+      OrderedItems.queries.foreach { case (query, keys) => assert(store.findDocument(query).map(_._1) == keys, query) }
+      store.insertDocument(0, 5, OrderedItems.all.head._2)(NoSession)
+      assertThrows[TooManyDocumentsException](store.findDocumentByPaths()(NoSession))
+    }
+  }
+
   // F14: every query condition the PostgreSQL store supports must work here too
   Feature("Query conditions") {
 
@@ -119,3 +129,18 @@ class MemoryDocumentStoreSpec extends AnyFeatureSpecLike with GivenWhenThen with
 }
 
 case class Item(name: String, count: Int, total: Long, active: Boolean, tags: List[String], note: Option[String])
+
+/** F273: items, and sorted, paged queries of them with the keys both stores find. */
+object OrderedItems {
+  val all: Seq[(Long, Item)] = Seq(
+    1L -> Item("b", 2, 200L, active = true, Nil, Some("x")),
+    2L -> Item("a", 1, 100L, active = true, Nil, None),
+    3L -> Item("d", 4, 400L, active = false, Nil, Some("z")),
+    4L -> Item("c", 3, 300L, active = true, Nil, Some("y")))
+  val queries: Seq[(DocumentStoreQuery, Seq[Long])] = Seq(
+    DocumentStoreQuery(Nil, Seq(SortAscInt("count")), 0, -1) -> Seq(2L, 1L, 4L, 3L),
+    DocumentStoreQuery(Nil, Seq(SortDescLong("total")), 1, 2) -> Seq(4L, 1L),
+    DocumentStoreQuery(Seq(ExpectedSingleBooleanValue(Seq("active"), value = true)), Seq(SortDescText("name")), 0, 2) -> Seq(4L, 1L),
+    DocumentStoreQuery(Nil, Seq(SortAscText(Seq("note", "value"))), 0, -1) -> Seq(1L, 4L, 3L, 2L),
+    DocumentStoreQuery(Nil, Seq(SortDescText(Seq("note", "value"))), 0, 1) -> Seq(2L))
+}

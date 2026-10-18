@@ -1129,6 +1129,14 @@ its column migrations are made in one transaction (F43). A name whose table name
 one of its indexes, would pass PostgreSQL's 63 characters (which it would cut silently) is
 refused at once (F118); a managed projection's tables carry their build's suffix (§8.2).
 
+- **Paths and limits.** Every JSON path (conditions, sorts, parts, index definitions) is written by
+  `JsonPath.literal` as a text-array literal, each element quoted as PostgreSQL quotes it, so a name
+  cannot end the literal or split in two (F210); paths stay literals, not parameters, so the
+  expression indexes match. A query without a limit reads at most `maxRows` + 1 rows (100 000 by
+  default) and fails with `TooManyDocumentsException` beyond (F211); `DocumentStoreQuery.Unbounded`
+  and `findAll()` have no bound. `MemoryDocumentStore` filters, sorts, pages and limits the same way
+  (F273), texts by code point.
+
 - **Optimistic updates.** `updateDocument` and `updateExistingDocument` read the document
   (from the cache or the table), apply `modify` and write the next version
   (`UPDATE … WHERE version = ?`). When another writer changed it first, they evict the cached

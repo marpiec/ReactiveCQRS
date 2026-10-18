@@ -118,8 +118,10 @@ typu `T` pod kluczami typu `Long`, zwykle identyfikatorami agregatów (`cartId.a
 - **`PostgresDocumentStore[T]`** trzyma je w tabeli `projection_<name>` z kolumnami `space_id`, `id`,
   `version` i `document` (dokument jako `JSONB`, zapisany przez mpjsons). Tabelę i indeksy, o które
   prosisz, zakłada w chwili tworzenia magazynu.
-- **`MemoryDocumentStore[T]`** trzyma je w mapie w pamięci. Jest przeznaczony do testów (rozdział 19);
-  ignoruje przestrzenie, więc jego `clearSpace` nic nie robi.
+- **`MemoryDocumentStore[T]`** trzyma je w mapie w pamięci. Jest przeznaczony do testów (rozdział 19):
+  wyszukuje, sortuje, dzieli na strony i ogranicza wyniki tak jak magazyn PostgreSQL (teksty porównuje
+  po znakach, gdzie PostgreSQL może używać porządku sortowania bazy danych) i pamięta przestrzeń
+  każdego dokumentu.
 
 Oto magazyn listy koszyków, którą budujemy w tym rozdziale. Jej dokumenty to
 `CartSummary(name: String, itemCount: Int, version: Int)`:
@@ -421,6 +423,16 @@ Wszystkie warunki muszą być spełnione naraz. Oprócz `ExpectedGreaterThanIntV
 Do sortowania służą `SortAscText`, `SortDescText`, `SortAscInt`, `SortDescInt`, `SortAscLong` i
 `SortDescLong`. `limit` równy `-1` oznacza brak limitu, a `DocumentStoreQuery.basic(where)` to skrót od
 „te warunki, bez sortowania, bez limitu”.
+
+Zapytanie bez limitu oraz metody wyszukujące takie jak `findDocumentByPath` i tak zatrzymują się na
+`maxRows` magazynu (domyślnie 100 000, parametr magazynu): zapytanie, które znajdzie więcej, kończy
+się wyjątkiem `TooManyDocumentsException`, zamiast wczytywać rosnącą tabelę do pamięci. Daj takiemu
+zapytaniu limit i przechodź przez wyniki stronami za pomocą przesunięcia. Dla małego modelu odczytu,
+który musi wrócić w całości, pytaj z `limit = DocumentStoreQuery.Unbounded` albo użyj `findAll()`.
+
+Nazwy w ścieżce mogą zawierać dowolne znaki, na przykład klucze mapy: `Seq("labels", "size, in cm")`
+to ścieżka z dwóch nazw, a magazyn wpisuje ją do swojego SQL tak, że nic w niej nie zostaje odczytane
+jako SQL.
 
 > **Wskazówka:** zapytanie z pustym `where` znajduje wszystkie dokumenty, posortowane i podzielone na
 > strony tak, jak sobie życzysz; jeśli chcesz dostać wszystkie naraz, prościej użyć `findAll()`.

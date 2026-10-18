@@ -196,7 +196,7 @@ Każda bazodanowa część biblioteki ma w `core` swojego dublera działającego
 | `MemoryEventStoreState` (`core.eventstore`) | `PostgresEventStoreState` | trzyma obiekty, nie JSON; nie ma transakcji, którą można by wycofać; odczyty stanu z wybranej chwili kończą się błędem |
 | `MemoryCommandResponseState` (`core.commandhandler`) | `PostgresCommandResponseState` | nie jest transakcyjny: odpowiedź zostaje zapisana, nawet gdy późniejszy zapis zdarzeń się nie powiedzie |
 | `MemorySubscriptionsState` (`core.projection`) | `PostgresSubscriptionsState` | te same reguły „porównaj i ustaw” dla wersji projekcji; bez transakcji |
-| `MemoryDocumentStore[T]`, `MemoryDocumentStoreAutoId[T]` (`core.documentstore`) | `PostgresDocumentStore` | warunki zapytań działają tak jak w PostgreSQL; każdy dokument zachowuje przestrzeń, z którą zapisano go pierwszy raz, a `clearSpace` usuwa dokumenty przestrzeni |
+| `MemoryDocumentStore[T]`, `MemoryDocumentStoreAutoId[T]` (`core.documentstore`) | `PostgresDocumentStore` | warunki zapytań, kolejność, przesunięcie, limit i `maxRows` działają tak jak w PostgreSQL; każdy dokument zachowuje przestrzeń, z którą zapisano go pierwszy raz, a `clearSpace` usuwa dokumenty przestrzeni |
 | `MemoryUidGenerator` (`core.uid`) | `PostgresUidGenerator` | pule po 100 identyfikatorów, od 1001 |
 | `MemoryTypesNamesState` (`core.types`) | `PostgresTypesNamesState` | identyfikatory nazw klas, numerowane w kolejności, w jakiej padają pytania |
 | `MemoryProjectionRegistry` (`core.rebuild`) | `PostgresProjectionRegistry` | usunięcie budowy sprowadza się do zapomnienia o niej |

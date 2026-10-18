@@ -80,6 +80,14 @@ Fixes from [the risk assessment of 1.0.0](docs/RISK-ASSESSMENT.md), in the order
   - Ephemeral buses refuse new drafts once their ids are spent, also ones that waited, and no longer hang.
   - Drafts do not call the context's `WithOutboxWriter`; the in-memory stores roll back a failed transaction.
   - A command bus no longer restarts over a message whose handling throws (it logs and drops it).
+- **Document store** (F210, F211, F273, chapters 8 and 19):
+  - JSON paths are written into SQL so that no name can change the query: a map key holding a comma, a quote or a
+    brace is one key, in conditions, sorts, parts and indexes.
+  - **Changed:** a query without a limit (`-1`, `DocumentStoreQuery.basic`, `findDocumentByPath` and the other
+    finders) fails with `TooManyDocumentsException` when it finds more than the store's `maxRows` (100 000, a new
+    constructor parameter), instead of reading them all into memory. Page with `limit` and `offset`; for a small read
+    model, `DocumentStoreQuery.Unbounded` or `findAll()`.
+  - `MemoryDocumentStore` sorts, pages and limits as the PostgreSQL store does.
 
 ## 1.0.0 (18/10/2026)
 

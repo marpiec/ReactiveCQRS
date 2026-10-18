@@ -22,6 +22,8 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
   val mpjsons: MPJsons
   val cache: DocumentStoreCache[T]
   val indicies: Seq[Index]
+  /** F211: the most documents a query without a limit may find; with more it fails (`TooManyDocumentsException`). */
+  val maxRows: Int
 
 
   if (!tableName.matches( """[a-zA-Z0-9\_]+""")) {
@@ -132,8 +134,8 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
   /** Whether the index is unique, its method, and its expressions, as created. */
   private def indexSql(index: Index): (Boolean, String, String) = {
-    def text(path: Seq[String]) = s"(document #>> '{${path.mkString(",")}}')"
-    def typed(path: Seq[String], cast: String) = s"((document #> '{${path.mkString(",")}}')::$cast)"
+    def text(path: Seq[String]) = s"(document #>> ${JsonPath.literal(path)})"
+    def typed(path: Seq[String], cast: String) = s"((document #> ${JsonPath.literal(path)})::$cast)"
     index match {
       case MultipleCombinedIndex(_, paths) => (false, "btree", pathsToQuery(paths))
       case UniqueCombinedIndex(_, paths) => (true, "btree", pathsToQuery(paths))
@@ -143,21 +145,15 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
       case UniqueLongIndex(_, path) => (true, "btree", typed(path, "bigint"))
       case MultipleIntIndex(_, path) => (false, "btree", typed(path, "int"))
       case UniqueIntIndex(_, path) => (true, "btree", typed(path, "int"))
-      case MultipleTextArrayIndex(_, path) => (false, "gin", s"(document #> '{${path.mkString(",")}}')")
+      case MultipleTextArrayIndex(_, path) => (false, "gin", s"(document #> ${JsonPath.literal(path)})")
     }
   }
 
   private def pathsToQuery(paths: Seq[IndexPath]): String = {
     paths.map {
-      case path: TextIndexPath =>
-        val p = path.path.mkString(",")
-        s"(document #>> '{$p}')"
-      case path: LongIndexPath =>
-        val p = path.path.mkString(",")
-        s"((document #> '{$p}')::bigint)"
-      case path: IntIndexPath =>
-        val p = path.path.mkString(",")
-        s"((document #> '{$p}')::int)"
+      case path: TextIndexPath => s"(document #>> ${JsonPath.literal(path.path)})"
+      case path: LongIndexPath => s"((document #> ${JsonPath.literal(path.path)})::bigint)"
+      case path: IntIndexPath => s"((document #> ${JsonPath.literal(path.path)})::int)"
     }.mkString(",")
   }
 
@@ -229,119 +225,74 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
   private def createQuery(searchParams: DocumentStoreQuery) = {
 
-    val sortPart = if(searchParams.sortBy.isEmpty) "" else searchParams.sortBy.map({
-      case SortAscInt(path) => "(document#>'{"+path.mkString(",")+"}')::int " + " ASC"
-      case SortDescInt(path) => "(document#>'{"+path.mkString(",")+"}')::int " + " DESC"
-      case SortAscLong(path) => "(document#>'{"+path.mkString(",")+"}')::bigint " + " ASC"
-      case SortDescLong(path) => "(document#>'{"+path.mkString(",")+"}')::bigint " + " DESC"
-      case SortAscText(path) => "document#>>'{" + path.mkString(",") + "}' " + " ASC"
-      case SortDescText(path) => "document#>>'{" + path.mkString(",") + "}' " + " DESC"
-    }).mkString(" ORDER BY ", ", ", "")
-
-    SQL("SELECT id, version, document FROM " + projectionTableName +
-      whereClause(searchParams.where) +
-      sortPart +
-      (if(searchParams.limit >= 0) (" LIMIT " + searchParams.limit) else "") +
-      (if(searchParams.offset > 0) (" OFFSET " + searchParams.offset) else "")
-    )
+    SQL("SELECT id, version, document FROM " + projectionTableName + whereClause(searchParams.where) + orderAndPage(searchParams))
   }
 
   private def createPartsQuery(parts: Seq[Seq[String]], searchParams: DocumentStoreQuery) = {
 
-    val partsQuery = parts.map(part => "document#>'{"+part.mkString(",")+"}'").mkString(", ") // JSON, as the parts are read with mpjsons (F159)
+    val partsQuery = parts.map(part => "document#>" + JsonPath.literal(part)).mkString(", ") // JSON, as the parts are read with mpjsons (F159)
 
-    val sortPart = if(searchParams.sortBy.isEmpty) "" else searchParams.sortBy.map({
-      case SortAscInt(path) => "(document#>'{" + path.mkString(",") + "}')::int " + " ASC"
-      case SortDescInt(path) => "(document#>'{" + path.mkString(",") + "}')::int " + " DESC"
-      case SortAscLong(path) => "(document#>'{" + path.mkString(",") + "}')::bigint " + " ASC"
-      case SortDescLong(path) => "(document#>'{" + path.mkString(",") + "}')::bigint " + " DESC"
-      case SortAscText(path) => "document#>>'{" + path.mkString(",") + "}' " + " ASC"
-      case SortDescText(path) => "document#>>'{" + path.mkString(",") + "}' " + " DESC"
+    SQL("SELECT id, " + partsQuery + " FROM " + projectionTableName + whereClause(searchParams.where) + orderAndPage(searchParams))
+  }
+
+  // F211: a query without a limit reads one row more than the store's `maxRows`, so that more fail (`capped`).
+  private def orderAndPage(query: DocumentStoreQuery): String = {
+    val order = if (query.sortBy.isEmpty) "" else query.sortBy.map({
+      case SortAscInt(path) => "(document #> " + JsonPath.literal(path) + ")::int ASC"
+      case SortDescInt(path) => "(document #> " + JsonPath.literal(path) + ")::int DESC"
+      case SortAscLong(path) => "(document #> " + JsonPath.literal(path) + ")::bigint ASC"
+      case SortDescLong(path) => "(document #> " + JsonPath.literal(path) + ")::bigint DESC"
+      case SortAscText(path) => "document #>> " + JsonPath.literal(path) + " ASC"
+      case SortDescText(path) => "document #>> " + JsonPath.literal(path) + " DESC"
     }).mkString(" ORDER BY ", ", ", "")
-
-    SQL("SELECT id, " + partsQuery + " FROM " + projectionTableName +
-      whereClause(searchParams.where) +
-      sortPart +
-      (if (searchParams.limit >= 0) " LIMIT " + searchParams.limit else "") +
-      (if (searchParams.offset > 0) " OFFSET " + searchParams.offset else ""))
-
+    val limit = if (query.limit >= 0) query.limit.toLong else maxRows.toLong + 1
+    order + " LIMIT " + limit + (if (query.offset > 0) " OFFSET " + query.offset else "")
   }
 
-  def findDocument(searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, Document[T])] = {
-    val query = createQuery(searchParams)
+  private def capped[R](query: DocumentStoreQuery, rows: List[R]): List[R] =
+    if (query.limit < 0 && rows.size > maxRows) throw new TooManyDocumentsException(tableName, maxRows) else rows
+
+  // Runs a query of `createQuery` or `createPartsQuery` with its values bound, reading each row with `read`.
+  private def run[R](searchParams: DocumentStoreQuery, query: SQL[Nothing, NoExtractor])(read: WrappedResultSet => R)(implicit session: DBSession): List[R] =
+    capped(searchParams, query.bind(getAllValues(searchParams.where): _*).map(read).list())
+
+  def findDocument(searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, Document[T])] = inSession { implicit session =>
+    val loaded = run(searchParams, createQuery(searchParams))(rs => rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3))))
+    loaded.foreach(t => cacheAfterCommit(t._1, Some(t._2)))
+    loaded.map({case (key, value) => (key, Document[T](value.document))})
+  }
+
+  def findDocumentWithTransform[TT <: AnyRef](searchParams: DocumentStoreQuery, transform: T => TT)(implicit session: DBSession = null): Seq[(Long, Document[TT])] =
     inSession { implicit session =>
-      val loaded = query
-        .bind(getAllValues(searchParams.where): _*).map(rs => rs.long(1) -> VersionedDocument[T](rs.int(2), mpjsons.deserialize[T](rs.string(3))))
-        .list()
-      loaded.foreach(t => cacheAfterCommit(t._1, Some(t._2)))
-      loaded.map({case (key, value) => (key, Document[T](value.document))})
+      run(searchParams, createQuery(searchParams)) { rs =>
+        val (id, document) = (rs.long(1), mpjsons.deserialize[T](rs.string(3)))
+        cacheAfterCommit(id, Some(VersionedDocument[T](rs.int(2), document)))
+        id -> Document[TT](transform(document))
+      }
     }
-  }
 
-  def findDocumentWithTransform[TT <: AnyRef](searchParams: DocumentStoreQuery, transform: T => TT)(implicit session: DBSession = null): Seq[(Long, Document[TT])] = {
-    val query = createQuery(searchParams)
+  def findDocumentPartByPaths[P: TypeTag](part: Seq[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, P)] =
     inSession { implicit session =>
-      val loaded = query
-        .bind(getAllValues(searchParams.where): _*).map(rs => {
-        val id = rs.long(1)
-        val version = rs.int(2)
-        val beforeTransform = mpjsons.deserialize[T](rs.string(3))
-        cacheAfterCommit(id, Some(VersionedDocument[T](version, beforeTransform)))
-        id -> VersionedDocument[TT](version, transform(beforeTransform))
-      }).list()
-      loaded.map({case (key, value) => (key, Document[TT](value.document))})
+      run(searchParams, createPartsQuery(Seq(part), searchParams))(rs => rs.long(1) -> mpjsons.deserialize[P](rs.string(2)))
     }
-  }
 
-  def findDocumentPartByPaths[P: TypeTag](part: Seq[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, P)] = {
-    val query = createPartsQuery(Seq(part), searchParams)
-
+  def findDocument2PartsByPaths[P1: TypeTag, P2: TypeTag](part1: Seq[String], part2: Seq[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, (P1, P2))] =
     inSession { implicit session =>
-      query
-        .bind(getAllValues(searchParams.where): _*)
-        .map(rs => rs.long(1) -> mpjsons.deserialize[P](rs.string(2)))
-        .list()
+      run(searchParams, createPartsQuery(Seq(part1, part2), searchParams))(rs =>
+        rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3))))
     }
-  }
 
-  def findDocument2PartsByPaths[P1: TypeTag, P2: TypeTag](part1: Seq[String], part2: Seq[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, (P1, P2))] = {
-    val query = createPartsQuery(Seq(part1, part2), searchParams)
-
+  def findDocument3PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag](part1: Seq[String], part2: Seq[String], part3: Seq[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, (P1, P2, P3))] =
     inSession { implicit session =>
-      val loaded = query
-        .bind(getAllValues(searchParams.where): _*)
-        .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3))))
-        .list()
-
-      loaded
+      run(searchParams, createPartsQuery(Seq(part1, part2, part3), searchParams))(rs =>
+        rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3)), mpjsons.deserialize[P3](rs.string(4))))
     }
-  }
 
-  def findDocument3PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag](part1: Seq[String], part2: Seq[String], part3: Seq[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, (P1, P2, P3))] = {
-    val query = createPartsQuery(Seq(part1, part2, part3), searchParams)
-
+  def findDocument4PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag, P4: TypeTag](part1: Seq[String], part2: Seq[String], part3: Seq[String], part4: Seq[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, (P1, P2, P3, P4))] =
     inSession { implicit session =>
-      val loaded = query
-        .bind(getAllValues(searchParams.where): _*)
-        .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3)), mpjsons.deserialize[P3](rs.string(4))))
-        .list()
-
-      loaded
+      run(searchParams, createPartsQuery(Seq(part1, part2, part3, part4), searchParams))(rs =>
+        rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3)), mpjsons.deserialize[P3](rs.string(4)), mpjsons.deserialize[P4](rs.string(5))))
     }
-  }
-
-  def findDocument4PartsByPaths[P1: TypeTag, P2: TypeTag, P3: TypeTag, P4: TypeTag](part1: Seq[String], part2: Seq[String], part3: Seq[String], part4: Seq[String], searchParams: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, (P1, P2, P3, P4))] = {
-    val query = createPartsQuery(Seq(part1, part2, part3, part4), searchParams)
-
-    inSession { implicit session =>
-      val loaded = query
-        .bind(getAllValues(searchParams.where): _*)
-        .map(rs => rs.long(1) -> (mpjsons.deserialize[P1](rs.string(2)), mpjsons.deserialize[P2](rs.string(3)), mpjsons.deserialize[P3](rs.string(4)), mpjsons.deserialize[P4](rs.string(5))))
-        .list()
-
-      loaded
-    }
-  }
 
   // F159: no condition, no WHERE (the memory store then finds every document too).
   private def whereClause(values: Seq[ExpectedValue]): String =
@@ -349,19 +300,19 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 
   private def constructWhereClauseForExpectedValues(values: Seq[ExpectedValue]): String = {
     values.map{
-      case ExpectedNoValue(path) => s"document #>> '{${path.mkString(",")}}' IS NULL"
-      case ExpectedMultipleTextValues(path, v) => s"document #>> '{${path.mkString(",")}}' in (${List.fill(v.size)("?").mkString(",")})"
-      case ExpectedMultipleIntValues(path, v) => s"(document #> '{${path.mkString(",")}}')::int in (${List.fill(v.size)("?").mkString(",")})"
-      case ExpectedMultipleLongValues(path, v) => s"(document #> '{${path.mkString(",")}}')::bigint in (${List.fill(v.size)("?").mkString(",")})"
-      case ExpectedSingleTextValue(path, _) => s"document #>> '{${path.mkString(",")}}' = ?"
-      case ExpectedSingleTextValueLike(path, _) => s"document #>> '{${path.mkString(",")}}' ilike ?"
-      case ExpectedSingleTextValueInArray(path, v) => s"(document #> '{${path.mkString(",")}}') ?? ?"
-      case ExpectedMultipleTextValuesInArray(path, v) => s"(document #> '{${path.mkString(",")}}') ??| ARRAY[${List.fill(v.size)("?").mkString(",")}]"
-      case ExpectedSingleIntValue(path, _) => s"(document #> '{${path.mkString(",")}}')::int = ?"
-      case ExpectedSingleLongValue(path, _) => s"(document #> '{${path.mkString(",")}}')::bigint = ?"
-      case ExpectedSingleBooleanValue(path, _) => s"(document #> '{${path.mkString(",")}}')::boolean = ?"
-      case ExpectedGreaterThanIntValue(path, _) => s"(document #> '{${path.mkString(",")}}')::int > ?"
-      case ExpectedLessThanIntValue(path, _) => s"(document #> '{${path.mkString(",")}}')::int < ?"
+      case ExpectedNoValue(path) => s"document #>> ${JsonPath.literal(path)} IS NULL"
+      case ExpectedMultipleTextValues(path, v) => s"document #>> ${JsonPath.literal(path)} in (${List.fill(v.size)("?").mkString(",")})"
+      case ExpectedMultipleIntValues(path, v) => s"(document #> ${JsonPath.literal(path)})::int in (${List.fill(v.size)("?").mkString(",")})"
+      case ExpectedMultipleLongValues(path, v) => s"(document #> ${JsonPath.literal(path)})::bigint in (${List.fill(v.size)("?").mkString(",")})"
+      case ExpectedSingleTextValue(path, _) => s"document #>> ${JsonPath.literal(path)} = ?"
+      case ExpectedSingleTextValueLike(path, _) => s"document #>> ${JsonPath.literal(path)} ilike ?"
+      case ExpectedSingleTextValueInArray(path, v) => s"(document #> ${JsonPath.literal(path)}) ?? ?"
+      case ExpectedMultipleTextValuesInArray(path, v) => s"(document #> ${JsonPath.literal(path)}) ??| ARRAY[${List.fill(v.size)("?").mkString(",")}]"
+      case ExpectedSingleIntValue(path, _) => s"(document #> ${JsonPath.literal(path)})::int = ?"
+      case ExpectedSingleLongValue(path, _) => s"(document #> ${JsonPath.literal(path)})::bigint = ?"
+      case ExpectedSingleBooleanValue(path, _) => s"(document #> ${JsonPath.literal(path)})::boolean = ?"
+      case ExpectedGreaterThanIntValue(path, _) => s"(document #> ${JsonPath.literal(path)})::int > ?"
+      case ExpectedLessThanIntValue(path, _) => s"(document #> ${JsonPath.literal(path)})::int < ?"
 
     }.mkString(" ", " AND ", " ")
   }
@@ -575,7 +526,8 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
 }
 
 class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJsons,
-                                                      val cache: DocumentStoreCache[T], val indicies: Seq[Index] = Seq.empty)(implicit val t: TypeTag[T])
+                                                      val cache: DocumentStoreCache[T], val indicies: Seq[Index] = Seq.empty,
+                                        val maxRows: Int = DocumentStoreQuery.MaxRows)(implicit val t: TypeTag[T])
   extends DocumentStore[T] with PostgresDocumentStoreTrait[T] {
 
   override def insertDocument(spaceId: Long, key: Long, document: T)(implicit session: DBSession): Unit = {
@@ -620,7 +572,8 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
 }
 
 class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjsons: MPJsons,
-                                                            val cache: DocumentStoreCache[T], val indicies: Seq[Index] = Seq.empty)(implicit val t: TypeTag[T])
+                                                            val cache: DocumentStoreCache[T], val indicies: Seq[Index] = Seq.empty,
+                                        val maxRows: Int = DocumentStoreQuery.MaxRows)(implicit val t: TypeTag[T])
   extends DocumentStoreAutoId[T] with PostgresDocumentStoreTrait[T] {
 
   protected final lazy val sequenceName = "sequence_" + tableName

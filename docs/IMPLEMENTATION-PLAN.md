@@ -2675,3 +2675,11 @@ Open test-infrastructure items:
   buses log and drop a message whose handling throws; a restart takes new ids and a unique event-bus name.
 - F256: no outbox writer for drafts; the in-memory stores roll back a failed `localTx`'s writes per aggregate.
 - Each fix red under a mutation (six). Chapter 20 (EN, PL), ARCHITECTURE §4.10.
+
+**18/10/2026: the risk assessment, step 4, item 13: the document store**
+- F210: `JsonPath.literal` writes every path as a text-array literal quoted as PostgreSQL quotes it (indexes keep
+  matching and are not rebuilt). F211: queries without a limit fail beyond the store's `maxRows` (100 000);
+  `DocumentStoreQuery.Unbounded` and `findAll()` stay unbounded. The finders run through one `run`, the order and
+  paging through one `orderAndPage` (two copies before). F273: the memory store sorts, pages, limits and caps.
+- Each fix red under a mutation (four). Chapters 8 and 19 (EN, PL; chapter 8 no longer says the memory store ignores
+  spaces), ARCHITECTURE §6.8, SCALING §9.

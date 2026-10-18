@@ -459,6 +459,7 @@ Pekko's default dispatcher has 12 threads on the measured machine; since M5, han
 | `GetEventsForAggregate` answers | the whole history: 168 MB for 50 000 events (measured) | none |
 | A restore | transient: 52 MB for 50 000 events, 146 MB for 500 000 (measured peaks) | one per owner restoring, at most 32 at once |
 | A rebuild | 150 MB peak for 112 211 events (measured, baseline-M4) | pages, 2 chunks in flight, 10 000 replay states, each the size of a state |
+| Document-store queries without a limit (F211) | every document found, deserialized: about 100 000 × the document's size at the cap (estimated) | the store's `maxRows` (100 000): beyond it the query fails with `TooManyDocumentsException`; page with `limit` and `offset`. `findAll()` and `DocumentStoreQuery.Unbounded` have no bound |
 | Subscription version cache | 10 000 aggregates' versions | LRU |
 | Outbox poller | one entry per waiting aggregate, at most 100 000 | `OutboxPollerOptions.maxTracked` |
 | Purged aggregates (R17) | 8 bytes per aggregate a purge removed, per projection instance: 8 MB for 1 million (arithmetic) | `ProjectionActorOptions.purgedDropWindow` (30 minutes) after the purge's last batch |

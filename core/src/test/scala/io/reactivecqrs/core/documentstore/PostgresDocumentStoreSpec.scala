@@ -9,6 +9,7 @@ import scalikejdbc._
 
 case class Label(name: String)
 case class Labels(labels: List[Label])
+case class Attributes(values: Map[String, String])
 
 class PostgresDocumentStoreSpec extends AnyFeatureSpec with GivenWhenThen with BeforeAndAfter with Matchers {
 
@@ -176,6 +177,65 @@ class PostgresDocumentStoreSpec extends AnyFeatureSpec with GivenWhenThen with B
         documentStore.findDocumentByPaths(thirteen).keySet mustBe Set(1)
       } finally {
         documentStore.dropTable()
+      }
+    }
+  }
+
+  Feature("Paths with any characters (F210)") {
+    Scenario("F210 a key with a comma, a quote or a brace is one key, in conditions, sorts, parts and indexes") {
+      val (odd, other) = ("it's {a,b}", "a,b")
+      val store = new PostgresDocumentStore[Attributes]("test_paths", mpjsons, new NoopDocumentStoreCache, Seq(MultipleTextIndex(1, Seq("values", odd))))
+      try {
+        val built = DB.readOnly(implicit session => sql"SELECT 'projection_test_paths_idx_1'::regclass::oid::bigint".map(_.long(1)).single())
+        new PostgresDocumentStore[Attributes]("test_paths", mpjsons, new NoopDocumentStoreCache, Seq(MultipleTextIndex(1, Seq("values", odd))))
+        DB.readOnly(implicit session => sql"SELECT 'projection_test_paths_idx_1'::regclass::oid::bigint".map(_.long(1)).single()) mustBe built
+
+        DB.localTx { implicit session =>
+          // JSON objects with such keys, as a host's own JSON may have them (mpjsons writes a map as pairs)
+          Seq(1L -> """{"name": "n", "values": {"a,b": "x", "it's {a,b}": "b"}}""", 2L -> """{"name": "n", "values": {"it's {a,b}": "a"}}""", 3L -> """{"name": "n", "values": {"a": "x"}}""")
+            .foreach { case (id, json) => sql"INSERT INTO projection_test_paths (space_id, id, version, document) VALUES (0, $id, 1, $json::jsonb)".update() }
+          def keys(where: ExpectedValue*): Set[Long] = store.findDocumentPartByPaths[String](Seq("name"), DocumentStoreQuery.basic(where)).map(_._1).toSet
+
+          keys(ExpectedSingleTextValue(Seq("values", other), "x")) mustBe Set(1L)
+          keys(ExpectedSingleTextValue(Seq("values", odd), "a")) mustBe Set(2L)
+          keys(ExpectedSingleTextValue(Seq("values", "x}' = '' OR '1'='1"), "x")) mustBe empty
+          store.findDocumentPartByPaths[String](Seq("values", odd), DocumentStoreQuery(Seq(ExpectedSingleTextValueLike(Seq("values", odd), "%")),
+            Seq(SortAscText(Seq("values", odd))), 0, 10)) mustBe Seq(2L -> "a", 1L -> "b")
+        }
+      } finally {
+        store.dropTable()
+      }
+    }
+  }
+
+  Feature("Queries without a limit (F211)") {
+    Scenario("F211 a query without a limit fails beyond the store's maxRows; with a limit, Unbounded or findAll it does not") {
+      val store = new PostgresDocumentStore[SimpleType]("test_cap", mpjsons, new NoopDocumentStoreCache, maxRows = 2)
+      try {
+        DB.localTx { implicit session =>
+          (1 to 3).foreach(i => store.insertDocument(0, i, SimpleType(1)))
+          a[TooManyDocumentsException] must be thrownBy store.findDocumentByPath(Seq("field"), "1")
+          a[TooManyDocumentsException] must be thrownBy store.findDocumentPartByPaths[Int](Seq("field"), DocumentStoreQuery.basic(Nil))
+          store.findDocument(DocumentStoreQuery(Nil, Nil, 0, 2)).size mustBe 2
+          store.findDocument(DocumentStoreQuery(Nil, Nil, 0, DocumentStoreQuery.Unbounded)).size mustBe 3
+          store.findAll().size mustBe 3
+        }
+      } finally {
+        store.dropTable()
+      }
+    }
+  }
+
+  Feature("Order, offset and limit, as the memory store keeps them (F273)") {
+    Scenario("F273 sorted, paged queries") {
+      val store = new PostgresDocumentStore[Item]("test_pages", mpjsons, new NoopDocumentStoreCache)
+      try {
+        DB.localTx { implicit session =>
+          OrderedItems.all.foreach { case (key, item) => store.insertDocument(0, key, item) }
+          OrderedItems.queries.foreach { case (query, keys) => store.findDocument(query).map(_._1) mustBe keys }
+        }
+      } finally {
+        store.dropTable()
       }
     }
   }

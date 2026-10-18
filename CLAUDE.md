@@ -305,7 +305,8 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
   interpolator (binds params safely) and `SQL(s"...")` with manual string building
   (used for dynamic IN-lists, index/table names, JSON paths). The latter is where
   injection risk lives — table/index/JSON-path fragments are interpolated, not
-  bound. Keep identifiers validated (see `PostgresDocumentStore` uniqueId checks).
+  bound. Keep identifiers validated (see `PostgresDocumentStore` uniqueId checks); JSON paths go
+  through `JsonPath.literal` (F210).
 - **Serialization**: events are stored as JSON text via mpjsons keyed by
   `event_type_id` (the class name); `event_type_version` is always 0 (D29). Changing an
   event class shape breaks replay: add a new class (`...V2`) and keep the old one.

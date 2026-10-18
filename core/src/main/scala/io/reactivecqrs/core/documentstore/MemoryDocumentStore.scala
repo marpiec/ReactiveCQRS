@@ -15,6 +15,8 @@ import scala.reflect.runtime.universe._
 sealed trait MemoryDocumentStoreTrait[T <: AnyRef] {
 
   val store = mutable.ParHashMap[Long, Document[T]]()
+  /** As `PostgresDocumentStoreTrait.maxRows` (F211). */
+  val maxRows: Int
   // F156: each document's space, as the space_id column keeps it: set when the document is inserted, kept after.
   protected val spaces = mutable.ParHashMap[Long, Long]()
 
@@ -24,8 +26,37 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef] {
   }
 
 
-  // Conditions mirror PostgresDocumentStore.createQuery, so tests using this store see the same results.
+  // Conditions, order, offset, limit and maxRows mirror PostgresDocumentStore.createQuery, so tests using this store see
+  // the same results (F273).
   def findDocument(query: DocumentStoreQuery)(implicit session: DBSession = null): Seq[(Long, Document[T])] = {
+    val paged = ordered(found(query), query.sortBy).drop(query.offset)
+    if (query.limit >= 0) paged.take(query.limit)
+    else if (paged.size > maxRows) throw new TooManyDocumentsException("the memory store", maxRows)
+    else paged
+  }
+
+  // As PostgreSQL orders: numbers by value, texts by their characters (PostgreSQL's collation may differ), a missing
+  // value last when ascending and first when descending; equal ones by key, which PostgreSQL leaves unspecified.
+  private def ordered(documents: Seq[(Long, Document[T])], sortBy: Seq[Sort]): Seq[(Long, Document[T])] = {
+    def compare(path: Seq[String], numbers: Boolean)(a: Document[T], b: Document[T]): Int =
+      (valueAtPath(a.document, path).map(_.toString), valueAtPath(b.document, path).map(_.toString)) match {
+        case (None, None) => 0
+        case (None, _) => 1
+        case (_, None) => -1
+        case (Some(x), Some(y)) => if (numbers) BigDecimal(x).compare(BigDecimal(y)) else x.compareTo(y)
+      }
+    val comparisons = sortBy.map {
+      case SortAscInt(path) => compare(path, numbers = true) _
+      case SortAscLong(path) => compare(path, numbers = true) _
+      case SortAscText(path) => compare(path, numbers = false) _
+      case SortDescInt(path) => (a: Document[T], b: Document[T]) => -compare(path, numbers = true)(a, b)
+      case SortDescLong(path) => (a: Document[T], b: Document[T]) => -compare(path, numbers = true)(a, b)
+      case SortDescText(path) => (a: Document[T], b: Document[T]) => -compare(path, numbers = false)(a, b)
+    }
+    documents.sortBy(_._1).sortWith { (a, b) => comparisons.iterator.map(_(a._2, b._2)).find(_ != 0).exists(_ < 0) }
+  }
+
+  private def found(query: DocumentStoreQuery): Seq[(Long, Document[T])] = {
     store.filter(keyValuePair => {
       val document = keyValuePair._2.asInstanceOf[Document[AnyRef]].document
       query.where.forall {
@@ -97,7 +128,8 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef] {
   }
 
   def findDocumentByObjectInArray[V](arrayPath: Seq[String], objectPath: Seq[String], value: V, limit: Int)(implicit session: DBSession = null): Map[Long, Document[T]] = {
-    store.filter(keyValuePair => arrayMatchSeq(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, arrayPath).exists(matches(_, objectPath, value))).seq.toMap
+    store.filter(keyValuePair => arrayMatchSeq(keyValuePair._2.asInstanceOf[Document[AnyRef]].document, arrayPath).exists(matches(_, objectPath, value)))
+      .seq.toSeq.sortBy(_._1).take(limit).toMap // F273: at most `limit`, as PostgreSQL finds them
   }
 
   def findAll()(implicit session: DBSession = null): Map[Long, Document[T]] = {
@@ -229,7 +261,7 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef] {
 
 }
 
-class MemoryDocumentStore[T <: AnyRef] extends DocumentStore[T] with MemoryDocumentStoreTrait[T] {
+class MemoryDocumentStore[T <: AnyRef](val maxRows: Int = DocumentStoreQuery.MaxRows) extends DocumentStore[T] with MemoryDocumentStoreTrait[T] {
 
   def insertDocument(spaceId: Long, key: Long, document: T)(implicit session: DBSession = null): Unit =
     if (store.contains(key)) {
@@ -242,7 +274,7 @@ class MemoryDocumentStore[T <: AnyRef] extends DocumentStore[T] with MemoryDocum
     documents.foreach(document => insertDocument(spaceId, document.key, document.document))
 }
 
-class MemoryDocumentStoreAutoId[T <: AnyRef] extends DocumentStoreAutoId[T] with MemoryDocumentStoreTrait[T] {
+class MemoryDocumentStoreAutoId[T <: AnyRef](val maxRows: Int = DocumentStoreQuery.MaxRows) extends DocumentStoreAutoId[T] with MemoryDocumentStoreTrait[T] {
 
   val random = new scala.util.Random(System.nanoTime)
 

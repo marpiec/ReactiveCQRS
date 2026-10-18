@@ -115,8 +115,9 @@ of type `T` under keys of type `Long`, usually the aggregate's id (`cartId.asLon
 - **`PostgresDocumentStore[T]`** keeps them in a table called `projection_<name>`, with the columns
   `space_id`, `id`, `version` and `document` (the document as `JSONB`, written by mpjsons). It
   creates the table, and the indexes you ask for, when you create the store.
-- **`MemoryDocumentStore[T]`** keeps them in a map in memory. It is meant for tests (chapter 19);
-  it ignores spaces, so its `clearSpace` does nothing.
+- **`MemoryDocumentStore[T]`** keeps them in a map in memory. It is meant for tests (chapter 19):
+  it finds, sorts, pages and limits as the PostgreSQL store does (texts are compared by their
+  characters, where PostgreSQL may use the database's collation), and keeps each document's space.
 
 Here is the store of the cart list this chapter builds, whose documents are
 `CartSummary(name: String, itemCount: Int, version: Int)`:
@@ -414,6 +415,15 @@ The conditions all have to hold. Besides `ExpectedGreaterThanIntValue` there are
 arrays. Sorts come as `SortAscText`, `SortDescText`, `SortAscInt`, `SortDescInt`, `SortAscLong` and
 `SortDescLong`. A `limit` of `-1` means no limit, and `DocumentStoreQuery.basic(where)` is the
 shortcut for "these conditions, no sorting, no limit".
+
+A query without a limit, and the finders such as `findDocumentByPath`, still stop at the store's
+`maxRows` (100 000 by default, a parameter of the store): a query that finds more fails with
+`TooManyDocumentsException` instead of reading a growing table into memory. Give such a query a
+limit and page through it with the offset. For a small read model that must come back whole, ask
+with `limit = DocumentStoreQuery.Unbounded`, or use `findAll()`.
+
+A path's names may hold any characters, such as a map's keys: `Seq("labels", "size, in cm")` is a
+path of two names, and the store writes it into its SQL so that nothing in it is read as SQL.
 
 > **Tip:** a query with an empty `where` finds every document, sorted and paged as you ask; for all
 > of them at once, `findAll()` is simpler.
