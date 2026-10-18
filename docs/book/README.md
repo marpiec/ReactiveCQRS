@@ -97,15 +97,27 @@ your project needs today.
 
 ## Where the examples come from
 
-Almost every example is taken from, or modelled on, the shopping-cart domain in the `testdomain`
-module of this repository (`testdomain/src/main/scala/io/reactivecqrs/testdomain/shoppingcart/`).
-It is real code that the test suite runs, so you can open it, run it and poke at it.
+The code in this book is compiled and run. It comes from three places in this repository:
+
+- **The book's examples, E1 to E11**, in `examples/src/main/scala/io/reactivecqrs/examples/`: small
+  programs, each with a `main` you can run and a spec that runs the same code.
+- **The test domain's shopping cart**, in `testdomain/src/main/scala/io/reactivecqrs/testdomain/shoppingcart/`,
+  which chapters 5 to 18 use. It is the cart the library's own specs run.
+- **The specs of those chapters**, in `examples/src/test/scala/io/reactivecqrs/examples/cart/`: each
+  block that sends something is a region of a spec, right before the lines that check what the
+  chapter says it answers.
+
+A block taken from one of them is marked in the chapter's source with a comment that names its file
+and region, and `BookSnippetsSpec` checks that every such block is that region, word for word. The
+few blocks without a mark show one call or a configuration line, or code the chapter presents as
+hypothetical, or wrong on purpose.
 
 ## The version this book describes
 
-ReactiveCQRS **1.0** (currently `1.0.0-SNAPSHOT`), on Scala 2.13, Apache Pekko 1.7 and PostgreSQL.
-Some 1.0 features are still being built; the chapters that mention them say so plainly, and never
-pretend they are there already.
+ReactiveCQRS **1.0** (currently `1.0.0-SNAPSHOT`), on Scala 2.13, Apache Pekko 1.7, Java 21 and
+PostgreSQL. Every feature the book shows is built and tested; where a part of 1.0's verification is
+still to come (tests that kill a node or cut the network, [chapter 17](17-cluster.md)), the chapter
+says so plainly.
 
 For maintainers: how the library works inside is in [`../ARCHITECTURE.md`](../ARCHITECTURE.md);
 known problems and decisions are in [`../KNOWN-ISSUES.md`](../KNOWN-ISSUES.md); behaviour under

@@ -14,7 +14,7 @@ import scalikejdbc._
 
 import scala.concurrent.duration._
 import scala.concurrent.{Await, Future}
-import scala.util.Try
+import scala.util.{Failure, Success, Try}
 
 class SquashingSpec extends CartSpec {
 
@@ -109,6 +109,18 @@ class SquashingSpec extends CartSpec {
       // #old
       await(old).failed.get.getMessage mustBe
         s"The history of aggregate ${cartId.asLong} is squashed up to version 5; version 3 cannot be read"
+
+      And("a read that expects it answers None")
+      import system.dispatcher
+      val maybeCart =
+        // #squashedRead
+        (commandBus ? GetAggregateForVersion(cartId, AggregateVersion(3))).mapTo[Try[Aggregate[ShoppingCart]]].map {
+          case Success(cart) => Some(cart)
+          case Failure(e: AggregateSquashedException) => None // only versions from e.squashedUpTo on exist
+          case Failure(e) => throw e
+        } // with an implicit ExecutionContext in scope
+        // #squashedRead
+      await(maybeCart) mustBe None
     }
 
     Scenario("a squash event that does not give back the state is refused, unless it may change the state") {

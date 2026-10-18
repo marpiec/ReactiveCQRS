@@ -284,20 +284,27 @@ permanently.
 5. For a build in progress, wrap the message: `ToBuildInProgress(RetryAllFailedSubscriptions)`. A
    build with failed subscriptions does not replace the active one.
 
+As in [chapter 9](09-projection-failures.md), for its cart list:
+
+<!-- snippet: cart/FailuresSpec.scala#status -->
 ```scala
-import org.apache.pekko.pattern.ask
-import org.apache.pekko.util.Timeout
-import io.reactivecqrs.core.projection._
-import scala.concurrent.Await
-import scala.concurrent.duration._
+import io.reactivecqrs.core.projection.{GetProjectionStatus, ProjectionStatus}
 
-implicit val timeout: Timeout = Timeout(5.seconds)
+val status = Await.result((cartsList ? GetProjectionStatus).mapTo[ProjectionStatus], 5.seconds)
+status.failures.foreach { f =>
+  println(f.aggregateType.simpleName + " " + f.aggregateId.asLong + " stuck at version " + f.version.asInt + ": " + f.error)
+}
+// ShoppingCart 43 stuck at version 1: PSQLException: ERROR: duplicate key value violates unique constraint ...
+```
 
-val status = Await.result((projection ? GetProjectionStatus).mapTo[ProjectionStatus], 5.seconds)
-status.failures.foreach(f => println(s"${f.aggregateId} failed at ${f.version}: ${f.error}"))
+and after the fix is deployed:
 
-// After the fix is deployed:
-Await.result((projection ? RetryFailedSubscription(cartId)).mapTo[FailedSubscriptionsHandled], 5.seconds)
+<!-- snippet: cart/FailuresSpec.scala#retry -->
+```scala
+import io.reactivecqrs.core.projection.{FailedSubscriptionsHandled, RetryFailedSubscription}
+
+val handled = Await.result((cartsList ? RetryFailedSubscription(cartId)).mapTo[FailedSubscriptionsHandled], 5.seconds)
+// FailedSubscriptionsHandled(Id(43),1)
 ```
 
 > **Warning:** `SkipFailedVersion` marks the version as applied without applying it, so the read
@@ -342,8 +349,8 @@ again, and the outbox only grows.
    [docs/SCALING.md](../SCALING.md), section 4). Rebuilding the projection may be faster; or raise
    the pace while the backlog drains:
 
+   <!-- snippet: cart/FailuresSpec.scala#pollerOptions -->
    ```scala
-   import org.apache.pekko.actor.Props
    import io.reactivecqrs.core.delivery.{OutboxPollerActor, OutboxPollerOptions, RedeliveryPolicy}
 
    val outboxPoller = system.actorOf(Props(new OutboxPollerActor(eventStore, eventBus,
@@ -430,9 +437,8 @@ squash event's time (`GetAggregateAtInstant`), fails instead of giving a wrong a
 - Keep recent history readable with `AutomaticSquash(afterEvents, keepLast, keepNewerThan)`
   ([chapter 14](14-squash.md)).
 
+<!-- snippet: cart/SquashingSpec.scala#squashedRead -->
 ```scala
-import scala.util.{Failure, Success, Try}
-
 (commandBus ? GetAggregateForVersion(cartId, AggregateVersion(3))).mapTo[Try[Aggregate[ShoppingCart]]].map {
   case Success(cart) => Some(cart)
   case Failure(e: AggregateSquashedException) => None // only versions from e.squashedUpTo on exist
@@ -466,14 +472,17 @@ that is stopped or far behind delays the delete too.
 > and subscription rows. Your read models are yours: projections remove their documents when they
 > see the `PermanentDeleteEvent` ([chapter 6](06-events.md)).
 
-### A history rewrite answers success, but nothing changed
+### A history rewrite succeeds, but the read models still show the old value
 
-**Why:** today, a rewrite whose handler returns rewritten events but no new event is answered
-`SuccessResponse`, and nothing is stored. (A complete history rewrite is coming in 1.0.)
+**Why:** a rewrite whose handler returns rewritten events but no new event is stored, at the same
+version, and publishes nothing: projections never hear of it. (Before 1.0 such a rewrite was answered
+`SuccessResponse` and stored nothing at all, issue F146.) A projection also keeps what it copied
+elsewhere, whatever the rewrite changed.
 
-**What to do:** always add a compensating event, as the shopping cart does:
-`RewriteCommandSuccess(rewritten, CartNameRewritten(name))`. It also tells your projections that
-something changed ([chapter 15](15-rewriting-history.md)).
+**What to do:** add a compensating event, as the shopping cart does:
+`RewriteCommandSuccess(rewritten, CartNameRewritten(name))`, and handle it in every projection that
+shows the value; or rebuild the projections afterwards. To erase a value everywhere the library keeps
+it, use the complete rewrite, `HistoryRewriter` ([chapter 15](15-rewriting-history.md)).
 
 ---
 
@@ -522,6 +531,7 @@ breaks reading. Rows written with the event versions of releases before 1.0 do n
    (`ItemAddedV2`), and handle both in event handlers and projections ([chapter 6](06-events.md)).
 2. Before every upgrade, run `StoredDataCheck` on a copy of production, with the new code:
 
+   <!-- snippet: cart/ProductionSpec.scala#upgradeCheck -->
    ```scala
    import io.reactivecqrs.core.tools.StoredDataCheck
 
@@ -542,8 +552,8 @@ breaks reading. Rows written with the event versions of releases before 1.0 do n
 
 **What you see:** during the rollout, commands answer `CommandRejected` with a reason like
 "ItemAddedV2 is written once every node runs version 2.0.0 or later", and squashes are refused
-with the same reason. (`ItemAddedV2(name, source)` is the new cart event of the test suite's rolling
-upgrade, `CartCluster.scala`.)
+with the same reason. (`ItemAddedV2(name, source)` is the new cart event of version 2.0.0
+of the carts in [chapter 17](17-cluster.md).)
 
 **Why:** the context lists the class in `writtenFrom`. A node of the older version could not read
 the event, so nothing writes it until every member of the cluster announces at least that
@@ -552,15 +562,16 @@ at all.
 
 **What to do:**
 
-1. Let handlers write the older event in the meantime, as the test suite's version 2.0.0 of the
-   cart does:
+1. Let handlers write the older event in the meantime, as version 2.0.0 of the carts in chapter 17
+   does:
 
+   <!-- snippet: cart/CartsV2.scala#writtenFrom -->
    ```scala
    override val writtenFrom: Map[Class[_], String] = Map(classOf[ItemAddedV2] -> "2.0.0")
 
    override def commandHandlers = cart => {
      case c: AddItemConcurrently if everyNodeRuns("2.0.0") => CommandSuccess(ItemAddedV2(c.name, "version 2"))
-     case other => super.commandHandlers(cart)(other) // version 1.0.0's handlers, which write ItemAdded
+     case other => super.commandHandlers(cart)(other) // ItemAdded, as in 1.0.0
    }
    ```
 

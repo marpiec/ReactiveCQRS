@@ -2455,3 +2455,22 @@ Open test-infrastructure items:
   archived, and a managed projection of who placed it): the squash event, the archive and the read
   model hold the customer no more, and `history_rewrites` has its row. The run block imported
   `HistoryRewriter` but not `RewriteReport`, which it names.
+
+**18/10/2026: the rest of the book's code is compiled and checked**
+- Chapters 8 to 20 and the appendices, one commit per chapter: chapter 8's cart list and activity log
+  are classes of the cart chapters' package, shown whole, with the later sections' query cases as
+  nested regions (`ReadModelsSpec`); chapter 9's failure story runs with three quick retries
+  (`FailuresSpec`); chapter 10's supervisor messages are a second scenario of E10's spec; chapter 11's
+  live page opens, shows Alice's milk and catches up from the cache (`LiveUpdatesSpec`); chapter 12
+  quotes the test domain's saga and plays both its runs (`SagasSpec`); chapter 16's purge hook and
+  upgrade steps are scenarios of E9's spec; chapter 17's new event class is written by version 2.0.0
+  only, on clusters of one node of each version (`NodeVersionsSpec`); chapter 18's host steps run in
+  `ProductionSpec`; chapter 19's probe and test clock are E11's `DeliveriesSpec`, its nodes in one JVM
+  E2's own setup; the appendices quote the same regions.
+- Blocks that were wrong as written, fixed by compiling them: the three targeted rebuilds of chapter 10
+  sent together (the supervisor refuses the second while one runs); chapter 12's saga, which left out
+  the answers it does not expect; chapter 16's and 17's classes copied, trimmed, from the library's own
+  test sources, which readers cannot see; a class "as before" in chapter 11 and an elided body in
+  chapter 18. A census counts, indented blocks included, 216 blocks taken from compiled code and 24
+  unmarked: sbt lines, one call or one value shown, the library's own signatures, and code the chapters
+  show on purpose as hypothetical or wrong (M7 design: "fragments that illustrate one call").

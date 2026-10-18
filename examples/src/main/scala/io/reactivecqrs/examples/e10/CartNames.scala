@@ -25,9 +25,11 @@ class CartNames(val subscriptionsState: SubscriptionsState, store: DocumentStore
 
   private def written(name: String): String = if (capitals) name.toUpperCase else name
 
+  // #query
   override protected def receiveQuery: Receive = {
     case GetCartName(id) => delayIfNotAvailable(sender(), () => store.getDocument(id.asLong).map(_.document), 2000)
   }
+  // #query
 
   // #clear
   override protected def clearForRebuild(target: RebuildTarget)(implicit session: DBSession): Unit = target match {

@@ -14,6 +14,7 @@ sends only to itself are left out.
 
 All the examples use Pekko's `ask` with a timeout, and `mapTo` to name the type of the answer:
 
+<!-- snippet: cart/CommandKindsSpec.scala#basics -->
 ```scala
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
@@ -163,10 +164,12 @@ call, with `sender()` as `respondTo`:
 | `delayIfNotAvailableAsync(respondTo, search, forMaximumMillis)`, with `search: () => Future[Option[T]]` | The same |
 | `delayIfNotAvailableAsyncCustom(respondTo, search, found, forMaximumMillis)`, with `search: () => Future[T]` and `found: T => Boolean` | The result itself, a `T` (not wrapped), once `found(result)` is true; at the deadline the `T` of one last search; `Status.Failure(e)` on a failure |
 
+E10's cart names answer their query this way:
+
+<!-- snippet: e10/CartNames.scala#query -->
 ```scala
 override protected def receiveQuery: Receive = {
-  case GetCartName(cartId) => // a query message of your own
-    delayIfNotAvailable(sender(), () => documentStore.getDocument(cartId.asLong).map(_.document), 2000)
+  case GetCartName(id) => delayIfNotAvailable(sender(), () => store.getDocument(id.asLong).map(_.document), 2000)
 }
 ```
 

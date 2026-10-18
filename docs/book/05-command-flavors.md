@@ -235,8 +235,8 @@ Take them from `ReserveAggregateId` and you never need to think about it. If you
 way, the command bus checks them before anything runs, and answers `FailureResponse` for an id that
 is:
 
-- not positive (zero or below; negative ids are kept for ephemeral, in-memory aggregates, coming in
-  1.0),
+- not positive (zero or below; negative ids are kept for ephemeral, in-memory aggregates,
+  [chapter 20](20-ephemeral-aggregates.md)),
 - not below 2^53 (9 007 199 254 740 992), the largest whole number a JavaScript client reads exactly,
 - in the range of another installation.
 

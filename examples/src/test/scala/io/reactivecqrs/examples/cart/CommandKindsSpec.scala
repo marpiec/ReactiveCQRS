@@ -135,6 +135,34 @@ class CommandKindsSpec extends CartSpec {
     }
   }
 
+  Feature("The cheat sheet's asks") {
+
+    Scenario("a command answered with a command response, a query with a Try") {
+      val userId = alice
+      val cartId = newCart(commandBus)
+      // #basics
+      import org.apache.pekko.pattern.ask
+      import org.apache.pekko.util.Timeout
+      import io.reactivecqrs.api._
+      import scala.concurrent.Future
+      import scala.concurrent.duration._
+      import scala.util.Try
+
+      implicit val timeout: Timeout = Timeout(5.seconds)
+
+      // A command: the answer is a command response.
+      val added: Future[CustomCommandResponse[_]] =
+        (commandBus ? AddItem(userId, cartId, AggregateVersion(1), "milk")).mapTo[CustomCommandResponse[_]]
+
+      // A query: the answer is a Try.
+      val cart: Future[Try[Aggregate[ShoppingCart]]] =
+        (commandBus ? GetAggregate(cartId)).mapTo[Try[Aggregate[ShoppingCart]]]
+      // #basics
+      await(added) mustBe SuccessResponse(cartId, AggregateVersion(2))
+      await(cart).get.id mustBe cartId
+    }
+  }
+
   Feature("What a handler can answer") {
 
     Scenario("several events, or none") {

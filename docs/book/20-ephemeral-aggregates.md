@@ -95,6 +95,7 @@ Drafts nobody touches do not pile up forever:
 - **A maximum**: the bus holds at most `maxAggregates` drafts (100 000 by default); a new one beyond
   that is answered `CommandRejected`.
 
+<!-- snippet: e8/DraftsSpec.scala#limits -->
 ```scala
 AggregateCommandBusActor.ephemeral(new ShoppingListContext, persistentBus = lists, uidGenerator, mpjsons,
   maxAggregates = 10000, idleTime = 2.hours)

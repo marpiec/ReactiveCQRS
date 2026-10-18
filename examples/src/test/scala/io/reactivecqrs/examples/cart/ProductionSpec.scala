@@ -85,6 +85,18 @@ class ProductionSpec extends CartSpec {
       println(report.text)
       // #check
       report.unreadable mustBe 0L
+
+      locally {
+        // #upgradeCheck
+        import io.reactivecqrs.core.tools.StoredDataCheck
+
+        val report = StoredDataCheck.run(mpjsons, typesNames,
+          Seq(StoredDataCheck.ProjectionTable[String]("storeA"))) // one per document store, with its document class
+        println(report.text)
+        if (report.unreadable > 0) sys.error("Fix the unreadable rows before the upgrade")
+        // #upgradeCheck
+        report.missingTables mustBe Seq("projection_storeA") // this test schema has no such store
+      }
     }
 
     Scenario("the library's measures forwarded to a metrics system of one's own") {
