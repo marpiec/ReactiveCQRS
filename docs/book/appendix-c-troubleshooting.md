@@ -576,6 +576,24 @@ at all.
 6. Changing a type's placement or `numberOfShards` needs a full stop, not a rolling upgrade
    ([chapter 17](17-cluster.md)).
 
+### Nodes cannot send each other messages
+
+**What you see:** commands to aggregates whose owners run on another node are answered
+`FailureResponse` with "cannot be sent between nodes: ... Java serialization ... was disabled", the
+log says "Failed to serialize message" every few seconds, and the node never gets ready: at start it
+logged "Messages between nodes would go through ..., not the library's serializer".
+
+**Why:** messages between nodes must go through the library's serializer. Pekko's own
+`reference.conf` binds `java.io.Serializable` to Java serialization, which is off; the library's
+binds it to its serializer; and of the two, the one earlier on the classpath wins. Under sbt the
+library comes first; a packaged application's classpath may come in any order.
+
+**What to do:** put the binding in your configuration, where it wins over every `reference.conf`:
+
+```hocon
+pekko.actor.serialization-bindings { "java.io.Serializable" = reactivecqrs }
+```
+
 ### `MessageTooLargeException` in a cluster
 
 **What you see:** an ask fails at once with `MessageTooLargeException`: "A ... of ... bytes is too

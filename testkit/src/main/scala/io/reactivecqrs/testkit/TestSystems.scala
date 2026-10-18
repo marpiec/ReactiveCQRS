@@ -17,9 +17,11 @@ object TestSystems {
           pekko.actor.debug.lifecycle = off""")
 
   /** What several nodes in one JVM need: local ports chosen by the system, JMX beans of their own, and no JVM exit or
-    * shutdown hook when one stops. */
+    * shutdown hook when one stops; and the library's serializer for messages between nodes, as a host's configuration
+    * binds it (F178). */
   val clusterConfig: Config = ConfigFactory.parseString("""
           pekko.actor.provider = cluster
+          pekko.actor.serialization-bindings { "java.io.Serializable" = reactivecqrs }
           pekko.remote.artery.canonical { hostname = "127.0.0.1", port = 0 }
           pekko.cluster.jmx.multi-mbeans-in-same-jvm = on
           pekko.coordinated-shutdown.exit-jvm = off

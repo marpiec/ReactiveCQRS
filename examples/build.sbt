@@ -11,4 +11,14 @@ libraryDependencies ++= Seq(
   "org.apache.pekko" %% "pekko-management" % "1.2.1",
   "org.apache.pekko" %% "pekko-lease-kubernetes" % "1.2.1")
 
+// E2's image (examples/deploy/e2): the examples' runtime jars in target/e2/lib, which the Dockerfile copies, so the
+// image needs neither sbt nor the dependencies' repositories.
+lazy val stageE2 = taskKey[File]("Copies the examples' runtime jars into target/e2/lib for E2's image")
+stageE2 := {
+  val lib = target.value / "e2" / "lib"
+  IO.delete(lib)
+  (Runtime / fullClasspathAsJars).value.map(_.data).foreach(jar => IO.copyFile(jar, lib / jar.getName))
+  lib.getParentFile
+}
+
 publish / skip := true

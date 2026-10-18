@@ -1,18 +1,19 @@
 # E2 (chapter 17): three nodes of the shop and their PostgreSQL, on one machine.
 #
 # From the repository's root:
+#   sbt examples/stageE2
 #   docker compose -f examples/deploy/e2/docker-compose.yml up --build
 #
 # Each node starts the same code (ClusterSetup.startNode). node1 and node2 are the seeds; node1 starts the cluster.
 # The split brain resolver keeps the majority (keep-majority, e2.conf): with three nodes there always is one.
-# Each node writes a cart once the cluster is up and prints what the carts list, which runs once in the cluster,
-# says about it.
+# Each node writes a cart once it is ready and prints what the carts list, which runs once in the cluster, says
+# about it.
 
 x-node: &node
   build:
-    context: ../../..
-    dockerfile: examples/deploy/e2/Dockerfile
-  image: reactivecqrs-e2
+    context: ../../target/e2 # the jars `sbt examples/stageE2` put there
+    dockerfile: ../../deploy/e2/Dockerfile
+  image: reactivecqrs-e2:1.0.0
   # A node that leaves the cluster, or is downed, ends its process (exit-jvm in e2.conf); it is started again.
   restart: unless-stopped
   depends_on:

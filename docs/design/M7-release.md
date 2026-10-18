@@ -168,5 +168,5 @@ Decided on 17/10/2026: F175 accepted, AR5 now, F165 renamed to `NoInfo`.
 | An index built again (F171, F173) on a large table | a plain `CREATE INDEX` blocks writes for minutes | built concurrently on a large table (D69), in the background step, as `buildIndexesConcurrently` does |
 | Subscribable projections push after the commit (F161) | a push lost if the node stops between the commit and the push | the listener re-reads on renewal; documented: pushes are at most once, the store is the truth |
 | The examples need PostgreSQL | they cannot run without it | they use the test database the suites use; the README says so |
-| Docker is missing (this machine) | E2's compose file and the fresh-reader test cannot run here | written and checked by reading; run where Docker is, before the release |
+| Docker is missing (this machine) | E2's compose file and the fresh-reader test cannot run here | Docker came on 18/10/2026: E2's three nodes ran in Docker Compose (the oldest stopped, a node restarted), which found F178; the Kubernetes manifest is checked by reading and by `NodeSpec` (Docker Desktop's Kubernetes is off); the fresh-reader test is still to run |
 | The rehearsal finds unreadable rows or a slow step | the migration date moves | the runbook's dry run (`StoredDataCheck`) comes first, and its findings are fixed before the date |

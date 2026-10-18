@@ -42,6 +42,11 @@ class NodeSpec extends AnyFeatureSpec with Matchers with Eventually {
       config.getInt("pekko.management.http.port") mustBe 8558
     }
 
+    Scenario("binds the library's serializer itself, whatever the order of the classpath's reference.conf files (F178)") {
+      ConfigFactory.parseResources("e2.conf").getString("pekko.actor.serialization-bindings.\"java.io.Serializable\"") mustBe
+        "reactivecqrs"
+    }
+
     Scenario("with Docker Compose, a node alone: a cluster of one, keep-majority, ready once its bus knows the carts list") {
       val port = { val socket = new ServerSocket(0); try socket.getLocalPort finally socket.close() }
       // As main makes it, but on free ports, and a test's stop must not end the JVM.

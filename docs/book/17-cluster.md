@@ -43,6 +43,7 @@ an `application.conf` for a node of a three-node installation whose actor system
 ```hocon
 pekko {
   actor.provider = cluster
+  actor.serialization-bindings { "java.io.Serializable" = reactivecqrs }
   remote.artery.canonical {
     hostname = "10.0.0.11"     # this node's address
     port = 17355               # Pekko's default
@@ -56,7 +57,14 @@ pekko {
 }
 ```
 
-Three of these lines deserve a word:
+Four of these lines deserve a word:
+
+- **`serialization-bindings`** sends every message between nodes through the library's serializer
+  (see "Messages between nodes" below). The library's `reference.conf` binds it too, but Pekko's
+  binds `java.io.Serializable` to Java serialization, which is off, and of two `reference.conf` files
+  the one earlier on the classpath wins. A packaged application's classpath may come in any order, so
+  your configuration binds it. A node that can talk to others but would serialize otherwise logs an
+  error saying so, and stays not ready.
 
 - **`seed-nodes`** are the addresses a starting node contacts to join. (Pekko Management's Cluster
   Bootstrap can find them for you on Kubernetes; Pekko's own documentation covers both ways.)
@@ -511,7 +519,7 @@ E2 comes with what it takes to run its nodes as separate processes, in `examples
 
 | File | What it is |
 |---|---|
-| `Dockerfile` | an image that builds the repository with sbt and runs E2's `ClusterSetup` |
+| `Dockerfile` | an image with a Java 21 runtime and the examples' jars, which runs E2's `ClusterSetup` |
 | `docker-compose.yml` | three nodes and a PostgreSQL on one machine |
 | `kubernetes.yaml` | three nodes on Kubernetes, with the split brain resolver's lease |
 
@@ -562,8 +570,21 @@ The Kubernetes manifest has four parts worth knowing:
    subscribers; `terminationGracePeriodSeconds: 120` gives a leaving node time to hand its owners
    over (90 seconds, above).
 
-> **Warning:** the image builds and runs the examples with sbt, which is fine for trying a cluster
-> out. A production image packages the application (sbt-native-packager, for one) and runs `java`.
+To try it on one machine, from the repository's root:
+
+```bash
+sbt examples/stageE2
+docker compose -f examples/deploy/e2/docker-compose.yml up --build
+```
+
+`stageE2` copies the examples' jars, with every library they need, to `examples/target/e2/lib`, and
+the image runs them with `java -cp "/app/lib/*"`: no sbt, and no repository to reach, in the image.
+Each node prints the cart it made and what the carts list, wherever it runs, says about it. Stop
+`node1`, the oldest, and the carts list and the outbox poller move to `node2`; restart `node3`, and
+it makes a cart again, read from `node2`.
+
+> **Remember:** `java -cp "lib/*"` puts the jars on the classpath in no particular order, which is
+> exactly why `e2.conf` binds the serializer itself (the first item of this chapter's configuration).
 
 ## What you learned
 

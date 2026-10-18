@@ -2334,3 +2334,17 @@ Open test-infrastructure items:
   path, delivery, the sequence gate, the tables, copies and squash, a managed rebuild, a cluster of
   three, a rolling upgrade, moving an organization), each pointing to its chapter. Every diagram
   renders with Mermaid 10.9.1 (checked in a page that renders them, 18/10/2026).
+
+**18/10/2026: E2 in Docker, F178 and F179**
+- Docker came to this machine: E2's three nodes ran in Docker Compose. The image now holds a Java 21
+  runtime and the examples' jars, which `sbt examples/stageE2` copies to `examples/target/e2/lib`
+  (no sbt and no repository in the image). Each node made a cart and read it from the carts list;
+  with the oldest node stopped, the carts list, the outbox poller and the shard coordinator moved to
+  node2, and a restarted node3 made and read a cart again. The examples log at INFO (`logback.xml`).
+- F178, found by the first run: every message between the nodes failed, as `java -cp lib/*` put
+  pekko-actor's `reference.conf` before the library's, and its binding of `java.io.Serializable` to
+  Java serialization won. The host's configuration binds the library's serializer (the book, E2, the
+  test kit), and `Readiness` keeps a node whose case classes would not reach it not ready, logging the
+  remedy. `SerializerBindingSpec`, red first; `NodeSpec`. Book: chapters 17 and 18, appendix C.
+- F179, recorded for the owner: mpjsons 0.7.0 is in no public repository; this machine has it in its
+  local Maven repository only.

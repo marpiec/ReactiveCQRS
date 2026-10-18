@@ -74,7 +74,8 @@ below with running code.
   `EventBusSubscriptionsManagerApi` and `PostgresEventBusState` are gone, and so are the `event_bus` and
   `events_to_route` tables' uses.
 - **Configuration**: `pekko.actor.provider = cluster` with the split brain resolver, on every node, also a
-  single one.
+  single one, and `pekko.actor.serialization-bindings { "java.io.Serializable" = reactivecqrs }`: a node
+  without the library's serializer for its messages stays not ready.
 - **Events**: no event versioning; `event_type_version` is always 0, and a changed event shape is a new
   class (`...V2`). A first event gives its organization's space. Undo events need no case in event
   handlers.

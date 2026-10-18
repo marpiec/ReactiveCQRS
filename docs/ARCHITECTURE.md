@@ -1410,7 +1410,10 @@ with that work.
 `cluster/ClusterSerializer` is the one serializer of the messages between nodes. `reference.conf`
 binds it to `java.io.Serializable`, so every case class and Scala collection that Pekko has no
 more specific serializer for comes to it (Pekko keeps `Some`, `None`, `Status`, `ActorRef` and its
-own messages); Java serialization stays off. The manifest is the class name; the payload is one
+own messages); Java serialization stays off. pekko-actor's `reference.conf` binds the same key to
+Java serialization, and of two `reference.conf` files the one earlier on the classpath wins, so the
+host's configuration binds it as well; `Readiness` keeps a node whose case classes would not reach
+the library's serializer not ready, and logs why (F178). The manifest is the class name; the payload is one
 value, each part written with a tag that says what it is:
 
 - scalars, `Instant`, `UUID`, `BigDecimal`; an `ActorRef` as its serialized path with its node's

@@ -283,6 +283,7 @@ node; ask each node's bus separately.
 | "Error handling command ..., errorId: [...]" | aggregate owner | a caller got `CommandHandlingError` with that error id |
 | "Error persisting events, errorId: [...]" | aggregate owner | a caller got `EventHandlingError`; the line names the cause (too many events, an event too large, a database error) |
 | "A ... of ... bytes is too large to be sent between nodes" | cluster serializer | a message could not cross nodes ([chapter 17](17-cluster.md)) |
+| "Messages between nodes would go through ..." | readiness | the library's serializer is not bound: the node stays not ready until `pekko.actor.serialization-bindings { "java.io.Serializable" = reactivecqrs }` is in its configuration ([chapter 17](17-cluster.md)) |
 | "Buffer is full" | Pekko shard regions and singleton proxies | messages were dropped while a shard or a singleton moved |
 
 The error id in the two owner lines is the one the caller received: a support request that quotes it
