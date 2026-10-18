@@ -45,7 +45,7 @@ class SerialCommandsSpec extends CommonSpec {
   import system.dispatcher
 
   private def created(bus: ActorRef): AggregateId = {
-    val response: CustomCommandResponse[_] = bus ?? CreateShoppingCartWithId(None, userId, Await.result((bus ? ReserveAggregateId).mapTo[AggregateId], 5.seconds), "Groceries")
+    val response = bus.askFor[CustomCommandResponse[_]](CreateShoppingCartWithId(None, userId, Await.result((bus ? ReserveAggregateId).mapTo[AggregateId], 5.seconds), "Groceries"))
     response.asInstanceOf[SuccessResponse].aggregateId
   }
 
@@ -62,7 +62,7 @@ class SerialCommandsSpec extends CommonSpec {
 
       responses.collect { case e: AggregateConcurrentModificationError => e } mustBe empty
       responses.collect { case SuccessResponse(_, version) => version.asInt }.sorted mustBe (2 to 1001)
-      val cart: Try[Aggregate[ShoppingCart]] = bus ?? GetAggregate(cartId)
+      val cart = bus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId))
       cart.get.version mustBe AggregateVersion(1001)
       cart.get.aggregateRoot.get.items.size mustBe 1000
     }
@@ -79,13 +79,13 @@ class SerialCommandsSpec extends CommonSpec {
 
     Scenario("a command beyond the queue limit is rejected at once") {
       val bus = busOf(new SerialTallies(maxQueue = 3))
-      val started: CustomCommandResponse[_] = bus ?? StartTally(userId)
+      val started = bus.askFor[CustomCommandResponse[_]](StartTally(userId))
       val id = started.asInstanceOf[SuccessResponse].aggregateId
 
       val running = bus ? CountWhenReleased(userId, id, "queue limit")
       val waiting = (1 to 3).map(_ => bus ? CountWhenReleased(userId, id, "queue limit"))
       Thread.sleep(200)
-      val beyond: CustomCommandResponse[_] = bus ?? CountWhenReleased(userId, id, "queue limit")
+      val beyond = bus.askFor[CustomCommandResponse[_]](CountWhenReleased(userId, id, "queue limit"))
       beyond mustBe a[CommandRejected]
 
       release("queue limit")
@@ -94,7 +94,7 @@ class SerialCommandsSpec extends CommonSpec {
 
     Scenario("a command's timeout counts from its arrival, also the time it waited in the queue") {
       val bus = busOf(new SerialTallies(maxQueue = 10)) // a timeout of 1 s
-      val started: CustomCommandResponse[_] = bus ?? StartTally(userId)
+      val started = bus.askFor[CustomCommandResponse[_]](StartTally(userId))
       val id = started.asInstanceOf[SuccessResponse].aggregateId
 
       val first = bus ? CountWhenReleased(userId, id, "never released")
@@ -115,7 +115,7 @@ class SerialCommandsSpec extends CommonSpec {
       val copies = Await.result(Future.sequence((1 to 2).map(_ => bus ? AddItemConcurrently(userId, cartId, "once", key))), 10.seconds)
 
       copies.distinct mustBe Seq(SuccessResponse(cartId, AggregateVersion(2)))
-      val cart: Try[Aggregate[ShoppingCart]] = bus ?? GetAggregate(cartId)
+      val cart = bus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId))
       cart.get.version mustBe AggregateVersion(2)
     }
   }

@@ -1216,6 +1216,12 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 
 ### Code structure
 
+#### F177 — The test kit's `??` makes the compiler warn at every `val` it gives a value to
+- **Low** (the published test kit), confirmed · **Fixed in M7** (18/10/2026; a clean compile of the specs gives no dead-code warning, 135 before, and E11's specs use `askFor`) · `ActorAskSupport` (test kit)
+- **Symptom:** `val x: T = actor ?? message` takes `T` from the `val`'s type. Scala 2.13 types the call with its type parameter as `Nothing` first, and `-Ywarn-dead-code` (`-Wdead-code`, on in this build and in sbt-tpolecat's defaults) reports "dead code following this construct" at each such line; an implicit `ClassTag` does not help (it is resolved first), a `def` does not warn, an explicit type argument does not (probed 18/10/2026). The library's specs had about 135 such lines, burying real warnings (noted at review 5); an application that compiles its tests with fatal warnings cannot use `??` at all. `askActor[T](message)(timeout)`, the typed variant, needs a timeout every time.
+- **Fix:** one typed ask, `actor.askFor[T](message)` (10 seconds) or `askFor[T](message, timeout)`, whose type is named, so nothing is inferred; it checks the answer's class and names the actor, the message and both classes when it differs (an unnamed type fails, saying to name it). `??` and `askActor` go: the test kit was never published, and the library's specs move to `askFor`.
+- **Found:** writing E11 (M7, 18/10/2026); first noted at review 5 (M3) as test hygiene.
+
 #### F174 — The published license differed from the repository's
 - **Low**, confirmed · **Fixed in M6** (17/10/2026; the owner chose MIT) · `LICENSE`, `project/Common.scala` (`licenses`)
 - **Symptom:** the repository's `LICENSE` file was the Apache License 2.0 (its template, with no copyright line filled in), which GitHub shows, while the build published every artifact's POM with the MIT license (`licenses += ("MIT", ...)`). Users of the artifacts and of the repository were told different terms.
@@ -1296,7 +1302,7 @@ From §7 of Neula's change requests.
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔, F174 ✔; F155 decided (review 8) |
-| M7 | AR5 ✔ (moved from M5 at review 7; D86); F148 ✔, F152 ✔, F153 ✔, F156 ✔, F157 ✔, F160 ✔, F161 ✔, F162 ✔, F163 ✔, F164 ✔, F165 ✔, F166 ✔, F169 ✔ (found writing the book), F170 ✔, F171 ✔, F173 ✔, F175 (accepted), F176 ✔ (found writing E10) |
+| M7 | AR5 ✔ (moved from M5 at review 7; D86); F148 ✔, F152 ✔, F153 ✔, F156 ✔, F157 ✔, F160 ✔, F161 ✔, F162 ✔, F163 ✔, F164 ✔, F165 ✔, F166 ✔, F169 ✔ (found writing the book), F170 ✔, F171 ✔, F173 ✔, F175 (accepted), F176 ✔ (found writing E10), F177 ✔ (found writing E11) |
 
 ---
 

@@ -95,7 +95,7 @@ class SagaRecoverySpec extends CommonSpec {
       val cartName = unique("Cart")
       val saga = newSaga(sagaName, new FlakySagaState(sagaState, createFailures = 1, updateFailures = 2))
 
-      val response: SagaResponse = saga ?? CreateMultipleCarts(userId, cartName, 3)
+      val response = saga.askFor[SagaResponse](CreateMultipleCarts(userId, cartName, 3))
 
       response mustBe a[CartsCreated]
       response.asInstanceOf[CartsCreated].carts.size mustBe 3
@@ -108,7 +108,7 @@ class SagaRecoverySpec extends CommonSpec {
       val cartName = unique("Cart")
       val saga = newSaga(sagaName, new FlakySagaState(sagaState, createFailures = Int.MaxValue, updateFailures = 0))
 
-      val response: SagaResponse = saga ?? CreateMultipleCarts(userId, cartName, 3)
+      val response = saga.askFor[SagaResponse](CreateMultipleCarts(userId, cartName, 3))
 
       response mustBe a[SagaFailureResponse]
       eventsNamed(cartName + " 1") mustBe 0
@@ -148,7 +148,7 @@ class SagaRecoverySpec extends CommonSpec {
       val saga = newSaga(sagaName, state, failingSagaIds)
       awaitAssert(state.loadsOfPendingSagas mustBe 1, 3.seconds, 50.millis)
 
-      val response: SagaResponse = saga ?? CreateMultipleCarts(userId, unique("Cart"), 1)
+      val response = saga.askFor[SagaResponse](CreateMultipleCarts(userId, unique("Cart"), 1))
 
       response mustBe a[SagaFailureResponse]
       state.loadsOfPendingSagas mustBe 1

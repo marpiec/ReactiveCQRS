@@ -72,13 +72,13 @@ class HistoryRewriteSpec extends CommonSpec {
     val cartId = AggregateId(TestIds.aggregate())
     eventStore.localTx(session => eventStore.persistEvents(cartId,
       NewEvents[ShoppingCart](userId, AggregateVersion.ZERO, Instant.now, Seq(ShoppingCartCreated("Groceries"))))(session)).get
-    val added: CustomCommandResponse[_] = commandBus ?? AddItem(userId, cartId, AggregateVersion(1), "apple")
+    val added = commandBus.askFor[CustomCommandResponse[_]](AddItem(userId, cartId, AggregateVersion(1), "apple"))
     added mustBe SuccessResponse(cartId, AggregateVersion(2))
     cartId
   }
 
   private def cart(cartId: AggregateId): Aggregate[ShoppingCart] = {
-    val aggregate: Try[Aggregate[ShoppingCart]] = commandBus ?? GetAggregate(cartId)
+    val aggregate = commandBus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId))
     aggregate.get
   }
 
@@ -88,7 +88,7 @@ class HistoryRewriteSpec extends CommonSpec {
       val cartId = cartWithAnItem()
       cart(cartId).aggregateRoot.get.name mustBe "Groceries"
 
-      val renamed: CustomCommandResponse[_] = commandBus ?? RenameQuietly(userId, cartId, AggregateVersion(2), "Renamed")
+      val renamed = commandBus.askFor[CustomCommandResponse[_]](RenameQuietly(userId, cartId, AggregateVersion(2), "Renamed"))
       renamed mustBe SuccessResponse(cartId, AggregateVersion(3))
 
       val rewritten = cart(cartId)
@@ -100,7 +100,7 @@ class HistoryRewriteSpec extends CommonSpec {
     Scenario("F146 that adds no event is stored too, and keeps the version") {
       val cartId = cartWithAnItem()
 
-      val renamed: CustomCommandResponse[_] = commandBus ?? RenameSilently(userId, cartId, AggregateVersion(2), "Silent")
+      val renamed = commandBus.askFor[CustomCommandResponse[_]](RenameSilently(userId, cartId, AggregateVersion(2), "Silent"))
       renamed mustBe SuccessResponse(cartId, AggregateVersion(2))
 
       cart(cartId).version mustBe AggregateVersion(2)
@@ -111,11 +111,11 @@ class HistoryRewriteSpec extends CommonSpec {
 
     Scenario("of a base reaches its duplicates: their running owners read the rewritten history again") {
       val baseId = cartWithAnItem()
-      val copied: CustomCommandResponse[_] = commandBus ?? DuplicateShoppingCart(userId, baseId, AggregateVersion(2))
+      val copied = commandBus.askFor[CustomCommandResponse[_]](DuplicateShoppingCart(userId, baseId, AggregateVersion(2)))
       val copyId = copied.asInstanceOf[SuccessResponse].aggregateId
       cart(copyId).aggregateRoot.get.name mustBe "Groceries" // its owner runs
 
-      val renamed: CustomCommandResponse[_] = commandBus ?? RenameQuietly(userId, baseId, AggregateVersion(2), "Renamed")
+      val renamed = commandBus.askFor[CustomCommandResponse[_]](RenameQuietly(userId, baseId, AggregateVersion(2), "Renamed"))
       renamed mustBe SuccessResponse(baseId, AggregateVersion(3))
 
       cart(copyId).aggregateRoot.get.name mustBe "Renamed"
@@ -123,14 +123,14 @@ class HistoryRewriteSpec extends CommonSpec {
 
     Scenario("of a duplicate reaches only the duplicate's own events, never those of its base") {
       val baseId = cartWithAnItem()
-      val copied: CustomCommandResponse[_] = commandBus ?? DuplicateShoppingCart(userId, baseId, AggregateVersion(2))
+      val copied = commandBus.askFor[CustomCommandResponse[_]](DuplicateShoppingCart(userId, baseId, AggregateVersion(2)))
       val copyId = copied.asInstanceOf[SuccessResponse].aggregateId
 
       // The copy has no creation event of its own: nothing is rewritten, the audit item is added.
-      val renamed: CustomCommandResponse[_] = commandBus ?? RenameQuietly(userId, copyId, AggregateVersion(1), "Copy")
+      val renamed = commandBus.askFor[CustomCommandResponse[_]](RenameQuietly(userId, copyId, AggregateVersion(1), "Copy"))
       renamed mustBe SuccessResponse(copyId, AggregateVersion(2))
 
-      val baseEvents: Try[List[EventInfo[ShoppingCart]]] = commandBus ?? GetEventsForAggregate(baseId)
+      val baseEvents = commandBus.askFor[Try[List[EventInfo[ShoppingCart]]]](GetEventsForAggregate(baseId))
       baseEvents.get.map(_.event) mustBe List(ShoppingCartCreated("Groceries"), ItemAdded("apple"))
       eventStore.readEventsRange[ShoppingCart](copyId, AggregateVersion(1), AggregateVersion(1)).map(_.event) mustBe
         Seq(ShoppingCartDuplicated(SpaceId(0), baseId, AggregateVersion(2)))
@@ -139,13 +139,13 @@ class HistoryRewriteSpec extends CommonSpec {
     Scenario("that would change an event's class is refused, and nothing of the command is stored") {
       val cartId = cartWithAnItem()
 
-      val refused: CustomCommandResponse[_] = commandBus ?? RewriteCreationAsItem(userId, cartId, AggregateVersion(2))
+      val refused = commandBus.askFor[CustomCommandResponse[_]](RewriteCreationAsItem(userId, cartId, AggregateVersion(2)))
       refused mustBe an[EventHandlingError]
 
       DB.readOnly { implicit session =>
         sql"SELECT count(*) FROM events WHERE aggregate_id = ${cartId.asLong}".map(_.int(1)).single()
       } mustBe Some(2)
-      val events: Try[List[EventInfo[ShoppingCart]]] = commandBus ?? GetEventsForAggregate(cartId)
+      val events = commandBus.askFor[Try[List[EventInfo[ShoppingCart]]]](GetEventsForAggregate(cartId))
       events.get.map(_.event) mustBe List(ShoppingCartCreated("Groceries"), ItemAdded("apple"))
       cart(cartId).version mustBe AggregateVersion(2)
     }

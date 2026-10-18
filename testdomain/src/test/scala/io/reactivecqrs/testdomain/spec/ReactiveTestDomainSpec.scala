@@ -88,15 +88,15 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
 
     def shoppingCartCommand(command: AnyRef): Aggregate[ShoppingCart]= {
-      val result: CustomCommandResponse[_] = shoppingCartCommandBus ?? command
+      val result = shoppingCartCommandBus.askFor[CustomCommandResponse[_]](command)
       val success = result.asInstanceOf[SuccessResponse]
 
-      val shoppingCartTry:Try[Aggregate[ShoppingCart]] = shoppingCartCommandBus ?? GetAggregate(success.aggregateId)
+      val shoppingCartTry = shoppingCartCommandBus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(success.aggregateId))
       shoppingCartTry.get
     }
 
     def getShoppingCartForVersion(aggregateId: AggregateId, aggregateVersion: AggregateVersion): Aggregate[ShoppingCart] = {
-      val shoppingCartTry:Try[Aggregate[ShoppingCart]] = shoppingCartCommandBus ?? GetAggregateForVersion(aggregateId, aggregateVersion)
+      val shoppingCartTry = shoppingCartCommandBus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregateForVersion(aggregateId, aggregateVersion))
       shoppingCartTry.get
     }
   }
@@ -172,7 +172,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
       import fixture._
 
       // Will not be able to create cart ending with M 4
-      val result: MultipleCartCreatorSagaResponse = multipleCartCreatorSaga ?? CreateMultipleCarts(userId, "My special cart M", 5)
+      val result = multipleCartCreatorSaga.askFor[MultipleCartCreatorSagaResponse](CreateMultipleCarts(userId, "My special cart M", 5))
 
       Thread.sleep(500) // time to cleanup
     }

@@ -44,21 +44,21 @@ class PersistTransactionSpec extends CommonSpec {
   Feature("A command whose events cannot all be stored") {
 
     Scenario("stores none of them, and the aggregate carries on from its previous version") {
-      val created: CustomCommandResponse[_] = commandBus ?? CreateShoppingCart(None, userId, "Groceries")
+      val created = commandBus.askFor[CustomCommandResponse[_]](CreateShoppingCart(None, userId, "Groceries"))
       val cartId = created.asInstanceOf[SuccessResponse].aggregateId
 
       When("the second of two events fails")
-      val failed: CustomCommandResponse[_] = commandBus ?? AddItems(userId, cartId, AggregateVersion(1), Seq("apple", "x" * 100))
+      val failed = commandBus.askFor[CustomCommandResponse[_]](AddItems(userId, cartId, AggregateVersion(1), Seq("apple", "x" * 100)))
 
       Then("the command fails and the first event is not stored either")
       failed mustBe an[EventHandlingError]
       storedEvents(cartId) mustBe 1
 
       And("the next command, expecting version 1, is stored, on a state without the failed command's items")
-      val next: CustomCommandResponse[_] = commandBus ?? AddItem(userId, cartId, AggregateVersion(1), "pear")
+      val next = commandBus.askFor[CustomCommandResponse[_]](AddItem(userId, cartId, AggregateVersion(1), "pear"))
       next mustBe SuccessResponse(cartId, AggregateVersion(2))
       storedEvents(cartId) mustBe 2
-      val cart: Try[Aggregate[ShoppingCart]] = commandBus ?? GetAggregate(cartId)
+      val cart = commandBus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId))
       cart.get.aggregateRoot.get.items.map(_.name) mustBe Vector("pear")
     }
   }

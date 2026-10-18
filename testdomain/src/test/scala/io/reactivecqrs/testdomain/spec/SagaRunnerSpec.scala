@@ -53,14 +53,14 @@ class SagaRunnerSpec extends CommonSpec {
       val name = "Greeter-" + System.nanoTime()
       val runner = system.actorOf(SagaRunner.props(new Greeter(name), uidGenerator, sagaState))
 
-      runner.askActor[SagaResponse](Greet(user, "Ann"))(10.seconds) mustBe Greeted("Hello, Ann")
+      runner.askFor[SagaResponse](Greet(user, "Ann")) mustBe Greeted("Hello, Ann")
       awaitAssert(stored(name) mustBe 0, 5.seconds, 50.millis)
     }
 
     Scenario("a saga written as a SagaActor, as before 1.0, still runs") {
       val saga = system.actorOf(Props(new LegacyGreeter(sagaState, uidGenerator, "LegacyGreeter-" + System.nanoTime(), hold = false)))
 
-      saga.askActor[SagaResponse](Greet(user, "Bob"))(10.seconds) mustBe Greeted("Hi, Bob")
+      saga.askFor[SagaResponse](Greet(user, "Bob")) mustBe Greeted("Hi, Bob")
     }
 
     Scenario("a saga a SagaActor stored resumes under the definition of its name, and answers its caller") {

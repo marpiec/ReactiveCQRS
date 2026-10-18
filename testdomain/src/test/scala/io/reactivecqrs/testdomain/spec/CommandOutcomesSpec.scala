@@ -99,7 +99,7 @@ class CommandOutcomesSpec extends CommonSpec {
 
   Feature("A command handler that reports a failure") {
     Scenario("the caller gets the failure and the executor stops") {
-      val response: CustomCommandResponse[_] = cartBus ?? CreateShoppingCart(None, userId, "Cart M 4")
+      val response = cartBus.askFor[CustomCommandResponse[_]](CreateShoppingCart(None, userId, "Cart M 4"))
 
       response mustBe FailureResponse(List("Cannot add cart *M 4"))
       awaitAssert(liveExecutors("CommandOutcomesCartBus") mustBe 0, 3.seconds, 200.millis)
@@ -108,7 +108,7 @@ class CommandOutcomesSpec extends CommonSpec {
 
   Feature("A command handler that never completes") {
     Scenario("the caller gets an error after the context's command timeout and the executor stops") {
-      val response: CustomCommandResponse[_] = sluggishBus ?? StartSluggish(userId)
+      val response = sluggishBus.askFor[CustomCommandResponse[_]](StartSluggish(userId))
 
       response mustBe a[CommandHandlingError]
       awaitAssert(liveExecutors("CommandOutcomesSluggishBus") mustBe 0, 3.seconds, 200.millis)
@@ -119,7 +119,7 @@ class CommandOutcomesSpec extends CommonSpec {
     Scenario("the caller gets a concurrent-modification error at once instead of waiting for the timeout (F67)") {
       val missing = AggregateId(TestIds.aggregate())
 
-      val response: CustomCommandResponse[_] = cartBus ?? AddItem(userId, missing, AggregateVersion(1), "apple")
+      val response = cartBus.askFor[CustomCommandResponse[_]](AddItem(userId, missing, AggregateVersion(1), "apple"))
 
       response mustBe AggregateConcurrentModificationError(missing, AggregateType.of[ShoppingCart], AggregateVersion(1), AggregateVersion.ZERO)
     }
@@ -144,13 +144,13 @@ class CommandOutcomesSpec extends CommonSpec {
 
   Feature("Queries for an earlier version") {
     Scenario("leave no temporary actor behind (F74)") {
-      val created: SuccessResponse = cartBus ?? CreateShoppingCart(None, userId, "Cart with history")
+      val created = cartBus.askFor[SuccessResponse](CreateShoppingCart(None, userId, "Cart with history"))
 
       (1 to 3).foreach { _ =>
-        val events: Try[List[EventInfo[ShoppingCart]]] = cartBus ?? GetEventsForAggregateForVersion(created.aggregateId, AggregateVersion(1))
+        val events = cartBus.askFor[Try[List[EventInfo[ShoppingCart]]]](GetEventsForAggregateForVersion(created.aggregateId, AggregateVersion(1)))
         events.get.size mustBe 1
       }
-      val aggregate: Try[Aggregate[ShoppingCart]] = cartBus ?? GetAggregateForVersion(created.aggregateId, AggregateVersion(1))
+      val aggregate = cartBus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregateForVersion(created.aggregateId, AggregateVersion(1)))
       aggregate.get.version mustBe AggregateVersion(1)
 
       awaitAssert(liveActors("/user/CommandOutcomesCartBus/*_ARV_*") mustBe 0, 3.seconds, 100.millis)
@@ -164,7 +164,7 @@ class CommandOutcomesSpec extends CommonSpec {
       val inFlight = idlessBus ? StartSluggish(userId)
 
       When("the next command needs a new pool and the generator fails")
-      val next: CustomCommandResponse[_] = idlessBus ?? StartSluggish(userId)
+      val next = idlessBus.askFor[CustomCommandResponse[_]](StartSluggish(userId))
 
       Then("it gets an error at once")
       next mustBe a[CommandHandlingError]
@@ -181,7 +181,7 @@ class CommandOutcomesSpec extends CommonSpec {
     Scenario("an owner persists, and applies events, on the blocking dispatcher; command handlers run on the handlers' one") {
       val probe = new ThreadsProbeContext
       val bus = system.actorOf(AggregateCommandBusActor(probe, uidGenerator, eventStore, commandResponseState, eventBus))
-      val started: CustomCommandResponse[_] = bus ?? StartThreadsProbe(userId)
+      val started = bus.askFor[CustomCommandResponse[_]](StartThreadsProbe(userId))
       started mustBe a[SuccessResponse]
 
       probe.eventHandlerThread.get must include("reactivecqrs.blocking-dispatcher")

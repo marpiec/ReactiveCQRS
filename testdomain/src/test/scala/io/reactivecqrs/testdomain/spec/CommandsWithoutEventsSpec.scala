@@ -54,9 +54,9 @@ class CommandsWithoutEventsSpec extends CommonSpec {
 
     Scenario("10 000 of them run no statement about the aggregate and leave its version unchanged") {
       Given("a cart that is loaded in its repository actor and whose creation was published")
-      val created: SuccessResponse = commandBus ?? CreateShoppingCart(None, userId, "Checked cart")
+      val created = commandBus.askFor[SuccessResponse](CreateShoppingCart(None, userId, "Checked cart"))
       val cartId = created.aggregateId
-      val loaded: Try[Aggregate[ShoppingCart]] = commandBus ?? GetAggregate(cartId)
+      val loaded = commandBus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId))
       loaded.get.version mustBe AggregateVersion(1)
       awaitAssert(waitingForPublication(cartId) mustBe 0, 10.seconds, 50.millis) // its outbox row is deleted asynchronously
       val eventsBefore = storedEvents(cartId)
@@ -80,7 +80,7 @@ class CommandsWithoutEventsSpec extends CommonSpec {
       responses.distinct mustBe Seq(SuccessResponse(cartId, AggregateVersion(1)))
       statementsAboutCart.asScala.toList mustBe Nil
       storedEvents(cartId) mustBe eventsBefore
-      val after: Try[Aggregate[ShoppingCart]] = commandBus ?? GetAggregate(cartId)
+      val after = commandBus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId))
       after.get.version mustBe AggregateVersion(1)
     }
   }

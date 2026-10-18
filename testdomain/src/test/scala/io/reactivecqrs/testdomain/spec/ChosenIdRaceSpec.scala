@@ -60,7 +60,7 @@ class ChosenIdRaceSpec extends CommonSpec {
   }
 
   private def stored(cartId: AggregateId): Aggregate[ShoppingCart] = {
-    val read: Try[Aggregate[ShoppingCart]] = nodes.head ?? GetAggregate(cartId)
+    val read = nodes.head.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId))
     read.get
   }
 
@@ -68,11 +68,11 @@ class ChosenIdRaceSpec extends CommonSpec {
 
     scenario("is refused when not positive, not below 2^53, or in another installation's range; a legacy id is taken") {
       Seq(AggregateId(-7), AggregateId(1L << 53), AggregateId(5000000000000L)).foreach { id =>
-        val answer: CustomCommandResponse[_] = nodes.head ?? CreateShoppingCartWithId(None, userId, id, "refused")
+        val answer = nodes.head.askFor[CustomCommandResponse[_]](CreateShoppingCartWithId(None, userId, id, "refused"))
         answer mustBe a[FailureResponse]
       }
       val legacy = AggregateId(TestIds.aggregate())
-      val answer: CustomCommandResponse[_] = nodes.head ?? CreateShoppingCartWithId(None, userId, legacy, "taken")
+      val answer = nodes.head.askFor[CustomCommandResponse[_]](CreateShoppingCartWithId(None, userId, legacy, "taken"))
       answer mustBe SuccessResponse(legacy, AggregateVersion(1))
     }
   }

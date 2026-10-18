@@ -62,10 +62,10 @@ class FailedRestoreSpec extends CommonSpec {
       setStoredEvent(cartId, "not json")
 
       try {
-        val commandResponse: CustomCommandResponse[_] = commandBus ?? AddItem(userId, cartId, AggregateVersion(1), "apple")
+        val commandResponse = commandBus.askFor[CustomCommandResponse[_]](AddItem(userId, cartId, AggregateVersion(1), "apple"))
         commandResponse mustBe a[CommandHandlingError]
 
-        val query: Try[Aggregate[ShoppingCart]] = commandBus ?? GetAggregate(cartId)
+        val query = commandBus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId))
         query.failed.get mustBe an[AggregateRestoreFailedException]
       } finally {
         setStoredEvent(cartId, validCreation) // later specs in this schema read every stored event
@@ -77,7 +77,7 @@ class FailedRestoreSpec extends CommonSpec {
       val cartId = storedCart()
 
       setStoredEvent(cartId, "not json")
-      val failed: CustomCommandResponse[_] = commandBus ?? AddItem(userId, cartId, AggregateVersion(1), "apple")
+      val failed = commandBus.askFor[CustomCommandResponse[_]](AddItem(userId, cartId, AggregateVersion(1), "apple"))
       failed mustBe a[CommandHandlingError]
 
       When("the event is repaired and the retry window has passed")
@@ -85,7 +85,7 @@ class FailedRestoreSpec extends CommonSpec {
 
       Then("a command succeeds")
       awaitAssert({
-        val response: CustomCommandResponse[_] = commandBus ?? AddItem(userId, cartId, AggregateVersion(1), "apple")
+        val response = commandBus.askFor[CustomCommandResponse[_]](AddItem(userId, cartId, AggregateVersion(1), "apple"))
         response mustBe SuccessResponse(cartId, AggregateVersion(2))
       }, 5.seconds, 200.millis)
     }

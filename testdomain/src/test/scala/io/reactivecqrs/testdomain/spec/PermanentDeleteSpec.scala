@@ -115,12 +115,12 @@ class PermanentDeleteSpec extends CommonSpec {
     Scenario("happens once every subscriber has acknowledged the permanent delete event") {
       val f = new Fixture
       val memoId = AggregateId(TestIds.aggregate())
-      val written: CustomCommandResponse[_] = f.commandBus ?? WriteMemo(userId, memoId, "note")
+      val written = f.commandBus.askFor[CustomCommandResponse[_]](WriteMemo(userId, memoId, "note"))
       written mustBe SuccessResponse(memoId, AggregateVersion(1))
       f.delivered(memoId) mustBe Seq(1)
       f.ack(memoId, 1)
 
-      val erased: CustomCommandResponse[_] = f.commandBus ?? EraseMemo(userId, memoId, AggregateVersion(1))
+      val erased = f.commandBus.askFor[CustomCommandResponse[_]](EraseMemo(userId, memoId, AggregateVersion(1)))
       erased mustBe SuccessResponse(memoId, AggregateVersion(2))
       f.delivered(memoId) mustBe Seq(2)
       storedVersions(memoId) mustBe Seq(1, 2)
@@ -133,7 +133,7 @@ class PermanentDeleteSpec extends CommonSpec {
       Given("a memo that a projection failed on")
       val f = new Fixture
       val memoId = AggregateId(TestIds.aggregate())
-      val written: CustomCommandResponse[_] = f.commandBus ?? WriteMemo(userId, memoId, "note")
+      val written = f.commandBus.askFor[CustomCommandResponse[_]](WriteMemo(userId, memoId, "note"))
       written mustBe SuccessResponse(memoId, AggregateVersion(1))
       f.delivered(memoId) mustBe Seq(1)
       f.ack(memoId, 1)
@@ -141,7 +141,7 @@ class PermanentDeleteSpec extends CommonSpec {
       subscriptions.recordFailure("PermanentDeleteSpecProjection", failure)
 
       When("it is erased and the erase is acknowledged")
-      val erased: CustomCommandResponse[_] = f.commandBus ?? EraseMemo(userId, memoId, AggregateVersion(1))
+      val erased = f.commandBus.askFor[CustomCommandResponse[_]](EraseMemo(userId, memoId, AggregateVersion(1)))
       erased mustBe SuccessResponse(memoId, AggregateVersion(2))
       f.delivered(memoId) mustBe Seq(2)
       f.ack(memoId, 2)
@@ -163,7 +163,7 @@ class PermanentDeleteSpec extends CommonSpec {
     Scenario("leaves no snapshot behind, also when the owner takes snapshots and stops after the delete") {
       val f = new Fixture(new MemoContext() { override val snapshots: Option[SnapshotPolicy] = Some(SnapshotPolicy(every = 100)) })
       val memoId = AggregateId(TestIds.aggregate())
-      val written: CustomCommandResponse[_] = f.commandBus ?? WriteMemo(userId, memoId, "note")
+      val written = f.commandBus.askFor[CustomCommandResponse[_]](WriteMemo(userId, memoId, "note"))
       written mustBe SuccessResponse(memoId, AggregateVersion(1))
       f.delivered(memoId) mustBe Seq(1)
       f.ack(memoId, 1)
@@ -171,7 +171,7 @@ class PermanentDeleteSpec extends CommonSpec {
       val watcher = TestProbe()
       watcher.watch(owner)
 
-      val erased: CustomCommandResponse[_] = f.commandBus ?? EraseMemo(userId, memoId, AggregateVersion(1))
+      val erased = f.commandBus.askFor[CustomCommandResponse[_]](EraseMemo(userId, memoId, AggregateVersion(1)))
       erased mustBe SuccessResponse(memoId, AggregateVersion(2))
       f.delivered(memoId) mustBe Seq(2)
       f.ack(memoId, 2)
@@ -203,15 +203,15 @@ class PermanentDeleteSpec extends CommonSpec {
     /** A memo and a copy of it, both delivered, and the memo erased. */
     def erasedWithCopy(f: Fixture): (AggregateId, AggregateId) = {
       val memoId = AggregateId(TestIds.aggregate())
-      val written: CustomCommandResponse[_] = f.commandBus ?? WriteMemo(userId, memoId, "note")
+      val written = f.commandBus.askFor[CustomCommandResponse[_]](WriteMemo(userId, memoId, "note"))
       written mustBe SuccessResponse(memoId, AggregateVersion(1))
       f.delivered(memoId) mustBe Seq(1)
       f.ack(memoId, 1)
-      val copied: CustomCommandResponse[_] = f.commandBus ?? CopyMemo(userId, memoId, AggregateVersion(1))
+      val copied = f.commandBus.askFor[CustomCommandResponse[_]](CopyMemo(userId, memoId, AggregateVersion(1)))
       val copyId = copied.asInstanceOf[SuccessResponse].aggregateId
       f.delivered(copyId) mustBe Seq(1)
       f.ack(copyId, 1)
-      val erased: CustomCommandResponse[_] = f.commandBus ?? EraseMemo(userId, memoId, AggregateVersion(1))
+      val erased = f.commandBus.askFor[CustomCommandResponse[_]](EraseMemo(userId, memoId, AggregateVersion(1)))
       erased mustBe SuccessResponse(memoId, AggregateVersion(2))
       f.delivered(memoId) mustBe Seq(2)
       (memoId, copyId)
@@ -219,7 +219,7 @@ class PermanentDeleteSpec extends CommonSpec {
 
     def storedText(f: Fixture, memoId: AggregateId): String = {
       f.commandBus ! PassivateAggregate(memoId) // read from the store, not from a live owner
-      val memo: Try[Aggregate[Memo]] = f.commandBus ?? GetAggregate(memoId)
+      val memo = f.commandBus.askFor[Try[Aggregate[Memo]]](GetAggregate(memoId))
       memo.get.aggregateRoot.get.text
     }
 

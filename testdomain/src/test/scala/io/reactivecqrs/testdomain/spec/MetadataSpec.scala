@@ -61,7 +61,7 @@ class MetadataSpec extends CommonSpec {
     val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStore, responses, eventBus))
 
     def seen: Map[(AggregateId, Int), EventMetadata] = {
-      val recorded: Map[(AggregateId, Int), EventMetadata] = projection ?? GetCartsMetadata
+      val recorded = projection.askFor[Map[(AggregateId, Int), EventMetadata]](GetCartsMetadata)
       recorded
     }
   }
@@ -81,9 +81,9 @@ class MetadataSpec extends CommonSpec {
       val cartId = storedCart(Some(onBehalf))
 
       When("an item is added on someone's behalf, and one without an envelope")
-      val first: CustomCommandResponse[_] = f.commandBus ?? AddItemOnBehalf(userId, cartId, AggregateVersion(1), "apple", onBehalf)
+      val first = f.commandBus.askFor[CustomCommandResponse[_]](AddItemOnBehalf(userId, cartId, AggregateVersion(1), "apple", onBehalf))
       first mustBe SuccessResponse(cartId, AggregateVersion(2))
-      val second: CustomCommandResponse[_] = f.commandBus ?? AddItem(userId, cartId, AggregateVersion(2), "pear")
+      val second = f.commandBus.askFor[CustomCommandResponse[_]](AddItem(userId, cartId, AggregateVersion(2), "pear"))
       second mustBe SuccessResponse(cartId, AggregateVersion(3))
 
       Then("the projection gets the creation from the store with its envelope, and the live events with theirs")
@@ -97,10 +97,10 @@ class MetadataSpec extends CommonSpec {
       val f = new Fixture
       val cartId = storedCart(Some(onBehalf))
 
-      val rewritten: CustomCommandResponse[_] = f.commandBus ?? RewriteCartName(userId, cartId, AggregateVersion(1), "Renamed")
+      val rewritten = f.commandBus.askFor[CustomCommandResponse[_]](RewriteCartName(userId, cartId, AggregateVersion(1), "Renamed"))
       rewritten mustBe SuccessResponse(cartId, AggregateVersion(2))
 
-      val events: Try[List[EventInfo[ShoppingCart]]] = f.commandBus ?? GetEventsForAggregate(cartId)
+      val events = f.commandBus.askFor[Try[List[EventInfo[ShoppingCart]]]](GetEventsForAggregate(cartId))
       events.get.map(e => (e.version.asInt, e.event, e.metadata)) mustBe List(
         (1, ShoppingCartCreated("Renamed"), onBehalf),
         (2, CartNameRewritten("Renamed"), EventMetadata.ofUser(userId)))

@@ -71,7 +71,7 @@ has promised it since M6 ("a test kit for applications is coming in 1.0").
   - `TestCluster`: several nodes in one JVM (configuration, start, join, wait until up, stop), each
     node built by the application's own function (R20's multi-node part; the library's own carts
     stay in its testdomain);
-  - `TestClock`, `TestIds` and `ActorAskSupport` (`??`);
+  - `TestClock`, `TestIds` and `ActorAskSupport` (`askFor[T](message)`, typed: F177);
   - the in-memory doubles stay in the core module, made faithful where tests rely on them (F156).
 - **The second installation:** the import specs compare the projections rebuilt in the target
   installation with the source's (M6's verification gap), with the source's actors stopped while the

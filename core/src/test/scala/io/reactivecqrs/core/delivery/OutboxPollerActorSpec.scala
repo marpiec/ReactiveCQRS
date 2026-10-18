@@ -36,7 +36,7 @@ class OutboxPollerActorSpec extends CommonSpec {
       bus.receiveN(2, 3.seconds).collect { case r: Republish => r.aggregateId } must have size 2
       bus.expectNoMessage(200.millis)
 
-      poller.askActor[OutboxStatus](GetOutboxStatus)(3.seconds).waiting mustBe 5
+      poller.askFor[OutboxStatus](GetOutboxStatus, 3.seconds).waiting mustBe 5
     }
   }
 }

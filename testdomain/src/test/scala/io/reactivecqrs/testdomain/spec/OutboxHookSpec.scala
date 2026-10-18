@@ -68,19 +68,19 @@ class OutboxHookSpec extends CommonSpec {
 
     Scenario("writes its rows in the transaction of the events") {
       val cartId = storedCart()
-      val added: CustomCommandResponse[_] = commandBus ?? AddItems(userId, cartId, AggregateVersion(1), Seq("apple", "pear"))
+      val added = commandBus.askFor[CustomCommandResponse[_]](AddItems(userId, cartId, AggregateVersion(1), Seq("apple", "pear")))
       added mustBe SuccessResponse(cartId, AggregateVersion(3))
       jobs(cartId) mustBe List((3, "apple"), (3, "pear"))
     }
 
     Scenario("a writer that fails rolls the events back, and the aggregate carries on") {
       val cartId = storedCart()
-      val refused: CustomCommandResponse[_] = commandBus ?? AddItems(userId, cartId, AggregateVersion(1), Seq("apple", "refused"))
+      val refused = commandBus.askFor[CustomCommandResponse[_]](AddItems(userId, cartId, AggregateVersion(1), Seq("apple", "refused")))
       refused mustBe an[EventHandlingError]
       storedEvents(cartId) mustBe 1
       jobs(cartId) mustBe empty
 
-      val next: CustomCommandResponse[_] = commandBus ?? AddItem(userId, cartId, AggregateVersion(1), "plum")
+      val next = commandBus.askFor[CustomCommandResponse[_]](AddItem(userId, cartId, AggregateVersion(1), "plum"))
       next mustBe SuccessResponse(cartId, AggregateVersion(2))
       jobs(cartId) mustBe List((2, "plum"))
     }
@@ -88,8 +88,8 @@ class OutboxHookSpec extends CommonSpec {
     Scenario("a copy of an idempotent command does not write the rows again") {
       val cartId = storedCart()
       val key = Some(ClientKey("outbox hook " + System.nanoTime()))
-      val first: CustomCommandResponse[_] = commandBus ?? AddItemConcurrently(userId, cartId, "fig", key)
-      val copy: CustomCommandResponse[_] = commandBus ?? AddItemConcurrently(userId, cartId, "fig", key)
+      val first = commandBus.askFor[CustomCommandResponse[_]](AddItemConcurrently(userId, cartId, "fig", key))
+      val copy = commandBus.askFor[CustomCommandResponse[_]](AddItemConcurrently(userId, cartId, "fig", key))
       copy mustBe first
       jobs(cartId) mustBe List((2, "fig"))
       storedEvents(cartId) mustBe 2

@@ -2283,3 +2283,17 @@ Open test-infrastructure items:
   subscriber before the next start; a stop during its node's coordinated shutdown, or while the
   registered subscriber that answered with it is asked again, is INFO. `EventsBusActorSpec` (two
   scenarios) and `ClusterDeliverySpec`, red first. Book: chapters 9 and 18.
+
+**18/10/2026: E11, testing, and F177, a typed ask in the test kit**
+- E11 (`examples/src/test/.../e11`, specs only, on E1's carts): the base class an application writes
+  (`ShopSpec`), a cart's rules as functions (`CartRulesSpec`, both edges of the five-item rule), a
+  history replayed with a fold and E5's squash event checked (`ReplaySpec`), the carts and their
+  read model over the in-memory doubles (`CartsInMemorySpec`), the read model fed by a probe playing
+  the bus (`CartsListAloneSpec`), E1's own wiring on PostgreSQL with `RecordingMetrics`
+  (`CartsOnPostgresSpec`), the golden test of every example's stored classes (`StoredFormatsSpec`,
+  22 references) and a round trip of E1's messages through the cluster serializer (`CrossNodeSpec`).
+  Chapter 19's code is now these specs (the snippet checker reads the examples' test sources too);
+  E4's internal order `Charge` is package-private, so the golden test can make one (chapter 12).
+- F177, found writing E11: `val x: T = actor ?? message` made `-Wdead-code` warn at every line (135 in
+  the library's specs). The test kit's ask is now `askFor[T](message, timeout = 10.seconds)`, typed,
+  checking the answer's class; `??` and `askActor` are gone and the specs use `askFor`.

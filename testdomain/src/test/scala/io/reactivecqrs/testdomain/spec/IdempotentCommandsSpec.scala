@@ -60,7 +60,7 @@ class IdempotentCommandsSpec extends CommonSpec {
   }
 
   private def newCart(): AggregateId = {
-    val created: CustomCommandResponse[_] = commandBus ?? CreateShoppingCart(None, userId, unique("Cart"))
+    val created = commandBus.askFor[CustomCommandResponse[_]](CreateShoppingCart(None, userId, unique("Cart")))
     created.asInstanceOf[SuccessResponse].aggregateId
   }
 
@@ -70,8 +70,8 @@ class IdempotentCommandsSpec extends CommonSpec {
       val name = unique("Cart")
       val command = CreateShoppingCart(sagaStep(), userId, name)
 
-      val first: CustomCommandResponse[_] = commandBus ?? command
-      val second: CustomCommandResponse[_] = commandBus ?? command
+      val first = commandBus.askFor[CustomCommandResponse[_]](command)
+      val second = commandBus.askFor[CustomCommandResponse[_]](command)
 
       first mustBe a[SuccessResponse]
       second mustBe first
@@ -113,8 +113,8 @@ class IdempotentCommandsSpec extends CommonSpec {
       val item = unique("plum")
       val command = AddItemWithReceipt(clientKey(), userId, cartId, AggregateVersion(1), item)
 
-      val first: CustomCommandResponse[_] = commandBus ?? command
-      val second: CustomCommandResponse[_] = commandBus ?? command
+      val first = commandBus.askFor[CustomCommandResponse[_]](command)
+      val second = commandBus.askFor[CustomCommandResponse[_]](command)
 
       first mustBe CustomSuccessResponse(cartId, AggregateVersion(2), ItemReceipt(item))
       second mustBe first
@@ -125,9 +125,9 @@ class IdempotentCommandsSpec extends CommonSpec {
       val cartId = newCart()
       val item = unique("fig")
       val command = AddItemWithReceipt(clientKey(), userId, cartId, AggregateVersion(1), item)
-      val first: CustomCommandResponse[_] = commandBus ?? command
+      val first = commandBus.askFor[CustomCommandResponse[_]](command)
 
-      val afterRestart: CustomCommandResponse[_] = newCommandBus() ?? command
+      val afterRestart = newCommandBus().askFor[CustomCommandResponse[_]](command)
 
       afterRestart mustBe first
       eventsNamed(item) mustBe 1
@@ -137,22 +137,22 @@ class IdempotentCommandsSpec extends CommonSpec {
   Feature("A first command with an aggregate id chosen by the caller") {
 
     Scenario("creates the aggregate under that id") {
-      val cartId: AggregateId = commandBus ?? ReserveAggregateId
+      val cartId = commandBus.askFor[AggregateId](ReserveAggregateId)
       val name = unique("Cart")
 
-      val response: CustomCommandResponse[_] = commandBus ?? CreateShoppingCartWithId(None, userId, cartId, name)
-      val cart: Try[Aggregate[ShoppingCart]] = commandBus ?? GetAggregate(cartId)
+      val response = commandBus.askFor[CustomCommandResponse[_]](CreateShoppingCartWithId(None, userId, cartId, name))
+      val cart = commandBus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId))
 
       response mustBe SuccessResponse(cartId, AggregateVersion(1))
       cart.get mustBe Aggregate(cartId, AggregateVersion(1), Some(ShoppingCart(name, Vector())))
     }
 
     Scenario("sent again without a key, it is rejected because the aggregate exists") {
-      val cartId: AggregateId = commandBus ?? ReserveAggregateId
+      val cartId = commandBus.askFor[AggregateId](ReserveAggregateId)
       val name = unique("Cart")
-      val first: CustomCommandResponse[_] = commandBus ?? CreateShoppingCartWithId(None, userId, cartId, name)
+      val first = commandBus.askFor[CustomCommandResponse[_]](CreateShoppingCartWithId(None, userId, cartId, name))
 
-      val second: CustomCommandResponse[_] = commandBus ?? CreateShoppingCartWithId(None, userId, cartId, name)
+      val second = commandBus.askFor[CustomCommandResponse[_]](CreateShoppingCartWithId(None, userId, cartId, name))
 
       first mustBe SuccessResponse(cartId, AggregateVersion(1))
       second mustBe an[AggregateConcurrentModificationError]
@@ -160,7 +160,7 @@ class IdempotentCommandsSpec extends CommonSpec {
     }
 
     Scenario("sent concurrently with one key, it creates the aggregate once and returns the same response") {
-      val cartId: AggregateId = commandBus ?? ReserveAggregateId
+      val cartId = commandBus.askFor[AggregateId](ReserveAggregateId)
       val name = unique("Cart")
 
       val responses = sendConcurrently(5, CreateShoppingCartWithId(clientKey(), userId, cartId, name))

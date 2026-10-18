@@ -52,7 +52,7 @@ class ContendedCommandsSpec extends CommonSpec {
   feature("Concurrent commands that conflict only with their own owner's commits (F99)") {
 
     scenario("forty sent to one aggregate at once all succeed, and each handler runs at most twice") {
-      val created: CustomCommandResponse[_] = commandBus ?? CreateShoppingCart(None, userId, "contended")
+      val created = commandBus.askFor[CustomCommandResponse[_]](CreateShoppingCart(None, userId, "contended"))
       val cartId = created.asInstanceOf[SuccessResponse].aggregateId
       carts.handlerRuns.set(0)
 
@@ -61,7 +61,7 @@ class ContendedCommandsSpec extends CommonSpec {
       val answers = Await.result(Future.sequence((1 to 40).map(i => commandBus ? AddItemConcurrently(userId, cartId, "item " + i))), 60.seconds)
 
       answers.filterNot(_.isInstanceOf[SuccessResponse]) mustBe empty
-      val cart: Try[Aggregate[ShoppingCart]] = commandBus ?? GetAggregate(cartId)
+      val cart = commandBus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId))
       cart.get.version mustBe AggregateVersion(41)
       carts.handlerRuns.get must be <= 80
     }

@@ -12,7 +12,8 @@ import scala.jdk.CollectionConverters._
 // chapters instead of checking them; the diff shows what changed.
 class BookSnippetsSpec extends AnyFeatureSpec with Matchers {
 
-  private val sources = Paths.get("examples", "src", "main", "scala", "io", "reactivecqrs", "examples")
+  // E11's code is tests: its regions are in the test sources.
+  private val sources = Seq("main", "test").map(scope => Paths.get("examples", "src", scope, "scala", "io", "reactivecqrs", "examples"))
   private def chapters: Seq[Path] =
     Files.list(Paths.get("docs", "book")).iterator().asScala.filter(_.toString.endsWith(".md")).toSeq.sortBy(_.toString) :+ Paths.get("README.md")
 
@@ -62,7 +63,7 @@ class BookSnippetsSpec extends AnyFeatureSpec with Matchers {
         "<!-- snippet: ex/Other.scala#any -->",
         "```scala",
         "```")
-      val src = dir.resolve("src")
+      val src = Seq(dir.resolve("main"), dir.resolve("src")) // the first root has none of them
 
       BookSnippets.check(Seq(chapter), src).map(_.replace(chapter.toString, "chapter")) mustBe List(
         "chapter:9: the block differs from ex/Code.scala#inner",

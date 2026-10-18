@@ -85,7 +85,7 @@ class SnapshotSpec extends CommonSpec {
             case 3 | 4 if cart.root.items.nonEmpty => RemoveItem(userId, cartId, cart.version, cart.root.items(random.nextInt(cart.root.items.size)).id)
             case _ => AddItem(userId, cartId, cart.version, "item " + run + "." + step)
           }
-          val response: CustomCommandResponse[_] = commandBus ?? command
+          val response = commandBus.askFor[CustomCommandResponse[_]](command)
           response match {
             case SuccessResponse(id, _) => cartId = id // a duplicate goes on with the copy
             case _: FailureResponse => () // a sixth item is refused
@@ -120,7 +120,7 @@ class SnapshotSpec extends CommonSpec {
       renamed(99999, from = 1)
 
       When("its owner restores it and stops (a snapshot is written at its passivation)")
-      val loaded: Try[Aggregate[ShoppingCart]] = bus ?? GetAggregate(cartId)
+      val loaded = bus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId))
       loaded.get.version mustBe AggregateVersion(100000)
       bus ! PassivateAggregate(cartId)
       awaitAssert(snapshotVersion(cartId) mustBe Some(100000), 10.seconds, 50.millis)
@@ -140,7 +140,7 @@ class SnapshotSpec extends CommonSpec {
       same(later, fullReplay.restore(cartId)) mustBe true
 
       And("the owner restores the same way and accepts a command")
-      val next: CustomCommandResponse[_] = bus ?? AddItem(userId, cartId, AggregateVersion(100150), "after")
+      val next = bus.askFor[CustomCommandResponse[_]](AddItem(userId, cartId, AggregateVersion(100150), "after"))
       next mustBe SuccessResponse(cartId, AggregateVersion(100151))
     }
   }
@@ -149,7 +149,7 @@ class SnapshotSpec extends CommonSpec {
 
     def cartWithSnapshot(): AggregateId = {
       val cartId = storedCart()
-      (1 to 2).foreach(i => { val r: CustomCommandResponse[_] = commandBus ?? AddItem(userId, cartId, AggregateVersion(i), "item " + i); r mustBe a[SuccessResponse] })
+      (1 to 2).foreach(i => commandBus.askFor[CustomCommandResponse[_]](AddItem(userId, cartId, AggregateVersion(i), "item " + i)) mustBe a[SuccessResponse])
       snapshotVersion(cartId) mustBe Some(3)
       cartId
     }
@@ -185,24 +185,24 @@ class SnapshotSpec extends CommonSpec {
 
     Scenario("an undo deletes the aggregate's snapshot") {
       val cartId = storedCart()
-      (1 to 2).foreach(i => { val r: CustomCommandResponse[_] = commandBus ?? AddItem(userId, cartId, AggregateVersion(i), "item " + i); r mustBe a[SuccessResponse] })
+      (1 to 2).foreach(i => commandBus.askFor[CustomCommandResponse[_]](AddItem(userId, cartId, AggregateVersion(i), "item " + i)) mustBe a[SuccessResponse])
       snapshotVersion(cartId) mustBe Some(3)
 
-      val undone: CustomCommandResponse[_] = commandBus ?? UndoShoppingCartChange(userId, cartId, AggregateVersion(3), 1)
+      val undone = commandBus.askFor[CustomCommandResponse[_]](UndoShoppingCartChange(userId, cartId, AggregateVersion(3), 1))
       undone mustBe SuccessResponse(cartId, AggregateVersion(4))
       snapshotVersion(cartId) mustBe None
     }
 
     Scenario("a history rewrite deletes the snapshots of the aggregate and of its duplicates") {
       val cartId = storedCart()
-      (1 to 2).foreach(i => { val r: CustomCommandResponse[_] = commandBus ?? AddItem(userId, cartId, AggregateVersion(i), "item " + i); r mustBe a[SuccessResponse] })
-      val duplicated: CustomCommandResponse[_] = commandBus ?? DuplicateShoppingCart(userId, cartId, AggregateVersion(3))
+      (1 to 2).foreach(i => commandBus.askFor[CustomCommandResponse[_]](AddItem(userId, cartId, AggregateVersion(i), "item " + i)) mustBe a[SuccessResponse])
+      val duplicated = commandBus.askFor[CustomCommandResponse[_]](DuplicateShoppingCart(userId, cartId, AggregateVersion(3)))
       val copyId = duplicated.asInstanceOf[SuccessResponse].aggregateId
-      (1 to 2).foreach(i => { val r: CustomCommandResponse[_] = commandBus ?? AddItem(userId, copyId, AggregateVersion(i), "copy item " + i); r mustBe a[SuccessResponse] })
+      (1 to 2).foreach(i => commandBus.askFor[CustomCommandResponse[_]](AddItem(userId, copyId, AggregateVersion(i), "copy item " + i)) mustBe a[SuccessResponse])
       snapshotVersion(cartId) mustBe Some(3)
       snapshotVersion(copyId) mustBe Some(3)
 
-      val rewritten: CustomCommandResponse[_] = commandBus ?? RewriteCartName(userId, cartId, AggregateVersion(3), "Renamed")
+      val rewritten = commandBus.askFor[CustomCommandResponse[_]](RewriteCartName(userId, cartId, AggregateVersion(3), "Renamed"))
       rewritten mustBe SuccessResponse(cartId, AggregateVersion(4))
       snapshotVersion(cartId) mustBe None
       snapshotVersion(copyId) mustBe None

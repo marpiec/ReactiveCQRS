@@ -156,7 +156,7 @@ class ProjectionsSpec extends CommonSpec {
     val supervisors: Seq[ActorRef] = start(projections.runtime)
     bus ! RegisterSubscribers(supervisors)
 
-    def send(command: AnyRef): SuccessResponse = notes.askActor[CustomCommandResponse[_]](command)(10.seconds) match {
+    def send(command: AnyRef): SuccessResponse = notes.askFor[CustomCommandResponse[_]](command) match {
       case success: SuccessResponse => success
       case other => fail("command failed: " + other)
     }
@@ -183,7 +183,7 @@ class ProjectionsSpec extends CommonSpec {
         buildDelayMillis)
     }
 
-  private def builds(supervisor: ActorRef): Builds = supervisor.askActor[Builds](GetBuilds)(5.seconds)
+  private def builds(supervisor: ActorRef): Builds = supervisor.askFor[Builds](GetBuilds, 5.seconds)
 
   private def switchedTo(supervisor: ActorRef, build: Int): Unit =
     awaitAssert({
@@ -191,7 +191,7 @@ class ProjectionsSpec extends CommonSpec {
       (now.active.map(_.number), now.building) mustBe ((Some(build), None))
     }, 60.seconds, 100.millis)
 
-  private def linesOf(supervisor: ActorRef, id: AggregateId): Option[NoteLines] = supervisor.askActor[Option[NoteLines]](GetNoteLines(id))(5.seconds)
+  private def linesOf(supervisor: ActorRef, id: AggregateId): Option[NoteLines] = supervisor.askFor[Option[NoteLines]](GetNoteLines(id), 5.seconds)
 
   private def tableExists(table: String): Boolean = DB.readOnly(implicit s => sql"SELECT to_regclass($table) IS NOT NULL".map(_.boolean(1)).single().get)
 
@@ -312,7 +312,7 @@ class ProjectionsSpec extends CommonSpec {
       })
       val (a, c) = (node.create("a"), node.create("c"))
       switchedTo(supervisor, 1)
-      def logOf(id: AggregateId): Option[NoteLog] = supervisor.askActor[Option[NoteLog]](GetNoteLog(id))(5.seconds)
+      def logOf(id: AggregateId): Option[NoteLog] = supervisor.askFor[Option[NoteLog]](GetNoteLog(id), 5.seconds)
       awaitAssert(logOf(c) mustBe Some(NoteLog(Vector("1"))), 10.seconds)
 
       When("its instance stops by itself, and an event of the other note is stored while it starts again")
@@ -335,7 +335,7 @@ class ProjectionsSpec extends CommonSpec {
       val memoContext = new MemoContext
       val bus = system.actorOf(Props(new EventsBusActor()))
       val memos = system.actorOf(AggregateCommandBusActor(memoContext, uidGenerator, eventStore, responses, bus))
-      def send(command: AnyRef): Unit = memos.askActor[CustomCommandResponse[_]](command)(10.seconds) mustBe a[SuccessResponse]
+      def send(command: AnyRef): Unit = memos.askFor[CustomCommandResponse[_]](command) mustBe a[SuccessResponse]
       val ids = (1 to 60).map(_ => AggregateId(TestIds.aggregate()))
       ids.foreach(id => send(WriteMemo(userId, id, "memo " + id.asLong)))
       val firstEvent = DB.readOnly(implicit s => sql"SELECT id FROM events WHERE aggregate_id = ${ids.head.asLong}".map(_.long(1)).single().get)
@@ -352,8 +352,8 @@ class ProjectionsSpec extends CommonSpec {
 
       Then("once built, the projection does not have it, and the memo is deleted")
       switchedTo(supervisor, 1)
-      awaitAssert(supervisor.askActor[Option[MemoText]](GetMemoText(ids.head))(5.seconds) mustBe None, 10.seconds)
-      supervisor.askActor[Option[MemoText]](GetMemoText(ids.last))(5.seconds) mustBe Some(MemoText("memo " + ids.last.asLong))
+      awaitAssert(supervisor.askFor[Option[MemoText]](GetMemoText(ids.head), 5.seconds) mustBe None, 10.seconds)
+      supervisor.askFor[Option[MemoText]](GetMemoText(ids.last), 5.seconds) mustBe Some(MemoText("memo " + ids.last.asLong))
       awaitAssert(DB.readOnly(implicit s => sql"SELECT count(*) FROM events WHERE aggregate_id = ${ids.head.asLong}".map(_.int(1)).single().get) mustBe 0, 10.seconds)
       Singletons.stop(system, supervisor)
       Seq(bus, memos).foreach(system.stop)
@@ -417,7 +417,7 @@ class ProjectionsSpec extends CommonSpec {
       val node = new Node(settings = BuilderSettings(pageSize = 1, chunkEvents = 1))(projections => {
         built = notesProjection(projections, "m4p-watch", 1, "m4p_watch", buildDelayMillis = 30); Seq(built)
       })
-      def status(): BuildStatus = built.askActor[BuildStatus](GetBuildStatus)(5.seconds)
+      def status(): BuildStatus = built.askFor[BuildStatus](GetBuildStatus, 5.seconds)
 
       Then("while it builds, the status is the builder's, and GetBuilds gives the position the builder saved")
       awaitAssert({
@@ -445,7 +445,7 @@ class ProjectionsSpec extends CommonSpec {
       (1 to 100).foreach(i => node.create("filler " + i))
 
       When("a rebuild starts at run time, and the note changes meanwhile")
-      supervisor.askActor[RebuildStarted](RebuildProjection)(5.seconds).build mustBe 2
+      supervisor.askFor[RebuildStarted](RebuildProjection, 5.seconds).build mustBe 2
       node.send(AddBuildNoteLine(userId, note, AggregateVersion(2), "two"))
 
       Then("the active build does not take the change while the new one builds")
@@ -501,7 +501,7 @@ class ProjectionsSpec extends CommonSpec {
       supervisor ! SubscribeToNotes("subscription", listener.ref)
       listener.expectMsg(5.seconds, SubscribedForProjectionUpdates("subscription"))
 
-      supervisor.askActor[RebuildStarted](RebuildProjection)(5.seconds) mustBe RebuildStarted(2)
+      supervisor.askFor[RebuildStarted](RebuildProjection, 5.seconds) mustBe RebuildStarted(2)
       switchedTo(supervisor, 2)
 
       Then("an update after the switch reaches it from the new build")
@@ -523,7 +523,7 @@ class ProjectionsSpec extends CommonSpec {
       switchedTo(supervisor, 1)
 
       When("it is built again and switches: both buses are told to remove the build it replaces")
-      supervisor.askActor[RebuildStarted](RebuildProjection)(5.seconds) mustBe RebuildStarted(2)
+      supervisor.askFor[RebuildStarted](RebuildProjection, 5.seconds) mustBe RebuildStarted(2)
       val old = busA.fishForSpecificMessage(60.seconds) { case EventsBusActor.RemoveSubscriber(subscriber, false) => subscriber }
       busB.fishForSpecificMessage(10.seconds) { case EventsBusActor.RemoveSubscriber(subscriber, false) => subscriber } mustBe old
       val watcher = TestProbe()
@@ -571,7 +571,7 @@ class ProjectionsSpec extends CommonSpec {
       DB.autoCommit(implicit s => sql"""UPDATE projection_m4p_target_v1 SET document = '{"title":"damaged","lines":[]}'""".update())
 
       When("one of them is rebuilt")
-      supervisor.askActor[AggregatesRebuilt](RebuildAggregates(RebuildTarget.OneAggregate(repaired)))(30.seconds) mustBe
+      supervisor.askFor[AggregatesRebuilt](RebuildAggregates(RebuildTarget.OneAggregate(repaired)), 30.seconds) mustBe
         AggregatesRebuilt(RebuildTarget.OneAggregate(repaired), 1)
 
       Then("its document is right again, and the other one is as it was")
@@ -597,7 +597,7 @@ class ProjectionsSpec extends CommonSpec {
       val backfill = eventStore.backfillSpaces()
       backfill.filled must be >= 2
       DB.readOnly(implicit s => sql"SELECT space_id FROM aggregates WHERE id = ${seven.asLong}".map(_.long(1)).single()) mustBe Some(7L)
-      supervisor.askActor[AggregatesRebuilt](RebuildAggregates(RebuildTarget.OneSpace(io.reactivecqrs.api.id.SpaceId(7))))(30.seconds).aggregates mustBe 1
+      supervisor.askFor[AggregatesRebuilt](RebuildAggregates(RebuildTarget.OneSpace(io.reactivecqrs.api.id.SpaceId(7))), 30.seconds).aggregates mustBe 1
 
       Then("only organization 7's document is rebuilt")
       linesOf(supervisor, seven) mustBe Some(NoteLines("seven", Vector("x")))
@@ -639,7 +639,7 @@ class ProjectionsSpec extends CommonSpec {
       switchedTo(supervisor, 1)
       DB.autoCommit(implicit s => sql"UPDATE aggregates SET space_id = -1 WHERE id = ${note.asLong}".update())
       try {
-        supervisor.askActor[RebuildRefused](RebuildAggregates(RebuildTarget.OneSpace(io.reactivecqrs.api.id.SpaceId(5))))(10.seconds).reason must include("backfillSpaces")
+        supervisor.askFor[RebuildRefused](RebuildAggregates(RebuildTarget.OneSpace(io.reactivecqrs.api.id.SpaceId(5)))).reason must include("backfillSpaces")
       } finally DB.autoCommit(implicit s => sql"UPDATE aggregates SET space_id = 5 WHERE id = ${note.asLong}".update())
       node.stop()
     }
@@ -669,7 +669,7 @@ class ProjectionsSpec extends CommonSpec {
       val note = node.create("note", "x")
       switchedTo(events, 1)
 
-      events.askActor[RebuildRefused](RebuildAggregates(RebuildTarget.OneAggregate(note)))(10.seconds).reason must include("clearForRebuild")
+      events.askFor[RebuildRefused](RebuildAggregates(RebuildTarget.OneAggregate(note))).reason must include("clearForRebuild")
       registry.projection("m4p-no-target").flatMap(_.pendingTarget) mustBe None
       node.stop()
     }

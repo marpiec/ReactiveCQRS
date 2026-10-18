@@ -81,12 +81,12 @@ class AggregateOwnerSpec extends CommonSpec {
   private val userId = UserId(1)
 
   private def started(): AggregateId = {
-    val response: CustomCommandResponse[_] = commandBus ?? StartTally(userId)
+    val response = commandBus.askFor[CustomCommandResponse[_]](StartTally(userId))
     response.asInstanceOf[SuccessResponse].aggregateId
   }
 
   private def state(id: AggregateId): Aggregate[Tally] = {
-    val aggregate: Try[Aggregate[Tally]] = commandBus ?? GetAggregate(id)
+    val aggregate = commandBus.askFor[Try[Aggregate[Tally]]](GetAggregate(id))
     aggregate.get
   }
 
@@ -97,7 +97,7 @@ class AggregateOwnerSpec extends CommonSpec {
     Scenario("is answered with an error at the timeout, and its events are never stored afterwards") {
       val id = started()
 
-      val response: CustomCommandResponse[_] = commandBus ?? CountWhenReleased(userId, id, "late")
+      val response = commandBus.askFor[CustomCommandResponse[_]](CountWhenReleased(userId, id, "late"))
       response mustBe a[CommandHandlingError]
 
       When("its handler finishes after the timeout")
@@ -138,7 +138,7 @@ class AggregateOwnerSpec extends CommonSpec {
     Scenario("is answered with the aggregate as soon as it reaches the version") {
       val id = started()
       val query = sent(GetAggregateMinVersion(id, AggregateVersion(3), 5000))
-      val counted: CustomCommandResponse[_] = commandBus ?? Count(userId, id, AggregateVersion(1), 2)
+      val counted = commandBus.askFor[CustomCommandResponse[_]](Count(userId, id, AggregateVersion(1), 2))
       counted mustBe SuccessResponse(id, AggregateVersion(3))
       Await.result(query, 5.seconds).asInstanceOf[Try[Aggregate[Tally]]].get.aggregateRoot mustBe Some(Tally(2))
     }
@@ -148,12 +148,12 @@ class AggregateOwnerSpec extends CommonSpec {
 
     Scenario("a first event without a space is refused, and nothing is stored") {
       val id = AggregateId(TestIds.aggregate())
-      val refused: CustomCommandResponse[_] = commandBus ?? StartTallyIn(userId, SpaceId.unknown.asLong, id)
+      val refused = commandBus.askFor[CustomCommandResponse[_]](StartTallyIn(userId, SpaceId.unknown.asLong, id))
       refused mustBe a[FailureResponse]
       refused.asInstanceOf[FailureResponse].exceptions.head must include("space")
       state(id).version mustBe AggregateVersion.ZERO
 
-      val inPlatform: CustomCommandResponse[_] = commandBus ?? StartTallyIn(userId, 0, id) // space 0 is the platform
+      val inPlatform = commandBus.askFor[CustomCommandResponse[_]](StartTallyIn(userId, 0, id)) // space 0 is the platform
       inPlatform mustBe SuccessResponse(id, AggregateVersion(1))
     }
   }
@@ -163,7 +163,7 @@ class AggregateOwnerSpec extends CommonSpec {
     Scenario("run once per persisted event") {
       val id = started()
       val before = handledEvents.get()
-      val response: CustomCommandResponse[_] = commandBus ?? Count(userId, id, AggregateVersion(1), 3)
+      val response = commandBus.askFor[CustomCommandResponse[_]](Count(userId, id, AggregateVersion(1), 3))
       response mustBe SuccessResponse(id, AggregateVersion(4))
       handledEvents.get() - before mustBe 3
       state(id).aggregateRoot mustBe Some(Tally(3))

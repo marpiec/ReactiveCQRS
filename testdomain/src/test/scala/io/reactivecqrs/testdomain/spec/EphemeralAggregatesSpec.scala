@@ -49,13 +49,13 @@ class EphemeralAggregatesSpec extends CommonSpec {
                            eventSizeLimit: Int = 100000): ActorRef =
     system.actorOf(AggregateCommandBusActor.ephemeral(context, persistent, uidGenerator, mpjsons, maxAggregates, idleTime, sweepEvery, eventSizeLimit))
 
-  private def send(bus: ActorRef, command: AnyRef): CustomCommandResponse[_] = bus.askActor[CustomCommandResponse[_]](command)(10.seconds)
+  private def send(bus: ActorRef, command: AnyRef): CustomCommandResponse[_] = bus.askFor[CustomCommandResponse[_]](command)
   private def created(bus: ActorRef): AggregateId = send(bus, CreateShoppingCart(None, user, "Draft")) match {
     case SuccessResponse(id, _) => id
     case other => fail("not created: " + other)
   }
-  private def cart(bus: ActorRef, id: AggregateId): Try[Aggregate[ShoppingCart]] = bus.askActor[Try[Aggregate[ShoppingCart]]](GetAggregate(id))(10.seconds)
-  private def materialize(bus: ActorRef, id: AggregateId): MaterializeResponse = bus.askActor[MaterializeResponse](Materialize(id, user))(10.seconds)
+  private def cart(bus: ActorRef, id: AggregateId): Try[Aggregate[ShoppingCart]] = bus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(id))
+  private def materialize(bus: ActorRef, id: AggregateId): MaterializeResponse = bus.askFor[MaterializeResponse](Materialize(id, user))
   private def storedEvents(): Long = DB.readOnly(implicit session => sql"SELECT count(*) FROM events".map(_.long(1)).single().get)
 
   // The statements that write, run by anyone in this JVM while `block` runs.

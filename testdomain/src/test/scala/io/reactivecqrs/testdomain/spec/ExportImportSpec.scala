@@ -79,10 +79,10 @@ class ExportImportSpec extends CommonSpec {
       new ErasableFolderNotes(subscriptions, new PostgresDocumentStore[FolderDoc](build.documentStore("folder_notes"), mpjsons, new NoopDocumentStoreCache))
     }
     bus ! RegisterSubscribers(Seq(notes))
-    def doc(id: AggregateId): Option[FolderDoc] = notes.askActor[Option[FolderDoc]](GetFolderDoc(id))(5.seconds)
+    def doc(id: AggregateId): Option[FolderDoc] = notes.askFor[Option[FolderDoc]](GetFolderDoc(id), 5.seconds)
     try {
       awaitAssert(ready(doc), 60.seconds, 100.millis)
-      awaitAssert(Seq("CaughtUp", "NoBuild") must contain (notes.askActor[BuildStatus](GetBuildStatus)(5.seconds).phase), 60.seconds, 100.millis)
+      awaitAssert(Seq("CaughtUp", "NoBuild") must contain (notes.askFor[BuildStatus](GetBuildStatus, 5.seconds).phase), 60.seconds, 100.millis)
       read(doc)
     } finally {
       // The supervisor, or in a cluster its singleton's manager, ends after its instances and builder.

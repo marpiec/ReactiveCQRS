@@ -186,7 +186,7 @@ class ProjectionBuilderSpec extends CommonSpec {
     bus ! RegisterSubscribers(projections)
     val notes: ActorRef = system.actorOf(AggregateCommandBusActor(noteContext, uidGenerator, eventStore, responses, bus))
 
-    def send(command: AnyRef): SuccessResponse = notes.askActor[CustomCommandResponse[_]](command)(10.seconds) match {
+    def send(command: AnyRef): SuccessResponse = notes.askFor[CustomCommandResponse[_]](command) match {
       case success: SuccessResponse => success
       case other => fail("command failed: " + other)
     }
@@ -201,7 +201,7 @@ class ProjectionBuilderSpec extends CommonSpec {
   private def builderOf(target: ActorRef, identity: String, reporter: ActorRef, store: EventStoreState = eventStore,
                         positions: BuildPositions = new MemoryBuildPositions, settings: BuilderSettings = BuilderSettings(pageSize = 50, chunkEvents = 20),
                         replaySources: Map[AggregateType, ReplaySource] = sources): ActorRef = {
-    val plan = BuildPlan(target.askActor[Listeners](GetListeners)(5.seconds).subscriptions)
+    val plan = BuildPlan(target.askFor[Listeners](GetListeners, 5.seconds).subscriptions)
     onBlocking(Props(new ProjectionBuilder(target, identity, plan, store, subscriptions, replaySources, positions, reporter, settings)))
   }
 
@@ -246,7 +246,7 @@ class ProjectionBuilderSpec extends CommonSpec {
       live.add(squashed, 2, "y")
       val all = Seq(plain, undone, copy, deleted, squashed)
       live.delivered(all)
-      live.notes.askActor[SquashResponse](SquashAggregate(squashed, AggregateVersion(3)))(10.seconds) mustBe AggregateSquashed(squashed, AggregateVersion(3))
+      live.notes.askFor[SquashResponse](SquashAggregate(squashed, AggregateVersion(3))) mustBe AggregateSquashed(squashed, AggregateVersion(3))
       live.add(squashed, 3, "z")
       live.delivered(all)
 
@@ -344,7 +344,7 @@ class ProjectionBuilderSpec extends CommonSpec {
       live.add(squashed, 1, "c")
       val all = Seq(plain, undone, copy, squashed)
       live.delivered(all)
-      live.notes.askActor[SquashResponse](SquashAggregate(squashed, AggregateVersion(2)))(10.seconds) mustBe AggregateSquashed(squashed, AggregateVersion(2))
+      live.notes.askFor[SquashResponse](SquashAggregate(squashed, AggregateVersion(2))) mustBe AggregateSquashed(squashed, AggregateVersion(2))
       live.add(squashed, 2, "d")
       live.delivered(all)
 
@@ -419,7 +419,7 @@ class ProjectionBuilderSpec extends CommonSpec {
 
       documents(rebuiltLogs, Seq(healthy)) mustBe documents(liveLogs, Seq(healthy))
       documents(rebuiltLogs, Seq(broken))(broken).entries mustBe Vector("1:BuildNoteCreated")
-      target.askActor[ProjectionStatus](GetProjectionStatus)(5.seconds).failures.map(f => (f.aggregateId, f.version.asInt)) must contain((broken, 2))
+      target.askFor[ProjectionStatus](GetProjectionStatus, 5.seconds).failures.map(f => (f.aggregateId, f.version.asInt)) must contain((broken, 2))
 
       // The damaged note would fail the builds of the scenarios that read every note after this one.
       DB.autoCommit(implicit s => sql"DELETE FROM events WHERE aggregate_id = ${broken.asLong}".update())
@@ -440,7 +440,7 @@ class ProjectionBuilderSpec extends CommonSpec {
         settings = BuilderSettings(pageSize = 50, chunkEvents = 20, retryAfter = 200.millis))
 
       documents(rebuiltLogs, Seq(note)) mustBe documents(liveLogs, Seq(note))
-      target.askActor[ProjectionStatus](GetProjectionStatus)(5.seconds).failures mustBe empty
+      target.askFor[ProjectionStatus](GetProjectionStatus, 5.seconds).failures mustBe empty
     }
   }
 
@@ -453,7 +453,7 @@ class ProjectionBuilderSpec extends CommonSpec {
       val note = live.create("squashed far")
       (1 to 6).foreach(v => live.add(note, v, "line " + v))
       live.delivered(Seq(note))
-      live.notes.askActor[SquashResponse](SquashAggregate(note, AggregateVersion(6)))(10.seconds) mustBe AggregateSquashed(note, AggregateVersion(6))
+      live.notes.askFor[SquashResponse](SquashAggregate(note, AggregateVersion(6))) mustBe AggregateSquashed(note, AggregateVersion(6))
       live.add(note, 7, "after")
       live.delivered(Seq(note))
 

@@ -55,7 +55,7 @@ class HandlerDispatcherSpec extends CommonSpec {
       val bus = system.actorOf(Props(new EventsBusActor()))
       bus ! RegisterSubscribers(Nil)
       val commands = system.actorOf(AggregateCommandBusActor(new ThreadProbeContext, uidGenerator, eventStore, responses, bus))
-      val created: CustomCommandResponse[_] = commands ?? CreateThreadProbe(UserId(1))
+      val created = commands.askFor[CustomCommandResponse[_]](CreateThreadProbe(UserId(1)))
       created mustBe a[SuccessResponse]
       ThreadProbeContext.handlerThread.get must include("reactivecqrs.handler-dispatcher")
     }

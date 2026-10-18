@@ -66,12 +66,12 @@ class OutboxPollerSpec extends CommonSpec {
       poller ! Poll
     }
 
-    def gaveUp(): Seq[AggregateId] = poller.askActor[OutboxStatus](GetOutboxStatus)(5.seconds).gaveUp.map(_.aggregateId)
+    def gaveUp(): Seq[AggregateId] = poller.askFor[OutboxStatus](GetOutboxStatus, 5.seconds).gaveUp.map(_.aggregateId)
   }
 
   private def newCart(f: Fixture): AggregateId = {
     val cartId = AggregateId(TestIds.aggregate())
-    val created: CustomCommandResponse[_] = f.commandBus ?? CreateShoppingCartWithId(None, userId, cartId, "Groceries")
+    val created = f.commandBus.askFor[CustomCommandResponse[_]](CreateShoppingCartWithId(None, userId, cartId, "Groceries"))
     created mustBe SuccessResponse(cartId, AggregateVersion(1))
     cartId
   }

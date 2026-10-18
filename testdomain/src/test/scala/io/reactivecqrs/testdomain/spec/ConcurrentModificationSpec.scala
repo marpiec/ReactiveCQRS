@@ -79,8 +79,8 @@ class ConcurrentModificationSpec extends CommonSpec {
 
   /** Creates a cart and loads it into its repository actor. */
   private def loadedCart(): AggregateId = {
-    val created: SuccessResponse = commandBus ?? CreateShoppingCart(None, userId, "Groceries")
-    val loaded: Try[Aggregate[ShoppingCart]] = commandBus ?? GetAggregate(created.aggregateId)
+    val created = commandBus.askFor[SuccessResponse](CreateShoppingCart(None, userId, "Groceries"))
+    val loaded = commandBus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(created.aggregateId))
     loaded.get.version mustBe AggregateVersion(1)
     created.aggregateId
   }
@@ -93,7 +93,7 @@ class ConcurrentModificationSpec extends CommonSpec {
       eventStore.writeFromElsewhere(cartId, AggregateVersion(1), ItemAdded("from elsewhere"))
 
       When("a concurrent command is sent")
-      val response: CustomCommandResponse[_] = commandBus ?? AddItemConcurrently(userId, cartId, "apple")
+      val response = commandBus.askFor[CustomCommandResponse[_]](AddItemConcurrently(userId, cartId, "apple"))
 
       Then("it is applied as version 3")
       response mustBe SuccessResponse(cartId, AggregateVersion(3))
@@ -103,7 +103,7 @@ class ConcurrentModificationSpec extends CommonSpec {
       val cartId = loadedCart()
       eventStore.writeFromElsewhere(cartId, AggregateVersion(1), ItemAdded("from elsewhere"))
 
-      val response: CustomCommandResponse[_] = commandBus ?? AddItem(userId, cartId, AggregateVersion(2), "apple")
+      val response = commandBus.askFor[CustomCommandResponse[_]](AddItem(userId, cartId, AggregateVersion(2), "apple"))
 
       response mustBe SuccessResponse(cartId, AggregateVersion(3))
     }
@@ -118,7 +118,7 @@ class ConcurrentModificationSpec extends CommonSpec {
 
       try {
         When("a concurrent command is sent")
-        val response: CustomCommandResponse[_] = commandBus ?? AddItemConcurrently(userId, cartId, "apple")
+        val response = commandBus.askFor[CustomCommandResponse[_]](AddItemConcurrently(userId, cartId, "apple"))
 
         Then("the caller gets a concurrent-modification error well within the ask timeout")
         response mustBe an[AggregateConcurrentModificationError]
@@ -142,12 +142,12 @@ class ConcurrentModificationSpec extends CommonSpec {
       responses.count(_ == SuccessResponse(cartId, AggregateVersion(2))) mustBe 1
 
       And("the aggregate is at version 2 with one item, as stored")
-      val cart: Try[Aggregate[ShoppingCart]] = commandBus ?? GetAggregate(cartId)
+      val cart = commandBus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId))
       cart.get.version mustBe AggregateVersion(2)
       cart.get.aggregateRoot.get.items.size mustBe 1
 
       And("a command expecting version 2 succeeds")
-      val next: CustomCommandResponse[_] = commandBus ?? AddItem(userId, cartId, AggregateVersion(2), "after the race")
+      val next = commandBus.askFor[CustomCommandResponse[_]](AddItem(userId, cartId, AggregateVersion(2), "after the race"))
       next mustBe SuccessResponse(cartId, AggregateVersion(3))
     }
   }
@@ -162,7 +162,7 @@ class ConcurrentModificationSpec extends CommonSpec {
 
       try {
         When("its name is rewritten throughout its history")
-        val response: CustomCommandResponse[_] = commandBus ?? RewriteCartNameConcurrently(userId, cartId, "Renamed")
+        val response = commandBus.askFor[CustomCommandResponse[_]](RewriteCartNameConcurrently(userId, cartId, "Renamed"))
 
         Then("the retry rewrote the creation event too")
         response mustBe SuccessResponse(cartId, AggregateVersion(3))

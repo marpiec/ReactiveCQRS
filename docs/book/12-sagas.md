@@ -357,7 +357,8 @@ import scala.concurrent.{ExecutionContext, Future}
 object CheckoutSaga {
   case class Checkout(userId: UserId, stockId: AggregateId, paymentId: AggregateId, items: Int, amountCents: Long)
     extends SagaOrder
-  private case class Charge(userId: UserId, stockId: AggregateId, paymentId: AggregateId, items: Int, amountCents: Long)
+  // Stored with the saga, like every order: package-private, not private, so the stored-formats test (E11) can make one.
+  private[examples] case class Charge(userId: UserId, stockId: AggregateId, paymentId: AggregateId, items: Int, amountCents: Long)
     extends SagaInternalOrder
 
   case class CheckedOut(paymentId: AggregateId) extends SagaResponse
@@ -402,9 +403,12 @@ class CheckoutSaga(stock: ActorRef, payments: ActorRef)(implicit executionContex
 }
 ```
 
-Three habits are worth copying:
+Four habits are worth copying:
 
 - **One command per step.** Each step has its own `SagaStep`, so each command has its own key.
+- **Internal orders a test can make.** The runner stores every order, the internal ones too, and the
+  stored-formats test of [chapter 19](19-testing.md) needs a sample of each: keep them
+  package-private (`private[examples]` here), not private.
 - **A revert case for every order a step can fail at,** the first one included, even when there is
   nothing to undo. A revert of an order that `handleRevert` does not handle fails, which the runner
   logs as an error. (The test domain's saga leaves `CreateMultipleCarts` out: when its very first

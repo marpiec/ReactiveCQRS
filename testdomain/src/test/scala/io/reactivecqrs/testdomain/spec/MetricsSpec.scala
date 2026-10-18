@@ -47,11 +47,11 @@ class MetricsSpec extends CommonSpec {
       val cart = AggregateId(TestIds.aggregate())
 
       When("a cart is created, gets an item, and a command expects an older version")
-      val created: CustomCommandResponse[_] = commands ?? CreateShoppingCartWithId(None, userId, cart, "cart")
+      val created = commands.askFor[CustomCommandResponse[_]](CreateShoppingCartWithId(None, userId, cart, "cart"))
       created mustBe a[SuccessResponse]
-      val added: CustomCommandResponse[_] = commands ?? AddItem(userId, cart, AggregateVersion(1), "apple")
+      val added = commands.askFor[CustomCommandResponse[_]](AddItem(userId, cart, AggregateVersion(1), "apple"))
       added mustBe a[SuccessResponse]
-      val late: CustomCommandResponse[_] = commands ?? AddItem(userId, cart, AggregateVersion(1), "pear")
+      val late = commands.askFor[CustomCommandResponse[_]](AddItem(userId, cart, AggregateVersion(1), "pear"))
       late mustBe a[AggregateConcurrentModificationError]
 
       Then("each command's time is measured with its type, its class and its answer's")
@@ -71,7 +71,7 @@ class MetricsSpec extends CommonSpec {
       val restoresBefore = recording.timed("reactivecqrs.restore", Map("type" -> "ShoppingCart", "from" -> "events")).size
       commands ! PassivateAggregate(cart)
       awaitAssert {
-        val read: Try[Aggregate[ShoppingCart]] = commands ?? GetAggregate(cart)
+        val read = commands.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cart))
         read.get.version mustBe AggregateVersion(2)
         recording.timed("reactivecqrs.restore", Map("type" -> "ShoppingCart", "from" -> "events")).size must be > restoresBefore
       }

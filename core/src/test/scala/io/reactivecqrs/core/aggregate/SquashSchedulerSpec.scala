@@ -32,7 +32,7 @@ class SquashSchedulerSpec extends CommonSpec {
       SquashSchedulerOptions(firstRunAfter = 1.hour, perRun = perRun, answerTimeout = answerTimeout))))
 
     def asked(id: AggregateId, upTo: Int): Unit = bus.expectMsg(SquashAggregate(id, AggregateVersion(upTo), metadata = Some(SquashScheduler.metadata)))
-    def status: SquashStatus = scheduler ?? GetSquashStatus
+    def status: SquashStatus = scheduler.askFor[SquashStatus](GetSquashStatus)
   }
 
   Feature("The squash scheduler") {

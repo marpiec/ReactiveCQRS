@@ -217,7 +217,7 @@ class RebuildEquivalenceSpec extends CommonSpec {
     def ids: Seq[AggregateId] = (listVersions.keys ++ tagVersions.keys ++ deleted).toSeq
     private var deleted = Set[AggregateId]()
 
-    private def ask(bus: ActorRef, command: AnyRef): Any = bus.askActor[Any](command)(10.seconds)
+    private def ask(bus: ActorRef, command: AnyRef): Any = bus.askFor[Any](command)
 
     private def onList(command: AnyRef, node: Node): Unit = ask(node.lists, command) match {
       case SuccessResponse(id, version) =>
@@ -274,7 +274,7 @@ class RebuildEquivalenceSpec extends CommonSpec {
   private def delivered(ids: Seq[AggregateId]): Unit =
     awaitAssert(ids.foreach(id => eventStore.oldestVersionToPublish(id) mustBe None), 30.seconds, 100.millis)
 
-  private def builds(supervisor: ActorRef): Builds = supervisor.askActor[Builds](GetBuilds)(5.seconds)
+  private def builds(supervisor: ActorRef): Builds = supervisor.askFor[Builds](GetBuilds, 5.seconds)
 
   private def switchedTo(supervisor: ActorRef, build: Int): Unit =
     awaitAssert({
@@ -313,7 +313,7 @@ class RebuildEquivalenceSpec extends CommonSpec {
       sameAsReference()
 
       When("it is rebuilt from the store while it serves and more of the history is written")
-      first.supervisor.askActor[Any](RebuildProjection)(5.seconds) mustBe RebuildStarted(2)
+      first.supervisor.askFor[Any](RebuildProjection, 5.seconds) mustBe RebuildStarted(2)
       history.run(first, 200)
 
       Then("the new build, once switched, holds the reference's rows")

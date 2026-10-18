@@ -95,12 +95,12 @@ class CompleteRewriteSpec extends CommonSpec {
   eventBus ! RegisterSubscribers(Seq(notes))
   private val user = UserId(5)
 
-  private def send(command: AnyRef): SuccessResponse = folders.askActor[CustomCommandResponse[_]](command)(10.seconds) match {
+  private def send(command: AnyRef): SuccessResponse = folders.askFor[CustomCommandResponse[_]](command) match {
     case success: SuccessResponse => success
     case other => fail("command failed: " + other)
   }
-  private def folder(id: AggregateId): Folder = folders.askActor[Try[Aggregate[Folder]]](GetAggregate(id))(10.seconds).get.aggregateRoot.get
-  private def doc(id: AggregateId): Option[FolderDoc] = notes.askActor[Option[FolderDoc]](GetFolderDoc(id))(5.seconds)
+  private def folder(id: AggregateId): Folder = folders.askFor[Try[Aggregate[Folder]]](GetAggregate(id)).get.aggregateRoot.get
+  private def doc(id: AggregateId): Option[FolderDoc] = notes.askFor[Option[FolderDoc]](GetFolderDoc(id), 5.seconds)
   private def delivered(ids: AggregateId*): Unit = awaitAssert(ids.foreach(id => eventStore.oldestVersionToPublish(id) mustBe None), 20.seconds, 50.millis)
   private def rewrite(id: AggregateId, change: HistoryChange): RewriteReport =
     Await.result(new HistoryRewriter(folders, eventStore, Map("notes" -> notes)).rewrite(id, change, user), 60.seconds)
@@ -109,7 +109,7 @@ class CompleteRewriteSpec extends CommonSpec {
 
     Scenario("erases a value from an aggregate, its archive, its copies attached and detached, and the projections given") {
       awaitAssert({ // its first build done: a targeted rebuild is refused while a build runs
-        val builds = notes.askActor[Builds](GetBuilds)(5.seconds)
+        val builds = notes.askFor[Builds](GetBuilds, 5.seconds)
         (builds.active.map(_.number), builds.building) mustBe ((Some(1), None))
       }, 60.seconds, 100.millis)
 
@@ -122,7 +122,7 @@ class CompleteRewriteSpec extends CommonSpec {
       val attached = send(CopyFolder(user, space, base, AggregateVersion(3))).aggregateId
       send(AddNote(user, attached, AggregateVersion(1), "secret"))
       delivered(base, attached, detached)
-      folders.askActor[SquashResponse](SquashAggregate(base, AggregateVersion(3), user))(10.seconds) mustBe AggregateSquashed(base, AggregateVersion(3))
+      folders.askFor[SquashResponse](SquashAggregate(base, AggregateVersion(3), user)) mustBe AggregateSquashed(base, AggregateVersion(3))
       awaitAssert(doc(attached) mustBe Some(FolderDoc("Alpha", Vector("secret", "public", "secret"))), 20.seconds, 50.millis)
 
       val ids = Seq(base, attached, detached).map(_.asLong)
@@ -172,10 +172,10 @@ class CompleteRewriteSpec extends CommonSpec {
         }
       }
       val bus = system.actorOf(AggregateCommandBusActor(refusing, uidGenerator, eventStore, responses, eventBus))
-      val id = bus.askActor[CustomCommandResponse[_]](CreateFolder(user, SpaceId(0), "Beta"))(10.seconds).asInstanceOf[SuccessResponse].aggregateId
-      bus.askActor[CustomCommandResponse[_]](AddNote(user, id, AggregateVersion(1), "red"))(10.seconds) mustBe a[SuccessResponse]
+      val id = bus.askFor[CustomCommandResponse[_]](CreateFolder(user, SpaceId(0), "Beta")).asInstanceOf[SuccessResponse].aggregateId
+      bus.askFor[CustomCommandResponse[_]](AddNote(user, id, AggregateVersion(1), "red")) mustBe a[SuccessResponse]
 
-      val refused = bus.askActor[RewriteResponse](RewriteEverywhere(id, Recolour("red"), user))(10.seconds)
+      val refused = bus.askFor[RewriteResponse](RewriteEverywhere(id, Recolour("red"), user))
       refused.asInstanceOf[RewriteRefused].reason must include("D17")
       eventStore.readEventsRange[Folder](id, AggregateVersion(2), AggregateVersion(2)).map(_.event) mustBe Seq(NoteAdded("red"))
       system.stop(bus)

@@ -34,7 +34,7 @@ test surface.
 | `api` | `api/` | Public domain API: `Aggregate`, `Event`, `Command`, results, ids. Depends only on Pekko. |
 | `core` | `core/` | All the machinery: actors, event store, event bus, projections, sagas, document store, uid generator. Depends on `api`. |
 | `testdomain` | `testdomain/` | Example shopping-cart domain + integration specs. Depends on `api`, `core`. |
-| `testkit` | `testkit/` | The published test kit (M7, E11): `TestDatabase` (a new schema per test run), `SchemaReference`, `TestSystems` (cluster of one), `TestCluster` (nodes in one JVM), `TestClock`, `TestIds`, actor-ask helpers; the library's ScalaTest base `CommonSpec` in its test sources. |
+| `testkit` | `testkit/` | The published test kit (M7, E11): `TestDatabase` (a new schema per test run), `SchemaReference`, `TestSystems` (cluster of one), `TestCluster` (nodes in one JVM), `TestClock`, `TestIds`, `askFor` (typed asks, F177); the library's ScalaTest base `CommonSpec` in its test sources. |
 | `examples` | `examples/` | The book's examples E1–E11 (M7), each with a runnable `main` and a spec; `BookSnippetsSpec` checks that the book's marked code blocks are their regions. Not published. |
 | `bench` | `bench/` | Performance bench and load driver (`sbt "bench/run <name>"`, reports in `docs/perf/`). Not published. |
 | `utils` | `utils/` | Present in tree; commented out / mostly unused in `build.sbt`. |

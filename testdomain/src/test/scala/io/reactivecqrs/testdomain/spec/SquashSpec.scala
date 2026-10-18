@@ -100,7 +100,7 @@ class SquashSpec extends CommonSpec {
   private implicit val timeout: Timeout = Timeout(10.seconds)
 
   private def send(command: AnyRef): CustomCommandResponse[_] = {
-    val response: CustomCommandResponse[_] = commandBus ?? command
+    val response = commandBus.askFor[CustomCommandResponse[_]](command)
     response
   }
 
@@ -108,7 +108,7 @@ class SquashSpec extends CommonSpec {
 
   private def createdOn(bus: ActorRef, items: String*): AggregateId = {
     def sent(command: AnyRef): CustomCommandResponse[_] = {
-      val response: CustomCommandResponse[_] = bus ?? command
+      val response = bus.askFor[CustomCommandResponse[_]](command)
       response
     }
     val cartId = Await.result((bus ? ReserveAggregateId).mapTo[AggregateId], 5.seconds)
@@ -159,22 +159,22 @@ class SquashSpec extends CommonSpec {
       count("events", cartId) mustBe 2
       eventClassAt(cartId, 5) mustBe classOf[CartSquashed].getName
       DB.readOnly(implicit session => sql"SELECT squashed_version FROM aggregates WHERE id = ${cartId.asLong} AND base_id = ${cartId.asLong}".map(_.int(1)).single()) mustBe Some(5)
-      val events: Try[List[EventInfo[ShoppingCart]]] = commandBus ?? GetEventsForAggregate(cartId)
+      val events = commandBus.askFor[Try[List[EventInfo[ShoppingCart]]]](GetEventsForAggregate(cartId))
       events.get.map(e => (e.version.asInt, e.metadata)) mustBe List((5, metadata), (6, EventMetadata.ofUser(userId)))
 
       And("the live owner, a new one, and a fresh read all give the state of before")
       same(restorer.restore(cartId), before) mustBe true
-      val live: Try[Aggregate[ShoppingCart]] = commandBus ?? GetAggregate(cartId)
+      val live = commandBus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId))
       (live.get.version, live.get.aggregateRoot.get) mustBe ((before.version, before.root))
       commandBus ! PassivateAggregate(cartId)
-      val restored: Try[Aggregate[ShoppingCart]] = commandBus ?? GetAggregate(cartId)
+      val restored = commandBus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId))
       (restored.get.version, restored.get.aggregateRoot.get) mustBe ((before.version, before.root))
       send(AddItem(userId, cartId, AggregateVersion(6), "kiwi")) mustBe SuccessResponse(cartId, AggregateVersion(7))
 
       And("a historical read at the point works, below it fails with an explicit error (D51)")
-      val atPoint: Try[Aggregate[ShoppingCart]] = commandBus ?? GetAggregateForVersion(cartId, AggregateVersion(5))
+      val atPoint = commandBus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregateForVersion(cartId, AggregateVersion(5)))
       atPoint.get.aggregateRoot.get.items.map(_.name) mustBe Vector("pear", "plum")
-      val below: Try[Aggregate[ShoppingCart]] = commandBus ?? GetAggregateForVersion(cartId, AggregateVersion(3))
+      val below = commandBus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregateForVersion(cartId, AggregateVersion(3)))
       below.failed.get mustBe an[AggregateSquashedException]
     }
 
@@ -302,7 +302,7 @@ class SquashSpec extends CommonSpec {
       squash(cartId, 5) mustBe AggregateSquashed(cartId, AggregateVersion(5))
 
       noopRows mustBe 0
-      val cart: Try[Aggregate[ShoppingCart]] = commandBus ?? GetAggregate(cartId)
+      val cart = commandBus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId))
       cart.get.aggregateRoot.get.items.map(_.name) mustBe Vector("apple")
     }
 
@@ -339,11 +339,11 @@ class SquashSpec extends CommonSpec {
       val bus = system.actorOf(AggregateCommandBusActor(carts, uidGenerator, eventStore, responses, eventBus))
       val cartsRestorer = new AggregateRestorer[ShoppingCart](eventStore, carts.eventHandlers, () => carts.initialAggregateRoot)
       def sent(command: AnyRef): CustomCommandResponse[_] = {
-        val response: CustomCommandResponse[_] = bus ?? command
+        val response = bus.askFor[CustomCommandResponse[_]](command)
         response
       }
       def itemsOf(id: AggregateId): Vector[String] = {
-        val cart: Try[Aggregate[ShoppingCart]] = bus ?? GetAggregate(id)
+        val cart = bus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(id))
         cart.get.aggregateRoot.get.items.map(_.name)
       }
       val cartId = createdOn(bus, "apple", "pear", "plum")
@@ -381,7 +381,7 @@ class SquashSpec extends CommonSpec {
     Scenario("a squash moves the events its policy keeps to the archive, which the command bus reads and the class report finds") {
       val bus = system.actorOf(AggregateCommandBusActor(new AuditedCarts, uidGenerator, eventStore, responses, eventBus))
       def sent(command: AnyRef): CustomCommandResponse[_] = {
-        val response: CustomCommandResponse[_] = bus ?? command
+        val response = bus.askFor[CustomCommandResponse[_]](command)
         response
       }
       val cartId = createdOn(bus, "apple", "pear")
@@ -400,7 +400,7 @@ class SquashSpec extends CommonSpec {
 
       And("a new owner restores the cart without reading the archive")
       bus ! PassivateAggregate(cartId)
-      val cart: Try[Aggregate[ShoppingCart]] = bus ?? GetAggregate(cartId)
+      val cart = bus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId))
       cart.get.aggregateRoot.get.items mustBe Vector(Item(2, "pear"), Item(3, "plum"))
 
       And("the class report finds the added items in both tables, and the removal nowhere: that class could go")
@@ -417,10 +417,10 @@ class SquashSpec extends CommonSpec {
       val bus = system.actorOf(AggregateCommandBusActor(gauges, uidGenerator, eventStore, responses, eventBus))
       def gauge(moves: Int): AggregateId = {
         val gaugeId = Await.result((bus ? ReserveAggregateId).mapTo[AggregateId], 5.seconds)
-        val set: CustomCommandResponse[_] = bus ?? SetGauge(userId, gaugeId, 10)
+        val set = bus.askFor[CustomCommandResponse[_]](SetGauge(userId, gaugeId, 10))
         set mustBe SuccessResponse(gaugeId, AggregateVersion(1))
         (1 to moves).foreach { i =>
-          val moved: CustomCommandResponse[_] = bus ?? MoveGauge(userId, gaugeId, AggregateVersion(i), 1)
+          val moved = bus.askFor[CustomCommandResponse[_]](MoveGauge(userId, gaugeId, AggregateVersion(i), 1))
           moved mustBe SuccessResponse(gaugeId, AggregateVersion(i + 1))
         }
         gaugeId
@@ -433,13 +433,13 @@ class SquashSpec extends CommonSpec {
       scheduler ! SquashScheduler.Run
 
       awaitAssert({
-        val status: SquashScheduler.SquashStatus = scheduler ?? SquashScheduler.GetSquashStatus
+        val status = scheduler.askFor[SquashScheduler.SquashStatus](SquashScheduler.GetSquashStatus)
         status mustBe SquashScheduler.SquashStatus(squashed = 1, refused = 0, waiting = 0)
       }, 10.seconds, 50.millis)
       eventStore.readEventsRange[Gauge](long, AggregateVersion(1), AggregateVersion(10)).map(e => (e.version.asInt, e.event, e.metadata)) mustBe
         Seq((5, GaugeRestated(14), SquashScheduler.metadata), (6, GaugeMoved(1), EventMetadata.ofUser(userId)))
       eventStore.squashedVersion(short) mustBe None
-      val squashed: Try[Aggregate[Gauge]] = bus ?? GetAggregate(long)
+      val squashed = bus.askFor[Try[Aggregate[Gauge]]](GetAggregate(long))
       (squashed.get.version, squashed.get.aggregateRoot) mustBe ((AggregateVersion(6), Some(Gauge(15))))
     }
   }

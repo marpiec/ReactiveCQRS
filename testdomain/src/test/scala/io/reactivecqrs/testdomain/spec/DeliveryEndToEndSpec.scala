@@ -65,7 +65,7 @@ class DeliveryEndToEndSpec extends CommonSpec {
       val firstCommands = commandBusOn(firstBus)
       Seq[AnyRef](CreateShoppingCartWithId(None, userId, cartId, "Groceries"), AddItem(userId, cartId, AggregateVersion(1), "apple"),
         AddItem(userId, cartId, AggregateVersion(2), "pear")).foreach { command =>
-        val response: CustomCommandResponse[_] = firstCommands ?? command
+        val response = firstCommands.askFor[CustomCommandResponse[_]](command)
         response mustBe a[SuccessResponse]
       }
       awaitAssert(eventStore.oldestVersionToPublish(cartId) mustBe None, 5.seconds, 50.millis)
@@ -75,18 +75,18 @@ class DeliveryEndToEndSpec extends CommonSpec {
       val projection = system.actorOf(Props(new DeliveredCartsProjection(new MemorySubscriptionsState)).withDispatcher(BlockingDispatcher.id))
       bus ! RegisterSubscribers(Seq(projection))
       val commands = commandBusOn(bus)
-      val added: CustomCommandResponse[_] = commands ?? AddItem(userId, cartId, AggregateVersion(3), "plum")
+      val added = commands.askFor[CustomCommandResponse[_]](AddItem(userId, cartId, AggregateVersion(3), "plum"))
       added mustBe SuccessResponse(cartId, AggregateVersion(4))
 
       Then("the projection asks for versions 1 to 3, and applies 1 to 4 once each, in order")
-      awaitAssert(projection.askActor[Map[AggregateId, Vector[(Int, Instant)]]](GetDeliveredCarts)(3.seconds)
+      awaitAssert(projection.askFor[Map[AggregateId, Vector[(Int, Instant)]]](GetDeliveredCarts, 3.seconds)
         .getOrElse(cartId, Vector.empty).map(_._1) mustBe Vector(1, 2, 3, 4), 10.seconds, 100.millis)
 
       And("the live event's delivery is acknowledged, so its outbox row is gone")
       awaitAssert(eventStore.oldestVersionToPublish(cartId) mustBe None, 5.seconds, 50.millis)
 
       And("every timestamp the projection saw, the live one included, is the stored one (R6)")
-      val delivered = projection.askActor[Map[AggregateId, Vector[(Int, Instant)]]](GetDeliveredCarts)(3.seconds)(cartId)
+      val delivered = projection.askFor[Map[AggregateId, Vector[(Int, Instant)]]](GetDeliveredCarts, 3.seconds).apply(cartId)
       delivered.map(_._2) mustBe eventStore.readEventsRange[ShoppingCart](cartId, AggregateVersion(1), AggregateVersion(4)).map(_.timestamp)
     }
 
@@ -101,7 +101,7 @@ class DeliveryEndToEndSpec extends CommonSpec {
       When("30 carts get two items each, the commands sent at once")
       val ids = (1 to 30).map(_ => AggregateId(TestIds.aggregate()))
       ids.foreach { id =>
-        val created: CustomCommandResponse[_] = commands ?? CreateShoppingCartWithId(None, userId, id, "cart")
+        val created = commands.askFor[CustomCommandResponse[_]](CreateShoppingCartWithId(None, userId, id, "cart"))
         created mustBe a[SuccessResponse]
       }
       val replies = TestProbe()
@@ -114,7 +114,7 @@ class DeliveryEndToEndSpec extends CommonSpec {
       held.expectMsgType[DeliveryStatus](3.seconds).behind.values.sum must be > 0
 
       And("every event reaches the projection once, in order, and every outbox row goes")
-      awaitAssert(projection.askActor[Map[AggregateId, Vector[Int]]](GetDeliveredCarts)(3.seconds) mustBe ids.map(_ -> Vector(1, 2, 3)).toMap,
+      awaitAssert(projection.askFor[Map[AggregateId, Vector[Int]]](GetDeliveredCarts, 3.seconds) mustBe ids.map(_ -> Vector(1, 2, 3)).toMap,
         60.seconds, 200.millis)
       awaitAssert(ids.foreach(id => eventStore.oldestVersionToPublish(id) mustBe None), 10.seconds, 100.millis)
     }

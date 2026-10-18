@@ -13,7 +13,8 @@ import scala.concurrent.{ExecutionContext, Future}
 object CheckoutSaga {
   case class Checkout(userId: UserId, stockId: AggregateId, paymentId: AggregateId, items: Int, amountCents: Long)
     extends SagaOrder
-  private case class Charge(userId: UserId, stockId: AggregateId, paymentId: AggregateId, items: Int, amountCents: Long)
+  // Stored with the saga, like every order: package-private, not private, so the stored-formats test (E11) can make one.
+  private[examples] case class Charge(userId: UserId, stockId: AggregateId, paymentId: AggregateId, items: Int, amountCents: Long)
     extends SagaInternalOrder
 
   case class CheckedOut(paymentId: AggregateId) extends SagaResponse

@@ -147,9 +147,9 @@ class ProjectionDeliverySpec extends CommonSpec {
       bus.fishForSpecificMessage(3.seconds) { case Republish(`noteType`, `id`) => () }
 
     def applied(kind: String): Seq[(AggregateId, Seq[Int])] =
-      projection.askActor[Vector[(String, AggregateId, Seq[Int])]](GetApplied)(3.seconds).collect { case (`kind`, id, versions) => (id, versions) }
+      projection.askFor[Vector[(String, AggregateId, Seq[Int])]](GetApplied, 3.seconds).collect { case (`kind`, id, versions) => (id, versions) }
 
-    def status(): ProjectionStatus = projection.askActor[ProjectionStatus](GetProjectionStatus)(3.seconds)
+    def status(): ProjectionStatus = projection.askFor[ProjectionStatus](GetProjectionStatus, 3.seconds)
 
     /** Every answer about the aggregate that arrives within `within`: acknowledgements and failures, in order. */
     def answers(id: AggregateId, within: FiniteDuration): Seq[String] = bus.receiveWhile(within) {
@@ -281,7 +281,7 @@ class ProjectionDeliverySpec extends CommonSpec {
       f.chunk(1, eventsItem(b, 1)) mustBe ChunkApplied(1, Nil, 1)
       f.builder.fishForSpecificMessage(3.seconds) { case MessageFailed(_, `b`, _, _, _) => () }
       f.failTimes(b, 0)
-      f.projection.askActor[FailedSubscriptionsHandled](RetryFailedSubscription(b))(3.seconds) mustBe FailedSubscriptionsHandled(b, 1)
+      f.projection.askFor[FailedSubscriptionsHandled](RetryFailedSubscription(b), 3.seconds) mustBe FailedSubscriptionsHandled(b, 1)
       f.builder.fishForSpecificMessage(3.seconds) { case RequestRepublish(_, _, `b`, from) => from.asInt } mustBe 1
 
       f.builder.send(f.projection, GoLive)
@@ -299,7 +299,7 @@ class ProjectionDeliverySpec extends CommonSpec {
       f.events(b, 1)
       f.acked(b)
 
-      f.projection.askActor[Vector[(AggregateId, Boolean)]](GetRebuildingSeen)(3.seconds) mustBe Vector(a -> true, b -> false)
+      f.projection.askFor[Vector[(AggregateId, Boolean)]](GetRebuildingSeen, 3.seconds) mustBe Vector(a -> true, b -> false)
     }
 
     Scenario("a reset for a targeted rebuild answers the deliveries waiting for its aggregates, which the builder gives again") {
@@ -400,7 +400,7 @@ class ProjectionDeliverySpec extends CommonSpec {
       f.events(id, 2, 3)
       f.failedFor(id)
 
-      f.projection.askActor[FailedSubscriptionsHandled](RetryFailedSubscription(id))(3.seconds) mustBe FailedSubscriptionsHandled(id, 1)
+      f.projection.askFor[FailedSubscriptionsHandled](RetryFailedSubscription(id), 3.seconds) mustBe FailedSubscriptionsHandled(id, 1)
 
       f.requestedFrom(id) mustBe 2
       f.requestedFrom(id) mustBe 2 // asked again: the first request may not have reached the owner
@@ -423,7 +423,7 @@ class ProjectionDeliverySpec extends CommonSpec {
       f.events(b, 1)
       f.failedFor(b)
 
-      f.projection.askActor[FailedSubscriptionsRetried](RetryAllFailedSubscriptions)(3.seconds) mustBe FailedSubscriptionsRetried(2)
+      f.projection.askFor[FailedSubscriptionsRetried](RetryAllFailedSubscriptions, 3.seconds) mustBe FailedSubscriptionsRetried(2)
 
       f.requestedFrom(a) mustBe 1
       f.requestedFrom(b) mustBe 1
@@ -472,7 +472,7 @@ class ProjectionDeliverySpec extends CommonSpec {
       f.events(id, 1)
       f.failedFor(id)
 
-      f.projection.askActor[FailedSubscriptionsHandled](SkipFailedVersion(id))(3.seconds) mustBe FailedSubscriptionsHandled(id, 1)
+      f.projection.askFor[FailedSubscriptionsHandled](SkipFailedVersion(id), 3.seconds) mustBe FailedSubscriptionsHandled(id, 1)
 
       f.requestedFrom(id) mustBe 2
       f.state.lastVersion(classOf[RecordingProjection].getName, SubscriptionType.EVENTS, id) mustBe AggregateVersion(1)
@@ -489,13 +489,13 @@ class ProjectionDeliverySpec extends CommonSpec {
       f.events(skipped, 1)
       f.failedFor(skipped)
 
-      f.projection.askActor[FailedSubscriptionsHandled](RetryFailedSubscription(retried))(3.seconds) mustBe FailedSubscriptionsHandled(retried, 1)
+      f.projection.askFor[FailedSubscriptionsHandled](RetryFailedSubscription(retried), 3.seconds) mustBe FailedSubscriptionsHandled(retried, 1)
       f.requestedFrom(retried) mustBe 1
       f.events(retried, 1)
       f.acked(retried) mustBe Seq(1)
       f.outboxRepublished(retried)
 
-      f.projection.askActor[FailedSubscriptionsHandled](SkipFailedVersion(skipped))(3.seconds) mustBe FailedSubscriptionsHandled(skipped, 1)
+      f.projection.askFor[FailedSubscriptionsHandled](SkipFailedVersion(skipped), 3.seconds) mustBe FailedSubscriptionsHandled(skipped, 1)
       f.outboxRepublished(skipped)
     }
 
@@ -508,7 +508,7 @@ class ProjectionDeliverySpec extends CommonSpec {
       f.failedFor(id)
       f.status().failures.map(_.version.asInt) mustBe Seq(7)
 
-      f.projection.askActor[FailedSubscriptionsHandled](SkipFailedVersion(id))(3.seconds) mustBe FailedSubscriptionsHandled(id, 1)
+      f.projection.askFor[FailedSubscriptionsHandled](SkipFailedVersion(id), 3.seconds) mustBe FailedSubscriptionsHandled(id, 1)
 
       f.state.lastVersion(classOf[RecordingProjection].getName, SubscriptionType.EVENTS, id) mustBe AggregateVersion(7)
       f.status().failures mustBe empty

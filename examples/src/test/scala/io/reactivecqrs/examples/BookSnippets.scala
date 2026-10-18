@@ -5,8 +5,8 @@ import java.nio.file.{Files, Path}
 
 /**
   * The book's code is the examples' code (M7). A region of an example source between two lines `// #name` is a snippet;
-  * a code block of a chapter right after a line `<!-- snippet: e1/BasicSetup.scala#wiring -->` (a path under the
-  * examples' sources) must be that region, without the indentation the region's lines share. Regions may nest; marker
+  * a code block of a chapter right after a line `<!-- snippet: e1/BasicSetup.scala#wiring -->` (a path under one of
+  * the examples' source roots, the first that has it) must be that region, without the indentation the region's lines share. Regions may nest; marker
   * lines belong to none. `check` lists the blocks that differ, `write` puts the regions into the chapters.
   */
 object BookSnippets {
@@ -53,14 +53,14 @@ object BookSnippets {
 
   private def read(file: Path): Seq[String] = new String(Files.readAllBytes(file), UTF_8).split("\r?\n", -1).toSeq
 
-  private def snippet(sources: Path, block: Block): Either[String, Seq[String]] = {
-    val source = sources.resolve(block.snippet)
-    if (!Files.exists(source)) Left(s"${block.file}:${block.line}: no example source ${block.snippet}")
-    else regions(read(source)).get(block.name).toRight(s"${block.file}:${block.line}: ${block.snippet} has no region ${block.name}")
-  }
+  private def snippet(sources: Seq[Path], block: Block): Either[String, Seq[String]] =
+    sources.map(_.resolve(block.snippet)).find(Files.exists(_)) match {
+      case None => Left(s"${block.file}:${block.line}: no example source ${block.snippet}")
+      case Some(source) => regions(read(source)).get(block.name).toRight(s"${block.file}:${block.line}: ${block.snippet} has no region ${block.name}")
+    }
 
   /** The marked blocks of `chapters` that are not their snippets, each named with its chapter and line. */
-  def check(chapters: Seq[Path], sources: Path): List[String] = chapters.toList.flatMap { chapter =>
+  def check(chapters: Seq[Path], sources: Seq[Path]): List[String] = chapters.toList.flatMap { chapter =>
     val lines = read(chapter)
     blocks(chapter, lines) match {
       case Left(problem) => List(problem)
@@ -78,7 +78,7 @@ object BookSnippets {
 
   /** Puts each marked block's snippet into its chapter; a block whose snippet is missing stays as it is. Returns the
     * chapters it changed. */
-  def write(chapters: Seq[Path], sources: Path): Seq[Path] = chapters.filter { chapter =>
+  def write(chapters: Seq[Path], sources: Seq[Path]): Seq[Path] = chapters.filter { chapter =>
     val text = new String(Files.readAllBytes(chapter), UTF_8)
     val lineEnd = if (text.contains("\r\n")) "\r\n" else "\n"
     val lines = read(chapter)
