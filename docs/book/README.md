@@ -117,9 +117,7 @@ hypothetical, or wrong on purpose.
 ## The version this book describes
 
 ReactiveCQRS **1.0** (currently `1.0.0-SNAPSHOT`), on Scala 2.13, Apache Pekko 1.7, Java 21 and
-PostgreSQL. Every feature the book shows is built and tested; where a part of 1.0's verification is
-still to come (tests that kill a node or cut the network, [chapter 17](17-cluster.md)), the chapter
-says so plainly.
+PostgreSQL. Every feature the book shows is built and tested.
 
 For maintainers: how the library works inside is in [`../ARCHITECTURE.md`](../ARCHITECTURE.md);
 known problems and decisions are in [`../KNOWN-ISSUES.md`](../KNOWN-ISSUES.md); behaviour under

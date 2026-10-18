@@ -38,9 +38,10 @@ object ClusterSetup {
   /** Where a node sends its commands and its questions. */
   final case class Node(carts: ActorRef, cartsList: ActorRef)
 
-  def startNode(system: ActorSystem): Node = {
+  /** E2's node, with E1's carts run by `cartContext` (the fault tests' adds a command, `FaultTests`). */
+  def startNode(system: ActorSystem, cartContext: ShardedCartContext = new ShardedCartContext): Node = {
     // #node
-    // The same code on every node (system: this node's ActorSystem)
+    // The same code on every node (system: this node's ActorSystem; cartContext: E1's carts, sharded, see below)
     val mpjsons = new MPJsons
     val typesNames = new PostgresTypesNamesState().initSchema()
     val eventStore = new PostgresEventStoreState(mpjsons, typesNames).initSchema()
@@ -51,11 +52,11 @@ object ClusterSetup {
     val uidGenerator = system.actorOf(UidGeneratorActor.postgres(system), "uidGenerator")
     val eventBus = system.actorOf(Props(new EventsBusActor()), "eventBus")
     val carts = system.actorOf(
-      AggregateCommandBusActor(new ShardedCartContext, uidGenerator, eventStore, responses, eventBus), "carts")
+      AggregateCommandBusActor(cartContext, uidGenerator, eventStore, responses, eventBus), "carts")
 
     // Once in the cluster: every node starts them, one node runs them
     val projections = new Projections(system, ProjectionsSettings(eventStore, subscriptions,
-      new PostgresProjectionRegistry().initSchema(), contexts = Seq(new ShardedCartContext)))
+      new PostgresProjectionRegistry().initSchema(), contexts = Seq(cartContext)))
     val cartsList: ActorRef = projections.start[CartsListProjection]("e2-carts-list", 1, "cartsList") { build =>
       new CartsListProjection(subscriptions,
         new PostgresDocumentStore[CartSummary](build.documentStore("e2_carts_list"), mpjsons, new NoopDocumentStoreCache))
@@ -101,13 +102,23 @@ object ClusterSetup {
   }
   // #config
 
-  def main(args: Array[String]): Unit = {
+  /** The connection pool, to the database that DB_URL, DB_USER and DB_PASSWORD name (by default chapter 2's). */
+  def connectFromEnvironment(): Unit =
     BasicSetup.connect(sys.env.getOrElse("DB_URL", "jdbc:postgresql://localhost:5432/reactivecqrs"),
       sys.env.getOrElse("DB_USER", "reactivecqrs"), sys.env.getOrElse("DB_PASSWORD", "reactivecqrs"))
+
+  /** A node as the deployments start it: connected to its database, joining the cluster through Cluster Bootstrap,
+    * and running `startNode`. */
+  def startProcess(cartContext: ShardedCartContext = new ShardedCartContext): (ActorSystem, Node) = {
+    connectFromEnvironment()
     val system = ActorSystem("shop", nodeConfig(sys.env.get))
     PekkoManagement(system).start() // the health checks, /ready and /alive, and Bootstrap's endpoint, on port 8558
     ClusterBootstrap(system).start() // joins the cluster the contact points report, or forms one with them (F180)
-    val node = startNode(system)
+    (system, startNode(system, cartContext))
+  }
+
+  def main(args: Array[String]): Unit = {
+    val (system, node) = startProcess()
 
     // Once the node is ready (its bus knows the carts list), it makes a cart and reads it from the carts list.
     val deadline = 2.minutes.fromNow

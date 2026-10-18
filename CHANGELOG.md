@@ -66,7 +66,8 @@ below with running code.
   `SchemaReference` (the golden test of stored formats), `TestClock`, `TestIds` and `askFor`.
 - **The book and its examples.** Twenty chapters and three appendices in `docs/book`, whose code comes
   from the `examples` module (E1–E11, each runnable and tested), with a three-node deployment for Docker
-  Compose and Kubernetes in `examples/deploy/e2`.
+  Compose and Kubernetes in `examples/deploy/e2`, and fault tests that kill, stop and cut off its nodes
+  under load (`examples/deploy/e2/faults`).
 
 ### Changed (a host's code or configuration changes)
 
@@ -85,8 +86,9 @@ below with running code.
   `Any`, a trait, `ActorRef` or `Throwable`; a field added later is an `Option`.
 - **Read models**: a read model to be rebuilt starts through `Projections`, naming its tables through the
   build; side effects stay in unmanaged projections or check `rebuilding`.
-- **API**: `io.reactivecqrs.api.Nothing` is `NoInfo`; `OnConcurrentModification` and `SimulateEvent` are
-  gone; `SubscriptionsState`'s per-kind version methods are `lastVersion` and `newVersion` with a
+- **API**: `io.reactivecqrs.api.Nothing` is `NoInfo`; `OnConcurrentModification`, `SimulateEvent`,
+  `EventHandler`, `IdentifiableEvent`, `EventIdentifier`, `EventsIdentifiers`, `EventWithIdentifier`,
+  `AggregateVersion.upTo` and `isJustAfter`, and `LRUCache` are gone; `SubscriptionsState`'s per-kind version methods are `lastVersion` and `newVersion` with a
   `SubscriptionType`; `SagaActor` is deprecated in favour of `SagaDefinition`.
 - **Tests**: `testutils` is the published `reactivecqrs-testkit`; its ask is `askFor[T](message)`.
 - **Behaviour** a host may notice: a projection with two listeners of one kind for one type refuses to
@@ -95,7 +97,7 @@ below with running code.
 
 ### Fixed
 
-169 issues recorded and fixed, each with the test that showed it, are in
+171 issues recorded and fixed, each with the test that showed it, are in
 [KNOWN-ISSUES.md, section 3](docs/KNOWN-ISSUES.md): among them events that were never re-delivered
 while their aggregate stayed in memory (F2), a history rewrite left half-applied (F8), idempotent
 commands that could run twice (F9), memory that grew with uptime in the bus (F1), and rebuild reads

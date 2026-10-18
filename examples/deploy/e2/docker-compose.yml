@@ -17,6 +17,8 @@ x-node: &node
   image: reactivecqrs-e2:1.0.0
   # A node that leaves the cluster, or is downed, ends its process (exit-jvm in e2.conf); it is started again.
   restart: unless-stopped
+  # A node that leaves hands its shards over for up to 90 seconds (chapter 17); Docker's default is 10 seconds.
+  stop_grace_period: 2m
   depends_on:
     postgres:
       condition: service_healthy

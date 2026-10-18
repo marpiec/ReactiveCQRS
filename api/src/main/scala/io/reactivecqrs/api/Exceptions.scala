@@ -4,6 +4,7 @@ import java.time.Instant
 
 import io.reactivecqrs.api.id.AggregateId
 
+/** The aggregate has no events: it was never made, or it was deleted for good. */
 class NoEventsForAggregateException(val aggregateId: AggregateId, val aggregateType: AggregateType) extends Exception("No events for aggregate " + aggregateId.asLong)
 
 /** D77: a query for an ephemeral aggregate that is not on this node (it restarted, or the query reached another node). */
@@ -14,12 +15,15 @@ class EphemeralAggregateLostException(val aggregateId: AggregateId)
 class AggregateRestoreFailedException(val aggregateId: AggregateId, val aggregateType: AggregateType, cause: Throwable)
   extends Exception("Restoring aggregate " + aggregateId.asLong + " of type " + aggregateType.typeName + " failed: " + cause.getMessage, cause)
 
+/** The aggregate is not at the version asked for: a read of a version it has not reached (`GetAggregateMinVersion`
+  * past its deadline, `GetAggregateForVersion` beyond its last), or a write that expected another version. */
 class AggregateInIncorrectVersionException(val aggregateId: AggregateId,
                                            val aggregateType: AggregateType,
                                            val currentVersion: AggregateVersion,
                                            val requestedVersion: AggregateVersion) extends Exception("Requested version " + requestedVersion.asInt+" but current version is " + currentVersion.asInt)
 
-
+/** An event whose JSON is longer than the store allows (`maxSize` characters): the command that made it stores
+  * nothing. */
 class EventTooLargeException(val aggregateId: AggregateId,
                              val aggregateTypeName: String,
                              val currentVersion: AggregateVersion,
@@ -37,6 +41,9 @@ class MessageTooLargeException(val className: String, val size: Int, val limit: 
   override def fillInStackTrace(): Throwable = this
 }
 
+/** The aggregate reached the store's limit of versions per aggregate (`maxCount`, the event store's
+  * `aggregateVersionLimit`, a guard against runaway aggregates): the command stores nothing, and its sender gets an
+  * `EventHandlingError`. A squash keeps the version, so only a larger limit lets the aggregate grow. */
 class TooManyEventsException(val aggregateId: AggregateId,
                              val aggregateTypeName: String,
                              val maxCount: Int) extends Exception("Too many versions for aggregate " + aggregateId.asLong +"@"+aggregateTypeName+", max version is " + maxCount) {

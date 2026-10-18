@@ -79,7 +79,7 @@ has PostgreSQL on port 5432 and no Docker.
 | Statement counting | Database round trips per command, per restore, per batch | ScalikeJDBC `GlobalSettings.queryCompletionListener` (no new dependency) | benchmarks, selected tests |
 | Soak and memory | Bounded memory, no leaks over long runs | testdomain load driver; heap after GC sampled | per milestone |
 | Multi-node | Sharding, singletons, handover, cross-node delivery | Several `ActorSystem`s in one JVM; docker-compose cluster of 3 nodes + PostgreSQL (needs Docker) | M5 onward (compose: when Docker is available) |
-| Fault injection | Network partitions, node kills, slow database | **new** Toxiproxy in docker-compose (partitions cannot be simulated reliably in one JVM; needs Docker) | M5 onward (when Docker is available) |
+| Fault injection | Network partitions, node kills, slow database | docker-compose with two networks: `docker network disconnect` cuts a node off the others but not off the database, `docker kill` and `stop` end nodes (E2's fault tests, run in M7; Toxiproxy was not needed). A slow database is not covered | M7 (Docker came to the machine then) |
 | Upgrade tests | 0.12.47 → 1.0 migration; rolling N → N+1 | Production-copy rehearsal (runbook + script); two testdomain builds in one cluster | M5, M7 |
 | Benchmarks | Latency, throughput, restore and rebuild times | `bench` sbt module with an end-to-end load driver over testdomain | per milestone |
 | Documentation checks | Examples work, snippets compile, links and diagrams valid | examples as tests; **new** mdoc (snippets in Markdown are compiled); **new** link checker and Mermaid render check, run locally | M7 (examples from their milestone on) |
@@ -2474,3 +2474,49 @@ Open test-infrastructure items:
   chapter 18. A census counts, indented blocks included, 216 blocks taken from compiled code and 24
   unmarked: sbt lines, one call or one value shown, the library's own signatures, and code the chapters
   show on purpose as hypothetical or wrong (M7 design: "fragments that illustrate one call").
+
+**18/10/2026: E2's fault tests in Docker; F182**
+- What M5 moved to E2 (a writer killed right after a commit, a rebalance under load with a client
+  ledger, a partition, singleton failover after a loss) runs in `examples/deploy/e2/faults`.
+  `run.sh` starts PostgreSQL and three of E2's nodes in Docker Compose, on two networks: the nodes
+  reach each other on `cluster` and the database on `db`, so a node cut off the others still
+  writes. Under load it kills the second oldest node and starts it a minute later, stops one
+  gracefully and starts it again, cuts the oldest off `cluster` for 90 seconds, and kills the oldest;
+  then `FaultTests check` compares the database with the clients' ledger in 13 checks.
+- Each node runs `FaultTests node`: `ClusterSetup.startNode` with `FaultTestCartContext`, E2's carts
+  with two idempotent commands (`CreateCartOnce` under a reserved id, and `AddItemOnce`, decided by E1's
+  rule of five items), and a client of three workers on carts all nodes share. A command's key goes
+  into `fault_ledger` before it is sent; a lost answer (none in 15 seconds, or an error) is followed by
+  the same command until it is answered. `startNode` takes the context as a parameter, so chapter 17's
+  block names it. `FaultTestsSpec` checks the harness in one JVM: the commands once per key, a run of
+  the client that every check passes, and four faults forged into the store that the check finds.
+- Two runs (measured, Docker Desktop 29.8 on this machine): 100 358 and 100 017 commands in about
+  nine minutes; every check held. 18 commands per run were sent again after a lost answer (9 and 10
+  applied, at most four copies of one), and none took effect twice; of the items a dying node left
+  unanswered (6 and 7), one had been added, once. Times: a killed node unreachable after 6 to 8 s,
+  the resolver's decision 20 s later, singletons and shards elsewhere 20 to 22 s after that (48 and
+  49 s from the kill); the cut-off oldest node downed itself at the same moment as the others and its
+  singletons started on the next oldest 21 s after they stopped; events a killed node had stored but
+  not delivered were re-published 3.5 minutes later (the poller's rule), or about 1 minute later when
+  the poller moved with the killed oldest. docs/SCALING.md section 12 and chapter 17 report them.
+- F182 (Low): in run 1 the cut-off node's bus logged "Subscriber .../cartsList-proxy stopped" at
+  ERROR as it ended: its cluster ended (which stops the singletons' proxies) 3 ms before its
+  coordinated shutdown started, the moment F176's check missed. A stop after the cluster has ended
+  counts as the node's shutdown now; `DownedNodeSpec` (the coordinated shutdown held back, so the
+  moment lasts) was red first. Run 2, with the fix, logged no error but the cut-off node's failed
+  bootstrap probes.
+- E2's Compose file gives a stopping node 2 minutes (`stop_grace_period`), above the 90-second
+  hand-over; Docker's default of 10 seconds would kill a leaving node halfway, which chapter 17
+  warns about. `.gitattributes` keeps shell scripts' line endings LF on Windows checkouts.
+
+**18/10/2026: Scaladoc for `api`; F183**
+- Every public type and member of `api` has a doc comment saying what it is, when the library sends
+  or answers it, and what it is answered with, checked against the code: the read messages and their
+  answers, the kinds of commands, results, responses and events, the context's members, the ids and
+  the exceptions. `sbt api/doc` gives no warning. Doc comments that the code contradicted are
+  corrected (the version limit, which a squash does not lower; `CommandRejected`'s other reasons).
+- F183 (Low): documenting found API that neither the library nor Neula's sources use (a scan of
+  `neulaserver`, 18/10/2026): `EventHandler`, `AbstractEventHandler`, `IdentifiableEvent`,
+  `EventIdentifier`, `EventsIdentifiers`, `EventWithIdentifier`, `AggregateVersion.upTo` and
+  `isJustAfter`, and `LRUCache` (deprecated since F32); removed, `ApiSurfaceSpec` red first against
+  the old sources. `SpaceId` loses its pool of instances, kept in a global `var` read without a lock.

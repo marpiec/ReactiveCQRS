@@ -3,9 +3,10 @@ package io.reactivecqrs.core.eventbus
 import java.time.Instant
 
 import org.apache.pekko.actor.{Actor, ActorRef, CoordinatedShutdown, Stash, Status, Terminated}
+import org.apache.pekko.cluster.Cluster
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.core.cluster.{MessageSize, Readiness}
+import io.reactivecqrs.core.cluster.{MessageSize, Readiness, Singletons}
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.core.eventbus.FlowControl.SentKey
@@ -489,7 +490,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   // node shuts down (a singleton does so as its node leaves) nor while a registered subscriber is asked for its replacement.
   private def subscriberStopped(subscriber: ActorRef, askedAgain: Iterable[ActorRef]): Unit = {
     if (!stopped.contains(subscriber)) {
-      if (CoordinatedShutdown(context.system).shutdownReason().isDefined)
+      if (nodeShutsDown)
         log.info("Subscriber " + subscriber.path + " stopped as the node shuts down; its events stay in the outbox")
       else if (askedAgain.nonEmpty)
         log.info("Subscriber " + subscriber.path + " stopped; its events stay in the outbox until " +
@@ -500,6 +501,11 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       endDeliveries(_.subscriber == subscriber, _ => true)
     }
   }
+
+  // F182: a node that is downed ends its cluster first, which stops the singletons' proxies, and starts its coordinated
+  // shutdown a moment later.
+  private def nodeShutsDown: Boolean = CoordinatedShutdown(context.system).shutdownReason().isDefined ||
+    Singletons.isCluster(context.system) && Cluster(context.system).isTerminated
 
   // A removed subscriber takes nothing more, and no delivery waits for it any more: one it was the last to answer is
   // complete, so its owner is acknowledged (unlike a stopped subscriber's, which keeps its outbox rows), unless the

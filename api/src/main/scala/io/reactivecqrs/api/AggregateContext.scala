@@ -9,11 +9,23 @@ import scala.concurrent.Future
 import scala.concurrent.duration._
 import scala.reflect.ClassTag
 
+// The reads of an aggregate, sent to its type's command bus. Each is answered with a `Try`.
+
+/** The aggregate's current state: `Success(Aggregate(id, version, root))`, from its owner. `root` is `None` before the
+  * aggregate exists and after it was deleted. */
 case class GetAggregate(id: AggregateId)
+/** The aggregate's state as soon as it reaches `version`, for reading your own write: answered at once if it is there,
+  * otherwise when it gets there, or with `Failure(AggregateInIncorrectVersionException)` after `maxMillis`. */
 case class GetAggregateMinVersion(id: AggregateId, version: AggregateVersion, maxMillis: Int)
+/** The aggregate's state at `version`, restored from the store; `Failure(AggregateSquashedException)` below its squash
+  * point. */
 case class GetAggregateForVersion(id: AggregateId, version: AggregateVersion)
+/** The aggregate's state at `instant`, restored from the store; `Failure(AggregateSquashedException)` before its squash
+  * event's time. */
 case class GetAggregateAtInstant(id: AggregateId, instant: Instant)
 
+/** Every event of the aggregate, oldest first, undone ones included: `Success(List[EventInfo])`. A duplicate's list
+  * starts with its base's events. The whole history comes in one message. */
 case class GetEventsForAggregate(id: AggregateId)
 
 /** The events of the aggregate that squashes kept in the archive (R11), oldest first; answered `Success(ArchivedEvents)`. */
@@ -21,7 +33,10 @@ case class GetArchivedEvents(id: AggregateId)
 /** An archived event as it was stored, `undoneFrom` the version of the undo that cancelled it, if one did, and when the
   * squash archived it. */
 case class ArchivedEvent[AGGREGATE_ROOT](info: EventInfo[AGGREGATE_ROOT], undoneFrom: Option[AggregateVersion], archived: Instant)
+/** The answer to `GetArchivedEvents`. */
 case class ArchivedEvents[AGGREGATE_ROOT](id: AggregateId, events: Seq[ArchivedEvent[AGGREGATE_ROOT]])
+/** The aggregate's events up to `version`, oldest first: `Success(List[EventInfo])`; `Failure(AggregateSquashedException)`
+  * below its squash point. */
 case class GetEventsForAggregateForVersion(id: AggregateId, version: AggregateVersion)
 
 /** Asks a command bus for a new aggregate id, for a `FirstCommand` that names its aggregate in `chosenAggregateId`.
@@ -31,7 +46,9 @@ case object ReserveAggregateId
 /** Replaces the aggregate's events 1..`upTo` with one squash event at `upTo` (D47); the version does not change. Answered
   * with `AggregateSquashed` or `SquashRefused`. `userId` and `metadata` are stored with the squash event. */
 case class SquashAggregate(id: AggregateId, upTo: AggregateVersion, userId: UserId = UserId(0), metadata: Option[EventMetadata] = None)
+/** The answer to `SquashAggregate`. */
 sealed trait SquashResponse
+/** The aggregate's events 1..`upTo` are one squash event now. */
 case class AggregateSquashed(id: AggregateId, upTo: AggregateVersion) extends SquashResponse
 /** Nothing was changed, for `reason`: squash is not enabled for the type; the version is out of range, squashed
   * already, or deleted; a squash event, the aggregate's or one that detaches a duplicate, does not give back the state
@@ -49,6 +66,7 @@ trait HistoryChange extends Serializable
   * copies and the projections are the host's to follow, with `HistoryRewriter`. Answered with `HistoryRewritten` or
   * `RewriteRefused`; a second request with the same change finds nothing to change. */
 case class RewriteEverywhere(id: AggregateId, change: HistoryChange, userId: UserId)
+/** The answer to `RewriteEverywhere`. */
 sealed trait RewriteResponse
 /** `events` and `archived` events were written again; `fields`: the names of the fields the change altered. */
 case class HistoryRewritten(id: AggregateId, events: Int, archived: Int, fields: Set[String]) extends RewriteResponse
@@ -61,8 +79,11 @@ case class RewriteRefused(id: AggregateId, reason: String) extends RewriteRespon
   * the ephemeral bus; answered `Materialized` with the new id, or `MaterializeRefused` (it stays): without a squash
   * policy, while commands run on it, or when the persistent store refuses the event. */
 case class Materialize(id: AggregateId, userId: UserId)
+/** The answer to `Materialize`. */
 sealed trait MaterializeResponse
+/** The ephemeral aggregate `id` is stored as `persistentId`, and dropped. */
 case class Materialized(id: AggregateId, persistentId: AggregateId) extends MaterializeResponse
+/** Nothing was stored, for `reason`; the ephemeral aggregate stays. */
 case class MaterializeRefused(id: AggregateId, reason: String) extends MaterializeResponse
 
 /** D77: the idempotency key of a materialization, so that one ephemeral aggregate is never stored twice. */
@@ -118,6 +139,7 @@ case class SnapshotPolicy(every: Int = 200, onPassivation: Boolean = true, schem
 /** How the owner of an aggregate runs its commands. */
 sealed trait CommandProcessing
 
+/** The ways an owner runs its aggregate's commands. */
 object CommandProcessing {
   /** Commands of one aggregate run side by side, each on the state it found; a command whose events would follow
     * another's fails with `AggregateConcurrentModificationError`, and a `ConcurrentCommand` runs again (D37). */
@@ -131,8 +153,10 @@ object CommandProcessing {
   }
 }
 
+/** What happens to a command that finds its aggregate's queue full (`CommandProcessing.Serial`). */
 sealed trait OverflowPolicy
 
+/** The overflow policies. */
 object OverflowPolicy {
   /** The command is not run; the caller gets `CommandRejected` and may send it again later. */
   case object Reject extends OverflowPolicy
@@ -141,6 +165,7 @@ object OverflowPolicy {
 /** Where the owners of an aggregate type run (D43). */
 sealed trait Placement
 
+/** The placements of owners. */
 object Placement {
   /** Each node keeps owners of its own for the aggregates it is asked about; between nodes, the store's version check
     * decides which command wins. For aggregates of one node (ephemeral ones) and for moving to `Sharded` gradually. */
@@ -154,30 +179,46 @@ object Placement {
   }
 }
 
-/** An aggregate type's behaviour. Events are stored under their class name; an event class that must change shape is
+/** An aggregate type's behaviour: what its commands decide (`commandHandlers`) and what its events do to its state
+  * (`eventHandlers`), with the type's options. One context per aggregate type, given to the type's command bus
+  * (`AggregateCommandBusActor`). Events are stored under their class name; an event class that must change shape is
   * kept, deprecated, and a new class (`...V2`) takes its place (D29: there is no event versioning). */
 abstract class AggregateContext[AGGREGATE_ROOT : ClassTag] {
 
+  /** Lets a command handler return a `Future` of its decision (when it must ask someone first): the owner waits for it,
+    * at most `commandTimeout`. */
   protected implicit def future2AsyncResult[T](future: Future[CustomCommandResult[T]]): AsyncCommandResult[T] = {
     AsyncCommandResult(future)
   }
 
+  /** The state before the first event: what the first event's handler receives. */
   def initialAggregateRoot: AGGREGATE_ROOT
 
+  /** Given the aggregate's current state, decides each command: events to store (`CommandSuccess`), a refusal
+    * (`CommandFailure`), or a `Future` of either. It runs off the owner's thread and must not change anything itself. */
   type CommandHandler = AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]]
 
+  /** Given who stored an event, when, and the state before it, returns the state after the event (`null` deletes the
+    * aggregate). It must be a pure function of these: it runs again at every restore. */
   type EventHandler = (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT]
 
+  /** Given the stored events of the classes a history-rewriting command names, and the current state, decides that
+    * command: `RewriteCommandSuccess` with the events changed. */
   type RewriteHistoryCommandHandler = (Iterable[EventWithVersion[AGGREGATE_ROOT]], AGGREGATE_ROOT) => PartialFunction[Any, GenericCommandResult[Any]]
 
+  /** The type's event handlers: a case for each event class it stores, undo events excepted (F148). */
   def eventHandlers: EventHandler
 
+  /** The type's command handlers: a case for each command class it takes. */
   def commandHandlers: CommandHandler
 
+  /** The handlers of the type's history-rewriting commands (`RewriteHistoryCommand`); none by default. */
   def rewriteHistoryCommandHandlers: RewriteHistoryCommandHandler = (events, AGGREGATE_ROOT) => {
     case _ => throw new IllegalStateException("Please implement rewriteHistoryCommandHandlers in AggregateContext "+this.getClass.getSimpleName)
   }
 
+  /** The version of the context's behaviour. Raise it when the event handlers change what a history gives: snapshots of
+    * the older version are thrown away, and the managed projections that receive its states are built again (D63). */
   val version: Int
 
   /** How long a command may take until the caller gets a `CommandHandlingError` (R5). */
@@ -222,6 +263,7 @@ abstract class AggregateContext[AGGREGATE_ROOT : ClassTag] {
     writtenFrom.get(event.getClass).filterNot(everyNodeRuns).map(version =>
       event.getClass.getSimpleName + " is written once every node runs version " + version + " or later")
 
+  /** The type's key, from the root class (`AggregateType.of`). */
   val aggregateType: AggregateType = AggregateType.of[AGGREGATE_ROOT]
 
   /** The root's class, under whose name its states are stored (snapshots, D30). */

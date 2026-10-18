@@ -2,42 +2,30 @@ package io.reactivecqrs.api.id
 
 object SpaceId {
 
-  private var pool = Map[Long, SpaceId]()
+  /** `-1`: the space of aggregates stored before the store kept spaces, until `backfillSpaces` gives them theirs (F49,
+    * D38); old first events may carry it. No new aggregate is made in it: such a first event is refused. */
+  val unknown: SpaceId = SpaceId(-1L)
 
-  val unknown: SpaceId = create(-1L)
+  /** The space whose id is the id of the aggregate that stands for it (an organization, say). */
+  def apply(id: AggregateId): SpaceId = new SpaceId(id.asLong)
 
-  def apply(id: AggregateId): SpaceId = {
-    create(id.asLong)
-  }
-
-  def apply(asLong: Long): SpaceId = {
-    create(asLong)
-  }
-
-  private def create(asLong: Long): SpaceId = {
-    pool.getOrElse(asLong, {
-      synchronized {
-        val space = new SpaceId(asLong)
-        pool += asLong -> space
-        space
-      }
-    })
-  }
+  /** The space `asLong`. */
+  def apply(asLong: Long): SpaceId = new SpaceId(asLong)
 
   def unapply(id: SpaceId): Option[Long] = Some(id.asLong)
-
 }
 
 /**
-  * Globally unique id that identifies single aggregate in whole application.
+  * The organization (space) an aggregate belongs to, given by its first event (`FirstEvent.spaceId`): a projection
+  * keeps it with each document, a purge, an export or an import works on one space at a time. `SpaceId(0)` when the
+  * application has no organizations.
   *
-  * @param asLong unique long identifier across aggregates.
+  * @param asLong the space's id, often the id of the aggregate that stands for the organization.
   */
 class SpaceId(val asLong: Long) extends Serializable {
   override def equals(obj: Any): Boolean = obj.isInstanceOf[SpaceId] && obj.asInstanceOf[SpaceId].asLong == asLong
 
   override def hashCode(): Int = java.lang.Long.hashCode(asLong)
 
-  override def toString: String = "SpaceId("+asLong+")"
-
+  override def toString: String = "SpaceId(" + asLong + ")"
 }

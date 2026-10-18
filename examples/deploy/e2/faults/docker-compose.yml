@@ -1,0 +1,105 @@
+# E2's fault tests (chapter 17): three nodes of the shop under load, for run.sh to kill, stop and cut off.
+#
+# From the repository's root:
+#   sbt examples/stageE2
+#   examples/deploy/e2/faults/run.sh
+#
+# Every node runs `FaultTests node`: E2's node (ClusterSetup.startNode) whose carts take two more commands, and a client
+# that sends them, with a ledger of what it sent (FaultTests.scala). Two networks: the nodes reach PostgreSQL on `db`
+# and each other on `cluster`, as peer1, peer2 and peer3, so a node cut off `cluster` still writes to the database.
+
+name: e2faults
+
+x-node: &node
+  build:
+    context: ../../../target/e2 # the jars `sbt examples/stageE2` put there
+    dockerfile: ../../deploy/e2/Dockerfile
+  image: reactivecqrs-e2:1.0.0
+  entrypoint: ["java", "-cp", "/app/lib/*", "io.reactivecqrs.examples.e2.FaultTests", "node"]
+  # A node downed by the split brain resolver ends its process (exit-jvm in e2.conf); it is started again.
+  restart: unless-stopped
+  # A node that leaves hands its shards over for up to 90 seconds (chapter 17): Docker must wait longer.
+  stop_grace_period: 2m
+  depends_on:
+    postgres:
+      condition: service_healthy
+  environment: &environment
+    CONTACT_POINTS: "peer1,peer2,peer3"
+    DB_URL: "jdbc:postgresql://postgres:5432/shop"
+    DB_USER: "shop"
+    DB_PASSWORD: "shop"
+    APP_VERSION: "1.0.0"
+    SHOP_CONFIG: "e2"
+    CLIENT_WORKERS: "3"
+    CLIENT_PAUSE_MS: "20"
+    # Artery binds every address: a node started again while it is cut off cannot resolve its own name.
+    JAVA_TOOL_OPTIONS: "-Xmx1g -Dpekko.remote.artery.bind.hostname=0.0.0.0"
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: shop
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: shop
+    networks: [db]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop -d shop"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  node1:
+    <<: *node
+    hostname: node1
+    networks:
+      cluster:
+        aliases: [peer1]
+      db: {}
+    environment:
+      <<: *environment
+      NODE_HOST: peer1
+      NODE_NAME: node1
+
+  node2:
+    <<: *node
+    hostname: node2
+    networks:
+      cluster:
+        aliases: [peer2]
+      db: {}
+    environment:
+      <<: *environment
+      NODE_HOST: peer2
+      NODE_NAME: node2
+
+  node3:
+    <<: *node
+    hostname: node3
+    networks:
+      cluster:
+        aliases: [peer3]
+      db: {}
+    environment:
+      <<: *environment
+      NODE_HOST: peer3
+      NODE_NAME: node3
+
+  # `FaultTests check`, which run.sh starts once the clients stop.
+  check:
+    image: reactivecqrs-e2:1.0.0
+    entrypoint: ["java", "-cp", "/app/lib/*", "io.reactivecqrs.examples.e2.FaultTests", "check"]
+    profiles: [check]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [db]
+    environment:
+      DB_URL: "jdbc:postgresql://postgres:5432/shop"
+      DB_USER: "shop"
+      DB_PASSWORD: "shop"
+      CHECK_PATIENCE_MINUTES: "12"
+
+networks:
+  cluster: {}
+  db: {}

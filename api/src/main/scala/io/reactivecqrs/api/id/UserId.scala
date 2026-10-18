@@ -1,13 +1,14 @@
 package io.reactivecqrs.api.id
 
 /**
- * Globally unique id that identifies user of the application, originator of command.
- * It might be the same as AggregateId, if user is represented as Aggregate in the system.
- * @param asLong unique long identifier across users.
+ * The user who sent a command, stored with each of its events. The library does not interpret it; it may be the id of
+ * an aggregate that stands for the user.
+ *
+ * @param asLong the user's id.
  */
 case class UserId(asLong: Long)
 
-
 object UserId {
-  def fromAggregateId(id: AggregateId) = UserId(id.asLong)
+  /** The user that the aggregate `id` stands for. */
+  def fromAggregateId(id: AggregateId): UserId = UserId(id.asLong)
 }

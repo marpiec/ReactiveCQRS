@@ -22,7 +22,8 @@ noticed):
 
 Docker is not available on the development machine, so the plan's docker-compose scenarios
 (Toxiproxy partitions, killing the writing node) are prepared as files and run on a machine
-that has it; the in-JVM multi-node tests cover what one JVM can show.
+that has it; the in-JVM multi-node tests cover what one JVM can show. (They ran in M7, as E2's
+fault tests, once Docker came to the machine: docs/SCALING.md, section 12.)
 
 ## The shape
 
@@ -475,7 +476,7 @@ The plan's M5 verification, at the close (17/10/2026):
 |---|---|
 | A command on any node reaches its owner; a projection singleton receives every owner's events; queries from any node | in-JVM multi-node tests (several `ActorSystem`s on local ports, one PostgreSQL schema): `ShardedOwnersSpec`, `ClusterDeliverySpec`, `LocalOwnersSpec`, `ClusterMessageSizeSpec` |
 | A node that leaves under load; a singleton that moves | `ShardedOwnersSpec` (a twelve-second command during the hand-over, nothing lost or applied twice), `ClusterDeliverySpec` (the projection, the poller and the saga runner move with the oldest node), `RollingUpgradeSpec` |
-| A killed writer, a rebalance under load with a client ledger, a network partition, singleton failover after a loss | the docker-compose cluster with Toxiproxy: not run, as the machine has no Docker; moved to M7 (E2). The in-JVM tests cover graceful leaving only |
+| A killed writer, a rebalance under load with a client ledger, a network partition, singleton failover after a loss | not run in M5, as the machine had no Docker; run in M7 as E2's fault tests (`examples/deploy/e2/faults`, 18/10/2026): every check held in two runs of about 100 000 commands, and the first found F182 (docs/SCALING.md, section 12). The in-JVM tests cover graceful leaving only |
 | Cluster of one | the full suites pass with `-Dreactivecqrs.test.clusterOfOne=true` (core 274, testdomain 164) |
 | Rolling upgrade N → N+1 with a new event class under load | `RollingUpgradeSpec` (no failed command but retryable ones, the projection caught up, no deserialization error, a removed projection retired only after); a projection version switch across nodes in `ClusterDeliverySpec` |
 | Serialization | `ClusterSerializationSpec` (every conversation's messages), `ClusterSerializerSpec` (messages of another version) |

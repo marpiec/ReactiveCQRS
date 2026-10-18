@@ -4,7 +4,8 @@ How the library behaves when the volume or the load is high: where it throttles,
 memory, how it fails or stalls, and what to do about it. The scenarios follow the questions asked
 at M5: 10 000 command requests at once, aggregates of 50 000 events, a store of 100 million events,
 writes that outrun the projections, commands and events of 5 MB (section 7) and command handlers
-that take minutes (section 8). Section 6 covers the messages between the nodes of a cluster.
+that take minutes (section 8). Section 6 covers the messages between the nodes of a cluster, and
+section 12 what happens when a node is lost under load.
 
 **How to read the numbers.**
 - **Measured** numbers come from the bench reports [docs/perf/load-M5.md](perf/load-M5.md),
@@ -510,3 +511,37 @@ Recorded in [KNOWN-ISSUES](KNOWN-ISSUES.md):
 | F125: the per-aggregate limit let one event too many through | fixed in M5 |
 | F126: batches counted in events held whatever their events weighed | fixed in M5 (restore fetches stay 1 000 rows: hosts with large events lower them) |
 | F127: command handlers ran on Pekko's default dispatcher, so a slow handler stalled the buses and projections | fixed in M5 |
+
+## 12. Losing a node under load
+
+Measured by E2's fault tests (`examples/deploy/e2/faults`, the book's chapter 17): two runs on 18/10/2026,
+each about 100 000 commands in nine minutes from clients on all three nodes, on Docker Desktop 29.8 on
+the machine above (three nodes of 1 GB heap and PostgreSQL 17 in containers). A run kills a node, stops
+one gracefully, cuts the oldest off the other two while it still reaches the database, and kills the
+oldest; then it compares the database with the clients' ledgers. Both runs passed every check: every
+command answered with a success stored once, in its aggregate; the commands sent again after a lost
+answer (18 per run, at most four copies of one) taking effect once; no version of an aggregate stored
+twice; the carts list caught up with every cart.
+
+| What | Measured |
+| --- | --- |
+| A killed node marked unreachable by the others | 6 to 8 s |
+| The split brain resolver's decision after that | 20 s (`stable-after`) |
+| Shards and singletons started elsewhere after the decision | 20 to 22 s (the removal margin, by default `stable-after`) |
+| From a kill to the singletons running elsewhere | 48 s and 49 s |
+| A cut-off oldest node: its singletons stopped, and started on the next oldest | 21 s apart; never two at once |
+| Events a killed node had stored but not delivered | 2 or 3 after a kill of another node, re-published 3.5 min later; 2 and 8 after a kill of the oldest, about 1 min later (the moved poller's first poll) |
+| Deliveries to a cut-off singleton left in the outbox | 16 and 10, delivered about 1 min after the cut |
+| A graceful stop | 3 to 5 s, nothing left in the outbox |
+
+**Recommendations.**
+- Clients send a command again, with its idempotency key, for at least a minute: shorter, and a node's
+  loss shows as errors for aggregates that are only moving.
+- The resolver's 20 s and the removal margin set how long a lost node's aggregates wait. Shorter values
+  answer sooner but down nodes that only paused (a long garbage collection), and every downed node
+  restarts: change them together, and only with measurements of your own.
+- What a killed node had not delivered waits for the outbox poller's 3 minutes; a projection that must
+  catch up sooner after a crash needs an earlier first attempt (`RedeliveryPolicy.Options.attemptsAfter`).
+
+Run 1 found F182: the node that downed itself logged an error from its event bus as it ended; fixed,
+and run 2 logged none.

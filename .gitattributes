@@ -1,0 +1,2 @@
+# Shell scripts keep LF line endings on every checkout: bash reads a CR as part of each command.
+*.sh text eol=lf

@@ -15,5 +15,14 @@ class ApiSurfaceSpec extends AnyFeatureSpec with Matchers {
         "io.reactivecqrs.api.command.Fail$", "io.reactivecqrs.api.SimulateEvent", "io.reactivecqrs.api.Nothing", "io.reactivecqrs.api.Nothing$")
         .filter(name => Try(Class.forName(name)).isSuccess) mustBe empty
     }
+
+    Scenario("has none of the classes and methods that neither the library nor Neula uses (F183)") {
+      Seq("io.reactivecqrs.api.EventHandler", "io.reactivecqrs.api.AbstractEventHandler", "io.reactivecqrs.api.IdentifiableEvent",
+        "io.reactivecqrs.api.EventIdentifier", "io.reactivecqrs.api.EventsIdentifiers", "io.reactivecqrs.api.EventWithIdentifier",
+        "io.reactivecqrs.api.id.LRUCache")
+        .filter(name => Try(Class.forName(name)).isSuccess) mustBe empty
+      classOf[io.reactivecqrs.api.AggregateVersion].getMethods.map(_.getName) must not contain "isJustAfter"
+      io.reactivecqrs.api.AggregateVersion.getClass.getMethods.map(_.getName) must not contain "upTo"
+    }
   }
 }

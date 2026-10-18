@@ -126,7 +126,7 @@ section), their carts list as a managed projection, and the outbox poller:
 
 <!-- snippet: e2/ClusterSetup.scala#node -->
 ```scala
-// The same code on every node (system: this node's ActorSystem)
+// The same code on every node (system: this node's ActorSystem; cartContext: E1's carts, sharded, see below)
 val mpjsons = new MPJsons
 val typesNames = new PostgresTypesNamesState().initSchema()
 val eventStore = new PostgresEventStoreState(mpjsons, typesNames).initSchema()
@@ -137,11 +137,11 @@ val subscriptions = new PostgresSubscriptionsState(typesNames).initSchema()
 val uidGenerator = system.actorOf(UidGeneratorActor.postgres(system), "uidGenerator")
 val eventBus = system.actorOf(Props(new EventsBusActor()), "eventBus")
 val carts = system.actorOf(
-  AggregateCommandBusActor(new ShardedCartContext, uidGenerator, eventStore, responses, eventBus), "carts")
+  AggregateCommandBusActor(cartContext, uidGenerator, eventStore, responses, eventBus), "carts")
 
 // Once in the cluster: every node starts them, one node runs them
 val projections = new Projections(system, ProjectionsSettings(eventStore, subscriptions,
-  new PostgresProjectionRegistry().initSchema(), contexts = Seq(new ShardedCartContext)))
+  new PostgresProjectionRegistry().initSchema(), contexts = Seq(cartContext)))
 val cartsList: ActorRef = projections.start[CartsListProjection]("e2-carts-list", 1, "cartsList") { build =>
   new CartsListProjection(subscriptions,
     new PostgresDocumentStore[CartSummary](build.documentStore("e2_carts_list"), mpjsons, new NoopDocumentStoreCache))
@@ -316,9 +316,52 @@ from the cluster, and its shards start again on the remaining nodes. For a short
 one aggregate could exist; the database's version check still lets only one of them write each
 version.
 
-> **Remember:** the library's own multi-node tests run several nodes inside one JVM, and cover nodes
-> that leave gracefully. Tests that kill a node or cut the network are planned before the 1.0
-> release. Until then, test such failures in your own environment.
+### What E2's fault tests show
+
+E2 comes with fault tests that do all of this to real processes, in `examples/deploy/e2/faults`.
+Three nodes run in Docker, each with a client that creates carts and adds items to carts that all
+nodes share. Every command carries an idempotency key; the client keeps a ledger of what it sent and
+how it was answered, and sends a command again, with the same key, whenever an answer is lost. Under
+this load the script:
+
+1. kills a node (`docker kill`), and starts it again a minute later;
+2. stops a node gracefully and starts it again, so shards move away and back;
+3. cuts the oldest node, where the carts list and the outbox poller run, off the other two, while it
+   still reaches the database;
+4. kills the oldest node.
+
+Then it compares the database with the ledgers. From the repository's root:
+
+```bash
+sbt examples/stageE2
+```
+
+```bash
+examples/deploy/e2/faults/run.sh
+```
+
+Two runs on one machine (18/10/2026, Docker Desktop on Windows; measured, not a benchmark) sent about
+100 000 commands each in nine minutes, and every check held. Every command that was answered with a
+success is stored once, in its cart; none of the 18 commands sent again after a lost answer took
+effect twice; no version of an aggregate was stored twice; no cart got a sixth item; and the carts
+list caught up with every cart. The timings tell you what to expect:
+
+- **A vanished node's aggregates wait a little under 50 seconds.** The other nodes notice within 6 to 8
+  seconds, the split brain resolver decides 20 seconds later (its `stable-after`), and the node's
+  shards and singletons start elsewhere 20 seconds after that. Until then, commands for its
+  aggregates wait, or time out at their senders and are sent again.
+- **A node that is cut off downs itself.** The oldest node, cut off, decided at the same moment as the
+  other two that it was on the smaller side, stopped its singletons and ended its process; the
+  singletons started on the next oldest node 21 seconds later. At no moment did two of them run.
+- **The outbox covers what a vanished node had not delivered.** A node killed right after its commits
+  left two or three events stored but not delivered. The outbox poller re-published them about three
+  and a half minutes later (it waits 3 minutes, and polls every 30 seconds). When the killed node was
+  the oldest, the poller moved with the other singletons, and a new poller re-publishes at its first
+  poll what it finds waiting: about a minute after the kill.
+
+> **Remember:** with the default settings, a client that keeps sending a command again with its key
+> for a minute rides out the loss of a node. Give up sooner, and you get errors for aggregates that
+> are only moving.
 
 ## Messages between nodes
 
@@ -609,7 +652,9 @@ docker compose -f examples/deploy/e2/docker-compose.yml up --build
 the image runs them with `java -cp "/app/lib/*"`: no sbt, and no repository to reach, in the image.
 Each node prints the cart it made and what the carts list, wherever it runs, says about it. Stop
 `node1`, the oldest, and the carts list and the outbox poller move to `node2`; restart `node3`, and
-it makes a cart again, read from `node2`.
+it makes a cart again, read from `node2`. The Compose file gives a stopping node two minutes
+(`stop_grace_period: 2m`), more than a hand-over may take; Docker's default of 10 seconds would kill
+it halfway.
 
 > **Remember:** `java -cp "lib/*"` puts the jars on the classpath in no particular order, which is
 > exactly why `e2.conf` binds the serializer itself (the first item of this chapter's configuration).
@@ -624,6 +669,9 @@ it makes a cart again, read from `node2`.
   make busy types `Sharded` in a cluster of several nodes, and change placement only with a full stop.
 - A leaving node waits up to 90 seconds for the commands at work; your process manager must wait
   longer, and clients retry with idempotency keys.
+- A node that vanishes or is cut off is downed by the split brain resolver; its aggregates and
+  singletons start elsewhere within a minute, and the outbox delivers what it had not. E2's fault
+  tests show it under load: every acknowledged command stored once, nothing lost.
 - Messages between nodes go through one serializer: keep your classes mpjsons-friendly, add fields as
   `Option`s, and keep messages well under 248 KiB.
 - Rolling upgrades: an app-version per release, the oldest node last, and `writtenFrom` with
