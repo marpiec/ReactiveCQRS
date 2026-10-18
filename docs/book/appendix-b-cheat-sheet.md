@@ -5,7 +5,7 @@ library's actors, grouped by who receives them, and exactly what comes back: the
 it arrives wrapped in a `Try`. At the end you will find the methods your application calls itself
 (schema set-up, backfills, checks) and the defaults worth knowing by heart.
 
-Every row was checked against the code of ReactiveCQRS 1.0 (`1.0.0-SNAPSHOT`). Messages the library
+Every row was checked against the code of ReactiveCQRS 1.0 (`1.0.0`). Messages the library
 sends only to itself are left out.
 
 ---

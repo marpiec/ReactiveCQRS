@@ -36,7 +36,7 @@ Dwa rodzaje pomocy:
 - **W test kicie** `reactivecqrs-testkit`, osobnym module dla twoich testów:
 
   ```scala
-  libraryDependencies += "io.reactivecqrs" %% "reactivecqrs-testkit" % "1.0.0-SNAPSHOT" % Test
+  libraryDependencies += "io.reactivecqrs" %% "reactivecqrs-testkit" % "1.0.0" % Test
   ```
 
   Są w nim `TestDatabase` (osobny schemat na każde uruchomienie testów), `TestIds`, `TestClock`,

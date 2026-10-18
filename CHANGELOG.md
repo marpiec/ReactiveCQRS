@@ -2,7 +2,7 @@
 
 Notable changes of ReactiveCQRS, newest first. Dates are DD/MM/YYYY.
 
-## 1.0.0 (not released yet)
+## 1.0.0 (18/10/2026)
 
 The first release after 0.12.47. It rewrites how events reach their subscribers, how an aggregate lives
 in memory, how read models are rebuilt and how the library runs on several nodes, and it adds

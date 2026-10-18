@@ -79,8 +79,8 @@ The artifacts are published to Neula's Maven repository:
 resolvers += "Neula releases" at "https://nexus.neula.in/repository/neula-releases"
 
 libraryDependencies ++= Seq(
-  "io.reactivecqrs" %% "reactivecqrs-core"    % "1.0.0-SNAPSHOT",
-  "io.reactivecqrs" %% "reactivecqrs-testkit" % "1.0.0-SNAPSHOT" % Test, // for your tests
+  "io.reactivecqrs" %% "reactivecqrs-core"    % "1.0.0",
+  "io.reactivecqrs" %% "reactivecqrs-testkit" % "1.0.0" % Test, // for your tests
   "ch.qos.logback"  %  "logback-classic"      % "1.5.32" // or any other slf4j backend
 )
 ```
@@ -273,10 +273,10 @@ sbt -Dreactivecqrs.test.clusterOfOne=true test
 
 ## Project status
 
-Version 1.0 is in development, on the `1.0.0-SNAPSHOT` line: milestones M1 to M6 are done, and M7
-(the release: test kit, API clean-up, the remaining findings) is next. See the
-[implementation plan](docs/IMPLEMENTATION-PLAN.md) for what each milestone holds, and
-[known issues](docs/KNOWN-ISSUES.md) for what is still open.
+Version 1.0.0 was released on 18/10/2026 (the tag `v1.0.0`); what changed since 0.12.47 is in the
+[changelog](CHANGELOG.md). What is still open, such as the upgrade's rehearsal on a copy of production
+(F52, F53) and the publication of mpjsons 0.7.0 (F179), is in [known issues](docs/KNOWN-ISSUES.md); the
+[implementation plan](docs/IMPLEMENTATION-PLAN.md) records how each milestone was built.
 
 ## License
 

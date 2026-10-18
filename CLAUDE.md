@@ -6,8 +6,8 @@ problems**. Known problems, decisions and the plan of the 1.0 line live in
 `docs/KNOWN-ISSUES.md` and `docs/IMPLEMENTATION-PLAN.md` (§7 below points there);
 `docs/ARCHITECTURE.md` describes how the library works in detail.
 
-> Note: written from a static read of 0.12.44 and updated for the 1.0 line through milestone M6 and
-> M7's findings and test kit (17/10/2026). Line numbers drift as files change — re-grep before quoting.
+> Note: written from a static read of 0.12.44 and updated for the 1.0 line through the 1.0.0
+> release (18/10/2026). Line numbers drift as files change — re-grep before quoting.
 
 ---
 
@@ -63,7 +63,7 @@ sbt "project core" "~compile"   # incremental
   Memory-backed variants (`Memory*State`, `MemoryDocumentStore`) are test doubles.
 - Publishing: `publishMavenStyle`, target `https://nexus.neula.in/...`
   (overridable via `-DsnapshotsRepo=`). Version lives in `project/Common.scala`
-  (`version := "1.0.0-SNAPSHOT"`) — bump it there, not per-module.
+  (`version := "1.0.0"`, released 18/10/2026, tag `v1.0.0`) — bump it there, not per-module.
 
 ---
 

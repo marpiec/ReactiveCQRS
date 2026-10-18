@@ -7,7 +7,7 @@ Everything you can set, in one place. ReactiveCQRS has two kinds of settings:
   classes you pass them, and the members of your aggregate contexts.
 
 Each table gives the default, what the setting does, and the chapter that explains it. The defaults
-were read from the code of ReactiveCQRS 1.0 (`1.0.0-SNAPSHOT`) on 18/10/2026. The ones you are most
+were read from the code of ReactiveCQRS 1.0 (`1.0.0`) on 18/10/2026. The ones you are most
 likely to change are also in [Appendix B](appendix-b-cheat-sheet.md), "Defaults worth knowing".
 
 Sizes: 64 MB is 64 × 1 024 × 1 024 bytes; times are written as Scala's `FiniteDuration`s.

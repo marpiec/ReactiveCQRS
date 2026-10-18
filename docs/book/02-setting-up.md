@@ -49,7 +49,7 @@ own build (`project/Common.scala` and `build.sbt`):
 |---|---|
 | Organization | `io.reactivecqrs` |
 | Artifacts | `reactivecqrs-api` and `reactivecqrs-core` |
-| Version | `1.0.0-SNAPSHOT` |
+| Version | `1.0.0` |
 | Scala suffix | yes (`_2.13`), so use `%%` |
 
 A minimal `build.sbt` for an application:
@@ -60,7 +60,7 @@ ThisBuild / scalaVersion := "2.13.18"
 resolvers += "Neula releases" at "https://nexus.neula.in/repository/neula-releases"
 
 libraryDependencies ++= Seq(
-  "io.reactivecqrs" %% "reactivecqrs-core" % "1.0.0-SNAPSHOT",
+  "io.reactivecqrs" %% "reactivecqrs-core" % "1.0.0",
   "ch.qos.logback"  %  "logback-classic"   % "1.5.32"   // or any other slf4j backend
 )
 
@@ -320,10 +320,10 @@ which has this shape (its context is called `ShoppingCartAggregateContext`).
 
 ```scala
 lazy val domain = project.settings(
-  libraryDependencies += "io.reactivecqrs" %% "reactivecqrs-api" % "1.0.0-SNAPSHOT")
+  libraryDependencies += "io.reactivecqrs" %% "reactivecqrs-api" % "1.0.0")
 
 lazy val app = project.dependsOn(domain).settings(
-  libraryDependencies += "io.reactivecqrs" %% "reactivecqrs-core" % "1.0.0-SNAPSHOT")
+  libraryDependencies += "io.reactivecqrs" %% "reactivecqrs-core" % "1.0.0")
 ```
 
 ## Checking that it all works
@@ -392,7 +392,7 @@ step 4 in action.
 - You need a JDK 21 or newer, Scala 2.13, sbt and PostgreSQL; the library brings Pekko, ScalikeJDBC
   and the JDBC driver along.
 - The library is `io.reactivecqrs %% reactivecqrs-api` (for your domain) and
-  `io.reactivecqrs %% reactivecqrs-core` (the machinery), version `1.0.0-SNAPSHOT`.
+  `io.reactivecqrs %% reactivecqrs-core` (the machinery), version `1.0.0`.
 - Your application must create ScalikeJDBC's default connection pool **before** any library code
   runs, with at least 32 connections.
 - Each state class creates its tables with `initSchema()`; the class-name dictionary comes first,

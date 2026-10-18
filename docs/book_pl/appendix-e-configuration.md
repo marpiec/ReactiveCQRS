@@ -7,7 +7,7 @@ Wszystko, co możesz ustawić, w jednym miejscu. ReactiveCQRS ma dwa rodzaje ust
   które im przekazujesz, i składowe twoich kontekstów agregatów.
 
 Każda tabela podaje wartość domyślną, to, co robi ustawienie, i rozdział, który je objaśnia. Wartości
-domyślne odczytano 18/10/2026 z kodu ReactiveCQRS 1.0 (`1.0.0-SNAPSHOT`). Te, które najpewniej
+domyślne odczytano 18/10/2026 z kodu ReactiveCQRS 1.0 (`1.0.0`). Te, które najpewniej
 zechcesz zmienić, są też w [dodatku B](appendix-b-cheat-sheet.md), w części „Wartości domyślne, które
 warto znać”.
 

@@ -2579,3 +2579,10 @@ Open test-infrastructure items:
 - Review 9 (KNOWN-ISSUES §7) closes M7: what the release's checks found, the deferred work (the
   fresh-reader test, the rehearsal on a copy of production, a slow database), the next step (the release).
 - `FaultTests` simplified: the client's answer is one match over `Try`, the cart creation one loop.
+
+**18/10/2026: 1.0.0 released**
+- At the owner's go-ahead: version `1.0.0` (`project/Common.scala`), the tag `v1.0.0`, the CHANGELOG dated;
+  the README, both books and CLAUDE.md name the released version. Two of M7's exit criteria follow the
+  release, by the owner's decision: the rehearsal on a copy of production (F52, F53), from which Neula plans
+  its move, and the publication of mpjsons 0.7.0 and of the library to Nexus (F179). F184 (the rebuild's
+  5–8 %) is profiled after it.

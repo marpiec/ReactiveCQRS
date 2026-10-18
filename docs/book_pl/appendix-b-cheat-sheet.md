@@ -6,7 +6,7 @@ przychodzi opakowana w `Try`. Na końcu znajdziesz metody, które twoja aplikacj
 (przygotowanie schematu, uzupełnienia wsteczne, kontrole), i wartości domyślne, które warto znać na
 pamięć.
 
-Każdy wiersz sprawdzono z kodem ReactiveCQRS 1.0 (`1.0.0-SNAPSHOT`). Komunikatów, które biblioteka
+Każdy wiersz sprawdzono z kodem ReactiveCQRS 1.0 (`1.0.0`). Komunikatów, które biblioteka
 wysyła tylko sama do siebie, tu nie ma.
 
 ---
