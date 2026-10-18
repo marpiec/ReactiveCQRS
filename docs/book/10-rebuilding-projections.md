@@ -58,94 +58,85 @@ After the switch, the old build's tables are dropped. You never write any of tha
 
 ## Setting up managed projections
 
-We will manage a small projection of cart names, modelled on `ShoppingCartsListProjectionAggregatesBased`
-in the test domain. It keeps one document per cart, holding the cart's name:
+We will manage E10's projection of cart names, over the carts of chapter 2's E1. It keeps one
+document per cart, holding the cart's name. It can also write the names in capitals, which its
+version 2 will do; and `clearForRebuild`, at its end, is for the targeted rebuilds at the end of this
+chapter:
 
+<!-- snippet: e10/CartNames.scala#projection -->
 ```scala
-import io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.core.documentstore.DocumentStore
-import io.reactivecqrs.core.projection.{ProjectionActor, SubscriptionsState}
-import io.reactivecqrs.testdomain.shoppingcart.ShoppingCart
+case class GetCartName(id: AggregateId) // answered with Option[String], once the cart's document is there
 
-case class GetCartName(id: AggregateId)
+class CartNames(val subscriptionsState: SubscriptionsState, store: DocumentStore[String], capitals: Boolean) extends ProjectionActor {
 
-class CartNames(val subscriptionsState: SubscriptionsState, store: DocumentStore[String]) extends ProjectionActor {
+  override protected val projectionName: String = "CartNames"
 
   protected val listeners = List(AggregateListener[ShoppingCart] { (id, _, created, cart) => implicit session =>
     cart match {
-      case Some(c) if created => store.insertDocument(0, id.asLong, c.name)
-      case Some(c)            => store.overwriteDocument(id.asLong, c.name)
+      case Some(c) if created => store.insertDocument(0, id.asLong, written(c.name))
+      case Some(c)            => store.overwriteDocument(id.asLong, written(c.name))
       case None               => store.removeDocument(id.asLong) // the cart was deleted
     }
   })
 
+  private def written(name: String): String = if (capitals) name.toUpperCase else name
+
   override protected def receiveQuery: Receive = {
-    case GetCartName(id) => sender() ! store.getDocument(id.asLong).map(_.document)
+    case GetCartName(id) => delayIfNotAvailable(sender(), () => store.getDocument(id.asLong).map(_.document), 2000)
   }
 
-  override protected val projectionName: String = "CartNames"
+  override protected def clearForRebuild(target: RebuildTarget)(implicit session: DBSession): Unit = target match {
+    case RebuildTarget.OneAggregate(id) => store.removeDocument(id.asLong)
+    case RebuildTarget.OneSpace(space)  => store.clearSpace(space.asLong)
+    case RebuildTarget.OneType(_)       => store.clearAllData() // CartNames receives carts only
+  }
 }
 ```
 
-Nothing here is new since chapter 8. What changes is how you start it. Four steps:
+Nothing in the listener is new since chapter 8. What changes is how you start it. Four steps, all
+here:
 
-1. **Create the registry**, once, when the application starts:
+<!-- snippet: e10/RebuildSetup.scala#start -->
+```scala
+val registry = new PostgresProjectionRegistry().initSchema()
+val projections = new Projections(system, ProjectionsSettings(eventStore, subscriptions, registry,
+  contexts = Seq(new ShoppingCartContext)))
 
-   ```scala
-   import io.reactivecqrs.core.rebuild.PostgresProjectionRegistry
+val cartNames = projections.start[CartNames]("e10-cart-names", version, "cartNames") { build =>
+  new CartNames(subscriptions,
+    new PostgresDocumentStore[String](build.documentStore("e10_cart_names"), mpjsons, new NoopDocumentStoreCache),
+    capitals = build.version >= 2)
+}
+eventBus ! EventsBusActor.RegisterSubscribers(List(cartNames)) // the supervisor, where the projection would be
+```
 
-   val registry = new PostgresProjectionRegistry().initSchema()
-   ```
-
-2. **Create one `Projections`** for the actor system. It runs every managed projection:
-
-   ```scala
-   import io.reactivecqrs.core.rebuild.{Projections, ProjectionsSettings}
-
-   val projections = new Projections(system, ProjectionsSettings(eventStore, subscriptionsState, registry,
-     contexts = Seq(new ShoppingCartAggregateContext)))
-   ```
-
-   `eventStore` is where builds read events from, and `subscriptionsState` is the one your
-   projections already use (chapter 8). `contexts` lists the aggregate contexts whose *states* your
-   managed projections receive: `CartNames` listens to cart states, so the cart context goes in. Three
-   more parameters have defaults: `builder` (how a build reads, `BuilderSettings()`),
-   `buildsAtOnce = 2`, and `restartAfter = 10.seconds` (how long the supervisor waits before it tries
-   again after something failed).
-
-3. **Start the projection** through it:
-
-   ```scala
-   import io.reactivecqrs.core.documentstore.{NoopDocumentStoreCache, PostgresDocumentStore}
-
-   val cartNames: ActorRef = projections.start[CartNames]("cart-names", 1, "cartNames") { build =>
-     new CartNames(subscriptionsState,
-       new PostgresDocumentStore[String](build.documentStore("cart_names"), mpjsons, new NoopDocumentStoreCache))
-   }
-   ```
-
-   Read it from left to right: the projection's class, its **name** (`"cart-names"`), its
-   **version** (`1`), the actor name of its supervisor (`"cartNames"`), and a function that makes one
-   instance of the projection for a given build. The function asks the build for the table name:
-   `build.documentStore("cart_names")` gives `cart_names_v1` for the first build of version 1, and
-   the document store makes the table `projection_cart_names_v1` from it.
-
-4. **Use the supervisor wherever you would have used the projection**: register it with the event
-   bus, and send it your queries.
+1. **The registry**, created once when the application starts: a few tables where the library
+   remembers each projection's builds.
+2. **One `Projections`** for the actor system. It runs every managed projection. `eventStore` is
+   where builds read events from, and `subscriptions` is the subscriptions state your projections
+   already use (chapter 8). `contexts` lists the aggregate contexts whose *states* your managed
+   projections receive: `CartNames` listens to cart states, so the cart context goes in. Three more
+   parameters have defaults: `builder` (how a build reads, `BuilderSettings()`), `buildsAtOnce = 2`,
+   and `restartAfter = 10.seconds` (how long the supervisor waits before it tries again after
+   something failed).
+3. **The projection, started through it.** Read it from left to right: the projection's class, its
+   **name** (`"e10-cart-names"`), its **version** (`version`: 1 in the first release), the actor
+   name of its supervisor (`"cartNames"`), and a function that makes one instance of the projection
+   for a given build. The function asks the build for the table name:
+   `build.documentStore("e10_cart_names")` gives `e10_cart_names_v1` for the first build of version
+   1, and the document store makes the table `projection_e10_cart_names_v1` from it. It also tells
+   the instance whether to write capitals, from the build's version.
+4. **The supervisor, used wherever you would have used the projection**: registered with the event
+   bus (together with your other subscribers, in one message), and sent your queries:
 
    ```scala
-   import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
-   import org.apache.pekko.pattern.ask
-
-   eventBus ! RegisterSubscribers(Seq(cartNames)) // together with your other subscribers, in one message
-
    val name: Future[Option[String]] = (cartNames ? GetCartName(cartId)).mapTo[Option[String]]
    ```
 
-The first time this runs, the registry has never heard of `cart-names`, so the supervisor starts
+The first time this runs, the registry has never heard of `e10-cart-names`, so the supervisor starts
 build 1 and fills it with every cart already in the store. Build 1 is all there is, so it answers
 queries from the start, with whatever it has so far. Once it has caught up, it simply carries on
-with live events. From now on the registry says: `cart-names`, active build 1, version 1.
+with live events. From now on the registry says: `e10-cart-names`, active build 1, version 1.
 
 > **Remember:** the name is the projection's identity in the database. To change a projection,
 > change its version and keep its name.
@@ -165,17 +156,18 @@ supervisor creates every instance on the blocking dispatcher for you.
 
 ## Shipping a new version
 
-Say the shop wants cart names in capital letters. Here is the whole release:
+Say the shop wants cart names in capital letters. E10 is ready for it: `CartNames` writes capitals
+when `capitals` is true, and the function that makes an instance sets it from the build's version
+(`capitals = build.version >= 2`). So the whole release is:
 
-1. Change the listener to store `c.name.toUpperCase`, in both `insertDocument` and
-   `overwriteDocument`.
-2. Raise the version in `start`: `projections.start[CartNames]("cart-names", 2, "cartNames") { ... }`.
-3. Deploy and start the application.
+1. Raise the version in `start` from 1 to 2. (Without E10's flag, you would change the listener to
+   store `c.name.toUpperCase` and raise the version.)
+2. Deploy and start the application.
 
 That's all you do. What happens next:
 
 - The supervisor reads the registry: the active build is at version 1, the code at version 2. It
-  starts build 2, with tables of its own (`projection_cart_names_v2`).
+  starts build 2, with tables of its own (`projection_e10_cart_names_v2`).
 - Build 1 keeps answering queries.
 - A builder reads the carts from the event store and hands them to build 2, many at a time, one
   transaction per chunk.
@@ -183,13 +175,17 @@ That's all you do. What happens next:
 - Build 1 leaves the event bus and stops; its tables, subscription versions and failure records are
   dropped.
 
+E10 runs both releases, each in an actor system of its own, as a redeploy starts the application
+again; `RebuildSpec` checks that version 1 served the names as typed and version 2 serves them in
+capitals.
+
 The log tells the story. With our projection it reads like this (other lines left out):
 
 ```
-Projection cart-names serves build 1 (version 1), builds 2 (version 2)
-Projection projection:cart-names_v2 is live; reconciling it with the store
-Projection cart-names switched to build 2 (version 2)
-Projection cart-names: build 1 is dropped
+Projection e10-cart-names serves build 1 (version 1), builds 2 (version 2)
+Projection projection:e10-cart-names_v2 is live; reconciling it with the store
+Projection e10-cart-names switched to build 2 (version 2)
+Projection e10-cart-names: build 1 is dropped
 ```
 
 You can also ask the supervisor. `GetBuilds` is answered with `Builds(name, active, building,
@@ -205,9 +201,25 @@ import io.reactivecqrs.core.rebuild.ProjectionSupervisor._
 
 `active` and `building` are `BuildRecord`s: the build's `number`, its `version`, its table `suffix`
 (`"_v2"`), and the `subscriber` name its subscription versions are stored under
-(`"projection:cart-names_v2"`). `caughtUp` is true once the build in progress has every event; it
+(`"projection:e10-cart-names_v2"`). `caughtUp` is true once the build in progress has every event; it
 replaces the active build as soon as it has no failed subscription (more on that below). The
-building record's `position` is where the build saved its progress last.
+building record's `position` is where the build saved its progress last. E10 waits for the switch by
+asking for the builds until the new version serves alone:
+
+<!-- snippet: e10/RebuildSetup.scala#builds -->
+```scala
+/** The builds once the projection's `version` serves alone, the switch to it done; asked every 200 ms. */
+@tailrec
+def switchedTo(shop: Shop, version: Int, deadline: Deadline)(implicit timeout: Timeout): Builds = {
+  val builds = Await.result((shop.cartNames ? GetBuilds).mapTo[Builds], timeout.duration)
+  if (builds.active.exists(_.version == version) && builds.building.isEmpty) builds
+  else if (deadline.isOverdue()) throw new IllegalStateException(s"Version $version does not serve yet: $builds")
+  else {
+    Thread.sleep(200)
+    switchedTo(shop, version, deadline)
+  }
+}
+```
 
 To watch a build at work, ask the same supervisor for `GetBuildStatus`:
 
@@ -245,16 +257,15 @@ deployed version 2. So what about the events that arrive meanwhile? You choose, 
   `RebuildProjection` while the application runs.
 
 ```scala
-projections.start[CartNames]("cart-names", 3, "cartNames", whileBuilding = ServeStale) { build => ... }
+projections.start[CartNames]("e10-cart-names", 3, "cartNames", whileBuilding = ServeStale) { build => ... }
 ```
 
 Both live in `io.reactivecqrs.core.rebuild.ProjectionSupervisor`.
 
 > **Tip:** the function is given the build, and the build knows its own version (`build.version`).
-> An instance made for the active build of version 1 can keep version 1's behaviour while version 2
-> builds. If `CartNames` took a `capitals` flag, you would write
-> `new CartNames(subscriptionsState, store, capitals = build.version >= 2)`. `ProjectionsSpec` does
-> exactly this.
+> An instance made for the active build of version 1 keeps version 1's behaviour while version 2
+> builds. That is what E10's `capitals = build.version >= 2` does: with `ServeLive`, the active
+> build of version 1 goes on writing names as typed, in version 1's tables.
 
 ## What your projection sees while it is built
 
@@ -336,13 +347,11 @@ Sometimes one page of a catalogue has a typo. You reprint that page, not the who
 **targeted rebuild** does the same for a read model: it rebuilds, in place, what the active build
 made from one aggregate, one aggregate type or one organization, and leaves everything else alone.
 
-First, the projection has to know how to clear what it made from a target. Override
-`clearForRebuild` in `CartNames`:
+First, the projection has to know how to clear what it made from a target. `CartNames` overrides
+`clearForRebuild`:
 
+<!-- snippet: e10/CartNames.scala#clear -->
 ```scala
-import io.reactivecqrs.core.projection.RebuildTarget
-import scalikejdbc.DBSession
-
 override protected def clearForRebuild(target: RebuildTarget)(implicit session: DBSession): Unit = target match {
   case RebuildTarget.OneAggregate(id) => store.removeDocument(id.asLong)
   case RebuildTarget.OneSpace(space)  => store.clearSpace(space.asLong)
@@ -350,7 +359,7 @@ override protected def clearForRebuild(target: RebuildTarget)(implicit session: 
 }
 ```
 
-That is the pattern of `ManagedNotes` in `ProjectionsSpec`. Then ask the supervisor:
+Then ask the supervisor:
 
 ```scala
 import io.reactivecqrs.api.AggregateType
@@ -374,6 +383,18 @@ What happens:
 4. The answer is `AggregatesRebuilt(target, count)`, with the number of aggregates rebuilt.
 
 Between steps 2 and 4, queries about the target find its documents missing or half rebuilt.
+
+E10 repairs one cart this way, after a hand-written SQL fix gone wrong overwrote its name in the
+active build's table:
+
+<!-- snippet: e10/RebuildSetup.scala#repair -->
+```scala
+def repair(shop: Shop, cartId: AggregateId)(implicit timeout: Timeout): AggregatesRebuilt =
+  Await.result(shop.cartNames ? RebuildAggregates(RebuildTarget.OneAggregate(cartId)), timeout.duration) match {
+    case rebuilt: AggregatesRebuilt => rebuilt // AggregatesRebuilt(OneAggregate(cartId), 1)
+    case refused => throw new IllegalStateException("Not rebuilt: " + refused)
+  }
+```
 
 The supervisor answers `RebuildRefused(reason)` instead when:
 
@@ -414,7 +435,7 @@ you retire it, including its failure records, which would otherwise hold up perm
 the aggregates they name. Call this when the application starts:
 
 ```scala
-projections.retire("cart-names")
+projections.retire("e10-cart-names")
 ```
 
 It drops every build of the projection and forgets the name. In a cluster in the middle of a rolling
