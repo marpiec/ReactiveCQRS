@@ -2243,3 +2243,10 @@ Open test-infrastructure items:
   that then lives on its own, and a squash that folds the oldest events into one after detaching
   that copy; the history below the squash point is refused to reads and gone from `events`. A
   runnable main and `HistorySpec`.
+
+**18/10/2026: E6, command processing**
+- E6 (`examples/.../e6`): a concert scheduled with a key the client chooses (sent twice: one concert,
+  the same answer), seats booked one at a time (`Serial`: eight bookings of five seats sent at once
+  give five tickets and three "Sold out"; sixty at once overflow the queue of twenty, the rest
+  answered `CommandRejected`), and each booking's ticket row written with its event (`WithOutboxWriter`).
+  A runnable main and `CommandsSpec`, stable over three runs and as a cluster of one.
