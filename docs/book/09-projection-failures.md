@@ -53,6 +53,7 @@ saga (chapter 12), or in a listener of their own that uses `noDBSession` (no tra
 grouped with other carts), does nothing while `rebuilding` is true, and is idempotent: doing the
 same thing twice must be harmless.
 
+<!-- snippet: cart/CartDeletedMailer.scala#mailer -->
 ```scala
 import io.reactivecqrs.core.projection.{AggregateListenerActor, SubscriptionsState}
 import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCart, ShoppingCartDeleted}
@@ -76,14 +77,17 @@ with nothing to ask. You start and register it like any projection (chapter 8).
 ## When a listener throws
 
 Let's break something on purpose. Suppose we decided that cart names must be unique in our list,
-and gave the store from chapter 8 a unique index:
+and gave it a store like chapter 8's with a unique index (in a table of its own here):
 
+<!-- snippet: cart/FailuresSpec.scala#uniqueStore -->
 ```scala
-new PostgresDocumentStore[CartSummary]("carts_list", mpjsons, new NoopDocumentStoreCache,
+val cartsStore = new PostgresDocumentStore[CartSummary]("unique_carts", mpjsons, new NoopDocumentStoreCache,
   Seq(UniqueTextIndex(1, Seq("name"))))
 ```
 
-Alice has a cart called "Groceries". Then Bob creates one with the same name. The write side does
+This chapter's blocks run in `FailuresSpec` (`examples/src/test/scala/io/reactivecqrs/examples/cart/`),
+which tells this story with three quick retries instead of nine slow ones. Alice has a cart called
+"Groceries". Then Bob creates one with the same name. The write side does
 not mind, because cart names are not unique there, but our listener's `insertDocument` for Bob's
 cart (cart 43) breaks the index. Here is what happens next:
 
@@ -127,6 +131,7 @@ or record the failure.
 
 Ask the projection itself:
 
+<!-- snippet: cart/FailuresSpec.scala#status -->
 ```scala
 import io.reactivecqrs.core.projection.{GetProjectionStatus, ProjectionStatus}
 
@@ -156,6 +161,7 @@ survive restarts: a stuck cart stays stuck until somebody does something about i
 First fix the cause. Here we swap the unique index for an ordinary one, under a new number (at
 start, the store drops index 1 and creates index 2), and restart:
 
+<!-- snippet: cart/FailuresSpec.scala#indexSwap -->
 ```scala
 Seq(MultipleTextIndex(2, Seq("name")))
 ```
@@ -173,10 +179,11 @@ retry at start did not help, these three messages, sent to the projection, do it
 
 `count` says how many failed subscriptions were handled; 0 means there was nothing to do.
 
+<!-- snippet: cart/FailuresSpec.scala#retry -->
 ```scala
 import io.reactivecqrs.core.projection.{FailedSubscriptionsHandled, RetryFailedSubscription}
 
-Await.result((cartsList ? RetryFailedSubscription(cartId)).mapTo[FailedSubscriptionsHandled], 5.seconds)
+val handled = Await.result((cartsList ? RetryFailedSubscription(cartId)).mapTo[FailedSubscriptionsHandled], 5.seconds)
 // FailedSubscriptionsHandled(Id(43),1)
 ```
 
@@ -222,11 +229,12 @@ These options of chapter 8's `ProjectionActorOptions` shape everything above:
 | `gapRequestRepeat` (10 seconds) | how long a request for missing versions waits before it is sent again, doubling up to 5 minutes |
 | `gapGiveUpAfter` (10 minutes) | how long missing versions are asked for before the gap becomes a recorded failure |
 
+<!-- snippet: cart/FailuresSpec.scala#retries -->
 ```scala
 import io.reactivecqrs.core.projection.ProjectionActorOptions
 import io.reactivecqrs.core.util.Backoff
 
-ProjectionActorOptions.DEFAULT
+val options = ProjectionActorOptions.DEFAULT
   .withRetries(Backoff(1.second, 10.seconds, maxAttempts = 4)) // four attempts, about 7 seconds of waiting
   .copy(gapGiveUpAfter = 30.minutes)
 ```
@@ -251,6 +259,7 @@ own log lines use its `projectionName`. We called both "CartsList".)
 
 Ask the bus how it is doing with `GetDeliveryStatus`:
 
+<!-- snippet: cart/FailuresSpec.scala#delivery -->
 ```scala
 import io.reactivecqrs.core.eventbus.EventsBusActor.{DeliveryStatus, GetDeliveryStatus}
 
@@ -291,6 +300,7 @@ later. Subscribers that already have the events simply acknowledge them again. A
 aggregates are published again per poll, the longest waiting first, so that a backlog after an
 outage does not wake every owner at once.
 
+<!-- snippet: cart/FailuresSpec.scala#outboxStatus -->
 ```scala
 import io.reactivecqrs.core.delivery.OutboxPollerActor.{GetOutboxStatus, OutboxStatus}
 
@@ -300,6 +310,7 @@ val outbox = Await.result((outboxPoller ? GetOutboxStatus).mapTo[OutboxStatus], 
 
 You can change the timings with `OutboxPollerOptions` when you create the poller:
 
+<!-- snippet: cart/FailuresSpec.scala#pollerOptions -->
 ```scala
 import io.reactivecqrs.core.delivery.{OutboxPollerActor, OutboxPollerOptions, RedeliveryPolicy}
 

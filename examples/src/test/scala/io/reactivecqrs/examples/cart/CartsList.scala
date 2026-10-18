@@ -25,11 +25,12 @@ case class GetCartSummaryAtLeast(cartId: AggregateId, version: AggregateVersion)
 
 // #projection
 import io.reactivecqrs.core.documentstore.DocumentStore
-import io.reactivecqrs.core.projection.{ProjectionActor, SubscriptionsState}
+import io.reactivecqrs.core.projection.{ProjectionActor, ProjectionActorOptions, SubscriptionsState}
 import io.reactivecqrs.testdomain.shoppingcart.ShoppingCart
 
 class CartsListProjection(val subscriptionsState: SubscriptionsState,
-                          store: DocumentStore[CartSummary]) extends ProjectionActor {
+                          store: DocumentStore[CartSummary],
+                          options: ProjectionActorOptions = ProjectionActorOptions.DEFAULT) extends ProjectionActor(options) {
 
   override protected val projectionName: String = "CartsList"
 

@@ -236,11 +236,12 @@ the event bus `eventBus`, the user `alice`, and the cart command bus `carts`.
    <!-- snippet: cart/CartsList.scala#projection -->
    ```scala
    import io.reactivecqrs.core.documentstore.DocumentStore
-   import io.reactivecqrs.core.projection.{ProjectionActor, SubscriptionsState}
+   import io.reactivecqrs.core.projection.{ProjectionActor, ProjectionActorOptions, SubscriptionsState}
    import io.reactivecqrs.testdomain.shoppingcart.ShoppingCart
 
    class CartsListProjection(val subscriptionsState: SubscriptionsState,
-                             store: DocumentStore[CartSummary]) extends ProjectionActor {
+                             store: DocumentStore[CartSummary],
+                             options: ProjectionActorOptions = ProjectionActorOptions.DEFAULT) extends ProjectionActor(options) {
 
      override protected val projectionName: String = "CartsList"
 
@@ -281,7 +282,8 @@ the event bus `eventBus`, the user `alice`, and the cart command bus `carts`.
    The listener reads like the scoreboard it is: a new cart gets a document, a changed cart gets its
    document replaced, a deleted cart loses it. This is the test domain's
    `ShoppingCartsListProjectionAggregatesBased`, plus the item count and the version. It answers
-   two more questions, `FindBigCarts` and `GetCartSummaryAtLeast`, which come later in this chapter.
+   two more questions, `FindBigCarts` and `GetCartSummaryAtLeast`, which come later in this chapter,
+   and its third parameter, its options, comes at the end of the chapter.
 
 3. **Create the notebook**, once per system; the store is the one of the section before:
 
@@ -540,8 +542,8 @@ search that throws, or a `Future` that fails, is answered with `Status.Failure`.
 
 ## Options worth knowing
 
-A projection takes its options in its constructor, as a `ProjectionActorOptions`:
-`extends ProjectionActor(options)`, as E3's projection does. Start from
+A projection takes its options in its constructor, as a `ProjectionActorOptions`: the cart list's
+third parameter, which it passes on with `extends ProjectionActor(options)`. Start from
 `ProjectionActorOptions.DEFAULT` and change what you need:
 
 <!-- snippet: cart/ReadModelsSpec.scala#options -->
