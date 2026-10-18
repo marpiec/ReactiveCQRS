@@ -38,7 +38,7 @@ object TestDatabase {
       connection.close()
     }
     ConnectionPool.singleton(inSchemaUrl(schema), user, password,
-      ConnectionPoolSettings(initialSize = 5, maxSize = 20, connectionTimeoutMillis = 3000L))
+      ConnectionPoolSettings(initialSize = 5, maxSize = 32, connectionTimeoutMillis = 3000L))
   }
 
   private def dropOldRunSchemas(connection: Connection): Unit = {
@@ -56,7 +56,7 @@ object TestDatabase {
   /** Initializes the default ScalikeJDBC connection pool once per JVM, whichever spec runs first. */
   def init(): Unit = initialized
 
-  private val settings = ConnectionPoolSettings(initialSize = 5, maxSize = 20, connectionTimeoutMillis = 3000L)
+  private val settings = ConnectionPoolSettings(initialSize = 5, maxSize = 32, connectionTimeoutMillis = 3000L)
 
   /** Runs `block` with the default pool on a second schema of this run (`<schema>_<suffix>`, created if missing), as a
     * second installation, then on this run's schema again. Nothing else may use the pool meanwhile: the library's

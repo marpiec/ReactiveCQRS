@@ -1,7 +1,8 @@
 # E2 (chapter 17): three nodes of the shop on Kubernetes, joining through Cluster Bootstrap, with the split brain
 # resolver's lease.
 #
-#   kubectl create secret generic shop-db --from-literal=url=jdbc:postgresql://<host>:5432/shop \
+#   kubectl create secret generic shop-db \
+#     --from-literal=url="jdbc:postgresql://<host>:5432/shop?tcpKeepAlive=true&socketTimeout=600&logServerErrorDetail=false" \
 #     --from-literal=user=<user> --from-literal=password=<password>
 #   kubectl apply -f examples/deploy/e2/kubernetes.yaml
 #

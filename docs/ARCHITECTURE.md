@@ -1680,6 +1680,7 @@ or after the library's actors start. `metrics/RecordingMetrics` keeps them in me
 | `reactivecqrs.outbox.waiting` | gauge | | at each poll: aggregates waiting in the outbox, at most `maxTracked` |
 | `reactivecqrs.outbox.given.up` | gauge | | aggregates the poller reported undelivered |
 | `reactivecqrs.outbox.republished` | count | | re-publications the poller asked for |
+| `reactivecqrs.outbox.read.abandoned` | count | | reads of the outbox given up after `readTimeout` (F186) |
 | `reactivecqrs.message.too.large` | count | `class` | messages too large to cross nodes (F121) |
 
 Tracing goes with the metadata envelope (R13, D32): `EventMetadata.traceContext` holds the W3C

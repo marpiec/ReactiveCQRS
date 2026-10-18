@@ -3,7 +3,7 @@ package io.reactivecqrs.core.aggregate
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.eventstore.EventStoreState
-import io.reactivecqrs.core.util.{BlockingDispatcher, MyActorLogging}
+import io.reactivecqrs.core.util.{BlockingDispatcher, MyActorLogging, ReadWatch}
 import org.apache.pekko.actor.{Actor, ActorRef, Cancellable}
 
 import scala.concurrent.Future
@@ -37,13 +37,14 @@ object SquashScheduler {
   val metadata: EventMetadata = EventMetadata("system:squash-scheduler")
 
   private case class NotAnswered(aggregateId: AggregateId)
-  private case class Read(found: Seq[(SquashTarget, Try[Seq[(AggregateId, AggregateVersion)]])])
+  private case class Read(number: Int, found: Seq[(SquashTarget, Try[Seq[(AggregateId, AggregateVersion)]])])
 }
 
 /** @param perRun how many aggregates of each type a run squashes at most; the next run goes on after the last one
-  * @param answerTimeout how long the scheduler waits for one squash before it goes on with the next */
+  * @param answerTimeout how long the scheduler waits for one squash before it goes on with the next
+  * @param readTimeout how long a read of the candidates may run before a run gives it up, logs it and reads again (F186) */
 case class SquashSchedulerOptions(firstRunAfter: FiniteDuration = 1.minute, interval: FiniteDuration = 1.hour,
-                                  perRun: Int = 100, answerTimeout: FiniteDuration = 1.minute) {
+                                  perRun: Int = 100, answerTimeout: FiniteDuration = 1.minute, readTimeout: FiniteDuration = 5.minutes) {
   require(perRun > 0, "perRun must be positive")
 }
 
@@ -63,7 +64,7 @@ class SquashScheduler(eventStore: EventStoreState, targets: Seq[SquashScheduler.
   private var after = Map[AggregateType, AggregateId]()
   private var waiting = Vector[(SquashTarget, AggregateId, AggregateVersion)]()
   private var current: Option[(AggregateId, Cancellable)] = None
-  private var reading = false
+  private val reads = new ReadWatch(options.readTimeout)
   private var squashed = 0L
   private var refused = 0L
 
@@ -76,12 +77,17 @@ class SquashScheduler(eventStore: EventStoreState, targets: Seq[SquashScheduler.
 
   override def receive: Receive = {
     case Run =>
-      if (reading || current.nonEmpty) log.info("The squash run before is still going; this one is skipped")
-      else read()
-    case Read(found) =>
-      reading = false
+      val started = if (current.nonEmpty) None else reads.start()
+      started match {
+        case None => log.info("The squash run before is still going; this one is skipped")
+        case Some((number, gaveUp)) =>
+          if (gaveUp) log.error(reads.givenUp("Reading the aggregates to squash"))
+          read(number)
+      }
+    case Read(number, found) => if (reads.ended(number)) {
       waiting = found.toVector.flatMap(candidates)
       next()
+    }
     case AggregateSquashed(id, _) if current.exists(_._1 == id) =>
       squashed += 1
       next()
@@ -96,11 +102,10 @@ class SquashScheduler(eventStore: EventStoreState, targets: Seq[SquashScheduler.
   }
 
   // F27: the reads run on the blocking dispatcher, each type's from where the run before stopped.
-  private def read(): Unit = {
-    reading = true
+  private def read(number: Int): Unit = {
     val from = targets.map(target => target -> after.getOrElse(target.aggregateType, AggregateId(Long.MinValue)))
     Future(from.map { case (target, start) => target -> Try(eventStore.squashCandidates(target.aggregateType, target.policy, start, options.perRun)) })(
-      BlockingDispatcher(context.system)).onComplete(result => self ! Read(result.getOrElse(Nil)))
+      BlockingDispatcher(context.system)).onComplete(result => self ! Read(number, result.getOrElse(Nil)))
   }
 
   // A failed read is logged, and the type is looked at again in the next run (AR7).

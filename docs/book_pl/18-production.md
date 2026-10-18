@@ -23,8 +23,9 @@ kod biblioteki:
 ```scala
 import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
 
-ConnectionPool.singleton("jdbc:postgresql://db.internal:5432/shop", "shop", sys.env("SHOP_DB_PASSWORD"),
-  ConnectionPoolSettings(initialSize = 8, maxSize = 40, connectionTimeoutMillis = 5000L))
+ConnectionPool.singleton("jdbc:postgresql://db.internal:5432/shop?tcpKeepAlive=true&socketTimeout=600&logServerErrorDetail=false",
+  "shop", sys.env("SHOP_DB_PASSWORD"),
+  ConnectionPoolSettings(initialSize = 8, maxSize = 40, connectionTimeoutMillis = 5000L, validationQuery = "SELECT 1"))
 ```
 
 Ustaw pulę **co najmniej tak dużą jak dispatcher blokujący** (domyślnie 32 wątki, krok 4): każdy
@@ -34,7 +35,26 @@ wystarczyć na pule *wszystkich* twoich węzłów.
 
 > **Ostrzeżenie:** ScalikeJDBC domyślnie tworzy pulę 8 połączeń i czeka na wolne połączenie 5 sekund.
 > Pod obciążeniem praca, która czeka dłużej, kończy się błędem, a nadawca polecenia dostaje
-> `EventHandlingError`.
+> `EventHandlingError`. Węzeł, którego pula jest mniejsza niż jego dispatcher blokujący, zapisuje przy
+> starcie ostrzeżenie w logu.
+
+Reszta tego kodu chroni przed bazą danych, która przestaje odpowiadać: po przełączeniu awaryjnym
+połączenie może czekać na odpowiedź, która nigdy nie przyjdzie, i na zawsze trzymać wątek biblioteki.
+
+- `socketTimeout=600`: odczyt, który przez 10 minut nie dostaje odpowiedzi, kończy się błędem. Ustaw go
+  powyżej najdłuższego polecenia, jakie wykonują twoje węzły, a długie zadania z kroku 7 (budowę
+  indeksów, uzupełnianie danych) uruchamiaj z procesu bez tego ustawienia.
+- `tcpKeepAlive=true`: system operacyjny zauważa połączenie, którego drugi koniec zniknął.
+- `validationQuery`: połączenie jest sprawdzane, zanim zostanie wydane, więc po restarcie bazy martwe
+  połączenia są wymieniane, zamiast każde psuć jeden kawałek pracy. Kosztuje to jedną wymianę z bazą
+  przy każdym pobraniu połączenia.
+- `logServerErrorDetail=false`: błędy sterownika nie cytują wierszy (zobacz niżej „Dane osobowe a
+  logi”).
+
+W bazie danych `ALTER ROLE shop SET idle_in_transaction_session_timeout = '10min';` kończy sesje, które
+zawieszony albo martwy proces zostawił otwarte w transakcji. Także singletony samej biblioteki nie czekają
+w nieskończoność: poller outboxu i scheduler squasha porzucają odczyt, który trwa dłużej niż pięć minut
+(`readTimeout` w ich opcjach), zapisują błąd w logu i czytają od nowa.
 
 ### 2. Inicjalizuj schemat przy każdym starcie
 
@@ -268,6 +288,7 @@ co dostajesz:
 | `reactivecqrs.outbox.waiting` | wskaźnik | | agregaty czekające w outboxie przy każdym przeglądzie |
 | `reactivecqrs.outbox.given.up` | wskaźnik | | agregaty, które poller zgłosił jako niedostarczone |
 | `reactivecqrs.outbox.republished` | licznik | | ponowne publikacje, o które poprosił poller |
+| `reactivecqrs.outbox.read.abandoned` | licznik | | odczyty outboxu porzucone po `readTimeout`: połączenie przestało odpowiadać |
 | `reactivecqrs.message.too.large` | licznik | `class` | komunikaty zbyt duże, by przejść między węzłami ([rozdział 17](17-cluster.md)) |
 
 > **Wskazówka:** trzy alerty wyłapują większość kłopotów: `reactivecqrs.outbox.given.up` powyżej zera,

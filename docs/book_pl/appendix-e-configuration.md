@@ -89,6 +89,7 @@ Składowe twojego `AggregateContext`; nadpisz te, których potrzebujesz.
 | `pullPartEvents`, `pullPartBytes` | `1000`, `16 MB` | Rozmiar części, w jakich właściciel odpowiada na pobranie. | — |
 | `OutboxPollerActor(eventStore, eventBus, options, clock)` | `OutboxPollerOptions()`, zegar systemowy | Czasy pollera; w testach `TestClock`. | [9](09-projection-failures.md), [19](19-testing.md) |
 | `OutboxPollerOptions` `firstPollAfter`, `pollInterval` | `10 s`, `30 s` | Pierwszy przegląd i kolejne po nim. | [4](04-first-command.md) |
+| `OutboxPollerOptions` `readTimeout` | `5 minutes` | Odczyt outboxu, który trwa dłużej, jest porzucany, zapisywany w logu i powtarzany (połączenie, które przestało odpowiadać). | [18](18-production.md) |
 | `maxTracked` | `100000` | Najwięcej czekających agregatów, ile czyta jeden przegląd. | — |
 | `RedeliveryPolicy.Options` `attemptsAfter` | `3 minutes`, `6 minutes` | Kiedy czekające zdarzenie jest publikowane ponownie. | [9](09-projection-failures.md) |
 | `giveUpAfter`, `retryGivenUpEvery` | `10 minutes`, `30 minutes` | Kiedy jest zgłaszane jako niedostarczone i jak często próbuje się potem znowu. | [9](09-projection-failures.md) |
@@ -123,6 +124,7 @@ Składowe twojego `AggregateContext`; nadpisz te, których potrzebujesz.
 | `SagaDefinition.persistRetries` | `Backoff(100 ms, 30 s, maxAttempts = 10)` | Jak ponawia się nieudany zapis postępu sagi. | [12](12-sagas.md) |
 | `SagaDefinition.spaceOf(order)` | `None` | Organizacja, do której należy saga, na potrzeby usuwania organizacji. | [12](12-sagas.md) |
 | `SquashSchedulerOptions` `firstRunAfter`, `interval` | `1 minute`, `1 hour` | Kiedy przypadają przebiegi schedulera. | [14](14-squash.md) |
+| `SquashSchedulerOptions` `readTimeout` | `5 minutes` | Odczyt agregatów do squasha, który trwa dłużej, jest porzucany, zapisywany w logu i powtarzany. | [18](18-production.md) |
 | `perRun`, `answerTimeout` | `100`, `1 minute` | Najwięcej agregatów jednego typu w jednym przebiegu i jak długo scheduler czeka na każdą odpowiedź. | [14](14-squash.md) |
 | `SpacePurge(eventStore, commandBuses, projections, hooks, options)` | bez hooków, `SpacePurgeOptions()` | Usuwanie organizacji, z hookami twoich własnych tabel. | [16](16-organizations.md) |
 | `SpacePurgeOptions` `aggregatesPerBatch`, `eventsPerBatch` | `1000`, `100000` | Kęsy, które bierze usuwanie, każdy w jednej transakcji. | [16](16-organizations.md) |

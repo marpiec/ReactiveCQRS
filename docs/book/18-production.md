@@ -22,8 +22,9 @@ runs:
 ```scala
 import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
 
-ConnectionPool.singleton("jdbc:postgresql://db.internal:5432/shop", "shop", sys.env("SHOP_DB_PASSWORD"),
-  ConnectionPoolSettings(initialSize = 8, maxSize = 40, connectionTimeoutMillis = 5000L))
+ConnectionPool.singleton("jdbc:postgresql://db.internal:5432/shop?tcpKeepAlive=true&socketTimeout=600&logServerErrorDetail=false",
+  "shop", sys.env("SHOP_DB_PASSWORD"),
+  ConnectionPoolSettings(initialSize = 8, maxSize = 40, connectionTimeoutMillis = 5000L, validationQuery = "SELECT 1"))
 ```
 
 Make the pool **at least as large as the blocking dispatcher** (32 threads by default, step 4): every
@@ -33,7 +34,25 @@ of *all* your nodes.
 
 > **Warning:** ScalikeJDBC's own default is a pool of 8 connections with a 5-second wait. Under load,
 > work that waits longer than that for a connection fails, and the caller of a command gets an
-> `EventHandlingError`.
+> `EventHandlingError`. A node whose pool is smaller than its blocking dispatcher logs a warning
+> when it starts.
+
+The rest of that code guards against a database that stops answering: after a failover, a connection
+can wait for an answer that never comes, holding a thread of the library for ever.
+
+- `socketTimeout=600`: a read that gets no answer for 10 minutes fails. Choose it above the longest
+  statement your nodes run, and run the long jobs of step 7 (index builds, backfills) from a process
+  without it.
+- `tcpKeepAlive=true`: the operating system notices a connection whose other end is gone.
+- `validationQuery`: a connection is checked before it is handed out, so after a database restart the
+  dead ones are replaced instead of failing a piece of work each. It costs a round trip per borrow.
+- `logServerErrorDetail=false`: the driver's errors do not quote rows (see "Personal data and the logs"
+  below).
+
+On the database, `ALTER ROLE shop SET idle_in_transaction_session_timeout = '10min';` ends the sessions
+a hung or dead process left open in a transaction. And the library's own singletons do not wait for
+ever either: the outbox poller and the squash scheduler give up a read that runs longer than five
+minutes (`readTimeout` in their options), log an error, and read again.
 
 ### 2. Initialize the schema, on every start
 
@@ -264,6 +283,7 @@ are safe for any metrics system. What you get:
 | `reactivecqrs.outbox.waiting` | gauge | | aggregates waiting in the outbox at each poll |
 | `reactivecqrs.outbox.given.up` | gauge | | aggregates the poller reported undelivered |
 | `reactivecqrs.outbox.republished` | count | | re-publications the poller asked for |
+| `reactivecqrs.outbox.read.abandoned` | count | | reads of the outbox given up after `readTimeout`: a connection no longer answers |
 | `reactivecqrs.message.too.large` | count | `class` | messages too large to cross nodes ([chapter 17](17-cluster.md)) |
 
 > **Tip:** three alerts cover most trouble: `reactivecqrs.outbox.given.up` above zero,

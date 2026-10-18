@@ -88,6 +88,7 @@ Members of your `AggregateContext`; override the ones you need.
 | `pullPartEvents`, `pullPartBytes` | `1000`, `16 MB` | The size of the parts an owner sends a pull in. | — |
 | `OutboxPollerActor(eventStore, eventBus, options, clock)` | `OutboxPollerOptions()`, the system clock | The poller's timing; a `TestClock` in tests. | [9](09-projection-failures.md), [19](19-testing.md) |
 | `OutboxPollerOptions` `firstPollAfter`, `pollInterval` | `10 s`, `30 s` | The first poll, and the polls after it. | [4](04-first-command.md) |
+| `OutboxPollerOptions` `readTimeout` | `5 minutes` | A read of the outbox that runs longer is given up, logged and done again (a connection that no longer answers). | [18](18-production.md) |
 | `maxTracked` | `100000` | The most waiting aggregates a poll reads. | — |
 | `RedeliveryPolicy.Options` `attemptsAfter` | `3 minutes`, `6 minutes` | When a waiting event is published again. | [9](09-projection-failures.md) |
 | `giveUpAfter`, `retryGivenUpEvery` | `10 minutes`, `30 minutes` | When it is reported undelivered, and how often it is tried after that. | [9](09-projection-failures.md) |
@@ -122,6 +123,7 @@ Members of your `AggregateContext`; override the ones you need.
 | `SagaDefinition.persistRetries` | `Backoff(100 ms, 30 s, maxAttempts = 10)` | How a failed write of a saga's progress is retried. | [12](12-sagas.md) |
 | `SagaDefinition.spaceOf(order)` | `None` | The organization a saga belongs to, for purges. | [12](12-sagas.md) |
 | `SquashSchedulerOptions` `firstRunAfter`, `interval` | `1 minute`, `1 hour` | When the scheduler's runs come. | [14](14-squash.md) |
+| `SquashSchedulerOptions` `readTimeout` | `5 minutes` | A read of the aggregates to squash that runs longer is given up, logged and done again. | [18](18-production.md) |
 | `perRun`, `answerTimeout` | `100`, `1 minute` | The most aggregates per type in one run, and how long it waits for each answer. | [14](14-squash.md) |
 | `SpacePurge(eventStore, commandBuses, projections, hooks, options)` | no hooks, `SpacePurgeOptions()` | A purge of an organization, with your own tables' hooks. | [16](16-organizations.md) |
 | `SpacePurgeOptions` `aggregatesPerBatch`, `eventsPerBatch` | `1000`, `100000` | The bites a purge takes, one transaction each. | [16](16-organizations.md) |

@@ -24,7 +24,7 @@ x-node: &node
       condition: service_healthy
   environment: &environment
     CONTACT_POINTS: "node1,node2,node3"
-    DB_URL: "jdbc:postgresql://postgres:5432/shop"
+    DB_URL: "jdbc:postgresql://postgres:5432/shop?tcpKeepAlive=true&socketTimeout=600&logServerErrorDetail=false"
     DB_USER: "shop"
     DB_PASSWORD: "shop"
     APP_VERSION: "1.0.0"

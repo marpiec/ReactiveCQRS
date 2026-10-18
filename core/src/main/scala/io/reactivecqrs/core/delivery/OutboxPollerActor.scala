@@ -6,7 +6,7 @@ import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.eventbus.EventsBusActor.Republish
 import io.reactivecqrs.core.eventstore.{EventStoreState, WaitingInOutbox}
 import io.reactivecqrs.core.metrics.ReactiveMetrics
-import io.reactivecqrs.core.util.{BlockingDispatcher, MyActorLogging}
+import io.reactivecqrs.core.util.{BlockingDispatcher, MyActorLogging, ReadWatch}
 import org.apache.pekko.actor.{Actor, ActorRef}
 
 import scala.concurrent.Future
@@ -22,7 +22,7 @@ object OutboxPollerActor {
   /** `waiting`: aggregates with rows in the outbox at the last poll (at most `maxTracked`); `gaveUp`: those reported as
     * undelivered. */
   case class OutboxStatus(waiting: Int, gaveUp: Seq[WaitingInOutbox])
-  private case class Read(result: Try[Seq[WaitingInOutbox]])
+  private case class Read(number: Int, result: Try[Seq[WaitingInOutbox]])
 }
 
 /** When the outbox poller reads the outbox, and what it does with what waits there.
@@ -31,11 +31,13 @@ object OutboxPollerActor {
   * @param pollInterval how often it reads the outbox
   * @param redelivery when it has an aggregate's events re-published, and when it gives up
   * @param maxTracked how many waiting aggregates a poll reads and keeps track of at most, the oldest first
+  * @param readTimeout how long a read may run before a poll gives it up, logs it and reads again (F186)
   */
 case class OutboxPollerOptions(firstPollAfter: FiniteDuration = 10.seconds,
                                pollInterval: FiniteDuration = 30.seconds,
                                redelivery: RedeliveryPolicy.Options = RedeliveryPolicy.Options(),
-                               maxTracked: Int = 100000)
+                               maxTracked: Int = 100000,
+                               readTimeout: FiniteDuration = 5.minutes)
 
 /**
   * The single owner of re-deliveries (D8). Every poll it reads which aggregates have rows waiting in the outbox, and,
@@ -52,25 +54,27 @@ class OutboxPollerActor(eventStore: EventStoreState, eventBus: ActorRef, options
   private val maxLinesPerPoll = 10
   private var memory = Map[AggregateId, RedeliveryPolicy.Tracked]()
   private var lastWaiting = 0 // F169: the memory leaves out new aggregates postponed beyond a poll's re-publications
-  private var reading = false
+  private val reads = new ReadWatch(options.readTimeout)
 
   private val polls = context.system.scheduler.scheduleWithFixedDelay(options.firstPollAfter, options.pollInterval, self, Poll)
 
   override def postStop(): Unit = polls.cancel()
 
   override def receive: Receive = {
-    case Poll => if (!reading) read()
-    case Read(result) =>
-      reading = false
-      poll(result)
+    case Poll => reads.start().foreach { case (number, gaveUp) =>
+      if (gaveUp) {
+        log.error(reads.givenUp("Reading the outbox"))
+        ReactiveMetrics(context.system).metrics.count("reactivecqrs.outbox.read.abandoned", Map.empty, 1)
+      }
+      read(number)
+    }
+    case Read(number, result) => if (reads.ended(number)) poll(result)
     case GetOutboxStatus => sender() ! OutboxStatus(lastWaiting, memory.values.filter(_.gaveUp).map(_.waiting).toSeq)
   }
 
   // F27: the read runs on the blocking dispatcher; its result comes back as a message.
-  private def read(): Unit = {
-    reading = true
-    Future(eventStore.readWaitingInOutbox(options.maxTracked))(BlockingDispatcher(context.system)).onComplete(result => self ! Read(result))
-  }
+  private def read(number: Int): Unit =
+    Future(eventStore.readWaitingInOutbox(options.maxTracked))(BlockingDispatcher(context.system)).onComplete(result => self ! Read(number, result))
 
   // A failed read is logged and retried at the next poll (AR7: a throw would restart the poller and forget the attempts).
   private def poll(result: Try[Seq[WaitingInOutbox]]): Unit = result match {

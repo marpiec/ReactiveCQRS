@@ -8,7 +8,10 @@ import io.reactivecqrs.core.projection.PostgresSubscriptionsState
 import io.reactivecqrs.core.rebuild.PostgresProjectionRegistry
 import io.reactivecqrs.core.saga.PostgresSagaState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
-import io.reactivecqrs.testkit.{CommonSpec, TestDatabase}
+import io.reactivecqrs.testkit.{CommonSpec, LogCapture, TestDatabase}
+import com.typesafe.config.ConfigFactory
+import org.apache.pekko.actor.ActorSystem
+import org.apache.pekko.testkit.TestKit
 import scalikejdbc._
 
 import scala.concurrent.duration._
@@ -45,6 +48,23 @@ class StartupLocksSpec extends CommonSpec {
     SQL(s"SET LOCAL lock_timeout = '${timeout.toMillis}ms'").execute.apply()
     SQL(s"LOCK TABLE $table IN ROW EXCLUSIVE MODE").execute.apply()
   }).isSuccess
+
+  Feature("F272 the pool against the blocking dispatcher") {
+    Scenario("a system whose blocking dispatcher has more threads than the pool has connections warns, once") {
+      val threads = ConnectionPool.get().settings.maxSize + 1
+      val larger = ActorSystem("larger-dispatcher", ConfigFactory.parseString(
+        "reactivecqrs.blocking-dispatcher.thread-pool-executor.fixed-pool-size = " + threads).withFallback(system.settings.config))
+      val capture = new LogCapture(larger)
+      try {
+        BlockingDispatcher(larger)
+        BlockingDispatcher(larger)
+        capture.containing("threads: under load, work waits for a connection") must have size 1
+      } finally {
+        capture.close()
+        TestKit.shutdownActorSystem(larger)
+      }
+    }
+  }
 
   Feature("F185 schema steps at start") {
     for ((table, start) <- starts; (holding, lock) <- Seq("reads" -> "ACCESS SHARE", "writes" -> "ROW EXCLUSIVE")) {

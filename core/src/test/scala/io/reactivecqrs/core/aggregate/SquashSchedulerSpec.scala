@@ -1,12 +1,14 @@
 package io.reactivecqrs.core.aggregate
 
 import java.time.Instant
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
 
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.aggregate.SquashScheduler._
 import io.reactivecqrs.core.eventstore.{EventA, EventB, MemoryEventStoreState, NewEvents, SomeAggregate}
-import io.reactivecqrs.testkit.CommonSpec
+import io.reactivecqrs.testkit.{CommonSpec, LogCapture}
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.testkit.TestProbe
 
@@ -74,6 +76,32 @@ class SquashSchedulerSpec extends CommonSpec {
 
       awaitAssert(f.status mustBe SquashStatus(squashed = 1, refused = 0, waiting = 0), 3.seconds, 20.millis)
       f.bus.expectNoMessage(200.millis)
+    }
+
+    Scenario("F186 gives up a read that does not end after the read timeout, logs it, and reads again at the next run") {
+      val reads = new AtomicInteger()
+      val hanging = new CountDownLatch(1)
+      val store = new MemoryEventStoreState {
+        override def squashCandidates(aggregateType: AggregateType, policy: AutomaticSquash, after: AggregateId, limit: Int,
+                                      now: Instant): Seq[(AggregateId, AggregateVersion)] = {
+          if (reads.incrementAndGet() == 1) hanging.await() // a connection that no longer answers
+          Nil
+        }
+      }
+      val capture = new LogCapture(system)
+      try {
+        val scheduler = system.actorOf(Props(new SquashScheduler(store, Seq(SquashTarget(aggregateType, TestProbe().ref, rule)),
+          SquashSchedulerOptions(firstRunAfter = 1.hour, readTimeout = 300.millis))))
+        scheduler ! Run
+        awaitAssert(reads.get mustBe 1, 3.seconds, 20.millis)
+        Thread.sleep(400)
+        scheduler ! Run
+        awaitAssert(reads.get mustBe 2, 3.seconds, 20.millis)
+        awaitAssert(capture.containing("did not end in") must not be empty, 3.seconds, 50.millis)
+      } finally {
+        hanging.countDown()
+        capture.close()
+      }
     }
   }
 }
