@@ -192,7 +192,8 @@ class without type parameters; the host must call `PostgresCommandResponseState.
 | serial mode: `maxQueuePerAggregate` commands already wait | not run | `CommandRejected(id, reason)` (R8) |
 | the aggregate's restore failed (§4.4) | nothing persisted | `CommandHandlingError` |
 | no id available (the uid generator fails) | nothing persisted, the bus keeps running (F75) | `CommandHandlingError` with command id 0 |
-| event handler failed before persisting, or the persist failed | nothing persisted | `EventHandlingError(...)` |
+| event handler failed before persisting, or the database refused the persist | nothing persisted | `EventHandlingError(...)` |
+| the connection failed during the persist (`Errors.transient`) | not known; the owner reads the aggregate again | `CommandHandlingError` (F253) |
 | version mismatch (memory or SQL) | nothing persisted | `AggregateConcurrentModificationError(...)`, or the stored response for an idempotent command whose copy won |
 | idempotency key taken, but its response already removed by retention | nothing persisted | `CommandHandlingError` |
 
@@ -311,7 +312,8 @@ abstract class AggregateContext[R : ClassTag] {           // AggregateContext.sc
    waiting `GetAggregateMinVersion` queries are answered, and the caller gets the response
    with the new version. Every other outcome is one answer as well: "Concurrent aggregate
    modification exception" from PostgreSQL → reload, then the conflict rule of step 5; a
-   taken idempotency key → the stored response; anything else → `EventHandlingError`. If the
+   taken idempotency key → the stored response; a lost connection → `CommandHandlingError`, the outcome
+   not known, and the aggregate read again (F253); anything else → `EventHandlingError`. If the
    re-read after an undo, duplication or rewrite fails, nothing is published and the owner
    enters the failed-restore state (§4.4); the caller still gets success, because the events
    are committed, and the outbox poller has them re-published later.
@@ -571,11 +573,9 @@ permanent delete (F244): an aggregate at the limit can still be rewritten, squas
   one per system (a cluster singleton in M5). Each run reads, per type, up to `perRun`
   aggregates that `AutomaticSquash(afterEvents, keepLast, keepNewerThan)` selects
   (`squashCandidates`: on the own row, `base_version - keepLast - coalesce(squashed_version, 0)
-  >= afterEvents`; with `keepNewerThan` the point is at most the aggregate's newest version older
-  than that age, R11: a binary search of the primary key finds the first event id not older, once
-  per run, then one probe of `events (aggregate_id, id)` per aggregate; exact up to the longest
-  command's duration and the nodes' clock skew, as ids follow commits and times the commands'
-  starts), going
+  >= afterEvents`; with `keepNewerThan` the point is below the aggregate's first event not older
+  than that age, by its own events' times (R11, F246: an import keeps old times under new ids, so no
+  boundary over all event ids holds)), going
   on after the last id of the run before, and asks the command bus to squash them one at a
   time (`answerTimeout`); `GetSquashStatus` counts the answers. Its squash events carry the
   actor `system:squash-scheduler`.

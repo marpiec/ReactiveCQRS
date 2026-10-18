@@ -27,7 +27,8 @@ down the steps.
 
 ### A command answers `CommandHandlingError`
 
-**What you see:** `CommandHandlingError(commandName, errorId, commandId)`. Nothing was stored.
+**What you see:** `CommandHandlingError(commandName, errorId, commandId)`. Nothing was stored, unless the log says the
+database was lost while the events were stored: then the outcome is not known, and reading the aggregate tells.
 
 **Likely causes**, by what the log says next to the `errorId`:
 

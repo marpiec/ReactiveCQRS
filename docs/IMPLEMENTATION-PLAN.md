@@ -2712,3 +2712,11 @@ Open test-infrastructure items:
   versioned in `schema_steps`). Each red under a mutation (F250: the mutated run does not finish).
 - F270 and F271 documented only (chapters 17 and 18, ARCHITECTURE §13.6) and left open: binding every timestamp as UTC
   and refusing new message classes while older nodes run are larger changes.
+
+**18/10/2026: the risk assessment, the findings after its plan**
+- Fixed: F246 (squash boundary by each aggregate's own times), F253 (a lost connection is an unknown outcome), F251
+  (version queries capped), F252 (every remaining check), F263 (size markers answered), F224 (draft responses kept for
+  `idleTime`), F265, F266, F267. Each with a test red under a mutation, except F224, F265, F266 and F267 (one-line or
+  small changes).
+- Left open, each with its reason in KNOWN-ISSUES: F202 (workaround in chapter 10), F227, F238, F239, F241, F242, F243,
+  F262, F274. Still open from the plan: F215, F217 (part), F270, F271 (documented).

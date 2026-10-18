@@ -269,6 +269,12 @@ projections.start[CartNames]("e10-cart-names", 3, "cartNames", whileBuilding = S
 
 Obie wartości znajdziesz w `io.reactivecqrs.core.rebuild.ProjectionSupervisor`.
 
+> **Ostrzeżenie:** przy `ServeStale` aktywna budowa nie przyjmuje zdarzeń, dopóki buduje się nowa. Jeśli
+> przed przełączeniem wrócisz do starszego kodu, nowa budowa zostanie porzucona, a aktywna znów obsłuży
+> zdarzenia na żywo, ale bez tego, co zatwierdzono w międzyczasie: agregat nadrobi to dopiero przy
+> swoim następnym zdarzeniu. Po takim powrocie wyślij `RebuildAggregates(RebuildTarget.OneType(...))`
+> dla każdego typu projekcji.
+
 > **Wskazówka:** funkcja dostaje budowę, a budowa zna własną wersję (`build.version`). Instancja
 > zrobiona dla aktywnej budowy wersji 1 zachowuje się jak wersja 1, dopóki buduje się wersja 2.
 > Właśnie to robi `capitals = build.version >= 2` z E10: przy `ServeLive` aktywna budowa wersji 1

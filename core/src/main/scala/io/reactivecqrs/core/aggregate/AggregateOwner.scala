@@ -189,6 +189,8 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
   private case object AskToStop
 
   private case class MinVersionQuery(respondTo: ActorRef, version: AggregateVersion, deadline: Long)
+  private val MaxMinVersionQueries = 1000
+  private val MaxMinVersionWait = 5.minutes
   private var minVersionQueries = Vector[MinVersionQuery]()
   private var minVersionTimer: Option[Cancellable] = None
 
@@ -575,8 +577,18 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
               case None => conflict(command, AggregateConcurrentModificationError(aggregateId, aggregateType, command.baseVersion, version))
               case Some(failure) => pendingFailed(envelope.commandId, failure)
             }
+          case Failure(e) if Errors.transient(e) =>
+            // F253: the connection failed around the commit, so whether the events are stored is not known: the caller is
+            // told so, not "nothing stored", and the state is read again (the outbox publishes what was stored).
+            val error = commandHandlingError(envelope)
+            log.error(e, "Persisting the events of " + envelope.command.getClass.getSimpleName + " lost the database; whether they are stored " +
+              "is not known, errorId: [" + error.errorId + "]")
+            restore()
+            finish(envelope.commandId, error)
           case Failure(e) =>
-            val error = EventHandlingError(events.head.getClass.getSimpleName, RandomUtil.generateRandomString(16), envelope.commandId)
+            // F265: a rewrite may come without new events.
+            val named = (events ++ rewritten.map(_.event)).headOption.map(_.getClass.getSimpleName).getOrElse(envelope.command.getClass.getSimpleName)
+            val error = EventHandlingError(named, RandomUtil.generateRandomString(16), envelope.commandId)
             log.error(e, "Error persisting events, errorId: [" + error.errorId + "]")
             finish(envelope.commandId, error)
         }
@@ -884,14 +896,18 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
 
   // ************** Queries for a version not reached yet (F81)
 
+  // F251: at most `MaxMinVersionQueries` wait, each at most `MaxMinVersionWait`.
   private def minVersionQuery(respondTo: ActorRef, minVersion: AggregateVersion, maxMillis: Int): Unit = {
     val failure = if (version < minVersion) caughtUp() else None
     if (failure.isDefined) {
       respondTo ! Failure(failure.get)
     } else if (version >= minVersion) {
       respondTo ! Success(aggregate)
+    } else if (minVersionQueries.size >= MaxMinVersionQueries) {
+      respondTo ! Failure(new AggregateInIncorrectVersionException(aggregateId, aggregateType, version, minVersion))
     } else {
-      minVersionQueries :+= MinVersionQuery(respondTo, minVersion, System.nanoTime() + maxMillis * 1000000L)
+      val waits = math.min(math.max(maxMillis, 0).toLong, MaxMinVersionWait.toMillis)
+      minVersionQueries :+= MinVersionQuery(respondTo, minVersion, System.nanoTime() + waits * 1000000L)
       scheduleMinVersionDeadline()
     }
   }

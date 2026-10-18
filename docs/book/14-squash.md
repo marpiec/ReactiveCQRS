@@ -377,7 +377,8 @@ With `keepNewerThan`, recent events stay too, however many there are:
 AutomaticSquash(afterEvents = 1000, keepLast = 100, keepNewerThan = Some(30.days))
 ```
 
-Now the squash point is also no later than the aggregate's newest event older than 30 days. If that
+Now the squash point is also below the aggregate's first event not older than 30 days, by the times
+of the aggregate's own events (an imported organization keeps its events' original times). If that
 leaves fewer than `afterEvents` events to squash, the aggregate waits for a later run.
 `afterEvents` must be positive and `keepLast` not negative, or the rule refuses to be created.
 

@@ -8,6 +8,16 @@ lists them all. Each entry is as it was when it was closed. Severity and confide
 
 ### Delivery and subscriptions
 
+#### F263 — An oversized request is replaced by a marker that never reaches the asker, who waits out its full timeout
+- **Low**, possible · **Fixed for 1.0.1** (18/10/2026, after step 4 of the risk assessment; `SagaFaultsSpec` "F263", red under a mutation) · `SagaRunning`, `ProjectionSupervisor`
+- **Fix:** the saga runner and the projection supervisor answer the size marker (`Status.Failure(MessageTooLargeException)`) to its sender, as the command bus already did.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F267 — The push updates cache replays one type's updates through another type's filter
+- **Low**, possible · **Fixed for 1.0.1** (18/10/2026, after step 4; no test of its own) · `SubscribableProjectionActor`
+- **Fix:** each cached update keeps its type; a new subscription is replayed only its type's updates, each in its own `Try`.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F216 — Push subscriptions do not scale: every update runs every filter of its type, expiry and cancel are linear, and nothing is bounded
 - **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4; `SubscribableSpec` "F216", red under a mutation) · `SubscribableProjectionActor`
 - **Fix:** subscriptions are kept per type in insertion-ordered sets, so a cancel or an expiry costs the same however many there are; subscribers are watched and lose their subscriptions when they stop; at most 100 000 subscriptions (one more is answered `ProjectionSubscriptionsCancelled`) and 10 000 cached updates. Left: each update still runs every filter of its type (no routing key).
@@ -416,6 +426,26 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 
 ### Commands and aggregates
 
+#### F251 — Waiting min-version queries are unbounded in number and duration, and each publish scans them all
+- **Low**, unlikely · **Fixed for 1.0.1** (18/10/2026, after step 4 of the risk assessment; `OwnerFaultsSpec` "F251", red under a mutation) · `AggregateOwner.minVersionQuery`
+- **Fix:** an owner holds at most 1 000 waiting queries, each at most 5 minutes; one more is answered `AggregateInIncorrectVersionException` at once. Left: a publish still scans the waiting ones (at most 1 000).
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F252 — Values the library does not check before it uses them
+- **Low**, possible · **Fixed for 1.0.1** (18/10/2026: idempotency keys in step 1, unknown saga phases in item 11, the rest after step 4; `IdempotentCommandsSpec`, `PostgresSagaStateSpec` and `PostgresEventStoreStateSpec` "F252", red under mutations) · `AggregateVersion`, `PostgresEventStoreState`, `LocalOwners`, `SagaRunning`
+- **Fix:** keys over 256 characters and saga caller paths over 256 are refused before anything runs; an unknown saga phase is left out at the load; a negative `AggregateVersion` and non-positive store limits are refused where they are made; an owner's actor name is URL-encoded, so a root class with non-ASCII letters no longer restarts the bus.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F253 — A commit whose outcome is unknown is answered "nothing was stored"
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, after step 4; `OwnerFaultsSpec` "F253", red under a mutation) · `AggregateOwner.persist`
+- **Fix:** a write that fails with a connection-class error (`Errors.transient`) is answered `CommandHandlingError`, logged as of unknown outcome, and the owner reads the aggregate again (the outbox publishes what was stored); the book tells callers to read the aggregate, or use an idempotency key, before sending again. `EventHandlingError` now means the database refused the write. Left: the library does not look up whether such a commit landed.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F265 — A rewrite without a new event that the store refuses strands its caller until the timeout, and its cause is never logged
+- **Low**, possible · **Fixed for 1.0.1** (18/10/2026, after step 4; a one-line change, no test of its own) · `AggregateOwner.persist`
+- **Fix:** the `EventHandlingError` names the first new or rewritten event (or the command), so a refused rewrite without new events is answered at once and its cause logged.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F204 — The id generator trusts its configuration: a too-high installation number or a lowered sequence step hands out wrong or duplicate ids
 - **High**, unlikely · **Fixed for 1.0.1** (18/10/2026, step 4 of the risk assessment; `IdRangeSpec` "F204" ×2, red under a mutation each) · `PostgresUidGenerator`, `UidGeneratorSchemaInitializer`
 - **Fix:** only a sequence never used is moved into the installation's range; one used below it is refused at start, the sequence left as it is (moving an installation's ids is done by hand). A pool is as large as the sequence's step read with each draw (never more than the cached size), and a start never lowers the step.
@@ -763,6 +793,11 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 
 ### Event store and SQL
 
+#### F246 — The squash scheduler assumes event times grow with event ids; an import, or a node with a wrong clock, makes it squash history the policy keeps
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, after step 4 of the risk assessment; `EventStoreStateSpec` "F246", red under a mutation on PostgreSQL) · `PostgresEventStoreState.squashCandidates`
+- **Fix:** with `keepNewerThan`, each aggregate's squash point is below its own first event not older than the age, by its own events' times; the binary search over all event ids is gone. An imported aggregate is judged by its original times.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F198 — An organization export is not one snapshot: a write during it gives two events at one version after the import
 - **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 2 of the risk assessment; `ExportImportSpec` "F198" and `PostgresEventStoreStateSpec` "F198") · `SpaceExport`, the event store's indexes, `StoredDataCheck`
 - **Fix:** the export reads every row in one `REPEATABLE READ, READ ONLY` transaction, so a command that commits meanwhile is in the file whole or not at all; the import refuses an aggregate whose events are not exactly its versions (F199). `events (aggregate_id, version)` is unique (`events_aggregate_version_uidx`): made at start on a small store, and by `buildIndexesConcurrently()` on a large one, which keeps the plain index and logs an error while some aggregate has two events of one version; `StoredDataCheck` names those (`repeatedVersions`).
@@ -937,6 +972,11 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 
 ### Performance and runtime
 
+#### F224 — An ephemeral bus keeps every idempotent response in memory for 30 days, whatever happens to its drafts
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, after step 4 of the risk assessment; a one-line change, no test of its own) · `AggregateCommandBusActor.ephemeral`
+- **Fix:** an ephemeral bus keeps its responses for its `idleTime`, as long as a draft lives unused, not 30 days. Left: the hourly removal still walks every response under the store's lock.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F233 — Readiness says "ready" before the node has started, and stays ready while it shuts down
 - **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4 of the risk assessment; `SerializerBindingSpec` "F233" ×2, red under a mutation each) · `Readiness`
 - **Fix:** a node waits for its start until its first event bus registers (no host call needed), and a CoordinatedShutdown task in the phase before services unbind makes it not ready for good.
@@ -1042,6 +1082,11 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Test:** `PostgresTypesNamesStateSpec` (four instances and forty threads ask for one new name: one id; failed before).
 
 ### Document store
+
+#### F266 — `clearSpace` and `clearAllData` evict the document cache before the commit, not after
+- **Low**, unlikely · **Fixed for 1.0.1** (18/10/2026, after step 4 of the risk assessment; no test of its own) · `PostgresDocumentStore`
+- **Fix:** the evictions run at once and again after the commit, so a read that fills the cache in between is evicted too.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
 
 #### F210 — Document-store JSON paths and sort fields are written into SQL unescaped
 - **High**, unlikely · **Fixed for 1.0.1** (18/10/2026, step 4 of the risk assessment; `PostgresDocumentStoreSpec` "F210", red under a mutation) · `JsonPath`, `PostgresDocumentStore`

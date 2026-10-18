@@ -241,8 +241,8 @@ Every command gets exactly one answer, always one of these (all in `io.reactivec
 | `FailureResponse(exceptions)` | Your handler said no (`CommandFailure`), with its reasons; or the library refused the command, as it does for a new aggregate whose first event names no space. |
 | `AggregateConcurrentModificationError(aggregateId, aggregateType, expected, was)` | Your `expectedVersion` was not the aggregate's version: somebody changed it first, or it does not exist (`was` is then version 0). |
 | `CommandRejected(aggregateId, reason)` | The command was not run at all, but sending it again later may work. |
-| `CommandHandlingError(commandName, errorId, commandId)` | Something broke while running your handler: it threw, had no `case` for the command, or took longer than the command timeout; or the aggregate could not be read. |
-| `EventHandlingError(eventName, errorId, commandId)` | Storing failed: an event handler threw, an event broke a limit, or the database failed. |
+| `CommandHandlingError(commandName, errorId, commandId)` | Something broke while running your handler: it threw, had no `case` for the command, or took longer than the command timeout; or the aggregate could not be read; or the database connection was lost while the events were committed, so whether they were stored is not known: read the aggregate before you send the command again, or give it an idempotency key. |
+| `EventHandlingError(eventName, errorId, commandId)` | Storing failed: an event handler threw, an event broke a limit, or the database refused the write. Nothing was stored. |
 
 Only the two successes stored anything. For the two errors, the log has a line with the same
 `errorId` and the full story. [Chapter 5](05-command-flavors.md) goes through every answer and what

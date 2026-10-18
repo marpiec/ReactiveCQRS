@@ -36,6 +36,9 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
                               eventSizeLimitPerClassName: Map[String, Int] = Map.empty,
                               outboxDeleteDelay: FiniteDuration = 20.millis) extends EventStoreState {
 
+  require(fetchSize > 0 && eventSizeLimit > 0 && aggregateVersionLimit > 0 && eventSizeLimitPerClassName.values.forall(_ > 0),
+    "fetchSize, eventSizeLimit, aggregateVersionLimit and the limits per class must be positive (F252)")
+
   /** Creates the tables, indexes and procedures it needs, when missing; returns this store. */
   def initSchema(): PostgresEventStoreState = {
     (new PostgresEventStoreSchemaInitializer).initSchema()
@@ -857,9 +860,11 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       val upTo = policy.keepNewerThan match {
         case None => sqls"a.base_version - $keep"
         case Some(age) =>
-          val boundary = firstEventNotOlderThan(now.minusMillis(age.toMillis))
-          sqls"""LEAST(a.base_version - $keep, coalesce((SELECT e.version FROM events e WHERE e.aggregate_id = a.id AND e.id < $boundary
-                |  ORDER BY e.id DESC LIMIT 1), 0))""".stripMargin
+          // F246: by the aggregate's own events' times: everything from its first event not older than the age is kept,
+          // whatever the times of other aggregates' events (an import keeps its original times under new ids).
+          val time = utc(now.minusMillis(age.toMillis)) // stored as UTC wall time (F65)
+          sqls"""LEAST(a.base_version - $keep, coalesce((SELECT min(e.version) FROM events e WHERE e.aggregate_id = a.id AND e.event_time >= $time),
+                |  a.base_version + 1) - 1)""".stripMargin
       }
       sql"""SELECT id, up_to FROM (SELECT a.id, $upTo AS up_to, a.squashed_version FROM aggregates a
            |   WHERE a.type_id = ${typesNamesState.typeIdByClassName(aggregateType.typeName)} AND a.base_id = a.id AND a.id > ${after.asLong}
@@ -867,23 +872,6 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
            | WHERE up_to - coalesce(squashed_version, 0) >= ${policy.afterEvents}
            | ORDER BY id LIMIT $limit""".stripMargin.map(rs => (AggregateId(rs.long(1)), AggregateVersion(rs.int(2)))).list()
     }
-
-  // R11: the id of the first event not older than `at`, by a binary search of the primary key (about 40 reads). Ids follow
-  // the commits and times the commands' starts, so it is exact up to the longest command's duration and the nodes' clock
-  // skew; events written later with old times (an import) count as new, so they are kept longer, never squashed early.
-  private def firstEventNotOlderThan(at: Instant)(implicit session: DBSession): Long = {
-    val time = utc(at) // stored as UTC wall time (F65)
-    var low = 0L // the events below are older
-    var high = sql"SELECT coalesce(max(id), 0) + 1 FROM events".map(_.long(1)).single().get // the first event from here is not
-    while (low < high) {
-      val mid = low + (high - low) / 2
-      sql"SELECT id, event_time < $time FROM events WHERE id >= $mid ORDER BY id LIMIT 1".map(rs => (rs.long(1), rs.boolean(2))).single() match {
-        case Some((id, true)) => low = math.min(id + 1, high)
-        case _ => high = mid
-      }
-    }
-    low
-  }
 
   // One query for all aggregate types (F37); the aggregate's own row of its chain gives the type. The limit bounds what
   // the poller holds, not the grouping, which still reads every row (F122: cheap while the outbox is near empty).

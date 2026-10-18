@@ -124,6 +124,17 @@ Fixes from [the risk assessment of 1.0.0](docs/RISK-ASSESSMENT.md), in the order
   - The event store's procedures are versioned (`schema_steps`): an older node leaves newer ones as they are.
   - The book covers clocks and time zones (run the JVM on UTC, keep clocks in sync) and new message classes during a
     rolling upgrade (F270, F271, left open).
+- **Remaining findings** (F224, F246, F251, F252, F253, F263, F265, F266, F267, chapters 4, 5, 7, 10, 14 and 20):
+  - **Changed:** a write whose database connection fails is answered `CommandHandlingError` (outcome unknown), not
+    `EventHandlingError` (nothing stored); read the aggregate, or use an idempotency key, before sending it again.
+  - `keepNewerThan` squashes judge each aggregate by its own events' times, so an import no longer moves the boundary.
+  - At most 1 000 version queries wait per aggregate, each at most 5 minutes; a negative `AggregateVersion`, store
+    limits that are not positive, and saga caller paths over 256 characters are refused where they are made.
+  - Smaller: draft responses kept for `idleTime`; size markers answered by the saga runner and projections; a refused
+    rewrite without events answered at once; document-cache clears also after the commit; cached push updates replayed
+    by type.
+  - Left open, each with its reason in KNOWN-ISSUES: F202 (a workaround in chapter 10), F227, F238, F239, F241, F242,
+    F243, F262, F274.
 
 ## 1.0.0 (18/10/2026)
 

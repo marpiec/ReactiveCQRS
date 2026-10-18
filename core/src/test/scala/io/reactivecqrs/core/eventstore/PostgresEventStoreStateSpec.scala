@@ -223,6 +223,11 @@ class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStore
     eventStoreState.readNewestWaitingInOutbox(2) mustBe all.reverse.take(2) // F260
   }
 
+  Scenario("F252 a negative version, and store limits that are not positive, are refused where they are made") {
+    an[IllegalArgumentException] must be thrownBy AggregateVersion(-1)
+    an[IllegalArgumentException] must be thrownBy new PostgresEventStoreState(new MPJsons, new PostgresTypesNamesState(), fetchSize = 0)
+  }
+
   Scenario("F269 a node of an older version leaves the procedures of a newer one as they are") {
     val initializer = new PostgresEventStoreSchemaInitializer()
     DB.autoCommit(implicit session => sql"INSERT INTO schema_steps (name, completed) VALUES ('procedures:999', current_timestamp)".update())

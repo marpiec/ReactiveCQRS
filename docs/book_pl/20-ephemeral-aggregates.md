@@ -98,6 +98,7 @@ Szkice, których nikt nie dotyka, nie gromadzą się w nieskończoność:
 - **Czas bezczynności**: szkic nieużywany przez `idleTime` (domyślnie 12 godzin) zostaje usunięty.
   Szyna nigdy nie usuwa szkicu wcześniej, niż wynosi limit czasu poleceń w kontekście, więc
   polecenie, które wciąż się wykonuje, nie może pisać do szkicu, którego już nie ma.
+- **Odpowiedzi**: odpowiedzi zachowane dla kluczy idempotencji poleceń szkiców też znikają po `idleTime`.
 - **Górny limit**: szyna trzyma najwyżej `maxAggregates` szkiców (domyślnie 100 000); nowy szkic
   ponad tę liczbę dostaje odpowiedź `CommandRejected`. Tak samo nowy szkic, gdy start węzła wydał
   już wszystkie swoje 16 777 216 identyfikatorów szkiców; następny start przynosi nowe.

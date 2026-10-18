@@ -244,8 +244,8 @@ Każde polecenie dostaje dokładnie jedną odpowiedź, zawsze jedną z tych (wsz
 | `FailureResponse(exceptions)` | Twój handler powiedział „nie” (`CommandFailure`) i podał powody; albo biblioteka odrzuciła polecenie, tak jak robi to z nowym agregatem, którego pierwsze zdarzenie nie wskazuje przestrzeni (space). |
 | `AggregateConcurrentModificationError(aggregateId, aggregateType, expected, was)` | Twoje `expectedVersion` nie było wersją agregatu: ktoś zmienił go przed tobą albo agregat nie istnieje (wtedy `was` to wersja 0). |
 | `CommandRejected(aggregateId, reason)` | Polecenie w ogóle się nie wykonało, ale wysłane ponownie później może się udać. |
-| `CommandHandlingError(commandName, errorId, commandId)` | Coś się zepsuło podczas działania twojego handlera: rzucił wyjątek, nie miał `case` dla tego polecenia albo działał dłużej niż limit czasu polecenia; albo nie dało się odczytać agregatu. |
-| `EventHandlingError(eventName, errorId, commandId)` | Zapis się nie udał: handler zdarzenia rzucił wyjątek, zdarzenie przekroczyło jakiś limit albo zawiodła baza danych. |
+| `CommandHandlingError(commandName, errorId, commandId)` | Coś się zepsuło podczas działania twojego handlera: rzucił wyjątek, nie miał `case` dla tego polecenia albo działał dłużej niż limit czasu polecenia; albo nie dało się odczytać agregatu; albo połączenie z bazą danych zerwało się podczas zatwierdzania zdarzeń, więc nie wiadomo, czy zostały zapisane: odczytaj agregat, zanim wyślesz polecenie ponownie, albo nadaj mu klucz idempotencji. |
+| `EventHandlingError(eventName, errorId, commandId)` | Zapis się nie udał: handler zdarzenia rzucił wyjątek, zdarzenie przekroczyło jakiś limit albo baza danych odrzuciła zapis. Nic nie zostało zapisane. |
 
 Tylko przy dwóch sukcesach coś zostało zapisane. Przy dwóch ostatnich, czyli błędach, w logu
 znajdziesz linię z tym samym `errorId` i pełnym opisem tego, co się stało.

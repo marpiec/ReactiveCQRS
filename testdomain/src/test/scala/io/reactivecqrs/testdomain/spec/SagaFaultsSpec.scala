@@ -80,6 +80,13 @@ class SagaFaultsSpec extends CommonSpec {
 
   Feature("A saga under faults") {
 
+    Scenario("F263 an order too large to cross nodes is answered to its sender with the size failure") {
+      val asker = TestProbe()
+      val tooLarge = org.apache.pekko.actor.Status.Failure(new io.reactivecqrs.api.MessageTooLargeException("Pay", 300000, 250000))
+      asker.send(runner(new Payments(newName())), tooLarge)
+      asker.expectMsg(5.seconds, tooLarge)
+    }
+
     Scenario("F205 a step that failed runs again with its key before the saga reverts, and goes on forward") {
       val payments = new Payments(newName(), failFirst = 2)
 

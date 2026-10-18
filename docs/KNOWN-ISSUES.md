@@ -191,7 +191,7 @@ Changes must keep these true (from `ARCHITECTURE.md` §10, extended by the decis
 
 ## 3. Issues in the library
 
-The issues still open. The 248 closed ones (fixed, accepted, decided or found not to be a problem) are in
+The issues still open. The 257 closed ones (fixed, accepted, decided or found not to be a problem) are in
 [`KNOWN-ISSUES-ARCHIVE.md`](KNOWN-ISSUES-ARCHIVE.md), by area, as they were recorded; a number named in the code or in
 the other documents (`F99`) is found there. F185–F274 were found by the risk assessment of 1.0.0 (18/10/2026), at the end of this
 section.
@@ -231,7 +231,7 @@ together, and the order to fix them in. None is reproduced yet: "likely" is trac
 on a dependency's behaviour, timing or configuration; "scenario" says how probable its trigger is.
 
 #### F202 — With `ServeStale`, an abandoned build leaves the active build missing every event committed during the build
-- **High**, likely · scenario unlikely · Open · details under F202 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+- **High**, likely · scenario unlikely · Open; examined 18/10/2026 and left: a safe fix runs a reconciliation-only build against the active build after the rollback; chapter 10 gives the workaround (`RebuildAggregates(OneType)` per type) · details under F202 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F215 — Operations on a base with many copies replay the base once per copy and hold every copy's row lock throughout
 - **Medium**, suspected · scenario possible · Open; examined 18/10/2026 and left: caching the base's state once per base version must still apply each copy's own duplication event, and locking the copies `FOR KEY SHARE` needs the SQL procedures changed; both are more than step 4 should carry · details under F215 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
@@ -239,53 +239,26 @@ on a dependency's behaviour, timing or configuration; "scenario" says how probab
 #### F217 — A large targeted rebuild, a purge's last step, or a retired build's drop each runs as one long operation on the projection's thread
 - **Medium**, likely · scenario possible · Open; partly fixed for 1.0.1 (18/10/2026): a retired build's subscription rows are deleted in transactions of 10 000. Left: the targeted reset still reads its ids and clears in one transaction, `clearSpace` has no `space_id` index, and the drop runs on the supervisor's thread · details under F217 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
-#### F224 — An ephemeral bus keeps every idempotent response in memory for 30 days, whatever happens to its drafts
-- **Medium**, likely · scenario possible · Open · details under F224 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
 #### F227 — An oversized cluster message is serialized in full before the marker replaces it
-- **Medium**, likely · scenario unlikely · Open · details under F227 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+- **Medium**, likely · scenario unlikely · Open; examined 18/10/2026 and left: unlikely, and the cost is one oversized serialization before the marker · details under F227 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F238 — A node's subscription version cache goes stale for subscribers whose writer runs elsewhere
-- **Medium**, likely · scenario unlikely · Open · details under F238 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+- **Medium**, likely · scenario unlikely · Open; examined 18/10/2026 and left: it needs per-node subscribers sharing a node's subscription state, which no host does · details under F238 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F239 — Ask paths are reused after a node restarts at the same address, so a late answer can reach another caller
-- **Low**, likely · scenario unlikely · Open · details under F239 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+- **Low**, likely · scenario unlikely · Open; examined 18/10/2026 and left: low, and a late answer needs a restart at the same address within an ask · details under F239 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F241 — Any sender can cancel, renew or take over a push subscription by its id
-- **Low**, likely · scenario possible · Open · details under F241 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+- **Low**, likely · scenario possible · Open; examined 18/10/2026 and left: low while subscription ids are generated, as the book's pattern does · details under F241 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F242 — `StoreFirstEvent` is accepted by any persistent bus, and stores any first event without the command handlers
-- **Low**, likely · scenario unlikely · Open · details under F242 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+- **Low**, likely · scenario unlikely · Open; examined 18/10/2026 and left: low; only the host's code sends to its persistent buses · details under F242 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F243 — A conflict answer reveals another organization's aggregate and its version
-- **Low**, likely · scenario possible · Open · details under F243 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F246 — The squash scheduler assumes event times grow with event ids; an import, or a node with a wrong clock, makes it squash history the policy keeps
-- **Medium**, likely · scenario possible · Open · details under F246 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F251 — Waiting min-version queries are unbounded in number and duration, and each publish scans them all
-- **Low**, likely · scenario unlikely · Open · details under F251 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F252 — Values the library does not check before it uses them
-- **Low**, likely · scenario possible · Open; the idempotency keys fixed for 1.0.1 (18/10/2026: a key longer than the 256 characters stored is refused before the handler runs, `IdempotentCommandsSpec` "F252"), and a saga row of an unknown phase is left out at the load like an unreadable order (`PostgresSagaStateSpec` "F252") · details under F252 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F253 — A commit whose outcome is unknown is answered "nothing was stored"
-- **Medium**, likely · scenario possible · Open · details under F253 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+- **Low**, likely · scenario possible · Open; examined 18/10/2026 and left: low; a host that exposes conflicts to other organizations' users maps the answer · details under F243 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F262 — A listener's `afterCommit` called in the first part of a two-part listener runs before the commit, and again when the work is remade
-- **Medium**, likely · scenario unlikely · Open · details under F262 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F263 — An oversized request is replaced by a marker that never reaches the asker, who waits out its full timeout
-- **Low**, likely · scenario possible · Open · details under F263 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F265 — A rewrite without a new event that the store refuses strands its caller until the timeout, and its cause is never logged
-- **Low**, likely · scenario possible · Open · details under F265 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F266 — `clearSpace` and `clearAllData` evict the document cache before the commit, not after
-- **Low**, likely · scenario unlikely · Open · details under F266 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F267 — The push updates cache replays one type's updates through another type's filter
-- **Low**, likely · scenario possible · Open · details under F267 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+- **Medium**, likely · scenario unlikely · Open; examined 18/10/2026 and left: unlikely; the book shows `afterCommit` in the transaction part only · details under F262 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F270 — Clocks and time zones: node clocks drive re-delivery, give-ups, instant reads and the squash policy, and several timestamps are written in the session's zone
 - **Medium**, likely · scenario possible · Open; documented 18/10/2026 (chapter 18: the JVM on UTC, clocks in sync); left: bind every timestamp as UTC, take `event_time` from the database, monotonic deadlines · details under F270 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
@@ -294,7 +267,7 @@ on a dependency's behaviour, timing or configuration; "scenario" says how probab
 - **Medium**, likely · scenario possible · Open; documented 18/10/2026 (chapter 17, ARCHITECTURE §13.6: add a message class in one release, send it in the next); left: refusing such messages while older nodes run · details under F271 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F274 — The memory event store diverges from PostgreSQL exactly where several of these findings live
-- **Medium**, likely · scenario likely · Open · details under F274 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+- **Medium**, likely · scenario likely · Open; examined 18/10/2026: the rollback (F256) and the sort and paging of the memory document store (F273) are aligned; the rest stays a test double's gap, and the specs of those findings run on PostgreSQL · details under F274 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 ## 4. Issues on the Neula side
 
@@ -344,7 +317,7 @@ From §7 of Neula's change requests.
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔, F174 ✔; F155 decided (review 8) |
 | M7 | AR5 ✔ (moved from M5 at review 7; D86); F148 ✔, F152 ✔, F153 ✔, F156 ✔, F157 ✔, F160 ✔, F161 ✔, F162 ✔, F163 ✔, F164 ✔, F165 ✔, F166 ✔, F169 ✔ (found writing the book), F170 ✔, F171 ✔, F173 ✔, F175 (accepted), F176 ✔ (found writing E10), F177 ✔ (found writing E11), F178 ✔ (found running E2 in Docker), F179 (deferred: the owner publishes mpjsons later), F180 ✔ (found running E2 on Kubernetes), F181 ✔ (found writing chapter 6's spec), F182 ✔ (found by E2's fault tests in Docker), F183 ✔ (found writing the Scaladoc), F184 (open, found by review 9's bench) |
-| After 1.0 | F185–F274, found by the risk assessment of 18/10/2026 ([RISK-ASSESSMENT.md](RISK-ASSESSMENT.md) §13 orders them); its step 1, for 1.0.1: F185 ✔, F186 ✔, F187 ✔, F188 ✔, F189 ✔, F190 ✔, F191 ✔, F193 ✔, F200 ✔, F252 (keys ✔), F255 ✔, F272 ✔; D87; step 2: F192 ✔, F194 ✔, F195 ✔, F196 ✔, F197 ✔, F198 ✔, F199 ✔, F225 ✔, F226 ✔, F201 ✔, F237 ✔, F244 ✔, F245 ✔, F248 ✔, F254 ✔, F259 ✔, F261 ✔; step 3: F205 ✔, F206 ✔, F207 ✔, F208 ✔, F209 ✔, F232 ✔, F236 ✔, F256 ✔, F257 ✔; step 4: F210 ✔, F211 ✔, F212 ✔, F221 ✔, F222 ✔, F223 ✔, F228 ✔, F258 ✔, F260 ✔, F264 ✔, F268 ✔, F273 ✔; item 15: F213 ✔, F214 ✔, F216 ✔, F218 ✔, F219 ✔, F220 ✔, F229 ✔, F230 ✔, F231 ✔, F234 ✔, F235 ✔, F217 (part), F215 open; item 16: F203 ✔, F204 ✔, F233 ✔, F240 ✔, F247 (part) ✔, F249 ✔, F250 ✔, F269 ✔, F270 and F271 documented, open |
+| After 1.0 | F185–F274, found by the risk assessment of 18/10/2026 ([RISK-ASSESSMENT.md](RISK-ASSESSMENT.md) §13 orders them); its step 1, for 1.0.1: F185 ✔, F186 ✔, F187 ✔, F188 ✔, F189 ✔, F190 ✔, F191 ✔, F193 ✔, F200 ✔, F252 (keys ✔), F255 ✔, F272 ✔; D87; step 2: F192 ✔, F194 ✔, F195 ✔, F196 ✔, F197 ✔, F198 ✔, F199 ✔, F225 ✔, F226 ✔, F201 ✔, F237 ✔, F244 ✔, F245 ✔, F248 ✔, F254 ✔, F259 ✔, F261 ✔; step 3: F205 ✔, F206 ✔, F207 ✔, F208 ✔, F209 ✔, F232 ✔, F236 ✔, F256 ✔, F257 ✔; step 4: F210 ✔, F211 ✔, F212 ✔, F221 ✔, F222 ✔, F223 ✔, F228 ✔, F258 ✔, F260 ✔, F264 ✔, F268 ✔, F273 ✔; item 15: F213 ✔, F214 ✔, F216 ✔, F218 ✔, F219 ✔, F220 ✔, F229 ✔, F230 ✔, F231 ✔, F234 ✔, F235 ✔, F217 (part), F215 open; item 16: F203 ✔, F204 ✔, F233 ✔, F240 ✔, F247 (part) ✔, F249 ✔, F250 ✔, F269 ✔, F270 and F271 documented, open; after step 4: F224 ✔, F246 ✔, F251 ✔, F252 ✔, F253 ✔, F263 ✔, F265 ✔, F266 ✔, F267 ✔; left open with their reasons: F202, F227, F238, F239, F241, F242, F243, F262, F274 |
 
 ---
 

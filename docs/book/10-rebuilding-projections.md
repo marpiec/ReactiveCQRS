@@ -264,6 +264,12 @@ projections.start[CartNames]("e10-cart-names", 3, "cartNames", whileBuilding = S
 
 Both live in `io.reactivecqrs.core.rebuild.ProjectionSupervisor`.
 
+> **Warning:** with `ServeStale`, the active build takes no events while the new one is built. If you
+> roll back to the older code before the switch, the new build is abandoned and the active build
+> serves live again, but without what was committed meanwhile: an aggregate catches up only with its
+> next event. After such a rollback, send `RebuildAggregates(RebuildTarget.OneType(...))` for each of
+> the projection's types.
+
 > **Tip:** the function is given the build, and the build knows its own version (`build.version`).
 > An instance made for the active build of version 1 keeps version 1's behaviour while version 2
 > builds. That is what E10's `capitals = build.version >= 2` does: with `ServeLive`, the active

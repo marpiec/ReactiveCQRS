@@ -47,7 +47,7 @@ object SubscribableProjectionActor {
 }
 
 /** An update kept in the updates cache, with when it arrived. */
-case class UpdateCacheEntry(arrived: Instant, value: Any)
+case class UpdateCacheEntry(arrived: Instant, value: Any, typeName: String = "")
 
 /** A push subscription: who gets the updates of the type `typeName` that `acceptor` lets through, renewed last at
   * `renewal`. */
@@ -127,9 +127,13 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
 
       if (updatesCacheTTL != Duration.ZERO) {
         val shouldArriveAfter = Instant.now().minus(updatesCacheTTL)
-        updatesCache.filter(d => d.arrived.isAfter(shouldArriveAfter) && missedUpdatesFilter(d.value.asInstanceOf[DATA]))
-          .map(d => filter(d.value.asInstanceOf[DATA])).filter(_.isDefined)
-          .foreach(result => listener ! SubscriptionUpdated(subscriptionId, result.get))
+        // F267: only the subscription's type's updates, each on its own: a filter that throws keeps no other from it.
+        updatesCache.filter(d => d.typeName == typeName && d.arrived.isAfter(shouldArriveAfter)).foreach { d =>
+          Try(Some(d.value.asInstanceOf[DATA]).filter(missedUpdatesFilter).flatMap(filter)) match {
+            case Success(update) => update.foreach(u => listener ! SubscriptionUpdated(subscriptionId, u))
+            case Failure(e) => log.error(e, "Projection " + projectionName + ": the filter of subscription " + subscriptionId + " failed on a missed update")
+          }
+        }
       }
 
       if (log.isDebugEnabled) {
@@ -165,7 +169,7 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
   private def deliverUpdate(u: Any, typeName: String): Unit = {
     try {
       if(updatesCacheTTL != Duration.ZERO) {
-        updatesCache += UpdateCacheEntry(Instant.now(), u)
+        updatesCache += UpdateCacheEntry(Instant.now(), u, typeName)
         trimUpdatesCache()
       }
 

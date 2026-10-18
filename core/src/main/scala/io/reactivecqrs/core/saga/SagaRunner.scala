@@ -1,10 +1,10 @@
 package io.reactivecqrs.core.saga
 
 import org.apache.pekko.pattern.{ask, pipe}
-import org.apache.pekko.actor.{Actor, ActorRef, ActorSystem, ExtendedActorSystem, Props}
+import org.apache.pekko.actor.{Actor, ActorRef, ActorSystem, ExtendedActorSystem, Props, Status}
 import org.apache.pekko.serialization.Serialization
 import org.apache.pekko.util.Timeout
-import io.reactivecqrs.api.SagaStep
+import io.reactivecqrs.api.{MessageTooLargeException, SagaStep}
 import io.reactivecqrs.api.id.SagaId
 import io.reactivecqrs.core.cluster.Singletons
 import io.reactivecqrs.core.metrics.ReactiveMetrics
@@ -76,6 +76,8 @@ object SagaRunner {
 
   /** The longest order key stored (`sagas.order_key`). */
   val MaxOrderKeyLength = 256
+  /** The longest caller path stored (`sagas.respond_to`). */
+  val MaxCallerPathLength = 256
 }
 
 /** The library's runner of the sagas of one `SagaDefinition` (AR5, D86). */
@@ -178,6 +180,7 @@ abstract class SagaRunning extends Actor with MyActorLogging {
     case RetryWrite(pending, attempt) => write(pending, attempt)
     case RemoveFinished => removeFinished()
     case GetSagaStatus => sender() ! SagaStatus(running.size, waitingForIds.size)
+    case tooLarge @ Status.Failure(_: MessageTooLargeException) => sender() ! tooLarge // F263: an order too large to cross nodes
     case m => log.warning("Received incorrect message of type: [" + m.getClass.getName + "]")
   }
 
@@ -198,12 +201,15 @@ abstract class SagaRunning extends Actor with MyActorLogging {
       case keyed: IdempotentSagaOrder => Some(keyed.orderKey)
       case _ => None
     }
+    val caller = callerPath(context.system, respondTo)
     if (key.exists(_.length > MaxOrderKeyLength)) {
       respondTo ! SagaFailureResponse(List("The order key has " + key.get.length + " characters; at most " + MaxOrderKeyLength + " are stored"))
+    } else if (caller.length > MaxCallerPathLength) { // F252: as stored (respond_to), refused at once, not after the write retries
+      respondTo ! SagaFailureResponse(List("The caller path has " + caller.length + " characters; at most " + MaxCallerPathLength + " are stored"))
     } else {
       val sagaId = SagaId(sagaIds.take())
       running += sagaId // a load that reads its row before its create is answered does not start it twice (F232)
-      write(CreateSaga(RunningSaga(sagaId, callerPath(context.system, respondTo), order, CONTINUES, 0, key)))
+      write(CreateSaga(RunningSaga(sagaId, caller, order, CONTINUES, 0, key)))
     }
   }
 

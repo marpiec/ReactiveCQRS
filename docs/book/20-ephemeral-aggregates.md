@@ -97,6 +97,7 @@ Drafts nobody touches do not pile up forever:
 - **Idle time**: a draft unused for `idleTime` (12 hours by default) is dropped. The bus never drops
   one sooner than the context's command timeout, so a command that is still running cannot write
   into a draft that is gone.
+- **Responses**: the answers kept for idempotency keys of draft commands go after `idleTime` too.
 - **A maximum**: the bus holds at most `maxAggregates` drafts (100 000 by default); a new one beyond
   that is answered `CommandRejected`. So is a new one once a start of the node has given out all
   its 16 777 216 draft ids; the next start brings new ones.

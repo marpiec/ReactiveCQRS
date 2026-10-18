@@ -386,7 +386,8 @@ Z `keepNewerThan` zostają też świeże zdarzenia, bez względu na to, ile ich 
 AutomaticSquash(afterEvents = 1000, keepLast = 100, keepNewerThan = Some(30.days))
 ```
 
-Teraz punkt squasha nie jest też późniejszy niż najnowsze zdarzenie agregatu starsze niż 30 dni.
+Teraz punkt squasha jest też poniżej pierwszego zdarzenia agregatu nie starszego niż 30 dni, według
+czasów własnych zdarzeń agregatu (zaimportowana organizacja zachowuje pierwotne czasy zdarzeń).
 Jeśli przez to do squasha zostaje mniej niż `afterEvents` zdarzeń, agregat czeka na późniejszy
 przebieg. `afterEvents` musi być dodatnie, a `keepLast` nieujemne, inaczej reguły nie da się
 utworzyć.

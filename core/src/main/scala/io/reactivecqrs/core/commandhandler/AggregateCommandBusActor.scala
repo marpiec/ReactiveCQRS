@@ -83,7 +83,8 @@ object AggregateCommandBusActor {
                                           sweepEvery: FiniteDuration = 5.minutes, eventSizeLimit: Int = 100000,
                                           eventSizeLimitPerClassName: Map[String, Int] = Map.empty, aggregateVersionLimit: Int = 10000): Props =
     Props(new AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext, uidGenerator,
-      new EphemeralEventStoreState(mpjsons, eventSizeLimit, eventSizeLimitPerClassName, aggregateVersionLimit), new MemoryCommandResponseState(),
+      new EphemeralEventStoreState(mpjsons, eventSizeLimit, eventSizeLimitPerClassName, aggregateVersionLimit),
+      new MemoryCommandResponseState(retention = idleTime), // F224: no longer than a draft lives unused
       ActorRef.noSender, keepAliveLimit = 200, maxInactivityMillis = 43200000L, eventsLogger = None, failedRestoreRetryAfter = 5.seconds,
       ephemeral = Some(EphemeralMode(persistentBus, maxAggregates, idleTime, sweepEvery))))
 

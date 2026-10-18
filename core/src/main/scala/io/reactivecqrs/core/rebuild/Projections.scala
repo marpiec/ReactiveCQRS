@@ -2,7 +2,7 @@ package io.reactivecqrs.core.rebuild
 
 import java.net.URLEncoder
 
-import io.reactivecqrs.api.{AggregateContext, AggregateType}
+import io.reactivecqrs.api.{AggregateContext, AggregateType, MessageTooLargeException}
 import io.reactivecqrs.api.id.{AggregateId, SpaceId}
 import io.reactivecqrs.core.cluster.{Members, Singletons}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
@@ -394,6 +394,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   // ************** Running
 
   private def running: Receive = {
+    case tooLarge @ Status.Failure(_: MessageTooLargeException) => sender() ! tooLarge // F263: a query too large to cross nodes
     case GetSubscriptionRequests(registered) =>
       asked(sender(), registered)
       subscribeTakers()

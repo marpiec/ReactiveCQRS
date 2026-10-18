@@ -81,7 +81,7 @@ private[commandhandler] final class LocalOwners(context: ActorContext,
   }
 
   private def create(id: AggregateId): ActorRef = {
-    val owner = context.actorOf(ownerProps(id), typeName + "_" + id.asLong + "_" + spawnedCount)
+    val owner = context.actorOf(ownerProps(id), java.net.URLEncoder.encode(typeName, "UTF-8") + "_" + id.asLong + "_" + spawnedCount) // F252
     spawnedCount += 1
     context.watch(owner)
     ownerIds += owner -> id.asLong

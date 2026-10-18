@@ -189,7 +189,8 @@ atLeast7.foreach {
 - Otherwise the aggregate's owner holds the question and answers the moment that version is stored.
 - If the version does not come within `maxMillis` milliseconds (2 seconds here), the answer is
   `Failure(AggregateInIncorrectVersionException)`, which says the version the aggregate is at and the
-  one you asked for.
+  one you asked for. An owner holds at most 1 000 such questions, each at most 5 minutes; one more is
+  answered so at once.
 
 > **Remember:** your ask timeout is a separate clock. Make it longer than `maxMillis`, or your
 > `Future` may fail before the owner had its chance to answer.

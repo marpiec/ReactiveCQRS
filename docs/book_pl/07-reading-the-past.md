@@ -188,7 +188,8 @@ atLeast7.foreach {
   zapisana.
 - Jeśli wersja nie pojawi się w ciągu `maxMillis` milisekund (tutaj to 2 sekundy), odpowiedzią jest
   `Failure(AggregateInIncorrectVersionException)`, a wyjątek podaje wersję, w której jest agregat, i tę,
-  o którą pytasz.
+  o którą pytasz. Właściciel przetrzymuje najwyżej 1 000 takich pytań, każde najwyżej 5 minut; kolejne
+  dostaje taką odpowiedź od razu.
 
 > **Pamiętaj:** limit czasu twojego zapytania (ask) to osobny zegar. Ustaw go dłuższy niż `maxMillis`, bo
 > inaczej twój `Future` może zakończyć się błędem, zanim właściciel zdąży odpowiedzieć.

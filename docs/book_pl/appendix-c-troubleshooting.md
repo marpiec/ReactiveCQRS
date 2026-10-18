@@ -26,7 +26,8 @@ kolejne kroki.
 
 ### Polecenie odpowiada `CommandHandlingError`
 
-**Co widzisz:** `CommandHandlingError(commandName, errorId, commandId)`. Nic nie zostało zapisane.
+**Co widzisz:** `CommandHandlingError(commandName, errorId, commandId)`. Nic nie zostało zapisane, chyba że log mówi, że
+połączenie z bazą danych zerwało się podczas zapisu zdarzeń: wtedy wynik nie jest znany, a odczyt agregatu go pokaże.
 
 **Prawdopodobne przyczyny**, według tego, co log mówi obok `errorId`:
 

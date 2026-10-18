@@ -545,6 +545,19 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     eventStoreState.squashCandidates(AggregateType("other.Type"), rule, before, 10) mustBe empty
   }
 
+  Scenario("F246 an aggregate's events newer than the policy keeps are not squashed, whatever the times of others' events") {
+    val recent = new TestFixture(eventStoreState)
+    recent.storeEvents(EventA("first") +: (2 to 4).map(EventB))
+    val imported = newId() // written after, with its original, old times, as an import writes them
+    eventStoreState.localTx(session => eventStoreState.persistEvents(imported, NewEvents(UserId(1), AggregateVersion.ZERO,
+      Instant.parse("2019-01-01T00:00:00Z"), EventA("old") +: (2 to 4).map(EventB)))(session)).get
+    published(recent.aggregateId, imported)
+    val rule = AutomaticSquash(afterEvents = 1, keepNewerThan = Some(30.days))
+
+    eventStoreState.squashCandidates(AggregateType.of[SomeAggregate], rule, AggregateId(recent.aggregateId.asLong - 1), 10, Instant.now) mustBe
+      Seq(imported -> AggregateVersion(4))
+  }
+
   // A detach replaces the duplicate's first event; if an undo marked it, the undo would then take the base's state too.
   Scenario("A squash or a permanent delete is refused while a duplicate it would detach has its first event undone") {
     val base = new TestFixture(eventStoreState)

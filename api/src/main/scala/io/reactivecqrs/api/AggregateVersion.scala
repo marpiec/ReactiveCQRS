@@ -9,6 +9,7 @@ object AggregateVersion {
 
   /** The version `asInt`. */
   def apply(asInt: Int): AggregateVersion = {
+    require(asInt >= 0, "An aggregate version is not negative: " + asInt) // F252
     if (asInt < 1000) {
       pool(asInt)
     } else {

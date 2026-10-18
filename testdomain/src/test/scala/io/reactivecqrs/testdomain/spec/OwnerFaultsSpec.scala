@@ -8,7 +8,7 @@ import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, MemoryCommandResponseState}
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
-import io.reactivecqrs.core.eventstore.PostgresEventStoreState
+import io.reactivecqrs.core.eventstore.{NewEvents, PostgresEventStoreState}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart._
@@ -47,9 +47,13 @@ class SlowResponses extends MemoryCommandResponseState() {
   }
 }
 
-/** The store, whose look-ups of an aggregate's version fail `failures` times: a connection reset. */
+/** The store, whose look-ups of an aggregate's version fail `failures` times, and whose writes of events `persistFailures`
+  * times: a connection reset. */
 class FailingLookupStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNamesState) extends PostgresEventStoreState(mpjsons, typesNamesState) {
   val failures = new AtomicInteger()
+  val persistFailures = new AtomicInteger()
+  override def persist[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: scalikejdbc.DBSession) =
+    if (persistFailures.getAndDecrement() > 0) throw new java.sql.SQLException("connection reset", "08006") else super.persist(aggregateId, eventsEnvelope)
   override def storedVersion(aggregateId: AggregateId): Option[(AggregateVersion, Int)] =
     if (failures.getAndDecrement() > 0) throw new java.sql.SQLException("connection reset", "08006") else super.storedVersion(aggregateId)
 }
@@ -96,6 +100,22 @@ class OwnerFaultsSpec extends CommonSpec {
       val cart = created(bus)
       bus.askFor[CustomCommandResponse[_]](AddItemConcurrently(user, cart, "deep")) mustBe a[CommandHandlingError]
       bus.askFor[CustomCommandResponse[_]](AddItemConcurrently(user, cart, "shallow")) mustBe SuccessResponse(cart, AggregateVersion(2))
+    }
+
+    Scenario("F253 a write whose connection fails is answered as of unknown outcome, not as nothing stored") {
+      val bus = carts(new ShoppingCartAggregateContext)
+      val cart = created(bus)
+      eventStore.persistFailures.set(1)
+      bus.askFor[CustomCommandResponse[_]](AddItem(user, cart, AggregateVersion(1), "lost")) mustBe a[CommandHandlingError]
+      bus.askFor[CustomCommandResponse[_]](AddItem(user, cart, AggregateVersion(1), "next")) mustBe SuccessResponse(cart, AggregateVersion(2))
+    }
+
+    Scenario("F251 at most 1 000 queries wait for a version, a further one is answered at once") {
+      val bus = carts(new ShoppingCartAggregateContext)
+      val cart = created(bus)
+      val waiting = TestProbe()
+      (1 to 1000).foreach(_ => waiting.send(bus, GetAggregateMinVersion(cart, AggregateVersion(5), 60000)))
+      bus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregateMinVersion(cart, AggregateVersion(5), 60000), 5.seconds).isFailure mustBe true
     }
 
     Scenario("F231 a look-up of the stored version that fails answers its command at once, and the owner goes on") {

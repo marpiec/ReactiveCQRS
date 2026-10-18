@@ -514,6 +514,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
         .map(_.long(1)).list()
 
       idsRemoved.foreach(id => cache.remove(id))
+      AfterCommit(session)(idsRemoved.foreach(id => cache.remove(id))) // F266: and after the commit, past any read meanwhile
     }
   }
 
@@ -560,6 +561,7 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
     inSession { implicit session =>
       sql"TRUNCATE TABLE ${tableNameSQL}".update()
       cache.clear()
+      AfterCommit(session)(cache.clear()) // F266: and after the commit, past any read meanwhile
     }
   }
 
@@ -627,6 +629,7 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
       sql"TRUNCATE TABLE ${tableNameSQL}".update()
       sql"ALTER SEQUENCE ${sequenceNameSQL} RESTART WITH 1".update()
       cache.clear()
+      AfterCommit(session)(cache.clear()) // F266: and after the commit, past any read meanwhile
     }
   }
 
