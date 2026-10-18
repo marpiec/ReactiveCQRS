@@ -10,22 +10,26 @@ import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.{CartsCre
 
 import scala.concurrent.{ExecutionContext, Future}
 
+// The regions (`// #name`) are code blocks of the book, docs/book (BookSnippetsSpec checks them).
 
+// #messages
 object MultipleCartCreatorSaga {
 
   case class CreateMultipleCarts(userId: UserId, cartName: String, cartsCount: Int) extends SagaOrder
-  private case class CreateRemainingCarts(userId: UserId, cartName: String, cartsCount: Int, createdCarts: List[AggregateIdWithVersion]) extends SagaInternalOrder
-
+  private case class CreateRemainingCarts(userId: UserId, cartName: String, cartsCount: Int,
+                                          createdCarts: List[AggregateIdWithVersion]) extends SagaInternalOrder
 
   trait MultipleCartCreatorSagaResponse extends SagaResponse
   case class CartsCreated(carts: List[AggregateIdWithVersion]) extends MultipleCartCreatorSagaResponse
   case class CartsCreationFailure(exceptions: List[String]) extends MultipleCartCreatorSagaResponse
-
 }
+// #messages
 
 /** Creates a number of carts, one per step, and deletes those it created when one cannot be created (AR5: a definition,
   * which `SagaRunner` runs). Its futures run on `executionContext`; its commands wait `timeout` for their answers. */
-class MultipleCartCreatorSaga(shoppingCartCommandBus: ActorRef)(implicit executionContext: ExecutionContext, timeout: Timeout) extends SagaDefinition {
+// #definition
+class MultipleCartCreatorSaga(shoppingCartCommandBus: ActorRef)(implicit executionContext: ExecutionContext,
+                                                                timeout: Timeout) extends SagaDefinition {
 
   override val name = "MultipleCartCreatorSaga"
 
@@ -35,8 +39,12 @@ class MultipleCartCreatorSaga(shoppingCartCommandBus: ActorRef)(implicit executi
   }
 
   override def handleRevert(sagaStep: SagaStep): ReceiveRevert = {
-    case revert: CreateRemainingCarts => revertCreateRemainingCarts(sagaStep, revert.userId, revert.cartName, revert.cartsCount, revert.createdCarts)
+    case revert: CreateRemainingCarts =>
+      revertCreateRemainingCarts(sagaStep, revert.userId, revert.cartName, revert.cartsCount, revert.createdCarts)
   }
+
+  // ... the steps, below
+  // #definition
 
   private def handleCreateMultipleCarts(sagaStep: SagaStep, order: CreateMultipleCarts): Future[SagaHandlingStatus] = {
     if(order.cartsCount > 0) {
@@ -50,14 +58,16 @@ class MultipleCartCreatorSaga(shoppingCartCommandBus: ActorRef)(implicit executi
     createShoppingCart(sagaStep, order.userId, order.cartName, order.cartsCount, order.createdCarts)
   }
 
-  private def createShoppingCart(sagaStep: SagaStep, userId: UserId, cartName: String, cartsCount: Int, createdCarts: List[AggregateIdWithVersion]) = {
-
+  // #step
+  private def createShoppingCart(sagaStep: SagaStep, userId: UserId, cartName: String, cartsCount: Int,
+                                 createdCarts: List[AggregateIdWithVersion]) = {
     val currentCartId = createdCarts.size + 1
-    (shoppingCartCommandBus ? CreateShoppingCart(Some(sagaStep), userId, cartName + " "+currentCartId))
+    (shoppingCartCommandBus ? CreateShoppingCart(Some(sagaStep), userId, cartName + " " + currentCartId))
       .mapTo[CustomCommandResponse[_]]
       .map {
         case c: SuccessResponse if createdCarts.length + 1 < cartsCount =>
-          SagaContinues(CreateRemainingCarts(userId, cartName, cartsCount, AggregateIdWithVersion(c.aggregateId, c.aggregateVersion) :: createdCarts))
+          SagaContinues(CreateRemainingCarts(userId, cartName, cartsCount,
+            AggregateIdWithVersion(c.aggregateId, c.aggregateVersion) :: createdCarts))
         case c: SuccessResponse =>
           SagaSucceded(CartsCreated(AggregateIdWithVersion(c.aggregateId, c.aggregateVersion) :: createdCarts))
         case c: FailureResponse =>
@@ -66,9 +76,11 @@ class MultipleCartCreatorSaga(shoppingCartCommandBus: ActorRef)(implicit executi
           SagaFailed(CartsCreationFailure(List("The cart was not created: " + other)))
       }
   }
+  // #step
 
-
-  private def revertCreateRemainingCarts(sagaStep: SagaStep, userId: UserId, cartName: String, cartsCount: Int, createdCarts: List[AggregateIdWithVersion]): Future[SagaRevertHandlingStatus] = {
+  // #revert
+  private def revertCreateRemainingCarts(sagaStep: SagaStep, userId: UserId, cartName: String, cartsCount: Int,
+                                         createdCarts: List[AggregateIdWithVersion]): Future[SagaRevertHandlingStatus] = {
     (shoppingCartCommandBus ? DeleteShoppingCart(Some(sagaStep), userId, createdCarts.head.id, createdCarts.head.version))
       .mapTo[CustomCommandResponse[_]]
       .map {
@@ -82,6 +94,5 @@ class MultipleCartCreatorSaga(shoppingCartCommandBus: ActorRef)(implicit executi
           SagaRevertFailed(List("The cart was not deleted: " + other))
       }
   }
-
-
+  // #revert
 }

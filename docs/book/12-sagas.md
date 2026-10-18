@@ -69,6 +69,7 @@ it made. Let us read it from the top.
 
 ### The messages
 
+<!-- snippet: shoppingcart/MultipleCartCreatorSaga.scala#messages -->
 ```scala
 object MultipleCartCreatorSaga {
 
@@ -91,6 +92,7 @@ hands it to itself, and it carries the carts made so far. Every order has a `use
 
 ### The definition
 
+<!-- snippet: shoppingcart/MultipleCartCreatorSaga.scala#definition -->
 ```scala
 class MultipleCartCreatorSaga(shoppingCartCommandBus: ActorRef)(implicit executionContext: ExecutionContext,
                                                                 timeout: Timeout) extends SagaDefinition {
@@ -108,7 +110,6 @@ class MultipleCartCreatorSaga(shoppingCartCommandBus: ActorRef)(implicit executi
   }
 
   // ... the steps, below
-}
 ```
 
 A definition gives the runner a name and two functions:
@@ -128,6 +129,7 @@ its name at once, so it keeps nothing in fields of its own.
 
 Both orders end up in the same method. It sends one command and turns the answer into a status:
 
+<!-- snippet: shoppingcart/MultipleCartCreatorSaga.scala#step -->
 ```scala
 private def createShoppingCart(sagaStep: SagaStep, userId: UserId, cartName: String, cartsCount: Int,
                                createdCarts: List[AggregateIdWithVersion]) = {
@@ -142,12 +144,14 @@ private def createShoppingCart(sagaStep: SagaStep, userId: UserId, cartName: Str
         SagaSucceded(CartsCreated(AggregateIdWithVersion(c.aggregateId, c.aggregateVersion) :: createdCarts))
       case c: FailureResponse =>
         SagaFailed(CartsCreationFailure(c.exceptions))
+      case other =>
+        SagaFailed(CartsCreationFailure(List("The cart was not created: " + other)))
     }
 }
 ```
 
 A cart is made, and more are to come: continue, with the new cart added to the list. The last cart
-is made: succeed, with the whole list. The cart is refused: fail. The `?` uses the `timeout` the
+is made: succeed, with the whole list. The cart is refused, or any other answer comes: fail. The `?` uses the `timeout` the
 definition was given. `Some(sagaStep)` is the idempotency id of the command; it gets a section of its
 own below.
 
@@ -157,9 +161,10 @@ saga ends normally, with nothing to do.)
 
 ### The revert
 
+<!-- snippet: shoppingcart/MultipleCartCreatorSaga.scala#revert -->
 ```scala
 private def revertCreateRemainingCarts(sagaStep: SagaStep, userId: UserId, cartName: String, cartsCount: Int,
-                                       createdCarts: List[AggregateIdWithVersion]) = {
+                                       createdCarts: List[AggregateIdWithVersion]): Future[SagaRevertHandlingStatus] = {
   (shoppingCartCommandBus ? DeleteShoppingCart(Some(sagaStep), userId, createdCarts.head.id, createdCarts.head.version))
     .mapTo[CustomCommandResponse[_]]
     .map {
@@ -169,11 +174,14 @@ private def revertCreateRemainingCarts(sagaStep: SagaStep, userId: UserId, cartN
         SagaRevertSucceded
       case c: FailureResponse =>
         SagaRevertFailed(c.exceptions)
+      case other =>
+        SagaRevertFailed(List("The cart was not deleted: " + other))
     }
 }
 ```
 
-One cart per revert step: delete the newest, then continue with the rest of the list.
+One cart per revert step: delete the newest, then continue with the rest of the list. A refusal, or
+any other answer, ends the revert as failed.
 
 ### A run that succeeds
 
@@ -208,8 +216,12 @@ step has a `SagaStep` of its own.
 
 ## Starting a saga and talking to it
 
+These steps run in `SagasSpec` (`examples/src/test/scala/io/reactivecqrs/examples/cart/`), which
+plays both runs above and checks what they answer and leave behind.
+
 1. **Create the saga state**, once:
 
+   <!-- snippet: cart/SagasSpec.scala#sagaState -->
    ```scala
    import io.reactivecqrs.core.saga.PostgresSagaState
 
@@ -219,6 +231,7 @@ step has a `SagaStep` of its own.
 
 2. **Start its runner**, as `ReactiveTestDomainSpec` does:
 
+   <!-- snippet: cart/SagasSpec.scala#runner -->
    ```scala
    import io.reactivecqrs.core.saga.SagaRunner
 
@@ -232,6 +245,7 @@ step has a `SagaStep` of its own.
 
 3. **Send it orders**, and wait for the response:
 
+   <!-- snippet: cart/SagasSpec.scala#order -->
    ```scala
    import io.reactivecqrs.core.saga.SagaResponse
    import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.CreateMultipleCarts
@@ -279,6 +293,7 @@ twice as long each time, up to 30 seconds, ten attempts in all. If every attempt
 stays at its last stored step until the next start. The rule is the `persistRetries` value of the
 definition, a `Backoff` (from `io.reactivecqrs.core.util`) you can override; this is the default:
 
+<!-- snippet: cart/SagasSpec.scala#persistRetries -->
 ```scala
 override val persistRetries: Backoff = Backoff(100.millis, 30.seconds, maxAttempts = 10)
 ```
@@ -314,6 +329,7 @@ ticket."
 Pass it as the idempotency id of the command the step sends; the command is an
 `IdempotentCommand[SagaStep]` (chapter 5), as the cart commands of the test domain are:
 
+<!-- snippet: shoppingcart/Commands.scala#create -->
 ```scala
 case class CreateShoppingCart(idempotencyId: Option[SagaStep], userId: UserId, name: String)
   extends FirstCommand[ShoppingCart, CustomCommandResponse[_]] with IdempotentCommand[SagaStep]
@@ -338,6 +354,7 @@ cart, but could not store that it had, resumes after a restart, and each cart ex
 Here is the shape of a saga with two different steps. `Stock` and `Payment` are aggregates made up
 for this example, with commands like this one (`ReleaseItems` and `ChargePayment` look the same):
 
+<!-- snippet: e4/Shop.scala#reserveItems -->
 ```scala
 case class ReserveItems(idempotencyId: Option[SagaStep], userId: UserId, aggregateId: AggregateId, items: Int)
   extends ConcurrentCommand[Stock, CustomCommandResponse[_]] with IdempotentCommand[SagaStep]
@@ -432,6 +449,7 @@ conflict, and the revert ends there, leaving the older carts in place. A compens
 A saga runner must run once in the whole cluster. Start it with `SagaRunner.start` on every node,
 and send orders to the proxy it returns (chapter 17 explains singletons):
 
+<!-- snippet: cart/SagasSpec.scala#start -->
 ```scala
 val cartsSaga: ActorRef = SagaRunner.start(system,
   new MultipleCartCreatorSaga(carts)(system.dispatcher, Timeout(60.seconds)), uidGenerator, sagaState)

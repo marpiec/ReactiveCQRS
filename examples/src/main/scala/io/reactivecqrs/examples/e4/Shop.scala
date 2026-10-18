@@ -16,8 +16,10 @@ case class ItemsReserved(items: Int) extends Event[Stock]
 case class ItemsReleased(items: Int) extends Event[Stock]
 
 case class OpenStock(userId: UserId, available: Int) extends FirstCommand[Stock, CustomCommandResponse[_]]
+// #reserveItems
 case class ReserveItems(idempotencyId: Option[SagaStep], userId: UserId, aggregateId: AggregateId, items: Int)
   extends ConcurrentCommand[Stock, CustomCommandResponse[_]] with IdempotentCommand[SagaStep]
+// #reserveItems
 case class ReleaseItems(idempotencyId: Option[SagaStep], userId: UserId, aggregateId: AggregateId, items: Int)
   extends ConcurrentCommand[Stock, CustomCommandResponse[_]] with IdempotentCommand[SagaStep]
 
