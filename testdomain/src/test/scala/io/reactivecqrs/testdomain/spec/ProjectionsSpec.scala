@@ -5,7 +5,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.cluster.Singletons
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
-import io.reactivecqrs.core.documentstore.{Document, DocumentStore, NoopDocumentStoreCache, PostgresDocumentStore}
+import io.reactivecqrs.core.documentstore.{Document, DocumentStore, NoopDocumentStoreCache, PostgresDocumentStore, UniqueTextIndex}
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
 import io.reactivecqrs.core.eventstore.{AggregateScope, EventStoreState, PostgresEventStoreState, StoredAggregate}
@@ -297,6 +297,35 @@ class ProjectionsSpec extends CommonSpec {
       repaired.set(true)
       switchedTo(v2, 2)
       awaitAssert(linesOf(v2, note) mustBe Some(NoteLines("note", Vector("ONE", "TWO"))), 10.seconds)
+      second.stop()
+    }
+
+    Scenario("a new version that declares an index the active build's documents violate leaves the active build serving with its own indexes (F189)") {
+      Given("version 1, built and live, with two notes of one title")
+      var v1: ActorRef = null
+      val first = new Node()(projections => { v1 = notesProjection(projections, "m4p-index", 1, "m4p_index"); Seq(v1) })
+      val (a, b) = (first.create("same", "one"), first.create("same", "other"))
+      switchedTo(v1, 1)
+      awaitAssert(linesOf(v1, b) mustBe Some(NoteLines("same", Vector("other"))), 10.seconds)
+      first.stop()
+
+      When("version 2 starts, its store declaring titles unique")
+      var v2: ActorRef = null
+      val second = new Node()(projections => {
+        v2 = projections.start[ManagedNotes]("m4p-index", 2, "m4p-index-" + systems) { build =>
+          new ManagedNotes(subscriptions, new PostgresDocumentStore[NoteLines](build.documentStore("m4p_index"), mpjsons,
+            new NoopDocumentStoreCache, Seq(UniqueTextIndex(1, Seq("title")))), shout = build.version > 1)
+        }
+        Seq(v2)
+      })
+
+      Then("the supervisor answers, version 1 serves and takes events, and its table has not got version 2's index")
+      awaitAssert(builds(v2).building.map(_.number) mustBe Some(2), 10.seconds)
+      linesOf(v2, a).map(_.title) mustBe Some("same")
+      second.send(AddBuildNoteLine(userId, a, AggregateVersion(2), "two"))
+      awaitAssert(linesOf(v2, a).map(_.lines.map(_.toLowerCase)) mustBe Some(Vector("one", "two")), 10.seconds)
+      DB.readOnly(implicit s => sql"SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema() AND tablename = 'projection_m4p_index_v1'"
+        .map(_.int(1)).single().get) mustBe 1 // its primary key only
       second.stop()
     }
 

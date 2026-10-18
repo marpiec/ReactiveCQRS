@@ -274,6 +274,11 @@ Obie wartości znajdziesz w `io.reactivecqrs.core.rebuild.ProjectionSupervisor`.
 > Właśnie to robi `capitals = build.version >= 2` z E10: przy `ServeLive` aktywna budowa wersji 1
 > dalej zapisuje nazwy tak, jak je wpisano, w tabelach wersji 1.
 
+> **Uwaga:** magazyny dokumentów aktywnej budowy zachowują indeksy, które mają ich tabele. Gdy wersja 2
+> deklaruje nowy indeks, w tym unikalny, który dokumenty wersji 1 by naruszyły, dostają go tylko
+> własne tabele wersji 2; wersja 1 obsługuje zapytania jak dotąd. Dla instancji starszej budowy
+> `build.current` jest fałszywe.
+
 ## Co widzi projekcja w trakcie budowy
 
 Budowa podaje twojej projekcji te same zdarzenia, w tej samej kolejności w obrębie agregatu, co

@@ -8,6 +8,24 @@ lists them all. Each entry is as it was when it was closed. Severity and confide
 
 ### Delivery and subscriptions
 
+#### F188 — The event bus waits forever for a subscriber that cannot answer, and stashes every publication meanwhile
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 1 of the risk assessment; `EventsBusActorSpec` "F188", red first) · `EventsBusActor`
+- **Symptom:** a registered subscriber that never answered (a projection that could not start, a proxy whose singleton runs nowhere yet) kept the bus in its start-up state: nothing was delivered on the node, the node never became ready, and every publication was stashed in an unbounded stash with its events and state.
+- **Fix:** D87. Publications are not stashed: the bus keeps their aggregates (at most 100 000) and has the owners re-publish their outboxes once it starts, 1 000 a tick. After `registrationTimeout` (2 minutes) the bus starts without the silent subscribers ("Event bus starts without the subscriptions of: ..."); while one has not answered, every delivery is incomplete, so the outbox rows stay, and once it answers or is removed the kept aggregates are re-published.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F187 — A release that adds a singleton cannot finish a readiness-gated rolling upgrade
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 1 of the risk assessment, with F188; `EventsBusActorSpec` "F188") · `EventsBusActor`, the book's chapter 17
+- **Symptom:** a release adding a projection or saga runner registered on every bus: the new nodes' proxies found no singleton (it runs on the oldest node, still of the old release and replaced last), their buses never started, the nodes never became ready, and Kubernetes never went on to the next pod.
+- **Fix:** D87: the new nodes' buses start after `registrationTimeout`, keep their events in the outbox until the singleton answers from a new node, and re-publish them then. The book's chapter 17 says when a new singleton starts. Mirroring F132's wait for `start` was not needed.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F255 — A subscriber that stops before answering is dropped silently, and the node reports ready
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 1 of the risk assessment; `EventsBusActorSpec` "F255", red first) · `EventsBusActor`
+- **Symptom:** a registered subscriber that stopped at start was dropped without a word: the bus started and acknowledged every event to the others, so the outbox rows the subscriber would have taken were deleted unseen.
+- **Fix:** it is left unanswered (D87): an error says it never subscribed, and every event keeps its outbox row until it is removed (`RemoveSubscriber`) or the node restarts.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F1 — In-memory bus cursor never advances for aggregates that existed before the process started
 - **Medium**, likely · **Fixed in M2** (16/10/2026, bus rewrite: no cursor, D7; `EventsBusActorSpec` "Bookkeeping") · Owning module: Delivery (`EventsBusActor`, `EventBusState`)
 - **Symptom:** memory grows with uptime; per-ack CPU grows; the bus-side duplicate filter does nothing for older aggregates.
@@ -333,6 +351,11 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 
 ### Commands and aggregates
 
+#### F200 — The organization purge does not guard the platform space (0) or the legacy space (-1)
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 1 of the risk assessment; `PurgeSpec` "F200", red first) · `SpacePurge`
+- **Fix:** a purge of space 0 or of a negative space is refused before anything is read: a purge removes one organization only. The book's chapter 16 says so.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F7 — Event timestamps differ between live delivery and the store
 - **High**, confirmed · **Fixed in M1** (16/10/2026) · `CommandExecutorActor`, `PostgresEventStoreState`
 - **Symptom:** state and projections that use event timestamps (Neula: process flows, reports, functions) differ after restore, re-send or replay; the difference is the persist queue wait.
@@ -579,6 +602,34 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Found:** writing the book (M6, 17/10/2026).
 
 ### Event store and SQL
+
+#### F190 — Failed SQL statements are logged with their values: events, documents and saga orders reach the logs
+- **High**, suspected · **Fixed for 1.0.1** (18/10/2026, step 1 of the risk assessment; `LogPrivacySpec` "F190", red first) · every component that opens a ScalikeJDBC session
+- **Symptom:** ScalikeJDBC logs a failed statement with its bound values at ERROR, so an event, document or saga order with personal data reached the logs, where erasure does not reach.
+- **Fix:** the library's sessions use `SqlLogging.withoutValues` (no statement logging, no failed statements); a spec scans the sources so that every session-opening file imports it. `-Dreactivecqrs.log-values=true` logs the details again, at INFO on the logger `io.reactivecqrs.detail`, for a developer's machine. The book adds `logServerErrorDetail=false` to the JDBC URL, so the server's DETAIL with the key's values stays out of exception texts too.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F191 — Exception texts carry event, state, order and document values into logs, replies, `subscription_failures` and the bus's warnings
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 1 of the risk assessment; `LogPrivacySpec` "F191", `FailedRestoreSpec`, `SagaRunnerSpec`) · `util/Errors`, `util/ActorLogging`, about 40 sites
+- **Symptom:** a `MatchError`'s text is its whole value; a JSON error quotes the input; a PostgreSQL error quotes the row. These texts went into logs, command replies, `subscription_failures` and the bus's warnings, repeated at every re-delivery.
+- **Fix:** `Errors.describe` gives one line per cause without values (the class of a `MatchError`'s value; SQLState, constraint, table and column; a JSON problem and its position; a parse error without its input), and `Errors.redacted` the same as an exception with the original stack trace; actors log through a `RedactingLog`, and every library site that wrote an exception's text uses them. The bus logs a subscriber's `MessageFailed` once per subscription and aggregate. ARCHITECTURE §15 lists what reaches the logs.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F186 — No statement, socket or lock timeouts: a hung connection pins owners and threads, and silently stops re-delivery
+- **High**, suspected · **Fixed for 1.0.1** (18/10/2026, step 1 of the risk assessment; `OutboxPollerActorSpec` and `SquashSchedulerSpec` "F186") · `OutboxPollerActor`, `SquashScheduler`, the book's chapter 18, E2
+- **Symptom:** a read on a connection that hangs never ended: the outbox poller and the squash scheduler waited for it forever, so re-delivery stopped without a word.
+- **Fix:** their reads are numbered and watched (`ReadWatch`): one that has not ended in `readTimeout` (5 minutes) is given up with an error and a metric (`reactivecqrs.outbox.read.abandoned`), its late result is ignored, and the next poll reads again. The book and E2 set the driver's `socketTimeout=600` and `tcpKeepAlive=true`.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F272 — Mismatched defaults: a 32-thread blocking dispatcher against an 8-connection default pool, no validation query, and driver defaults that hang or log values
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 1 of the risk assessment; `StartupLocksSpec` "F272") · `BlockingDispatcher`, the test kit, the book's chapter 18
+- **Fix:** a warning at start, once per system, when the pool's `maxSize` is smaller than the blocking dispatcher's threads (`PoolCheck`); the test kit's pool has 32 connections; the book's pool settings add a `validationQuery` and the driver settings of F186 and F190.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F193 — Squashing a duplicate drops its link to its base, so a later erasure of the base never reaches it
+- **High**, suspected · **Fixed for 1.0.1** (18/10/2026, step 1 of the risk assessment; `EventStoreStateSpec` "F193", red first) · `PostgresEventStoreState`, `MemoryEventStoreState`
+- **Fix:** a squash, and the detachment of a copy, record its lineage before the chain rows go, in both stores, so a complete rewrite of the base still finds the copy among its copies.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
 
 #### F22 — Restore loads the whole event stream into memory before handling it
 - **Medium**, likely · **Fixed in M3** (16/10/2026; heap measured in `baseline-M3`) · `PostgresEventStoreState.readAndProcessEvents`
@@ -902,6 +953,12 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 
 ### Schema initialization
 
+#### F185 — Every node start takes exclusive locks on the event tables, with no lock timeout
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 1 of the risk assessment; `StartupLocksSpec`: 14 of its 16 scenarios red first) · every `*SchemaInitializer` and `initSchema()`, `PostgresDocumentStore`
+- **Symptom:** `ALTER TABLE ... IF NOT EXISTS` takes an ACCESS EXCLUSIVE lock and `CREATE INDEX IF NOT EXISTS` a SHARE lock before they look: a node's start queued behind a long transaction, and every statement on the table queued behind the start.
+- **Fix:** `util/Ddl`: each start-up step looks in the catalog first (`information_schema.columns`, `to_regclass`, `pg_sequences`) and changes only what is missing, under `SET LOCAL lock_timeout` (2 s), tried 30 times on SQLState 55P03, then fails with a message that points at `pg_stat_activity`. An unchanged schema takes no table lock at start.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F63 — Concurrent schema initialization fails
 - **Medium**, confirmed · **Fixed in M5** (17/10/2026: every schema initialization, the components' `initSchema()` and the document stores' tables, runs under a PostgreSQL advisory lock held on a connection of its own, so processes that start together initialize one at a time; `SchemaLockSpec`, red before the fix with a duplicate `pg_type` key) · `PostgresEventStoreSchemaInitializer` and every `initSchema`
 - **Symptom:** two processes initializing the schema at once (test suites in parallel today; cluster nodes starting together later) fail with a duplicate key on `pg_proc_proname_args_nsp_index` for `add_event`.
@@ -917,6 +974,12 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Fix:** `schemaname = current_schema()`, `to_regclass(…)` and `'events'::regclass`, so the library works in whatever schema the connection's `search_path` selects. Also `countAllEvents` treats the `-1` estimate of a never-analyzed table (PostgreSQL 14+) like 0 and counts exactly.
 
 ### Rebuild
+
+#### F189 — The active build's instance runs the new code's store setup on the old tables; when that fails, the projection and its node's bus stay down
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 1 of the risk assessment; `ProjectionsSpec` "F189", red first) · `ProjectionBuild`, `Projections`, `PostgresDocumentStore`
+- **Symptom:** a new version declaring an index the old documents violate (a unique one) made the active build's instance fail to start on its own tables, again every few seconds: the supervisor answered nothing, the projection served nothing, and the bus waited for it.
+- **Fix:** a build older than the code's version is not `current`; its document stores' tables are marked (`OutdatedTables`) and keep the indexes they have. The code's indexes come with its own build's tables.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
 
 #### F54 — Rebuild needs downtime and clears read models first
 - **Medium**, likely · **Fixed in M4** (17/10/2026: managed projections build a new version in tables of their own while the active version serves, and switch in one update; `ProjectionsSpec`) · `EventsReplayOrchestrator.scala:79-81`; Neula runs it as a separate run mode

@@ -88,6 +88,7 @@ behaviour.
 | D15 | The host passes the bus the list of subscriber actors it created. On start the bus asks each one for its subscription requests (empty list allowed), holds publications without blocking (`Stash` + `pipeTo`) until all answered, logs missing ones by name while waiting. Subscriptions are fixed after start. `EventBusSubscriptionsManager`, push subscription from `preStart` and `minimumExpectedSubscriptions` are removed. |
 | D9 | Superseded by D20a and R1 (D27). |
 | D19 | Merged into D20b. |
+| D87 | (18/10/2026, F187, F188, F255) The event bus does not wait forever for its subscribers: one that has not answered within `DeliveryOptions.registrationTimeout` (2 minutes) or stops before it answered is left *unanswered*, and the bus starts, with an error naming it. While any is unanswered, no delivery is complete, so every event keeps its outbox row; the bus keeps the aggregates published (at most 100 000) and has their owners re-publish once the last one answered or was removed. Publications are never stashed. A release that adds a singleton thus costs a rollout up to the timeout per node, instead of a hang; Neula may lower it. Rejected: telling proxies from other subscribers while older versions run (the bus cannot tell them apart), and starting at once without the stopped ones (their events would be deleted unseen). |
 
 ### 1.5 Commands, aggregates and their features
 
@@ -190,7 +191,7 @@ Changes must keep these true (from `ARCHITECTURE.md` §10, extended by the decis
 
 ## 3. Issues in the library
 
-The issues still open. The 180 closed ones (fixed, accepted, decided or found not to be a problem) are in
+The issues still open. The 191 closed ones (fixed, accepted, decided or found not to be a problem) are in
 [`KNOWN-ISSUES-ARCHIVE.md`](KNOWN-ISSUES-ARCHIVE.md), by area, as they were recorded; a number named in the code or in
 the other documents (`F99`) is found there. F185–F274 were found by the risk assessment of 1.0.0 (18/10/2026), at the end of this
 section.
@@ -229,32 +230,8 @@ one's scenario, mechanism, validation, fix and regression test under the same nu
 together, and the order to fix them in. None is reproduced yet: "likely" is traced in the code, "suspected" also depends
 on a dependency's behaviour, timing or configuration; "scenario" says how probable its trigger is.
 
-#### F185 — Every node start takes exclusive locks on the event tables, with no lock timeout
-- **High**, likely · scenario possible · Open · details under F185 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F186 — No statement, socket or lock timeouts: a hung connection pins owners and threads, and silently stops re-delivery
-- **High**, suspected · scenario possible · Open · details under F186 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F187 — A release that adds a singleton cannot finish a readiness-gated rolling upgrade
-- **High**, likely · scenario likely · Open · details under F187 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F188 — The event bus waits forever for a subscriber that cannot answer, and stashes every publication meanwhile
-- **High**, likely · scenario possible · Open · details under F188 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F189 — The active build's instance runs the new code's store setup on the old tables; when that fails, the projection and its node's bus stay down
-- **High**, likely · scenario possible · Open · details under F189 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F190 — Failed SQL statements are logged with their values: events, documents and saga orders reach the logs
-- **High**, suspected · scenario likely · Open · details under F190 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F191 — Exception texts carry event, state, order and document values into logs, replies, `subscription_failures` and the bus's warnings
-- **High**, likely · scenario likely · Open · details under F191 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
 #### F192 — An erasure that could not rebuild a projection reports "complete" when run again; a build in progress switches in with the erased values
 - **High**, likely · scenario possible · Open · details under F192 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F193 — Squashing a duplicate drops its link to its base, so a later erasure of the base never reaches it
-- **High**, suspected · scenario possible · Open · details under F193 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F194 — After its base is erased, an attached duplicate is reported unchanged and never rebuilt; a lost history notice is never repaired
 - **High**, likely · scenario likely · Open · details under F194 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
@@ -273,9 +250,6 @@ on a dependency's behaviour, timing or configuration; "scenario" says how probab
 
 #### F199 — The organization import cannot tell a complete file from a truncated or inconsistent one, and trusts its references and class names
 - **High**, likely · scenario unlikely · Open · details under F199 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F200 — The organization purge does not guard the platform space (0) or the legacy space (-1)
-- **High**, likely · scenario unlikely · Open · details under F200 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F201 — A stale failure record becomes a false "versions missing" failure; skipping it moves the subscription past the aggregate, and the next event is acknowledged unapplied
 - **High**, likely · scenario unlikely · Open · details under F201 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
@@ -431,16 +405,13 @@ on a dependency's behaviour, timing or configuration; "scenario" says how probab
 - **Low**, likely · scenario unlikely · Open · details under F251 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F252 — Values the library does not check before it uses them
-- **Low**, likely · scenario possible · Open · details under F252 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+- **Low**, likely · scenario possible · Open; the idempotency keys fixed for 1.0.1 (18/10/2026: a key longer than the 256 characters stored is refused before the handler runs, `IdempotentCommandsSpec` "F252") · details under F252 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F253 — A commit whose outcome is unknown is answered "nothing was stored"
 - **Medium**, likely · scenario possible · Open · details under F253 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F254 — Transient database errors become durable recorded failures in live projections
 - **Medium**, likely · scenario possible · Open · details under F254 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F255 — A subscriber that stops before answering is dropped silently, and the node reports ready
-- **Medium**, likely · scenario unlikely · Open · details under F255 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F256 — Ephemeral buses call the context's outbox writer with no session, on an in-memory store that never rolls back
 - **Medium**, likely · scenario possible · Open · details under F256 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
@@ -489,9 +460,6 @@ on a dependency's behaviour, timing or configuration; "scenario" says how probab
 
 #### F271 — New application message classes are dropped by old nodes during a rolling upgrade
 - **Medium**, likely · scenario possible · Open · details under F271 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F272 — Mismatched defaults: a 32-thread blocking dispatcher against an 8-connection default pool, no validation query, and driver defaults that hang or log values
-- **Medium**, likely · scenario possible · Open · details under F272 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F273 — The memory document store ignores sort, offset and limit
 - **Medium**, likely · scenario likely · Open · details under F273 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
@@ -547,7 +515,7 @@ From §7 of Neula's change requests.
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔, F174 ✔; F155 decided (review 8) |
 | M7 | AR5 ✔ (moved from M5 at review 7; D86); F148 ✔, F152 ✔, F153 ✔, F156 ✔, F157 ✔, F160 ✔, F161 ✔, F162 ✔, F163 ✔, F164 ✔, F165 ✔, F166 ✔, F169 ✔ (found writing the book), F170 ✔, F171 ✔, F173 ✔, F175 (accepted), F176 ✔ (found writing E10), F177 ✔ (found writing E11), F178 ✔ (found running E2 in Docker), F179 (deferred: the owner publishes mpjsons later), F180 ✔ (found running E2 on Kubernetes), F181 ✔ (found writing chapter 6's spec), F182 ✔ (found by E2's fault tests in Docker), F183 ✔ (found writing the Scaladoc), F184 (open, found by review 9's bench) |
-| After 1.0 | F185–F274, open (the risk assessment of 18/10/2026, [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md) §13 orders them) |
+| After 1.0 | F185–F274, found by the risk assessment of 18/10/2026 ([RISK-ASSESSMENT.md](RISK-ASSESSMENT.md) §13 orders them); its step 1, for 1.0.1: F185 ✔, F186 ✔, F187 ✔, F188 ✔, F189 ✔, F190 ✔, F191 ✔, F193 ✔, F200 ✔, F252 (keys ✔), F255 ✔, F272 ✔; D87 |
 
 ---
 

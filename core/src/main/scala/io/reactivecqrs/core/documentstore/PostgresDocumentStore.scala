@@ -54,6 +54,13 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
       throw new IllegalStateException("Indices for projection " + tableName+" are not unique")
     }
 
+    if (OutdatedTables.contains(tableName)) {
+      // F189: the table of a build older than the code keeps its indexes; the code's come with its own build.
+      PostgresDocumentStoreTrait.log.info("Indexes of " + projectionTableName + " are left as they are: it is the table of an older version of its projection")
+    } else syncIndices()
+  }
+
+  private def syncIndices(): Unit = {
     val existing = readExistingIndices()
     existing.keys.filterNot(id => indicies.exists(_.uniqueId == id)).foreach(id => dropIndex(indexName(id)))
     indicies.foreach { index =>

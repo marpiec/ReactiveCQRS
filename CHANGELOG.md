@@ -2,6 +2,28 @@
 
 Notable changes of ReactiveCQRS, newest first. Dates are DD/MM/YYYY.
 
+## 1.0.1 (not released)
+
+Step 1 of [the risk assessment of 1.0.0](docs/RISK-ASSESSMENT.md): fixes to put in place before production moves to 1.0.
+
+- **No values in logs** (F190, F191). The library logs no SQL statements and describes a failure without the event, state,
+  order or document it was about: by its classes, SQLState, constraint, table and column. The same text goes into
+  `subscription_failures` and answers. `-Dreactivecqrs.log-values=true` shows the details again, for diagnosis. Add
+  `logServerErrorDetail=false` to the JDBC URL (chapter 18).
+- **Idempotency keys** longer than the 256 characters stored are refused before the handler runs (F252).
+- **Start-up takes no table locks** when the schema is as it should be; a change it must make waits at most 2 s for its
+  lock, tried again, then fails naming `pg_stat_activity` (F185).
+- **Hung reads**: the outbox poller and the squash scheduler give up a read after `readTimeout` (5 minutes) and read
+  again; a warning at start when the connection pool is smaller than the blocking dispatcher; the book and E2 set the
+  driver's `socketTimeout`, `tcpKeepAlive` and a `validationQuery` (F186, F272).
+- **The event bus starts without a subscriber that does not answer** within `DeliveryOptions.registrationTimeout`
+  (2 minutes) or stops before it answers, logging an error; every event keeps its outbox row until it answers, then is
+  published again. A publication that comes before the bus starts is published again from the outbox, not kept in
+  memory. A release that adds a projection or saga no longer hangs a rolling upgrade (F187, F188, F255).
+- **A new projection version's indexes** go to its own build's tables only; the active build keeps its indexes (F189).
+- **Purges of space 0 and of negative spaces** are refused (F200); a squashed copy keeps its link to its base, so an
+  erasure of the base still reaches it (F193).
+
 ## 1.0.0 (18/10/2026)
 
 The first release after 0.12.47. It rewrites how events reach their subscribers, how an aggregate lives

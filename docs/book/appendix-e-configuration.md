@@ -82,6 +82,7 @@ Members of your `AggregateContext`; override the ones you need.
 | `EventsBusActor(options, eventsLogger)` | `DeliveryOptions()`, no logger | The bus's timing and flow control; a debug logger of its deliveries. | [9](09-projection-failures.md) |
 | `DeliveryOptions` `deadline` | `10 minutes` | A delivery neither acknowledged nor failed by then ends as undelivered; its outbox row stays. | [9](09-projection-failures.md) |
 | `stallAfter`, `summaryInterval` | `1 minute`, `5 minutes` | When a waiting delivery is logged as stalled, and how often stalls are summed up. | [9](09-projection-failures.md) |
+| `registrationTimeout` | `2 minutes` | How long the bus waits at start for a registered subscriber's answer; then it starts without it and keeps every event in the outbox until it answers. | [17](17-cluster.md) |
 | `tickInterval`, `stallLinesPerTick` | `5 s`, `10` | How often the bus looks at its deliveries, and how many stall lines it logs per look. | — |
 | `window`, `windowBytes` | `10000` events, `64 MB` | The most a subscriber is sent and has not answered; the rest is held, and pulled from the owners later. | [SCALING.md](../SCALING.md), section 5 |
 | `maxPulls`, `pullTimeout` | `100`, `1 minute` | How many held aggregates are pulled at once, and when an unanswered pull is asked again. | — |

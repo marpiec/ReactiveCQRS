@@ -8,7 +8,7 @@ import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.cluster.Readiness
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
-import io.reactivecqrs.testkit.{CommonSpec, ErrorRecorder, TestIds, TestSystems}
+import io.reactivecqrs.testkit.{CommonSpec, ErrorRecorder, LogCapture, TestIds, TestSystems}
 import org.apache.pekko.Done
 import org.apache.pekko.actor.{ActorRef, CoordinatedShutdown, Props, Status}
 import org.apache.pekko.event.Logging
@@ -76,9 +76,10 @@ class EventsBusActorSpec extends CommonSpec {
 
   Feature("Start-up (D15)") {
 
-    Scenario("publishes nothing until every registered subscriber has answered") {
-      val (a, b, owner) = (TestProbe(), TestProbe(), TestProbe())
+    Scenario("publishes nothing until every registered subscriber has answered, and keeps no publication meanwhile (F188)") {
+      val (a, b, owner, commandBus) = (TestProbe(), TestProbe(), TestProbe(), TestProbe())
       val bus = newBus()
+      bus ! RegisterPublisher(cartType, commandBus.ref)
       bus ! RegisterSubscribers(Seq(a.ref, b.ref))
       a.expectMsg(GetSubscriptionRequests(a.ref))
       a.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, a.ref)), a.ref))
@@ -90,9 +91,57 @@ class EventsBusActorSpec extends CommonSpec {
       publish(bus, owner, id, 1)
       a.expectNoMessage(300.millis)
 
+      When("the last subscriber answers, the bus has the owner re-publish what waits in its outbox")
       b.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, b.ref)), b.ref))
+      commandBus.expectMsg(3.seconds, RepublishOutbox(id))
+      a.expectNoMessage(200.millis) // the publication itself was not kept
+      publish(bus, owner, id, 1)
       delivered(a) mustBe Seq(1)
       delivered(b) mustBe Seq(1)
+    }
+
+    Scenario("F188 starts without a subscriber that has not answered by the registration timeout, keeping the outbox rows until it does") {
+      val (a, b, owner, commandBus) = (TestProbe(), TestProbe(), TestProbe(), TestProbe())
+      val bus = system.actorOf(Props(new EventsBusActor(options.copy(registrationTimeout = 300.millis))))
+      bus ! RegisterPublisher(cartType, commandBus.ref)
+      bus ! RegisterSubscribers(Seq(a.ref, b.ref))
+      a.expectMsg(GetSubscriptionRequests(a.ref))
+      a.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, a.ref)), a.ref))
+      b.expectMsg(GetSubscriptionRequests(b.ref))
+      b.ignoreMsg { case _: GetSubscriptionRequests => true }
+      answered(bus, a)
+      awaitAssert(Readiness(system).waitingFor must not contain bus.path.toString, 3.seconds, 50.millis)
+
+      val id = newId()
+      publish(bus, owner, id, 1)
+      delivered(a) mustBe Seq(1)
+      ack(bus, a, id, 1)
+      owner.expectNoMessage(300.millis) // the row stays: b may subscribe to it
+
+      b.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, b.ref)), b.ref))
+      commandBus.expectMsg(3.seconds, RepublishOutbox(id))
+    }
+
+    Scenario("F255 starts without a subscriber that stopped before it answered, keeping the outbox rows, and says so") {
+      val (a, b, owner) = (TestProbe(), TestProbe(), TestProbe())
+      val capture = new LogCapture(system)
+      try {
+        val bus = newBus()
+        bus ! RegisterSubscribers(Seq(a.ref, b.ref))
+        a.expectMsg(GetSubscriptionRequests(a.ref))
+        a.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, a.ref)), a.ref))
+        b.expectMsg(GetSubscriptionRequests(b.ref))
+        system.stop(b.ref)
+        answered(bus, a)
+        awaitAssert(Readiness(system).waitingFor must not contain bus.path.toString, 3.seconds, 50.millis)
+
+        val id = newId()
+        publish(bus, owner, id, 1)
+        delivered(a) mustBe Seq(1)
+        ack(bus, a, id, 1)
+        owner.expectNoMessage(300.millis)
+        awaitAssert(capture.containing("never subscribed") must not be empty, 3.seconds, 50.millis)
+      } finally capture.close()
     }
 
     Scenario("keeps the node from being ready until every registered subscriber answered (D71)") {
@@ -115,8 +164,9 @@ class EventsBusActorSpec extends CommonSpec {
     }
 
     Scenario("waits for the subscribers of a second RegisterSubscribers too (F162)") {
-      val (a, b, owner) = (TestProbe(), TestProbe(), TestProbe())
+      val (a, b, owner, commandBus) = (TestProbe(), TestProbe(), TestProbe(), TestProbe())
       val bus = newBus()
+      bus ! RegisterPublisher(cartType, commandBus.ref)
       bus ! RegisterSubscribers(Seq(a.ref))
       bus ! RegisterSubscribers(Seq(b.ref))
       a.expectMsg(GetSubscriptionRequests(a.ref))
@@ -130,8 +180,7 @@ class EventsBusActorSpec extends CommonSpec {
       b.expectNoMessage(300.millis)
 
       a.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, a.ref)), a.ref))
-      delivered(a) mustBe Seq(1)
-      delivered(b) mustBe Seq(1)
+      commandBus.expectMsg(3.seconds, RepublishOutbox(id))
     }
 
     Scenario("asks a subscriber registered after the start, warns that it missed what was published before, and delivers to it once it answered (F162)") {

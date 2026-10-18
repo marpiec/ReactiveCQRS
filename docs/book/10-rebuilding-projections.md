@@ -269,6 +269,11 @@ Both live in `io.reactivecqrs.core.rebuild.ProjectionSupervisor`.
 > builds. That is what E10's `capitals = build.version >= 2` does: with `ServeLive`, the active
 > build of version 1 goes on writing names as typed, in version 1's tables.
 
+> **Note:** the active build's document stores keep the indexes their tables have. When version 2
+> declares a new index, a unique one that version 1's documents would break among them, only version
+> 2's own tables get it; version 1 serves on as it was. For the instance of the older build,
+> `build.current` is false.
+
 ## What your projection sees while it is built
 
 A build hands your projection the same events, in the same order per aggregate, that live delivery

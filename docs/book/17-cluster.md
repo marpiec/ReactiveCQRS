@@ -459,6 +459,12 @@ Readiness(system).ready        // false while an event bus still waits for its s
 Readiness(system).waitingFor   // the event buses that still wait
 ```
 
+A node does not stay unready forever. A subscriber that has not answered within the bus's
+`registrationTimeout` (2 minutes, in `DeliveryOptions`) is left out: the bus starts and logs an error
+that names it. It delivers to the others, but no event leaves the outbox until the missing
+subscriber answers; then the owners publish what they kept again. A subscriber that stops before it
+answers is left out the same way, at once.
+
 If you use Pekko Management's health checks (add Pekko Management to your application; the library
 does not bring it), one line makes it a readiness check, so load balancers send traffic only to ready
 nodes:
@@ -556,6 +562,11 @@ A few more rules of the road:
   read them.
 - **A new command class:** send it only once every node runs its version, as an owner on an old node
   would not know it.
+- **A projection or saga added in the new version:** its singleton runs on the oldest node, which runs
+  the old version until it is replaced last. The new nodes' buses wait `registrationTimeout` for it,
+  then start without it, so the rollout goes on. Their events stay in the outbox until the singleton
+  starts on a new node and answers; then they are published again. A managed projection is built
+  from the store anyway.
 - **A projection removed in the new version:** `Projections.retire(name)` waits until every member
   runs that version before it drops the projection (it looks again every 10 seconds).
 - **Placement changes** still need a full stop (see above).

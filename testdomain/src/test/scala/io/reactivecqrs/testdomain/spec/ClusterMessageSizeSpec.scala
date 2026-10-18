@@ -5,6 +5,7 @@ import java.util.concurrent.{ConcurrentHashMap, ConcurrentLinkedQueue}
 
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
+import io.reactivecqrs.core.cluster.Readiness
 import io.reactivecqrs.core.documentstore.{NoopDocumentStoreCache, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.core.projection.PostgresSubscriptionsState
@@ -79,6 +80,9 @@ class ClusterMessageSizeSpec extends AnyFeatureSpec with Matchers with Eventuall
 
     Scenario("a subscriber on another node takes many large events in messages that fit the frame") {
       Given("a subscriber on the oldest node, of the carts published on the other node's bus")
+      // F188: a bus that has not started keeps no publication, only its aggregate, for its owner to publish again from
+      // its outbox; the events published here have no outbox, so they go once the bus runs.
+      eventually(Readiness(other.system).ready mustBe true)
       val received = new ConcurrentLinkedQueue[Seq[Int]]()
       val recorder = oldest.system.actorOf(Props(new DeliveryRecorder(received)))
       val remote = other.system.asInstanceOf[ExtendedActorSystem].provider.resolveActorRef(Serialization.serializedActorPath(recorder))

@@ -333,7 +333,8 @@ zdarzeń `eventBus`, użytkownika `alice` i szyny poleceń koszyków `carts`.
    Szyna pyta każdego subskrybenta, czego chce (projekcja odpowiada sama, po jednej subskrypcji na
    listener), i niczego nie publikuje, dopóki nie odpowie każdy subskrybent z listy. Czekając, co kilka
    sekund zapisuje w logu `Event bus waits for the subscriptions of: ...`, co bardzo się przydaje, gdy
-   zapomnisz uruchomić któregoś z nich.
+   zapomnisz uruchomić któregoś z nich. Po dwóch minutach startuje bez milczących i trzyma każde
+   zdarzenie w outboxie, dopóki nie odpowiedzą ([rozdział 18](18-production.md)).
 
 > **Ostrzeżenie:** projekcja uruchomiona na domyślnym dispatcherze też działa, ale przy starcie
 > zapisuje w logu ostrzeżenie („runs its listener transactions on the default dispatcher; create it

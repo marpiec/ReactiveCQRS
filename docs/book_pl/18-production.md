@@ -183,6 +183,13 @@ Nową projekcję, która musi zobaczyć całą historię, uruchamiasz przez `Pro
 który na pytanie szyny odpowiada błędem (projekcja zarządzana, której rejestr jest niedostępny),
 zostaje wymieniony z nazwy w ostrzeżeniu i jest pytany ponownie przy każdym takcie zegara szyny.
 
+Subskrybent, który nigdy nie odpowiada, nie blokuje węzła na zawsze. Po `registrationTimeout` (2 minuty)
+szyna startuje bez niego i loguje „Event bus starts without the subscriptions of: ...”; ten, który
+zatrzyma się, zanim odpowie, zostaje pominięty od razu („... stopped before it answered: it never
+subscribed”). Dopóki każdy zarejestrowany subskrybent nie odpowie, żadne zdarzenie nie opuszcza
+outboxu; gdy odpowiedzą wszyscy, właściciele publikują ponownie to, co zachowali. Taki, który nigdy
+nie wróci, sprawia, że outbox rośnie: usuń go przez `RemoveSubscriber` albo zrestartuj węzeł.
+
 Jak długo trwa to „w tym czasie”? Zmierzone 17/10/2026 (`docs/perf/baseline-M5.md`, jedna maszyna):
 nowy system z dwiema projekcjami odpowiedział na pierwsze polecenie po 668 ms, a jego projekcje
 zobaczyły pierwsze zdarzenie po 767 ms.
@@ -324,6 +331,8 @@ szynę każdego węzła pytaj osobno.
 | „Undelivered after ...” albo „Held for a full window after ...” | szyna zdarzeń | dostarczenie doszło do swojego 10-minutowego terminu; jego wiersz w outboxie zostaje |
 | „Subscriber ... stopped” (jako błąd) | szyna zdarzeń | subskrybent się zatrzymał i nic go nie zastępuje; jego zdarzenia czekają w outboxie do następnego startu. Ta sama linia na poziomie INFO jest normalna: węzeł się wyłącza albo zastępca projekcji jest już w drodze |
 | „Event bus waits for the subscriptions of: ...” | szyna zdarzeń | przy starcie: zarejestrowany subskrybent nie odpowiedział; węzeł nie jest gotowy |
+| „Event bus starts without the subscriptions of: ...” | szyna zdarzeń | zarejestrowany subskrybent nie odpowiedział w `registrationTimeout`; szyna działa, ale żadne zdarzenie nie opuszcza outboxu, dopóki nie odpowie |
+| „Subscriber ... stopped before it answered” | szyna zdarzeń | zarejestrowany subskrybent zatrzymał się przy starcie; żadne zdarzenie nie opuszcza outboxu, dopóki nie zostanie usunięty albo węzeł nie wystartuje ponownie |
 | „Event bus asked ... for its subscriptions and got a failure” | szyna zdarzeń | subskrybent nie mógł odpowiedzieć; jest pytany ponownie przy każdym takcie, a linia podaje przyczynę |
 | „Event bus registered ... after its start” | szyna zdarzeń | `RegisterSubscribers` przyszło po starcie: ci subskrybenci ominęli to, co opublikowano wcześniej |
 | „Delivery waits for ...” i „... deliveries wait longer than ...” | szyna zdarzeń | subskrybent wolno odpowiada |

@@ -322,7 +322,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   }
 
   private def instanceOf(record: BuildRecord): Instance = {
-    val build = new ProjectionBuild(record, registry)
+    val build = new ProjectionBuild(record, registry, current = record.version == spec.version)
     val ref = context.watch(context.actorOf(Props(create(build)).withDispatcher(BlockingDispatcher.id), childName("build", record.number)))
     ref ! BindSubscriber(record.subscriber)
     Instance(record, ref, subscribed = false)

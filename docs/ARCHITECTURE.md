@@ -757,8 +757,16 @@ them per poll.
 **Start-up (D15).** The host sends `RegisterSubscribers(subscribers)`. The bus watches each,
 asks it for its subscriptions (`GetSubscriptionRequests` → `SubscriptionRequests`), and
 stashes everything else until all have answered, logging the missing ones on each tick. A
-subscriber that stops before answering is dropped; one that answers with a failure is logged
-and asked again at the next tick, as one whose answer was lost. A second `RegisterSubscribers`
+publication is not stashed (F188): the bus keeps its aggregate only (at most 100 000), and once it
+starts has their owners re-publish their outboxes (`RepublishOutbox`), 1 000 a tick; the outbox
+poller re-publishes what did not fit. One that answers with a failure is logged and asked again at
+the next tick, as one whose answer was lost. The bus does not wait forever (D87): a subscriber that
+has not answered within `registrationTimeout` (2 minutes) is left *unanswered* and the bus starts
+(an error names it); one that stops before it answered is left unanswered at once (F255). While any
+is unanswered, every delivery is incomplete (its outbox rows stay, as for a stopped subscriber) and
+its aggregate is kept; when the last one answers or is removed, the kept aggregates are
+re-published. A singleton that starts only once the oldest node runs the new release (a
+projection added by it, F187) thus no longer keeps the new nodes unready during a rollout. A second `RegisterSubscribers`
 before the start adds to the first; one after the start registers its subscribers the same way,
 asked every tick until they answer, and they miss what was published before (F162, logged).
 Managed projections add and remove their builds' subscriptions (`AddSubscriptions`,
@@ -1223,7 +1231,9 @@ once the bus runs), puts the build in progress into `BuildFromStore`, and runs i
 other message goes to the instance that **serves**: the active build, or a new projection's
 first build, which serves while it is built. While a new version builds, the active build keeps
 applying live events with the current code (`ServeLive`, so parked queries keep working) or
-serves its tables unchanged (`ServeStale`). For a build begun at run time (`RebuildProjection`)
+serves its tables unchanged (`ServeStale`). Its instance's `ProjectionBuild` is not `current`
+(its version is older than the code's): its document stores keep the indexes their tables have
+(`OutdatedTables`), as the code's may not fit the older documents, a unique one above all (F189). For a build begun at run time (`RebuildProjection`)
 the active instance, subscribed already, leaves the buses once the new build joined them, and
 answers the deliveries still on their way unapplied (`ServeUnchanged`, F153).
 
@@ -1648,7 +1658,7 @@ chosen ids through a command bus.
   node during the rollout, which does not know it: send it only once every node runs its
   version.
 - **Readiness (D71):** `cluster/Readiness(system)` waits for each event bus until its subscribers
-  answered; `ReadinessCheck` is a Pekko Management readiness check over it
+  answered or its `registrationTimeout` passed (D87); `ReadinessCheck` is a Pekko Management readiness check over it
   (`pekko.management.health-checks.readiness-checks`).
 - **Clients during a rollout** send commands to nodes that are up and retry, with an
   idempotency key, through another node when a node leaves before it answered.
@@ -1709,3 +1719,6 @@ rewrite's reach (§4.9). So the library logs, stores and answers failures withou
 
 The system property `reactivecqrs.log-values=true` turns both back on for diagnosis: ScalikeJDBC logs
 as configured, and `Errors` logs each described failure in full on `io.reactivecqrs.detail`.
+
+A proposal to mark personal and loggable fields in the application classes, so that more can be shown
+and checked, is in [`design/personal-data-annotations.md`](design/personal-data-annotations.md).

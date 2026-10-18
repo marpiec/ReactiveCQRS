@@ -327,7 +327,8 @@ the event bus `eventBus`, the user `alice`, and the cart command bus `carts`.
    The bus asks each subscriber what it wants (the projection answers by itself, one subscription
    per listener) and publishes nothing until every subscriber on the list has answered. While it
    waits, it logs `Event bus waits for the subscriptions of: ...` every few seconds, which is handy
-   when you forgot to start one of them.
+   when you forgot to start one of them. After two minutes it starts without the silent ones, and
+   keeps every event in the outbox until they answer ([chapter 18](18-production.md)).
 
 > **Warning:** start a projection on the default dispatcher and it still works, but it logs a
 > warning at start ("runs its listener transactions on the default dispatcher; create it with

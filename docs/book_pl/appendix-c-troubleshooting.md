@@ -230,8 +230,10 @@ bus waits for the subscriptions of: ...” z listą nazw. Węzeł nie zgłasza g
 - Subskrybent odpowiada błędem: szyna pisze „Event bus asked ... for its subscriptions and got
   a failure, asks again: ...” z przyczyną, przy każdym cyklu, dopóki subskrybent nie odpowie.
 
-W tym czasie nic nie ginie: zdarzenia są zapisane i czekają w outboxie, a szyna przechowuje
-publikacje, dopóki nie wystartuje.
+W tym czasie nic nie ginie: zdarzenia są zapisane i czekają w outboxie, a gdy szyna wystartuje,
+właściciele publikują je ponownie. Po `registrationTimeout` (2 minuty) szyna startuje bez
+subskrybentów, którzy nie odpowiedzieli („Event bus starts without the subscriptions of: ...”):
+dostarcza do pozostałych, ale trzyma każde zdarzenie w outboxie, dopóki brakujący nie odpowiedzą.
 
 **Co zrobić:** wyślij `RegisterSubscribers` raz na starcie, ze wszystkimi projekcjami,
 aktorami-listenerami i nadzorcami (`RegisterSubscribers(Nil)`, gdy nie ma żadnych). Linia „waits for
@@ -509,7 +511,8 @@ ją trzyma, użyj pełnego przepisania historii, `HistoryRewriter` ([rozdział 1
   i odtwarza właściciela.
 - **Projekcje, które na starcie ponawiają stare awarie,** 20 na sekundę.
 - **Szyna zdarzeń, która czeka na swoich subskrybentów.** Węzeł nie jest gotowy, dopóki każdy z nich
-  nie odpowie („Event bus waits for the subscriptions of: ...”).
+  nie odpowie („Event bus waits for the subscriptions of: ...”) albo nie minie `registrationTimeout`
+  (2 minuty).
 - **Inicjalizacja schematu, która czeka na inny węzeł.** Węzły po kolei biorą blokadę schematu;
   czekający węzeł rezygnuje po pięciu minutach („The schema lock was not free for 5 minutes: another process
   initializes the schema”).

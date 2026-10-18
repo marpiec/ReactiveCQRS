@@ -126,6 +126,9 @@ object EventsBusActor {
   * answered (F126); what does not fit is held, and pulled from its owners once half the window is free, at most
   * `maxPulls` aggregates at once, each counted as a part of `pullPartEvents` and `pullPartBytes` (the owners' parts); a
   * pull not answered within `pullTimeout` is asked again.
+  *
+  * At start (F188), a registered subscriber that has not answered within `registrationTimeout` is waited for no longer:
+  * the bus starts, and keeps every event's outbox row until it answers.
   */
 case class DeliveryOptions(deadline: FiniteDuration = 10.minutes,
                            stallAfter: FiniteDuration = 1.minute,
@@ -137,7 +140,8 @@ case class DeliveryOptions(deadline: FiniteDuration = 10.minutes,
                            maxPulls: Int = 100,
                            pullTimeout: FiniteDuration = 1.minute,
                            pullPartEvents: Int = 1000,
-                           pullPartBytes: Long = 16L * 1024 * 1024)
+                           pullPartBytes: Long = 16L * 1024 * 1024,
+                           registrationTimeout: FiniteDuration = 2.minutes)
 
 /**
   * Routes events from their owners to the subscribers of their aggregate type and keeps one delivery per event until
@@ -179,6 +183,17 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   private var asking = Set[ActorRef]()
   private var lastSummary = System.nanoTime()
 
+  // F188, F255: the registered subscribers the bus started without (they did not answer within the registration timeout,
+  // or stopped before they answered). While there are any, every event keeps its outbox row; the aggregates that were
+  // published meanwhile, and those published while the bus started, are re-published once they all answered, at most
+  // RepublishedPerTick a tick; beyond MaxToRepublish of them, the outbox poller re-publishes the rest.
+  private var unanswered = Set[ActorRef]()
+  private var registrationStarted = 0L
+  private val toRepublish = mutable.LinkedHashSet[(AggregateType, AggregateId)]()
+  private var toRepublishOverflowed = false
+  private val MaxToRepublish = 100000
+  private val RepublishedPerTick = 1000
+
   private val undelivered = mutable.Queue[Undelivered]()
   private val undeliveredKept = 1000
 
@@ -206,9 +221,14 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
 
   private def registering: Receive = {
     case RegisterSubscribers(subscribers) =>
+      if (!registrationRequested) registrationStarted = System.nanoTime()
       registrationRequested = true
       awaitingRegistration ++= register(subscribers) // F162: a second list adds to the first
       startIfRegistered()
+    // F188: the outbox holds what is published while the bus starts; the bus keeps the aggregates only, to have them
+    // re-published once it starts, and never the events and states (a start that waits long kept them all in memory).
+    case PublishEvents(aggregateType, _, aggregateId, _, _, _, _) => republishLater(aggregateType, aggregateId)
+    case Republish(aggregateType, aggregateId) => republishLater(aggregateType, aggregateId)
     case SubscriptionRequests(requests, registeredSubscriber) =>
       answered(registeredSubscriber, requests)
       awaitingRegistration -= registeredSubscriber
@@ -223,18 +243,60 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     case GetDeliveryStatus => sender() ! status
     case Status.Failure(e) => failedToAnswer(e)
     case Terminated(subscriber) =>
+      if (awaitingRegistration.contains(subscriber)) neverSubscribed(subscriber)
       awaitingRegistration -= subscriber
       stoppedOrUnregistered(subscriber)
       startIfRegistered()
     case Tick =>
-      if (registrationRequested) {
-        log.warning("Event bus waits for the subscriptions of: " + awaitingRegistration.map(_.path.name).toSeq.sorted.mkString(", "))
+      if (registrationRequested && System.nanoTime() - registrationStarted >= options.registrationTimeout.toNanos) {
+        log.error("Event bus starts without the subscriptions of: " + names(awaitingRegistration) + ", which did not answer in " +
+          options.registrationTimeout + "; every event keeps its outbox row until they answer, then it is re-published")
+        unanswered ++= awaitingRegistration
+        asking ++= awaitingRegistration
+        awaitingRegistration = Set.empty
+        startIfRegistered()
+      } else if (registrationRequested) {
+        log.warning("Event bus waits for the subscriptions of: " + names(awaitingRegistration))
         // An ask can be lost on the way, in a singleton proxy's buffer among others: it is asked again.
         awaitingRegistration.foreach(subscriber => subscriber ! GetSubscriptionRequests(subscriber))
       } else {
         log.warning("Event bus waits for RegisterSubscribers from the host; nothing is published until then")
       }
     case _ => stash()
+  }
+
+  private def names(subscribers: Set[ActorRef]): String = subscribers.map(_.path.name).toSeq.sorted.mkString(", ")
+
+  // F255: a registered subscriber that stopped before it answered never subscribed: nothing tells which events it takes, so
+  // every event keeps its outbox row until it is removed or the node restarts.
+  private def neverSubscribed(subscriber: ActorRef): Unit = {
+    log.error("Subscriber " + subscriber.path.name + " stopped before it answered: it never subscribed. Every event keeps its " +
+      "outbox row until it is removed (RemoveSubscriber) or the node restarts")
+    unanswered += subscriber
+  }
+
+  private def republishLater(aggregateType: AggregateType, aggregateId: AggregateId): Unit =
+    if (toRepublish.size < MaxToRepublish) toRepublish += aggregateType -> aggregateId
+    else toRepublishOverflowed = true
+
+  // Once every registered subscriber answered: the owners of what was kept re-publish their outboxes, a part at a time.
+  private def republishKept(): Unit = if (unanswered.isEmpty && toRepublish.nonEmpty) {
+    val now = toRepublish.take(RepublishedPerTick).toSeq
+    now.foreach { case (aggregateType, aggregateId) => routeToPublisher(aggregateType, RepublishOutbox(aggregateId)) }
+    toRepublish --= now
+    if (toRepublish.isEmpty && toRepublishOverflowed) {
+      log.info("Event bus had its owners re-publish what it kept; more aggregates than it remembers wait for the outbox poller")
+      toRepublishOverflowed = false
+    }
+  }
+
+  // A registered subscriber the bus started without answered, or was removed.
+  private def noLongerUnanswered(subscriber: ActorRef): Unit = if (unanswered.contains(subscriber)) {
+    unanswered -= subscriber
+    if (unanswered.isEmpty) {
+      log.info("Event bus has the subscriptions of every registered subscriber; what it kept is re-published")
+      republishKept()
+    }
   }
 
   /** Watches and asks the subscribers not registered yet, and returns them. */
@@ -259,6 +321,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       Readiness(context.system).done(self.path.toString)
       context.become(running)
       unstashAll()
+      republishKept()
     }
   }
 
@@ -275,6 +338,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   // in the outbox for the replacements (F110).
   private def answered(registeredSubscriber: ActorRef, requests: Seq[SubscribeRequest]): Unit = {
     asking -= registeredSubscriber
+    noLongerUnanswered(registeredSubscriber)
     val now = requests.map(_.subscriber).toSet
     answeredWith.getOrElse(registeredSubscriber, Set.empty).filter(s => stopped.contains(s) && !now.contains(s))
       .foreach(replaced => removeSubscriber(replaced, keepOutbox = true))
@@ -341,6 +405,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
       flow.withBehind.toSeq.foreach(pull)
       checkDeadlines()
       sampleLevels()
+      republishKept()
   }
 
   // R19: the bus's levels, every tick; each subscriber's aggregates held, 0 for one not behind.
@@ -387,6 +452,8 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     val sentTo = sends.map { case (s, _) => Target(s.subscriber, s.kind) }.toSet
     val heldFor = holds.map { case (s, _) => Target(s.subscriber, s.kind) }.toSet
 
+    // F188: while a registered subscriber has not answered, no event is complete; its aggregate is re-published once all did.
+    if (unanswered.nonEmpty && onlyTo.isEmpty) republishLater(aggregateType, aggregateId)
     var finished = Vector[(Delivery, EventKey)]()
     events.foreach { event =>
       val key = EventKey(aggregateId, event.version)
@@ -395,7 +462,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
           // An event not waiting yet goes to every live subscription, sent or held. A stopped subscriber takes nothing,
           // so its events stay in the outbox until it is back after a restart.
           val delivery = Delivery(aggregateType, if (onlyTo.isEmpty) Some(publisher) else None, now, now, sentTo, heldFor,
-            incomplete = ofStopped.nonEmpty, stallLogged = false, permanentDelete = event.event.isInstanceOf[PermanentDeleteEvent[_]])
+            incomplete = ofStopped.nonEmpty || unanswered.nonEmpty, stallLogged = false, permanentDelete = event.event.isInstanceOf[PermanentDeleteEvent[_]])
           if (delivery.done) finished :+= (delivery -> key) else deliveries += key -> delivery
         case Some(waiting) =>
           // What was held for a subscriber that takes it now (a pull's part) is sent: it may stall from now on, not from
@@ -545,6 +612,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
     answeredWith = answeredWith.map { case (r, subscribers) => r -> (subscribers - subscriber) }
     stopped -= subscriber
     flow.remove(subscriber)
+    noLongerUnanswered(subscriber)
     if (keepOutbox) endDeliveries(_.subscriber == subscriber, _ => true) else completeFor(subscriber)
   }
 

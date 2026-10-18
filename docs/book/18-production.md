@@ -180,6 +180,13 @@ builds it from the stored events. A subscriber that answers the bus's question w
 managed projection whose registry is unavailable) is named in a warning and asked again at every
 tick.
 
+A subscriber that never answers does not keep the node down. After `registrationTimeout` (2 minutes)
+the bus starts without it and logs "Event bus starts without the subscriptions of: ..."; one that
+stops before it answers is left out at once ("... stopped before it answered: it never subscribed").
+Until every registered subscriber has answered, no event leaves the outbox; once they all did, the
+owners publish what they kept again. One that never comes back keeps the outbox growing: remove it
+with `RemoveSubscriber`, or restart the node.
+
 How long is "meanwhile"? Measured on 17/10/2026 (`docs/perf/baseline-M5.md`, one machine): a new
 system with two projections answered its first command after 668 ms and its projections saw the first
 event after 767 ms.
@@ -319,6 +326,8 @@ node; ask each node's bus separately.
 | "Undelivered after ..." or "Held for a full window after ..." | event bus | a delivery reached its 10-minute deadline; its outbox row stays |
 | "Subscriber ... stopped" (an error) | event bus | a subscriber stopped and nothing replaces it; its events stay in the outbox until the next start. The same line at INFO is normal: the node shuts down, or a projection's replacement is on its way |
 | "Event bus waits for the subscriptions of: ..." | event bus | at start: a registered subscriber has not answered; the node is not ready |
+| "Event bus starts without the subscriptions of: ..." | event bus | a registered subscriber did not answer in `registrationTimeout`; the bus runs, but no event leaves the outbox until it answers |
+| "Subscriber ... stopped before it answered" | event bus | a registered subscriber stopped at start; no event leaves the outbox until it is removed or the node restarts |
 | "Event bus asked ... for its subscriptions and got a failure" | event bus | a subscriber could not answer; it is asked again at every tick, and the line gives the cause |
 | "Event bus registered ... after its start" | event bus | a `RegisterSubscribers` came after the start: those subscribers missed what was published before |
 | "Delivery waits for ..." and "... deliveries wait longer than ..." | event bus | a subscriber is slow to answer |

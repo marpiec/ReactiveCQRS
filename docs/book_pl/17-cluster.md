@@ -473,6 +473,12 @@ Readiness(system).ready        // false while an event bus still waits for its s
 Readiness(system).waitingFor   // the event buses that still wait
 ```
 
+Węzeł nie zostaje niegotowy na zawsze. Subskrybent, który nie odpowiedział w czasie
+`registrationTimeout` szyny (2 minuty, w `DeliveryOptions`), zostaje pominięty: szyna startuje
+i loguje błąd, który go wymienia. Dostarcza do pozostałych, ale żadne zdarzenie nie opuszcza outboxu,
+dopóki brakujący subskrybent nie odpowie; wtedy właściciele publikują ponownie to, co zachowali.
+Subskrybent, który zatrzyma się, zanim odpowie, zostaje pominięty tak samo, od razu.
+
 Jeśli używasz health checków z Pekko Management (dodaj Pekko Management do swojej aplikacji; biblioteka
 go nie dołącza), jedna linia zamienia tę informację w sprawdzenie gotowości (readiness check), więc load
 balancery kierują ruch tylko do gotowych węzłów:
@@ -572,6 +578,11 @@ Jeszcze kilka przepisów ruchu drogowego:
   umie ich przeczytać.
 - **Nowa klasa polecenia:** wysyłaj ją dopiero, gdy każdy węzeł działa w jej wersji, bo właściciel na
   starym węźle by jej nie znał.
+- **Projekcja albo saga dodana w nowej wersji:** jej singleton działa na najstarszym węźle, który
+  działa w starej wersji, dopóki nie zostanie wymieniony jako ostatni. Szyny nowych węzłów czekają na
+  nią `registrationTimeout`, potem startują bez niej, więc aktualizacja idzie dalej. Ich zdarzenia
+  zostają w outboxie, dopóki singleton nie wystartuje na nowym węźle i nie odpowie; wtedy są
+  publikowane ponownie. Projekcja zarządzana i tak buduje się z magazynu.
 - **Projekcja usunięta w nowej wersji:** `Projections.retire(name)` czeka, aż każdy członek klastra
   będzie działał w tej wersji, zanim usunie projekcję (sprawdza ponownie co 10 sekund).
 - **Zmiany rozmieszczenia** nadal wymagają pełnego zatrzymania (zob. wyżej).

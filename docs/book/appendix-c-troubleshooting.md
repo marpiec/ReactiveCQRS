@@ -226,8 +226,10 @@ waits for the subscriptions of: ..." with a list of names. The node does not rep
 - A subscriber answers with a failure: the bus says "Event bus asked ... for its subscriptions and
   got a failure, asks again: ..." with the cause, at every tick until the subscriber answers.
 
-Nothing is lost meanwhile: the events are stored and wait in the outbox, and the bus keeps the
-publications until it starts.
+Nothing is lost meanwhile: the events are stored and wait in the outbox, and once the bus starts the
+owners publish them again. After `registrationTimeout` (2 minutes) the bus starts without the
+subscribers that did not answer ("Event bus starts without the subscriptions of: ..."): it delivers
+to the others, but keeps every event in the outbox until the missing ones answer.
 
 **What to do:** send `RegisterSubscribers` once at start, with every projection, listener actor and
 supervisor (`RegisterSubscribers(Nil)` when there are none). The "waits for the subscriptions of"
@@ -501,7 +503,7 @@ it, use the complete rewrite, `HistoryRewriter` ([chapter 15](15-rewriting-histo
   owner.
 - **Projections retrying old failures,** 20 per second, at start.
 - **The event bus waiting for its subscribers.** The node is not ready until every one has answered
-  ("Event bus waits for the subscriptions of: ...").
+  ("Event bus waits for the subscriptions of: ..."), or `registrationTimeout` (2 minutes) passed.
 - **Schema initialization waiting for another node.** Nodes take turns under the schema lock; one
   gives up after five minutes ("The schema lock was not free for 5 minutes: another process
   initializes the schema").

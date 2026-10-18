@@ -2601,3 +2601,20 @@ Open test-infrastructure items:
   complete while values remain (F192–F195); starts and rolling upgrades that can stall the cluster (F185, F187–F189);
   no database timeouts (F186); organization export and import (F198–F200); sagas' failure semantics (F205–F207).
 - KNOWN-ISSUES §3 records them, open; its index has a row for them.
+
+**18/10/2026: step 1 of the risk assessment, for 1.0.1**
+- At the owner's request, step 1 of `RISK-ASSESSMENT.md` §13, each finding red first:
+  - Privacy (F190, F191, F252's keys): the library's sessions log no statements; failures are described without
+    values (`Errors`), through a redacting actor log; a subscriber's failure is logged once per aggregate; an
+    idempotency key too long to store is refused before the handler runs. ARCHITECTURE §15 lists what reaches the logs.
+  - Start-up DDL (F185): catalog checks first, then `lock_timeout` and retries (`Ddl`); an unchanged schema takes no
+    table lock at start (`StartupLocksSpec`, 14 of 16 red first).
+  - Timeouts and pool (F186, F272): watched reads in the outbox poller and the squash scheduler (`readTimeout`); a
+    warning when the pool is smaller than the blocking dispatcher; the driver settings in the book and E2.
+  - The bus's start (F188, F187, F255; D87): publications are not stashed; after `registrationTimeout` (2 minutes) the
+    bus starts without silent subscribers, keeping every event in the outbox until they answer, then re-publishing.
+  - Builds of an older version keep their tables' indexes (F189).
+  - Purges of space 0 and negative spaces refused (F200); a squashed copy keeps its lineage (F193).
+- The book (both languages) and ARCHITECTURE follow; KNOWN-ISSUES closes eleven of them (F252 stays open for its other
+  values) and records D87. The owner's idea of marking personal data in application classes is recorded as a proposal
+  (`docs/design/personal-data-annotations.md`).

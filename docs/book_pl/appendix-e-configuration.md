@@ -83,6 +83,7 @@ Składowe twojego `AggregateContext`; nadpisz te, których potrzebujesz.
 | `EventsBusActor(options, eventsLogger)` | `DeliveryOptions()`, bez loggera | Czasy i kontrola przepływu szyny; logger debugowania jej dostarczeń. | [9](09-projection-failures.md) |
 | `DeliveryOptions` `deadline` | `10 minutes` | Dostarczenie, które do tego czasu nie dostało ani potwierdzenia, ani zgłoszenia błędu, kończy się jako niedostarczone; jego wiersz w outboxie zostaje. | [9](09-projection-failures.md) |
 | `stallAfter`, `summaryInterval` | `1 minute`, `5 minutes` | Kiedy czekające dostarczenie trafia do logu jako utknięte i jak często utknięcia są podsumowywane. | [9](09-projection-failures.md) |
+| `registrationTimeout` | `2 minutes` | Jak długo szyna czeka przy starcie na odpowiedź zarejestrowanego subskrybenta; potem startuje bez niego i trzyma każde zdarzenie w outboxie, dopóki nie odpowie. | [17](17-cluster.md) |
 | `tickInterval`, `stallLinesPerTick` | `5 s`, `10` | Jak często szyna przegląda swoje dostarczenia i ile linii o utknięciach loguje przy każdym przeglądzie. | — |
 | `window`, `windowBytes` | `10000` zdarzeń, `64 MB` | Najwięcej, ile może czekać wysłane do subskrybenta bez jego odpowiedzi; reszta jest wstrzymywana i później pobierana od właścicieli. | [SCALING.md](../SCALING.md), sekcja 5 |
 | `maxPulls`, `pullTimeout` | `100`, `1 minute` | Ile wstrzymanych agregatów pobiera się naraz i kiedy pobranie bez odpowiedzi jest ponawiane. | — |
