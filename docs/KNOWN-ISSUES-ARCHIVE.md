@@ -366,6 +366,31 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 
 ### Commands and aggregates
 
+#### F208 — A materialization that timed out lets the draft change again; the next one returns the older stored copy and drops the draft with its newer edits
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 3 of the risk assessment; `EphemeralAggregatesSpec` "F208", red under a mutation) · `AggregateOwner.materialize`
+- **Fix:** without an answer within the command timeout the outcome is not known: the callers are told so (`MaterializeRefused`), and the draft stays frozen (commands answered `CommandRejected`) while the owner sends the same `StoreFirstEvent`, with its key, again (1 s doubling to 30 s) until the persistent bus answers. A `Materialize` meanwhile joins it and hears the outcome; a passivation waits for it. Trade-off: a draft stays read-only while the persistent side is unreachable, until it is dropped as idle.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F209 — Ephemeral id tokens repeat across starts, so materialization keys collide within the response retention
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 3; `EphemeralAggregatesSpec` "F209", red under a mutation) · `MaterializationKey`, `AggregateCommandBusActor`
+- **Fix:** `MaterializationKey(ephemeralId, start)` carries a random UUID drawn at each start of the ephemeral bus (122 random bits), so two starts that draw one token never share a key. The id format stays (D39).
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F236 — On an ephemeral bus, a first command served after the ids ran out blocks every later command for good
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 3; `EphemeralAggregatesSpec` "F236", red under a mutation) · `AggregateCommandBusActor.route`
+- **Fix:** an ephemeral bus answers a new aggregate that waited while its block of ids ran out with `CommandRejected` and takes it out of the queue, so the commands behind it go on. `EphemeralMode` takes `token` and `ids` for tests.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F256 — Ephemeral buses call the context's outbox writer with no session, on an in-memory store that never rolls back
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 3; `EphemeralAggregatesSpec` "F256", red under two mutations) · `OwnerSettings.outboxWriter`, `MemoryEventStoreState.localTx`
+- **Fix:** ephemeral owners get no outbox writer. The in-memory stores roll back, at a `localTx` that throws, what it wrote to its aggregates (events, outbox, snapshots, generations), keeping other owners' writes, so a keyed creation that loses the key leaves no draft.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F257 — An ephemeral bus that restarts loses its drafts, then refuses every new draft until the node restarts
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 3; `EphemeralAggregatesSpec` "F257", red under a mutation) · `AggregateCommandBusActor`
+- **Fix:** a command bus logs and drops a message whose handling throws, so it does not restart (and stop its owners with their commands in flight, or an ephemeral bus's drafts). Should it restart all the same, `postRestart` takes a new block of ids and schedules the sweep, and the ephemeral event bus's name is unique per start.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F261 — Deleting an aggregate's idempotent responses removes their deduplication too, so a retried keyed creation creates it again
 - **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 2; `PostgresEventStoreStateSpec` "F167, F261", red under a mutation) · `PostgresEventStoreState.deleteAggregatePermanently`
 - **Fix:** a permanent delete clears the info of the aggregate's stored responses (F167's purpose: the values go) and keeps their rows, keys and the response's id and version, until the retention period removes them: a retried keyed command gets the old answer without its info.

@@ -715,24 +715,34 @@ Aggregates that live in one node's memory: drafts, written and published nowhere
   placement, its store an `EphemeralEventStoreState`, its responses a `MemoryCommandResponseState`, and
   its event bus one of its own without subscribers, which acknowledges every publication at once. The
   owners are the usual `AggregateOwner`s: commands, events, versions, timeouts and queries work as
-  for stored aggregates.
+  for stored aggregates, except that a context's outbox writer (`WithOutboxWriter`) is not called for
+  them (F256). A message whose handling throws is logged and dropped, never restarting the bus and
+  with it every draft (F257); should it restart all the same, it starts anew: a new store, token and
+  block of ids.
 - **The store** is the in-memory store without its commit-order list (`commitOrder = false`), so
   dropping an aggregate does not walk every event. It refuses what PostgreSQL refuses (an event's JSON
   longer than its class's limit, written by the host's `MPJsons`; more events than the version limit)
   and what ephemeral aggregates do not do (copies, squash, rewrites); a permanent delete forgets the
-  aggregate. One lock guards it; nothing under it does I/O.
+  aggregate. One lock guards it; nothing under it does I/O. As every in-memory store, it rolls back
+  what a `localTx` that throws wrote to its aggregates (F256), so a keyed creation that loses the key
+  leaves no draft.
 - **Ids**: `-(token × 2^24 + n)`, with a random 29-bit token drawn when the bus starts and one block of
   2^24 ids per start (D39: |id| below 2^53). A message for an id of another token is answered
   `EphemeralAggregateLost` (a query: `Failure(EphemeralAggregateLostException)`), one for an id the
   bus does not hold `EphemeralAggregateUnknown` (`Failure(NoEventsForAggregateException)`), before
-  any owner starts.
+  any owner starts. When the block is spent, new aggregates are answered `CommandRejected`, also one
+  that waited for a command-id pool meanwhile (F236).
 - **Materialize(id, userId)**: the owner refuses without a squash policy or while commands are under
   way; otherwise it makes its state's squash event, checked as a squash checks it (D85), rejects
-  commands (`CommandRejected`) until the answer, and asks the persistent bus to store
-  `StoreFirstEvent(userId, event, MaterializationKey(id))`: a library first command that the owner
-  writes as given, idempotent under the ephemeral id. On `SuccessResponse(newId, _)` it tells its bus
-  (`EphemeralMaterialized`), which drops the aggregate, and answers `Materialized(id, newId)`;
-  otherwise `MaterializeRefused`, and the aggregate stays.
+  commands (`CommandRejected`) until the outcome is known, and asks the persistent bus to store
+  `StoreFirstEvent(userId, event, MaterializationKey(id, start))`: a library first command that the
+  owner writes as given, idempotent under the ephemeral id and a random UUID of the bus's start, as
+  ids repeat across starts (F209). On `SuccessResponse(newId, _)` it tells its bus
+  (`EphemeralMaterialized`), which drops the aggregate, and answers `Materialized(id, newId)`; on
+  another answer `MaterializeRefused`, and the aggregate stays. With no answer within the command
+  timeout the outcome is not known: the callers are answered `MaterializeRefused` saying so, and the
+  aggregate stays frozen while the owner sends the same request again (1 s doubling to 30 s) until an
+  answer comes; a `Materialize` meanwhile joins it, and a passivation waits for it (F208).
 - **Bounds**: at most `maxAggregates` (new ones are answered `CommandRejected`; creations in flight
   are not counted); every `sweepEvery` the bus drops the aggregates unused for `idleTime` and for
   the context's command timeout (a command persists within its timeout or never, R5, so none can

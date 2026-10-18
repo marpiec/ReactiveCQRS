@@ -80,6 +80,11 @@ A few details that keep it safe:
   `MaterializeRefused(id, reason)` and the draft stays as it was.
 - The materialization is idempotent: should an answer come late and the request be sent again, the
   library recognizes it and answers the same new id instead of storing a second list.
+- If the persistent bus does not answer within the command timeout, nobody knows yet whether the
+  list was stored. The answer is `MaterializeRefused` saying the outcome is not known, and the draft
+  stays frozen: its commands are still answered `CommandRejected`, and the library sends the same
+  request again (after 1 s, then up to every 30 s) until the persistent bus answers. Send
+  `Materialize` again to hear the outcome.
 
 > **Tip:** the stored list starts at version 1, with one summary event: the draft's clicks are not
 > kept. That is the point of scratch paper. If you need the clicks, they belong in the diary from the
@@ -93,7 +98,8 @@ Drafts nobody touches do not pile up forever:
   one sooner than the context's command timeout, so a command that is still running cannot write
   into a draft that is gone.
 - **A maximum**: the bus holds at most `maxAggregates` drafts (100 000 by default); a new one beyond
-  that is answered `CommandRejected`.
+  that is answered `CommandRejected`. So is a new one once a start of the node has given out all
+  its 16 777 216 draft ids; the next start brings new ones.
 
 <!-- snippet: e8/DraftsSpec.scala#limits -->
 ```scala
@@ -120,7 +126,9 @@ Queries fail the same way: `GetAggregate` answers `Failure(EphemeralAggregateLos
 > **Under the hood:** each start of an ephemeral bus draws a random token, and its ids are
 > `-(token × 2^24 + n)`. So an id from before a restart, or from another node, is recognized as lost,
 > two nodes almost never share ids (once in 2^29 pairs of starts), and every id stays a number a
-> JavaScript user interface can hold (below 2^53). See [ARCHITECTURE.md, section 4.10](../ARCHITECTURE.md).
+> JavaScript user interface can hold (below 2^53). A materialization's key adds a random value of
+> the start, so even two starts that drew the same token never mix up their drafts. See
+> [ARCHITECTURE.md, section 4.10](../ARCHITECTURE.md).
 
 ## What drafts do not do
 
@@ -128,6 +136,9 @@ Queries fail the same way: `GetAggregate` answers `Failure(EphemeralAggregateLos
   materialized.
 - They are not squashed, copied or rewritten: materialize them first.
 - They do not survive a restart. Nothing about them is in the database.
+- They do not write your context's own rows (`WithOutboxWriter`, [chapter 5](05-command-flavors.md)): a
+  draft's events are in memory, outside any transaction. The rows come with the materialized list's
+  later commands.
 
 ## What you learned
 

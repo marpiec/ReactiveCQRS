@@ -7,7 +7,9 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.core.eventstore.MemoryEventStoreState.EventRow
 import scalikejdbc.{DBSession, NoSession}
 
+import scala.collection.mutable
 import scala.util.Try
+import scala.util.control.NonFatal
 
 /** The memory store's row of an event. */
 object MemoryEventStoreState {
@@ -75,6 +77,7 @@ class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState
       StoredEvent(event, version, 0)
     }
 
+    wrote(Set(aggregateId))
     eventStore += aggregateId -> eventsForAggregate
     if (eventsEnvelope.events.exists(_.isInstanceOf[UndoEvent[_]])) historyChangedFor(Set(aggregateId)) // as in PostgreSQL (D30, F119)
     eventsWithVersions
@@ -185,6 +188,7 @@ class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState
 
   // As in PostgreSQL (D30, F119): their snapshots may be wrong; owners holding the states of before must not write them.
   private def historyChangedFor(aggregateIds: Set[AggregateId]): Unit = {
+    wrote(aggregateIds)
     snapshots --= aggregateIds
     aggregateIds.foreach(id => generations += id -> (generations.getOrElse(id, 0) + 1))
   }
@@ -468,8 +472,33 @@ class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState
     if (versions.isEmpty) None else Some(AggregateVersion(versions.min))
   }
 
-  override def localTx[A](block: (DBSession) => A): A = {
-    block(NoSession)
+  // F256: a transaction that throws leaves the aggregates it wrote (events, outbox, snapshots, generations) as they were,
+  // as PostgreSQL rolls back; what other owners wrote meanwhile stays. Ids and the commit order's other rows are kept.
+  private val written = new ThreadLocal[mutable.Set[AggregateId]]
+  private def wrote(ids: Iterable[AggregateId]): Unit = Option(written.get).foreach(_ ++= ids)
+
+  private case class Saved(rows: List[EventRow], events: Map[AggregateId, Vector[EventStoreEntry[_]]],
+                           outbox: Map[(AggregateId, AggregateVersion), (UserId, Instant, Event[_], Long)], snapshots: Map[AggregateId, Snapshot[_]],
+                           generations: Map[AggregateId, Int])
+
+  override def localTx[A](block: (DBSession) => A): A = if (written.get != null) block(NoSession) else {
+    val saved = synchronized(Saved(eventsRows, eventStore, eventsToPublish, snapshots, generations))
+    written.set(mutable.Set.empty)
+    try block(NoSession) catch {
+      case NonFatal(e) =>
+        synchronized(written.get.foreach(rollBack(_, saved)))
+        throw e
+    } finally written.remove()
+  }
+
+  private def rollBack(id: AggregateId, saved: Saved): Unit = {
+    def as[V](now: Map[AggregateId, V], was: Map[AggregateId, V]): Map[AggregateId, V] = was.get(id).fold(now - id)(value => now + (id -> value))
+    eventStore = as(eventStore, saved.events)
+    snapshots = as(snapshots, saved.snapshots)
+    generations = as(generations, saved.generations)
+    eventsToPublish = eventsToPublish.filterNot(_._1._1 == id) ++ saved.outbox.filter(_._1._1 == id)
+    val rows = saved.rows.filter(_.aggregateId == id).map(row => row.eventId -> row).toMap
+    eventsRows = eventsRows.flatMap(row => if (row.aggregateId == id) rows.get(row.eventId) else Some(row))
   }
 
   override def squashCandidates(aggregateType: AggregateType, policy: AutomaticSquash, after: AggregateId, limit: Int,
@@ -497,7 +526,7 @@ class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState
       entry.version == rewritten.version && entry.event.getClass == rewritten.event.getClass)).foreach { rewritten =>
       throw new RewriteChangesClassException(aggregateId, rewritten.version, rewritten.event.getClass.getName)
     }
-    historyChangedFor(duplicatesOf(aggregateId) + aggregateId) // as in PostgreSQL (D30, F119)
+    historyChangedFor(duplicatesOf(aggregateId) + aggregateId) // as in PostgreSQL (D30, F119); marks them written too
     events.foreach { rewritten =>
       eventStore += aggregateId -> eventStore.getOrElse(aggregateId, Vector()).map(entry =>
         if (entry.version == rewritten.version) entry.asInstanceOf[EventStoreEntry[AGGREGATE_ROOT]].copy(event = rewritten.event) else entry)

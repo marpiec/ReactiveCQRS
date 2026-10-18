@@ -69,6 +69,10 @@ object AggregateOwner {
   /** D77, to the ephemeral command bus: the aggregate is stored for good under a new id; the bus drops it. */
   case class EphemeralMaterialized(aggregateId: AggregateId)
   private case class MaterializeAnswer(answer: Any)
+  private case object MaterializeAgain
+  /** F208: a materialization's request, sent again with its key until the persistent bus answers it, and its callers. */
+  private case class Materializing(request: AnyRef, callers: Vector[ActorRef], attempt: Int, inFlight: Boolean)
+  private val materializeRetries = Backoff(1.second, 30.seconds, Int.MaxValue)
   /** To the command bus: the histories of these aggregates changed under their owners (a squash or a rewrite of their
     * base, a detach, D85): the owners, if running, stop without a snapshot, and new ones read the histories again. */
   case class HistoryChanged(aggregateIds: Seq[AggregateId])
@@ -91,6 +95,7 @@ class OwnerSettings[AGGREGATE_ROOT: ClassTag](context: AggregateContext[AGGREGAT
                                               val maxRepublishBytes: Long = 16L * 1024 * 1024,
                                               val concurrentRetries: Backoff = AggregateOwner.defaultConcurrentRetries,
                                               val materializeTo: Option[ActorRef] = None,
+                                              val ephemeralStart: String = "",
                                               val refuseOtherTypes: Boolean = true) {
   /** The type's key. */
   val aggregateType: AggregateType = context.aggregateType
@@ -119,9 +124,10 @@ class OwnerSettings[AGGREGATE_ROOT: ClassTag](context: AggregateContext[AGGREGAT
   val sharded: Boolean = context.placement.isInstanceOf[Placement.Sharded]
   /** Why one of these events may not be written yet: its class is newer than a node of the cluster (D67). */
   def notWrittenYet(events: Seq[Any]): Option[String] = events.view.flatMap(context.notWrittenYet).headOption
-  /** The context's writer of rows of its own (R12), if it mixes in `WithOutboxWriter`. */
+  /** The context's writer of rows of its own (R12), if it mixes in `WithOutboxWriter`; none for ephemeral aggregates,
+    * whose events are in memory, outside any transaction (F256). */
   val outboxWriter: Option[OutboxWriter[AGGREGATE_ROOT]] = context match {
-    case withWriter: WithOutboxWriter[AGGREGATE_ROOT @unchecked] => Some(withWriter.outboxWriter)
+    case withWriter: WithOutboxWriter[AGGREGATE_ROOT @unchecked] if materializeTo.isEmpty => Some(withWriter.outboxWriter)
     case _ => None
   }
   /** Restores the type's aggregates from the store. */
@@ -192,8 +198,8 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
   private var stopping = false
   // The store changed under this owner: its state must not become a snapshot.
   private var stale = false
-  // D77: the caller of a materialization under way; commands wait for its outcome, rejected meanwhile.
-  private var materializing: Option[ActorRef] = None
+  // D77: a materialization under way; commands are rejected until its outcome is known (F208).
+  private var materializing: Option[Materializing] = None
 
   override def preStart(): Unit = if (sharded) commandBus ! OwnerStarted(aggregateId)
 
@@ -287,6 +293,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     case Rewrite(respondTo, request) => respondTo ! rewriteHistory(request) // it reads the state again after it
     case MaterializeOwner(respondTo, request) => materialize(respondTo, request)
     case MaterializeAnswer(answer) => materializeAnswered(answer)
+    case MaterializeAgain => materializing.filterNot(_.inFlight).foreach(sendMaterialize)
     case StopOwner =>
       stopping = true
       stopIfDone()
@@ -690,7 +697,9 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
 
   // ************** Stopping
 
-  private def stopIfDone(): Unit = if (stopping && pending.isEmpty) stopNow(withSnapshot = !stale)
+  // F208: a passivation waits for a materialization's outcome too, so the aggregate does not take commands again before
+  // it is known; a stop because the aggregate is dropped (stale) does not.
+  private def stopIfDone(): Unit = if (stopping && pending.isEmpty && (stale || materializing.isEmpty)) stopNow(withSnapshot = !stale)
 
   private def stopNow(withSnapshot: Boolean): Unit = {
     if (withSnapshot && snapshots.exists(_.onPassivation) && version > snapshotVersion) writeSnapshot()
@@ -747,36 +756,56 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
   // ************** Materialization (D77)
 
   // An ephemeral aggregate becomes a persistent one: its state's squash event, checked as a squash checks it (D85), is
-  // stored by the persistent command bus as the first event of a new aggregate, idempotently under this aggregate's id, so
-  // that a retry after a late answer stores nothing twice. Commands are rejected until the answer, so the state stored is
-  // the state the caller saw; one under way refuses it.
+  // stored by the persistent command bus as the first event of a new aggregate, idempotently under this aggregate's id and
+  // its bus's start (F209), so that a retry after a late answer stores nothing twice. Commands are rejected until the
+  // outcome is known, so the state stored is the state the caller saw (F208); commands under way refuse it.
   private def materialize(respondTo: ActorRef, request: Materialize): Unit = (materializeTo, squash) match {
     case (None, _) => respondTo ! MaterializeRefused(aggregateId, "not an ephemeral aggregate")
     case (_, None) => respondTo ! MaterializeRefused(aggregateId, "squash is not enabled for " + aggregateType.simpleName +
       ", so its state has no event to be stored as")
-    case _ if materializing.isDefined || pending.nonEmpty =>
+    case _ if materializing.isDefined => // the same state is being stored: this caller hears the outcome too
+      val under = materializing.get.copy(callers = materializing.get.callers :+ respondTo)
+      materializing = Some(under)
+      if (!under.inFlight) sendMaterialize(under)
+    case _ if pending.nonEmpty =>
       respondTo ! MaterializeRefused(aggregateId, "commands are under way on it; send it again")
-    case (Some(persistentBus), Some(policy)) =>
+    case (Some(_), Some(policy)) =>
       restorer.squashEvent(aggregateId, version, policy, Some(request.userId), Some(root)) match {
         case Left(reason) => respondTo ! MaterializeRefused(aggregateId, reason)
         case Right(event) =>
-          materializing = Some(respondTo)
-          implicit val timeout: Timeout = Timeout(commandTimeout)
-          (persistentBus ? StoreFirstEvent[AGGREGATE_ROOT](request.userId, event, Some(MaterializationKey(aggregateId))))
-            .recover { case e => e }(handlersContext).foreach(answer => self ! MaterializeAnswer(answer))(handlersContext)
+          sendMaterialize(Materializing(StoreFirstEvent[AGGREGATE_ROOT](request.userId, event, Some(MaterializationKey(aggregateId, ephemeralStart))),
+            Vector(respondTo), attempt = 1, inFlight = false))
       }
   }
 
-  private def materializeAnswered(answer: Any): Unit = materializing.foreach { respondTo =>
-    materializing = None
+  private def sendMaterialize(under: Materializing): Unit = {
+    materializing = Some(under.copy(inFlight = true))
+    implicit val timeout: Timeout = Timeout(commandTimeout)
+    (materializeTo.get ? under.request).recover { case e => e }(handlersContext).foreach(answer => self ! MaterializeAnswer(answer))(handlersContext)
+  }
+
+  private def materializeAnswered(answer: Any): Unit = materializing.foreach { under =>
     answer match {
       case SuccessResponse(persistentId, _) =>
+        materializing = None
         log.info("Ephemeral aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " materialized as " + persistentId.asLong)
         commandBus ! EphemeralMaterialized(aggregateId)
-        respondTo ! Materialized(aggregateId, persistentId)
-      case e: Throwable => respondTo ! MaterializeRefused(aggregateId, "the persistent command bus did not answer: " + Errors.describe(e))
-      case other => respondTo ! MaterializeRefused(aggregateId, "the persistent command bus answered " + other)
+        under.callers.foreach(_ ! Materialized(aggregateId, persistentId))
+      case e: Throwable =>
+        // F208: the request may still be stored, late. The aggregate stays as it is, taking no commands, and the same
+        // request goes again until the persistent bus answers it: stored, or refused.
+        val next = materializeRetries.delay(under.attempt + 1)
+        log.warning("Materializing ephemeral aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + ": no answer (attempt " +
+          under.attempt + "), sent again in " + next + ": " + Errors.describe(e))
+        under.callers.foreach(_ ! MaterializeRefused(aggregateId, "the persistent command bus did not answer: " + Errors.describe(e) +
+          "; the outcome is not known yet, the aggregate takes no commands until it is, and Materialize gets it"))
+        materializing = Some(under.copy(callers = Vector.empty, attempt = under.attempt + 1, inFlight = false))
+        context.system.scheduler.scheduleOnce(next, self, MaterializeAgain)
+      case other =>
+        materializing = None
+        under.callers.foreach(_ ! MaterializeRefused(aggregateId, "the persistent command bus answered " + other))
     }
+    stopIfDone()
   }
 
   // ************** Complete rewrite (D76)

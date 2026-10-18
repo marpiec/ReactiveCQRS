@@ -72,6 +72,14 @@ Fixes from [the risk assessment of 1.0.0](docs/RISK-ASSESSMENT.md), in the order
   - **Source change** for a host with its own `SagaState`: `createSaga` takes the order key and returns
     `SagaCreation`, writes take the phase and step they move from, new `finishSaga` and `removeFinished`,
     `loadAllSagas` gives a `StoredSaga`.
+- **Drafts** (F208, F209, F236, F256, F257, chapter 20):
+  - A materialization the persistent bus does not answer in time leaves the draft frozen, sending the same request
+    again until an answer comes; `Materialize` then gets the outcome. Edits made after a timeout are no longer lost.
+  - A materialization's key carries a random value of the bus's start (`MaterializationKey(id, start)`), so drafts of
+    two starts with the same ids are never mixed up.
+  - Ephemeral buses refuse new drafts once their ids are spent, also ones that waited, and no longer hang.
+  - Drafts do not call the context's `WithOutboxWriter`; the in-memory stores roll back a failed transaction.
+  - A command bus no longer restarts over a message whose handling throws (it logs and drops it).
 
 ## 1.0.0 (18/10/2026)
 

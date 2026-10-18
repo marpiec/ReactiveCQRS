@@ -2667,3 +2667,11 @@ Open test-infrastructure items:
   writes compare the stored phase and step. F252's unknown saga phases are now left out like unreadable orders.
 - `SagaState` changed (create returns `SagaCreation`, writes take `from`, new `finishSaga`, `removeFinished`,
   `loadAllSagas` gives `StoredSaga`): a source change for a host's own `SagaState`, noted in the CHANGELOG.
+
+**18/10/2026: the risk assessment, step 3, item 12: drafts and ephemeral buses**
+- F208: a materialization without an answer freezes the draft and sends the same request until one comes; joins and
+  passivation wait for it. F209: `MaterializationKey` carries a UUID of the bus's start.
+- F236: new drafts that waited while the ids ran out are refused, not left at the head of the queue. F257: command
+  buses log and drop a message whose handling throws; a restart takes new ids and a unique event-bus name.
+- F256: no outbox writer for drafts; the in-memory stores roll back a failed `localTx`'s writes per aggregate.
+- Each fix red under a mutation (six). Chapter 20 (EN, PL), ARCHITECTURE §4.10.

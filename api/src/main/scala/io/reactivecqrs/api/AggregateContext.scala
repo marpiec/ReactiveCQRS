@@ -84,7 +84,9 @@ case class RewriteRefused(id: AggregateId, reason: String) extends RewriteRespon
 /** D77: stores an ephemeral aggregate (one of an ephemeral command bus, whose ids are negative) as a new persistent
   * aggregate, whose first event is the context's squash event of its state; the ephemeral one is then dropped. Sent to
   * the ephemeral bus; answered `Materialized` with the new id, or `MaterializeRefused` (it stays): without a squash
-  * policy, while commands run on it, or when the persistent store refuses the event. */
+  * policy, while commands run on it, or when the persistent store refuses the event. When the persistent bus does not
+  * answer in time, the outcome is not known: the aggregate is refused, takes no commands, and sends the same request
+  * again until it is known (F208); a `Materialize` sent meanwhile is answered with that outcome. */
 case class Materialize(id: AggregateId, userId: UserId)
 /** The answer to `Materialize`. */
 sealed trait MaterializeResponse
@@ -93,9 +95,10 @@ case class Materialized(id: AggregateId, persistentId: AggregateId) extends Mate
 /** Nothing was stored, for `reason`; the ephemeral aggregate stays. */
 case class MaterializeRefused(id: AggregateId, reason: String) extends MaterializeResponse
 
-/** D77: the idempotency key of a materialization, so that one ephemeral aggregate is never stored twice. */
-case class MaterializationKey(ephemeralId: AggregateId) extends CommandIdempotencyId {
-  override def asDbKey: String = "materialize|" + ephemeralId.asLong
+/** D77: the idempotency key of a materialization, so that one ephemeral aggregate is never stored twice. `start`: the
+  * random value of the ephemeral bus's start (F209), as ids repeat across starts. */
+case class MaterializationKey(ephemeralId: AggregateId, start: String = "") extends CommandIdempotencyId {
+  override def asDbKey: String = "materialize|" + (if (start.isEmpty) "" else start + "|") + ephemeralId.asLong
 }
 
 /** D77: writes `event` as the first event of a new aggregate, as given, without the context's command handlers: what a

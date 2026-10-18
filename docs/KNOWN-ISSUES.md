@@ -191,7 +191,7 @@ Changes must keep these true (from `ARCHITECTURE.md` §10, extended by the decis
 
 ## 3. Issues in the library
 
-The issues still open. The 212 closed ones (fixed, accepted, decided or found not to be a problem) are in
+The issues still open. The 217 closed ones (fixed, accepted, decided or found not to be a problem) are in
 [`KNOWN-ISSUES-ARCHIVE.md`](KNOWN-ISSUES-ARCHIVE.md), by area, as they were recorded; a number named in the code or in
 the other documents (`F99`) is found there. F185–F274 were found by the risk assessment of 1.0.0 (18/10/2026), at the end of this
 section.
@@ -238,12 +238,6 @@ on a dependency's behaviour, timing or configuration; "scenario" says how probab
 
 #### F204 — The id generator trusts its configuration: a too-high installation number or a lowered sequence step hands out wrong or duplicate ids
 - **High**, likely · scenario unlikely · Open · details under F204 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F208 — A materialization that timed out lets the draft change again; the next one returns the older stored copy and drops the draft with its newer edits
-- **High**, likely · scenario possible · Open · details under F208 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F209 — Ephemeral id tokens repeat across starts, so materialization keys collide within the response retention
-- **High**, likely · scenario unlikely · Open · details under F209 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F210 — Document-store JSON paths and sort fields are written into SQL unescaped
 - **High**, likely · scenario unlikely · Open · details under F210 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
@@ -314,9 +308,6 @@ on a dependency's behaviour, timing or configuration; "scenario" says how probab
 #### F235 — A switch that the registry reports as not done leaves the supervisor stuck until a restart
 - **Medium**, likely · scenario unlikely · Open · details under F235 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
-#### F236 — On an ephemeral bus, a first command served after the ids ran out blocks every later command for good
-- **Medium**, likely · scenario unlikely · Open · details under F236 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
 #### F238 — A node's subscription version cache goes stale for subscribers whose writer runs elsewhere
 - **Medium**, likely · scenario unlikely · Open · details under F238 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
@@ -355,12 +346,6 @@ on a dependency's behaviour, timing or configuration; "scenario" says how probab
 
 #### F253 — A commit whose outcome is unknown is answered "nothing was stored"
 - **Medium**, likely · scenario possible · Open · details under F253 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F256 — Ephemeral buses call the context's outbox writer with no session, on an in-memory store that never rolls back
-- **Medium**, likely · scenario possible · Open · details under F256 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F257 — An ephemeral bus that restarts loses its drafts, then refuses every new draft until the node restarts
-- **Medium**, likely · scenario unlikely · Open · details under F257 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F258 — Managed projection instances share actor names, so lag signals and logs collide
 - **Medium**, likely · scenario likely · Open · details under F258 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
@@ -452,7 +437,7 @@ From §7 of Neula's change requests.
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔, F174 ✔; F155 decided (review 8) |
 | M7 | AR5 ✔ (moved from M5 at review 7; D86); F148 ✔, F152 ✔, F153 ✔, F156 ✔, F157 ✔, F160 ✔, F161 ✔, F162 ✔, F163 ✔, F164 ✔, F165 ✔, F166 ✔, F169 ✔ (found writing the book), F170 ✔, F171 ✔, F173 ✔, F175 (accepted), F176 ✔ (found writing E10), F177 ✔ (found writing E11), F178 ✔ (found running E2 in Docker), F179 (deferred: the owner publishes mpjsons later), F180 ✔ (found running E2 on Kubernetes), F181 ✔ (found writing chapter 6's spec), F182 ✔ (found by E2's fault tests in Docker), F183 ✔ (found writing the Scaladoc), F184 (open, found by review 9's bench) |
-| After 1.0 | F185–F274, found by the risk assessment of 18/10/2026 ([RISK-ASSESSMENT.md](RISK-ASSESSMENT.md) §13 orders them); its step 1, for 1.0.1: F185 ✔, F186 ✔, F187 ✔, F188 ✔, F189 ✔, F190 ✔, F191 ✔, F193 ✔, F200 ✔, F252 (keys ✔), F255 ✔, F272 ✔; D87; step 2: F192 ✔, F194 ✔, F195 ✔, F196 ✔, F197 ✔, F198 ✔, F199 ✔, F225 ✔, F226 ✔, F201 ✔, F237 ✔, F244 ✔, F245 ✔, F248 ✔, F254 ✔, F259 ✔, F261 ✔; step 3: F205 ✔, F206 ✔, F207 ✔, F232 ✔ |
+| After 1.0 | F185–F274, found by the risk assessment of 18/10/2026 ([RISK-ASSESSMENT.md](RISK-ASSESSMENT.md) §13 orders them); its step 1, for 1.0.1: F185 ✔, F186 ✔, F187 ✔, F188 ✔, F189 ✔, F190 ✔, F191 ✔, F193 ✔, F200 ✔, F252 (keys ✔), F255 ✔, F272 ✔; D87; step 2: F192 ✔, F194 ✔, F195 ✔, F196 ✔, F197 ✔, F198 ✔, F199 ✔, F225 ✔, F226 ✔, F201 ✔, F237 ✔, F244 ✔, F245 ✔, F248 ✔, F254 ✔, F259 ✔, F261 ✔; step 3: F205 ✔, F206 ✔, F207 ✔, F208 ✔, F209 ✔, F232 ✔, F236 ✔, F256 ✔, F257 ✔ |
 
 ---
 

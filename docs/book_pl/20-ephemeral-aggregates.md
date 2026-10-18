@@ -81,6 +81,11 @@ Kilka szczegółów, które dbają o bezpieczeństwo:
   `MaterializeRefused(id, reason)`, a szkic zostaje taki, jaki był.
 - Materializacja jest idempotentna: jeśli odpowiedź się spóźni i prośba pójdzie ponownie, biblioteka
   ją rozpozna i odpowie tym samym nowym identyfikatorem, zamiast zapisywać drugą listę.
+- Jeśli trwała szyna nie odpowie w limicie czasu polecenia, nikt jeszcze nie wie, czy lista została
+  zapisana. Odpowiedzią jest `MaterializeRefused` z informacją, że wynik nie jest znany, a szkic
+  pozostaje zamrożony: jego polecenia nadal dostają `CommandRejected`, a biblioteka wysyła tę samą
+  prośbę ponownie (po 1 s, potem najwyżej co 30 s), aż trwała szyna odpowie. Wyślij `Materialize`
+  jeszcze raz, by poznać wynik.
 
 > **Wskazówka:** zapisana lista zaczyna od wersji 1, z jednym zdarzeniem podsumowującym: kliknięcia ze
 > szkicu nie są zachowywane. Na tym właśnie polega brudnopis. Jeśli kliknięcia są ci potrzebne, ich
@@ -94,7 +99,8 @@ Szkice, których nikt nie dotyka, nie gromadzą się w nieskończoność:
   Szyna nigdy nie usuwa szkicu wcześniej, niż wynosi limit czasu poleceń w kontekście, więc
   polecenie, które wciąż się wykonuje, nie może pisać do szkicu, którego już nie ma.
 - **Górny limit**: szyna trzyma najwyżej `maxAggregates` szkiców (domyślnie 100 000); nowy szkic
-  ponad tę liczbę dostaje odpowiedź `CommandRejected`.
+  ponad tę liczbę dostaje odpowiedź `CommandRejected`. Tak samo nowy szkic, gdy start węzła wydał
+  już wszystkie swoje 16 777 216 identyfikatorów szkiców; następny start przynosi nowe.
 
 <!-- snippet: e8/DraftsSpec.scala#limits -->
 ```scala
@@ -123,7 +129,9 @@ Zapytania zawodzą w ten sam sposób: `GetAggregate` odpowiada
 > `-(token × 2^24 + n)`. Dzięki temu identyfikator sprzed restartu albo z innego węzła zostaje
 > rozpoznany jako utracony, dwa węzły prawie nigdy nie mają wspólnych identyfikatorów (raz na 2^29 par
 > startów), a każdy identyfikator pozostaje liczbą, którą interfejs użytkownika w JavaScripcie potrafi
-> przechować (poniżej 2^53). Zobacz [ARCHITECTURE.md, sekcja 4.10](../ARCHITECTURE.md).
+> przechować (poniżej 2^53). Klucz materializacji zawiera też losową wartość startu, więc nawet dwa
+> starty, które wylosowały ten sam token, nie pomylą swoich szkiców. Zobacz
+> [ARCHITECTURE.md, sekcja 4.10](../ARCHITECTURE.md).
 
 ## Czego szkice nie robią
 
@@ -131,6 +139,9 @@ Zapytania zawodzą w ten sam sposób: `GetAggregate` odpowiada
   zmaterializowane.
 - Nie przechodzą squasha, kopiowania ani przepisywania historii: najpierw je zmaterializuj.
 - Nie przetrwają restartu. W bazie danych nie ma o nich nic.
+- Nie zapisują własnych wierszy twojego kontekstu (`WithOutboxWriter`, [rozdział 5](05-command-flavors.md)):
+  zdarzenia szkicu są w pamięci, poza jakąkolwiek transakcją. Te wiersze przyjdą z późniejszymi
+  poleceniami zmaterializowanej listy.
 
 ## Co już umiesz
 
