@@ -338,7 +338,9 @@ planned in a way that the change must follow. Measured performance is in `docs/p
 behaviour under high volume and load, with recommendations, is in `docs/SCALING.md`. The risk assessment of
 1.0.0 (`docs/RISK-ASSESSMENT.md`, 18/10/2026) traces 90 open failure scenarios (F185–F274): each one's mechanism,
 validation, fix and regression test, the compound failures they make together, and the order to fix them in (§13);
-each area's working notes are in `docs/risk-assessment/`.
+each area's working notes are in `docs/risk-assessment/`. The second assessment (`docs/RISK-ASSESSMENT-2.md`,
+18/10/2026, of 1.0.1-SNAPSHOT at `2453711`) checked those fixes and found 61 more (F275–F335, notes in
+`docs/risk-assessment-2/`), among them regressions of 1.0.1 to fix before its release (its §6).
 
 ---
 

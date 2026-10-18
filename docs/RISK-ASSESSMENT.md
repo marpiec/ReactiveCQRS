@@ -27,7 +27,8 @@ or "suspected" (the other two): nothing here has been reproduced yet.
 measurements.
 
 **Where the findings live.** Each finding has an F-number (F185–F274) and is recorded, open, in
-[KNOWN-ISSUES.md](KNOWN-ISSUES.md) §3.
+[KNOWN-ISSUES.md](KNOWN-ISSUES.md) §3. [A second assessment](RISK-ASSESSMENT-2.md), of 1.0.1-SNAPSHOT, checked
+the fixes and added F275–F335.
 
 ## 1. Executive summary
 

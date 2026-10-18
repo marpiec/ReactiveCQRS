@@ -2730,3 +2730,12 @@ Open test-infrastructure items:
   ones). Each with a test red under a mutation, except F227 (a memory property).
 - Still open, each with its reason in KNOWN-ISSUES: F215, F217 (the paging of the reset and the drop), F238, F239,
   F243, F270, F271, F274.
+
+
+**18/10/2026: the second risk assessment (1.0.1-SNAPSHOT, `2453711`)**
+- Ten areas read again, focused on the fixes since 1.0.0; every High finding checked by an independent verifier.
+  61 findings, F275–F335 (13 High, 41 Medium, 7 Low), recorded open; report in `docs/RISK-ASSESSMENT-2.md`, notes in
+  `docs/risk-assessment-2/`. Nothing fixed.
+- Regressions of 1.0.1 to fix before its release: F275 (undo then event refused), F279 (owners grow beyond 200 new
+  aggregates a second), F282 (the F202 catch-up misses the usual rollback), F314 (F240 refuses java.time and other
+  values sent on their own); with F277, F285's upgrade warning and F287 (§6 of the report).
