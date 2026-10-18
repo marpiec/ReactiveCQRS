@@ -13,6 +13,7 @@ import org.slf4j.LoggerFactory
 
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
+import io.reactivecqrs.core.util.Errors
 
 /** What a complete rewrite did (D76). `rewritten`: the aggregates whose events or archived events it wrote again;
   * `unchanged`: those it left as they were; `refused`: those it wrote nothing of, with why; `bases`: the aggregates the
@@ -60,7 +61,7 @@ class HistoryRewriter(commandBus: ActorRef, eventStore: EventStoreState, project
     case None => Future.successful(report)
     case Some(id) =>
       (commandBus ? RewriteEverywhere(id, change, userId)).mapTo[RewriteResponse]
-        .recover { case e => RewriteRefused(id, "no answer: " + e.getMessage) }
+        .recover { case e => RewriteRefused(id, "no answer: " + Errors.describe(e)) }
         .flatMap { answer =>
           Future(eventStore.copiesOf(id)).flatMap { copies =>
             val found = copies.filterNot(seen.contains)
@@ -85,7 +86,7 @@ class HistoryRewriter(commandBus: ActorRef, eventStore: EventStoreState, project
             case _: AggregatesRebuilt => None
             case RebuildRefused(reason) => Some("aggregate " + id.asLong + ": " + reason)
             case other => Some("aggregate " + id.asLong + ": " + other)
-          }.recover { case e => Some("aggregate " + id.asLong + ": no answer: " + e.getMessage) }
+          }.recover { case e => Some("aggregate " + id.asLong + ": no answer: " + Errors.describe(e)) }
         }
       }.flatMap { failure =>
         rebuild(changed, rest, failure.fold(report.copy(rebuilt = report.rebuilt :+ name))(f => report.copy(failed = report.failed + (name -> f))))

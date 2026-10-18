@@ -18,6 +18,7 @@ import scala.collection.mutable
 import scala.concurrent.duration._
 import scala.util.Try
 import scala.util.control.NonFatal
+import io.reactivecqrs.core.util.Errors
 
 
 /** The messages of a node's event bus (chapters 8, 9 and 17). */
@@ -181,6 +182,10 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   private val undelivered = mutable.Queue[Undelivered]()
   private val undeliveredKept = 1000
 
+  // F191: the subscriptions of aggregates whose failure was logged, oldest first, at most MaxFailuresRemembered of them.
+  private val failureLogged = mutable.LinkedHashSet[(Target, AggregateId)]()
+  private val MaxFailuresRemembered = 10000
+
   private val messageSize = MessageSize(context.system)
   private val flow = new FlowControl[ActorRef](options.window, options.windowBytes, options.maxPulls, options.pullTimeout.toNanos, options.deadline.toNanos)
 
@@ -246,7 +251,7 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   // F162: a subscriber that cannot answer (a projection's supervisor whose registry is unavailable) is asked again at the
   // next tick, like one whose answer was lost.
   private def failedToAnswer(e: Throwable): Unit =
-    log.warning("Event bus asked " + sender().path.name + " for its subscriptions and got a failure, asks again: " + e.getMessage)
+    log.warning("Event bus asked " + sender().path.name + " for its subscriptions and got a failure, asks again: " + Errors.describe(e))
 
   private def startIfRegistered(): Unit = {
     if (registrationRequested && awaitingRegistration.isEmpty) {
@@ -472,8 +477,14 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   }
 
   private def finish(target: Target, aggregateId: AggregateId, versions: Seq[AggregateVersion], failed: Option[String]): Unit = {
-    failed.foreach(error => log.warning("Subscriber " + target.subscriber.path.name + " failed on aggregate " + aggregateId.asLong +
-      " versions " + versions.map(_.asInt).mkString(",") + ": " + error))
+    // F191: once while a subscription of an aggregate fails, as every later delivery of it is answered with the same failure.
+    if (failed.isEmpty) failureLogged -= (target -> aggregateId)
+    else if (!failureLogged.contains(target -> aggregateId)) {
+      failureLogged += target -> aggregateId
+      if (failureLogged.size > MaxFailuresRemembered) failureLogged -= failureLogged.head
+      failed.foreach(error => log.warning("Subscriber " + target.subscriber.path.name + " failed on aggregate " + aggregateId.asLong +
+        " versions " + versions.map(_.asInt).mkString(",") + ": " + error))
+    }
     versions.headOption.foreach(first => flow.answered(target.subscriber, SentKey(aggregateId, first.asInt, target.kind)))
     var finished = Vector[(Delivery, EventKey)]()
     versions.foreach { version =>

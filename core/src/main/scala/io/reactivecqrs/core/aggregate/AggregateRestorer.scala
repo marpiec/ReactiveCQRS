@@ -8,6 +8,7 @@ import io.reactivecqrs.core.eventstore.{EventStoreState, Snapshot}
 import org.slf4j.LoggerFactory
 
 import scala.util.{Failure, Success, Try}
+import io.reactivecqrs.core.util.Errors
 
 /** An aggregate's version and root as read from the store; the root is null once the aggregate was deleted.
   * `fromSnapshot`: the version of the snapshot the state was read from, if one was used. `generation`: the history
@@ -67,11 +68,11 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
           Some(snapshot).filter(s => s.contextVersion == contextVersion && s.schemaVersion == policy.schemaVersion &&
             at.forall(_.left.forall(s.version <= _)))
         case Success(Some(Failure(e))) =>
-          log.warn("The snapshot of aggregate " + aggregateId.asLong + " cannot be read; reading all of its events instead", e)
+          log.warn("The snapshot of aggregate " + aggregateId.asLong + " cannot be read; reading all of its events instead", Errors.redacted(e))
           None
         case Success(None) => None
         case Failure(e) =>
-          log.warn("Reading the snapshot of aggregate " + aggregateId.asLong + " failed; reading all of its events instead", e)
+          log.warn("Reading the snapshot of aggregate " + aggregateId.asLong + " failed; reading all of its events instead", Errors.redacted(e))
           None
       }
     case _ => None
@@ -84,7 +85,7 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
     Try(eventStore.writeSnapshot(aggregateId, Snapshot(version, contextVersion, policy.schemaVersion, root), stateClassName, generation)) match {
       case Success(_) => true
       case Failure(e) =>
-        log.warn("Writing the snapshot of aggregate " + aggregateId.asLong + " at version " + version.asInt + " failed", e)
+        log.warn("Writing the snapshot of aggregate " + aggregateId.asLong + " at version " + version.asInt + " failed", Errors.redacted(e))
         false
     }
   }
@@ -100,9 +101,9 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
                   state: Option[AGGREGATE_ROOT] = None): Either[String, FirstEvent[AGGREGATE_ROOT]] = for {
     replaced <- eventStore.readEventsRange[AGGREGATE_ROOT](aggregateId, version, version).headOption.toRight("no event at version " + version.asInt)
     expected <- Option(state.getOrElse(restore(aggregateId, Some(Left(version))).root)).toRight("the aggregate is deleted at version " + version.asInt)
-    event <- Try(policy.toEvent(expected)).toEither.left.map(e => "making the squash event failed: " + e)
+    event <- Try(policy.toEvent(expected)).toEither.left.map(e => "making the squash event failed: " + Errors.describe(e))
     restored <- Try(eventHandlers(userId.getOrElse(replaced.userId), replaced.timestamp, initialState())(event)).toEither
-      .left.map(e => "the event handlers fail on the squash event " + event.getClass.getSimpleName + ": " + e)
+      .left.map(e => "the event handlers fail on the squash event " + event.getClass.getSimpleName + ": " + Errors.describe(e))
     _ <- Either.cond(restored == expected || event.isInstanceOf[SquashMayChangeState], (),
       "the squash event " + event.getClass.getSimpleName + " does not give back the state it replaces (D85); a user or a time the " +
         "state keeps must be in the event, and its handler must take them from it, not from its parameters (F155)")

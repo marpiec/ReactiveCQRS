@@ -6,6 +6,7 @@ import scalikejdbc._
 
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
+import io.reactivecqrs.core.util.SqlLogging.withoutValues
 
 /** The short ids under which the store keeps class names (event types, aggregate types, subscribers), one per name. */
 trait TypesNamesState {

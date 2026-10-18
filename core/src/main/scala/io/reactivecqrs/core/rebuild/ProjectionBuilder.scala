@@ -12,6 +12,7 @@ import org.apache.pekko.actor.{Actor, ActorRef, Status, Terminated}
 import scala.collection.mutable
 import scala.concurrent.duration._
 import scala.util.control.NonFatal
+import io.reactivecqrs.core.util.Errors
 
 /** The builder's messages and settings: it builds a managed projection from the event store (D57, chapter 10). */
 object ProjectionBuilder {
@@ -152,7 +153,7 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
       reconcile()
     case Status.Failure(e) =>
       // The projection could not take a chunk (its store is down): the chunks in flight are sent again, after a wait.
-      log.warning("Projection " + subscriberName + " failed on a chunk, sending it again in " + settings.retryAfter + ": " + e)
+      log.warning("Projection " + subscriberName + " failed on a chunk, sending it again in " + settings.retryAfter + ": " + Errors.describe(e))
       inFlight.reverseIterator.foreach(sent => ready.prepend(sent)) // re-sent in their order
       inFlight.clear()
       retryLater()
@@ -268,7 +269,7 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
         val state = if (kinds.exists(_ != SubscriptionType.EVENTS)) Option(states.after(head.aggregateType, head.aggregateId, readable, head.squashedUpTo)) else None
         kinds.map(kind => item(kind, head.aggregateType, head.aggregateId, readable, state, startsAtSquash))
       } catch {
-        case NonFatal(e) if !transient(e) => unreadableItems(head, "its state cannot be restored: " + e.getClass.getSimpleName + ": " + e.getMessage)
+        case NonFatal(e) if !transient(e) => unreadableItems(head, "its state cannot be restored: " + Errors.describe(e))
       }
     }
     // A row that cannot be read ends its run; the projection fails the subscription there (F82).
@@ -356,7 +357,7 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
       case NonFatal(e) if !transient(e) =>
         unreadable += 1
         log.error(e, "Building " + subscriberName + ": " + aggregateType.simpleName + " " + id.asLong + " cannot be read from version " + from.asInt)
-        Seq(ChunkItem(kind, aggregateType, id, from, from, Nil, None, unreadable = Some(e.getClass.getSimpleName + ": " + e.getMessage)))
+        Seq(ChunkItem(kind, aggregateType, id, from, from, Nil, None, unreadable = Some(Errors.describe(e))))
     }
 
   // Missing versions are read by version and sent before anything else; a gap means a row was committed late, so the
@@ -400,6 +401,6 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
 
   private def save(reached: BuildPosition): Unit =
     try positions.save(reached) catch {
-      case NonFatal(e) => log.warning("Building " + subscriberName + " could not save its position " + reached + "; a restart repeats more: " + e)
+      case NonFatal(e) => log.warning("Building " + subscriberName + " could not save its position " + reached + "; a restart repeats more: " + Errors.describe(e))
     }
 }

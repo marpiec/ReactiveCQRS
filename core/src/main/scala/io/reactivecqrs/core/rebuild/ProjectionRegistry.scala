@@ -6,6 +6,7 @@ import io.reactivecqrs.core.rebuild.ProjectionBuilder.BuildPosition
 import scalikejdbc._
 
 import scala.collection.mutable
+import io.reactivecqrs.core.util.SqlLogging.withoutValues
 
 /** One build of a projection (D57): its number, the projection version it builds, the suffix of its tables, the name
   * its subscriptions are stored under, the context versions of the types whose states it receives (D63), and how far

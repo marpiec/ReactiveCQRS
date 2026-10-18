@@ -2,6 +2,7 @@ package io.reactivecqrs.core.util
 
 import org.slf4j.LoggerFactory
 import scalikejdbc.{DB, DBSession}
+import io.reactivecqrs.core.util.SqlLogging.withoutValues
 
 /**
  * Keeps in-memory caches from getting ahead of the database.
@@ -74,7 +75,7 @@ object AfterCommit {
     actions.foreach { action =>
       // The data is committed at this point: a failing cache update must not look like a failed transaction.
       try action() catch {
-        case e: Exception => log.error("Action after commit failed; the cache may miss an update until it is reloaded", e)
+        case e: Exception => log.error("Action after commit failed; the cache may miss an update until it is reloaded", Errors.redacted(e))
       }
     }
   }

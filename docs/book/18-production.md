@@ -303,6 +303,31 @@ node; ask each node's bus separately.
 The error id in the two owner lines is the one the caller received: a support request that quotes it
 leads straight to the stack trace.
 
+### Personal data and the logs
+
+Logs are kept for long and read by many, and no erasure reaches them ([chapter 15](15-rewriting-history.md)).
+So the library keeps the values it handles out of its logs, and out of what it stores and answers about
+failures:
+
+- Its database statements run with ScalikeJDBC's SQL logging off. A statement that fails is not logged
+  with its parameters, which would be whole events, documents and saga orders.
+- A failure is named without the values it failed on: a `MatchError` becomes "a value of class
+  ...", a PostgreSQL error its SQLState and constraint, an mpjsons error its type and position. Other
+  exceptions keep their message, cut to 1 000 characters.
+
+Your part:
+
+- Keep personal data out of your own exceptions' messages: the library logs them, and stores them in
+  `subscription_failures` when a listener fails.
+- Add `logServerErrorDetail=false` to the JDBC URL, so that the driver's exceptions do not quote rows
+  either.
+- For the sessions your code opens, set `GlobalSettings.loggingSQLErrors = false` once at start, or open
+  them with `import io.reactivecqrs.core.util.SqlLogging.withoutValues` in scope.
+
+To diagnose a failure with its values, start a node with `-Dreactivecqrs.log-values=true`. ScalikeJDBC
+then logs its statements as configured, and every failure is logged in full on the logger
+`io.reactivecqrs.detail`. Turn it off again: those lines carry personal data.
+
 ### PostgreSQL
 
 Watch, as for any busy PostgreSQL: connections in use (`pg_stat_activity`), autovacuum on the hot

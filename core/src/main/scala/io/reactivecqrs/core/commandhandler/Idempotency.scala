@@ -15,6 +15,11 @@ class Idempotency(responses: CommandResponseState) {
   /** The response stored for this command, if it is idempotent and one of its copies was already applied. */
   def storedResponse(command: Any): Option[CustomCommandResponse[_]] = keyOf(command).flatMap(responses.responseByKey)
 
+  /** Why the command's key cannot be stored, when it cannot: it is longer than `Idempotency.MaxKeyLength` (F252). */
+  def keyRefusal(command: Any): Option[IdempotencyKeyRefused] = keyOf(command).filter(_.length > Idempotency.MaxKeyLength).map { key =>
+    new IdempotencyKeyRefused("The idempotency key has " + key.length + " characters; at most " + Idempotency.MaxKeyLength + " are stored")
+  }
+
   /** Whether the command carries an idempotency key. */
   def isIdempotent(command: Any): Boolean = keyOf(command).isDefined
 
@@ -32,3 +37,11 @@ class Idempotency(responses: CommandResponseState) {
     case _ => None
   }
 }
+
+object Idempotency {
+  /** The longest idempotency key stored: the length of `commands_responses.key`. */
+  val MaxKeyLength = 256
+}
+
+/** A command whose idempotency key cannot be stored; it is answered with a failure before it runs (F252). */
+class IdempotencyKeyRefused(message: String) extends Exception(message)

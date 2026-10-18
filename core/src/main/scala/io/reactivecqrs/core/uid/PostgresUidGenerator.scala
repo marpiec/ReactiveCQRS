@@ -3,6 +3,7 @@ package io.reactivecqrs.core.uid
 import io.reactivecqrs.core.util.SchemaLock
 import org.postgresql.util.PSQLException
 import scalikejdbc._
+import io.reactivecqrs.core.util.SqlLogging.withoutValues
 
 /** The ids `from` to `from + size - 1`. */
 case class IdsPool(from: Long, size: Long)

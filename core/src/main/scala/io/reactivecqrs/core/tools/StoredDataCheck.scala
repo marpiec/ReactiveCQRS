@@ -8,6 +8,8 @@ import scalikejdbc._
 import scala.collection.mutable
 import scala.reflect.{ClassTag, classTag}
 import scala.util.{Failure, Success, Try}
+import io.reactivecqrs.core.util.SqlLogging.withoutValues
+import io.reactivecqrs.core.util.Errors
 
 /**
  * The dry run of D78: reads every stored JSON value with the mpjsons version on the classpath and reports, per table
@@ -163,7 +165,7 @@ object StoredDataCheck {
         case Success(_) => ()
         case Failure(e) =>
           counts.unreadable += 1
-          if (counts.examples.size < examplesPerClass) counts.examples += row + ": " + e.getMessage
+          if (counts.examples.size < examplesPerClass) counts.examples += row + ": " + Errors.describe(e)
       }
     }
 

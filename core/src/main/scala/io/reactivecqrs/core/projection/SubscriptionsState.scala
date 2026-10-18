@@ -11,6 +11,8 @@ import scalikejdbc._
 
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
+import io.reactivecqrs.core.util.SqlLogging.withoutValues
+import io.reactivecqrs.core.util.Errors
 
 /** A subscription was not at the version a write expected: another writer moved it (`SubscriptionsState.newVersion`). */
 class OptimisticLockingFailed(message: String) extends Exception(message)
@@ -512,7 +514,7 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, eventsLogger:
             "version: "+rs.int(1)+", subscriber: "+ rs.short(2)+", subscription: "+ rs.short(3)
           }).list().mkString("; ")
         } catch {
-          case e: Exception => subscriptionState += " (error reading current state: "+e.getMessage+")"
+          case e: Exception => subscriptionState += " (error reading current state: " + Errors.describe(e) + ")"
         }
 
         throw new OptimisticLockingFailed(getClass.getSimpleName +": optimistic locking failed for subscriber "+subscriberName+" ("+typesNamesState.typeIdByClassName(subscriberName)+"), subscription type "+subscriptionType.id+" and aggregate "+aggregateId.asLong+" expected version "+lastAggregateVersion.asInt+" but was not updated (rowsUpdated="+rowsUpdated+"). " + subscriptionState)

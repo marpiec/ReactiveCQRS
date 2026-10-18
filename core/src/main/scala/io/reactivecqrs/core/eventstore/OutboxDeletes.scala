@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory
 
 import scala.concurrent.duration._
 import scala.util.control.NonFatal
+import io.reactivecqrs.core.util.Errors
 
 private object OutboxDeletes {
   private val log = LoggerFactory.getLogger(classOf[OutboxDeletes])
@@ -60,7 +61,7 @@ private[eventstore] class OutboxDeletes(maxDelay: FiniteDuration, maxRows: Int)(
     if (!waiting.isEmpty) scheduleFlush(Duration.Zero)
     if (batch.nonEmpty) {
       try delete(batch) catch {
-        case NonFatal(e) => log.warn("Deleting " + batch.size + " delivered rows from the outbox failed; the outbox poller re-publishes them later", e)
+        case NonFatal(e) => log.warn("Deleting " + batch.size + " delivered rows from the outbox failed; the outbox poller re-publishes them later", Errors.redacted(e))
       }
     }
   }

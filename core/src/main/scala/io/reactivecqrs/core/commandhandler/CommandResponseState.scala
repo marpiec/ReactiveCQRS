@@ -11,6 +11,7 @@ import io.reactivecqrs.core.types.TypesNamesState
 import scalikejdbc._
 
 import scala.concurrent.duration._
+import io.reactivecqrs.core.util.SqlLogging.withoutValues
 
 /** Another copy of an idempotent command already stored its response under this key. */
 class IdempotencyKeyTakenException(val key: String) extends Exception("Idempotency key already used: " + key) {

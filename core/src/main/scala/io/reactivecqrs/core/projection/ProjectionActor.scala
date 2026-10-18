@@ -20,6 +20,7 @@ import scala.concurrent.{ExecutionContext, Future}
 import scala.reflect.ClassTag
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
+import io.reactivecqrs.core.util.Errors
 
 /** A query parked until the read model can answer it (`delayIfNotAvailable`), or until `until`. */
 sealed trait DelayedQuery {
@@ -648,7 +649,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     } else Try(appliedVersion(key)) match {
       case Success(applied) => drainFrom(key, queue, applied, gapRecheck)
       case Failure(e) =>
-        log.warning("Projection " + projectionName + " could not read its version of aggregate " + key.aggregateId.asLong + ", trying again: " + e)
+        log.warning("Projection " + projectionName + " could not read its version of aggregate " + key.aggregateId.asLong + ", trying again: " + Errors.describe(e))
         schedule(key, queue, options.retries.max, RetryBackOff)
     }
   }
@@ -756,11 +757,11 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         queue.failedAttempts += 1
         queue.pending = batch.deliveries.toVector ++ queue.pending
         if (options.retries.exhausted(queue.failedAttempts)) {
-          giveUp(key, queue, batch.aggregateType, batch.from, e.getClass.getSimpleName + ": " + e.getMessage, Some(e))
+          giveUp(key, queue, batch.aggregateType, batch.from, Errors.describe(e), Some(e))
         } else {
           // One warning per failing batch; its retries log at debug level, so a problem across many aggregates does not flood the log.
           val message = "Projection " + projectionName + " failed on " + batch.aggregateType.simpleName + " " + key.aggregateId.asLong +
-            " versions " + batch.from.asInt + "-" + batch.to.asInt + " (attempt " + queue.failedAttempts + "), retrying: " + e
+            " versions " + batch.from.asInt + "-" + batch.to.asInt + " (attempt " + queue.failedAttempts + "), retrying: " + Errors.describe(e)
           if (queue.failedAttempts == 1) log.warning(message) else log.debug(message)
           schedule(key, queue, options.retries.delay(queue.failedAttempts + 1), RetryBackOff)
         }
@@ -914,7 +915,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     }) match {
       case Success(applied) => waiting.foreach { case (key, queue) => drainFrom(key, queue, applied(key), gapRecheck = false) }
       case Failure(e) =>
-        log.warning("Projection " + projectionName + " could not read its versions of " + waiting.size + " aggregates, trying again: " + e)
+        log.warning("Projection " + projectionName + " could not read its versions of " + waiting.size + " aggregates, trying again: " + Errors.describe(e))
         waiting.foreach { case (key, queue) => schedule(key, queue, options.retries.max, RetryBackOff) }
     }
   }
@@ -925,7 +926,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     Try(runTogether(grouped.map(_.work))) match {
       case Success(_) => grouped.foreach(g => afterBatch(g.work.key, g.queue, g.work.batch, Success(())))
       case Failure(e) if grouped.size > 1 =>
-        log.debug("Projection " + projectionName + " failed on a group of " + grouped.size + " batches; they are applied one at a time: " + e)
+        log.debug("Projection " + projectionName + " failed on a group of " + grouped.size + " batches; they are applied one at a time: " + Errors.describe(e))
         grouped.foreach(g => afterBatch(g.work.key, g.queue, g.work.batch, Try(run(workOf(g.work.key, g.work.batch)))))
       case failure => grouped.foreach(g => afterBatch(g.work.key, g.queue, g.work.batch, failure))
     }
@@ -974,7 +975,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       }
     }
     val committed = batches.isEmpty || Try(runTogether(batches.map { case (key, _, batch) => workOf(key, batch) })).fold(e => {
-      log.warning("Projection " + projectionName + " failed on a chunk of " + batches.size + " batches; they are applied one aggregate at a time: " + e)
+      log.warning("Projection " + projectionName + " failed on a chunk of " + batches.size + " batches; they are applied one aggregate at a time: " + Errors.describe(e))
       false
     }, _ => true)
     if (committed) requestQueriesReplay() else toQueues ++= batches.map { case (key, item, _) => key -> item }

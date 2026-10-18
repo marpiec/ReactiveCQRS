@@ -140,6 +140,12 @@ Składowe twojego `AggregateContext`; nadpisz te, których potrzebujesz.
 | `eventStore.backfillSpaces(spaceOf, batchSize)` | brak, `1000` | Nadaje przestrzeń agregatom zapisanym, zanim pojawiły się przestrzenie. | [16](16-organizations.md) |
 | `eventStore.backfillEventKeys(batchSize)` | `10000` | Nadaje klucz zdarzeniom zapisanym, zanim pojawiły się klucze zdarzeń. | [16](16-organizations.md) |
 
+## Właściwości systemowe
+
+| Właściwość | Domyślnie | Co robi | Rozdział |
+|---|---|---|---|
+| `reactivecqrs.log-values` | `false` | Tylko do diagnozy: polecenia SQL biblioteki trafiają do logu z wartościami, a awarie w całości do `io.reactivecqrs.detail`. Te linie zawierają dane osobowe. | [18](18-production.md) |
+
 ## Test kit
 
 Ustawiane jako właściwości systemowe, na przykład `sbt -Dreactivecqrs.test.clusterOfOne=true test`.

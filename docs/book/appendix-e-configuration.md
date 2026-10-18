@@ -139,6 +139,12 @@ Members of your `AggregateContext`; override the ones you need.
 | `eventStore.backfillSpaces(spaceOf, batchSize)` | none, `1000` | Gives aggregates stored before spaces their space. | [16](16-organizations.md) |
 | `eventStore.backfillEventKeys(batchSize)` | `10000` | Gives events stored before event keys their key. | [16](16-organizations.md) |
 
+## System properties
+
+| Property | Default | What it does | Chapter |
+|---|---|---|---|
+| `reactivecqrs.log-values` | `false` | For diagnosis only: the library's statements are logged with their values, and failures in full on `io.reactivecqrs.detail`. Those lines carry personal data. | [18](18-production.md) |
+
 ## The test kit
 
 Set as system properties, for example `sbt -Dreactivecqrs.test.clusterOfOne=true test`.

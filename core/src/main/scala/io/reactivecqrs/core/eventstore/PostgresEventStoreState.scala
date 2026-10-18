@@ -13,6 +13,8 @@ import scalikejdbc._
 
 import scala.concurrent.duration._
 import scala.util.Try
+import io.reactivecqrs.core.util.SqlLogging.withoutValues
+import io.reactivecqrs.core.util.Errors
 
 /** What the space backfill did (F49): aggregates given a space, and those neither their first event nor the function
   * gave one. */
@@ -341,7 +343,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
            | ORDER BY e.id""".stripMargin.map { rs =>
         val (aggregateId, version) = (AggregateId(rs.long(3)), AggregateVersion(rs.int(4)))
         val event = Try(EventInfo[Any](version, mpjsons.deserialize[Event[Any]](rs.string(7), eventClass(rs.short(5), rs.short(6), aggregateId.asLong, version.asInt)),
-          UserId(rs.long(8)), utcTime(rs.underlying, 9), metadataOf(rs.string(10)))).toEither.left.map(e => e.getClass.getSimpleName + ": " + e.getMessage)
+          UserId(rs.long(8)), utcTime(rs.underlying, 9), metadataOf(rs.string(10)))).toEither.left.map(Errors.describe)
         (CommittedEvent(rs.long(1), AggregateType(typesNamesState.classNameById(rs.short(2))), aggregateId, version, rs.intOpt(11).map(AggregateVersion(_)),
           event, rs.int(12)), rs.long(13))
       }.list()

@@ -3,6 +3,7 @@ package io.reactivecqrs.core.eventstore
 import io.reactivecqrs.core.util.SchemaLock
 
 import scalikejdbc._
+import io.reactivecqrs.core.util.SqlLogging.withoutValues
 
 
 /** Creates the event store's tables, indexes and procedures, when missing (`PostgresEventStoreState.initSchema`). */

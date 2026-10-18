@@ -6,7 +6,7 @@ import io.reactivecqrs.api.id.UserId
 import io.reactivecqrs.core.saga._
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
-import io.reactivecqrs.testkit.{CommonSpec, TestDatabase}
+import io.reactivecqrs.testkit.{CommonSpec, LogCapture, TestDatabase}
 import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.testkit.TestProbe
 import scalikejdbc._
@@ -22,6 +22,14 @@ case class Greeted(text: String) extends SagaResponse
 class Greeter(val name: String) extends SagaDefinition {
   override def handleOrder(step: SagaStep): ReceiveOrder = { case Greet(_, text) => Future.successful(SagaSucceded(Greeted("Hello, " + text))) }
   override def handleRevert(step: SagaStep): ReceiveRevert = PartialFunction.empty
+}
+
+case class Shout(userId: UserId, text: String) extends SagaOrder
+
+/** Takes no order, so its first step fails with a MatchError whose message is the whole order; and it cannot undo. */
+class Mute(val name: String) extends SagaDefinition {
+  override def handleOrder(step: SagaStep): ReceiveOrder = PartialFunction.empty
+  override def handleRevert(step: SagaStep): ReceiveRevert = { case _ => Future.successful(SagaRevertFailed(List("nothing can be undone"))) }
 }
 
 /** The same saga written as before 1.0, as an actor; `hold` keeps its first step from ending, so the saga stays stored. */
@@ -55,6 +63,21 @@ class SagaRunnerSpec extends CommonSpec {
 
       runner.askFor[SagaResponse](Greet(user, "Ann")) mustBe Greeted("Hello, Ann")
       awaitAssert(stored(name) mustBe 0, 5.seconds, 50.millis)
+    }
+
+    Scenario("F191 a step and a revert that fail are answered and logged without the order's values") {
+      val value = "marker" + System.nanoTime()
+      val capture = new LogCapture(system)
+      try {
+        val runner = system.actorOf(SagaRunner.props(new Mute("Mute-" + System.nanoTime()), uidGenerator, sagaState))
+
+        val answer = runner.askFor[SagaResponse](Shout(user, value))
+
+        answer mustBe a[SagaFailureResponse]
+        answer.asInstanceOf[SagaFailureResponse].exceptions.foreach(_ must (include("MatchError") and not include value))
+        awaitAssert(capture.all.exists(_.contains("Saga revert failed")) mustBe true, 5.seconds, 50.millis)
+        capture.containing(value) mustBe empty
+      } finally capture.close()
     }
 
     Scenario("a saga written as a SagaActor, as before 1.0, still runs") {

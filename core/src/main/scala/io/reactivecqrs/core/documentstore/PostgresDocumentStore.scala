@@ -8,6 +8,7 @@ import scala.annotation.tailrec
 import scala.reflect.runtime.universe._
 import scalikejdbc._
 import io.reactivecqrs.core.util.{AfterCommit, SchemaLock}
+import io.reactivecqrs.core.util.SqlLogging.withoutValues
 
 object PostgresDocumentStoreTrait {
   private[documentstore] val log = org.slf4j.LoggerFactory.getLogger(classOf[PostgresDocumentStore[_]])

@@ -18,6 +18,7 @@ import scala.jdk.CollectionConverters._
 import scala.reflect.{ClassTag, classTag}
 import scala.util.Try
 import scala.util.control.NonFatal
+import io.reactivecqrs.core.util.Errors
 
 /**
   * @param contexts the aggregate contexts whose states projections receive, for their builds (D59) and for the context
@@ -411,9 +412,9 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       startTargetedBuilder()
     case RunTargetedBuilder => startTargetedBuilder()
     case Status.Failure(e) if targeted.exists(_.builder.isEmpty) && active.exists(_.ref == sender()) =>
-      log.error("Projection " + spec.name + " cannot rebuild " + targeted.get.target + ": " + e.getMessage)
+      log.error("Projection " + spec.name + " cannot rebuild " + targeted.get.target + ": " + Errors.describe(e))
       clearPendingTarget()
-      targeted.get.requester ! RebuildRefused(e.getMessage)
+      targeted.get.requester ! RebuildRefused(Errors.message(e))
       targeted = None
     case CheckSwitch => trySwitch()
     case status: ProjectionStatus if building.exists(_.ref == sender()) =>

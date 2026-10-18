@@ -3,6 +3,7 @@ package io.reactivecqrs.core.uid
 import io.reactivecqrs.core.util.SchemaLock
 
 import scalikejdbc._
+import io.reactivecqrs.core.util.SqlLogging.withoutValues
 
 /**
   * The sequences behind the id pools: one value per pool, stepping by the pool size. F23: pools of 10 000, fetched ahead.

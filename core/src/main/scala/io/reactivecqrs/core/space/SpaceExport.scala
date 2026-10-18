@@ -9,6 +9,7 @@ import io.reactivecqrs.core.aggregate.AggregateRestorer
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.space.SpaceFormat._
 import scalikejdbc._
+import io.reactivecqrs.core.util.SqlLogging.withoutValues
 
 /** What an export wrote. `detached`: the aggregates written with their version-1 event replaced by a squash event, as
   * their chains reached outside the space; `waitingInOutbox`: the space's events not delivered yet when it ran (export

@@ -1678,3 +1678,25 @@ Tracing goes with the metadata envelope (R13, D32): `EventMetadata.traceContext`
 trace context a command brings (`WithMetadata`), and every event it stores carries it to the
 listeners; a saga continues the trace by putting it in the metadata of the commands it sends.
 `MetricsSpec` covers the measures through a running system.
+
+## 15. What reaches the logs (F190, F191)
+
+Events, states, documents and saga orders carry personal data, and logs are out of the complete
+rewrite's reach (§4.9). So the library logs, stores and answers failures without the values they carry:
+
+- **Statements.** Every session the library opens runs with `util/SqlLogging.withoutValues`:
+  ScalikeJDBC's logging of failed statements and of every statement is off for it, as both print the
+  parameters. `LogPrivacySpec` checks that every file opening a session imports it.
+- **Exceptions.** `util/Errors.describe` names a failure by its class and what identifies it: a
+  `MatchError` by its value's class, a PostgreSQL error by its SQLState and constraint (the procedures'
+  own messages, P0001, are kept: they name ids and versions), an mpjsons error by its type and position,
+  a parser's error without its input. Other messages are kept, cut to 1 000 characters. `Errors.redacted`
+  rebuilds an exception that way, with its stack trace and causes: the actors' log (`MyActorLogging`)
+  passes every logged cause through it, and the slf4j loggers of the stores and tools do so at each call.
+- **What is stored and answered.** A listener's failure (`subscription_failures`, `MessageFailed`, the
+  status), a failed restore (`AggregateRestoreFailedException`), refusals and saga answers carry the
+  described text. A saga's log names its order's class only; a message an actor cannot handle is named
+  by its class.
+
+The system property `reactivecqrs.log-values=true` turns both back on for diagnosis: ScalikeJDBC logs
+as configured, and `Errors` logs each described failure in full on `io.reactivecqrs.detail`.

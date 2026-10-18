@@ -308,6 +308,30 @@ szynę każdego węzła pytaj osobno.
 Identyfikator błędu w obu liniach właściciela to ten sam, który dostał nadawca: zgłoszenie do
 wsparcia, które go przytacza, prowadzi prosto do śladu stosu.
 
+### Dane osobowe a logi
+
+Logi przechowuje się długo i czyta je wiele osób, a żadne usuwanie danych do nich nie sięga
+([rozdział 15](15-rewriting-history.md)). Dlatego biblioteka nie wpuszcza wartości, z którymi pracuje, do
+swoich logów ani do tego, co zapisuje i odpowiada o awariach:
+
+- Jej polecenia SQL działają z wyłączonym logowaniem SQL ScalikeJDBC. Polecenie, które zawiedzie, nie
+  trafia do logu ze swoimi parametrami, a byłyby nimi całe zdarzenia, dokumenty i zlecenia sag.
+- Awaria jest nazwana bez wartości, na których się wydarzyła: `MatchError` staje się „wartością klasy
+  ...”, błąd PostgreSQL jego SQLState i ograniczeniem, błąd mpjsons typem i pozycją. Pozostałe wyjątki
+  zachowują komunikat, przycięty do 1 000 znaków.
+
+Twoja część:
+
+- Nie umieszczaj danych osobowych w komunikatach własnych wyjątków: biblioteka je loguje, a gdy listener
+  zawiedzie, zapisuje w `subscription_failures`.
+- Dodaj `logServerErrorDetail=false` do adresu JDBC, żeby wyjątki sterownika też nie cytowały wierszy.
+- Dla sesji, które otwiera twój kod, ustaw raz przy starcie `GlobalSettings.loggingSQLErrors = false`
+  albo otwieraj je z `import io.reactivecqrs.core.util.SqlLogging.withoutValues` w zasięgu.
+
+Żeby zdiagnozować awarię razem z wartościami, uruchom węzeł z `-Dreactivecqrs.log-values=true`.
+ScalikeJDBC loguje wtedy polecenia tak, jak jest skonfigurowane, a każda awaria trafia w całości do
+loggera `io.reactivecqrs.detail`. Potem wyłącz to z powrotem: te linie zawierają dane osobowe.
+
 ### PostgreSQL
 
 Obserwuj to samo, co w każdym mocno obciążonym PostgreSQL: używane połączenia (`pg_stat_activity`),

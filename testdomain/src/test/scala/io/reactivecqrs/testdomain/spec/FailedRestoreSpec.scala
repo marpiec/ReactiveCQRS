@@ -13,7 +13,7 @@ import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testkit.{CommonSpec, TestDatabase, TestIds}
+import io.reactivecqrs.testkit.{CommonSpec, LogCapture, TestDatabase, TestIds}
 import org.apache.pekko.actor.{ActorRef, Props}
 import scalikejdbc._
 
@@ -69,6 +69,24 @@ class FailedRestoreSpec extends CommonSpec {
         query.failed.get mustBe an[AggregateRestoreFailedException]
       } finally {
         setStoredEvent(cartId, validCreation) // later specs in this schema read every stored event
+      }
+    }
+
+    Scenario("F191 the failure answered and logged carries none of the stored values") {
+      val cartId = storedCart()
+      val value = "marker" + System.nanoTime()
+      setStoredEvent(cartId, "{\"name\":\"" + value + "\",")
+      val capture = new LogCapture(system)
+      try {
+        val failure = commandBus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId)).failed.get
+        failure mustBe an[AggregateRestoreFailedException]
+        val answered = Iterator.iterate[Throwable](failure)(_.getCause).takeWhile(_ != null).map(_.toString).mkString(" ")
+        answered must (include("JsonInnerException") and not include value)
+        awaitAssert(capture.all.exists(_.contains("Restoring aggregate " + cartId.asLong)) mustBe true, 5.seconds, 50.millis)
+        capture.containing(value) mustBe empty
+      } finally {
+        capture.close()
+        setStoredEvent(cartId, validCreation)
       }
     }
 

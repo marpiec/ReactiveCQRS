@@ -9,6 +9,8 @@ import org.slf4j.LoggerFactory
 import scalikejdbc._
 
 import scala.util.{Failure, Success, Try}
+import io.reactivecqrs.core.util.SqlLogging.withoutValues
+import io.reactivecqrs.core.util.Errors
 
 /** Sagas' progress in the table `sagas`. */
 class PostgresSagaState(mpjsons: MPJsons, typesNamesState: TypesNamesState) extends SagaState {
@@ -52,7 +54,7 @@ class PostgresSagaState(mpjsons: MPJsons, typesNamesState: TypesNamesState) exte
           val sagaId = SagaId(rs.long(1))
           Try(mpjsons.deserialize[SagaInternalOrder](rs.string(6), typesNamesState.classNameById(rs.short(7)))) match {
             case Success(order) => handler(sagaId, UserId(rs.long(2)), rs.string(3), SagaPhase.byName(rs.string(4)), rs.int(5), order)
-            case Failure(e) => log.error("Saga " + name + " " + sagaId.asLong + " is not resumed: its stored order cannot be read", e)
+            case Failure(e) => log.error("Saga " + name + " " + sagaId.asLong + " is not resumed: its stored order cannot be read", Errors.redacted(e))
           }
         }
     }

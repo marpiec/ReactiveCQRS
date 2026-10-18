@@ -4,6 +4,7 @@ import io.reactivecqrs.core.util.SchemaLock
 
 import org.postgresql.util.PSQLException
 import scalikejdbc._
+import io.reactivecqrs.core.util.SqlLogging.withoutValues
 
 /** Creates the table `sagas` (`PostgresSagaState.initSchema`). */
 class PostgresSagaSchemaInitializer {

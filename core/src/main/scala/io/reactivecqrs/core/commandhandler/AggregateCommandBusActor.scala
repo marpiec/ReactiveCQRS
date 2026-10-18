@@ -24,6 +24,7 @@ import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
 import scala.reflect.ClassTag
 import scala.util.{Failure, Random, Success, Try}
+import io.reactivecqrs.core.util.Errors
 
 /** The command bus's messages, and the `Props` of a command bus. */
 object AggregateCommandBusActor {
@@ -179,7 +180,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   private def removeExpiredResponses(): Unit = {
     implicit val blocking: ExecutionContext = BlockingDispatcher(context.system)
     Future(idempotency.removeExpired()).onComplete {
-      case Failure(e) => log.warning("Removing expired idempotent command responses failed: " + e.getMessage)
+      case Failure(e) => log.warning("Removing expired idempotent command responses failed: " + Errors.describe(e))
       case Success(removed) => if (removed > 0) log.info("Removed " + removed + " expired idempotent command responses")
     }
   }
@@ -329,7 +330,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
       case Success(size) if size <= limit => None
       case Success(size) => Some("Command " + command.getClass.getSimpleName + " of " + size + " bytes is too large to be sent between " +
         "nodes; the limit is " + limit + " bytes (from pekko.remote.artery.advanced.maximum-frame-size)")
-      case Failure(e) => Some("Command " + command.getClass.getSimpleName + " cannot be sent between nodes: " + e)
+      case Failure(e) => Some("Command " + command.getClass.getSimpleName + " cannot be sent between nodes: " + Errors.describe(e))
     }
   }
 
@@ -399,7 +400,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
       case Failure(e: AggregateSquashedException) => respondTo ! Failure(e) // D51: an answer, not a failure of the store
       case Failure(e) =>
         log.error(e, "Reading aggregate " + id.asLong + " of type " + aggregateTypeSimpleName + " failed")
-        respondTo ! Failure(new AggregateRestoreFailedException(id, aggregateType, e))
+        respondTo ! Failure(new AggregateRestoreFailedException(id, aggregateType, Errors.redacted(e)))
     }
   }
 
@@ -466,7 +467,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
       case Success(Left(reason)) => respondTo ! DetachRefused(baseId, reason)
       case Failure(e) =>
         log.error(e, "Detaching the duplicates of aggregate " + baseId.asLong + " of type " + aggregateTypeSimpleName + " failed")
-        respondTo ! DetachRefused(baseId, "detaching failed: " + e.getMessage)
+        respondTo ! DetachRefused(baseId, "detaching failed: " + Errors.describe(e))
     }
   }
 

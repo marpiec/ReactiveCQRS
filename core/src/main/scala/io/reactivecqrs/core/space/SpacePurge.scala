@@ -14,6 +14,8 @@ import scalikejdbc._
 
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
+import io.reactivecqrs.core.util.SqlLogging.withoutValues
+import io.reactivecqrs.core.util.Errors
 
 /** R17: the host's own rows of purged aggregates (an outbox writer's, a projection's own tables), deleted in the purge's
   * transaction with the library's. */
@@ -110,7 +112,7 @@ class SpacePurge(eventStore: PostgresEventStoreState, commandBuses: Map[Aggregat
     Future.sequence(projections.map(projection => (projection ? PurgeCheck(space)).map {
       case PurgeCheckAnswer(_, refusal) => refusal
       case other => Some("projection " + projection.path.name + " answered " + other)
-    }.recover { case e => Some("projection " + projection.path.name + " did not answer: " + e.getMessage) }))
+    }.recover { case e => Some("projection " + projection.path.name + " did not answer: " + Errors.describe(e)) }))
       .map(missingBuses ++ _.flatten)
   }
 
@@ -127,7 +129,7 @@ class SpacePurge(eventStore: PostgresEventStoreState, commandBuses: Map[Aggregat
               case DuplicatesDetached(_, duplicates) => Right(detached ++ duplicates)
               case DetachRefused(_, reason) => Left(Seq("duplicates of aggregate " + baseId.asLong + " cannot be detached: " + reason))
               case other => Left(Seq("the command bus of " + aggregateType.typeName + " answered " + other))
-            }.recover { case e => Left(Seq("detaching the duplicates of aggregate " + baseId.asLong + " failed: " + e.getMessage)) }
+            }.recover { case e => Left(Seq("detaching the duplicates of aggregate " + baseId.asLong + " failed: " + Errors.describe(e))) }
           case refused => Future.successful(refused)
         }
       }
@@ -178,12 +180,12 @@ class SpacePurge(eventStore: PostgresEventStoreState, commandBuses: Map[Aggregat
       val gone = ids.toSet
       val owners = batch.filter(a => gone.contains(a.aggregateId)).groupBy(_.aggregateType).toSeq.map { case (aggregateType, aggregates) =>
         (commandBuses(aggregateType) ? ForgetAggregates(aggregates.map(_.aggregateId))).map(_ => None)
-          .recover { case e => Some(("command bus of " + aggregateType.typeName) -> ("did not stop the owners of purged aggregates: " + e.getMessage)) }
+          .recover { case e => Some(("command bus of " + aggregateType.typeName) -> ("did not stop the owners of purged aggregates: " + Errors.describe(e))) }
       }
       val told = if (ids.isEmpty) Nil else projections.map(projection => (projection ? PurgedAggregates(space, ids)).map {
         case PurgedAggregatesForgotten(_, _) => None
         case other => Some(projection.path.name -> ("answered " + other + " to the purged aggregates"))
-      }.recover { case e => Some(projection.path.name -> ("did not forget the purged aggregates: " + e.getMessage)) })
+      }.recover { case e => Some(projection.path.name -> ("did not forget the purged aggregates: " + Errors.describe(e))) })
       Future.sequence(owners ++ told).map(failures => (rows, ids.size, failures.flatten.toMap))
     }
 
@@ -199,7 +201,7 @@ class SpacePurge(eventStore: PostgresEventStoreState, commandBuses: Map[Aggregat
     Future.sequence(projections.map(projection => (projection ? PurgeSpace(space)).map {
       case SpacePurged(name, _) => Left(name)
       case other => Right(projection.path.name -> ("answered " + other + " to clearing the space"))
-    }.recover { case e => Right(projection.path.name -> ("could not clear the space: " + e.getMessage)) }))
+    }.recover { case e => Right(projection.path.name -> ("could not clear the space: " + Errors.describe(e))) }))
       .map(answers => (answers.collect { case Left(name) => name }, answers.collect { case Right(failure) => failure }.toMap))
 
   private def sum(a: Map[String, Long], b: Map[String, Long]): Map[String, Long] =

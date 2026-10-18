@@ -6,7 +6,7 @@ import java.time.temporal.ChronoUnit
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.cluster.Members
-import io.reactivecqrs.core.commandhandler.{Idempotency, IdempotencyKeyTakenException}
+import io.reactivecqrs.core.commandhandler.{Idempotency, IdempotencyKeyRefused, IdempotencyKeyTakenException}
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
 import io.reactivecqrs.core.eventstore.{EventStoreState, NewEvents}
@@ -24,6 +24,7 @@ import scala.concurrent.duration._
 import scala.reflect.{ClassTag, classTag}
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
+import io.reactivecqrs.core.util.Errors
 
 /** The messages of an aggregate's owner; the command bus sends them, hosts do not. */
 object AggregateOwner {
@@ -236,7 +237,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
         None
       case Failure(e) =>
         log.error(e, "Restoring aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " failed, retry after " + failedRestoreRetryAfter)
-        val failure = new AggregateRestoreFailedException(aggregateId, aggregateType, e)
+        val failure = new AggregateRestoreFailedException(aggregateId, aggregateType, Errors.redacted(e))
         restoreFailure = Some(failure)
         context.become(failedRestore(failure))
         context.system.scheduler.scheduleOnce(failedRestoreRetryAfter, self, AskToStop)
@@ -251,9 +252,9 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     case CommandTimedOut(commandId) => timedOut(commandId)
     case GetState(respondTo) => respondTo ! Failure(failure)
     case GetStateMinVersion(respondTo, _, _) => respondTo ! Failure(failure)
-    case Squash(respondTo, request) => respondTo ! SquashRefused(request.id, "the aggregate cannot be restored: " + failure.getMessage)
-    case Rewrite(respondTo, request) => respondTo ! RewriteRefused(request.id, "the aggregate cannot be restored: " + failure.getMessage)
-    case MaterializeOwner(respondTo, request) => respondTo ! MaterializeRefused(request.id, "the aggregate cannot be restored: " + failure.getMessage)
+    case Squash(respondTo, request) => respondTo ! SquashRefused(request.id, "the aggregate cannot be restored: " + Errors.message(failure))
+    case Rewrite(respondTo, request) => respondTo ! RewriteRefused(request.id, "the aggregate cannot be restored: " + Errors.message(failure))
+    case MaterializeOwner(respondTo, request) => respondTo ! MaterializeRefused(request.id, "the aggregate cannot be restored: " + Errors.message(failure))
     case MaterializeAnswer(answer) => materializeAnswered(answer)
     case MinVersionDeadline => answerExpiredMinVersionQueries()
     case AskToStop | PassivateOwner(_) => askToStop()
@@ -277,9 +278,9 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
       if (caughtUp().isEmpty) eventStore.oldestVersionToPublish(aggregateId).foreach(from => outboxRepublishedUpTo = republish(from, None))
     case RepublishRange(_, from, subscriber) => if (caughtUp().isEmpty) republish(from, Some(subscriber))
     case Squash(respondTo, request) =>
-      respondTo ! caughtUp().fold(squashHistory(request))(failure => SquashRefused(request.id, "the aggregate cannot be restored: " + failure.getMessage))
+      respondTo ! caughtUp().fold(squashHistory(request))(failure => SquashRefused(request.id, "the aggregate cannot be restored: " + Errors.message(failure)))
     case Rewrite(respondTo, request) =>
-      respondTo ! caughtUp().fold(rewriteHistory(request))(failure => RewriteRefused(request.id, "the aggregate cannot be restored: " + failure.getMessage))
+      respondTo ! caughtUp().fold(rewriteHistory(request))(failure => RewriteRefused(request.id, "the aggregate cannot be restored: " + Errors.message(failure)))
     case MaterializeOwner(respondTo, request) => materialize(respondTo, request)
     case MaterializeAnswer(answer) => materializeAnswered(answer)
     case StopOwner =>
@@ -399,7 +400,9 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
   // (a rewrite of its base, a squash that changes the state), and the command must not run on the state of before.
   private def attempt(command: Pending): Unit = {
     val envelope = command.envelope
-    Try(idempotency.storedResponse(envelope.command)) match {
+    // F252: a key the store cannot keep fails the command before it runs, not when its response is stored.
+    idempotency.keyRefusal(envelope.command).map(Failure(_)).getOrElse(Try(idempotency.storedResponse(envelope.command))) match {
+      case Failure(refused: IdempotencyKeyRefused) => finish(envelope.commandId, FailureResponse(List(refused.getMessage)))
       case Failure(e) => finishWithError(envelope, e)
       case Success(Some(stored)) => finish(envelope.commandId, stored)
       case Success(None) =>
@@ -723,7 +726,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
         case Success(Left(reason)) => SquashRefused(aggregateId, reason)
         case Failure(e) =>
           log.error(e, "Squashing aggregate " + aggregateId.asLong + " up to version " + upTo.asInt + " failed")
-          SquashRefused(aggregateId, "the squash failed: " + e.getMessage)
+          SquashRefused(aggregateId, "the squash failed: " + Errors.describe(e))
       }
   }
 
@@ -757,7 +760,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
         log.info("Ephemeral aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " materialized as " + persistentId.asLong)
         commandBus ! EphemeralMaterialized(aggregateId)
         respondTo ! Materialized(aggregateId, persistentId)
-      case e: Throwable => respondTo ! MaterializeRefused(aggregateId, "the persistent command bus did not answer: " + e.getMessage)
+      case e: Throwable => respondTo ! MaterializeRefused(aggregateId, "the persistent command bus did not answer: " + Errors.describe(e))
       case other => respondTo ! MaterializeRefused(aggregateId, "the persistent command bus answered " + other)
     }
   }
@@ -788,7 +791,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
       case Success(Left(reason)) => RewriteRefused(aggregateId, reason)
       case Failure(e) =>
         log.error(e, "Rewriting aggregate " + aggregateId.asLong + " failed")
-        RewriteRefused(aggregateId, "the rewrite failed: " + e.getMessage)
+        RewriteRefused(aggregateId, "the rewrite failed: " + Errors.describe(e))
     }
   }
 

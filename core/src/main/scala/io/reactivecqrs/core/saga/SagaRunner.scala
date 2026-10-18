@@ -14,6 +14,7 @@ import io.reactivecqrs.core.util.{BlockingDispatcher, MyActorLogging}
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
 import scala.concurrent.duration._
+import io.reactivecqrs.core.util.Errors
 
 /** Runs a `SagaDefinition` (chapter 12). */
 object SagaRunner {
@@ -121,7 +122,7 @@ abstract class SagaRunning extends Actor with MyActorLogging {
   // After a restart the running sagas still send their results to this actor; loading the stored ones again would
   // start them a second time (F75).
   override def postRestart(reason: Throwable): Unit = {
-    log.warning("Saga actor " + sagaName + " restarted after: " + reason.getMessage)
+    log.warning("Saga actor " + sagaName + " restarted after: " + Errors.describe(reason))
   }
 
   override def receive: Receive = {
@@ -142,7 +143,7 @@ abstract class SagaRunning extends Actor with MyActorLogging {
     case RevertStepCompleted(saga, result) => handleRevertStepResult(saga, result)
     case WriteCompleted(pending, attempt, result) => handleWriteResult(pending, attempt, result)
     case RetryWrite(pending, attempt) => write(pending, attempt)
-    case m => log.warning("Received incorrect message of type: [" + m.getClass.getName +"] "+m)
+    case m => log.warning("Received incorrect message of type: [" + m.getClass.getName + "]")
   }
 
   private def startWaiting(): Unit = while (waitingForIds.nonEmpty && sagaIds.available) {
@@ -159,7 +160,7 @@ abstract class SagaRunning extends Actor with MyActorLogging {
   private def sagaIdsNotReceived(e: Throwable): Unit = {
     sagaIds.failed()
     log.error(e, "No pool of saga ids for saga " + sagaName + " came; " + waitingForIds.size + " orders waiting for one are refused")
-    waitingForIds.foreach { case (_, respondTo) => respondTo ! SagaFailureResponse(List("No saga id: " + e.getMessage)) }
+    waitingForIds.foreach { case (_, respondTo) => respondTo ! SagaFailureResponse(List("No saga id: " + Errors.describe(e))) }
     waitingForIds = Vector.empty
   }
 
@@ -191,7 +192,7 @@ abstract class SagaRunning extends Actor with MyActorLogging {
       write(StoreProgress(saga.copy(phase = REVERTING, step = saga.step + 1)))
     case Failure(e) =>
       log.error(e, "Saga " + sagaName + " " + saga.sagaId.asLong + " step " + saga.step + " failed, reverting")
-      respond(saga, SagaFailureResponse(List(e.getMessage)))
+      respond(saga, SagaFailureResponse(List(Errors.describe(e))))
       write(StoreProgress(saga.copy(phase = REVERTING, step = saga.step + 1)))
   }
 
@@ -201,10 +202,10 @@ abstract class SagaRunning extends Actor with MyActorLogging {
     case Success(SagaRevertSucceded) =>
       write(DeleteSaga(saga))
     case Success(SagaRevertFailed(exceptions)) =>
-      log.error(s"Saga revert failed, sagaId = ${saga.sagaId.asLong}, order = ${saga.order}, " + exceptions.mkString(", "))
+      log.error(s"Saga revert failed, sagaId = ${saga.sagaId.asLong}, order of class ${saga.order.getClass.getName}: " + exceptions.mkString(", "))
       write(DeleteSaga(saga))
     case Failure(e) =>
-      log.error(e, s"Saga revert failed, sagaId = ${saga.sagaId.asLong}, order = ${saga.order}")
+      log.error(e, s"Saga revert failed, sagaId = ${saga.sagaId.asLong}, order of class ${saga.order.getClass.getName}")
       write(DeleteSaga(saga))
   }
 
@@ -241,12 +242,12 @@ abstract class SagaRunning extends Actor with MyActorLogging {
         case _ => log.error("Saga " + sagaName + " " + saga.sagaId.asLong + " is no longer stored (removed elsewhere?), stopping it at step " + saga.step)
       }
       case Failure(e) if !retries.exhausted(attempt) =>
-        log.warning("Storing saga " + sagaName + " " + saga.sagaId.asLong + " failed (attempt " + attempt + " of " + retries.maxAttempts + "): " + e.getMessage)
+        log.warning("Storing saga " + sagaName + " " + saga.sagaId.asLong + " failed (attempt " + attempt + " of " + retries.maxAttempts + "): " + Errors.describe(e))
         context.system.scheduler.scheduleOnce(retries.delay(attempt + 1), self, RetryWrite(pending, attempt + 1))
       case Failure(e) => pending match {
         case _: CreateSaga =>
           log.error(e, "Saga " + sagaName + " could not be stored, its order is refused")
-          respond(saga, SagaFailureResponse(List("The saga could not be stored: " + e.getMessage)))
+          respond(saga, SagaFailureResponse(List("The saga could not be stored: " + Errors.describe(e))))
         case _ =>
           log.error(e, "Storing saga " + sagaName + " " + saga.sagaId.asLong + " failed " + attempt + " times; it resumes from its last stored step after a restart")
       }

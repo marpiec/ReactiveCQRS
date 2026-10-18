@@ -78,6 +78,16 @@ class IdempotentCommandsSpec extends CommonSpec {
       eventsNamed(name) mustBe 1
     }
 
+    Scenario("F252 one whose key is longer than the store keeps is refused before it runs, and changes nothing") {
+      val cartId = newCart()
+      val item = unique("Item")
+
+      val answer = commandBus.askFor[CustomCommandResponse[_]](AddItemConcurrently(userId, cartId, item, Some(ClientKey("k" * 300))))
+
+      answer mustBe FailureResponse(List("The idempotency key has 300 characters; at most 256 are stored"))
+      eventsNamed(item) mustBe 0
+    }
+
     Scenario("a first command sent concurrently creates one aggregate, and every caller gets the same response") {
       val name = unique("Cart")
 

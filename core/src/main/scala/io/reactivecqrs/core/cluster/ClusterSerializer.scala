@@ -17,6 +17,7 @@ import org.apache.pekko.event.Logging
 import org.apache.pekko.serialization.{Serialization, SerializerWithStringManifest}
 
 import scala.util.{Failure, Success, Try}
+import io.reactivecqrs.core.util.Errors
 
 /** An exception from another node whose class is not one of the library's: its class name, and its message as it was. */
 class RemoteFailure(val className: String, message: String) extends RuntimeException(message) {
@@ -300,7 +301,7 @@ object ClusterSerializer {
       case m: MessageTooLargeException => library(m, m.className, m.size, m.limit)
       case k: IdempotencyKeyTakenException => library(k, k.key)
       case r: RemoteFailure => out.writeByte(OtherError); str(r.className); write(r.getMessage)
-      case other => out.writeByte(OtherError); str(other.getClass.getName); write(other.getMessage)
+      case other => out.writeByte(OtherError); str(other.getClass.getName); write(Errors.message(other))
     }
 
     private def library(e: Throwable, fields: Any*): Unit = {

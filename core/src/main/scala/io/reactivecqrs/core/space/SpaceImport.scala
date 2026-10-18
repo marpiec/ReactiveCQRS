@@ -21,6 +21,8 @@ import scala.collection.mutable
 import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.util.{Try, Using}
+import io.reactivecqrs.core.util.SqlLogging.withoutValues
+import io.reactivecqrs.core.util.Errors
 
 /** D40: maps the references an import's codec cannot see, held as numbers or text (a `Long` id, an actor "user:5" in the
   * metadata). Typed ones (`AggregateId`, `UserId`, `SpaceId`) are mapped before it is called. */
@@ -234,8 +236,8 @@ class SpaceImport(eventStore: PostgresEventStoreState, uidGenerator: ActorRef, r
       flushEvents()
       flushArchived()
     }.failed.toOption.map { e =>
-      log.error("Import into space " + into.asLong + " stopped", e)
-      "stopped after " + aggregates + " aggregates, " + events + " events and " + archived + " archived events were read (" + e.getMessage +
+      log.error("Import into space " + into.asLong + " stopped", Errors.redacted(e))
+      "stopped after " + aggregates + " aggregates, " + events + " events and " + archived + " archived events were read (" + Errors.describe(e) +
         "); purge space " + into.asLong + " and import again"
     }
 
