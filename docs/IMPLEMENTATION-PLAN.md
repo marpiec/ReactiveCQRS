@@ -2566,3 +2566,16 @@ Open test-infrastructure items:
   true (that nothing was reproduced yet, that ARCHITECTURE describes 0.12.47), and F52 named
   `StoredDataCheck.run` with a parameter it no longer has. The README, the CHANGELOG, SCALING and
   CLAUDE.md point to the archive; `DocLinksSpec` finds every link resolved.
+
+**18/10/2026: M7's review (review 9) and its bench**
+- The bench at the M7 close (`docs/perf/baseline-M7.md`, JDK 25) and, the same day, the M6 tag's code
+  (`m6-on-jdk25.md`), twice each (`rebuild-check-M7.md`, `rebuild-check-M6.md`), measured on this machine:
+  commands with two projections 4 916 and 4 611/s against 4 448 and 4 688/s, without subscribers 8 884 and
+  8 731/s against 7 717 and 8 745/s, serial mode 11 000/s against 10 450/s, one contended aggregate
+  1 666/s against 1 757/s, a restore of 500 000 events 3.6 s against 3.46 s, the delivery soak 304 s
+  against 295 s. The commands are level; the rebuild is 5–8 % slower in both pairs (5 732 and 6 071
+  against 6 213 and 6 375 events/s), within the runs' spread but in one direction: F184, open, to profile
+  after the release.
+- Review 9 (KNOWN-ISSUES §7) closes M7: what the release's checks found, the deferred work (the
+  fresh-reader test, the rehearsal on a copy of production, a slow database), the next step (the release).
+- `FaultTests` simplified: the client's answer is one match over `Try`, the cart creation one loop.

@@ -6,8 +6,9 @@ to the library's behaviour.
 
 > **Provenance.** Static read of `master` @ `4b5060f` (version 0.12.47), 16/10/2026, updated for
 > the changes of milestones M1 (to `cc8925c`), M2 (the delivery module, to `v1.0.0-M2`), M3 (the
-> aggregate owner, to `v1.0.0-M3`) and M4 as it goes (projection builds), and checked against
-> that code at each milestone review. Where a milestone changed the code, references name
+> aggregate owner, to `v1.0.0-M3`), M4 (projection builds), M5 (the cluster), M6 (organizations and
+> the data lifecycle) and M7 (the saga runner, the release's findings), and checked against that
+> code at each milestone review, the last on 18/10/2026. Where a milestone changed the code, references name
 > methods; the remaining line numbers are from `4b5060f` and may have drifted
 > by a few lines. Defaults and limits quoted below are the literal values in the code;
 > measured performance is in `docs/perf/`. How the library behaves under high volume and
@@ -784,9 +785,10 @@ the subscriber stops (watched). A stopped subscriber keeps its subscriptions, ma
 the deliveries it would take end without an owner ack, so their rows stay in the outbox
 until the next start (F87); `DeliveryStatus.stopped` lists it. The stop is logged as an error
 only when nothing replaces the subscriber before the next start: one that stops as its node
-shuts down, or while the registered subscriber that answered with it is asked again (the
-instance behind a singleton's proxy or a managed projection's supervisor), is logged at INFO
-(F176).
+shuts down (a coordinated shutdown runs, or the node's cluster has ended, as it does a moment
+before when the node is downed, F182), or while the registered subscriber that answered with it is
+asked again (the instance behind a singleton's proxy or a managed projection's supervisor), is
+logged at INFO (F176).
 Only a delivery ended by acks and failures acknowledges the owner, grouped per owner and
 aggregate; one ended by the deadline or a stop keeps its outbox rows. An event published
 again while its delivery waits goes only to the subscribers it waits for. A re-publication

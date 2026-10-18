@@ -64,10 +64,11 @@ below with running code.
 - **A published test kit**, `reactivecqrs-testkit` (chapter 19): `TestDatabase` (a schema per test run),
   `TestSystems` (a cluster of one on request), `TestCluster` (several nodes in one JVM),
   `SchemaReference` (the golden test of stored formats), `TestClock`, `TestIds` and `askFor`.
-- **The book and its examples.** Twenty chapters and three appendices in `docs/book`, whose code comes
+- **The book and its examples.** Twenty chapters and five appendices in `docs/book`, whose code comes
   from the `examples` module (E1–E11, each runnable and tested), with a three-node deployment for Docker
   Compose and Kubernetes in `examples/deploy/e2`, and fault tests that kill, stop and cut off its nodes
-  under load (`examples/deploy/e2/faults`).
+  under load (`examples/deploy/e2/faults`). The book is also in Polish (`docs/book_pl`), with the same
+  code.
 
 ### Changed (a host's code or configuration changes)
 

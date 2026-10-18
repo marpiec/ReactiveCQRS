@@ -194,6 +194,14 @@ The issues still open. The 180 closed ones (fixed, accepted, decided or found no
 [`KNOWN-ISSUES-ARCHIVE.md`](KNOWN-ISSUES-ARCHIVE.md), by area, as they were recorded; a number named in the code or in
 the other documents (`F99`) is found there.
 
+### Performance and runtime
+
+#### F184 — A projection rebuild may be 5–8 % slower than at M6
+- **Low** (performance), suspected (measured, within the bench's spread) · Open: profile after the release · `ProjectionActor`, `ProjectionBuilder`
+- **Symptom:** the bench's rebuild of 112 211 events, 18/10/2026, JDK 25, alternating runs: M7 5 732 and 6 071 events/s, the M6 tag 6 213 and 6 375 events/s (`docs/perf/baseline-M7.md`, `rebuild-check-M7.md`, `m6-on-jdk25.md`, `rebuild-check-M6.md`). The command scenarios of the same runs spread by about ±7 % from run to run, so the gap may be noise; both pairs point the same way.
+- **Candidates:** the build's code barely changed in M7: a projection applies each chunk inside the after-commit wrapper of F161 (a thread-local and a buffer per transaction) and counts applied updates for F163; the state-only build walks the aggregates with F173's query, whose index the bench does not build (the events-based build, which the bench times, does not walk).
+- **Found:** the bench of the M7 review (review 9).
+
 ### Serialization (mpjsons 0.7)
 
 #### F52 — JDK value types stored in the old private-field form cannot be read by 0.7
@@ -260,7 +268,7 @@ From §7 of Neula's change requests.
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔, F174 ✔; F155 decided (review 8) |
-| M7 | AR5 ✔ (moved from M5 at review 7; D86); F148 ✔, F152 ✔, F153 ✔, F156 ✔, F157 ✔, F160 ✔, F161 ✔, F162 ✔, F163 ✔, F164 ✔, F165 ✔, F166 ✔, F169 ✔ (found writing the book), F170 ✔, F171 ✔, F173 ✔, F175 (accepted), F176 ✔ (found writing E10), F177 ✔ (found writing E11), F178 ✔ (found running E2 in Docker), F179 (deferred: the owner publishes mpjsons later), F180 ✔ (found running E2 on Kubernetes), F181 ✔ (found writing chapter 6's spec), F182 ✔ (found by E2's fault tests in Docker), F183 ✔ (found writing the Scaladoc) |
+| M7 | AR5 ✔ (moved from M5 at review 7; D86); F148 ✔, F152 ✔, F153 ✔, F156 ✔, F157 ✔, F160 ✔, F161 ✔, F162 ✔, F163 ✔, F164 ✔, F165 ✔, F166 ✔, F169 ✔ (found writing the book), F170 ✔, F171 ✔, F173 ✔, F175 (accepted), F176 ✔ (found writing E10), F177 ✔ (found writing E11), F178 ✔ (found running E2 in Docker), F179 (deferred: the owner publishes mpjsons later), F180 ✔ (found running E2 on Kubernetes), F181 ✔ (found writing chapter 6's spec), F182 ✔ (found by E2's fault tests in Docker), F183 ✔ (found writing the Scaladoc), F184 (open, found by review 9's bench) |
 
 ---
 
@@ -842,3 +850,75 @@ F171, F173 (the measurement), F175 (the close's bench).
 **Next:** M7, the release: the test kit (with a second installation), the API clean-up (F157,
 F165), the remaining findings, Java 21, the README brought to the release, the book polished, the
 delivery envelope between nodes (F170) and the walk over a type's aggregates (F173); AR5.
+
+### Review 9, 18/10/2026: M7, before the release (architecture description, plan and code)
+
+Scope: the release's work as built: the findings left for M7 (F148–F183), the test kit (E11, R20),
+the examples E1–E11 and the book's code taken from them, the saga runner (AR5, D86), E2's deployments
+with Docker Compose and on Kubernetes and its fault tests, Java 21 bytecode, the Scaladoc, the upgrade
+runbook (D81), the CHANGELOG, the Polish translation of the book; `docs/ARCHITECTURE.md` and the book.
+Inputs: the full suites in both modes after every work item (on JDK 25 at the end), E2's fault tests (two runs),
+the bench (`baseline-M7` against `baseline-M6`, and the M6 tag on the same JDK the same day), the
+book's 216 compiled blocks, and our own reading of M7's code changes (the saga runner, the projection
+actor, the event bus, the document store's sessions, readiness, the stored data check).
+
+**Outcome.** The M7 decisions hold. Refinements:
+- The book's code is the examples' code (the M7 design). Compiling it found blocks that were wrong as
+  written (chapters 10, 12, 14 to 17, the runbook) and F181; checking the Polish translation block by
+  block against the English found three more slips in the English text. Documentation that compiles,
+  and two books checked against each other, are the rule from here (`BookSnippetsSpec`,
+  `DocLinksSpec`).
+- Real processes found what one JVM could not: the order of the classpath (F178), seed nodes in a
+  rolling restart (F180), and the log of a node the resolver downs (F182). The in-JVM specs stay the
+  first line; E2's fault tests (`examples/deploy/e2/faults`) run before each release.
+- AR5: a saga is data and functions that the library's runner runs; its state machine (`SagaRunning`)
+  is the one place where a saga's decisions are taken, each step's result and each write coming back
+  to the actor as a message, and the deprecated `SagaActor` runs on it unchanged.
+- The API is smaller and documented: F157, F165 and F183 removed or renamed what nothing used or what
+  misled; every public type of `api` and the public parts of `core` have doc comments, and `sbt doc`
+  gives no warning.
+- The backlog is split: `KNOWN-ISSUES.md` keeps what is open, and the 180 closed issues are in
+  `KNOWN-ISSUES-ARCHIVE.md`.
+
+**Fixed in M7:** AR5; F148, F152, F153, F156, F157, F160–F166, F169–F171, F173, F176–F178,
+F180–F183. Accepted: F175. Deferred by the owner: F179. Open: F184 (found by this review's bench).
+
+**Deferred, with reasons:**
+- The fresh-reader test of the plan's verification (the quick start and the cluster example on a clean
+  machine): it needs the library and mpjsons published (F179); it runs after the owner publishes them.
+- The rehearsal on a copy of production (D81), for which F52 and F53 wait: Neula's.
+- A slow database, the toolkit's third fault: the fault tests cover kills, graceful stops and a
+  partition; a database that answers slowly is covered by the in-JVM timeouts only.
+
+**Measured** (single runs on one machine; the bench on JDK 25, where `baseline-M6` ran on JDK 17):
+- `baseline-M7` (one run, JDK 25) against `baseline-M6` (JDK 17): commands without subscribers
+  8 884/s (M6: 9 156/s); with two projections 4 916/s (4 658/s), p99 7.3 ms (8.8 ms), the projections
+  2 661 events/s, 0.55 s behind; one contended aggregate 1 666/s (1 640/s); serial mode 11 000/s
+  (9 573/s) and 2 160/s on one aggregate (1 922/s); rebuild 5 732 events/s (6 695/s); a restore of
+  500 000 events 3.6 s (2.07 s); the memory soak 556 271 commands, projected 93 s after the load
+  (107 s), 113 MB right after it and 23 MB idle; the delivery soak's 1 000 000 events all projected
+  304 s after the load started (250 s), nothing waiting, 26 to 27 MB after each of five restarts;
+  startup 767 and 816 ms.
+- The same day on the same JDK, the M6 tag (`m6-on-jdk25.md`): without subscribers 7 717/s, two
+  projections 4 448/s, serial 10 450/s, contended 1 757/s, rebuild 6 213 events/s, a restore of
+  500 000 events 3.46 s, the delivery soak 295 s. So the slower restore and soak against
+  `baseline-M6` come from the JDK and the machine's day, not from M7's code. A second pair
+  (`rebuild-check-M7.md`, `rebuild-check-M6.md`): commands level (4 611 and 4 688/s with two
+  projections, 8 731 and 8 745/s without), rebuild 6 071 against 6 375 events/s; the rebuild is
+  5–8 % slower in both pairs, within the ±7 % the command scenarios spread between runs (F184, open).
+- E2's fault tests (two runs, Docker Desktop): about 100 000 commands each in nine minutes, every
+  check held; a lost node's aggregates and singletons elsewhere 48 and 49 s after a kill; what a
+  killed node had not delivered re-published 3.5 minutes later, or about 1 minute after a kill of
+  the oldest (`docs/SCALING.md` §12).
+- The full suites on JDK 25: core 325, examples 107, testdomain 194 scenarios, in 4 min 31 s; as a
+  cluster of one in 4 min 48 s.
+
+**Observations:**
+- Each kind of check found its own kind of problem: compiling the book found examples that did not
+  do what they said; running real processes found deployment problems; documenting the API found code
+  nothing used; translating found prose that contradicted itself. None of them would have been found by
+  more unit tests.
+
+**Next:** the release: version `1.0.0` and the tag `v1.0.0` (the owner's go-ahead), then the owner
+publishes mpjsons 0.7.0 (F179) and the library to Nexus; the fresh-reader test after that; Neula's
+rehearsal on a copy of production plans the move (D81).

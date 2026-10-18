@@ -10,7 +10,9 @@ scenarios with the cluster libraries and flow control (F93). M5's high-load scen
 `flow-M5.md` (the soak with flow control), `heavy-M5.md` and `heavy-before-F127.md` (handlers that hold their
 threads); `docs/SCALING.md` reads them. `baseline-M6.md` runs the M5 scenarios again at the M6 close (organizations,
 the complete rewrite, ephemeral aggregates and F172 in the code). `jsonnames-M6.md` compares short JSON keys
-(mpjsons `@jsonName`) with descriptive ones (§7.1), with its findings and a recommendation.
+(mpjsons `@jsonName`) with descriptive ones (§7.1), with its findings and a recommendation. `baseline-M7.md` runs
+the same scenarios at the M7 close, on JDK 25; `m6-on-jdk25.md` runs the M6 tag's code the same day for comparison,
+and `rebuild-check-M7.md` and `rebuild-check-M6.md` repeat the pair to check the rebuild's difference (F184).
 
 ## Running it
 

@@ -15,7 +15,7 @@ import scalikejdbc._
 
 import scala.concurrent.Await
 import scala.concurrent.duration._
-import scala.util.{Random, Try}
+import scala.util.{Failure, Random, Success, Try}
 
 // E2's fault tests (chapter 17): the cluster under load while nodes are killed, stopped, or cut off from the others.
 // Every node of examples/deploy/e2/faults runs `FaultTests node`: E2's node, whose carts take two more commands, and a
@@ -116,8 +116,12 @@ final class FaultClient(carts: ActorRef, incarnation: String, workers: Int, paus
   }
 
   private def createCart(): Unit = {
-    val cartId = Iterator.continually(Try(Await.result((carts ? ReserveAggregateId).mapTo[AggregateId], timeout.duration))
-      .toOption.orElse { Thread.sleep(1000); None }).flatten.next()
+    var reserved: Option[AggregateId] = None
+    while (reserved.isEmpty) {
+      reserved = Try(Await.result((carts ? ReserveAggregateId).mapTo[AggregateId], timeout.duration)).toOption
+      if (reserved.isEmpty) Thread.sleep(1000)
+    }
+    val cartId = reserved.get
     val key = newKey("create", cartId)
     send(key, CreateCartOnce(Some(LedgerKey(key)), user, cartId, key)).foreach {
       case _: SuccessResponse =>
@@ -151,10 +155,12 @@ final class FaultClient(carts: ActorRef, incarnation: String, workers: Int, paus
     var answer: Option[CustomCommandResponse[_]] = None
     while (answer.isEmpty && stopping.forall(_.hasTimeLeft())) {
       attempts += 1
-      val error = Try(Await.result((carts ? command).mapTo[CustomCommandResponse[_]], timeout.duration)).fold(_.toString, {
-        case response @ (_: SuccessResponse | _: FailureResponse) => answer = Some(response); ""
-        case other => other.toString // an error that a copy may not meet: AggregateConcurrentModificationError, ...
-      })
+      var error = ""
+      Try(Await.result((carts ? command).mapTo[CustomCommandResponse[_]], timeout.duration)) match {
+        case Success(response @ (_: SuccessResponse | _: FailureResponse)) => answer = Some(response)
+        case Success(other) => error = other.toString // an error that a copy may not meet: AggregateConcurrentModificationError, ...
+        case Failure(e) => error = e.toString // no answer in time
+      }
       if (answer.isEmpty) {
         DB.autoCommit(implicit session => sql"UPDATE fault_ledger SET attempts = $attempts, last_error = $error WHERE key = $key".update())
         Thread.sleep(1000)
