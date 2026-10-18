@@ -110,26 +110,11 @@ same code works in both.
 `Projections.start` ([chapter 10](10-rebuilding-projections.md)) does this for you: in a cluster,
 the `ActorRef` it returns is the node's proxy to the projection's supervisor.
 
-Here is what every node of the shopping-cart application runs at start. It uses
-`ClusterCartsProjection`, the small projection of `ClusterDeliverySpec` that keeps each cart's item
-names, and the `ShardedCartContext` of the next section:
+Here is what every node of E2, the cluster example, runs at start: E1's carts (sharded, see the next
+section), their carts list as a managed projection, and the outbox poller:
 
+<!-- snippet: e2/ClusterSetup.scala#node -->
 ```scala
-import io.mpjsons.MPJsons
-import io.reactivecqrs.core.cluster.Singletons
-import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
-import io.reactivecqrs.core.delivery.OutboxPollerActor
-import io.reactivecqrs.core.documentstore.{NoopDocumentStoreCache, PostgresDocumentStore}
-import io.reactivecqrs.core.eventbus.EventsBusActor
-import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
-import io.reactivecqrs.core.eventstore.PostgresEventStoreState
-import io.reactivecqrs.core.projection.PostgresSubscriptionsState
-import io.reactivecqrs.core.rebuild.{PostgresProjectionRegistry, Projections, ProjectionsSettings}
-import io.reactivecqrs.core.saga.PostgresSagaState
-import io.reactivecqrs.core.types.PostgresTypesNamesState
-import io.reactivecqrs.core.uid.UidGeneratorActor
-import org.apache.pekko.actor.{ActorRef, Props}
-
 // The same code on every node (system: this node's ActorSystem)
 val mpjsons = new MPJsons
 val typesNames = new PostgresTypesNamesState().initSchema()
@@ -140,38 +125,38 @@ val subscriptions = new PostgresSubscriptionsState(typesNames).initSchema()
 // One of each on every node
 val uidGenerator = system.actorOf(UidGeneratorActor.postgres(system), "uidGenerator")
 val eventBus = system.actorOf(Props(new EventsBusActor()), "eventBus")
-val carts = system.actorOf(AggregateCommandBusActor(new ShardedCartContext, uidGenerator, eventStore, responses, eventBus), "carts")
+val carts = system.actorOf(
+  AggregateCommandBusActor(new ShardedCartContext, uidGenerator, eventStore, responses, eventBus), "carts")
 
 // Once in the cluster: every node starts them, one node runs them
-val projections = new Projections(system,
-  ProjectionsSettings(eventStore, subscriptions, new PostgresProjectionRegistry().initSchema(), Seq(new ShardedCartContext)))
-val cartItems: ActorRef = projections.start[ClusterCartsProjection]("cluster-carts", 1, "clusterCarts") { build =>
-  new ClusterCartsProjection(subscriptions,
-    new PostgresDocumentStore[ClusterCartItems](build.documentStore("cluster_carts"), mpjsons, new NoopDocumentStoreCache))
+val projections = new Projections(system, ProjectionsSettings(eventStore, subscriptions,
+  new PostgresProjectionRegistry().initSchema(), contexts = Seq(new ShardedCartContext)))
+val cartsList: ActorRef = projections.start[CartsListProjection]("e2-carts-list", 1, "cartsList") { build =>
+  new CartsListProjection(subscriptions,
+    new PostgresDocumentStore[CartSummary](build.documentStore("e2_carts_list"), mpjsons, new NoopDocumentStoreCache))
 }
 Singletons.start(system, "outboxPoller", Props(new OutboxPollerActor(eventStore, eventBus)))
-val sagaState = new PostgresSagaState(mpjsons, typesNames)
-sagaState.initSchema()
-val cartsSaga: ActorRef = SagaRunner.start(system, new MultipleCartCreatorSaga(carts)(system.dispatcher, Timeout(60.seconds)),
-  uidGenerator, sagaState, actorName = Some("cartsSaga"))
 
 // Every node registers the projection's proxy on its own bus
-eventBus ! RegisterSubscribers(Seq(cartItems))
+eventBus ! RegisterSubscribers(Seq(cartsList))
 ```
+
+The imports are at the top of `ClusterSetup.scala`, in `examples/src/main/scala/io/reactivecqrs/examples/e2/`.
 
 What happens when this runs on three nodes:
 
 - Each node has its own uid generator, event bus and cart command bus. A command sent to the cart
   command bus of *any* node works.
-- One supervisor of the `cluster-carts` projection runs, on the oldest node. Each node's bus knows it
+- One supervisor of the `e2-carts-list` projection runs, on the oldest node. Each node's bus knows it
   through that node's proxy, so the projection gets the events of the owners on every node.
-- One outbox poller and one saga runner run, also on the oldest node. You send saga orders to
-  `cartsSaga`, the proxy, from whichever node you are on.
+- One outbox poller runs, also on the oldest node.
+- A saga runner runs once too: every node calls `SagaRunner.start(system, ...)` ([chapter 12](12-sagas.md))
+  and sends saga orders to the proxy it returns, from whichever node it is on.
 
-`ClusterDeliverySpec` runs exactly this on three nodes: a projection fed by the owners of every node
-answers queries on any node, with one instance in the whole cluster; and when the oldest node leaves,
-the projection, the poller and the saga runner move, and what was published meanwhile still reaches
-the projection.
+E2's `ClusterSpec` runs this on three nodes in one JVM: a cart filled through every node has one
+owner, and the carts list answers on every node; when the oldest node leaves, the carts list moves
+and still gets the events published meanwhile. The library's `ClusterDeliverySpec` checks the same
+with a saga runner too.
 
 > **Warning:** never start the outbox poller or the squash scheduler with a plain `system.actorOf` on
 > every node. With three nodes, every event waiting in the outbox would be re-published three times,
@@ -224,14 +209,12 @@ beyond 200 owners, the least recently used ones idle for 2 minutes are stopped, 
 
 ### Sharded: one owner per aggregate in the whole cluster
 
-A context opts in by overriding `placement`. This is `ShardedCartContext` from the cluster specs:
+A context opts in by overriding `placement`. E2 makes E1's carts sharded:
 
+<!-- snippet: e2/ShardedCarts.scala#sharded -->
 ```scala
-import io.reactivecqrs.api._
-import io.reactivecqrs.testdomain.shoppingcart.ShoppingCartAggregateContext
-
-class ShardedCartContext extends ShoppingCartAggregateContext {
-  override val placement: Placement = Placement.Sharded(numberOfShards = 10)
+class ShardedCartContext extends ShoppingCartContext {
+  override val placement: Placement = Placement.Sharded(numberOfShards = 30) // about ten per node of three
 }
 ```
 
@@ -522,10 +505,65 @@ A few more rules of the road:
 > **Under the hood:** app-versions, the write switch, readiness and the rolling-upgrade test are
 > described in [ARCHITECTURE.md, section 13.6](../ARCHITECTURE.md) (D65–D73, F132, F138).
 
-> **Remember:** a complete cluster example (three nodes, Kubernetes manifests with the lease) is
-> coming in 1.0. Until then, `CartCluster`, `ShardedOwnersSpec`, `ClusterDeliverySpec` and
-> `RollingUpgradeSpec` in `testdomain/src/test/scala/io/reactivecqrs/testdomain/spec/` show the wiring
-> of every node, on the test kit's `TestCluster` ([chapter 19](19-testing.md)).
+## Three nodes for real: Docker Compose and Kubernetes
+
+E2 comes with what it takes to run its nodes as separate processes, in `examples/deploy/e2/`:
+
+| File | What it is |
+|---|---|
+| `Dockerfile` | an image that builds the repository with sbt and runs E2's `ClusterSetup` |
+| `docker-compose.yml` | three nodes and a PostgreSQL on one machine |
+| `kubernetes.yaml` | three nodes on Kubernetes, with the split brain resolver's lease |
+
+Every node runs the same `ClusterSetup.main`, and takes what differs from node to node from its
+environment: `NODE_HOST` (its address), `SEED_NODES`, `APP_VERSION`, the database (`DB_URL`,
+`DB_USER`, `DB_PASSWORD`) and `SHOP_CONFIG`, the configuration to start from:
+
+<!-- snippet: e2/ClusterSetup.scala#config -->
+```scala
+/** A node's configuration: `e2.conf` (or `e2-kubernetes.conf`, as SHOP_CONFIG says), with this node's address, the
+  * seed nodes and the release's version from the environment. */
+def nodeConfig(setting: String => Option[String]): Config = {
+  val host = setting("NODE_HOST").getOrElse("127.0.0.1")
+  val seeds = setting("SEED_NODES").getOrElse(s"pekko://shop@$host:17355").split(",").map(_.trim)
+  ConfigFactory.parseString(
+    s"""pekko.remote.artery.canonical.hostname = "$host"
+       |pekko.cluster.seed-nodes = [${seeds.map("\"" + _ + "\"").mkString(", ")}]
+       |pekko.cluster.app-version = "${setting("APP_VERSION").getOrElse("1.0.0")}"
+       |""".stripMargin)
+    .withFallback(ConfigFactory.load(setting("SHOP_CONFIG").getOrElse("e2")))
+}
+```
+
+The two configurations are in `examples/src/main/resources`:
+
+- **`e2.conf`**, for Docker Compose: the cluster provider on port 17355, the split brain resolver
+  with `keep-majority` (three nodes always have a majority), `coordinated-shutdown.exit-jvm = on` (a
+  node that leaves the cluster, or is downed, ends its process, and the container is started again),
+  and Pekko Management's health checks on port 8558, with the library's `ReadinessCheck` as a
+  readiness check.
+- **`e2-kubernetes.conf`**, for Kubernetes: the same, with `lease-majority`. The side of a split that
+  holds a Kubernetes Lease stays, also with two nodes, where there is no majority. The lease is a
+  native Kubernetes `Lease` object named after the actor system (`shop-pekko-sbr`), from Pekko
+  Management's `pekko-lease-kubernetes`.
+
+The Kubernetes manifest has four parts worth knowing:
+
+1. **A service account with a role on leases**: `get`, `create`, `update` and `list` on
+   `leases` of `coordination.k8s.io`. Without it the split brain resolver cannot take the lease,
+   and in a split, no side stays.
+2. **A headless service with `publishNotReadyAddresses: true`**, so each pod has a name
+   (`shop-0.shop`) before it is ready: the nodes find each other before they serve.
+3. **A StatefulSet of three pods**, whose stable names make `shop-0` and `shop-1` the seed nodes.
+   Pods start one at a time, oldest first, and a rolling update replaces the newest first, so the
+   singletons on the oldest pod move only once. (Pekko Management's Cluster Bootstrap is the other
+   way to find the seeds.)
+4. **Probes on Pekko Management**: `/ready` keeps traffic away until the node's event bus knows its
+   subscribers; `terminationGracePeriodSeconds: 120` gives a leaving node time to hand its owners
+   over (90 seconds, above).
+
+> **Warning:** the image builds and runs the examples with sbt, which is fine for trying a cluster
+> out. A production image packages the application (sbt-native-packager, for one) and runs `java`.
 
 ## What you learned
 

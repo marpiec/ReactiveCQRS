@@ -35,7 +35,7 @@ test surface.
 | `core` | `core/` | All the machinery: actors, event store, event bus, projections, sagas, document store, uid generator. Depends on `api`. |
 | `testdomain` | `testdomain/` | Example shopping-cart domain + integration specs. Depends on `api`, `core`. |
 | `testkit` | `testkit/` | The published test kit (M7, E11): `TestDatabase` (a new schema per test run), `SchemaReference`, `TestSystems` (cluster of one), `TestCluster` (nodes in one JVM), `TestClock`, `TestIds`, `askFor` (typed asks, F177); the library's ScalaTest base `CommonSpec` in its test sources. |
-| `examples` | `examples/` | The book's examples E1–E11 (M7), each with a runnable `main` and a spec; `BookSnippetsSpec` checks that the book's marked code blocks are their regions. Not published. |
+| `examples` | `examples/` | The book's examples E1–E11 (M7), each with a runnable `main` and a spec (E11, testing, is specs only); E2's Docker and Kubernetes files in `examples/deploy/e2`; `BookSnippetsSpec` checks that the book's marked code blocks are their regions. Not published. |
 | `bench` | `bench/` | Performance bench and load driver (`sbt "bench/run <name>"`, reports in `docs/perf/`). Not published. |
 | `utils` | `utils/` | Present in tree; commented out / mostly unused in `build.sbt`. |
 
@@ -354,4 +354,4 @@ behaviour under high volume and load, with recommendations, is in `docs/SCALING.
 | Ephemeral aggregates (drafts in memory) | `AggregateCommandBusActor.ephemeral`, `core/.../eventstore/EphemeralEventStoreState.scala`, `AggregateOwner.materialize`, ARCHITECTURE §4.10 |
 | Erasure: the complete rewrite | `core/.../rewrite/HistoryRewriter.scala`, `AggregateOwner.rewriteHistory`, `PostgresEventStoreState.rewriteEverywhere`, ARCHITECTURE §4.9 |
 | How a user uses the library (the user docs) | `docs/book/` (a step-by-step book; how to write for it: `docs/book/STYLE.md`) |
-| The cluster: placement, members, singletons, messages between nodes | `core/.../cluster/*` (`Members`, `Singletons`, `ClusterSerializer`, `MessageSize`), `ARCHITECTURE.md` §13, `docs/design/M5-cluster.md`; multi-node tests `testdomain/.../spec/TestCluster.scala` |
+| The cluster: placement, members, singletons, messages between nodes | `core/.../cluster/*` (`Members`, `Singletons`, `ClusterSerializer`, `MessageSize`), `ARCHITECTURE.md` §13, `docs/design/M5-cluster.md`; multi-node tests on the test kit's `TestCluster` (`testdomain/.../spec/CartCluster.scala`); a deployment: E2 (`examples/.../e2`, `examples/deploy/e2`) |

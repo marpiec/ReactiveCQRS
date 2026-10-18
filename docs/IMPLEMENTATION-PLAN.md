@@ -2297,3 +2297,18 @@ Open test-infrastructure items:
 - F177, found writing E11: `val x: T = actor ?? message` made `-Wdead-code` warn at every line (135 in
   the library's specs). The test kit's ask is now `askFor[T](message, timeout = 10.seconds)`, typed,
   checking the answer's class; `??` and `askActor` are gone and the specs use `askFor`.
+
+**18/10/2026: E2, a cluster**
+- E2 (`examples/.../e2`, on E1's carts): `ShardedCartContext` (30 shards), `ClusterSetup.startNode`
+  (what every node runs: the stores, a uid generator, an event bus, the sharded carts, and once in
+  the cluster the carts list as a managed projection and the outbox poller), `nodeConfig` from the
+  environment, and `main` with Pekko Management's health checks (the library's `ReadinessCheck`).
+  `ClusterSpec` runs three nodes in one JVM (`TestCluster`): one owner per cart, the carts list on
+  every node, the oldest node leaving; `NodeSpec` checks the configurations main makes and `/alive`
+  and `/ready` of a node alone. `examples/deploy/e2`: a Dockerfile (sbt on JDK 21), Docker Compose
+  (three nodes and PostgreSQL, keep-majority) and a Kubernetes manifest (StatefulSet, headless
+  service, probes, lease-majority with a native Kubernetes Lease and its role). New dependencies of
+  the examples only: `pekko-management` and `pekko-lease-kubernetes` 1.2.1, whose Pekko 1.1.5
+  modules give way to 1.7.1. The Docker and Kubernetes files are checked by reading and by
+  `NodeSpec`, not run: this machine has no Docker (M7 design, failure circumstances); run them before
+  the release. Book: chapter 17 (its code from E2, a section on the deployments).

@@ -1,0 +1,124 @@
+# E2 (chapter 17): three nodes of the shop on Kubernetes, with the split brain resolver's lease.
+#
+#   kubectl create secret generic shop-db --from-literal=url=jdbc:postgresql://<host>:5432/shop \
+#     --from-literal=user=<user> --from-literal=password=<password>
+#   kubectl apply -f examples/deploy/e2/kubernetes.yaml
+#
+# The image is the one examples/deploy/e2/Dockerfile builds, pushed where the cluster can pull it; the database is yours.
+# A StatefulSet gives the pods stable names (shop-0, shop-1, shop-2), so shop-0 and shop-1 can be the seed nodes; Pekko
+# Management's Cluster Bootstrap is the other way to find them. The split brain resolver keeps the side that holds a
+# Kubernetes Lease (lease-majority, e2-kubernetes.conf), so it decides with two nodes too, and the pods' service account
+# may read and write leases.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: shop
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: shop-lease
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: shop-lease
+subjects:
+  - kind: ServiceAccount
+    name: shop
+roleRef:
+  kind: Role
+  name: shop-lease
+  apiGroup: rbac.authorization.k8s.io
+---
+# Headless: each pod's own address, shop-0.shop and so on, also before it is ready (the cluster forms before then).
+apiVersion: v1
+kind: Service
+metadata:
+  name: shop
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: shop
+  ports:
+    - name: remoting
+      port: 17355
+    - name: management
+      port: 8558
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: shop
+spec:
+  serviceName: shop
+  replicas: 3
+  # One pod at a time, oldest first at start and newest first in a rolling update (chapter 17).
+  podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      app: shop
+  template:
+    metadata:
+      labels:
+        app: shop
+    spec:
+      serviceAccountName: shop
+      # Longer than the shutdown of a node that hands over its owners and singletons (90 s for the shard regions).
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: shop
+          image: reactivecqrs-e2:1.0.0
+          ports:
+            - name: remoting
+              containerPort: 17355
+            - name: management
+              containerPort: 8558
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_HOST
+              value: "$(POD_NAME).shop"
+            - name: SEED_NODES
+              value: "pekko://shop@shop-0.shop:17355,pekko://shop@shop-1.shop:17355"
+            - name: APP_VERSION
+              value: "1.0.0"
+            - name: SHOP_CONFIG
+              value: "e2-kubernetes"
+            - name: DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: shop-db
+                  key: url
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: shop-db
+                  key: user
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: shop-db
+                  key: password
+          # Pekko Management's health checks: ready once the event bus knows all its subscribers (ReadinessCheck).
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: management
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /alive
+              port: management
+            initialDelaySeconds: 120
+            periodSeconds: 10
+            failureThreshold: 6

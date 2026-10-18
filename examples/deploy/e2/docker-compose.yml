@@ -1,0 +1,61 @@
+# E2 (chapter 17): three nodes of the shop and their PostgreSQL, on one machine.
+#
+# From the repository's root:
+#   docker compose -f examples/deploy/e2/docker-compose.yml up --build
+#
+# Each node starts the same code (ClusterSetup.startNode). node1 and node2 are the seeds; node1 starts the cluster.
+# The split brain resolver keeps the majority (keep-majority, e2.conf): with three nodes there always is one.
+# Each node writes a cart once the cluster is up and prints what the carts list, which runs once in the cluster,
+# says about it.
+
+x-node: &node
+  build:
+    context: ../../..
+    dockerfile: examples/deploy/e2/Dockerfile
+  image: reactivecqrs-e2
+  # A node that leaves the cluster, or is downed, ends its process (exit-jvm in e2.conf); it is started again.
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+  environment: &environment
+    SEED_NODES: "pekko://shop@node1:17355,pekko://shop@node2:17355"
+    DB_URL: "jdbc:postgresql://postgres:5432/shop"
+    DB_USER: "shop"
+    DB_PASSWORD: "shop"
+    APP_VERSION: "1.0.0"
+    SHOP_CONFIG: "e2"
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: shop
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: shop
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop -d shop"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  node1:
+    <<: *node
+    hostname: node1
+    environment:
+      <<: *environment
+      NODE_HOST: node1
+
+  node2:
+    <<: *node
+    hostname: node2
+    environment:
+      <<: *environment
+      NODE_HOST: node2
+
+  node3:
+    <<: *node
+    hostname: node3
+    environment:
+      <<: *environment
+      NODE_HOST: node3
