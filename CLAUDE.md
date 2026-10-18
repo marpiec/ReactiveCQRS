@@ -22,7 +22,7 @@ It is a *framework/library*, not a runnable application. The `testdomain` module
 (a shopping-cart domain) is the canonical worked example and the main integration
 test surface.
 
-- Scala **2.13.18**, compiled with `-release 17`.
+- Scala **2.13.18**, compiled with `-release 21` (D74): build with JDK 21 or newer (`sbt --java-home <jdk>`).
 - Pekko **1.7.1**, ScalikeJDBC **4.3.5**, postgresql **42.7.14**, mpjsons **0.7.0**.
 - Uses the **default ScalikeJDBC connection pool** (`DB.autoCommit`, `DB.readOnly`,
   `DB.localTx`). The connection pool **must be initialized by the host application

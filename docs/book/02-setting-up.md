@@ -9,9 +9,8 @@ of the book, and the one that saves you the most head-scratching later. Let's cl
 
 ## What you need on your desk
 
-- **A JDK, version 17 or newer.** The library is compiled for Java 17 (`-release 17` in its
-  build). The plan for the 1.0 release is to move to Java 21, so if you are picking a JDK today,
-  21 saves you an upgrade later.
+- **A JDK, version 21 or newer.** The library is compiled for Java 21 (`-release 21` in its
+  build), and its suites run on Java 25 too.
 - **Scala 2.13.** The library is built with Scala 2.13.18 and published for 2.13 only.
 - **sbt**, the Scala build tool. Any 1.x release will do; the library's own build uses 1.11.7.
 - **PostgreSQL**, running somewhere your machine can reach. The library's measurements (see
@@ -380,7 +379,7 @@ step 4 in action.
 
 ## What you learned
 
-- You need a JDK 17 or newer, Scala 2.13, sbt and PostgreSQL; the library brings Pekko, ScalikeJDBC
+- You need a JDK 21 or newer, Scala 2.13, sbt and PostgreSQL; the library brings Pekko, ScalikeJDBC
   and the JDBC driver along.
 - The library is `io.reactivecqrs %% reactivecqrs-api` (for your domain) and
   `io.reactivecqrs %% reactivecqrs-core` (the machinery), version `1.0.0-SNAPSHOT`.

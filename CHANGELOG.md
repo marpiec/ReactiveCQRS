@@ -11,14 +11,15 @@ makes its schema changes at start (small, idempotent steps under a lock) or in b
 once, and never needs a rewrite of the events table. The milestone builds `1.0.0-M2` to `1.0.0-M6`
 led here.
 
-Upgrading from 0.12: every step a host takes is listed, release by release, in
-[KNOWN-ISSUES.md, section 4](docs/KNOWN-ISSUES.md) (H1–H12); the upgrade runbook and the migration guide
-gather them for 1.0.0. The book, [*ReactiveCQRS, Step by Step*](docs/book/README.md), shows every feature
+Upgrading from 0.12: [the runbook](docs/UPGRADE-0.12-TO-1.0.md) goes through the move, a planned stop, step by
+step; every change a host makes is listed, release by release, in [KNOWN-ISSUES.md, section 4](docs/KNOWN-ISSUES.md)
+(H1–H12). The book, [*ReactiveCQRS, Step by Step*](docs/book/README.md), shows every feature
 below with running code.
 
 ### Requirements
 
-- Scala 2.13 (built with 2.13.18) and Java 17 or later; the library is compiled for Java 17.
+- Scala 2.13 (built with 2.13.18) and Java 21 or later; the library is compiled for Java 21, and its suites
+  pass on Java 25 too.
 - Apache Pekko 1.7.1, its cluster modules included; ScalikeJDBC 4.3.5; mpjsons 0.7.0.
 - PostgreSQL; the library's suites and benches run on PostgreSQL 17.
 

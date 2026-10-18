@@ -23,6 +23,7 @@ It was built for, and runs, the Neula platform.
 |---|---|
 | **[The book: *ReactiveCQRS, Step by Step*](docs/book/README.md)** | Start here. A friendly guide from zero to production in 20 chapters, with examples you can run. |
 | [Changelog](CHANGELOG.md) | What changed in each release, and what a host changes to upgrade. |
+| [Upgrading from 0.12](docs/UPGRADE-0.12-TO-1.0.md) | The runbook of the move from 0.12.47 to 1.0: the rehearsal, the stop, the checks. |
 | [Architecture](docs/ARCHITECTURE.md) | How the library works inside: actors, tables, delivery, rebuilds, the cluster. |
 | [Scaling and limits](docs/SCALING.md) | Behaviour under high volume and load, limits, and recommendations. |
 | [Performance reports](docs/perf/README.md) | Measured numbers from the benchmark module. |
@@ -61,7 +62,7 @@ It was built for, and runs, the Neula platform.
 
 ## Requirements
 
-- JDK 17 or newer
+- JDK 21 or newer (the library is compiled for Java 21)
 - Scala 2.13 (the library is built with 2.13.18)
 - PostgreSQL (measured on 17.4)
 - sbt

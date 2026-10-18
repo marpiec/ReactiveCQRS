@@ -874,8 +874,8 @@ Still open:
 
 5. Neula runs the production-copy checks (M1 pre-checks, M4 rebuild timing, M7 rehearsal)
    and the Neula-side items H1–H6.
-6. Java 21 bytecode (D74) needs JDK 21 on the build machine; only JDK 17.0.8 is installed.
-   Until JDK 21 is available the build targets Java 17, which also runs on Neula's Java 21.
+6. Java 21 bytecode (D74) needs JDK 21 or newer on the build machine. **Done 18/10/2026:** JDK 25
+   came to the build machine; the build targets Java 21 (`-release 21`).
 
 ---
 
@@ -2348,3 +2348,11 @@ Open test-infrastructure items:
   remedy. `SerializerBindingSpec`, red first; `NodeSpec`. Book: chapters 17 and 18, appendix C.
 - F179, recorded for the owner: mpjsons 0.7.0 is in no public repository; this machine has it in its
   local Maven repository only.
+
+**18/10/2026: Java 21 bytecode, and the upgrade runbook**
+- JDK 25 came to the build machine: the build targets Java 21 (`-release 21`, D74), compiles on JDK 25
+  without a warning, and both suites pass on it. The book, the README and the CHANGELOG ask for Java 21.
+- `docs/UPGRADE-0.12-TO-1.0.md` (D81): the code changes (H1–H12), the rehearsal on a copy of production
+  with `StoredDataCheck` and the pre-check queries (F34, F76, F49) and a table of durations it fills in,
+  the stop, what carries over by itself, the checks right after, the way back, and the background jobs.
+  The rehearsal itself is Neula's.

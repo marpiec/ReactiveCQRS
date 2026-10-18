@@ -472,9 +472,9 @@ What to do:
 ## When you upgrade to 1.0
 
 If you are coming from 0.12, the move to 1.0 is a **one-off, planned stop**: a 0.12 node cannot join a
-1.0 cluster. Rolling upgrades ([chapter 17](17-cluster.md)) start from 1.0 on. A step-by-step
-migration runbook, rehearsed on a copy of production, is coming with 1.0. Until then, here are the
-steps the library's milestones asked of a host, in the order you meet them.
+1.0 cluster. Rolling upgrades ([chapter 17](17-cluster.md)) start from 1.0 on. The step-by-step
+runbook, to rehearse on a copy of production first, is [UPGRADE-0.12-TO-1.0.md](../UPGRADE-0.12-TO-1.0.md).
+Here are the changes it asks of a host, in the order you meet them.
 
 **Before the stop, on a copy of production:**
 
@@ -510,7 +510,8 @@ steps the library's milestones asked of a host, in the order you meet them.
     `build.documentStore(...)`, give each build caches of its own, never commit or roll back the
     session a listener is given, and retire removed projections with `Projections.retire(name)`.
     Projections with side effects stay unmanaged.
-13. Use the cluster settings on every node, a single one too; start the poller, the squash scheduler
+13. Use the cluster settings on every node, a single one too, with the library's serializer bound in
+    them; start the poller, the squash scheduler
     and the saga runners with `Singletons.start`; register the projections' proxies on every bus
     ([chapter 17](17-cluster.md)).
 14. Set `reactivecqrs.installation-number` (step 3), make the uid generator with

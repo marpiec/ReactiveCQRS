@@ -152,8 +152,8 @@ Decided on 17/10/2026: F175 accepted, AR5 now, F165 renamed to `NoInfo`.
 - **AR5**: saga definitions run by a library runner now, with the migration of Neula's sagas in
   the guide, or after 1.0 with today's `SagaActor` kept. **Now, in M7**; it gets a design of its own
   first, and E4 and the saga chapter follow it.
-- **JDK 21 on the build machine**: D74 asks for Java 21 bytecode; only JDK 17 is installed here.
-  Until then the library is built for Java 17, which runs on Neula's Java 21.
+- **JDK 21 on the build machine**: D74 asks for Java 21 bytecode; only JDK 17 was installed here. **Done:** JDK 25
+  came on 18/10/2026, and the build targets Java 21.
 - **The rehearsal**: it needs a copy of Neula's production database, and someone to run it.
 - **F165's rename** changes every place Neula names `io.reactivecqrs.api.Nothing`; the migration
   guide lists it. **Renamed to `NoInfo`.**
