@@ -15,6 +15,10 @@ import io.reactivecqrs.core.util.Errors
   * generation the state was read at, which a snapshot of it must be written with (F119); 0 without snapshots. */
 case class Restored[AGGREGATE_ROOT](version: AggregateVersion, root: AGGREGATE_ROOT, fromSnapshot: Option[AggregateVersion] = None, generation: Int = 0)
 
+/** F197: the aggregate is of another type than the one restoring it (an id sent to the wrong command bus). */
+class AggregateTypeMismatchException(val aggregateId: AggregateId, val storedType: String, val expectedType: String)
+  extends IllegalStateException("Aggregate " + aggregateId.asLong + " is a " + storedType + ", not a " + expectedType)
+
 /**
   * Reads aggregates of one type from the event store: their state at the newest version, at a version or at an
   * instant, and the events behind it. It hides how the store keeps a history: duplication chains (a duplicate starts
@@ -29,16 +33,25 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
                                         initialState: () => AGGREGATE_ROOT,
                                         snapshots: Option[SnapshotPolicy] = None,
                                         contextVersion: Int = 0,
-                                        stateClassName: String = "") {
+                                        stateClassName: String = "",
+                                        aggregateType: Option[AggregateType] = None,
+                                        refuseOtherTypes: Boolean = true) {
 
   private val log = LoggerFactory.getLogger(classOf[AggregateRestorer[_]])
+  private lazy val shape = StateShape.of(stateClassName)
 
   /** The aggregate at its newest version, or at `at`. A version counts only the aggregate's own events, not those of
-    * the base it was duplicated from. Fails when an event cannot be read or handled. */
+    * the base it was duplicated from. Fails when an event cannot be read or handled, and, with `aggregateType`, when the
+    * aggregate is of another type (F197). */
   def restore(aggregateId: AggregateId, at: Option[Either[AggregateVersion, Instant]] = None): Restored[AGGREGATE_ROOT] = {
     // F119: read before the history, so the state is never paired with a later generation than its own. Read for every
     // context, as owners that may share their aggregate compare it with the store's (F131, F144).
-    val generation = if (at.isEmpty) eventStore.historyGeneration(aggregateId) else 0
+    val (stored, storedType) = eventStore.generationAndType(aggregateId)
+    for (expected <- aggregateType; actual <- storedType if actual != expected.typeName) {
+      val mismatch = new AggregateTypeMismatchException(aggregateId, actual, expected.typeName)
+      if (refuseOtherTypes) throw mismatch else log.error(mismatch.getMessage + "; restored anyway (reactivecqrs.aggregate-type-check = log)")
+    }
+    val generation = if (at.isEmpty) stored else 0
     usableSnapshot(aggregateId, at) match {
       case Some(snapshot) =>
         var version = snapshot.version
@@ -65,8 +78,9 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
     case Some(policy) if at.forall(_.isLeft) =>
       Try(eventStore.readSnapshot[AGGREGATE_ROOT](aggregateId, stateClassName)) match {
         case Success(Some(Success(snapshot))) =>
+          // F196, F197: of this state class, as it is now: one of another shape or class read as zeros, falses and nulls.
           Some(snapshot).filter(s => s.contextVersion == contextVersion && s.schemaVersion == policy.schemaVersion &&
-            at.forall(_.left.forall(s.version <= _)))
+            s.shape == shape && at.forall(_.left.forall(s.version <= _)))
         case Success(Some(Failure(e))) =>
           log.warn("The snapshot of aggregate " + aggregateId.asLong + " cannot be read; reading all of its events instead", Errors.redacted(e))
           None
@@ -82,7 +96,7 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
     * at `generation`, the one the state was read at (F119). A failure is logged and changes nothing else: the aggregate
     * is then restored from an older snapshot or from its events. */
   def writeSnapshot(aggregateId: AggregateId, version: AggregateVersion, root: AGGREGATE_ROOT, generation: Int): Boolean = snapshots.exists { policy =>
-    Try(eventStore.writeSnapshot(aggregateId, Snapshot(version, contextVersion, policy.schemaVersion, root), stateClassName, generation)) match {
+    Try(eventStore.writeSnapshot(aggregateId, Snapshot(version, contextVersion, policy.schemaVersion, root, shape), stateClassName, generation)) match {
       case Success(_) => true
       case Failure(e) =>
         log.warn("Writing the snapshot of aggregate " + aggregateId.asLong + " at version " + version.asInt + " failed", Errors.redacted(e))

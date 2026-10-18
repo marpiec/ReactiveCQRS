@@ -332,9 +332,11 @@ What to know about permanent delete:
   state. A type without a squash policy cannot do that: the delete then waits, and the log says why.
   The cart has a squash policy.
 - **Your projections' tables are yours.** The library does not touch them: delete their rows when
-  your projections see the event. The stored answers of the aggregate's idempotent commands go with
-  it; answers stored by older versions of the library, which do not name their aggregate, expire with
-  their retention period (30 days by default).
+  your projections see the event. The stored answers of the aggregate's idempotent commands lose
+  their custom info with it, but keep their keys until their retention period ends (30 days by
+  default): a client that retries a keyed creation gets the old answer, and does not create the
+  aggregate again. Answers stored by older versions of the library, which do not name their
+  aggregate, are left as they are and expire likewise.
 
 > **Tip:** plan ahead if you need both kinds of delete. A command cannot run on an aggregate whose
 > state is `null`, so a cart soft-deleted the cart's way can no longer be erased by a command. If you

@@ -280,10 +280,7 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
   // F117: a store that cannot be read now (the connection lost, the database restarting or short of resources) is read
   // again later, as a page is; only what cannot be read at all fails its subscription. In a page this retries the page;
   // in a gap fill the builder stops and its supervisor starts it again from the saved position.
-  private def transient(e: Throwable): Boolean = e match {
-    case sql: java.sql.SQLException => Option(sql.getSQLState).forall(state => Seq("08", "40", "53", "57").exists(state.startsWith))
-    case _ => Option(e.getCause).exists(cause => (cause ne e) && transient(cause))
-  }
+  private def transient(e: Throwable): Boolean = Errors.transient(e)
 
   private def unreadableItems(at: CommittedEvent, error: String): Seq[ChunkItem] = {
     unreadable += 1

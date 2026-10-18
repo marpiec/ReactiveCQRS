@@ -19,3 +19,6 @@ case class RepublishOutbox(aggregateId: AggregateId) extends RepublishRequest
 
 /** Re-publish `from` up to the current version to one subscriber only: its gap or its retry (D20c). */
 case class RepublishRange(aggregateId: AggregateId, from: AggregateVersion, subscriber: ActorRef) extends RepublishRequest
+
+/** F201: the owner's answer to a `RepublishRange` from beyond its version: the aggregate has nothing after `version`. */
+case class NothingToRepublish(aggregateId: AggregateId, version: AggregateVersion)

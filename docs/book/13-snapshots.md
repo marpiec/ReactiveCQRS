@@ -69,7 +69,7 @@ class SnapshottedCarts extends ShoppingCartAggregateContext {
 | --- | --- | --- |
 | `every` | `200` | The owner writes a snapshot right after a commit that takes the aggregate's version to the next multiple of `every`: at 200, 400, 600 and so on. |
 | `onPassivation` | `true` | The owner also writes one when it is stopped (passivated), if the aggregate has moved on since its last snapshot. |
-| `schemaVersion` | `1` | Raise it when the state class changes shape (see below). |
+| `schemaVersion` | `1` | Raise it when a field of the state changes its meaning (see below); a change of shape is seen without it. |
 
 A few things worth knowing about the writing:
 
@@ -161,11 +161,15 @@ aggregate's next snapshot replaces it.
 
 ## Changing the state class or the event handlers
 
-A snapshot stores the state as JSON of your aggregate root class, `ShoppingCart` here. Two kinds of
-change make old snapshots wrong without the library noticing:
+A snapshot stores the state as JSON of your aggregate root class, `ShoppingCart` here, with the
+class's *shape*: a fingerprint of its fields' names and types, and of the classes it holds. Since
+1.0.1 a snapshot of another shape is not used: the aggregate is replayed and gets a new one. So a
+field added, removed, renamed or retyped anywhere in the state needs nothing from you. (A snapshot
+written by 1.0.0 has no shape, so each aggregate is replayed once after the upgrade.) Two kinds of
+change still make old snapshots wrong without the library noticing:
 
-- **The root class changes shape** (a field added, removed or renamed): an old snapshot may not read
-  back as the new class. Raise `schemaVersion`, and old snapshots are ignored:
+- **A field keeps its name and type but changes its meaning** (amounts in cents instead of euros):
+  the shape is the same. Raise `schemaVersion`, and old snapshots are ignored:
 
   <!-- snippet: cart/SnapshotExperimentSpec.scala#schemaVersion -->
   ```scala
@@ -187,7 +191,8 @@ An aggregate cannot grow forever. The event store refuses to store an event past
 `aggregateVersionLimit`, 10 000 by default. A command whose events would go past it fails: the
 caller gets `EventHandlingError`, and the log names `TooManyEventsException`. The limit is a guard
 against runaway aggregates, such as a bug that adds an event in a loop, or one aggregate that should
-really have been several.
+really have been several. It guards growth only: an aggregate at the limit can still be squashed,
+erased ([chapter 15](15-rewriting-history.md)) and deleted for good.
 
 It is a parameter of the event store, so it applies to every aggregate type that store keeps. To
 allow longer histories, construct the store with a larger one:
@@ -245,8 +250,9 @@ and never ask for the whole history of a long aggregate at once (chapter 18).
   one when the owner is stopped.
 - Undo, history rewrite, squash and permanent delete delete the snapshots they make wrong; a new
   context `version` or `schemaVersion` makes old ones ignored.
-- Raise `schemaVersion` when the state class changes shape, and the context's `version` when an
-  event handler changes what it makes of the events.
+- A snapshot of another shape of the state class is not used (since 1.0.1). Raise `schemaVersion`
+  when a field changes its meaning, and the context's `version` when an event handler changes what
+  it makes of the events.
 - `aggregateVersionLimit` (10 000 by default) caps every aggregate's version, and a squash does not
   lower it.
 

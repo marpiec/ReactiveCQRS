@@ -8,6 +8,21 @@ lists them all. Each entry is as it was when it was closed. Severity and confide
 
 ### Delivery and subscriptions
 
+#### F201 — A stale failure record becomes a false "versions missing" failure; skipping it moves the subscription past the aggregate, and the next event is acknowledged unapplied
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 2 of the risk assessment; `ProjectionDeliverySpec` "F201", two scenarios, red under three mutations) · `ProjectionActor`, `AggregateOwner`
+- **Fix:** a retried failure whose version the subscription has applied is cleared at once, and a retried failure keeps its place in its queue until its record is deleted (the clear is tried again). An owner asked for versions beyond its own answers `NothingToRepublish(id, version)`, which closes the gap and clears a failure of versions that never existed. A skip of a "versions from N are missing" failure marks nothing and asks from N again. A failed load of the failure records is tried again, and `ServeUnchanged` keeps the failures. The owner's answer is covered by reading; the projection's handling of it by the spec.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F254 — Transient database errors become durable recorded failures in live projections
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 2; `ProjectionDeliverySpec` "F254", red under a mutation) · `ProjectionActor`, `Errors.transient`
+- **Fix:** a batch that fails on the database (`Errors.transient`, the builder's F117 check moved to `Errors`: SQLState classes 08, 40, 53, 57, or a SQL error without a state) counts no attempt: it is tried again every `retries.max` (30 s), with one warning a minute, and never recorded as a failure.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F259 — After a targeted reset, a live event of a target aggregate re-runs side effects for its whole history
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 2; `ProjectionDeliverySpec` "F259", red under a mutation) · `ProjectionActor`
+- **Fix:** a gap found while the subscription is at version 0 marks the first live version waiting; a batch that starts below it is applied as history (`rebuilding` true: no pushes). The owner re-publishes up to its version, so the live version may come in that batch and is applied as history too: one push less, never a push of the past. The same covers a subscriber added late.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F188 — The event bus waits forever for a subscriber that cannot answer, and stashes every publication meanwhile
 - **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 1 of the risk assessment; `EventsBusActorSpec` "F188", red first) · `EventsBusActor`
 - **Symptom:** a registered subscriber that never answered (a projection that could not start, a proxy whose singleton runs nowhere yet) kept the bus in its start-up state: nothing was delivered on the node, the node never became ready, and every publication was stashed in an unbounded stash with its events and state.
@@ -351,6 +366,36 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 
 ### Commands and aggregates
 
+#### F261 — Deleting an aggregate's idempotent responses removes their deduplication too, so a retried keyed creation creates it again
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 2; `PostgresEventStoreStateSpec` "F167, F261", red under a mutation) · `PostgresEventStoreState.deleteAggregatePermanently`
+- **Fix:** a permanent delete clears the info of the aggregate's stored responses (F167's purpose: the values go) and keeps their rows, keys and the response's id and version, until the retention period removes them: a retried keyed command gets the old answer without its info.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F196 — A snapshot of a state class that gained a field is restored with zero, false or null in that field, silently
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 2 of the risk assessment; `SnapshotSpec` "F196" and `StateShapeSpec`, red under a mutation) · `StateShape`, `AggregateRestorer`, the `snapshots` table
+- **Fix:** a snapshot is written with its state class's shape (a digest of the names and types of its fields and of the classes it holds, type arguments included, by Java reflection; the class's name is part of it), in a new `snapshots.shape` column; a snapshot of another shape, or without one (written by 1.0.0), is not used, and the aggregate is replayed once. `schemaVersion` is left for a field whose meaning changes.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F197 — An aggregate id of another type is restored by the wrong context, which then writes into it
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 2; `SnapshotSpec` "F197", red under a mutation; `StoredDataCheckSpec`) · `AggregateRestorer`, `EventStoreState.generationAndType`, `StoredDataCheck`
+- **Fix:** a restore reads the aggregate's type with its history generation (one row) and refuses one of another type than the command bus's, naming both: its queries, commands and squashes are refused, and nothing is written. Snapshots of another class are not used (F196's shape holds the class). `reactivecqrs.aggregate-type-check = "log"` only logs it, for a store whose type names are not the contexts' yet; `StoredDataCheck.run(..., contexts)` reports such types. The procedures do not check the type: a node of 1.0.0 writes as before, and the owner's restore is where an id reaches the wrong type.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F194 — After its base is erased, an attached duplicate is reported unchanged and never rebuilt; a lost history notice is never repaired
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 2; `CompleteRewriteSpec` "F194", red under a mutation) · `HistoryRewriter`, `AggregateOwner.rewriteHistory`
+- **Fix:** every visited aggregate is rebuilt (F192), the attached copies that show their base's values among them; an owner tells its duplicates' owners after every rewrite, changed or not, so a run again repairs a lost notice, and reads its state again when the stored version or history generation is not the one it holds.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F195 — A history change that keeps the version is not seen at persist: a command running across an erasure writes the erased values back
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 2; `CompleteRewriteSpec` "F195" and `PostgresEventStoreStateSpec` "F195", red under a mutation) · `AggregateOwner`, `add_events`, `overwriteEvents`
+- **Fix:** a command carries the history generation its state was read at; the owner runs it again (a concurrent command) or answers a conflict when the generation moved on while its handler ran. At the commit, `add_events` takes the expected generation (a new overload; the 1.0.0 form calls it with -1 for old nodes) and raises the conflict when the aggregate's generation is another, and a rewrite without new events locks and compares the aggregate's row (`HistoryChangedException`); so another node's rewrite between a catch-up and a commit is seen too.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F245 — An unreadable stored event makes its aggregate impossible to erase
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 2; `CompleteRewriteSpec` "F245" and `PostgresEventStoreStateSpec` "F245", red under a mutation) · `HistoryChange`, `PostgresEventStoreState.rewriteEverywhere`, `AggregateOwner`
+- **Fix:** `HistoryChange.inUnreadableEvent(json)` gives the change's text form; a row that cannot be read is written again as it returns (counted in `HistoryRewritten.unreadable`, `(unreadable)` in the audit row's classes), and without one the rewrite is refused, writing nothing, with a reason that names the row. The owner of an aggregate that cannot be restored runs rewrites too. Not a tombstone: the aggregate stays unreadable until its class or row is repaired, as replaying it without the event could give a wrong state.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F200 — The organization purge does not guard the platform space (0) or the legacy space (-1)
 - **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 1 of the risk assessment; `PurgeSpec` "F200", red first) · `SpacePurge`
 - **Fix:** a purge of space 0 or of a negative space is refused before anything is read: a purge removes one organization only. The book's chapter 16 says so.
@@ -602,6 +647,41 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Found:** writing the book (M6, 17/10/2026).
 
 ### Event store and SQL
+
+#### F198 — An organization export is not one snapshot: a write during it gives two events at one version after the import
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 2 of the risk assessment; `ExportImportSpec` "F198" and `PostgresEventStoreStateSpec` "F198") · `SpaceExport`, the event store's indexes, `StoredDataCheck`
+- **Fix:** the export reads every row in one `REPEATABLE READ, READ ONLY` transaction, so a command that commits meanwhile is in the file whole or not at all; the import refuses an aggregate whose events are not exactly its versions (F199). `events (aggregate_id, version)` is unique (`events_aggregate_version_uidx`): made at start on a small store, and by `buildIndexesConcurrently()` on a large one, which keeps the plain index and logs an error while some aggregate has two events of one version; `StoredDataCheck` names those (`repeatedVersions`).
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F199 — The organization import cannot tell a complete file from a truncated or inconsistent one, and trusts its references and class names
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 2; `ExportImportSpec` "F199") · `SpaceFormat`, `SpaceExport`, `SpaceImport`
+- **Fix:** format 2 ends with a trailer (counts and the SHA-256 of the lines before it); the import refuses a file without one (format 1 only with `acceptFormat1`), with lines after it, or whose counts or digest differ. Its first pass requires each aggregate's events to be its versions from its squash point, each once, in order, archived events at most its version, chain orders 1..n and chain and lineage bases in the file; it looks classes up without initializing them, and requires an event class to be an `Event` and a root class to be one of the contexts the import now takes (a required parameter). A second pass maps every event and checks its size before anything is written.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F225 — The organization export builds every cross-space detach event before writing, and binds their ids in one IN list
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 2; by reading, and `ExportImportSpec`'s export of a detached copy; 70 000 copies were not run) · `SpaceExport`
+- **Fix:** the copies that read outside are found by a join, not an IN list of their ids, and each one's detach event is made when its version-1 row is reached and written at once; only the check that its type can detach it (a context with a squash event) runs before the first line.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F226 — The organization import's write batches are bounded by count only
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 2; `ExportImportSpec` "F248" imports with `bytesPerTransaction = 1`; the 64 MB heap run was not made) · `SpaceImport`
+- **Fix:** a transaction of events or archived events ends at `eventsPerTransaction` (10 000) or `bytesPerTransaction` (16 MB, as F126 bounds the bus's parts), whichever comes first.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F248 — An organization import keeps ids that the target's own generator will hand out later
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 2; `ExportImportSpec` "F248") · `SpaceImport`
+- **Fix:** every exported id in the range of the target's aggregate id sequence (its installation's, D39) gets a new id: below the sequence a node's pool may hold it, above it the sequence reaches it later, and a client may choose it. An import from another installation keeps its ids. Moving the sequence past the ids above it was tried and rejected: it made the pools hand out ids that clients had chosen (the test kit's own ids showed it at once).
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F237 — The snapshot generation guard is not atomic: a snapshot can be written over a history that changed meanwhile
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 2; `PostgresEventStoreStateSpec` "F237", red under a mutation) · `PostgresEventStoreState.writeSnapshot`, `historyChangedFor`
+- **Fix:** the guard locks the aggregate's row (`FOR SHARE`), and the changes raise the generation, which locks the row, before they delete the snapshots: a snapshot write that read the old generation waits for the change, then sees the new one and writes nothing.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F244 — The version limit is checked on events that add no version: long aggregates can be neither erased, squashed nor permanently deleted
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 2; `PostgresEventStoreStateSpec` "F244", red under a mutation) · `PostgresEventStoreState.serializedChecked`
+- **Fix:** the version limit is checked only for events that add a version (the procedures' calls), and never for a permanent delete; rewritten, squash and detach events meet the size limit only.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
 
 #### F190 — Failed SQL statements are logged with their values: events, documents and saga orders reach the logs
 - **High**, suspected · **Fixed for 1.0.1** (18/10/2026, step 1 of the risk assessment; `LogPrivacySpec` "F190", red first) · every component that opens a ScalikeJDBC session
@@ -974,6 +1054,12 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Fix:** `schemaname = current_schema()`, `to_regclass(…)` and `'events'::regclass`, so the library works in whatever schema the connection's `search_path` selects. Also `countAllEvents` treats the `-1` estimate of a never-analyzed table (PostgreSQL 14+) like 0 and counts exactly.
 
 ### Rebuild
+
+#### F192 — An erasure that could not rebuild a projection reports "complete" when run again; a build in progress switches in with the erased values
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 2 of the risk assessment; `CompleteRewriteSpec` "F192", three scenarios, each red under a mutation that takes its fix out) · `HistoryRewriter`, `ProjectionSupervisor`
+- **Symptom:** a second run of an erasure whose first could not rebuild a projection found nothing to change, asked no projection and reported complete; a targeted rebuild was refused while a build or another targeted rebuild ran, and a build that had read the aggregate before the rewrite switched in with the old values.
+- **Fix:** the rewriter has every aggregate it visited rebuilt, changed or not, so a run again rebuilds what an earlier one could not, and counts no projection rebuilt when it asked nothing. The supervisor queues targeted rebuilds instead of refusing them, each for the active build or for the build in progress; a build's job runs once it caught up and holds its switch until done; the jobs are kept in the registry (`pending_target`, one per line), so a stop loses none.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
 
 #### F189 — The active build's instance runs the new code's store setup on the old tables; when that fails, the projection and its node's bus stay down
 - **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 1 of the risk assessment; `ProjectionsSpec` "F189", red first) · `ProjectionBuild`, `Projections`, `PostgresDocumentStore`

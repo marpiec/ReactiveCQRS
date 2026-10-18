@@ -45,6 +45,10 @@ class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState
     if (eventsEnvelope.expectedVersion.asInt != currentVersion) {
       throw new IllegalStateException("Incorrect version for event, expected " + eventsEnvelope.expectedVersion.asInt + " but was " + currentVersion)
     }
+    // F195, as the procedure checks it: the history the command's state was read from is still the stored one.
+    if (currentVersion > 0 && eventsEnvelope.expectedGeneration.exists(_ != generations.getOrElse(aggregateId, 0))) {
+      throw new HistoryChangedException(aggregateId)
+    }
     // Each event is checked against the history before it, the command's earlier events included, as the procedures
     // store them one after another; all are checked before anything changes, as a failed transaction rolls back.
     val entries = eventsEnvelope.events.zipWithIndex.map { case (event, i) =>
@@ -169,6 +173,11 @@ class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState
     }
 
   override def historyGeneration(aggregateId: AggregateId): Int = synchronized(generations.getOrElse(aggregateId, 0))
+
+  // F197, as in PostgreSQL: the type of the aggregate's first event's root.
+  override def generationAndType(aggregateId: AggregateId): (Int, Option[String]) = synchronized {
+    (generations.getOrElse(aggregateId, 0), eventStore.get(aggregateId).flatMap(_.headOption).map(e => AggregateType.ofClass(e.event.aggregateRootClass).typeName))
+  }
 
   override def storedVersion(aggregateId: AggregateId): Option[(AggregateVersion, Int)] = synchronized {
     eventStore.get(aggregateId).flatMap(_.lastOption).map(last => (last.version, generations.getOrElse(aggregateId, 0)))
@@ -477,7 +486,12 @@ class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState
   }
 
   // The SQL version updates the stored event in place; restore and re-publication then read the new one.
-  override def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit = synchronized {
+  override def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]],
+                                               expected: Option[(AggregateVersion, Int)])(implicit session: DBSession): Unit = synchronized {
+    expected.foreach { case (version, generation) => // F195, as in PostgreSQL
+      val stored = eventStore.get(aggregateId).flatMap(_.lastOption).map(last => (last.version, generations.getOrElse(aggregateId, 0)))
+      if (!stored.contains((version, generation))) throw new HistoryChangedException(aggregateId)
+    }
     // D17, as in PostgreSQL: a rewritten event keeps its class. Checked first: there is no transaction to roll back.
     events.find(rewritten => !eventStore.getOrElse(aggregateId, Vector()).exists(entry =>
       entry.version == rewritten.version && entry.event.getClass == rewritten.event.getClass)).foreach { rewritten =>

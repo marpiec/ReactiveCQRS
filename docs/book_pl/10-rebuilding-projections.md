@@ -428,10 +428,16 @@ def repair(shop: Shop, cartId: AggregateId)(implicit timeout: Timeout): Aggregat
   }
 ```
 
+Praca w toku jej nie odrzuca. Gdy trwa inna przebudowa celowana, ta czeka na swoją kolej. Trwająca
+budowa też ją wykonuje, gdy już nadrobi zaległości, a zanim zastąpi aktywną budowę: jej przebieg
+masowy mógł odczytać zdarzenia celu, zanim się zmieniły. Odpowiedź dostajesz, gdy skończy aktywna
+budowa; trwająca budowa robi swoją część, zanim zacznie obsługiwać zapytania. Nadzorca trzyma
+czekające przebudowy w rejestrze, więc zatrzymanie żadnej nie gubi: uruchomią się ponownie przy
+następnym starcie.
+
 Nadzorca odpowiada zamiast tego `RebuildRefused(reason)`, gdy:
 
 - projekcja nie implementuje `clearForRebuild` (mówi o tym powód);
-- trwa budowa (i tak zastąpi aktywną budowę w całości) albo inna przebudowa celowana;
 - cel nie dotyczy typu agregatu, który dostaje projekcja;
 - cel to organizacja, a niektóre agregaty typów tej projekcji nie znają jeszcze swojej organizacji.
   Agregatom zapisanym przez starsze wersje biblioteki może jej brakować; `backfillSpaces` naprawia

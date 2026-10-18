@@ -4,7 +4,7 @@ Notable changes of ReactiveCQRS, newest first. Dates are DD/MM/YYYY.
 
 ## 1.0.1 (not released)
 
-Step 1 of [the risk assessment of 1.0.0](docs/RISK-ASSESSMENT.md): fixes to put in place before production moves to 1.0.
+Fixes from [the risk assessment of 1.0.0](docs/RISK-ASSESSMENT.md), in the order of its plan (§13).
 
 - **No values in logs** (F190, F191). The library logs no SQL statements and describes a failure without the event, state,
   order or document it was about: by its classes, SQLState, constraint, table and column. The same text goes into
@@ -23,6 +23,41 @@ Step 1 of [the risk assessment of 1.0.0](docs/RISK-ASSESSMENT.md): fixes to put 
 - **A new projection version's indexes** go to its own build's tables only; the active build keeps its indexes (F189).
 - **Purges of space 0 and of negative spaces** are refused (F200); a squashed copy keeps its link to its base, so an
   erasure of the base still reaches it (F193).
+- **Erasure reaches every copy of a value** (F192, F194, F195, F237, F244, F245, chapter 15):
+  - `HistoryRewriter` has the projections rebuild every aggregate it visited, changed or not, so a copy that reads an
+    erased base is rebuilt, and a run again repairs what an earlier run could not.
+  - `RebuildAggregates` is no longer refused while a build or another targeted rebuild runs: it waits its turn, and a
+    build in progress does it before it replaces the active build. Waiting rebuilds survive a stop.
+  - A command whose handler ran across a rewrite runs again on the new state instead of writing the old value back,
+    also when the rewrite ran on another node (a new form of the `add_events` procedure; the old one stays for nodes
+    of 1.0.0).
+  - `HistoryChange.inUnreadableEvent` erases a value from an event that can no longer be read.
+  - An aggregate at `aggregateVersionLimit` can still be rewritten, squashed and deleted for good.
+  - A snapshot is never written over a history that changed meanwhile.
+- **Moving an organization** (F198, F199, F225, F226, F248, chapter 16):
+  - The export reads the organization as one snapshot of the database, and its file (format 2) ends with a trailer
+    of counts and a digest. **Source change:** `SpaceImport` takes the contexts of the space's types, as the export does.
+  - The import refuses, before writing anything, a file cut short, changed or inconsistent (versions, chains, classes),
+    and one of format 1 unless `acceptFormat1 = true`; it checks every event's size after its ids are mapped.
+  - An exported id in the target installation's own range gets a new one, as its generator may hand it out; an import
+    from another installation keeps its ids. Write batches end at 16 MB too.
+  - `events (aggregate_id, version)` is unique: at start on a small store; run `buildIndexesConcurrently()` again on a
+    large one. `StoredDataCheck` reports versions stored twice.
+- **Projection failures** (F201, F254, F259, F261, chapters 6 and 9):
+  - A database that is away (a restart, a failover) no longer leaves failure records: such errors are retried without
+    counting.
+  - A failure record left behind by a successful retry is cleared, not turned into a false "versions missing"
+    failure; an owner asked for versions it does not have says so; a skip of a "versions missing" failure marks
+    nothing; failures survive `ServeUnchanged`.
+  - The history an owner gives to a projection that had nothing of an aggregate is applied as history: no pushes.
+  - A permanent delete keeps the keys of the aggregate's stored responses (without their info) until they expire, so
+    a retried keyed creation does not create the aggregate again.
+- **Snapshots and types** (F196, F197, chapters 13 and 18):
+  - A snapshot records the shape of its state class; one of another shape is not used, so a field added to the state
+    no longer reads as zero or null. Snapshots written by 1.0.0 have no shape: each aggregate is replayed once.
+  - An aggregate sent to another type's command bus is refused there (queries, commands, squashes), naming both
+    types. `reactivecqrs.aggregate-type-check = "log"` only logs it; `StoredDataCheck.run(..., contexts = ...)`
+    reports aggregate types none of the contexts has.
 
 ## 1.0.0 (18/10/2026)
 

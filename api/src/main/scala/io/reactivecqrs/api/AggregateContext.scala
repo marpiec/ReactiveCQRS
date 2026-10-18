@@ -59,7 +59,12 @@ case class SquashRefused(id: AggregateId, reason: String) extends SquashResponse
 
 /** A change of what an aggregate's history holds (D76), as data: for example `EraseCustomer(customerId)`. The contexts
   * say what it does to their events (`historyChanges`, `metadataChanges`). */
-trait HistoryChange extends Serializable
+trait HistoryChange extends Serializable {
+  /** F245: what the change does to the stored JSON of an event the store cannot read (a class that changed shape, a row
+    * repaired by hand), so that erasure still reaches it: `Some(json)` with the value erased in the text, or the same
+    * text when it holds none. `None`, the default, says the change cannot tell, and the rewrite is refused. */
+  def inUnreadableEvent(json: String): Option[String] = None
+}
 
 /** Applies `change` to every stored event of the aggregate, its archived events included, in its owner, between commands
   * (D76): the events the change alters are written again, the version stays and nothing is published. The aggregate's
@@ -68,10 +73,12 @@ trait HistoryChange extends Serializable
 case class RewriteEverywhere(id: AggregateId, change: HistoryChange, userId: UserId)
 /** The answer to `RewriteEverywhere`. */
 sealed trait RewriteResponse
-/** `events` and `archived` events were written again; `fields`: the names of the fields the change altered. */
-case class HistoryRewritten(id: AggregateId, events: Int, archived: Int, fields: Set[String]) extends RewriteResponse
+/** `events` and `archived` events were written again; `fields`: the names of the fields the change altered;
+  * `unreadable`: of them, events the store could not read, written again as `HistoryChange.inUnreadableEvent` gave their
+  * JSON (F245). */
+case class HistoryRewritten(id: AggregateId, events: Int, archived: Int, fields: Set[String], unreadable: Int = 0) extends RewriteResponse
 /** Nothing was written, for `reason`: the change alters an event's class, an undo or a duplication event, throws, or
-  * makes an event larger than the store allows; or the aggregate cannot be read. */
+  * makes an event larger than the store allows; or an event cannot be read and the change has no form for it. */
 case class RewriteRefused(id: AggregateId, reason: String) extends RewriteResponse
 
 /** D77: stores an ephemeral aggregate (one of an ephemeral command bus, whose ids are negative) as a new persistent
@@ -129,8 +136,8 @@ case class AutomaticSquash(afterEvents: Int, keepLast: Int = 0, keepNewerThan: O
   * Performance snapshots of an aggregate's state (D30): the aggregate's owner stores its state every `every` events,
   * and when it stops if `onPassivation`, so a restore reads the snapshot and only the events after it. Snapshots
   * never change the history or the versions, and are thrown away when they could be wrong: after an undo or a history
-  * rewrite, and when `schemaVersion` or the context's `version` changes. Change `schemaVersion` when the state class
-  * changes shape.
+  * rewrite, and when `schemaVersion` or the context's `version` changes. A snapshot of another shape of the state class
+  * (its fields' names and types, F196) is not used either; change `schemaVersion` when a field changes its meaning.
   */
 case class SnapshotPolicy(every: Int = 200, onPassivation: Boolean = true, schemaVersion: Int = 1) {
   require(every > 0, "every must be positive")

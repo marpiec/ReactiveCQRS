@@ -43,7 +43,8 @@ class MessageTooLargeException(val className: String, val size: Int, val limit: 
 
 /** The aggregate reached the store's limit of versions per aggregate (`maxCount`, the event store's
   * `aggregateVersionLimit`, a guard against runaway aggregates): the command stores nothing, and its sender gets an
-  * `EventHandlingError`. A squash keeps the version, so only a larger limit lets the aggregate grow. */
+  * `EventHandlingError`. A squash keeps the version, so only a larger limit lets the aggregate grow. The limit guards
+  * growth only: an aggregate at it can still be rewritten, squashed and deleted for good (F244). */
 class TooManyEventsException(val aggregateId: AggregateId,
                              val aggregateTypeName: String,
                              val maxCount: Int) extends Exception("Too many versions for aggregate " + aggregateId.asLong +"@"+aggregateTypeName+", max version is " + maxCount) {

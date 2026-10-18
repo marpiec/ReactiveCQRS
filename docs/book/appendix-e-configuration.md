@@ -19,6 +19,7 @@ Sizes: 64 MB is 64 × 1 024 × 1 024 bytes; times are written as Scala's `Finite
 | Key | Default | What it does | Chapter |
 |---|---|---|---|
 | `reactivecqrs.installation-number` | `0` | The installation's range of aggregate ids: installation *n* makes them from *n* × 10^12 on. Every node of an installation sets the same number. | [5](05-command-flavors.md) |
+| `reactivecqrs.aggregate-type-check` | `"refuse"` | An aggregate of another type than its command bus's is not restored: queries, commands and squashes sent to the wrong bus are refused. `"log"` only logs it, for a store whose type names differ from the contexts' (check with `StoredDataCheck` first). | [18](18-production.md) |
 | `reactivecqrs.blocking-dispatcher.thread-pool-executor.fixed-pool-size` | `32` | Threads for aggregate owners and the library's database work; projections run here too (`BlockingDispatcher.id`). Keep it near the size of the JDBC pool. | [2](02-setting-up.md), [8](08-projections.md) |
 | `reactivecqrs.handler-dispatcher.thread-pool-executor.fixed-pool-size` | `32` | Threads for your command handlers. | [5](05-command-flavors.md) |
 | `pekko.actor.serialization-bindings { "java.io.Serializable" = reactivecqrs }` | set by the library's `reference.conf` | Messages between nodes go through the library's serializer. Set it in your own `application.conf` too: depending on the order of the classpath, Pekko's binding may win otherwise, and the node stays not ready (F178). | [17](17-cluster.md) |

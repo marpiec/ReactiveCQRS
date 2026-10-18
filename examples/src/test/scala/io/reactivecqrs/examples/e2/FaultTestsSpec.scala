@@ -74,6 +74,7 @@ class FaultTestsSpec extends AnyFeatureSpec with Matchers with Eventually with A
                  |  SELECT 'forged', 'forged', 'add', cart_id, 'applied' FROM fault_carts LIMIT 1""".stripMargin.update()
             sql"""UPDATE fault_ledger SET outcome = 'refused'
                  | WHERE key = (SELECT key FROM fault_ledger WHERE kind = 'add' AND outcome = 'applied' AND key <> 'forged' LIMIT 1)""".stripMargin.update()
+            sql"""DROP INDEX events_aggregate_version_uidx""".execute() // F198 keeps a version from being stored twice
             sql"""INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event)
                  |  SELECT nextval('events_seq'), user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event
                  |    FROM events WHERE id = (SELECT max(e.id) FROM events e JOIN types_names t ON t.id = e.event_type_id

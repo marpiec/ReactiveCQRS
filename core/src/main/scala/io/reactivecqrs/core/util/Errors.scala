@@ -48,6 +48,14 @@ object Errors {
     }
   }
 
+  /** Whether the failure is the database's for a while, not the work's (F117, F254): a lost or refused connection
+    * (SQLState class 08), a transaction rolled back by the server (40), too few resources (53) or an operator's
+    * intervention (57), here or in a cause. Work that met one is tried again, not given up on. */
+  def transient(e: Throwable): Boolean = e match {
+    case sql: java.sql.SQLException => Option(sql.getSQLState).forall(state => Seq("08", "40", "53", "57").exists(state.startsWith))
+    case _ => Option(e.getCause).exists(cause => (cause ne e) && transient(cause))
+  }
+
   private def logDetail(e: Throwable): Unit = if (LogValues.enabled) detail.info("A failure described without its values, in full", e)
 
   private def rebuilt(chain: List[Throwable]): Throwable = chain match {

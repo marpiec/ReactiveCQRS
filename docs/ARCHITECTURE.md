@@ -333,7 +333,7 @@ run works in a new schema (`TestDatabase`).
 
 | Table | Columns / keys | Role |
 |---|---|---|
-| `events` (`:29-41`) | `id` (from `events_seq`) PK, `user_id`, `aggregate_id`, `event_time TIMESTAMP`, `version`, `event_type_id`, `event_type_version` (always 0, D29), `event TEXT`, since M3 `metadata JSONB` (the envelope, D32; null when none); indexes `(aggregate_id)`, `(aggregate_id, id)`, and `(aggregate_id, version)` built online by `buildIndexesConcurrently()` (F38) | append-only event log |
+| `events` (`:29-41`) | `id` (from `events_seq`) PK, `user_id`, `aggregate_id`, `event_time TIMESTAMP`, `version`, `event_type_id`, `event_type_version` (always 0, D29), `event TEXT`, since M3 `metadata JSONB` (the envelope, D32; null when none); indexes `(aggregate_id)`, `(aggregate_id, id)`, and `(aggregate_id, version)`, unique since 1.0.1 (`events_aggregate_version_uidx`, F198: no aggregate has two events of one version), made at start on a small store and online by `buildIndexesConcurrently()` on a large one (F38), which keeps the plain index while `StoredDataCheck` reports repeated versions | append-only event log |
 | `aggregates` (`:103-115`) | PK `(id, base_id)`, `space_id`, `creation_time`, `type_id`, `base_order`, `base_id`, `base_version`, since M3 `squashed_version` (null unless squashed, D49), since M5 `history_generation` (F119); indexes `(type_id)`, `(base_id)`, since M6 `(space_id, id)` (an organization's aggregates in id order, built online on a large installation), and since M7 `(type_id, id) WHERE id = base_id` (a type's own rows in id order, for the walks of builds, F173; built online on a large installation) | one row per (aggregate, ancestor) in its duplication chain; the own row (`base_id = id`) holds the **current version** used for locking |
 | `noop_events` (`:75-81`) | `id` (= `events.id`) PK, `from_version` | events cancelled by an undo, effective from that version |
 | `snapshots` (since M3) | `aggregate_id` PK, `version`, `context_version`, `schema_version`, `state TEXT`, `created` | the latest performance snapshot of an aggregate (D30, §4.3); disposable |
@@ -348,14 +348,18 @@ run works in a new schema (`TestDatabase`).
 
 ### 4.2 Stored procedures and optimistic locking
 
-`add_events(user, space ids[], aggregate, expected_version, aggregate type, event types[], time, events[], metadata)`,
+`add_events(user, space ids[], aggregate, expected_version, aggregate type, event types[], time, events[], metadata, expected_generation)`,
 used for the plain and first events of a command (since M3 one call per command, F31):
 
-1. `UPDATE aggregates SET base_version = base_version + n WHERE id = agg AND base_id = agg RETURNING base_version - n`.
+1. `UPDATE aggregates SET base_version = base_version + n WHERE id = agg AND base_id = agg RETURNING base_version - n, space_id, history_generation`.
    The row lock serialises concurrent writers to the same aggregate.
 2. No row: when `expected_version = 0` and the first event's space id is `>= 0` (a first
    event), insert the `aggregates` row; otherwise raise.
-3. When `current_version != expected_version`, raise "Concurrent aggregate modification exception".
+3. When `current_version != expected_version`, raise "Concurrent aggregate modification exception";
+   so too, since 1.0.1, when `expected_generation >= 0` and the aggregate's history generation is
+   another (F195): a rewrite, an undo or a state-changing squash committed since the command's
+   state was read, though the version is the same. The form of 1.0.0 without the generation
+   stays, calling this one with -1, for nodes of that version during a rolling upgrade.
 4. Insert each event into `events` (type version 0, the command's metadata) **and**
    `events_to_publish` with `version = current + i`; return the new version.
 
@@ -379,7 +383,9 @@ library. Two owners of one aggregate never run at once in one command bus: a new
 only after the stopped one terminated (§4.4).
 
 Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` characters
-(overridable per class), `aggregateVersionLimit = 10000`, `fetchSize = 1000`.
+(overridable per class), `aggregateVersionLimit = 10000`, `fetchSize = 1000`. The size limit holds
+for every event written, the version limit only for events that add a version, and never for a
+permanent delete (F244): an aggregate at the limit can still be rewritten, squashed and deleted.
 
 ### 4.3 Reading state back
 
@@ -410,16 +416,27 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   before the version asked for, then reads the aggregate's own events after it
   (`readAndProcessOwnEvents`; a duplicate's base events all come before its own); otherwise,
   and for reads at an instant, it reads every event, never failing because of the snapshot
-  (R10). An undo deletes the aggregate's snapshot, a rewrite those of the aggregate and of its
+  (R10). A snapshot also records the shape of its state class (`StateShape`: a digest of the
+  fields' names and types of the class and of the classes it holds, by Java reflection), and one
+  of another shape, or of none (written by 1.0.0), is not used (F196): mpjsons would read a missing
+  field as zero, false or null. A restore reads the aggregate's type with its history generation
+  (one row) and refuses an aggregate of another type than its restorer's (F197, unless
+  `reactivecqrs.aggregate-type-check = log`), so an id sent to the wrong command bus is never
+  restored, commanded or squashed there. An undo deletes the aggregate's snapshot, a rewrite those of the aggregate and of its
   duplicates, a squash the one at or below its point, a permanent delete its own, each in its
   transaction. Each of those that may make a state wrong (an undo, a rewrite of the aggregate or
   of its base, a squash or a detach that may change the state) also raises the aggregate's
   `history_generation`, which a restore reads before the history; a snapshot is written only
   while its aggregate is stored at that version and its history is at the generation its state
   was read at (F119), so an owner that stops after such a change, a stale one kept for the next
-  owner by a shard, or another node's owner of a `Local` aggregate writes nothing. An owner
-  whose history changed under it (a delete, a detach, a rewrite or state-changing squash of its
-  base) is also stopped without writing one (F100).
+  owner by a shard, or another node's owner of a `Local` aggregate writes nothing. The guard
+  locks the aggregate's row (`FOR SHARE`) and the changes lock it before they delete snapshots,
+  so a snapshot write that read the generation before a change in progress waits for it and
+  then writes nothing (F237). An owner whose history changed under it (a delete, a detach, a
+  rewrite or state-changing squash of its base) is also stopped without writing one (F100).
+  A command carries the generation its state was read at: the owner runs it again when the
+  generation moved on while its handler ran, and the store refuses its events or its rewrite
+  at the commit when the stored generation is another (F195).
 - `GetAggregateMinVersion(id, v, maxMillis)` waits in the owner until the version is reached
   and is answered then; when `maxMillis` passes first, it is answered with
   `Failure(AggregateInIncorrectVersionException)` (fixed F81).
@@ -488,7 +505,7 @@ Limits (`PostgresEventStoreState.scala:15-17`): `eventSizeLimit = 100000` charac
   the aggregate's chain as a squash does (§4.6), detaches its duplicates (F76, fixed in M3:
   each one's first event becomes the type's squash event of its state at version 1, the
   replaced event archived first when its class is kept, R11), and
-  deletes the `aggregates`, `events_archive`, `commands_responses` (by `aggregate_id`, F167), `noop_events` (before `events`, so its sub-select still matches),
+  clears the info of its `commands_responses` (by `aggregate_id`, F167; their keys stay until the retention ends, so a retried keyed command gets the old answer, F261), deletes the `aggregates`, `events_archive`, `noop_events` (before `events`, so its sub-select still matches),
   `events`, `events_to_publish`, `snapshots`, `subscriptions` and `aggregate_lineage` rows (as copy or
   as base; the `history_rewrites` audit stays). It deletes nothing and
   gives the reason while a subscription of the aggregate is failed (`subscription_failures`,
@@ -614,22 +631,35 @@ without a hook. `StoredDataCheck.spaceRows(space)` counts what a space still has
 organization as JSON lines (`SpaceFormat`): a header (format, source installation, space, time), one
 line per aggregate (id, root class, version, squash point, creation time, its chain within the
 space), the events in commit order (aggregate, version, class name, the stored JSON, user, time,
-metadata JSON, undo mark), then the archived events. Classes are named, never numbered. It reads
-only, streaming the events (one read transaction, a fetch size). An aggregate whose chain reaches a
-base outside the space is written detached: its version-1 event is the type's squash event of its
-state at version 1, built and checked as a detach builds it (D50, D85), and it has no chain; a type
-without a squash event, or whose context is not given, refuses the export, as does an id below
-1001 in the space. The `ExportReport` counts the space's outbox rows (export a quiet organization).
+metadata JSON, undo mark), then the archived events, then (format 2, F199) a trailer with the counts
+and the SHA-256 of every line before it. Classes are named, never numbered. It reads only, streaming
+the events, every row in one `REPEATABLE READ, READ ONLY` transaction (F198): a command that commits
+meanwhile is in the file whole or not at all (the snapshot holds back vacuum while it runs). An
+aggregate whose chain reaches a base outside the space (found by a join, F225) is written detached:
+its version-1 event is the type's squash event of its state at version 1, made when its row is
+reached, outside the snapshot (a base changed meanwhile gives the same state, D85, or an erased one),
+and checked as a detach checks it (D50, D85); it has no chain. A type without a squash event, or
+whose context is not given, refuses the export before it writes, as does an id below 1001 in the
+space; a squash event that does not give back the state stops the file without its trailer. The
+`ExportReport` counts the space's outbox rows (export a quiet organization).
 
-`new SpaceImport(eventStore, uidGenerator, rewriters).read(file, into)` writes it into
-another installation's empty space `into`, in two passes over the file:
+`new SpaceImport(eventStore, uidGenerator, contexts, rewriters).read(file, into)` writes it into
+another installation's empty space `into`, in three passes over the file:
 
-1. **Check**, writing nothing: the format, an empty target space, every class present, every event
-   within this store's size limit and every aggregate within its version limit; each exported id
-   this installation has already gets a fresh one from its pool (`GetNewAggregatesIdsPool`).
-2. **Write**: the aggregates' own and chain rows (bases mapped), then the events in the file's order
+1. **Check**, writing nothing (F199): the format (format 1, without a trailer, only with
+   `acceptFormat1`), the trailer last with matching counts and digest, an empty target space; every
+   class present, looked up without being initialized, an event class an `Event`, a root class one
+   of `contexts`; each aggregate's events its versions from its squash point to its version, each
+   once, in order; archived events at most its version; its chain's orders 1..n, its chain's and
+   lineage's bases in the file and read at most up to their versions; every aggregate within this
+   store's version limit. Each exported id this installation has already, and each in the range of
+   its aggregate ids' sequence (a pool may hold it, the sequence reach it, or a client choose it,
+   F248), gets a fresh one from its pool (`GetNewAggregatesIdsPool`); the sequence is never moved.
+2. **Map**, writing nothing: every event read and rewritten as it will be written, checked against
+   this store's size limit after its ids are mapped.
+3. **Write**: the aggregates' own and chain rows (bases mapped), then the events in the file's order
    under new ids from `events_seq` (so their relative order is kept), each with its undo mark and
-   its key, in transactions of at most 10 000 events, then the archived events. Each event is read by
+   its key, in transactions of at most 10 000 events and 16 MB (F226), then the archived events. Each event is read by
    an `MPJsons` of the import's own (`newMPJsons`, set up like the host's) whose post-deserialization
    transforms map `AggregateId` and `UserId` to the new ids and the exported space to `into`, then
    passed to its type's `ImportRewriter` for references the codec cannot see, and written by the
@@ -656,13 +686,20 @@ For erasure: a change applied everywhere the library keeps an aggregate's values
   duplication event; otherwise, in one transaction under the chain lock, it writes the changed rows
   again in batches (size checked), raises the history generation of the aggregate and of the
   duplicates reading it (their snapshots go, F119), and inserts the audit row; the owner calls the
-  host's `OutboxWriter.rewrite` in the same transaction. After the commit the owner reads its
-  state again and has the bus stop the duplicates' owners. The version does not change and nothing
-  is published. Answered `HistoryRewritten(id, events, archived, fields)` or `RewriteRefused`.
+  host's `OutboxWriter.rewrite` in the same transaction. After the commit the owner has the bus
+  stop the duplicates' owners, every time, so a run again repairs a notice a failure lost (F194),
+  and reads its state again when the change wrote something or the stored version or generation
+  is not the one it holds (a rewrite of a base it reads). The version does not change and nothing
+  is published. Answered `HistoryRewritten(id, events, archived, fields, unreadable)` or
+  `RewriteRefused`. An event that cannot be read is changed as text by the change's
+  `inUnreadableEvent` (counted in `unreadable`), or refuses the rewrite when the change has no
+  text form (F245); the owner of an aggregate that cannot be restored runs the rewrite too.
 - **Copies**: `HistoryRewriter.rewrite(id, change, userId)` (`core/rewrite`) walks breadth first
   from the aggregate to `EventStoreState.copiesOf` (the duplicates reading it, from the chain rows,
   and the copies detached from it, from `aggregate_lineage`), each once, one owner at a time, then
-  has each projection given rebuild each changed aggregate with `RebuildAggregates(OneAggregate(id))`.
+  has each projection given rebuild every aggregate it visited, changed or not, with
+  `RebuildAggregates(OneAggregate(id))`: a copy that reads a changed base shows its values without a
+  change of its own (F194), and a run again must rebuild what an earlier run could not (F192).
   Its `RewriteReport` names the aggregates rewritten, unchanged and refused, the bases the first
   one reads (`basesOf`, left alone: the value may come from there), and the projections rebuilt or
   not. Run again, it does the rest.
@@ -951,8 +988,15 @@ Draining a queue, with `applied` the subscription's stored version:
    error, since); only then are the waiting deliveries and every later one of that aggregate
    and kind answered `MessageFailed`, and other aggregates keep flowing (D20a, R1). While the
    failure cannot be stored, nothing is answered and the batch is tried again every 30 s (F85).
+   A failure that is the database's (`Errors.transient`: SQLState classes 08, 40, 53, 57, as
+   the builder's F117) is not an attempt: the batch is tried again every 30 s, with a warning a
+   minute, and is never recorded as a failure (F254).
 5. A store that cannot be read (the version) is retried every 30 s without becoming a
    failure.
+6. F259: a gap found while the subscription has nothing of the aggregate (version 0: reset for
+   a targeted rebuild, or never had it) marks the first live version waiting (`liveFrom`); a
+   batch that starts below it is history (`rebuilding` true, so no pushes), though the owner's
+   re-publication runs up to its version and may hold that live version too.
 
 **Failed subscriptions** (D20a). `GetProjectionStatus` → `ProjectionStatus(name, failures,
 retrying, waitingForGap)`. `RetryFailedSubscription(id)` asks the owner for each failed
@@ -960,9 +1004,15 @@ version again, repeated like a gap, and clears the failure once a batch reaches 
 (F88); `RetryAllFailedSubscriptions` does it for every failure, 20 per second
 (`failureRetryInterval`); `SkipFailedVersion(id)` marks each failed version as applied without
 applying it, from the version the subscription has (below the one before the failure when it
-failed at a squash start, F113), and asks once for the versions after it. Failures recorded before a start are
-loaded when the bus registers the projection and retried the same way
-(`retryFailuresOnStart`).
+failed at a squash start, F113), and asks once for the versions after it; a failure of
+"versions from N are missing" marks nothing (they may not exist yet) and asks from N again
+(F201). Failures recorded before a start are loaded when the bus registers the projection (a
+load that fails is tried again) and retried the same way (`retryFailuresOnStart`). F201: a
+failure whose version the subscription has already applied (its record outlived the batch that
+applied it) is cleared when it is retried, and a retried failure keeps its place until its
+record is deleted; an owner asked for versions beyond its own answers `NothingToRepublish`,
+which closes the gap and clears a failure of versions that never existed. `ServeUnchanged`
+keeps the failures.
 
 **Failures of the actor itself** (AR7, F80). A message the projection fails on, a query
 included, is answered with `Status.Failure` and never rethrown, so the actor keeps its
@@ -1268,9 +1318,15 @@ one (F132).
 
 **Targeted rebuild** (D63, R14). `RebuildAggregates(target)` rebuilds in place, on the active
 build, what the projection derived from one aggregate (`OneAggregate`), one of its aggregate types
-(`OneType`) or one organization (`OneSpace`, by `aggregates.space_id`). The supervisor records the
-target in the registry (a rebuild a stop interrupted runs again at the next start), and sends
-the active instance `ResetForRebuild`. The projection lists the target's aggregates then, once
+(`OneType`) or one organization (`OneSpace`, by `aggregates.space_id`). It is never refused for work
+in progress (F192): the supervisor keeps a queue of jobs, one at a time, each for the active build
+or for the build in progress, recorded in the registry (`pending_target`, one line per job: a stop
+loses none, and those of a build no longer in progress are dropped at the start). A request makes a
+job for the active build, and one for the build in progress, which runs once that build caught up
+and holds its switch until done: its bulk pass reads by event id and may have read the target's
+rows before they were rewritten in place. The requester is answered when the job of the build
+that serves is done. Under `ServeStale` the active build only clears the target (it is told
+`ServeUnchanged` first): the code may not fit its documents. A job sends its instance `ResetForRebuild`. The projection lists the target's aggregates then, once
 it applied every delivery taken before, so one made meanwhile is either listed or delivered after
 the reset (F112); in one transaction its `clearForRebuild(target)` removes what it derived (a
 document, a space's documents) and its versions and failures of those aggregates are reset
@@ -1280,9 +1336,8 @@ A builder scoped to the target (`AggregateScope.Only` or `InSpace`; no `BuildFro
 `GoLive`, as the instance stays live) then delivers their events in commit order and reconciles
 them; live events of those aggregates meanwhile find a gap and are asked from their owners, and
 the gate drops what comes twice. The answer is `AggregatesRebuilt(target, count)`. A projection
-that does not implement `clearForRebuild` refuses (`RebuildRefused`), as does one with a build in
-progress, and an organization is not rebuilt while aggregates of the projection's types have no
-space yet.
+that does not implement `clearForRebuild` refuses (`RebuildRefused`), and an organization is not
+rebuilt while aggregates of the projection's types have no space yet.
 
 **Purge** (R17, §4.7). The supervisor answers `PurgeCheck` with a refusal while a build or a
 targeted rebuild runs, so no build reads the organization while it goes, and passes `PurgedAggregates`

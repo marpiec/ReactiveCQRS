@@ -92,9 +92,11 @@ class PausingListing(mpjsons: MPJsons, typesNamesState: PostgresTypesNamesState)
 case class MemoText(text: String)
 case class GetMemoText(id: AggregateId)
 
-/** Each memo's text, from its events; a memo deleted for good loses its document. */
-class MemoTexts(val subscriptionsState: SubscriptionsState, store: DocumentStore[MemoText]) extends ProjectionActor {
+/** Each memo's text, from its events; a memo deleted for good loses its document. While it is built, each memo takes
+  * `buildDelayMillis`, so a build can be seen at work. */
+class MemoTexts(val subscriptionsState: SubscriptionsState, store: DocumentStore[MemoText], buildDelayMillis: Long = 0) extends ProjectionActor {
   protected val listeners = List(EventsListener[Memo] { (id, events) => implicit session =>
+    if (rebuilding && buildDelayMillis > 0) Thread.sleep(buildDelayMillis)
     events.foreach(_.event match {
       case MemoWritten(text) => store.insertDocument(0, id.asLong, MemoText(text))
       case _: MemoErased => store.removeDocument(id.asLong)
@@ -371,7 +373,8 @@ class ProjectionsSpec extends CommonSpec {
       val runtime = new Projections(system, ProjectionsSettings(eventStore, subscriptions, registry, Seq(memoContext),
         BuilderSettings(pageSize = 1, chunkEvents = 1), restartAfter = 1.second))
       val supervisor = runtime.start[MemoTexts]("m4p-memos", 1, "m4p-memos") { build =>
-        new MemoTexts(subscriptions, new PostgresDocumentStore[MemoText](build.documentStore("m4p_memos"), mpjsons, new NoopDocumentStoreCache))
+        new MemoTexts(subscriptions, new PostgresDocumentStore[MemoText](build.documentStore("m4p_memos"), mpjsons, new NoopDocumentStoreCache),
+          buildDelayMillis = 30)
       }
       bus ! RegisterSubscribers(Seq(supervisor))
       awaitAssert(registry.projection("m4p-memos").get.building.exists(_.position.position >= firstEvent) mustBe true, 30.seconds, 5.millis)

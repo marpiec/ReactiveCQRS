@@ -2618,3 +2618,41 @@ Open test-infrastructure items:
 - The book (both languages) and ARCHITECTURE follow; KNOWN-ISSUES closes eleven of them (F252 stays open for its other
   values) and records D87. The owner's idea of marking personal data in application classes is recorded as a proposal
   (`docs/design/personal-data-annotations.md`).
+
+**18/10/2026: the risk assessment, step 2, item 7: erasure**
+- F192, F194: the rewriter has every visited aggregate rebuilt; the projection supervisor queues targeted rebuilds (one
+  job at a time, for the active build or for the build in progress before its switch), kept in the registry.
+- F195: a command carries the history generation it read; the owner runs it again when it moved on, and `add_events`
+  (a new overload with the generation) and `overwriteEvents` refuse at the commit; the 1.0.0 form stays for old nodes.
+- F237: the snapshot guard locks the aggregate row, and the changes lock it before they delete snapshots.
+- F244: the version limit only for events that add a version, never for a permanent delete.
+- F245: `HistoryChange.inUnreadableEvent` changes an unreadable row as text; the owner of an unrestorable aggregate
+  runs rewrites.
+- Tests: the erasure audit of the assessment's §12 in `CompleteRewriteSpec` (six paths, each followed by a search for
+  the value in every table, read model and log line) and four store scenarios. They need the new API to compile, so
+  each was shown red by taking its fix out (a mutation): all six fixes were caught.
+
+**18/10/2026: the risk assessment, step 2, items 8 and 9: export and import, snapshots and types**
+- F198, F225: the export reads in one `REPEATABLE READ, READ ONLY` transaction, finds the copies that read outside by
+  a join and makes each detach event when its row is reached. `events (aggregate_id, version)` is unique
+  (`events_aggregate_version_uidx`; at start on a small store, online otherwise, kept plain while versions repeat),
+  and `StoredDataCheck` names repeated versions.
+- F199: format 2 ends with a trailer (counts, SHA-256 of the lines); the import checks it, each aggregate's versions,
+  chains and lineage bases, and classes (looked up without initializing, an `Event`, a given context's root), then
+  maps every event before writing. `SpaceImport` takes the contexts (a source change, noted in the CHANGELOG).
+- F226: write batches end at 16 MB too. F248: every exported id in the target installation's own range is remapped.
+  Keeping the ids above the sequence and moving the sequence past them was tried first: the full suite showed pools
+  then handing out ids that tests (as clients may) had chosen, so it was dropped.
+- F196: snapshots carry the state class's shape (`StateShape`); F197: a restore refuses an aggregate of another type
+  (`reactivecqrs.aggregate-type-check`, "log" to only log), and `StoredDataCheck` reports types no context has.
+- Each fix was shown red by a mutation that takes it out (ten mutations, all caught). F111's scenario in
+  `ProjectionsSpec` raced its build since step 1's bus start re-publishes the aggregates at once: its build now takes
+  30 ms a memo, as its description intended.
+
+**18/10/2026: the risk assessment, step 2, item 10: projection failures**
+- F201: retried failures already applied are cleared at once and kept until their record goes; owners answer
+  `NothingToRepublish` beyond their version; a skip of missing versions marks nothing; the failure load is retried;
+  `ServeUnchanged` keeps failures. F254: transient database errors (`Errors.transient`, shared with the builder) are
+  not attempts. F259: history below the first live delivery of an aggregate at version 0 is applied as history.
+  F261: a permanent delete keeps its responses' keys without their info.
+- Six mutations, each caught by its scenario. Step 2 (items 7 to 10) ends here: twenty findings closed.

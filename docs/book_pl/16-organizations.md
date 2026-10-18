@@ -489,24 +489,37 @@ to, co miała. Bez zdarzenia squasha (albo bez kontekstu) eksport odmawia i nicz
 
 <!-- snippet: e9/OrganizationsSetup.scala#import -->
 ```scala
-val imported = new SpaceImport(installation.eventStore, installation.uidGenerator).read(file, into = target)
+val imported = new SpaceImport(installation.eventStore, installation.uidGenerator, contexts = Seq(new ShopCartContext))
+                 .read(file, into = target)
 // ImportReport(space, aggregates, events, archived, remapped, unknownReferences, someUnknown, refused)
 ```
 
-Działa na drugiej instalacji i wczytuje dane do przestrzeni, która musi być pusta. Czyta plik dwa
-razy:
+Działa na drugiej instalacji i wczytuje dane do przestrzeni, która musi być pusta, z kontekstami
+agregatów typów tej organizacji, tak jak bierze je eksport. Czyta plik trzy razy:
 
-1. **Najpierw sprawdza**, niczego nie zapisując: każda klasa z pliku musi tu istnieć, każde zdarzenie
-   musi mieścić się w limitach tej instalacji ([rozdział 6](06-events.md)), a przestrzeń musi być
-   pusta. Każdy problem trafia do `refused`.
-2. **Potem zapisuje**: agregaty, następnie zdarzenia w ich pierwotnej kolejności, razem ze
-   znacznikami cofnięć, a na końcu zarchiwizowane zdarzenia.
+1. **Najpierw sprawdza**, niczego nie zapisując. Plik musi być cały: jego ostatni wiersz, stopka,
+   liczy jego wiersze i niesie ich skrót, więc plik ucięty, sklejony albo zmieniony zostaje odrzucony.
+   Każda klasa musi tu istnieć (klasa zdarzenia musi być zdarzeniem, typ agregatu jednym z podanych
+   kontekstów); zdarzenia każdego agregatu muszą być jego wersjami, każdą raz, po kolei; kopia może
+   czytać tylko agregaty z pliku; a przestrzeń musi być pusta. Każdy problem trafia do `refused`.
+2. **Czyta każde zdarzenie tak, jak je zapisze**, wciąż niczego nie zapisując, więc zdarzenie, które
+   po podmianie identyfikatorów przekroczyłoby limity tej instalacji ([rozdział 6](06-events.md)),
+   zostaje odrzucone, zanim cokolwiek się zapisze.
+3. **Potem zapisuje**: agregaty, następnie zdarzenia w ich pierwotnej kolejności, razem ze
+   znacznikami cofnięć, a na końcu zarchiwizowane zdarzenia, w transakcjach po najwyżej 10 000 zdarzeń
+   i 16 MB.
+
+Eksport czyta całą organizację jako jedną migawkę bazy danych, więc polecenie zatwierdzone w trakcie
+jest w pliku w całości albo wcale. Plik zapisany przez 1.0.0 nie ma stopki: import go odrzuca, chyba
+że podasz `acceptFormat1 = true`; jeśli możesz, wyeksportuj go ponownie wersją 1.0.1.
 
 Dwie instalacje tworzyły identyfikatory we własnych zakresach (numer instalacji z rozdziału 2), więc
 identyfikatory rzadko się zderzają; te sprzed 1.0 mogą. Agregat, którego identyfikator jest tu już
 zajęty, dostaje nowy, a za nim idą wszystkie odwołania do niego: import czyta każde zdarzenie własną
 instancją mpjsons, która podmienia przeniesione wartości `AggregateId` i `UserId`, a `SpaceId` starej
-organizacji zamienia na nowy. `remapped` wymienia identyfikatory, które się zmieniły.
+organizacji zamienia na nowy. Tak samo dzieje się z identyfikatorem z własnego zakresu tej
+instalacji, bo jej generator może go wydać (import z innej instalacji zachowuje swoje identyfikatory).
+`remapped` wymienia identyfikatory, które się zmieniły.
 
 > **Ostrzeżenie:** import widzi tylko typowane identyfikatory. Identyfikator trzymany jako zwykły
 > `Long` albo wewnątrz tekstu („user:5” w aktorze metadanych) jest dla niego niewidoczny. Daj

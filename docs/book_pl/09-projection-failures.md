@@ -119,7 +119,10 @@ co dzieje się dalej:
 
 Jeszcze jeden przypadek: jeśli nie da się zapisać nawet samej awarii, bo nie działa baza danych,
 projekcja nic nie odpowiada i co 30 sekund próbuje jeszcze raz z tą samą paczką, aż albo ją zastosuje,
-albo zapisze awarię.
+albo zapisze awarię. A błąd, który jest winą bazy danych, a nie listenera (utracone albo odrzucone
+połączenie, transakcja wycofana przez serwer, serwerowi brakuje zasobów), w ogóle nie liczy się jako
+próba: paczka jest ponawiana co 30 sekund, dopóki bazy nie ma, z jednym ostrzeżeniem na minutę, i
+restart bazy danych nie zostawia żadnego zapisu awarii.
 
 > **Pamiętaj:** awaria dotyczy jednej projekcji, jednego rodzaju listenera i jednego agregatu. Koszyk
 > 43 utknął w `CartsList`; ten sam koszyk w innych projekcjach i wszystkie inne koszyki w tej projekcji
@@ -179,7 +182,7 @@ projekcji:
 |---|---|---|
 | `RetryFailedSubscription(cartId)` | `FailedSubscriptionsHandled(cartId, count)` | prosi właściciela koszyka o wersję, na której projekcja utknęła, i wszystkie po niej, raz za razem, aż przyjdą; gdy ta wersja zostanie zastosowana, wpis o awarii jest usuwany |
 | `RetryAllFailedSubscriptions` | `FailedSubscriptionsRetried(count)` | to samo dla każdej awarii projekcji, 20 na sekundę |
-| `SkipFailedVersion(cartId)` | `FailedSubscriptionsHandled(cartId, count)` | oznacza wersję, na której projekcja utknęła, jako zastosowaną, choć jej nie stosuje, usuwa wpis i raz prosi o wersje po niej |
+| `SkipFailedVersion(cartId)` | `FailedSubscriptionsHandled(cartId, count)` | oznacza wersję, na której projekcja utknęła, jako zastosowaną, choć jej nie stosuje, usuwa wpis i raz prosi o wersje po niej; przy awarii „brakuje wersji” niczego nie oznacza (tych wersji może jeszcze nie być) i prosi o nie ponownie |
 
 `count` mówi, ile nieudanych subskrypcji obsłużono; 0 znaczy, że nie było nic do zrobienia.
 
@@ -218,7 +221,17 @@ dostarczenie: „jestem na wersji 3, a to jest wersja 5”. Wtedy:
 4. Jeśli po 10 minutach wersje wciąż nie przyszły, zapisuje awarię na wersji 4 („versions from 4 are
    missing: asked … times in 10 minutes without an answer”), którą obsługujesz jak każdą inną awarię.
 
-`ProjectionStatus.waitingForGap` wymienia koszyki, które są na etapie kroków od 1 do 3.
+`ProjectionStatus.waitingForGap` wymienia koszyki, które są na etapie kroków od 1 do 3. Gdy właściciel
+nie ma nic po tym, o co prosi projekcja (koszyk jest w wersji 3, a nieaktualny wpis poprosił o 4),
+mówi o tym, a projekcja przestaje czekać; wpis awarii wersji, których nigdy nie było, zostaje wtedy
+usunięty. Wpis awarii, której wersję projekcja już zastosowała (jego usunięcie nie powiodło się po
+ponowieniu, które ją zastosowało), znika od razu po odczytaniu, zamiast stać się luką.
+
+Gdy projekcja nie ma jeszcze nic z koszyka (jej przebudowa celowana go wyzerowała albo dodano ją
+później), a przychodzi zdarzenie na żywo, właściciel najpierw daje jej historię koszyka. Ta historia
+jest stosowana tak, jak stosuje ją przebudowa: `rebuilding` jest prawdą, więc projekcja subskrybowalna
+niczego za nią nie wypycha (rozdział 11). Zdarzenie na żywo, które przyszło razem z nią, jest
+stosowane tak samo; zdarzenia po nim są już na żywo.
 
 ## Opcje na wypadek awarii
 

@@ -301,8 +301,11 @@ dzieje:
 2. **Potem każda kopia.** Kopie, które wciąż czytają agregat, kopie, które od niego odłączono
    (biblioteka zapamiętuje każde odłączenie w *rodowodzie*), i kopie tych kopii, jedna po drugiej.
    Własne zdarzenia każdej kopii też mogą przechowywać tę wartość.
-3. **Potem modele odczytu.** Każda wskazana projekcja przebudowuje w miejscu każdy agregat, który się
-   zmienił ([rozdział 10](10-rebuilding-projections.md)). Potrzebuje do tego `clearForRebuild`.
+3. **Potem modele odczytu.** Każda wskazana projekcja przebudowuje w miejscu każdy agregat, który
+   przepisanie odwiedziło ([rozdział 10](10-rebuilding-projections.md)): te, które się zmieniły, i te,
+   które się nie zmieniły, bo kopia czytająca zmieniony agregat pokazuje jego wartości bez żadnej
+   własnej zmiany. Potrzebuje do tego `clearForRebuild`. Projekcja budowana właśnie od nowa też
+   dostaje tę przebudowę, zanim jej nowa budowa zacznie obsługiwać zapytania.
 4. **Na koniec notatka w dzienniku.** Przepisanie każdego agregatu zostawia wiersz w
    `history_rewrites`: kto, kiedy, jaka zmiana, jakie klasy zdarzeń i pola. Nigdy wartości.
 
@@ -317,7 +320,32 @@ dotknęła zdarzenia cofnięcia lub duplikacji), przebudowane projekcje i te, kt
 `bases`: agregaty, które czyta pierwszy agregat. Przepisanie ich nie zmienia, bo wartość mogła
 przyjść właśnie stamtąd, a zdecydować o tym możesz tylko ty. `report.complete` ma wartość true, gdy
 nic nie zostało odrzucone i każda projekcja się przebudowała. Jeśli nie, usuń przyczynę i uruchom
-przepisanie jeszcze raz: tam, gdzie zmiana już wykonała swoją pracę, nie znajdzie nic do zmiany.
+przepisanie jeszcze raz: tam, gdzie zmiana już wykonała swoją pracę, nie znajdzie nic do zmiany, a
+projekcje znowu przebudują każdy agregat.
+
+Polecenie, którego handler działa w chwili przepisania, nie zapisze z powrotem starej wartości: jego
+zdarzenia zostaną odrzucone przy zatwierdzaniu, jak przy poleceniu, które przegrało wyścig, a
+polecenie współbieżne uruchomi się ponownie na stanie po wymazaniu. Dotyczy to także przepisania
+wykonanego na innym węźle.
+
+### Gdy zdarzenia nie da się odczytać
+
+Agregat może przechowywać zdarzenie, którego biblioteka nie umie już odczytać: klasę, której pola
+zmieniły się tak, że mpjsons za tym nie nadąża, albo wiersz poprawiony ręcznie. Jego właściciel nie
+odtworzy agregatu, ale wartość z takiego wiersza i tak musi zniknąć. Daj zmianie postać tekstową dla
+takich wierszy: `inUnreadableEvent` dostaje zapisany JSON i zwraca go z wymazaną wartością albo bez
+zmian, gdy wiersz jej nie zawiera.
+
+```scala
+case class EraseEmail(email: String) extends HistoryChange {
+  override def inUnreadableEvent(json: String): Option[String] =
+    Some(json.replace("\"" + email + "\"", "\"erased\""))
+}
+```
+
+Bez niej (domyślnie odpowiada `None`) przepisanie, które natrafi na taki wiersz, zostaje odrzucone i
+niczego nie zmienia. Wiersze zmienione jako tekst są liczone w `HistoryRewritten.unreadable`; agregat
+pozostaje nieczytelny, dopóki nie naprawisz jego klasy albo wiersza.
 
 > **Ostrzeżenie:** pełne przepisanie obejmuje to, co biblioteka przechowuje dla agregatu i jego
 > kopii. Nie sięga innych agregatów, które skopiowały wartość do własnych zdarzeń, danych sag,

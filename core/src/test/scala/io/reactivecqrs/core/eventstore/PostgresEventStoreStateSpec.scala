@@ -4,7 +4,7 @@ import java.time.Instant
 import java.util.concurrent.{CountDownLatch, TimeUnit}
 
 import io.mpjsons.MPJsons
-import io.reactivecqrs.api.{AggregateSquashedException, AggregateType, AggregateVersion, Event, EventTooLargeException, EventWithVersion, FirstEvent, SuccessResponse, TooManyEventsException}
+import io.reactivecqrs.api.{AggregateSquashedException, AggregateType, AggregateVersion, CustomSuccessResponse, Event, EventMetadata, EventTooLargeException, EventWithVersion, FirstEvent, TooManyEventsException}
 import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 import io.reactivecqrs.core.commandhandler.PostgresCommandResponseState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
@@ -19,6 +19,14 @@ import scala.util.{Success, Try}
 /** A squash or first event that a store limits to a few characters (F154). */
 case class Summary(text: String) extends FirstEvent[SomeAggregate] {
   def spaceId: SpaceId = SpaceId(0)
+}
+
+/** The end of an aggregate (F244). */
+case class Gone() extends io.reactivecqrs.api.PermanentDeleteEvent[SomeAggregate]
+
+/** Erases a number, also from an event that cannot be read (F245). */
+case class EraseNumberAnywhere(number: Int) extends io.reactivecqrs.api.HistoryChange {
+  override def inUnreadableEvent(json: String): Option[String] = Some(json.replace(":" + number, ":0"))
 }
 
 /** The first event of an aggregate of a given organization. */
@@ -99,6 +107,79 @@ class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStore
     store(3, Undo(1)).failed.get mustBe a[TooManyEventsException]
   }
 
+  // F244: the limit guards growth; erasure, squash and a permanent delete must still reach an aggregate at it.
+  Scenario("F244 an aggregate at the version limit can be rewritten, squashed and deleted, but takes no new event") {
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one"), EventB(2), EventB(3), EventB(4), EventB(5)))
+    published(f.aggregateId)
+    val limited = new PostgresEventStoreState(new MPJsons, new PostgresTypesNamesState(), aggregateVersionLimit = 3)
+    val (id, user) = (f.aggregateId, f.userId)
+    val erase: (Event[SomeAggregate], Option[EventMetadata]) => (Event[SomeAggregate], Option[EventMetadata]) =
+      (e, m) => (if (e == EventB(50)) EventB(0) else e, m)
+    val newEvent = Try(limited.localTx(session => limited.persistEvents(id, NewEvents(user, AggregateVersion(5), Instant.now, Seq(EventB(6))))(session).get))
+    newEvent.failed.get mustBe a[TooManyEventsException]
+
+    Try(limited.localTx(session => limited.overwriteEvents(id, Seq(EventWithVersion(AggregateVersion(5), EventB(50))), None)(session))) mustBe Success(())
+    limited.localTx(session => limited.rewriteEverywhere[SomeAggregate](id, user, EraseNumber(50), erase)(session)).map(_.events) mustBe Right(1)
+    limited.squash(id, AggregateVersion(5), EventA("squashed"), user, None, Nil) mustBe Right(())
+    Try(limited.localTx(session => limited.persistEvents(id, NewEvents(user, AggregateVersion(5), Instant.now, Seq(Gone())))(session).get)).isSuccess mustBe true
+  }
+
+  // F237: a snapshot write that read the generation before a change in progress must not land after it.
+  Scenario("F237 a snapshot written while a history change is under way waits for it, and is not written") {
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one"), EventB(2)))
+    val generation = eventStoreState.historyGeneration(f.aggregateId)
+    val (changing, release) = heldOpen(session => eventStoreState.overwriteEvents(f.aggregateId, Seq(EventWithVersion(AggregateVersion(2), EventB(20))), None)(session))
+    val writing = Future(eventStoreState.writeSnapshot(f.aggregateId, Snapshot(AggregateVersion(2), 1, 1, SomeAggregate()), classOf[SomeAggregate].getName, generation))
+    Thread.sleep(300) // the write either waits for the change's lock or, before the fix, is done
+    release.countDown()
+    Await.result(changing, 10.seconds)
+    Await.result(writing, 10.seconds)
+
+    eventStoreState.readSnapshot[SomeAggregate](f.aggregateId, classOf[SomeAggregate].getName) mustBe None
+  }
+
+  // F195: a command's events, or its rewrite, are refused when the history changed since its state was read.
+  Scenario("F195 events and rewrites for a history generation that changed are refused, as for a changed version") {
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one"), EventB(2)))
+    val (id, user) = (f.aggregateId, f.userId)
+    val before = eventStoreState.historyGeneration(id)
+    eventStoreState.localTx(session => eventStoreState.overwriteEvents(id, Seq(EventWithVersion(AggregateVersion(2), EventB(20))), None)(session))
+    val now = eventStoreState.historyGeneration(id)
+    now mustBe before + 1
+
+    def events(generation: Int): Try[Seq[(Event[SomeAggregate], AggregateVersion)]] = Try(eventStoreState.localTx(session =>
+      eventStoreState.persistEvents(id, NewEvents(user, AggregateVersion(2), Instant.now, Seq[Event[SomeAggregate]](EventB(3)), None, Some(generation)))(session).get))
+    val rewritten = Try(eventStoreState.localTx(session =>
+      eventStoreState.overwriteEvents(id, Seq(EventWithVersion(AggregateVersion(2), EventB(21))), Some((AggregateVersion(2), before)))(session)))
+
+    events(before).failed.get.getMessage must include("its history changed")
+    rewritten.failed.get mustBe a[HistoryChangedException]
+    events(now).isSuccess mustBe true
+  }
+
+  // F245: erasure reaches an event that cannot be read through the change's text form; without one it is refused.
+  Scenario("F245 a rewrite changes an event that cannot be read as text, or is refused when the change has no text form") {
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one"), EventB(77), EventC(true)))
+    def setEvent(json: String): Unit = DB.autoCommit { implicit session =>
+      sql"UPDATE events SET event = $json WHERE aggregate_id = ${f.aggregateId.asLong} AND version = 2".update()
+    }
+    val (id, user) = (f.aggregateId, f.userId)
+    val unchanged: (Event[SomeAggregate], Option[EventMetadata]) => (Event[SomeAggregate], Option[EventMetadata]) = (e, m) => (e, m)
+    def rewrite(change: io.reactivecqrs.api.HistoryChange) =
+      eventStoreState.localTx(session => eventStoreState.rewriteEverywhere[SomeAggregate](id, user, change, unchanged)(session))
+    setEvent("{\"number\":77") // cut short
+    try {
+      rewrite(EraseNumber(77)).left.toOption.get must include("event 2 of aggregate " + f.aggregateId.asLong + " cannot be read")
+      rewrite(EraseNumberAnywhere(77)).map(c => (c.events, c.unreadable)) mustBe Right((1, 1))
+      DB.readOnly(implicit session => sql"SELECT event FROM events WHERE aggregate_id = ${f.aggregateId.asLong} AND version = 2"
+        .map(_.string(1)).single()) mustBe Some("{\"number\":0")
+    } finally setEvent("{\"number\":0}") // later specs in this schema read every stored event
+  }
+
   // F126: the store reports each event's stored size, in bytes as PostgreSQL keeps it (non-ASCII text too, F142), and cuts
   // parts and pages by them, keeping at least one event.
   Scenario("events come with their stored sizes; parts and pages are cut by bytes, at least one event each") {
@@ -141,16 +222,33 @@ class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStore
     eventStoreState.readWaitingInOutbox(2) mustBe all.take(2)
   }
 
-  // F38, D69: the restore index is built online, once; running it again does nothing.
-  Scenario("the index of events by aggregate and version is built without blocking writes, and only once") {
+  // F38, D69: the restore index is built online, once; running it again does nothing. F198: it is unique, replacing the
+  // plain one, so no aggregate gets two events of one version.
+  Scenario("the index of events by aggregate and version is built without blocking writes, only once, and unique (F198)") {
+    def indexes: Map[String, (Boolean, Boolean)] = DB.readOnly { implicit session =>
+      sql"""SELECT c.relname, i.indisvalid, i.indisunique FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+           | JOIN pg_namespace n ON n.oid = c.relnamespace
+           | WHERE c.relname LIKE 'events_aggregate_version%' AND n.nspname = current_schema()""".stripMargin
+        .map(rs => rs.string(1) -> (rs.boolean(2), rs.boolean(3))).list().toMap
+    }
+    indexes mustBe Map("events_aggregate_version_uidx" -> (true, true)) // a small store, at start
+
+    DB.autoCommit { implicit session =>
+      sql"DROP INDEX events_aggregate_version_uidx".execute()
+      sql"CREATE INDEX events_aggregate_version_idx ON events (aggregate_id, version)".execute() // as 1.0.0 left it
+    }
     val store = eventStoreState.asInstanceOf[PostgresEventStoreState]
     store.buildIndexesConcurrently()
     store.buildIndexesConcurrently()
-    DB.readOnly { implicit session =>
-      sql"""SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
-           | JOIN pg_namespace n ON n.oid = c.relnamespace
-           | WHERE c.relname = 'events_aggregate_version_idx' AND n.nspname = current_schema()""".stripMargin.map(_.boolean(1)).list()
-    } mustBe List(true)
+    indexes mustBe Map("events_aggregate_version_uidx" -> (true, true))
+
+    val f = new TestFixture(eventStoreState)
+    f.storeEvents(Seq(EventA("one")))
+    Try(DB.autoCommit { implicit session =>
+      sql"""INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event)
+           | SELECT nextval('events_seq'), user_id, aggregate_id, event_time, version, event_type_id, 0, event FROM events
+           | WHERE aggregate_id = ${f.aggregateId.asLong}""".stripMargin.update()
+    }).isFailure mustBe true
   }
 
   // F173: a page of a type's aggregates reads their own rows through an index of its own: at a million aggregates of a
@@ -308,20 +406,23 @@ class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStore
     sql"""SELECT count(*) FROM event_keys k WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.id = k.id)""".map(_.long(1)).single().get
   }
 
-  // F167: a permanent delete takes the aggregate's stored command responses with it, as a purge does.
-  Scenario("F167 a permanent delete deletes the aggregate's stored command responses") {
+  // F167: a permanent delete takes the values of the aggregate's stored command responses with it. F261: their keys stay,
+  // so a retried keyed command is answered as it was, without its info, instead of making the aggregate again.
+  Scenario("F167, F261 a permanent delete clears the aggregate's stored responses' info and keeps their keys") {
     val responses = new PostgresCommandResponseState(new MPJsons, new PostgresTypesNamesState).initSchema()
     val f = new TestFixture(eventStoreState)
     f.storeEvents(Seq(EventA("one")))
+    val key = "F167-" + f.aggregateId.asLong
     DB.localTx { implicit session =>
-      responses.storeResponse("F167-" + f.aggregateId.asLong, SuccessResponse(f.aggregateId, AggregateVersion(1)), Some(f.aggregateId))
+      responses.storeResponse(key, CustomSuccessResponse(f.aggregateId, AggregateVersion(1), "personal"), Some(f.aggregateId))
     }
     published(f.aggregateId)
 
     eventStoreState.deleteAggregatePermanently(f.aggregateId) mustBe Right(())
     DB.readOnly { implicit session =>
-      sql"SELECT count(*) FROM commands_responses WHERE aggregate_id = ${f.aggregateId.asLong}".map(_.long(1)).single().get
+      sql"SELECT count(*) FROM commands_responses WHERE aggregate_id = ${f.aggregateId.asLong} AND info IS NOT NULL".map(_.long(1)).single().get
     } mustBe 0L
+    responses.responseByKey(key) mustBe Some(CustomSuccessResponse(f.aggregateId, AggregateVersion(1), null))
   }
 
   private def rewrite(store: PostgresEventStoreState, id: AggregateId, event: Event[SomeAggregate]): Unit =

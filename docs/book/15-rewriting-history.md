@@ -292,8 +292,11 @@ val report: Future[RewriteReport] =
 2. **Then every copy.** Copies that still read the aggregate, copies that were detached from it (the
    library remembers each detach in a *lineage*), and copies of those, one at a time. Each copy's
    own events may hold the value too.
-3. **Then the read models.** Each projection you named rebuilds every aggregate that changed, in
-   place ([chapter 10](10-rebuilding-projections.md)). It needs `clearForRebuild`.
+3. **Then the read models.** Each projection you named rebuilds every aggregate the rewrite
+   visited, in place ([chapter 10](10-rebuilding-projections.md)): those that changed, and those
+   that did not, since a copy that reads a changed aggregate shows its values without a change of
+   its own. It needs `clearForRebuild`. A projection that is being built again gets the rebuild
+   too, before its new build serves.
 4. **And a note in the logbook.** Each aggregate's rewrite leaves a row in `history_rewrites`: who,
    when, which change, which event classes and fields. Never the values.
 
@@ -308,7 +311,30 @@ an undo or a duplication event), the projections rebuilt and those that failed, 
 aggregates that the first one reads, which the rewrite does not change, since the value may have
 come from there and only you can decide. `report.complete` is true when nothing was refused and
 every projection rebuilt. When it is not, fix the cause and run it again: the change finds nothing
-to change where it already did its work.
+to change where it already did its work, and the projections rebuild every aggregate again.
+
+A command whose handler is running while the rewrite happens does not write the old value back:
+its events are refused at the commit, as for a command that lost a race, and a concurrent command
+runs again on the erased state. This also holds when the rewrite ran on another node.
+
+### When an event cannot be read
+
+An aggregate may hold an event the library can no longer read: a class whose fields changed in a way
+mpjsons cannot follow, or a row repaired by hand. Its owner cannot restore the aggregate, but the
+value in that row must still go. Give the change a text form for such rows: `inUnreadableEvent`
+gets the stored JSON and returns it with the value erased, or unchanged when the row does not hold
+it.
+
+```scala
+case class EraseEmail(email: String) extends HistoryChange {
+  override def inUnreadableEvent(json: String): Option[String] =
+    Some(json.replace("\"" + email + "\"", "\"erased\""))
+}
+```
+
+Without it (the default answers `None`), a rewrite that meets such a row is refused and changes
+nothing. The rows changed as text are counted in `HistoryRewritten.unreadable`; the aggregate stays
+unreadable until you repair its class or its row.
 
 > **Warning:** the complete rewrite covers what the library stores for the aggregate and its copies.
 > It does not reach other aggregates that copied the value into their own events, saga data, stored

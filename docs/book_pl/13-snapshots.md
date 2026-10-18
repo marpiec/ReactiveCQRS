@@ -71,7 +71,7 @@ Domyślnie `snapshots` to `None`. `SnapshotPolicy` ma trzy parametry, wszystkie 
 | --- | --- | --- |
 | `every` | `200` | Właściciel zapisuje migawkę zaraz po zatwierdzeniu, które doprowadza wersję agregatu do kolejnej wielokrotności `every`: przy 200, 400, 600 i tak dalej. |
 | `onPassivation` | `true` | Właściciel zapisuje migawkę także wtedy, gdy zostaje zatrzymany (pasywacja), jeśli agregat zmienił się od ostatniej migawki. |
-| `schemaVersion` | `1` | Podnieś, gdy klasa stanu zmienia kształt (zobacz niżej). |
+| `schemaVersion` | `1` | Podnieś, gdy pole stanu zmienia znaczenie (zobacz niżej); zmianę kształtu biblioteka widzi bez tego. |
 
 Kilka rzeczy, które warto wiedzieć o zapisywaniu migawek:
 
@@ -164,11 +164,15 @@ zastępuje.
 
 ## Zmiana klasy stanu albo handlerów zdarzeń
 
-Migawka przechowuje stan jako JSON klasy korzenia twojego agregatu, tutaj `ShoppingCart`. Dwa rodzaje zmian
-psują stare migawki tak, że biblioteka tego nie zauważy:
+Migawka przechowuje stan jako JSON klasy korzenia twojego agregatu, tutaj `ShoppingCart`, razem z
+*kształtem* tej klasy: odciskiem nazw i typów jej pól oraz klas, które zawiera. Od 1.0.1 migawka o innym
+kształcie nie jest używana: agregat zostaje odtworzony ze zdarzeń i dostaje nową. Pole dodane, usunięte,
+przemianowane albo o zmienionym typie, gdziekolwiek w stanie, nie wymaga więc od ciebie niczego. (Migawka
+zapisana przez 1.0.0 nie ma kształtu, więc po aktualizacji każdy agregat zostaje raz odtworzony w całości.)
+Dwa rodzaje zmian wciąż psują stare migawki tak, że biblioteka tego nie zauważy:
 
-- **Klasa korzenia zmienia kształt** (pole dodane, usunięte albo przemianowane): starej migawki może nie dać
-  się odczytać jako nowej klasy. Podnieś `schemaVersion`, a stare migawki będą pomijane:
+- **Pole zachowuje nazwę i typ, ale zmienia znaczenie** (kwoty w groszach zamiast w złotych): kształt jest
+  ten sam. Podnieś `schemaVersion`, a stare migawki będą pomijane:
 
   <!-- snippet: cart/SnapshotExperimentSpec.scala#schemaVersion -->
   ```scala
@@ -191,7 +195,9 @@ Agregat nie może rosnąć w nieskończoność. Magazyn zdarzeń odmawia zapisan
 `aggregateVersionLimit`, domyślnie 10 000. Polecenie, którego zdarzenia przekroczyłyby ten limit, kończy się
 niepowodzeniem: wywołujący dostaje `EventHandlingError`, a w logu pojawia się `TooManyEventsException`.
 Limit chroni przed agregatami, które wymknęły się spod kontroli: na przykład przed błędem, który w pętli
-dodaje zdarzenia, albo przed jednym agregatem, który tak naprawdę powinien być kilkoma.
+dodaje zdarzenia, albo przed jednym agregatem, który tak naprawdę powinien być kilkoma. Pilnuje tylko
+wzrostu: agregat na limicie wciąż można squashować, wymazać ([rozdział 15](15-rewriting-history.md))
+i usunąć na dobre.
 
 To parametr magazynu zdarzeń, więc dotyczy każdego typu agregatu, który ten magazyn przechowuje. Żeby
 pozwolić na dłuższe historie, utwórz magazyn z większym limitem:
@@ -248,8 +254,8 @@ i nigdy nie proś naraz o całą historię długiego agregatu (rozdział 18).
   zatrzymaniu właściciela.
 - Cofnięcie, przepisanie historii, squash i trwałe usunięcie usuwają migawki, które czynią błędnymi; nowa
   wartość `version` kontekstu albo `schemaVersion` sprawia, że stare migawki są pomijane.
-- Podnieś `schemaVersion`, gdy klasa stanu zmienia kształt, a `version` kontekstu, gdy handler zdarzenia
-  zmienia to, co robi ze zdarzeń.
+- Migawka o innym kształcie klasy stanu nie jest używana (od 1.0.1). Podnieś `schemaVersion`, gdy pole
+  zmienia znaczenie, a `version` kontekstu, gdy handler zdarzenia zmienia to, co robi ze zdarzeń.
 - `aggregateVersionLimit` (domyślnie 10 000) ogranicza wersję każdego agregatu, a squash jej nie obniża.
 
 Dalej: [rozdział 14](14-squash.md) zwija starą historię na dobre.

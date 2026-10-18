@@ -7,9 +7,9 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.cluster.Members
 import io.reactivecqrs.core.commandhandler.{Idempotency, IdempotencyKeyRefused, IdempotencyKeyTakenException}
-import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
+import io.reactivecqrs.core.delivery.{NothingToRepublish, RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
-import io.reactivecqrs.core.eventstore.{EventStoreState, NewEvents}
+import io.reactivecqrs.core.eventstore.{EventStoreState, HistoryChangedException, NewEvents}
 import io.reactivecqrs.core.metrics.ReactiveMetrics
 import io.reactivecqrs.core.util.{Backoff, MyActorLogging, RandomUtil}
 import org.apache.pekko.actor.{Actor, ActorRef, Cancellable}
@@ -90,7 +90,8 @@ class OwnerSettings[AGGREGATE_ROOT: ClassTag](context: AggregateContext[AGGREGAT
                                               val maxRepublishEvents: Int = 1000,
                                               val maxRepublishBytes: Long = 16L * 1024 * 1024,
                                               val concurrentRetries: Backoff = AggregateOwner.defaultConcurrentRetries,
-                                              val materializeTo: Option[ActorRef] = None) {
+                                              val materializeTo: Option[ActorRef] = None,
+                                              val refuseOtherTypes: Boolean = true) {
   /** The type's key. */
   val aggregateType: AggregateType = context.aggregateType
   /** The context's command handlers. */
@@ -125,7 +126,7 @@ class OwnerSettings[AGGREGATE_ROOT: ClassTag](context: AggregateContext[AGGREGAT
   }
   /** Restores the type's aggregates from the store. */
   val restorer = new AggregateRestorer[AGGREGATE_ROOT](eventStore, eventHandlers, initialState, snapshots, context.version,
-    classTag[AGGREGATE_ROOT].runtimeClass.getName)
+    classTag[AGGREGATE_ROOT].runtimeClass.getName, Some(context.aggregateType), refuseOtherTypes)
 }
 
 /**
@@ -163,7 +164,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
   /** A command of this owner, from its arrival until it is answered. `started`: it is under way (checked, its handler
     * running, or waiting to run again); in serial mode a command waits in `queued` until it may start. */
   private case class Pending(envelope: CommandEnvelope, timeout: Cancellable, attempt: Int, baseVersion: AggregateVersion, running: Boolean, started: Boolean,
-                             arrived: Long)
+                             arrived: Long, baseGeneration: Int = 0)
   private val pending = mutable.LinkedHashMap[Long, Pending]() // by command id, oldest first
   private val queued = mutable.Queue[Long]() // serial mode (R8): commands that have not started, oldest first
   private var startingQueued = false
@@ -253,7 +254,8 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     case GetState(respondTo) => respondTo ! Failure(failure)
     case GetStateMinVersion(respondTo, _, _) => respondTo ! Failure(failure)
     case Squash(respondTo, request) => respondTo ! SquashRefused(request.id, "the aggregate cannot be restored: " + Errors.message(failure))
-    case Rewrite(respondTo, request) => respondTo ! RewriteRefused(request.id, "the aggregate cannot be restored: " + Errors.message(failure))
+    // F245: erasure must reach an aggregate that cannot be read; the rewrite needs the store only, not the state.
+    case Rewrite(respondTo, request) => respondTo ! rewriteHistory(request)
     case MaterializeOwner(respondTo, request) => respondTo ! MaterializeRefused(request.id, "the aggregate cannot be restored: " + Errors.message(failure))
     case MaterializeAnswer(answer) => materializeAnswered(answer)
     case MinVersionDeadline => answerExpiredMinVersionQueries()
@@ -276,11 +278,13 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     case PublishEventsAck(_, versions, _) => delivered(versions)
     case RepublishOutbox(_) =>
       if (caughtUp().isEmpty) eventStore.oldestVersionToPublish(aggregateId).foreach(from => outboxRepublishedUpTo = republish(from, None))
-    case RepublishRange(_, from, subscriber) => if (caughtUp().isEmpty) republish(from, Some(subscriber))
+    case RepublishRange(_, from, subscriber) => if (caughtUp().isEmpty) {
+      // F201: a subscriber asking beyond the aggregate's version is told so, instead of waiting for versions that do not exist.
+      if (from > version) subscriber ! NothingToRepublish(aggregateId, version) else republish(from, Some(subscriber))
+    }
     case Squash(respondTo, request) =>
       respondTo ! caughtUp().fold(squashHistory(request))(failure => SquashRefused(request.id, "the aggregate cannot be restored: " + Errors.message(failure)))
-    case Rewrite(respondTo, request) =>
-      respondTo ! caughtUp().fold(rewriteHistory(request))(failure => RewriteRefused(request.id, "the aggregate cannot be restored: " + Errors.message(failure)))
+    case Rewrite(respondTo, request) => respondTo ! rewriteHistory(request) // it reads the state again after it
     case MaterializeOwner(respondTo, request) => materialize(respondTo, request)
     case MaterializeAnswer(answer) => materializeAnswered(answer)
     case StopOwner =>
@@ -421,7 +425,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
 
   private def runHandler(command: Pending): Unit = {
     val envelope = command.envelope
-    pending += envelope.commandId.asLong -> command.copy(baseVersion = version, running = true)
+    pending += envelope.commandId.asLong -> command.copy(baseVersion = version, baseGeneration = generation, running = true)
     // The handler runs on another thread: it gets immutable values only, never this actor's fields.
     val state: Either[String, AGGREGATE_ROOT] =
       if (envelope.command.isInstanceOf[FirstCommand[_, _]]) Right(initialState())
@@ -467,7 +471,9 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
   private def persistOrAnswer(command: Pending, events: Seq[Event[AGGREGATE_ROOT]], rewritten: Iterable[EventWithVersion[AGGREGATE_ROOT]], info: AnyRef): Unit = {
     if (events.isEmpty && rewritten.isEmpty) {
       finish(command.envelope.commandId, successResponse(command.baseVersion, info))
-    } else if (command.baseVersion != version) {
+    } else if (command.baseVersion != version || command.baseGeneration != generation) {
+      // F195: a rewrite, an undo or a squash that changes the state may keep the version: the handler ran on the state of
+      // before, and its events could carry an erased value back. It runs again on the new state, as after a commit.
       ownConflict(command, AggregateConcurrentModificationError(aggregateId, aggregateType, command.baseVersion, version))
     } else if (version == AggregateVersion.ZERO && events.headOption.exists(_.isInstanceOf[FirstEvent[_]]) && events.head.asInstanceOf[FirstEvent[_]].spaceId.asLong < 0) {
       finish(command.envelope.commandId, FailureResponse(List("A new aggregate needs a space: " + events.head.getClass.getSimpleName +
@@ -496,9 +502,12 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
         val metadata = metadataOf(envelope.command)
         val outcome = Try {
           eventStore.localTx { implicit session =>
-            if (rewritten.nonEmpty) eventStore.overwriteEvents(aggregateId, rewritten)
+            // F195: both refuse when the stored history changed since the state the handler saw, on another node too. A
+            // rewrite checks and locks the aggregate first, and raises the generation itself: its events are not checked again.
+            if (rewritten.nonEmpty) eventStore.overwriteEvents(aggregateId, rewritten, Some((command.baseVersion, command.baseGeneration)))
             // F146: a rewrite may add no event; then it is stored alone and the version stays.
-            val persisted = if (events.isEmpty) Seq.empty else eventStore.persist(aggregateId, NewEvents(userId, version, timestamp, events, metadata)).get
+            val persisted = if (events.isEmpty) Seq.empty else eventStore.persist(aggregateId,
+              NewEvents(userId, version, timestamp, events, metadata, if (rewritten.isEmpty) Some(command.baseGeneration) else None)).get
             val stored = persisted.map(e => EventInfo(e.version, e.event, userId, timestamp, metadata))
             if (idempotency.isIdempotent(envelope.command)) idempotency.record(envelope.command, response, aggregateId)
             // R12, D33: after the idempotency record, so a copy whose key is taken rolls back before writing anything.
@@ -531,8 +540,9 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
               case Some(stored) => finish(envelope.commandId, stored)
               case None => finishWithError(envelope, new IllegalStateException("Idempotency key taken but no stored response found"))
             }
-          case Failure(e: PSQLException) if movedOnWithoutThisOwner(e) =>
+          case Failure(e) if movedOnWithoutThisOwner(e) =>
             // The store moved on without this owner (another writer): reload, so a retry sees the real state (F19).
+            log.info("Aggregate " + aggregateId.asLong + " moved on without its owner: " + Errors.message(e))
             restore() match {
               case None => conflict(command, AggregateConcurrentModificationError(aggregateId, aggregateType, command.baseVersion, version))
               case Some(failure) => pendingFailed(envelope.commandId, failure)
@@ -548,9 +558,13 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
   // Another writer committed first; or, for a first event, created the aggregate first under the id the command chose
   // (two owners of it at once: on two nodes of a `Local` type, or in a hand-over, D43). The table's only unique key is
   // its primary key, whose name a database made by an older version may not share.
-  private def movedOnWithoutThisOwner(e: PSQLException): Boolean =
-    e.getLocalizedMessage.contains("Concurrent aggregate modification exception") ||
+  // F195: or its history changed under this owner, which a store without the procedures says with an exception.
+  private def movedOnWithoutThisOwner(e: Throwable): Boolean = e match {
+    case _: HistoryChangedException => true
+    case e: PSQLException => e.getLocalizedMessage.contains("Concurrent aggregate modification exception") ||
       e.getSQLState == "23505" && Option(e.getServerErrorMessage).exists(_.getTable == "aggregates")
+    case _ => false
+  }
 
   private def nextRoot(userId: UserId, timestamp: Instant, events: Seq[Event[AGGREGATE_ROOT]], readAfterCommit: Boolean): Either[(Exception, Event[AGGREGATE_ROOT]), AGGREGATE_ROOT] = {
     if (events.exists(_.isInstanceOf[DuplicationEvent[_]])) {
@@ -781,13 +795,15 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
       }
     }) match {
       case Success(Right(count)) =>
-        if (count.events + count.archived > 0) {
-          log.info("Aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " rewritten by " + request.change.getClass.getSimpleName +
-            ": " + count.events + " events, " + count.archived + " archived, fields " + count.fields.toSeq.sorted.mkString(", "))
-          historyChangedForDuplicates()
-          restore()
-        }
-        HistoryRewritten(aggregateId, count.events, count.archived, count.fields)
+        val changed = count.events + count.archived > 0
+        if (changed) log.info("Aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " rewritten by " + request.change.getClass.getSimpleName +
+          ": " + count.events + " events (" + count.unreadable + " unreadable), " + count.archived + " archived, fields " + count.fields.toSeq.sorted.mkString(", "))
+        // F194: the duplicates are told every time, so a run again repairs a notice a failure lost; and this owner reads
+        // its state again when the stored history is not the one it holds: a rewrite of a base it reads changed it.
+        historyChangedForDuplicates()
+        val behind = !eventStore.storedVersion(aggregateId).contains((version, generation))
+        if ((changed || behind || restoreFailure.isDefined) && restore().isEmpty) context.become(restored)
+        HistoryRewritten(aggregateId, count.events, count.archived, count.fields, count.unreadable)
       case Success(Left(reason)) => RewriteRefused(aggregateId, reason)
       case Failure(e) =>
         log.error(e, "Rewriting aggregate " + aggregateId.asLong + " failed")

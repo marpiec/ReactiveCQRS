@@ -4,7 +4,7 @@ import java.time.Instant
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.{AggregateId, SagaId, UserId}
+import io.reactivecqrs.api.id.{AggregateId, SagaId, SpaceId, UserId}
 import io.reactivecqrs.core.eventstore.NewEvents
 import io.reactivecqrs.core.commandhandler.PostgresCommandResponseState
 import io.reactivecqrs.core.documentstore.{NoopDocumentStoreCache, PostgresDocumentStore}
@@ -88,6 +88,30 @@ class StoredDataCheckSpec extends CommonSpec {
     }
 
     // F181: an application without sagas never makes the saga table.
+    Scenario("F198, F197 names the versions stored twice, and the aggregate types no context given has") {
+      TestDatabase.inSchema("repeated") {
+        val typesNames = new PostgresTypesNamesState().initSchema()
+        val store = new PostgresEventStoreState(mpjsons, typesNames).initSchema()
+        val (cartId, folderId) = (AggregateId(TestIds.aggregate()), AggregateId(TestIds.aggregate()))
+        store.localTx(session => store.persistEvents(cartId, NewEvents[ShoppingCart](userId, AggregateVersion.ZERO, Instant.now,
+          Seq(ShoppingCartCreated("Twice"), ItemAdded("apple"))))(session)).get
+        store.localTx(session => store.persistEvents(folderId, NewEvents[Folder](userId, AggregateVersion.ZERO, Instant.now,
+          Seq(FolderCreated(SpaceId(0), "Folder"))))(session)).get
+        DB.autoCommit { implicit session => // as an import of 1.0.0 could leave it, before the index was unique
+          sql"DROP INDEX events_aggregate_version_uidx".execute()
+          sql"""INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event)
+               | SELECT nextval('events_seq'), user_id, aggregate_id, event_time, version, event_type_id, 0, event FROM events
+               | WHERE aggregate_id = ${cartId.asLong} AND version = 2""".stripMargin.update()
+        }
+
+        val report = StoredDataCheck.run(mpjsons, typesNames, contexts = Seq(new ShoppingCartAggregateContext))
+
+        report.repeatedVersions mustBe Seq(StoredDataCheck.RepeatedVersion(cartId.asLong, 2, 2))
+        report.typesWithoutContext mustBe Map(classOf[Folder].getName -> 1L)
+        report.text must include("Versions stored twice")
+      }
+    }
+
     Scenario("checks a database that lacks some tables, and names the tables it did not find") {
       TestDatabase.inSchema("without_sagas") {
         Given("the tables of the event store only, with a cart")

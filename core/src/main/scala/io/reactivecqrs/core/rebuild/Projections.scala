@@ -205,7 +205,13 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   private val registry = settings.registry
 
   private case class Instance(record: BuildRecord, ref: ActorRef, subscribed: Boolean)
-  private case class Targeted(target: RebuildTarget, requester: ActorRef, types: Seq[AggregateType], aggregates: Int, builder: Option[ActorRef])
+  // F192: a targeted rebuild to do: of the active build (`build` None), or of the build in progress (its number) once it
+  // caught up, before it switches in, as its bulk pass may have read the aggregates before they changed. Kept in the
+  // registry until done, so a stop loses none; `requesters` are answered when it is done.
+  private case class Job(target: RebuildTarget, build: Option[Int], requesters: Vector[ActorRef])
+  private case class Targeted(job: Job, types: Seq[AggregateType], aggregates: Int, builder: Option[ActorRef]) {
+    def target: RebuildTarget = job.target
+  }
 
   private var active: Option[Instance] = None
   private var building: Option[Instance] = None // the same instance as `active` while a new projection is built first
@@ -219,7 +225,8 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   private var builder: Option[ActorRef] = None
   private var caughtUp = false
   private val retiring = mutable.Map[ActorRef, BuildRecord]()
-  private var targeted: Option[Targeted] = None
+  private var targeted: Option[Targeted] = None // the job running
+  private var jobs = Vector[Job]() // the jobs waiting, in order
   private var buildStopped = false // the build's instance stopped by itself; a new one starts after a wait
   // F110: instances that stopped, kept in the bus as stopped subscribers (their events stay in the outbox) until their
   // replacements are subscribed; then they leave it, and their outbox rows go to the replacements.
@@ -272,9 +279,13 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       connect()
       context.become(guarded(running))
       unstashAll()
-      // A targeted rebuild a stop interrupted runs again (a build in progress includes its target anyway).
-      if (building.isEmpty) logged("could not read its pending targeted rebuild; it runs at the next start") {
-        registry.projection(spec.name).flatMap(_.pendingTarget).flatMap(decode).foreach(target => rebuildTarget(target, context.system.deadLetters))
+      // The targeted rebuilds a stop interrupted run again; those of a build that is no longer in progress are not needed:
+      // a later build reads the store as it is now.
+      logged("could not read its pending targeted rebuilds; they run at the next start") {
+        jobs = registry.projection(spec.name).flatMap(_.pendingTarget).toVector.flatMap(_.split("\n")).flatMap(decodeJob)
+          .filter(_.build.forall(n => building.exists(_.record.number == n)))
+        saveJobs()
+        runNextJob()
       }
     case GetSubscriptionRequests(registered) => asked(sender(), registered) // answered once the instances are known
     case Terminated(ref) => terminated(ref)
@@ -394,12 +405,13 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
     case BuildCaughtUp =>
       caughtUp = true
       runtime.slots ! ReleaseBuildSlot
+      runNextJob() // the build's own targeted rebuilds, before it switches in
       trySwitch()
     case RebuildAggregates(target) => rebuildTarget(target, sender())
     // R17: a purge waits for builds; its other messages go to the active build.
-    case check: PurgeCheck => (building, targeted, active) match {
+    case check: PurgeCheck => (building, targeted.map(_.job).orElse(jobs.headOption), active) match {
       case (Some(b), _, _) => sender() ! PurgeCheckAnswer(spec.name, Some("build " + b.record.number + " of projection " + spec.name + " is in progress"))
-      case (_, Some(t), _) => sender() ! PurgeCheckAnswer(spec.name, Some("the rebuild of " + t.target + " by projection " + spec.name + " is in progress"))
+      case (_, Some(j), _) => sender() ! PurgeCheckAnswer(spec.name, Some("the rebuild of " + j.target + " by projection " + spec.name + " is in progress"))
       case (_, _, Some(a)) => a.ref.forward(check)
       case _ => sender() ! PurgeCheckAnswer(spec.name, Some("projection " + spec.name + " has no active build"))
     }
@@ -411,14 +423,18 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       targeted = targeted.map(_.copy(aggregates = aggregates))
       startTargetedBuilder()
     case RunTargetedBuilder => startTargetedBuilder()
-    case Status.Failure(e) if targeted.exists(_.builder.isEmpty) && active.exists(_.ref == sender()) =>
-      log.error("Projection " + spec.name + " cannot rebuild " + targeted.get.target + ": " + Errors.describe(e))
-      clearPendingTarget()
-      targeted.get.requester ! RebuildRefused(Errors.message(e))
+    case Status.Failure(e) if targeted.exists(t => t.builder.isEmpty && instanceOfJob(t.job).exists(_.ref == sender())) =>
+      val t = targeted.get
+      log.error("Projection " + spec.name + " cannot rebuild " + t.target + ": " + Errors.describe(e))
       targeted = None
+      saveJobs() // before the answer: the registry says what is left once the requester hears
+      t.job.requesters.foreach(_ ! RebuildRefused(Errors.message(e)))
+      runNextJob()
+      trySwitch()
     case CheckSwitch => trySwitch()
     case status: ProjectionStatus if building.exists(_.ref == sender()) =>
-      if (status.failures.isEmpty && status.retrying.isEmpty) switchNow() else {
+      if (buildJobsWaiting) () // the last of them tries again
+      else if (status.failures.isEmpty && status.retrying.isEmpty) switchNow() else {
         log.warning("Projection " + spec.name + ": build " + building.get.record.number + " caught up with " + (status.failures.size + status.retrying.size) +
           " failed subscriptions; it replaces the active build once they are retried or skipped (ToBuildInProgress)")
         context.system.scheduler.scheduleOnce(30.seconds, self, CheckSwitch)(context.dispatcher)
@@ -457,8 +473,11 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
     }
   }
 
-  // A build with failed subscriptions does not replace the active one until they are repaired.
-  private def trySwitch(): Unit = if (caughtUp) building.foreach(_.ref ! GetProjectionStatus)
+  // A build with failed subscriptions does not replace the active one until they are repaired, nor one with targeted
+  // rebuilds still to do (F192).
+  private def trySwitch(): Unit = if (caughtUp && !buildJobsWaiting) building.foreach(_.ref ! GetProjectionStatus)
+
+  private def buildJobsWaiting: Boolean = (targeted.map(_.job) ++ jobs).exists(_.build.isDefined)
 
   private def switchNow(): Unit = building.foreach { b =>
     val switched = try Some(registry.switch(spec.name, b.record.number)) catch {
@@ -505,30 +524,77 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
 
   // ************** Targeted rebuild (D63, R14)
 
+  private def typesOf(target: RebuildTarget): Seq[AggregateType] = listeners.map(_._1).distinct.filter(t => target match {
+    case RebuildTarget.OneType(aggregateType) => aggregateType == t
+    case _ => true
+  })
+
+  // F192: never refused for work in progress. The active build rebuilds the target in its turn; a build in progress does it
+  // too once it caught up, before it switches in. The requester is answered once the build that serves did it: a build
+  // that does not serve yet does it before it does.
   private def rebuildTarget(target: RebuildTarget, requester: ActorRef): Unit = {
-    val types = listeners.map(_._1).distinct.filter(t => target match {
-      case RebuildTarget.OneType(aggregateType) => aggregateType == t
-      case _ => true
-    })
-    (building, targeted, active) match {
-      case (Some(b), _, _) => requester ! RebuildRefused("build " + b.record.number + " is in progress, and replaces the active one whole")
-      case (_, Some(t), _) => requester ! RebuildRefused("the rebuild of " + t.target + " is in progress")
-      case (_, _, Some(_)) if types.nonEmpty && target.isInstanceOf[RebuildTarget.OneSpace] &&
-        settings.eventStore.aggregatesOf(types, AggregateId(Long.MinValue), 1, AggregateScope.InSpace(SpaceId(-1))).nonEmpty =>
-        requester ! RebuildRefused("aggregates of " + types.map(_.simpleName).mkString(", ") + " have no space yet: run backfillSpaces first (F49)")
-      case (_, _, Some(a)) if types.nonEmpty =>
-        registry.setPendingTarget(spec.name, Some(encode(target)))
-        targeted = Some(Targeted(target, requester, types, 0, None))
-        log.info("Projection " + spec.name + " rebuilds " + target)
-        val (eventStore, scope) = (settings.eventStore, scopeOf(target))
-        // F112: listed by the projection when it resets, after the deliveries it took before.
-        a.ref ! ResetForRebuild(target, () => Iterator.unfold(AggregateId(Long.MinValue)) { after =>
-          val page = eventStore.aggregatesOf(types, after, 1000, scope)
-          page.lastOption.map(last => (page.map(_.aggregateId), last.aggregateId))
-        }.flatten.toVector)
-      case _ => requester ! RebuildRefused(s"$target is not of an aggregate type the projection receives")
+    val types = typesOf(target)
+    if (types.isEmpty || serving.isEmpty) requester ! RebuildRefused(s"$target is not of an aggregate type the projection receives")
+    else if (target.isInstanceOf[RebuildTarget.OneSpace] &&
+      settings.eventStore.aggregatesOf(types, AggregateId(Long.MinValue), 1, AggregateScope.InSpace(SpaceId(-1))).nonEmpty)
+      requester ! RebuildRefused("aggregates of " + types.map(_.simpleName).mkString(", ") + " have no space yet: run backfillSpaces first (F49)")
+    else {
+      val forBuild = building.filterNot(b => active.exists(_.ref == b.ref)).map(_.record.number)
+      if (active.isDefined) addJob(Job(target, None, Vector(requester)))
+      forBuild.foreach(n => addJob(Job(target, Some(n), if (active.isDefined) Vector.empty else Vector(requester))))
+      if (active.isEmpty && forBuild.isEmpty) addJob(Job(target, building.map(_.record.number), Vector(requester))) // a first build
+      saveJobs()
+      runNextJob()
     }
   }
+
+  // A job like one waiting (not running) is that one, with one more requester.
+  private def addJob(job: Job): Unit = jobs.indexWhere(j => j.target == job.target && j.build == job.build) match {
+    case -1 => jobs :+= job
+    case i => jobs = jobs.updated(i, jobs(i).copy(requesters = jobs(i).requesters ++ job.requesters))
+  }
+
+  private def instanceOfJob(job: Job): Option[Instance] = job.build match {
+    case None => active
+    case Some(n) => building.filter(_.record.number == n).orElse(active.filter(_.record.number == n))
+  }
+
+  // The next job that can run: the active build's at once, a build's once it caught up. A build's whose build is gone is
+  // dropped: a later build reads the store as it is now.
+  private def runNextJob(): Unit = if (targeted.isEmpty) {
+    jobs = jobs.filter(j => instanceOfJob(j).isDefined || { j.requesters.foreach(_ ! RebuildRefused("the build it was for ended")); false })
+    jobs.find(j => j.build.isEmpty || caughtUp && building.exists(_.record.number == j.build.get)).foreach { job =>
+      jobs = jobs.filterNot(_ eq job)
+      startJob(job)
+    }
+  }
+
+  private def startJob(job: Job): Unit = instanceOfJob(job).foreach { instance =>
+    val types = typesOf(job.target)
+    targeted = Some(Targeted(job, types, 0, None))
+    log.info("Projection " + spec.name + " rebuilds " + job.target + job.build.fold("")(n => " in build " + n))
+    // An active build that serves its tables unchanged while another is built only clears the target: the code may not
+    // fit its documents (ServeStale), and the new build has the target rebuilt before it switches in.
+    if (job.build.isEmpty && building.isDefined && spec.whileBuilding == ServeStale) instance.ref ! ServeUnchanged
+    val (eventStore, scope) = (settings.eventStore, scopeOf(job.target))
+    // F112: listed by the projection when it resets, after the deliveries it took before.
+    instance.ref ! ResetForRebuild(job.target, () => Iterator.unfold(AggregateId(Long.MinValue)) { after =>
+      val page = eventStore.aggregatesOf(types, after, 1000, scope)
+      page.lastOption.map(last => (page.map(_.aggregateId), last.aggregateId))
+    }.flatten.toVector)
+  }
+
+  // The jobs, the running one first, as lines: "aggregate:12", or "build 3 aggregate:12" for a build's.
+  private def saveJobs(): Unit = logged("could not save its targeted rebuilds in the registry; one a stop interrupts is lost") {
+    val all = targeted.map(_.job).toVector ++ jobs
+    registry.setPendingTarget(spec.name, if (all.isEmpty) None else Some(all.map(j => j.build.fold("")(n => "build " + n + " ") + encode(j.target)).mkString("\n")))
+  }
+
+  private def decodeJob(line: String): Option[Job] =
+    if (line.startsWith("build ")) line.stripPrefix("build ").split(" ", 2) match {
+      case Array(n, target) => Try(n.toInt).toOption.flatMap(build => decode(target).map(Job(_, Some(build), Vector.empty)))
+      case _ => None
+    } else decode(line).map(Job(_, None, Vector.empty))
 
   private def scopeOf(target: RebuildTarget): AggregateScope = target match {
     case RebuildTarget.OneAggregate(id) => AggregateScope.Only(Set(id))
@@ -536,32 +602,30 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
     case RebuildTarget.OneSpace(spaceId) => AggregateScope.InSpace(spaceId)
   }
 
-  private def startTargetedBuilder(): Unit = for (t <- targeted; a <- active) {
+  private def startTargetedBuilder(): Unit = for (t <- targeted; instance <- instanceOfJob(t.job)) {
     val plan = BuildPlan(listeners.filter { case (aggregateType, _) => t.types.contains(aggregateType) })
-    val builder = context.watch(context.actorOf(Props(new ProjectionBuilder(a.ref, a.record.subscriber, plan, settings.eventStore,
+    val builder = context.watch(context.actorOf(Props(new ProjectionBuilder(instance.ref, instance.record.subscriber, plan, settings.eventStore,
       settings.subscriptionsState, runtime.sources, NoPositions, self, settings.builder, Some(scopeOf(t.target)))).withDispatcher(BlockingDispatcher.id)))
     targeted = Some(t.copy(builder = Some(builder)))
   }
 
+  // A job left in the registry runs again at the next start, which repeats a finished rebuild harmlessly.
   private def targetRebuilt(): Unit = targeted.foreach { t =>
-    clearPendingTarget()
-    log.info("Projection " + spec.name + " rebuilt " + t.target)
-    t.requester ! AggregatesRebuilt(t.target, t.aggregates)
+    log.info("Projection " + spec.name + " rebuilt " + t.target + t.job.build.fold("")(n => " in build " + n))
     targeted = None
-  }
-
-  // A target left in the registry runs again at the next start, which repeats a finished rebuild harmlessly.
-  private def clearPendingTarget(): Unit = logged("could not clear its targeted rebuild in the registry; it runs again at the next start") {
-    registry.setPendingTarget(spec.name, None)
+    saveJobs()
+    t.job.requesters.foreach(_ ! AggregatesRebuilt(t.target, t.aggregates))
+    runNextJob()
+    trySwitch()
   }
 
   private def logged(what: String)(work: => Unit): Unit = try work catch {
     case NonFatal(e) => log.error(e, "Projection " + spec.name + " " + what)
   }
 
-  private def rebuild(): Unit = (building, targeted) match {
+  private def rebuild(): Unit = (building, targeted.map(_.job).orElse(jobs.headOption)) match {
     case (Some(b), _) => sender() ! RebuildRefused("build " + b.record.number + " is in progress")
-    case (_, Some(t)) => sender() ! RebuildRefused("the rebuild of " + t.target + " is in progress")
+    case (_, Some(j)) => sender() ! RebuildRefused("the rebuild of " + j.target + " is in progress")
     case _ =>
       val b = instanceOf(registry.startBuild(spec.name, spec.version, runtime.contextVersions))
       building = Some(b)
@@ -600,6 +664,13 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
         if (building.exists(_.subscribed)) replaced :+= ref
         builder.foreach(context.stop)
         builder = None
+        // Its targeted rebuild runs again once the new instance caught up.
+        targeted.filter(_.job.build.contains(building.get.record.number)).foreach { t =>
+          t.builder.foreach(context.stop)
+          jobs = t.job +: jobs
+          targeted = None
+          runNextJob()
+        }
         caughtUp = false
         buildStopped = true
         runtime.slots ! ReleaseBuildSlot
@@ -613,8 +684,10 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
           if (i.ref != ref) context.stop(i.ref)
         }
         (builder ++ targeted.flatMap(_.builder)).foreach(context.stop)
-        targeted.foreach(t => t.requester ! RebuildRefused("the projection restarts; the rebuild of " + t.target + " runs again then"))
+        // The registry keeps the jobs: they run again at the start; their requesters are answered now.
+        (targeted.map(_.job) ++ jobs).foreach(j => j.requesters.foreach(_ ! RebuildRefused("the projection restarts; the rebuild of " + j.target + " runs again then")))
         targeted = None
+        jobs = Vector.empty
         runtime.slots ! ReleaseBuildSlot
         active = None
         building = None

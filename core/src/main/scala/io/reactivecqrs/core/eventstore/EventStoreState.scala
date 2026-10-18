@@ -9,13 +9,14 @@ import scalikejdbc.DBSession
 import scala.util.Try
 
 /** The events of one command, stored after `expectedVersion` with one user and one timestamp (D10) and the
-  * command's metadata envelope, if it has one (D32). */
+  * command's metadata envelope, if it has one (D32). `expectedGeneration`: the history generation the command's state was
+  * read at; when given, the events are refused if the stored history changed since, though the version did not (F195). */
 case class NewEvents[AGGREGATE_ROOT](userId: UserId, expectedVersion: AggregateVersion, timestamp: Instant, events: Seq[Event[AGGREGATE_ROOT]],
-                                     metadata: Option[EventMetadata] = None)
+                                     metadata: Option[EventMetadata] = None, expectedGeneration: Option[Int] = None)
 
 /** A performance snapshot (D30): the aggregate's state at `version`, usable only with the context and schema versions
-  * it was made with. */
-case class Snapshot[AGGREGATE_ROOT](version: AggregateVersion, contextVersion: Int, schemaVersion: Int, state: AGGREGATE_ROOT)
+  * it was made with, and the state class's shape (`StateShape`, F196; "" for one written by 1.0.0). */
+case class Snapshot[AGGREGATE_ROOT](version: AggregateVersion, contextVersion: Int, schemaVersion: Int, state: AGGREGATE_ROOT, shape: String = "")
 
 /** An aggregate with rows waiting in the outbox: its oldest waiting version, and when that event was written. */
 case class WaitingInOutbox(aggregateType: AggregateType, aggregateId: AggregateId, oldestVersion: AggregateVersion, since: Instant)
@@ -38,7 +39,7 @@ case class StoredAggregate(aggregateType: AggregateType, aggregateId: AggregateI
 
 /** What a complete rewrite wrote again (D76): the events and the archived events, their classes, and the fields that
   * changed (case class field names; `metadata.` and the envelope's field for a changed envelope). */
-case class RewriteCount(events: Int, archived: Int, classes: Set[String], fields: Set[String])
+case class RewriteCount(events: Int, archived: Int, classes: Set[String], fields: Set[String], unreadable: Int = 0)
 
 object RewriteCount {
   /** The fields whose values differ between two events (or envelopes, with the prefix `metadata.`) of one case class;
@@ -71,8 +72,14 @@ abstract class EventStoreState {
   /** `persist`, giving each event with its version. */
   final def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] =
     persist(aggregateId, eventsEnvelope).map(_.map(stored => (stored.event, stored.version)))
-  /** Writes these events over the stored ones of their versions (a history-rewriting command). */
-  def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit
+  /** The aggregate's history generation and its type's name, from its own row (F197); the type is None when the store
+    * does not know it. */
+  def generationAndType(aggregateId: AggregateId): (Int, Option[String]) = (historyGeneration(aggregateId), None)
+  /** Writes these events over the stored ones of their versions (a history-rewriting command). With `expected`, the
+    * version and history generation the command's state was read at, it throws `HistoryChangedException` when the
+    * stored aggregate differs (F195). */
+  def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]],
+                                      expected: Option[(AggregateVersion, Int)] = None)(implicit session: DBSession): Unit
   /** Calls `eventHandler` with each event of the aggregate, oldest first (a duplicate's base's first), up to a version
     * or an instant when one is given: its user, time, event, the aggregate that stored it, its version, and whether an
     * undo cancelled it. */

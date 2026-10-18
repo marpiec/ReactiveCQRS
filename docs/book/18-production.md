@@ -207,7 +207,10 @@ val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, mis
   transaction (`events (aggregate_id, version)`, `aggregates (space_id, id)` and, since 1.0's last
   steps, the aggregates' own rows by type), with PostgreSQL's `CREATE INDEX CONCURRENTLY`. It does
   nothing when they exist. Until the last one exists, a projection build on a large installation
-  reads a page of aggregates in about 100 ms instead of 1 ms.
+  reads a page of aggregates in about 100 ms instead of 1 ms. Since 1.0.1 the index on
+  `events (aggregate_id, version)` is unique, so no aggregate can get two events of one version: run
+  it again after the upgrade to 1.0.1. If some aggregate already has such a pair, it keeps the plain
+  index and logs an error, and `StoredDataCheck` names the pairs (`repeatedVersions`).
 - `backfillSpaces(spaceOf)` gives aggregates stored without an organization the space of their first
   event; for old first events that do not know theirs, you pass a function that does
   ([chapter 16](16-organizations.md)). Run it before you rebuild a projection for one organization.
@@ -237,7 +240,11 @@ managed projection, with its build's suffix, such as `_v1`). The report lists, p
 the rows read and the unreadable ones with examples, the aggregates still without a space, the
 events by event type version (in 1.0 they must all be 0), and the tables it did not find
 (`report.missingTables`): a name you mistyped, or on a database from before 1.0, `events_archive`.
-`report.unreadable` must be zero.
+`report.unreadable` must be zero. Since 1.0.1 it also names the versions stored twice
+(`report.repeatedVersions`, which keep the unique index of step 7 from being built) and, when you
+pass `contexts = Seq(...)` with every aggregate context of the application, the aggregate types none
+of them has (`report.typesWithoutContext`): their command buses would refuse to restore those
+aggregates (`reactivecqrs.aggregate-type-check`, appendix E). Both must be empty.
 
 Before you delete an old event class from your code, `StoredDataCheck.usersOf(className)` tells you
 which aggregates still have events of it, in the events and in the squash archive.

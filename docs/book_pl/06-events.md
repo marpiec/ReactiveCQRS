@@ -334,9 +334,11 @@ Co warto wiedzieć o trwałym usunięciu:
   stan. Typ bez polityki squasha tego nie potrafi: usunięcie wtedy czeka, a log mówi dlaczego. Koszyk ma
   politykę squasha.
 - **Tabele twoich projekcji są twoje.** Biblioteka ich nie dotyka: usuń ich wiersze, gdy twoje projekcje
-  zobaczą to zdarzenie. Zapisane odpowiedzi idempotentnych poleceń agregatu znikają razem z nim; odpowiedzi
-  zapisane przez starsze wersje biblioteki, które nie wskazują swojego agregatu, wygasają wraz z końcem
-  okresu przechowywania (domyślnie 30 dni).
+  zobaczą to zdarzenie. Zapisane odpowiedzi idempotentnych poleceń agregatu tracą razem z nim swoje
+  dodatkowe informacje, ale zachowują klucze do końca okresu przechowywania (domyślnie 30 dni): klient,
+  który ponawia utworzenie z kluczem, dostaje dawną odpowiedź i nie tworzy agregatu jeszcze raz.
+  Odpowiedzi zapisane przez starsze wersje biblioteki, które nie wskazują swojego agregatu, zostają bez
+  zmian i tak samo wygasają.
 
 > **Wskazówka:** jeśli potrzebujesz obu rodzajów usuwania, zaplanuj to z góry. Polecenie nie może działać na
 > agregacie, którego stan to `null`, więc koszyka usuniętego miękko tak, jak robi to nasz koszyk, nie da się

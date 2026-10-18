@@ -93,7 +93,8 @@ object OrganizationsSetup {
     // ExportReport(space, aggregates, events, archived, detached, waitingInOutbox, refused)
     // #export
     // #import
-    val imported = new SpaceImport(installation.eventStore, installation.uidGenerator).read(file, into = target)
+    val imported = new SpaceImport(installation.eventStore, installation.uidGenerator, contexts = Seq(new ShopCartContext))
+                     .read(file, into = target)
     // ImportReport(space, aggregates, events, archived, remapped, unknownReferences, someUnknown, refused)
     // #import
     Files.delete(file)

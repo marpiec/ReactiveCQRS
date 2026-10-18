@@ -117,7 +117,10 @@ cart (cart 43) breaks the index. Here is what happens next:
 
 One more case: if even the failure cannot be written down, because the database itself is down, the
 projection answers nothing and tries the batch again every 30 seconds, until it can either apply it
-or record the failure.
+or record the failure. And an error that is the database's, not the listener's (a lost or refused
+connection, a transaction the server rolled back, a server short of resources), is not counted as
+an attempt at all: the batch is tried again every 30 seconds for as long as the database is away,
+with one warning a minute, and no failure is recorded for a database restart.
 
 > **Remember:** a failure belongs to one projection, one listener kind and one aggregate. Cart 43 is
 > stuck in `CartsList`; the same cart in other projections, and every other cart in this one, are
@@ -175,7 +178,7 @@ retry at start did not help, these three messages, sent to the projection, do it
 |---|---|---|
 | `RetryFailedSubscription(cartId)` | `FailedSubscriptionsHandled(cartId, count)` | asks the cart's owner for the failed version and the ones after it, again and again until they come; once the failed version is applied, the failure record is deleted |
 | `RetryAllFailedSubscriptions` | `FailedSubscriptionsRetried(count)` | the same for every failure of the projection, 20 per second |
-| `SkipFailedVersion(cartId)` | `FailedSubscriptionsHandled(cartId, count)` | marks the failed version as applied without applying it, deletes the record, and asks once for the versions after it |
+| `SkipFailedVersion(cartId)` | `FailedSubscriptionsHandled(cartId, count)` | marks the failed version as applied without applying it, deletes the record, and asks once for the versions after it; for a "versions missing" failure it marks nothing (those versions may not exist yet) and asks for them again |
 
 `count` says how many failed subscriptions were handled; 0 means there was nothing to do.
 
@@ -215,7 +218,16 @@ comes: "I am at version 3, and this is version 5". Then:
    from 4 are missing: asked … times in 10 minutes without an answer"), which you handle like any
    other failure.
 
-`ProjectionStatus.waitingForGap` lists the carts in steps 1 to 3.
+`ProjectionStatus.waitingForGap` lists the carts in steps 1 to 3. When the owner has nothing after
+what the projection asks for (the cart is at version 3, and a stale record asked for 4), it says so,
+and the projection stops waiting; a failure record of versions that never existed is then deleted.
+A failure record whose version the projection has already applied (its deletion failed after the
+retry that applied it) is deleted as soon as it is read, instead of becoming a gap.
+
+When a projection has nothing of a cart yet (its targeted rebuild reset it, or it was added late)
+and a live event arrives, the owner gives it the cart's history first. That history is applied as a
+rebuild applies it: `rebuilding` is true, so a subscribable projection pushes nothing for it
+(chapter 11). The live event that came with it is applied the same way; the events after it are live.
 
 ## The failure options
 

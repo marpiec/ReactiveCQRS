@@ -6,7 +6,7 @@ import java.util.concurrent.{ExecutorService, Executors, TimeUnit}
 import org.apache.pekko.actor.{Actor, ActorRef, Cancellable, Status}
 import io.reactivecqrs.api.id.{AggregateId, SpaceId}
 import io.reactivecqrs.api._
-import io.reactivecqrs.core.delivery.SequenceGate
+import io.reactivecqrs.core.delivery.{NothingToRepublish, SequenceGate}
 import io.reactivecqrs.core.delivery.SequenceGate.{AlreadyApplied, Apply, Gap}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.core.metrics.ReactiveMetrics
@@ -421,7 +421,8 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     case ServeUnchanged =>
       unchanged = true
       eventBus = None
-      forget(queues.keys.map(_.aggregateId).toSet)
+      // F201: the failures stay known (they block deletes and squashes, and are in the status); only the queues go.
+      forget(queues.keys.map(_.aggregateId).toSet, keepFailures = true)
       failuresToRetry = Vector.empty
     case Activate =>
       if (!activated) {
@@ -493,6 +494,8 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       sender() ! FailedSubscriptionsRetried(count)
     case SkipFailedVersion(aggregateId) => sender() ! FailedSubscriptionsHandled(aggregateId, skipFailedVersions(aggregateId))
     case RetryNextFailure => retryNextFailure()
+    case LoadFailures => loadFailures()
+    case NothingToRepublish(aggregateId, version) => nothingAfter(aggregateId, version)
     case q: AsyncDelayedQuery => parkOrSearchAgain(q, q.searchedAt)(delayIfNotAvailableAsync(q.respondTo, q.search, q.until))
     case q: AsyncDelayedQueryCustom[_] => parkOrSearchAgain(q, q.searchedAt)(delayIfNotAvailableAsyncCustom(q.respondTo, q.search, q.found, q.until))
     case ReplayQueries =>
@@ -522,10 +525,14 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   /** Versions `from` to `to`, gathered from one or more deliveries (`parts`), applied in one transaction; `covered` are
     * deliveries whose versions all lie in the batch. All of them are acknowledged once the batch is applied. */
   private case class Batch(aggregateType: AggregateType, applied: AggregateVersion, from: AggregateVersion, to: AggregateVersion,
-                           events: Seq[EventInfo[Any]], aggregateRoot: Option[Any], parts: Seq[Pending], covered: Seq[Pending]) {
+                           events: Seq[EventInfo[Any]], aggregateRoot: Option[Any], parts: Seq[Pending], covered: Seq[Pending],
+                           history: Boolean = false) {
     def deliveries: Seq[Pending] = parts ++ covered
-    /** Every delivery came from a builder (a chunk's batch has none): the events are history. */
-    def fromBuilder: Boolean = deliveries.forall(_.fromBuilder)
+    /** Every delivery came from a builder (a chunk's batch has none), or the batch fills, from the owner, the history
+      * below a live delivery of an aggregate the subscription had nothing of (F259): the events are history. The owner
+      * re-publishes up to its version, so such a batch may hold the live versions too: they are applied as history as
+      * well (no push for them), and what follows is live. */
+    def fromBuilder: Boolean = history || deliveries.forall(_.fromBuilder)
   }
 
   private sealed trait DrainReason
@@ -536,6 +543,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   private case class Drain(key: Key, token: Int)
   private case class Applied(key: Key, queueId: Int, batch: Batch, outcome: Try[Unit])
   private case object RetryNextFailure
+  private case object LoadFailures
 
   /** The deliveries of one subscription waiting to be applied, and what happens to them now. Removed when idle, so the
     * queues hold only aggregates with work in progress (F15). `retryOf` is a recorded failure being retried: it is
@@ -550,6 +558,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     var gapRequests = 0     // requests for the current gap
     var gapSince = 0L       // System.nanoTime when the current gap was found
     var retryOf: Option[SubscriptionFailure] = None
+    var liveFrom: Option[AggregateVersion] = None // F259: the first version delivered live after nothing was applied
     def idle: Boolean = pending.isEmpty && !processing && scheduled.isEmpty && gapRequestedFrom.isEmpty && retryOf.isEmpty
   }
 
@@ -593,14 +602,25 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   }
 
   // The aggregates' waiting deliveries are answered, and their queues and failures dropped.
-  private def forget(aggregateIds: Set[AggregateId]): Unit = {
+  private def forget(aggregateIds: Set[AggregateId], keepFailures: Boolean = false): Unit = {
     queues.filter { case (key, _) => aggregateIds.contains(key.aggregateId) }.foreach { case (key, queue) =>
       queue.pending.foreach(delivery => delivery.respondTo ! MessageAck(self, key.aggregateId, delivery.versions, key.kind))
+      if (keepFailures) queue.retryOf.foreach(failure => failed += key -> failure)
     }
     queues --= queues.keys.filter(key => aggregateIds.contains(key.aggregateId))
-    failed --= failed.keys.filter(key => aggregateIds.contains(key.aggregateId))
+    if (!keepFailures) failed --= failed.keys.filter(key => aggregateIds.contains(key.aggregateId))
     failuresToRetry = failuresToRetry.filterNot(key => aggregateIds.contains(key.aggregateId))
   }
+
+  // F201: the owner has nothing after `version`. A gap asked from beyond it closes; a failure being retried whose version
+  // the aggregate never reached was stale (recorded as missing versions that do not exist), and is cleared.
+  private def nothingAfter(aggregateId: AggregateId, version: AggregateVersion): Unit =
+    queues.filter { case (key, queue) => key.aggregateId == aggregateId && queue.gapRequestedFrom.exists(_ > version) }.foreach { case (key, queue) =>
+      queue.gapRequestedFrom = None
+      queue.retryOf.filter(_.version > version).foreach(clearRetried(key, queue, _))
+      if (queue.scheduled.exists(_._2 == GapRecheck)) queue.scheduled = None
+      forgetIfIdle(key, queue)
+    }
 
   // R17: whether the projection's class implements clearForRebuild; the default refuses every target.
   private def clearsForRebuild: Boolean =
@@ -658,6 +678,9 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   // acknowledged, the versions after the applied one form one batch, and deliveries after a gap wait for the missing
   // versions. A retried failure waits for its version like a gap until a batch reaches it.
   private def drainFrom(key: Key, queue: Queue, applied: AggregateVersion, gapRecheck: Boolean): Unit = {
+    // F201: a failure being retried whose version is applied already (its record outlived the batch that applied it) is
+    // cleared, not asked for again: there may be nothing after it to ask for.
+    queue.retryOf.filter(_.version <= applied).foreach(clearRetried(key, queue, _))
     var next = applied
     var parts = Vector[(Pending, AggregateVersion)]() // a delivery and the first version it adds
     var covered = Vector[Pending]()
@@ -677,10 +700,13 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         case Gap(from) =>
           gap = Some(from)
           waiting :+= delivery
+          // F259: a subscription that has nothing of the aggregate (reset for a targeted rebuild, or never had it) gets
+          // its history from the owner: what comes below this delivery is history, applied as a rebuild applies it.
+          if (applied == AggregateVersion.ZERO && !delivery.fromBuilder && queue.liveFrom.isEmpty) queue.liveFrom = Some(delivery.first)
       }
     }
     queue.pending = waiting
-    if (gap.isEmpty && parts.isEmpty && queue.retryOf.isDefined) gap = Some(next.increment)
+    if (gap.isEmpty && parts.isEmpty && queue.retryOf.exists(_.version > applied)) gap = Some(next.increment)
 
     gap match {
       case Some(from) => requestMissingVersions(key, queue, from, gapRecheck, mayGiveUp = parts.isEmpty) // apply what can be applied first
@@ -691,7 +717,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       // The batch starts after the applied version, or at a squash event the subscriber never reached (F98).
       val batch = Batch(queue.aggregateType, applied, parts.head._2, next,
         parts.flatMap { case (delivery, from) => delivery.events.dropWhile(_.version < from) },
-        parts.last._1.aggregateRoot, parts.map(_._1), covered)
+        parts.last._1.aggregateRoot, parts.map(_._1), covered, history = queue.liveFrom.exists(parts.head._2 < _))
       queue.processing = true
       executionContext match {
         case Some(ec) =>
@@ -716,7 +742,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       queue.gapSince = now
     }
     if (mayGiveUp && sameGap && now - queue.gapSince >= options.gapGiveUpAfter.toNanos) {
-      giveUp(key, queue, queue.aggregateType, from, "versions from " + from.asInt + " are missing: asked " + queue.gapRequests +
+      giveUp(key, queue, queue.aggregateType, from, MissingVersions + from.asInt + " are missing: asked " + queue.gapRequests +
         " times in " + options.gapGiveUpAfter + " without an answer", None)
     } else {
       if (!sameGap || gapRecheck) {
@@ -733,6 +759,9 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
   private val gapRequestRepeats = Backoff(options.gapRequestRepeat, 5.minutes, maxAttempts = Int.MaxValue)
 
+  // How a failure of versions that never came starts: it is not a version the listener failed on (F201).
+  private val MissingVersions = "versions from "
+
   private def afterBatch(key: Key, queue: Queue, batch: Batch, outcome: Try[Unit]): Unit = {
     queue.processing = false
     outcome match {
@@ -741,18 +770,21 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         ReactiveMetrics(context.system).metrics.count("reactivecqrs.projection.applied", Map("projection" -> projectionName), batch.to.asInt - batch.from.asInt + 1L)
         options.eventsLogger.filter(_.isDebugEnabled).foreach(_.debug(s"$className ${key.aggregateId.asLong} applied ${batch.from.asInt}-${batch.to.asInt}"))
         queue.failedAttempts = 0
-        queue.retryOf.filter(_.version <= batch.to).foreach { failure =>
-          queue.retryOf = None
-          Try(subscriptionsState.autoCommit(subscriptionsState.clearFailure(subscriberName, key.subscriptionType, key.aggregateId)(_))) match {
-            case Success(_) => failureCleared(failure)
-            case Failure(e) => log.error(e, "Projection " + projectionName + " applied the failed version of aggregate " + key.aggregateId.asLong +
-              " but could not clear its failure record; it is retried again at the next start")
-          }
-          log.info("Projection " + projectionName + " recovered from its failure on " + failure.aggregateType.simpleName + " " + key.aggregateId.asLong)
-        }
+        if (queue.liveFrom.exists(_ <= batch.to.increment)) queue.liveFrom = None // F259: what follows is live
+        queue.retryOf.filter(_.version <= batch.to).foreach(clearRetried(key, queue, _))
         requestQueriesReplay()
         // Deliveries that arrived meanwhile may fill a gap, so they are looked at now, not at the gap's next check.
         if (queue.pending.nonEmpty || queue.retryOf.isDefined) drain(key, queue) else forgetIfIdle(key, queue)
+      case Failure(e) if Errors.transient(e) =>
+        // F254: the database's failure, not the listener's: tried again, without counting it, so a database that is down
+        // for a while leaves no failure records behind.
+        queue.pending = batch.deliveries.toVector ++ queue.pending
+        val now = System.nanoTime()
+        if (now - lastTransientLog >= TransientLogInterval) {
+          lastTransientLog = now
+          log.warning("Projection " + projectionName + " cannot reach its database (" + Errors.describe(e) + "); its batches are tried again")
+        }
+        schedule(key, queue, options.retries.max, RetryBackOff)
       case Failure(e) =>
         queue.failedAttempts += 1
         queue.pending = batch.deliveries.toVector ++ queue.pending
@@ -792,6 +824,23 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         schedule(key, queue, options.retries.max, RetryBackOff)
     }
   }
+
+  private var lastTransientLog = 0L
+  private val TransientLogInterval = 60L * 1000000000L
+
+  // F201: a retried failure whose version is applied is cleared; until its record goes, the queue keeps it, so the clear
+  // is tried again (a record left behind would come back at the next start as a gap that never fills).
+  private def clearRetried(key: Key, queue: Queue, failure: SubscriptionFailure): Unit =
+    Try(subscriptionsState.autoCommit(subscriptionsState.clearFailure(subscriberName, key.subscriptionType, key.aggregateId)(_))) match {
+      case Success(_) =>
+        queue.retryOf = None
+        failureCleared(failure)
+        log.info("Projection " + projectionName + " recovered from its failure on " + failure.aggregateType.simpleName + " " + key.aggregateId.asLong)
+      case Failure(e) =>
+        log.error(e, "Projection " + projectionName + " applied the failed version of aggregate " + key.aggregateId.asLong +
+          " but could not clear its failure record; it tries again")
+        schedule(key, queue, options.retries.max, RetryBackOff)
+    }
 
   private def forgetIfIdle(key: Key, queue: Queue): Unit = if (queue.idle) queues -= key
 
@@ -999,7 +1048,10 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
           log.info("Projection " + projectionName + " retries " + stored.size + " failed subscriptions")
           retryRateLimited(stored.sortBy(_.since).map(failure => Key(failure.subscriptionType, failure.aggregateId)).toVector)
         }
-      case Failure(e) => log.error(e, "Projection " + projectionName + " could not read its failed subscriptions")
+      case Failure(e) =>
+        // F201: read again later; on a single node no bus asks again, and unread failures would block nothing visibly.
+        log.error(e, "Projection " + projectionName + " could not read its failed subscriptions; it reads them again in " + options.retries.max)
+        context.system.scheduler.scheduleOnce(options.retries.max, self, LoadFailures)(context.dispatcher)
     }
   }
 
@@ -1036,19 +1088,21 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     eventBus.foreach(_ ! Republish(failure.aggregateType, failure.aggregateId))
 
   // Marks each failed version as applied, then asks once for the versions after it: there may be none, and a later
-  // event of the aggregate asks for any that went missing.
+  // event of the aggregate asks for any that went missing. F201: a failure of versions that never came marks nothing:
+  // those versions may not exist yet, and the next event would be taken for applied; it asks for them again instead.
   private def skipFailedVersions(aggregateId: AggregateId): Int = failed.keys.filter(_.aggregateId == aggregateId).toSeq.count { key =>
     val failure = failed(key)
     Try(subscriptionsState.localTx { session =>
       // From the version applied, which is below the one before the failure where the failure is at a squash start (F113).
       val applied = appliedVersion(key)
-      if (applied < failure.version) advance(key, applied, failure.version)(session)
+      if (applied < failure.version && !failure.error.startsWith(MissingVersions)) advance(key, applied, failure.version)(session)
       subscriptionsState.clearFailure(subscriberName, key.subscriptionType, key.aggregateId)(session)
     }) match {
       case Success(_) =>
         log.warning("Projection " + projectionName + " skipped version " + failure.version.asInt + " of " + failure.aggregateType.simpleName + " " + aggregateId.asLong)
         failed -= key
-        republisher.foreach(_ ! RequestRepublish(self, failure.aggregateType, failure.aggregateId, failure.version.increment))
+        val next = if (failure.error.startsWith(MissingVersions)) failure.version else failure.version.increment
+        republisher.foreach(_ ! RequestRepublish(self, failure.aggregateType, failure.aggregateId, next))
         failureCleared(failure)
         true
       case Failure(e) =>

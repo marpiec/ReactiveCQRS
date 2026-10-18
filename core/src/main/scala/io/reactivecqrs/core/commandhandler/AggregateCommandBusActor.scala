@@ -149,7 +149,8 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   private val lastUsed = scala.collection.mutable.Map[Long, Long]() // ephemeral: an aggregate and the nanoTime of its last message
 
   private val settings = new OwnerSettings[AGGREGATE_ROOT](aggregateContext, eventStoreState, idempotency, events, self, failedRestoreRetryAfter,
-    materializeTo = ephemeral.map(_.persistentBus))
+    materializeTo = ephemeral.map(_.persistentBus),
+    refuseOtherTypes = context.system.settings.config.getString("reactivecqrs.aggregate-type-check") != "log") // F197
 
   private def ownerProps(id: Option[AggregateId]): Props =
     Props(new AggregateOwner[AGGREGATE_ROOT](settings, id)).withDispatcher(BlockingDispatcher.id)

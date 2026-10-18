@@ -8,13 +8,16 @@ import scalikejdbc.ParameterBinder
 
 /**
   * D40: the lines of an organization's export, one JSON object each, written and read with mpjsons: the header, then
-  * one line per aggregate, then the events in commit order, then the archived events. Classes are named, never
-  * numbered: type ids differ between databases. Times are ISO-8601 instants.
+  * one line per aggregate, then the events in commit order, then the archived events, then (since format 2, F199) the
+  * trailer. Classes are named, never numbered: type ids differ between databases. Times are ISO-8601 instants.
   */
 object SpaceFormat {
 
-  /** The format's version, in every export's header. */
-  val Version = 1
+  /** The format's version, in every export's header. Format 2 adds the trailer. */
+  val Version = 2
+
+  /** The format 1.0.0 wrote, without a trailer: read only when the import is told to. */
+  val VersionWithoutTrailer = 1
 
   /** The first line: the format's version, the exporting installation, the space, and when it was exported. */
   case class ExportHeader(format: Int, installation: Int, space: Long, exported: String)
@@ -39,9 +42,20 @@ object SpaceFormat {
   case class ExportedArchived(aggregate: Long, version: Int, eventClass: String, json: String, user: Long, time: String,
                               metadata: Option[String], undoneFrom: Option[Int], archived: String)
 
+  /** The last line (F199): how many aggregates, events and archived events the file has, and the SHA-256 (hex) of every
+    * line before it, each with its newline, in UTF-8: a file cut short, joined or changed is told from a whole one. */
+  case class ExportTrailer(aggregates: Int, events: Long, archived: Long, sha256: String)
+
   /** One line of the file: exactly one field is set. */
   case class Line(header: Option[ExportHeader] = None, aggregate: Option[ExportedAggregate] = None, event: Option[ExportedEvent] = None,
-                  archived: Option[ExportedArchived] = None)
+                  archived: Option[ExportedArchived] = None, trailer: Option[ExportTrailer] = None)
+
+  /** The digest of the lines before the trailer. */
+  private[space] class LinesDigest {
+    private val digest = java.security.MessageDigest.getInstance("SHA-256")
+    def add(line: String): Unit = digest.update((line + "\n").getBytes(java.nio.charset.StandardCharsets.UTF_8))
+    def hex: String = digest.digest().map(b => "%02x".format(b & 0xff)).mkString
+  }
 
   // F65: event times are UTC wall times in TIMESTAMP columns.
   private val Utc = TimeZone.getTimeZone("UTC")

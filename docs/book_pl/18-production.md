@@ -210,7 +210,10 @@ val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, mis
   starcie (`events (aggregate_id, version)`, `aggregates (space_id, id)`, a od ostatnich kroków 1.0
   także indeks własnych wierszy agregatów według typu), za pomocą `CREATE INDEX CONCURRENTLY` z
   PostgreSQL. Gdy już istnieją, nic nie robi. Dopóki nie powstanie ostatni z nich, budowa projekcji w
-  dużej instalacji czyta stronę agregatów w około 100 ms zamiast 1 ms.
+  dużej instalacji czyta stronę agregatów w około 100 ms zamiast 1 ms. Od 1.0.1 indeks na
+  `events (aggregate_id, version)` jest unikalny, więc żaden agregat nie dostanie dwóch zdarzeń o jednej
+  wersji: uruchom go ponownie po aktualizacji do 1.0.1. Jeśli któryś agregat ma już taką parę, zostaje
+  zwykły indeks, w logu pojawia się błąd, a `StoredDataCheck` wymienia te pary (`repeatedVersions`).
 - `backfillSpaces(spaceOf)` nadaje agregatom zapisanym bez organizacji przestrzeń z ich pierwszego
   zdarzenia; dla starych pierwszych zdarzeń, które swojej przestrzeni nie znają, przekazujesz funkcję,
   która ją zna ([rozdział 16](16-organizations.md)). Zrób to, zanim przebudujesz projekcję dla jednej
@@ -242,7 +245,11 @@ zarządzanej z przyrostkiem budowy, na przykład `_v1`). Raport podaje, dla każ
 przeczytane wiersze i te nieczytelne, z przykładami, agregaty wciąż bez przestrzeni, zdarzenia według
 wersji typu zdarzenia (w 1.0 wszystkie muszą mieć 0) oraz tabele, których nie znalazł
 (`report.missingTables`): nazwę z literówką albo, w bazie sprzed 1.0, `events_archive`.
-`report.unreadable` musi wynosić zero.
+`report.unreadable` musi wynosić zero. Od 1.0.1 raport wymienia też wersje zapisane dwa razy
+(`report.repeatedVersions`, przez które nie powstaje unikalny indeks z kroku 7) oraz, gdy podasz
+`contexts = Seq(...)` z każdym kontekstem agregatu aplikacji, typy agregatów, których żaden z nich nie
+ma (`report.typesWithoutContext`): ich szyny poleceń odmówiłyby odtworzenia tych agregatów
+(`reactivecqrs.aggregate-type-check`, dodatek E). Oba muszą być puste.
 
 Zanim usuniesz z kodu starą klasę zdarzenia, `StoredDataCheck.usersOf(className)` powie ci, które
 agregaty wciąż mają zdarzenia tej klasy, w zdarzeniach i w archiwum squasha.

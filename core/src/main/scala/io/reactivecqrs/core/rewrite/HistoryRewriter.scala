@@ -18,8 +18,9 @@ import io.reactivecqrs.core.util.Errors
 /** What a complete rewrite did (D76). `rewritten`: the aggregates whose events or archived events it wrote again;
   * `unchanged`: those it left as they were; `refused`: those it wrote nothing of, with why; `bases`: the aggregates the
   * first one reads, which it does not change (the value may have come from there); `rebuilt`: the projections that
-  * rebuilt every changed aggregate; `failed`: the projections that did not, with why. Run it again for the rest: a change
-  * finds nothing to change where it was applied. */
+  * rebuilt every aggregate rewritten or unchanged (a copy may show a base's values); `failed`: the projections that did
+  * not, with why. Run it again for the rest: a change finds nothing to change where it was applied, and the projections
+  * rebuild every aggregate again (F192). */
 case class RewriteReport(aggregateId: AggregateId, rewritten: Seq[HistoryRewritten], unchanged: Seq[AggregateId], refused: Seq[RewriteRefused],
                          bases: Seq[AggregateId], rebuilt: Seq[String], failed: Map[String, String]) {
   /** Whether everything was rewritten and rebuilt. */
@@ -47,7 +48,9 @@ class HistoryRewriter(commandBus: ActorRef, eventStore: EventStoreState, project
       bases <- Future(eventStore.basesOf(aggregateId))
       walked <- walk(Vector(aggregateId), Set(aggregateId), change, userId,
         RewriteReport(aggregateId, Nil, Nil, Nil, bases, Nil, Map.empty))
-      report <- rebuild(walked.rewritten.map(_.id), projections.toList, walked)
+      // F192, F194: every aggregate visited, changed or not: a copy that reads a changed base shows its values without a
+      // change of its own, and a run again must rebuild what an earlier run could not (it then finds nothing to change).
+      report <- rebuild(walked.rewritten.map(_.id) ++ walked.unchanged, projections.toList, walked)
     } yield {
       if (report.complete) log.info("Aggregate " + aggregateId.asLong + " rewritten: " + report)
       else log.warn("Aggregate " + aggregateId.asLong + " not rewritten completely: " + report)
@@ -66,7 +69,7 @@ class HistoryRewriter(commandBus: ActorRef, eventStore: EventStoreState, project
           Future(eventStore.copiesOf(id)).flatMap { copies =>
             val found = copies.filterNot(seen.contains)
             val next = answer match {
-              case done: HistoryRewritten if done.events + done.archived > 0 => report.copy(rewritten = report.rewritten :+ done)
+              case done: HistoryRewritten if done.events + done.archived > 0 => report.copy(rewritten = report.rewritten :+ done) // unreadable ones included
               case _: HistoryRewritten => report.copy(unchanged = report.unchanged :+ id)
               case refused: RewriteRefused => report.copy(refused = report.refused :+ refused)
             }
@@ -75,9 +78,11 @@ class HistoryRewriter(commandBus: ActorRef, eventStore: EventStoreState, project
         }
   }
 
-  // Each projection rebuilds each changed aggregate in place, one target at a time (D63).
+  // Each projection rebuilds each aggregate in place, one target at a time (D63). With none to rebuild (every one refused),
+  // no projection is counted as rebuilt.
   private def rebuild(changed: Seq[AggregateId], left: List[(String, ActorRef)], report: RewriteReport): Future[RewriteReport] = left match {
     case Nil => Future.successful(report)
+    case _ if changed.isEmpty => Future.successful(report)
     case (name, projection) :: rest =>
       changed.foldLeft(Future.successful(Option.empty[String])) { (previous, id) =>
         previous.flatMap {

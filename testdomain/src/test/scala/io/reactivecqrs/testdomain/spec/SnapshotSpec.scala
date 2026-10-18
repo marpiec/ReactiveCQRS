@@ -179,6 +179,43 @@ class SnapshotSpec extends CommonSpec {
       restored.fromSnapshot mustBe None
       same(restored, fullReplay.restore(cartId)) mustBe true
     }
+
+    // F196: mpjsons reads a field the stored JSON lacks as zero, false or null, silently; the shape tells them apart.
+    Scenario("F196 one of another shape of the state class, or of 1.0.0 without a shape, though it reads") {
+      val cartId = cartWithSnapshot()
+      new CountingRestorer().restore(cartId).fromSnapshot mustBe Some(AggregateVersion(3))
+      Seq("0123456789abcdef0123456789abcdef", null).foreach { shape =>
+        DB.autoCommit { implicit session => sql"UPDATE snapshots SET shape = $shape WHERE aggregate_id = ${cartId.asLong}".update() }
+        val restored = new CountingRestorer().restore(cartId)
+        restored.fromSnapshot mustBe None
+        same(restored, fullReplay.restore(cartId)) mustBe true
+      }
+    }
+  }
+
+  Feature("An aggregate is restored only by its own type's command bus (F197)") {
+
+    Scenario("a query, a command and a squash sent to another type's bus are refused, and the aggregate is unchanged") {
+      Given("a cart with a snapshot, and a bus of folders, whose context also takes snapshots at version 1")
+      val cartId = storedCart()
+      (1 to 2).foreach(i => commandBus.askFor[CustomCommandResponse[_]](AddItem(userId, cartId, AggregateVersion(i), "item " + i)) mustBe a[SuccessResponse])
+      commandBus ! PassivateAggregate(cartId)
+      awaitAssert(snapshotVersion(cartId) mustBe Some(3), 10.seconds, 50.millis)
+      val folders = system.actorOf(AggregateCommandBusActor(new FolderContext, uidGenerator, eventStore, responses, eventBus))
+
+      When("the cart's id is sent to the folders' bus")
+      val query = folders.askFor[Try[Aggregate[Folder]]](GetAggregate(cartId))
+      val command = folders.askFor[CustomCommandResponse[_]](AddNote(userId, cartId, AggregateVersion(3), "into a cart"))
+      val squash = folders.askFor[SquashResponse](SquashAggregate(cartId, AggregateVersion(3), userId))
+
+      Then("each is refused, naming both types, and the cart is as it was")
+      query.failed.get.getMessage must include("is a " + classOf[ShoppingCart].getName + ", not a " + classOf[Folder].getName)
+      command mustBe a[CommandHandlingError]
+      squash mustBe a[SquashRefused]
+      fullReplay.restore(cartId).version mustBe AggregateVersion(3)
+      commandBus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId)).get.version mustBe AggregateVersion(3)
+      system.stop(folders)
+    }
   }
 
   Feature("Snapshots that would be wrong are deleted with the change that makes them wrong") {

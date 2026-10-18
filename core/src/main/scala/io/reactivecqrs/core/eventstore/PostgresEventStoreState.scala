@@ -8,7 +8,7 @@ import io.mpjsons.MPJsons
 import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.types.TypesNamesState
-import io.reactivecqrs.core.util.AfterCommit
+import io.reactivecqrs.core.util.{AfterCommit, Ddl}
 import scalikejdbc._
 
 import scala.concurrent.duration._
@@ -84,13 +84,15 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     }
   }
 
-  // `version`: the aggregate's version before the event, which takes the next one (F125).
-  private def serializedChecked(aggregateId: AggregateId, event: Event[_], version: AggregateVersion): String = {
+  // `version`: the aggregate's version before the event, which takes the next one (F125). F244: the version limit guards
+  // growth only (`adds`): an event that replaces a stored one (a rewrite, a squash, a detach) passes it, and so does a
+  // permanent delete, which ends the aggregate.
+  private def serializedChecked(aggregateId: AggregateId, event: Event[_], version: AggregateVersion, adds: Boolean = false): String = {
     val serialized = mpjsons.serialize(event, event.getClass.getName)
     val limit = eventSizeLimitPerClassName.getOrElse(event.getClass.getName, eventSizeLimit)
     if (serialized.length > limit) {
       throw new EventTooLargeException(aggregateId, aggregateTypeName(event), version, event.getClass.getName, serialized.length, limit)
-    } else if (version.asInt >= aggregateVersionLimit) {
+    } else if (adds && version.asInt >= aggregateVersionLimit && !event.isInstanceOf[PermanentDeleteEvent[_]]) {
       throw new TooManyEventsException(aggregateId, aggregateTypeName(event), aggregateVersionLimit)
     }
     serialized
@@ -99,7 +101,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   // Returns the version the procedure gives and the events' sizes.
   private def persistPlain[AGGREGATE_ROOT](aggregateId: AggregateId, newEvents: NewEvents[AGGREGATE_ROOT], events: Seq[Event[AGGREGATE_ROOT]],
                                            expectedVersion: AggregateVersion, metadata: Option[String])(implicit session: DBSession): (AggregateVersion, Seq[Int]) = {
-    val serialized = events.zipWithIndex.map { case (event, i) => serializedChecked(aggregateId, event, expectedVersion.incrementBy(i)) }
+    val serialized = events.zipWithIndex.map { case (event, i) => serializedChecked(aggregateId, event, expectedVersion.incrementBy(i), adds = true) }
     val spaceIds = events.map {
       case first: FirstEvent[_] => Long.box(first.spaceId.asLong)
       case _ => Long.box(-1L)
@@ -111,7 +113,8 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     }
     val aggregateTypeId = typesNamesState.typeIdByClassName(aggregateTypeName(events.head))
     val version = sql"""SELECT add_events(${newEvents.userId.asLong}, ${array("bigint", spaceIds)}, ${aggregateId.asLong}, ${expectedVersion.asInt},
-         |  $aggregateTypeId, ${array("smallint", eventTypeIds)}, ${utc(newEvents.timestamp)}, ${array("text", serialized)}, $metadata::jsonb)"""
+         |  $aggregateTypeId, ${array("smallint", eventTypeIds)}, ${utc(newEvents.timestamp)}, ${array("text", serialized)}, $metadata::jsonb,
+         |  ${newEvents.expectedGeneration.getOrElse(-1)})"""
       .stripMargin.map(_.int(1)).single().get
     (AggregateVersion(version), serialized.map(PostgresEventStoreState.utf8Length))
   }
@@ -120,13 +123,13 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   private def persistOne[AGGREGATE_ROOT](aggregateId: AggregateId, newEvents: NewEvents[AGGREGATE_ROOT], event: Event[AGGREGATE_ROOT],
                                          expectedVersion: AggregateVersion, metadata: Option[String])(implicit session: DBSession): (AggregateVersion, Int) = event match {
     case undo: UndoEvent[_] =>
-      val serialized = serializedChecked(aggregateId, event, expectedVersion)
+      val serialized = serializedChecked(aggregateId, event, expectedVersion, adds = true)
       (AggregateVersion(sql"""SELECT add_undo_event(${newEvents.userId.asLong}, ${aggregateId.asLong}, ${expectedVersion.asInt},
                              |  ${typesNamesState.typeIdByClassName(aggregateTypeName(event))}, ${typesNamesState.typeIdByClassName(event.getClass.getName)},
                              |  ${utc(newEvents.timestamp)}, $serialized, ${undo.eventsCount}, $metadata::jsonb)"""
         .stripMargin.map(_.int(1)).single().get), PostgresEventStoreState.utf8Length(serialized))
     case duplication: DuplicationEvent[_] =>
-      val serialized = serializedChecked(aggregateId, event, expectedVersion)
+      val serialized = serializedChecked(aggregateId, event, expectedVersion, adds = true)
       (AggregateVersion(sql"""SELECT add_duplication_event(${newEvents.userId.asLong}, ${duplication.spaceId.asLong}, ${aggregateId.asLong}, ${expectedVersion.asInt},
                              |  ${typesNamesState.typeIdByClassName(aggregateTypeName(event))}, ${typesNamesState.typeIdByClassName(event.getClass.getName)},
                              |  ${utc(newEvents.timestamp)}, $serialized, ${duplication.baseAggregateId.asLong}, ${duplication.baseAggregateVersion.asInt}, $metadata::jsonb)"""
@@ -137,7 +140,15 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
 
 
-  override def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit = {
+  override def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]],
+                                               expected: Option[(AggregateVersion, Int)])(implicit session: DBSession): Unit = {
+    // F195: a rewrite that adds no event meets no procedure's check: the aggregate's row is locked and compared here.
+    expected.foreach { case (version, generation) =>
+      val stored = sql"""SELECT base_version, history_generation FROM aggregates WHERE id = ${aggregateId.asLong} AND base_id = ${aggregateId.asLong} FOR UPDATE"""
+        .map(rs => (rs.int(1), rs.int(2))).single()
+      if (!stored.contains((version.asInt, generation))) throw new HistoryChangedException(aggregateId,
+        "expected version " + version.asInt + " at generation " + generation + ", stored " + stored.fold("nothing")(s => "version " + s._1 + " at generation " + s._2))
+    }
     // The snapshots of the aggregate and of its duplicates may hold the old values (D30).
     historyChangedFor(sqls"""SELECT id FROM aggregates WHERE base_id = ${aggregateId.asLong}""")
     // D17: a rewritten event keeps its class, so the history means what it meant; only the stored values change.
@@ -225,8 +236,9 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
 
   override def readSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, stateClassName: String): Option[Try[Snapshot[AGGREGATE_ROOT]]] = DB.readOnly { implicit session =>
-    sql"""SELECT version, context_version, schema_version, state FROM snapshots WHERE aggregate_id = ${aggregateId.asLong}"""
-      .map(rs => Try(Snapshot[AGGREGATE_ROOT](AggregateVersion(rs.int(1)), rs.int(2), rs.int(3), mpjsons.deserialize[AGGREGATE_ROOT](rs.string(4), stateClassName))))
+    sql"""SELECT version, context_version, schema_version, state, shape FROM snapshots WHERE aggregate_id = ${aggregateId.asLong}"""
+      .map(rs => Try(Snapshot[AGGREGATE_ROOT](AggregateVersion(rs.int(1)), rs.int(2), rs.int(3), mpjsons.deserialize[AGGREGATE_ROOT](rs.string(4), stateClassName),
+        rs.stringOpt(5).getOrElse(""))))
       .single()
   }
 
@@ -234,18 +246,24 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     val state = mpjsons.serialize(snapshot.state, stateClassName)
     DB.autoCommit { implicit session =>
       // Only while the aggregate is stored at that version, with the history the state was made from: an owner that
-      // stops after a permanent delete, or after its history changed under it, writes nothing (F119).
-      sql"""INSERT INTO snapshots (aggregate_id, version, context_version, schema_version, state, created)
-           | SELECT ${aggregateId.asLong}, ${snapshot.version.asInt}, ${snapshot.contextVersion}, ${snapshot.schemaVersion}, $state, current_timestamp
+      // stops after a permanent delete, or after its history changed under it, writes nothing (F119). F237: the guard locks
+      // the row, so a change in progress is waited for and then seen; the changes lock it before they delete snapshots.
+      sql"""INSERT INTO snapshots (aggregate_id, version, context_version, schema_version, state, created, shape)
+           | SELECT ${aggregateId.asLong}, ${snapshot.version.asInt}, ${snapshot.contextVersion}, ${snapshot.schemaVersion}, $state, current_timestamp, ${snapshot.shape}
            | WHERE EXISTS (SELECT 1 FROM aggregates WHERE id = ${aggregateId.asLong} AND base_id = ${aggregateId.asLong} AND base_version >= ${snapshot.version.asInt}
-           |   AND history_generation = $generation)
+           |   AND history_generation = $generation FOR SHARE)
            | ON CONFLICT (aggregate_id) DO UPDATE SET version = EXCLUDED.version, context_version = EXCLUDED.context_version,
-           |   schema_version = EXCLUDED.schema_version, state = EXCLUDED.state, created = EXCLUDED.created""".stripMargin.update()
+           |   schema_version = EXCLUDED.schema_version, state = EXCLUDED.state, created = EXCLUDED.created, shape = EXCLUDED.shape""".stripMargin.update()
     }
   }
 
   override def historyGeneration(aggregateId: AggregateId): Int = DB.readOnly { implicit session =>
     sql"""SELECT history_generation FROM aggregates WHERE id = ${aggregateId.asLong} AND base_id = ${aggregateId.asLong}""".map(_.int(1)).single().getOrElse(0)
+  }
+
+  override def generationAndType(aggregateId: AggregateId): (Int, Option[String]) = DB.readOnly { implicit session =>
+    sql"""SELECT a.history_generation, a.type_id FROM aggregates a WHERE a.id = ${aggregateId.asLong} AND a.base_id = ${aggregateId.asLong}"""
+      .map(rs => (rs.int(1), Some(typesNamesState.classNameById(rs.short(2))))).single().getOrElse((0, None))
   }
 
   override def storedVersion(aggregateId: AggregateId): Option[(AggregateVersion, Int)] = DB.readOnly { implicit session =>
@@ -255,9 +273,10 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 
   // D30, F119: the snapshots of these aggregates may hold states their history no longer gives: they go, and the
   // aggregates' history generation moves on, so an owner still holding such a state cannot write it as a snapshot again.
+  // F237: the rows first, so a snapshot write that read the old generation is waited for, and its snapshot deleted after.
   private def historyChangedFor(aggregateIds: SQLSyntax)(implicit session: DBSession): Unit = {
-    sql"""DELETE FROM snapshots WHERE aggregate_id IN ($aggregateIds)""".update()
     sql"""UPDATE aggregates SET history_generation = history_generation + 1 WHERE id = base_id AND id IN ($aggregateIds)""".update()
+    sql"""DELETE FROM snapshots WHERE aggregate_id IN ($aggregateIds)""".update()
   }
 
   /** Builds the indexes a large installation does not get at start without blocking writes (D69): F38's
@@ -265,7 +284,16 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     * aggregates' own rows. Run it once in the background after the upgrade; it does nothing for an index that exists.
     * An index an interrupted build left invalid is dropped and built again. */
   def buildIndexesConcurrently(): Unit = DB.autoCommit { implicit session =>
-    buildConcurrently("events_aggregate_version_idx", sqls"events (aggregate_id, version)")
+    // F198: unique, replacing the plain one, unless some aggregate has two events of one version: those are named by
+    // StoredDataCheck, and the plain index serves restores meanwhile.
+    if (Ddl.has(PostgresEventStoreSchemaInitializer.UniqueVersions) || !PostgresEventStoreSchemaInitializer.versionsRepeat()) {
+      buildConcurrently(PostgresEventStoreSchemaInitializer.UniqueVersions, sqls"events (aggregate_id, version)", unique = true)
+      sql"""DROP INDEX CONCURRENTLY IF EXISTS events_aggregate_version_idx""".execute()
+    } else {
+      PostgresEventStoreState.log.error("Some aggregates have two stored events of one version; the index that keeps them unique is not built " +
+        "(F198). Find them with StoredDataCheck")
+      buildConcurrently("events_aggregate_version_idx", sqls"events (aggregate_id, version)")
+    }
     // M6: an organization's aggregates in id order, for its purge, export and rebuild (D38). The index of the first M6
     // steps, on the space alone, goes once this one is built.
     buildConcurrently("aggregates_space_id_idx", sqls"aggregates (space_id, id)")
@@ -273,14 +301,15 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     buildConcurrently("aggregates_own_type_idx", sqls"aggregates (type_id, id) WHERE id = base_id")
   }
 
-  private def buildConcurrently(name: String, on: SQLSyntax)(implicit session: DBSession): Unit = {
+  private def buildConcurrently(name: String, on: SQLSyntax, unique: Boolean = false)(implicit session: DBSession): Unit = {
     val index = SQLSyntax.createUnsafely(name)
     val invalid = sql"""SELECT NOT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
                        | JOIN pg_namespace n ON n.oid = c.relnamespace
                        | WHERE c.relname = $name AND n.nspname = current_schema()""".stripMargin
       .map(_.boolean(1)).single().getOrElse(false)
     if (invalid) sql"""DROP INDEX CONCURRENTLY IF EXISTS $index""".execute()
-    sql"""CREATE INDEX CONCURRENTLY IF NOT EXISTS $index ON $on""".execute()
+    if (unique) sql"""CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS $index ON $on""".execute()
+    else sql"""CREATE INDEX CONCURRENTLY IF NOT EXISTS $index ON $on""".execute()
   }
 
   /**
@@ -509,8 +538,10 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       if (tableExists("subscriptions")) {
         sql"""DELETE FROM subscriptions WHERE aggregate_id = $id""".update()
       }
-      if (columnExists("commands_responses", "aggregate_id")) { // F167: as a purge does
-        sql"""DELETE FROM commands_responses WHERE aggregate_id = $id""".update()
+      // F167: the responses' values go; F261: their keys stay, until the responses' retention ends, so a retried keyed
+      // command is answered as before (the deleted aggregate's id and version, without info) and creates nothing again.
+      if (columnExists("commands_responses", "aggregate_id")) {
+        sql"""UPDATE commands_responses SET info = NULL, info_type_id = NULL WHERE aggregate_id = $id""".update()
       }
     }
   }
@@ -675,15 +706,29 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     val id = aggregateId.asLong
     lockChain(id)
     case class Changed(archived: Boolean, rowId: Long, version: Int, event: Event[AGGREGATE_ROOT], metadata: Option[EventMetadata])
+    case class ChangedUnread(archived: Boolean, rowId: Long, json: String)
     val changed = scala.collection.mutable.ListBuffer[Changed]()
+    val changedUnread = scala.collection.mutable.ListBuffer[ChangedUnread]()
     var (refusal, classes, fields) = (Option.empty[String], Set.empty[String], Set.empty[String])
     def check(archived: Boolean)(rs: WrappedResultSet): Unit = if (refusal.isEmpty) {
       val version = rs.int(2)
-      val event = mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(5), eventClass(rs.short(3), rs.short(4), id, version))
+      val where = (if (archived) "archived event " else "event ") + version + " of aggregate " + id
+      Try(mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(5), eventClass(rs.short(3), rs.short(4), id, version))).toEither.left.map { unreadable =>
+        // F245: an event that cannot be read is changed as text, when the change says how; erasure must reach it too.
+        change.inUnreadableEvent(rs.string(5)) match {
+          case Some(json) if json != rs.string(5) =>
+            changedUnread += ChangedUnread(archived, rs.long(1), json)
+            classes += "(unreadable)"
+          case Some(_) => ()
+          case None => refusal = Some(where + " cannot be read (" + Errors.message(unreadable) + "), and the change has no form " +
+            "for an event that cannot be read (HistoryChange.inUnreadableEvent)")
+        }
+      }.foreach(event => checkRead(archived, rs, version, where, event))
+    }
+    def checkRead(archived: Boolean, rs: WrappedResultSet, version: Int, where: String, event: Event[AGGREGATE_ROOT]): Unit = {
       val metadata = metadataOf(rs.string(6))
       val (newEvent, newMetadata) = alter(event, metadata)
       if (newEvent != event || newMetadata != metadata) {
-        val where = (if (archived) "archived event " else "event ") + version + " of aggregate " + id
         if (newEvent.getClass != event.getClass) refusal = Some("the change makes " + where + " a " + newEvent.getClass.getName + " (D17)")
         else if (newEvent != event && (event.isInstanceOf[UndoEvent[_]] || event.isInstanceOf[DuplicationEvent[_]]))
           refusal = Some("the change alters " + where + ", an undo or a duplication, whose meaning the store keeps elsewhere")
@@ -703,10 +748,13 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
         val rows = changed.filter(_.archived == archived).map(c => Seq[Any](serializedChecked(aggregateId, c.event, AggregateVersion(c.version - 1)),
           metadataJson(c.metadata).orNull, c.rowId))
         if (rows.nonEmpty) sql"""UPDATE $table SET event = ?, metadata = ?::jsonb WHERE id = ?""".batch(rows.toSeq: _*).apply()
+        val raw = changedUnread.filter(_.archived == archived).map(c => Seq[Any](c.json, c.rowId))
+        if (raw.nonEmpty) sql"""UPDATE $table SET event = ? WHERE id = ?""".batch(raw.toSeq: _*).apply()
       }
       // The snapshots of the aggregate and of its duplicates were made from the values of before.
-      if (changed.nonEmpty) historyChangedFor(sqls"""SELECT id FROM aggregates WHERE base_id = $id""")
-      val count = RewriteCount(changed.count(!_.archived), changed.count(_.archived), classes, fields)
+      if (changed.nonEmpty || changedUnread.nonEmpty) historyChangedFor(sqls"""SELECT id FROM aggregates WHERE base_id = $id""")
+      val count = RewriteCount(changed.count(!_.archived) + changedUnread.count(!_.archived), changed.count(_.archived) + changedUnread.count(_.archived),
+        classes, fields, changedUnread.size)
       sql"""INSERT INTO history_rewrites (aggregate_id, user_id, at, change_class, classes, fields, events, archived)
            | VALUES ($id, ${userId.asLong}, current_timestamp, ${change.getClass.getName}, ${classes.toSeq.sorted.mkString(",")},
            |  ${fields.toSeq.sorted.mkString(",")}, ${count.events}, ${count.archived})""".stripMargin.update()
@@ -868,6 +916,8 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 
 /** The store's helpers. */
 object PostgresEventStoreState {
+
+  private[eventstore] val log = org.slf4j.LoggerFactory.getLogger(classOf[PostgresEventStoreState])
 
   /** The bytes of `s` in UTF-8, as PostgreSQL keeps it (`octet_length`), counted without encoding it: a size the store
     * reports when it writes is the one it reports when it reads (F142). */

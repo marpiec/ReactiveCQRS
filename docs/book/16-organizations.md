@@ -478,23 +478,35 @@ from its own state, just as the purge does, so it keeps exactly what it had. Wit
 
 <!-- snippet: e9/OrganizationsSetup.scala#import -->
 ```scala
-val imported = new SpaceImport(installation.eventStore, installation.uidGenerator).read(file, into = target)
+val imported = new SpaceImport(installation.eventStore, installation.uidGenerator, contexts = Seq(new ShopCartContext))
+                 .read(file, into = target)
 // ImportReport(space, aggregates, events, archived, remapped, unknownReferences, someUnknown, refused)
 ```
 
-It runs on the other installation, into a space that must be empty. It reads the file twice:
+It runs on the other installation, into a space that must be empty, with the aggregate contexts of
+the organization's types, as the export takes them. It reads the file three times:
 
-1. **It checks first**, writing nothing: every class in the file must exist here, every event must
-   fit this installation's limits ([chapter 6](06-events.md)), and the space must be empty. Any
-   problem ends up in `refused`.
-2. **Then it writes**: the aggregates, then the events in their original order, with their undo
-   marks, then the archived events.
+1. **It checks first**, writing nothing. The file must be whole: its last line, the trailer, counts
+   its lines and carries a digest of them, so a file cut short, joined or changed is refused. Every
+   class must exist here (an event class must be an event, an aggregate's type one of the contexts
+   given); each aggregate's events must be its versions, each once, in order; a copy may read only
+   aggregates in the file; and the space must be empty. Any problem ends up in `refused`.
+2. **It reads every event as it will write it**, still writing nothing, so an event that would grow
+   past this installation's limits ([chapter 6](06-events.md)) once its ids are mapped is refused
+   before anything is written.
+3. **Then it writes**: the aggregates, then the events in their original order, with their undo
+   marks, then the archived events, in transactions of at most 10 000 events and 16 MB.
+
+The export reads the whole organization as one snapshot of the database, so a command that commits
+while it runs is either in the file whole or not at all. A file written by 1.0.0 has no trailer: the
+import refuses it unless you pass `acceptFormat1 = true`; export it again with 1.0.1 if you can.
 
 Two installations made their ids in ranges of their own (the installation number of chapter 2), so
 ids rarely clash; ids from before 1.0 can. An aggregate whose id is taken here gets a new one, and
 every reference to it follows: the import reads each event with its own mpjsons instance, which
 replaces `AggregateId` and `UserId` values that moved, and turns the old organization's `SpaceId` into
-the new one. `remapped` lists the ids that moved.
+the new one. So does an id in this installation's own range, as its generator may hand it out (an
+import from another installation keeps its ids). `remapped` lists the ids that moved.
 
 > **Warning:** the import only sees ids that are typed. An id kept as a plain `Long`, or inside a
 > text ("user:5" in a metadata actor), is invisible to it. Give the import an `ImportRewriter` for

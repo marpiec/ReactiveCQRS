@@ -40,12 +40,13 @@ class InterferingEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesName
 
   // A rewrite changes stored rows before it persists its events, the aggregate's among them (F119): the other writer
   // commits before that, as one in another process would, instead of waiting on this transaction's locks forever.
-  override def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit = {
+  override def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]],
+                                               expected: Option[(AggregateVersion, Int)])(implicit session: DBSession): Unit = {
     if (interfereWith.contains(aggregateId) && interferencesLeft.getAndDecrement() > 0) {
       val stored = sql"SELECT base_version FROM aggregates WHERE id = ${aggregateId.asLong} AND base_id = ${aggregateId.asLong}".map(_.int(1)).single().get
       writeFromElsewhere(aggregateId, AggregateVersion(stored), ItemAdded("from elsewhere"))
     }
-    super.overwriteEvents(aggregateId, events)
+    super.overwriteEvents(aggregateId, events, expected)
   }
 
   /** Commits an event in its own transaction, as another writer would. */

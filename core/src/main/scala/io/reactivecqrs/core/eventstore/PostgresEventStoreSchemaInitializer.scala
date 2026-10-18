@@ -6,6 +6,15 @@ import scalikejdbc._
 import io.reactivecqrs.core.util.SqlLogging.withoutValues
 
 
+private[eventstore] object PostgresEventStoreSchemaInitializer {
+  /** F198: the index that keeps one event per aggregate and version. */
+  val UniqueVersions = "events_aggregate_version_uidx"
+
+  /** Whether some aggregate has two stored events of one version. */
+  def versionsRepeat()(implicit session: DBSession): Boolean =
+    sql"SELECT EXISTS (SELECT 1 FROM events GROUP BY aggregate_id, version HAVING count(*) > 1)".map(_.boolean(1)).single().contains(true)
+}
+
 /** Creates the event store's tables, indexes and procedures, when missing (`PostgresEventStoreState.initSchema`). */
 class PostgresEventStoreSchemaInitializer  {
 
@@ -24,6 +33,7 @@ class PostgresEventStoreSchemaInitializer  {
     createAggregatesBaseIdIndex()
     createEventsSequence()
     createSnapshotsTable()
+    addSnapshotsShapeColumn()
     addEventsMetadataColumn()
     addAggregatesSquashedVersionColumn()
     addAggregatesHistoryGenerationColumn()
@@ -35,6 +45,7 @@ class PostgresEventStoreSchemaInitializer  {
     createLineageAndRewritesTables()
     dropOldFunctions()
     createAddEventsFunction()
+    createAddEventsWithoutGenerationFunction()
     createAddEventFunction()
     createAddUndoEventFunction()
     createAddDuplicationEventFunction()
@@ -131,6 +142,10 @@ class PostgresEventStoreSchemaInitializer  {
       """.execute()
   }
 
+  // F196: the shape of the state class a snapshot was written with; a snapshot of another shape, or without one (written
+  // by 1.0.0), is not used. The table is disposable, so the column is small news to it.
+  private def addSnapshotsShapeColumn(): Unit = Ddl.addColumn("snapshots", "shape", "TEXT")
+
   // D32: the metadata envelope of an event; null for events stored without one.
   private def addEventsMetadataColumn(): Unit = Ddl.addColumn("events", "metadata", "JSONB")
 
@@ -143,8 +158,17 @@ class PostgresEventStoreSchemaInitializer  {
 
   // F38: a new or small installation gets the restore index at once; a large one builds it online
   // (`PostgresEventStoreState.buildIndexesConcurrently`), since a plain build would block writes for its duration (D69).
+  // F198: unique, so no import, tool or race can give an aggregate two events of one version; while the stored events
+  // have such a pair, the plain index stays (StoredDataCheck names them), and so does it on a large installation until
+  // `buildIndexesConcurrently` replaces it.
   private def createEventsAggregateVersionIndexWhenSmall(): Unit = if (small("events")) {
-    Ddl.createIndex("events_aggregate_version_idx", "CREATE INDEX IF NOT EXISTS events_aggregate_version_idx ON events (aggregate_id, version)")
+    val unique = DB.readOnly(implicit session => Ddl.has(PostgresEventStoreSchemaInitializer.UniqueVersions) ||
+      !PostgresEventStoreSchemaInitializer.versionsRepeat())
+    if (unique) {
+      Ddl.createIndex(PostgresEventStoreSchemaInitializer.UniqueVersions,
+        s"CREATE UNIQUE INDEX IF NOT EXISTS ${PostgresEventStoreSchemaInitializer.UniqueVersions} ON events (aggregate_id, version)")
+      Ddl.dropIndex("events_aggregate_version_idx")
+    } else Ddl.createIndex("events_aggregate_version_idx", "CREATE INDEX IF NOT EXISTS events_aggregate_version_idx ON events (aggregate_id, version)")
   }
 
   // M6: an organization is found through its aggregates' space (D38); built online on a large installation (D69).
@@ -222,6 +246,20 @@ class PostgresEventStoreSchemaInitializer  {
     sql"""DROP FUNCTION IF EXISTS add_duplication_event(BIGINT, BIGINT, BIGINT, BIGINT, INT, SMALLINT, SMALLINT, SMALLINT, TIMESTAMP, VARCHAR, BIGINT, INT)""".execute()
   }
 
+  // F195: the form of 1.0.0, without the history generation, which nodes of that version call during a rolling upgrade.
+  private def createAddEventsWithoutGenerationFunction(): Unit = DB.autoCommit { implicit session =>
+    SQL("""
+          |CREATE OR REPLACE FUNCTION add_events(_user_id BIGINT, _space_ids BIGINT[], _aggregate_id BIGINT, _expected_version INT, _aggregate_type_id SMALLINT, _event_type_ids SMALLINT[], _event_time TIMESTAMP, _events TEXT[], _metadata JSONB)
+          |RETURNS INT AS
+          |$$
+          |BEGIN
+          |    RETURN add_events(_user_id, _space_ids, _aggregate_id, _expected_version, _aggregate_type_id, _event_type_ids, _event_time, _events, _metadata, -1);
+          |END;
+          |$$
+          |LANGUAGE 'plpgsql' VOLATILE
+        """.stripMargin).execute()
+  }
+
   // One event: `add_events` with a single element.
   private def createAddEventFunction(): Unit = DB.autoCommit { implicit session =>
     SQL("""
@@ -243,16 +281,17 @@ class PostgresEventStoreSchemaInitializer  {
   // Returns the aggregate's new version.
   private def createAddEventsFunction(): Unit = DB.autoCommit { implicit session =>
     SQL("""
-          |CREATE OR REPLACE FUNCTION add_events(_user_id BIGINT, _space_ids BIGINT[], _aggregate_id BIGINT, _expected_version INT, _aggregate_type_id SMALLINT, _event_type_ids SMALLINT[], _event_time TIMESTAMP, _events TEXT[], _metadata JSONB)
+          |CREATE OR REPLACE FUNCTION add_events(_user_id BIGINT, _space_ids BIGINT[], _aggregate_id BIGINT, _expected_version INT, _aggregate_type_id SMALLINT, _event_type_ids SMALLINT[], _event_time TIMESTAMP, _events TEXT[], _metadata JSONB, _expected_generation INT)
           |RETURNS INT AS
           |$$
           |DECLARE
           |    n INT := array_length(_events, 1);
           |    current_version INT;
+          |    current_generation INT;
           |    event_id BIGINT;
           |    _space BIGINT;
           |BEGIN
-          |    UPDATE aggregates SET base_version = base_version + n WHERE id = _aggregate_id AND base_id = _aggregate_id RETURNING base_version - n, space_id INTO current_version, _space;
+          |    UPDATE aggregates SET base_version = base_version + n WHERE id = _aggregate_id AND base_id = _aggregate_id RETURNING base_version - n, space_id, history_generation INTO current_version, _space, current_generation;
           |    IF NOT FOUND THEN
           |        IF _expected_version = 0 AND _space_ids[1] >= 0 THEN
           |            INSERT INTO aggregates (space_id, id, creation_time, type_id, base_order, base_id, base_version) VALUES (_space_ids[1], _aggregate_id, current_timestamp, _aggregate_type_id, 1, _aggregate_id, n);
@@ -266,6 +305,9 @@ class PostgresEventStoreSchemaInitializer  {
           |    END IF;
           |    IF _expected_version >= 0 AND current_version != _expected_version THEN
           |        RAISE EXCEPTION 'Concurrent aggregate modification exception, user id %, aggregate id %, expected version %, current_version %', _user_id, _aggregate_id, _expected_version, current_version;
+          |    END IF;
+          |    IF _expected_generation >= 0 AND current_generation IS NOT NULL AND current_generation != _expected_generation THEN
+          |        RAISE EXCEPTION 'Concurrent aggregate modification exception, user id %, aggregate id %, its history changed: expected generation %, current generation %', _user_id, _aggregate_id, _expected_generation, current_generation;
           |    END IF;
           |    FOR i IN 1 .. n LOOP
           |        event_id := nextval('events_seq');

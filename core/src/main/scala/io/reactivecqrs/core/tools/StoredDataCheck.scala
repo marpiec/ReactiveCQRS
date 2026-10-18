@@ -1,6 +1,7 @@
 package io.reactivecqrs.core.tools
 
 import io.mpjsons.MPJsons
+import io.reactivecqrs.api.AggregateContext
 import io.reactivecqrs.core.commandhandler.PostgresCommandResponseState
 import io.reactivecqrs.core.types.TypesNamesState
 import scalikejdbc._
@@ -37,7 +38,8 @@ object StoredDataCheck {
   /** `missingTables`: the tables to read that the database does not have (F181), such as the saga table of an
     * application without sagas, or the archive of a database from before 1.0. */
   case class Report(results: Seq[ClassResult], aggregatesWithoutSpace: Long, eventsByTypeVersion: Map[Int, Long],
-                    missingTables: Seq[String] = Nil) {
+                    missingTables: Seq[String] = Nil, repeatedVersions: Seq[RepeatedVersion] = Nil,
+                    typesWithoutContext: Map[String, Long] = Map.empty) {
 
     def unreadable: Long = results.map(_.unreadable).sum
 
@@ -47,14 +49,23 @@ object StoredDataCheck {
       val rows = results.map(r => s"| ${r.table} | ${r.className} | ${r.rows} | ${r.unreadable} | ${r.examples.mkString("; ")} |").mkString("\n")
       val missing = if (missingTables.isEmpty) "" else "\n\nTables not found, so not read: " + missingTables.mkString(", ")
       header + rows + missing + s"\n\nAggregates without a space (space_id = -1): $aggregatesWithoutSpace\n" +
-        "Events by event type version: " + eventsByTypeVersion.toSeq.sorted.map { case (v, n) => s"$v: $n" }.mkString(", ") + "\n"
+        "Events by event type version: " + eventsByTypeVersion.toSeq.sorted.map { case (v, n) => s"$v: $n" }.mkString(", ") + "\n" +
+        (if (repeatedVersions.isEmpty) "" else "Versions stored twice or more (F198; the first 100): " +
+          repeatedVersions.map(r => s"aggregate ${r.aggregateId} version ${r.version} (${r.events} events)").mkString(", ") + "\n") +
+        (if (typesWithoutContext.isEmpty) "" else "Aggregate types no context given has (F197; their aggregates are not restored): " +
+          typesWithoutContext.toSeq.sorted.map { case (t, n) => s"$t: $n" }.mkString(", ") + "\n")
     }
   }
 
+  /** F198: an aggregate with more than one stored event of one version, which no restore reads right. */
+  case class RepeatedVersion(aggregateId: Long, version: Int, events: Long)
+
   /** Reads every stored row of the library's tables (and of `projections`) with the classes of this code, and reports
-    * what does not read. Run it on a copy of production before an upgrade (the runbook). */
+    * what does not read. Run it on a copy of production before an upgrade (the runbook). With `contexts`, it also counts
+    * the aggregates of types none of them has, which their command buses would not restore (F197). */
   def run(mpjsons: MPJsons, typesNamesState: TypesNamesState,
-          projections: Seq[ProjectionTable[_]] = Seq.empty, examplesPerClass: Int = 5, fetchSize: Int = 1000): Report = {
+          projections: Seq[ProjectionTable[_]] = Seq.empty, examplesPerClass: Int = 5, fetchSize: Int = 1000,
+          contexts: Seq[AggregateContext[_]] = Nil): Report = {
 
     val results = new Results(examplesPerClass)
     val responses = new PostgresCommandResponseState(mpjsons, typesNamesState)
@@ -116,7 +127,14 @@ object StoredDataCheck {
       Report(results.all,
         sql"SELECT count(*) FROM aggregates WHERE space_id = -1".map(_.long(1)).single().get,
         sql"SELECT event_type_version, count(*) FROM events GROUP BY event_type_version".map(rs => rs.int(1) -> rs.long(2)).list().toMap,
-        missing.result())
+        missing.result(),
+        sql"""SELECT aggregate_id, version, count(*) FROM events GROUP BY aggregate_id, version HAVING count(*) > 1
+             | ORDER BY aggregate_id, version LIMIT 100""".stripMargin.map(rs => RepeatedVersion(rs.long(1), rs.int(2), rs.long(3))).list(),
+        if (contexts.isEmpty) Map.empty else {
+          val known = contexts.map(_.aggregateType.typeName).toSet
+          sql"SELECT type_id, count(*) FROM aggregates WHERE id = base_id GROUP BY type_id".map(rs => className(rs.short(1)) -> rs.long(2)).list()
+            .filterNot { case (name, _) => known.contains(name) }.toMap
+        })
     }
   }
 

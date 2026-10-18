@@ -20,6 +20,7 @@ Rozmiary: 64 MB to 64 × 1 024 × 1 024 bajtów; czasy są zapisane jako `Finite
 | Klucz | Domyślnie | Co robi | Rozdział |
 |---|---|---|---|
 | `reactivecqrs.installation-number` | `0` | Zakres identyfikatorów agregatów danej instalacji: instalacja *n* tworzy je od *n* × 10^12 w górę. Każdy węzeł instalacji ustawia tę samą liczbę. | [5](05-command-flavors.md) |
+| `reactivecqrs.aggregate-type-check` | `"refuse"` | Agregat innego typu niż typ jego szyny poleceń nie jest odtwarzany: zapytania, polecenia i squashe wysłane do złej szyny są odrzucane. `"log"` tylko to loguje, dla magazynu, którego nazwy typów różnią się od nazw kontekstów (sprawdź to najpierw przez `StoredDataCheck`). | [18](18-production.md) |
 | `reactivecqrs.blocking-dispatcher.thread-pool-executor.fixed-pool-size` | `32` | Wątki dla właścicieli agregatów i pracy biblioteki z bazą danych; tu działają też projekcje (`BlockingDispatcher.id`). Trzymaj tę liczbę blisko rozmiaru puli JDBC. | [2](02-setting-up.md), [8](08-projections.md) |
 | `reactivecqrs.handler-dispatcher.thread-pool-executor.fixed-pool-size` | `32` | Wątki dla twoich handlerów poleceń. | [5](05-command-flavors.md) |
 | `pekko.actor.serialization-bindings { "java.io.Serializable" = reactivecqrs }` | ustawiony w `reference.conf` biblioteki | Komunikaty między węzłami przechodzą przez serializator biblioteki. Ustaw to też we własnym `application.conf`: inaczej, zależnie od kolejności na classpath, może wygrać powiązanie Pekko, a węzeł pozostanie niegotowy (F178). | [17](17-cluster.md) |

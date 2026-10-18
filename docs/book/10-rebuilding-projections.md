@@ -418,11 +418,15 @@ def repair(shop: Shop, cartId: AggregateId)(implicit timeout: Timeout): Aggregat
   }
 ```
 
+Work in progress does not refuse it. Another targeted rebuild that runs makes it wait its turn. A
+build in progress does it too, once it has caught up and before it replaces the active build: its
+bulk pass may have read the target's events before they changed. You get the answer once the active
+build is done; the build in progress does its part before it serves. The supervisor keeps the
+waiting rebuilds in the registry, so a stop loses none: they run again at the next start.
+
 The supervisor answers `RebuildRefused(reason)` instead when:
 
 - the projection does not implement `clearForRebuild` (the reason says so);
-- a build is in progress (it replaces the active build whole anyway), or another targeted rebuild
-  is;
 - the target is not of an aggregate type the projection receives;
 - the target is an organization, and some aggregates of the projection's types do not know their
   organization yet. Aggregates stored by older versions of the library may lack it;

@@ -93,6 +93,15 @@ class SearchedNotes(val subscriptionsState: SubscriptionsState, searchMillis: Lo
   override protected val projectionName: String = "SearchedNotes"
 }
 
+/** A store that loses its connection for its first `outage` writes of a version (SQLState 08006), as a database restarting. */
+class FlakyDatabase(outage: Int) extends MemorySubscriptionsState {
+  private val left = new AtomicInteger(outage)
+  override def newVersion(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId,
+                          lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: scalikejdbc.DBSession): Unit =
+    if (left.getAndDecrement() > 0) throw new java.sql.SQLException("connection lost", "08006")
+    else super.newVersion(subscriberName, subscriptionType, aggregateId, lastAggregateVersion, aggregateVersion)
+}
+
 /** A store whose failure records fail until `storable`, as during a database outage. */
 class UnstorableFailures extends MemorySubscriptionsState {
   @volatile var storable = false
@@ -512,6 +521,69 @@ class ProjectionDeliverySpec extends CommonSpec {
 
       f.state.lastVersion(classOf[RecordingProjection].getName, SubscriptionType.EVENTS, id) mustBe AggregateVersion(7)
       f.status().failures mustBe empty
+    }
+
+    Scenario("F254 a database that is lost for longer than the retries leaves no failure record, and the batch is applied once it is back") {
+      val f = new Fixture(state = new FlakyDatabase(outage = 6)) // twice the three attempts
+      val id = newId()
+
+      f.events(id, 1)
+
+      f.acked(id) mustBe Seq(1)
+      f.status().failures mustBe empty
+      f.state.failures(classOf[RecordingProjection].getName) mustBe empty
+    }
+
+    Scenario("F201 a failure record left at or below the applied version is cleared at the start, not asked for again") {
+      val state = new MemorySubscriptionsState
+      val id = newId()
+      val subscriber = classOf[RecordingProjection].getName
+      state.newVersion(subscriber, SubscriptionType.EVENTS, id, AggregateVersion.ZERO, AggregateVersion(3))(scalikejdbc.NoSession)
+      state.recordFailure(subscriber, SubscriptionFailure(SubscriptionType.EVENTS, noteType, id, AggregateVersion(3), "failed before", Instant.now))
+
+      val f = new Fixture(state = state)
+
+      f.outboxRepublished(id)
+      state.failures(subscriber) mustBe empty
+      f.bus.expectNoMessage(300.millis) // in particular, no request for versions from 4
+    }
+
+    Scenario("F201 a failure of versions that never came is cleared when the owner has nothing after; a skip of it marks nothing") {
+      val f = new Fixture(ProjectionActorOptions.DEFAULT.withRetries(quickRetries).copy(gapRequestRepeat = 100.millis, gapGiveUpAfter = 500.millis))
+      val subscriber = classOf[RecordingProjection].getName
+      val (cleared, skipped) = (newId(), newId())
+      Seq(cleared, skipped).foreach { id =>
+        f.events(id, 1)
+        f.acked(id)
+        f.events(id, 3) // version 2 never comes
+        f.failedFor(id) must include("missing")
+      }
+
+      f.projection.askFor[FailedSubscriptionsHandled](RetryFailedSubscription(cleared), 3.seconds) mustBe FailedSubscriptionsHandled(cleared, 1)
+      f.requestedFrom(cleared) mustBe 2
+      f.bus.send(f.projection, io.reactivecqrs.core.delivery.NothingToRepublish(cleared, AggregateVersion(1)))
+      awaitAssert(f.state.failures(subscriber).map(_.aggregateId) mustBe Seq(skipped), 3.seconds, 20.millis)
+
+      f.projection.askFor[FailedSubscriptionsHandled](SkipFailedVersion(skipped), 3.seconds) mustBe FailedSubscriptionsHandled(skipped, 1)
+      f.state.lastVersion(subscriber, SubscriptionType.EVENTS, skipped) mustBe AggregateVersion(1)
+      f.requestedFrom(skipped) mustBe 2
+      f.events(skipped, 2)
+      f.acked(skipped) mustBe Seq(2)
+      f.applied("events").filter(_._1 == skipped).map(_._2) mustBe Seq(Seq(1), Seq(2))
+    }
+
+    Scenario("F259 the history the owner gives below a live delivery of an aggregate the projection had nothing of is applied as history") {
+      val f = new Fixture
+      val id = newId()
+
+      f.events(id, 3)
+      f.requestedFrom(id) mustBe 1
+      f.events(id, 1, 2, 3) // the owner re-publishes up to its version
+      f.bus.fishForSpecificMessage(3.seconds) { case MessageAck(_, `id`, versions, _) if versions.map(_.asInt) == Seq(1, 2, 3) => () }
+      f.events(id, 4)
+      f.bus.fishForSpecificMessage(3.seconds) { case MessageAck(_, `id`, versions, _) if versions.map(_.asInt) == Seq(4) => () }
+
+      f.projection.askFor[Vector[(AggregateId, Boolean)]](GetRebuildingSeen, 3.seconds) mustBe Vector(id -> true, id -> false)
     }
 
     Scenario("failures recorded before the start are retried when the projection starts") {

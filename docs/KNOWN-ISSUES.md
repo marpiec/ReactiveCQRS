@@ -191,7 +191,7 @@ Changes must keep these true (from `ARCHITECTURE.md` §10, extended by the decis
 
 ## 3. Issues in the library
 
-The issues still open. The 191 closed ones (fixed, accepted, decided or found not to be a problem) are in
+The issues still open. The 208 closed ones (fixed, accepted, decided or found not to be a problem) are in
 [`KNOWN-ISSUES-ARCHIVE.md`](KNOWN-ISSUES-ARCHIVE.md), by area, as they were recorded; a number named in the code or in
 the other documents (`F99`) is found there. F185–F274 were found by the risk assessment of 1.0.0 (18/10/2026), at the end of this
 section.
@@ -229,30 +229,6 @@ Ninety issues found by a deep reading of 1.0.0 for failure scenarios: [RISK-ASSE
 one's scenario, mechanism, validation, fix and regression test under the same number, the compound failures they make
 together, and the order to fix them in. None is reproduced yet: "likely" is traced in the code, "suspected" also depends
 on a dependency's behaviour, timing or configuration; "scenario" says how probable its trigger is.
-
-#### F192 — An erasure that could not rebuild a projection reports "complete" when run again; a build in progress switches in with the erased values
-- **High**, likely · scenario possible · Open · details under F192 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F194 — After its base is erased, an attached duplicate is reported unchanged and never rebuilt; a lost history notice is never repaired
-- **High**, likely · scenario likely · Open · details under F194 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F195 — A history change that keeps the version is not seen at persist: a command running across an erasure writes the erased values back
-- **High**, likely · scenario possible · Open · details under F195 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F196 — A snapshot of a state class that gained a field is restored with zero, false or null in that field, silently
-- **High**, suspected · scenario possible · Open · details under F196 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F197 — An aggregate id of another type is restored by the wrong context, which then writes into it
-- **High**, likely · scenario possible · Open · details under F197 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F198 — An organization export is not one snapshot: a write during it gives two events at one version after the import
-- **High**, likely · scenario possible · Open · details under F198 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F199 — The organization import cannot tell a complete file from a truncated or inconsistent one, and trusts its references and class names
-- **High**, likely · scenario unlikely · Open · details under F199 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F201 — A stale failure record becomes a false "versions missing" failure; skipping it moves the subscription past the aggregate, and the next event is acknowledged unapplied
-- **High**, likely · scenario unlikely · Open · details under F201 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F202 — With `ServeStale`, an abandoned build leaves the active build missing every event committed during the build
 - **High**, likely · scenario unlikely · Open · details under F202 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
@@ -323,12 +299,6 @@ on a dependency's behaviour, timing or configuration; "scenario" says how probab
 #### F224 — An ephemeral bus keeps every idempotent response in memory for 30 days, whatever happens to its drafts
 - **Medium**, likely · scenario possible · Open · details under F224 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
-#### F225 — The organization export builds every cross-space detach event before writing, and binds their ids in one IN list
-- **Medium**, likely · scenario possible · Open · details under F225 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F226 — The organization import's write batches are bounded by count only
-- **Medium**, likely · scenario possible · Open · details under F226 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
 #### F227 — An oversized cluster message is serialized in full before the marker replaces it
 - **Medium**, likely · scenario unlikely · Open · details under F227 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
@@ -359,9 +329,6 @@ on a dependency's behaviour, timing or configuration; "scenario" says how probab
 #### F236 — On an ephemeral bus, a first command served after the ids ran out blocks every later command for good
 - **Medium**, likely · scenario unlikely · Open · details under F236 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
-#### F237 — The snapshot generation guard is not atomic: a snapshot can be written over a history that changed meanwhile
-- **Medium**, suspected · scenario unlikely · Open · details under F237 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
 #### F238 — A node's subscription version cache goes stale for subscribers whose writer runs elsewhere
 - **Medium**, likely · scenario unlikely · Open · details under F238 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
@@ -380,20 +347,11 @@ on a dependency's behaviour, timing or configuration; "scenario" says how probab
 #### F243 — A conflict answer reveals another organization's aggregate and its version
 - **Low**, likely · scenario possible · Open · details under F243 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
-#### F244 — The version limit is checked on events that add no version: long aggregates can be neither erased, squashed nor permanently deleted
-- **Medium**, likely · scenario possible · Open · details under F244 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F245 — An unreadable stored event makes its aggregate impossible to erase
-- **Medium**, likely · scenario possible · Open · details under F245 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
 #### F246 — The squash scheduler assumes event times grow with event ids; an import, or a node with a wrong clock, makes it squash history the policy keeps
 - **Medium**, likely · scenario possible · Open · details under F246 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F247 — The SMALLINT type-id space is consumed by every build, and by every node's first sight of a name
 - **Medium**, likely · scenario unlikely · Open · details under F247 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F248 — An organization import keeps ids that the target's own generator will hand out later
-- **Medium**, likely · scenario unlikely · Open · details under F248 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F249 — With large-message destinations configured, the command size check uses the large frame for every destination
 - **Medium**, suspected · scenario possible · Open · details under F249 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
@@ -410,9 +368,6 @@ on a dependency's behaviour, timing or configuration; "scenario" says how probab
 #### F253 — A commit whose outcome is unknown is answered "nothing was stored"
 - **Medium**, likely · scenario possible · Open · details under F253 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
-#### F254 — Transient database errors become durable recorded failures in live projections
-- **Medium**, likely · scenario possible · Open · details under F254 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
 #### F256 — Ephemeral buses call the context's outbox writer with no session, on an in-memory store that never rolls back
 - **Medium**, likely · scenario possible · Open · details under F256 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
@@ -422,14 +377,8 @@ on a dependency's behaviour, timing or configuration; "scenario" says how probab
 #### F258 — Managed projection instances share actor names, so lag signals and logs collide
 - **Medium**, likely · scenario likely · Open · details under F258 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
-#### F259 — After a targeted reset, a live event of a target aggregate re-runs side effects for its whole history
-- **Medium**, likely · scenario possible · Open · details under F259 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
 #### F260 — A stopped subscriber that is not removed makes the poller's work futile, and starves other aggregates' re-delivery
 - **Medium**, likely · scenario possible · Open · details under F260 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F261 — Deleting an aggregate's idempotent responses removes their deduplication too, so a retried keyed creation creates it again
-- **Medium**, likely · scenario possible · Open · details under F261 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F262 — A listener's `afterCommit` called in the first part of a two-part listener runs before the commit, and again when the work is remade
 - **Medium**, likely · scenario unlikely · Open · details under F262 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
@@ -515,7 +464,7 @@ From §7 of Neula's change requests.
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔, F174 ✔; F155 decided (review 8) |
 | M7 | AR5 ✔ (moved from M5 at review 7; D86); F148 ✔, F152 ✔, F153 ✔, F156 ✔, F157 ✔, F160 ✔, F161 ✔, F162 ✔, F163 ✔, F164 ✔, F165 ✔, F166 ✔, F169 ✔ (found writing the book), F170 ✔, F171 ✔, F173 ✔, F175 (accepted), F176 ✔ (found writing E10), F177 ✔ (found writing E11), F178 ✔ (found running E2 in Docker), F179 (deferred: the owner publishes mpjsons later), F180 ✔ (found running E2 on Kubernetes), F181 ✔ (found writing chapter 6's spec), F182 ✔ (found by E2's fault tests in Docker), F183 ✔ (found writing the Scaladoc), F184 (open, found by review 9's bench) |
-| After 1.0 | F185–F274, found by the risk assessment of 18/10/2026 ([RISK-ASSESSMENT.md](RISK-ASSESSMENT.md) §13 orders them); its step 1, for 1.0.1: F185 ✔, F186 ✔, F187 ✔, F188 ✔, F189 ✔, F190 ✔, F191 ✔, F193 ✔, F200 ✔, F252 (keys ✔), F255 ✔, F272 ✔; D87 |
+| After 1.0 | F185–F274, found by the risk assessment of 18/10/2026 ([RISK-ASSESSMENT.md](RISK-ASSESSMENT.md) §13 orders them); its step 1, for 1.0.1: F185 ✔, F186 ✔, F187 ✔, F188 ✔, F189 ✔, F190 ✔, F191 ✔, F193 ✔, F200 ✔, F252 (keys ✔), F255 ✔, F272 ✔; D87; step 2: F192 ✔, F194 ✔, F195 ✔, F196 ✔, F197 ✔, F198 ✔, F199 ✔, F225 ✔, F226 ✔, F201 ✔, F237 ✔, F244 ✔, F245 ✔, F248 ✔, F254 ✔, F259 ✔, F261 ✔ |
 
 ---
 
