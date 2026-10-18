@@ -2237,3 +2237,9 @@ Open test-infrastructure items:
   state, the events, both), a delayed query that reads its own write, and a listener that keeps
   failing on one cart: recorded, shown by `GetProjectionStatus`, the other listeners going on, cleared
   by `SkipFailedVersion`. A runnable main and `ProjectionsSpec`.
+
+**18/10/2026: E5, an aggregate's history**
+- E5 (`examples/.../e5`): a shopping list with snapshots on, an undo, a copy at an earlier version
+  that then lives on its own, and a squash that folds the oldest events into one after detaching
+  that copy; the history below the squash point is refused to reads and gone from `events`. A
+  runnable main and `HistorySpec`.
