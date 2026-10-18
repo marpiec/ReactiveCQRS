@@ -300,4 +300,4 @@ flowchart LR
 
 ---
 
-Next: back to [the contents](README.md).
+Next: [Appendix E](appendix-e-configuration.md), every setting in one place.

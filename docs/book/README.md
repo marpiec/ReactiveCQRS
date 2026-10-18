@@ -33,7 +33,8 @@ your project needs today.
 - **Part VI, Organizations, clusters and production**: organizations (spaces), running on several
   nodes, operating it all, and testing.
 - **Part VII, Scratch paper**: ephemeral aggregates, which live in memory until you keep them.
-- **Appendices**: a glossary, a cheat sheet of messages, and a troubleshooting guide.
+- **Appendices**: a glossary, a cheat sheet of messages, a troubleshooting guide, the architecture
+  in pictures, and every setting in one place.
 
 ## Icons used in this book
 
@@ -94,6 +95,7 @@ your project needs today.
 - B. [Cheat Sheet: Messages and Answers](appendix-b-cheat-sheet.md)
 - C. [Troubleshooting](appendix-c-troubleshooting.md)
 - D. [The Architecture in Pictures](appendix-d-architecture.md)
+- E. [Configuration Reference](appendix-e-configuration.md)
 
 ## Where the examples come from
 
