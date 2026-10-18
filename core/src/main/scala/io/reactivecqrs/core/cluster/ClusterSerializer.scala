@@ -343,15 +343,15 @@ object ClusterSerializer {
       case VectorV => elements()
       case SetV => elements().toSet
       case MapV => (1 to in.readInt()).map(_ => read() -> read()).toMap
-      case Module => loaded(str()).getField("MODULE$").get(null)
+      case Module => trusted(str(), library = false).getField("MODULE$").get(null)
       case TupleV =>
         val values = elements()
         loaded("scala.Tuple" + values.size).getConstructors.head.newInstance(values.map(_.asInstanceOf[AnyRef]): _*)
       case ProductV =>
-        val shape = shapes.get(loaded(str()))
+        val shape = shapes.get(trusted(str(), library = true))
         shape((1 to in.readInt()).map(_ => str() -> read()).toMap)
       case Json =>
-        val className = str()
+        val className = trusted(str(), library = false).getName
         json.deserialize[Any](str(), className)
       case LibraryError => libraryError(str(), (1 to in.readInt()).map(_ => read()))
       case OtherError => new RemoteFailure(str(), read().asInstanceOf[String])
@@ -391,7 +391,7 @@ object ClusterSerializer {
         val version = AggregateVersion(in.readInt())
         val userId = UserId(in.readLong())
         val timestamp = Instant.ofEpochSecond(in.readLong(), in.readInt())
-        val className = classes(in.readInt())
+        val className = trusted(classes(in.readInt()), library = false).getName
         val event = json.deserialize[Any](str(), className).asInstanceOf[Event[Any]]
         EventInfo[Any](version, event, userId, timestamp, read().asInstanceOf[Option[EventMetadata]])
       }
@@ -399,8 +399,23 @@ object ClusterSerializer {
 
     private def loaded(className: String): Class[_] = system.dynamicAccess.getClassFor[AnyRef](className).get
 
+    // F240: a class named in the bytes is loaded, not initialized, and used only when it is the library's (written field
+    // by field), or as JSON a Scala case class or object, a collection, a string, number, boolean or character (an
+    // application's message, event or state): no other class is made or initialized.
+    private def trusted(className: String, library: Boolean): Class[_] = {
+      val clazz = loaded(className)
+      def plainValue = classOf[Product].isAssignableFrom(clazz) || clazz == classOf[String] || classOf[Number].isAssignableFrom(clazz) ||
+        clazz == classOf[java.lang.Boolean] || clazz == classOf[Character] || className.startsWith("scala.collection.")
+      if (!isLibrary(className) && (library || !plainValue))
+        throw new IllegalArgumentException("A cluster message names " + className + ", which it may not carry")
+      clazz
+    }
+
+    // F240: a length is never past the message's end, so a corrupt or crafted one allocates nothing.
     private def str(): String = {
-      val bytes = new Array[Byte](in.readInt())
+      val length = in.readInt()
+      if (length < 0 || length > in.available()) throw new IllegalArgumentException("A length of " + length + " in a cluster message, past its end")
+      val bytes = new Array[Byte](length)
       in.readFully(bytes)
       new String(bytes, UTF_8)
     }

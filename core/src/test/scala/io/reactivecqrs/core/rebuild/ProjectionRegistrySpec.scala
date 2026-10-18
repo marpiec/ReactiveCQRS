@@ -70,6 +70,14 @@ class ProjectionRegistrySpec extends AnyFeatureSpec with Matchers {
 
   Feature("Dropping a build (F94)") {
 
+    Scenario("F203 a name past PostgreSQL's 63 characters is refused before it is recorded") {
+      val name = newName()
+      val handle = new ProjectionBuild(postgres.startBuild(name, 1, Map.empty), postgres)
+      an[IllegalArgumentException] must be thrownBy handle.table("t" * 63)
+      an[IllegalArgumentException] must be thrownBy handle.documentStore("d" * 50)
+      handle.table("t" * 40).length must be <= 63
+    }
+
     Scenario("drops every table and sequence it named, and forgets it") {
       val name = newName()
       val build = postgres.startBuild(name, 1, Map.empty)

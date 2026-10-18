@@ -26,6 +26,16 @@ class PostgresTypesNamesStateSpec extends CommonSpec {
       }
     }
 
+    Scenario("F247 a name another node stored takes no id of the sequence") {
+      val nodes = (1 to 3).map(_ => new PostgresTypesNamesState().initSchema()) // their caches loaded before the name exists
+      val name = "io.example.Known." + System.nanoTime()
+      new PostgresTypesNamesState().typeIdByClassName(name) // another node stores it
+      def sequence = scalikejdbc.DB.readOnly(implicit s => scalikejdbc.SQL("SELECT last_value FROM types_names_seq").map(_.long(1)).single().get)
+      val before = sequence
+      nodes.foreach(_.typeIdByClassName(name)) // the three meet it
+      sequence mustBe before
+    }
+
     Scenario("F230 a name that waits for another node's insert holds up no other name") {
       val (state, waiting, other) = (new PostgresTypesNamesState().initSchema(), "io.example.Waiting." + System.nanoTime(), "io.example.Other." + System.nanoTime())
       scalikejdbc.DB.localTx { implicit session => // another node inserts the name, not committed yet

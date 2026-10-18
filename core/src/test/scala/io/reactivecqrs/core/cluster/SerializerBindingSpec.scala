@@ -27,9 +27,21 @@ class SerializerBindingSpec extends AnyFeatureSpec with Matchers {
       }
     }
 
-    Scenario("a node whose case classes go to the library's serializer is ready") {
+    Scenario("a node whose case classes go to the library's serializer waits for its start only, and is ready once its bus is (F233)") {
       withNode("") { system =>
+        Readiness(system).waitingFor mustBe Set(Readiness.Starting)
+        Readiness(system).waitFor("a bus")
+        Readiness(system).done("a bus")
         Readiness(system).ready mustBe true
+      }
+    }
+
+    Scenario("F233 a node that shuts down is not ready") {
+      withNode("") { system =>
+        Readiness(system).waitFor("a bus")
+        Readiness(system).done("a bus")
+        Await.ready(org.apache.pekko.actor.CoordinatedShutdown(system).run(org.apache.pekko.actor.CoordinatedShutdown.UnknownReason), 30.seconds)
+        Readiness(system).ready mustBe false
       }
     }
   }

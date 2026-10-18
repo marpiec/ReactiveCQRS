@@ -23,6 +23,8 @@ class ProjectionBuild private[rebuild](val record: BuildRecord, registry: Projec
   /** The table name of a `PostgresDocumentStore` (or `…AutoId`) of this build. */
   def documentStore(table: String): String = {
     val named = checked(table) + record.suffix
+    fits("projection_" + named)
+    fits("sequence_" + named)
     OutdatedTables.mark(named, outdated = !current)
     registry.recordObject(name, number, "projection_" + named, sequence = false)
     registry.recordObject(name, number, "sequence_" + named, sequence = true) // the auto-id store's
@@ -36,9 +38,17 @@ class ProjectionBuild private[rebuild](val record: BuildRecord, registry: Projec
   def sequence(sequence: String): String = recorded(sequence, sequence = true)
 
   private def recorded(base: String, sequence: Boolean): String = {
-    val named = checked(base) + record.suffix
+    val named = fits(checked(base) + record.suffix)
     registry.recordObject(name, number, named, sequence)
     named
+  }
+
+  // F203: PostgreSQL cuts a longer name silently, so two builds would share one table, and dropping the older would drop
+  // the newer's; refused before anything is recorded or written, while the active build serves on.
+  private def fits(objectName: String): String = {
+    require(objectName.length <= 63, "The name " + objectName + " of build " + number + " of " + name + " passes PostgreSQL's 63 " +
+      "characters, which it would cut silently; give the table or sequence a shorter name")
+    objectName
   }
 
   private def checked(base: String): String = {

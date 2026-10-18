@@ -1765,9 +1765,13 @@ chosen ids through a command bus.
   member yet, nothing new is (F138). A version whose new classes were written cannot be rolled
   back. A new command class can reach an owner on an old
   node during the rollout, which does not know it: send it only once every node runs its
-  version.
+  version; the same holds for any message class a singleton receives (saga orders, queries,
+  F271), which the old oldest node drops.
+- **Procedures (F269):** `schema_steps` records `procedures:<n>`; a node installs its procedures only
+  when no newer version is recorded, and logs that it left them otherwise.
 - **Readiness (D71):** `cluster/Readiness(system)` waits for each event bus until its subscribers
-  answered or its `registrationTimeout` passed (D87); `ReadinessCheck` is a Pekko Management readiness check over it
+  answered or its `registrationTimeout` passed (D87), and is not ready before its first event bus exists nor once its
+  coordinated shutdown begins (F233); `ReadinessCheck` is a Pekko Management readiness check over it
   (`pekko.management.health-checks.readiness-checks`).
 - **Clients during a rollout** send commands to nodes that are up and retry, with an
   idempotency key, through another node when a node leaves before it answered.

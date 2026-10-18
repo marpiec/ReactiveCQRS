@@ -22,11 +22,12 @@ class UidGeneratorSchemaInitializer {
     initSequence("sagas_uids_seq", start = 1)
   }
 
-  // F185: the step is changed only when it is not the pool size; an ALTER SEQUENCE waits for the transactions using it.
+  // F185: the step is changed only when it is below the pool size, never lowered (F204: a larger one is a later version's,
+  // whose nodes draw pools of it); an ALTER SEQUENCE waits for the transactions using it.
   private def initSequence(name: String, start: Long): Unit = {
     DB.autoCommit(implicit session => SQL(s"CREATE SEQUENCE IF NOT EXISTS $name INCREMENT BY $poolSize START $start").execute.apply())
     Ddl.change("setting the step of " + name, implicit session =>
-      sql"SELECT increment_by FROM pg_sequences WHERE schemaname = current_schema() AND sequencename = $name".map(_.long(1)).single().contains(poolSize.toLong)
+      sql"SELECT increment_by FROM pg_sequences WHERE schemaname = current_schema() AND sequencename = $name".map(_.long(1)).single().exists(_ >= poolSize)
     )(implicit session => SQL(s"ALTER SEQUENCE $name INCREMENT BY $poolSize").execute.apply())
   }
 }

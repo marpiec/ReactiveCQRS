@@ -7,6 +7,10 @@ import io.reactivecqrs.core.util.SqlLogging.withoutValues
 
 
 private[eventstore] object PostgresEventStoreSchemaInitializer {
+  /** F269: the version of the stored procedures this code installs (1: 1.0.0; 2: 1.0.1, `add_events` checks the history
+    * generation, F195). Raise it with every change to a procedure. */
+  val ProceduresVersion = 2
+
   /** F198: the index that keeps one event per aggregate and version. */
   val UniqueVersions = "events_aggregate_version_uidx"
 
@@ -46,13 +50,32 @@ class PostgresEventStoreSchemaInitializer  {
     createEventKeysTable()
     createEventsArchiveTable()
     createLineageAndRewritesTables()
-    dropOldFunctions()
-    createAddEventsFunction()
-    createAddEventsWithoutGenerationFunction()
-    createAddEventFunction()
-    createAddUndoEventFunction()
-    createAddDuplicationEventFunction()
+    installProcedures()
     completeEventKeysWhenNoEvents()
+  }
+
+  // F269: a node replaces the procedures only with its own version or a newer one: an older node that starts during a
+  // rolling upgrade, or after one, leaves the newer bodies as they are. (Nodes of 1.0.0 do not ask.)
+  private[eventstore] def installProcedures(): Boolean = {
+    val stored = DB.readOnly(implicit session => sql"SELECT name FROM schema_steps WHERE name LIKE 'procedures:%'".map(_.string(1)).list())
+      .flatMap(_.stripPrefix("procedures:").toIntOption).maxOption.getOrElse(0)
+    if (stored > PostgresEventStoreSchemaInitializer.ProceduresVersion) {
+      PostgresEventStoreState.log.warn("The event store's procedures are of version " + stored + ", newer than this node's " +
+        PostgresEventStoreSchemaInitializer.ProceduresVersion + ": they are left as they are")
+      false
+    } else {
+      dropOldFunctions()
+      createAddEventsFunction()
+      createAddEventsWithoutGenerationFunction()
+      createAddEventFunction()
+      createAddUndoEventFunction()
+      createAddDuplicationEventFunction()
+      DB.autoCommit { implicit session =>
+        val name = "procedures:" + PostgresEventStoreSchemaInitializer.ProceduresVersion
+        sql"INSERT INTO schema_steps (name, completed) VALUES ($name, current_timestamp) ON CONFLICT (name) DO NOTHING".update()
+      }
+      true
+    }
   }
 
 

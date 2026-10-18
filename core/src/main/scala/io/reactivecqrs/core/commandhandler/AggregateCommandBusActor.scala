@@ -334,7 +334,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
   // F121: a command of a sharded type may go to an owner on another node, so it must fit a message between nodes; it is
   // refused wherever its owner runs, so the outcome does not depend on where that is. The envelope adds under 1 KiB.
   private def tooLarge(command: Any): Option[String] = messageSize.flatMap { sizes =>
-    val limit = sizes.limit - 1024
+    val limit = sizes.frameLimit - 1024 // F249: an owner is never a large-message destination
     Try(sizes.of(command.asInstanceOf[AnyRef])) match {
       case Success(size) if size <= limit => None
       case Success(size) => Some("Command " + command.getClass.getSimpleName + " of " + size + " bytes is too large to be sent between " +

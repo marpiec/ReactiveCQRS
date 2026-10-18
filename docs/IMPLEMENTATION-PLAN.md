@@ -2704,3 +2704,11 @@ Open test-infrastructure items:
   F218, F220 closed; F217 partly (a retired build's rows deleted in batches; paging the targeted reset and a `space_id`
   index left); F215 left open: a per-base cache must also apply each copy's duplication event, and the lock modes need
   the SQL procedures changed.
+
+**18/10/2026: the risk assessment, step 4, item 16: deployment and start-up**
+- F203 (build names checked), F204 (the id generator: used sequences never moved, pools of the current step), F233
+  (readiness from the first event bus to the shutdown, no host call), F240 (the reader's classes and lengths), F247
+  (look up before insert), F249 (`frameLimit` for commands), F250 (stack overflows contained), F269 (procedures
+  versioned in `schema_steps`). Each red under a mutation (F250: the mutated run does not finish).
+- F270 and F271 documented only (chapters 17 and 18, ARCHITECTURE §13.6) and left open: binding every timestamp as UTC
+  and refusing new message classes while older nodes run are larger changes.

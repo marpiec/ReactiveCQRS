@@ -480,6 +480,10 @@ i loguje błąd, który go wymienia. Dostarcza do pozostałych, ale żadne zdarz
 dopóki brakujący subskrybent nie odpowie; wtedy właściciele publikują ponownie to, co zachowali.
 Subskrybent, który zatrzyma się, zanim odpowie, zostaje pominięty tak samo, od razu.
 
+Węzeł nie jest też gotowy, zanim powstanie jego pierwsza szyna zdarzeń (na przykład gdy czeka na
+schemat), ani od chwili, gdy zaczyna się jego zamykanie, więc aktualizacja czeka na węzły, które
+naprawdę działają, a ruch opuszcza węzeł, zanim ten się zatrzyma.
+
 Jeśli używasz health checków z Pekko Management (dodaj Pekko Management do swojej aplikacji; biblioteka
 go nie dołącza), jedna linia zamienia tę informację w sprawdzenie gotowości (readiness check), więc load
 balancery kierują ruch tylko do gotowych węzłów:
@@ -589,6 +593,13 @@ Jeszcze kilka przepisów ruchu drogowego:
 - **Zmiany rozmieszczenia** nadal wymagają pełnego zatrzymania (zob. wyżej).
 - **Klaster, który działa na wersji milestone** (1.0.0-M5 lub -M6), przechodzi na 1.0.0 z pełnym
   zatrzymaniem: 1.0 zapisuje zdarzenia dostarczenia w postaci, której tamte wersje nie umieją odczytać.
+- **Nowa klasa komunikatu** (zlecenie sagi, zapytanie, polecenie) może trafić do węzła starej wersji,
+  na przykład najstarszego, na którym działają singletony; ten nie umie jej odczytać i ją odrzuca, a
+  nadawca dostaje tylko przekroczenie czasu. Dodaj taką klasę w jednym wydaniu, a wysyłaj ją w
+  następnym, gdy każdy węzeł działa już w pierwszym.
+- **Procedury składowane:** węzeł podmienia procedury magazynu zdarzeń tylko na te ze swojej wersji
+  albo nowszej, więc starszy węzeł, który zrestartuje się w trakcie aktualizacji, zostawia nowe treści
+  w spokoju.
 
 > **Pod maską:** wersje aplikacji, przełącznik zapisu, gotowość i test aktualizacji kroczącej opisuje
 > [ARCHITECTURE.md, sekcja 13.6](../ARCHITECTURE.md) (D65–D73, F132, F138).

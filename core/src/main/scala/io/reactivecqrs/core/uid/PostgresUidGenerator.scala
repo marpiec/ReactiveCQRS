@@ -15,10 +15,10 @@ abstract class UidGenerator {
 }
 
 /**
-  * Pools of ids from a sequence that steps by the pool size. `range`, for aggregate ids (D39): the sequence is moved to
-  * the range's start when it is behind (never back), a start with the sequence already past the range's end is refused
-  * (a wrong installation number, or two on one database), and so is a pool past that end. Without one, pools stop at
-  * 2^53.
+  * Pools of ids from a sequence that steps by the pool size. `range`, for aggregate ids (D39): a sequence never used yet
+  * is moved to the range's start; one used below the range, or past its end, is refused at start (a wrong installation
+  * number, or two on one database: F204), and so is a pool past that end. Without one, pools stop at 2^53. A pool is as
+  * large as the sequence's step when it is drawn, so a step lowered meanwhile gives no id twice (F204).
   */
 class PostgresUidGenerator(sequenceName: String, range: Option[IdRange] = None) extends UidGenerator {
 
@@ -33,14 +33,14 @@ class PostgresUidGenerator(sequenceName: String, range: Option[IdRange] = None) 
 
   /** The next pool; throws when it would pass the range's end. */
   def nextIdsPool: IdsPool = {
-    val poolFrom = DB.autoCommit { implicit session =>
-      SQL(s"SELECT NEXTVAL('$sequenceName')").map(rs => rs.long(1)).single().getOrElse {
-        throw new IllegalStateException("Query returned no values, that should not happen.")
-      }
+    val (poolFrom, step) = DB.autoCommit { implicit session =>
+      SQL(s"SELECT NEXTVAL('$sequenceName'), (SELECT increment_by FROM pg_sequences WHERE sequencename = '$sequenceName' AND schemaname = current_schema())")
+        .map(rs => (rs.long(1), rs.longOpt(2).getOrElse(poolSize))).single().get
     }
-    if (poolFrom + poolSize > until) throw new IllegalStateException(s"No ids left in $sequenceName: the pool from $poolFrom would pass $until" +
+    val size = math.min(step, poolSize)
+    if (poolFrom + size > until) throw new IllegalStateException(s"No ids left in $sequenceName: the pool from $poolFrom would pass $until" +
       range.map(r => s", the end of installation ${r.installation}'s range").getOrElse(", 2^53"))
-    IdsPool(poolFrom, poolSize)
+    IdsPool(poolFrom, size)
   }
 
   // Under the schema lock, as the nodes of an installation start together.
@@ -50,6 +50,9 @@ class PostgresUidGenerator(sequenceName: String, range: Option[IdRange] = None) 
       val next = if (called) last + poolSize else last
       if (next + poolSize > r.until) throw new IllegalStateException(s"The ids of $sequenceName are past installation ${r.installation}'s range " +
         s"(the next pool starts at $next, the range ends before ${r.until}): is the installation number right?")
+      if (next < r.from && called) throw new IllegalStateException(s"The ids of $sequenceName were given below installation ${r.installation}'s " +
+        s"range (the next pool starts at $next, the range at ${r.from}): is the installation number right? Moving an installation's ids is done by " +
+        s"hand (setval), never by a start")
       if (next < r.from) SQL(s"SELECT setval('$sequenceName', ${r.from}, false)").map(_.long(1)).single()
     }
   }

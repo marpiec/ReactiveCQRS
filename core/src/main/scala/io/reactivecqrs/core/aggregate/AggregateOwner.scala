@@ -232,7 +232,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     * the command bus to stop it after `failedRestoreRetryAfter`, so a later request restores in a new owner (D11). */
   private def restore(): Option[AggregateRestoreFailedException] = {
     val started = System.nanoTime()
-    Try(restorer.restore(aggregateId)) match {
+    Try(contained(restorer.restore(aggregateId))) match {
       case Success(restored) =>
         metrics.metrics.time("reactivecqrs.restore", typeTag + ("from" -> (if (restored.fromSnapshot.isDefined) "snapshot" else "events")),
           System.nanoTime() - started)
@@ -456,11 +456,13 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     val rewritten = rewrittenClasses(envelope.command).map(classes => restorer.eventsOfClasses(aggregateId, classes))
     Future {
       val current = state.fold(missing => throw new IllegalStateException(missing), identity)
-      val result = rewritten match {
-        case Some(events) => rewriteHistoryCommandHandlers(events, current)(envelope.command)
-        case None => envelope.command match {
-          case store: StoreFirstEvent[_] => CommandSuccess(store.event.asInstanceOf[Event[AGGREGATE_ROOT]]) // D77: as given
-          case other => commandHandlers(current)(other)
+      val result = contained {
+        rewritten match {
+          case Some(events) => rewriteHistoryCommandHandlers(events, current)(envelope.command)
+          case None => envelope.command match {
+            case store: StoreFirstEvent[_] => CommandSuccess(store.event.asInstanceOf[Event[AGGREGATE_ROOT]]) // D77: as given
+            case other => commandHandlers(current)(other)
+          }
         }
       }
       result match {
@@ -592,6 +594,12 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     case _ => false
   }
 
+  // F250: a handler or a restore that overflows its stack (deep recursion, deeply nested JSON) fails its command or its
+  // restore, as other errors do: a fatal error would end the JVM, and a stored event could then end every node that reads it.
+  private def contained[T](work: => T): T = try work catch {
+    case e: StackOverflowError => throw new IllegalStateException("The stack overflowed", e)
+  }
+
   private def nextRoot(userId: UserId, timestamp: Instant, events: Seq[Event[AGGREGATE_ROOT]], readAfterCommit: Boolean): Either[(Exception, Event[AGGREGATE_ROOT]), AGGREGATE_ROOT] = {
     if (events.exists(_.isInstanceOf[DuplicationEvent[_]])) {
       Right(root) // a duplicate has no state of its own before its first event; it is read after the commit
@@ -600,7 +608,7 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
         // F148: restores skip undo events, and the state after an undo is read from the store, so handlers need none.
         case (Right(state), _: UndoEvent[_]) => Right(state)
         case (Right(state), event) =>
-          try Right(eventHandlers(userId, timestamp, state)(event)) catch {
+          try Right(contained(eventHandlers(userId, timestamp, state)(event))) catch {
             case e: Exception => Left((e, event))
           }
         case (failed, _) => failed

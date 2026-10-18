@@ -466,6 +466,10 @@ that names it. It delivers to the others, but no event leaves the outbox until t
 subscriber answers; then the owners publish what they kept again. A subscriber that stops before it
 answers is left out the same way, at once.
 
+A node is also not ready before its first event bus exists (while it waits for the schema, say),
+and from the moment its shutdown begins, so a rollout waits for nodes that are really up and
+traffic leaves a node before it stops.
+
 If you use Pekko Management's health checks (add Pekko Management to your application; the library
 does not bring it), one line makes it a readiness check, so load balancers send traffic only to ready
 nodes:
@@ -573,6 +577,12 @@ A few more rules of the road:
 - **Placement changes** still need a full stop (see above).
 - **A cluster that runs a milestone build** (1.0.0-M5 or -M6) moves to 1.0.0 with a full stop: 1.0
   writes the events of a delivery in a form those builds cannot read.
+- **A new message class** (a saga order, a query, a command) can reach a node of the old version,
+  such as the oldest node that runs the singletons, which cannot read it and drops it: its sender
+  only times out. Add such a class in one release, and send it in the next, once every node runs
+  the first.
+- **Stored procedures:** a node replaces the event store's procedures only with its own version's
+  or newer ones, so an older node that restarts during the rollout leaves the new bodies alone.
 
 > **Under the hood:** app-versions, the write switch, readiness and the rolling-upgrade test are
 > described in [ARCHITECTURE.md, section 13.6](../ARCHITECTURE.md) (D65–D73, F132, F138).

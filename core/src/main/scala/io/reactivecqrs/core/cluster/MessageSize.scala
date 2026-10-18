@@ -12,12 +12,15 @@ import org.apache.pekko.serialization.SerializationExtension
   */
 class MessageSize(system: ExtendedActorSystem) extends Extension {
 
-  /** The largest message, in bytes, that may be sent between nodes. */
+  private val artery = system.settings.config.getConfig("pekko.remote.artery")
+
+  /** F249: the largest message, in bytes, that may be sent to an ordinary destination, such as an aggregate's owner. */
+  val frameLimit: Int = (artery.getBytes("advanced.maximum-frame-size").longValue - 8 * 1024).toInt
+
+  /** The largest message, in bytes, that may be sent between nodes, to a large-message destination if there are any. */
   val limit: Int = {
-    val artery = system.settings.config.getConfig("pekko.remote.artery")
-    val frame = artery.getBytes("advanced.maximum-frame-size").longValue
     val largeFrame = if (artery.getStringList("large-message-destinations").isEmpty) 0L else artery.getBytes("advanced.maximum-large-frame-size").longValue
-    (math.max(frame, largeFrame) - 8 * 1024).toInt
+    math.max(frameLimit.toLong, largeFrame - 8 * 1024).toInt
   }
 
   /** What the events of one delivery are packed into: half the limit, the rest left for a state and the envelope. */

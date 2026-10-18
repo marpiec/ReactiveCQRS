@@ -112,6 +112,18 @@ Fixes from [the risk assessment of 1.0.0](docs/RISK-ASSESSMENT.md), in the order
   - The idle-owner sweep stops at most 200 owners at once; `AfterCommit` and type names take no JVM-wide lock;
     `backfillEventKeys` scans no whole table, pauses between batches (`pause`) and retries a failed batch; a projection
     switch whose answer was lost completes; a retired build's subscription rows go in batches.
+- **Deployment and start-up** (F203, F204, F233, F240, F247, F249, F250, F269, chapters 17 and 18):
+  - A managed build's table or sequence name past 63 characters is refused before it is created.
+  - The aggregate-id generator refuses a node whose installation number does not fit ids given already, never moves
+    a used sequence, and draws pools of the sequence's current step; a start never lowers the step.
+  - **Changed:** a node is not ready before its first event bus exists, nor once its shutdown begins.
+  - The cluster serializer reads only the library's classes and plain values or case classes, and refuses lengths
+    past the frame.
+  - A type name another node stored takes no id; commands are checked against the ordinary frame; a stack overflow in
+    a handler or a restore fails that command or restore instead of the JVM.
+  - The event store's procedures are versioned (`schema_steps`): an older node leaves newer ones as they are.
+  - The book covers clocks and time zones (run the JVM on UTC, keep clocks in sync) and new message classes during a
+    rolling upgrade (F270, F271, left open).
 
 ## 1.0.0 (18/10/2026)
 

@@ -56,6 +56,41 @@ class ClusterSerializerSpec extends AnyFeatureSpec with Matchers with BeforeAndA
     }
   }
 
+  Feature("The limits of messages between nodes") {
+
+    Scenario("F249 with large-message destinations, an ordinary destination keeps the ordinary frame's limit") {
+      val large = ActorSystem("large-frames", ConfigFactory.parseString(
+        """pekko.remote.artery.advanced.maximum-frame-size = 64 KiB
+          |pekko.remote.artery.advanced.maximum-large-frame-size = 2 MiB
+          |pekko.remote.artery.large-message-destinations = ["/user/large"]""".stripMargin).withFallback(ConfigFactory.load()))
+      try {
+        val sizes = MessageSize(large)
+        (sizes.frameLimit, sizes.limit) mustBe ((56 * 1024, 2 * 1024 * 1024 - 8 * 1024))
+      } finally TestKit.shutdownActorSystem(large)
+    }
+  }
+
+  Feature("Frames the reader refuses (F240)") {
+
+    def read(write: DataOutputStream => Unit): Any = {
+      val bytes = new ByteArrayOutputStream()
+      val out = new DataOutputStream(bytes)
+      write(out)
+      out.flush()
+      new ClusterSerializer.Reader(new DataInputStream(new ByteArrayInputStream(bytes.toByteArray)), system, ClusterSerialization(system).mpjsons).read()
+    }
+    def str(out: DataOutputStream, s: String): Unit = { val b = s.getBytes("UTF-8"); out.writeInt(b.length); out.write(b) }
+
+    Scenario("F240 a frame naming a class that is neither the library's nor a case class is refused, the class not made") {
+      an[IllegalArgumentException] must be thrownBy read { out => out.writeByte(24); str(out, "java.lang.ProcessBuilder"); str(out, "{}") } // as JSON
+      an[IllegalArgumentException] must be thrownBy read { out => out.writeByte(23); str(out, "java.util.Date"); out.writeInt(0) } // as a library class
+    }
+
+    Scenario("F240 a length past the frame's end is refused without allocating it") {
+      an[IllegalArgumentException] must be thrownBy read { out => out.writeByte(1); out.writeInt(Int.MaxValue) }
+    }
+  }
+
   Feature("Messages that cannot leave their node") {
 
     Scenario("a message defined inside a class is refused by the sending node") {

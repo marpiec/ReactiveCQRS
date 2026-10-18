@@ -60,5 +60,20 @@ class IdRangeSpec extends AnyFeatureSpec with Matchers {
     Scenario("without a range, takes pools as before") {
       new PostgresUidGenerator(sequence(1001)).nextIdsPool.from mustBe 1001
     }
+
+    Scenario("F204 a node with a higher installation number refuses to start on ids given already, and leaves them") {
+      val name = sequence(1001)
+      new PostgresUidGenerator(name, Some(IdRange(0))).nextIdsPool.from mustBe 1001
+      (the[IllegalStateException] thrownBy new PostgresUidGenerator(name, Some(IdRange(3)))).getMessage must include("installation number")
+      new PostgresUidGenerator(name, Some(IdRange(0))).nextIdsPool.from mustBe 11001 // untouched
+    }
+
+    Scenario("F204 a step lowered while a generator runs gives pools of the new step, no id twice") {
+      val name = sequence(1001)
+      val (first, second) = (new PostgresUidGenerator(name), new PostgresUidGenerator(name))
+      DB.autoCommit(implicit session => SQL(s"ALTER SEQUENCE $name INCREMENT BY 5000").execute())
+      val pools = Seq(first.nextIdsPool, second.nextIdsPool, first.nextIdsPool)
+      pools.map(p => (p.from, p.size)) mustBe Seq((1001L, 5000L), (6001L, 5000L), (11001L, 5000L))
+    }
   }
 }

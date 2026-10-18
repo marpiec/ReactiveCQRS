@@ -30,6 +30,15 @@ class OneSecondCarts extends ShoppingCartAggregateContext {
   }
 }
 
+/** Carts whose item "deep" makes the handler recurse until its stack overflows. */
+class DeepCarts extends ShoppingCartAggregateContext {
+  private def deeper(n: Long): Long = deeper(n + 1) + 1
+  override def commandHandlers = cart => {
+    case c: AddItemConcurrently if c.name == "deep" => CommandSuccess(ItemAdded("depth " + deeper(0)))
+    case other => super.commandHandlers(cart)(other)
+  }
+}
+
 /** Responses in memory, whose look-ups by key take 1.5 s: a database that is slow for a moment. */
 class SlowResponses extends MemoryCommandResponseState() {
   override def responseByKey(key: String): Option[CustomCommandResponse[_]] = {
@@ -80,6 +89,13 @@ class OwnerFaultsSpec extends CommonSpec {
       plain.expectMsgType[CustomCommandResponse[_]](5.seconds) mustBe a[CommandHandlingError]
       keyed.expectMsgType[CustomCommandResponse[_]](5.seconds) mustBe a[CommandHandlingError]
       bus.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cart)).get.version mustBe AggregateVersion(1)
+    }
+
+    Scenario("F250 a handler that overflows its stack fails its command, and the node goes on") {
+      val bus = carts(new DeepCarts)
+      val cart = created(bus)
+      bus.askFor[CustomCommandResponse[_]](AddItemConcurrently(user, cart, "deep")) mustBe a[CommandHandlingError]
+      bus.askFor[CustomCommandResponse[_]](AddItemConcurrently(user, cart, "shallow")) mustBe SuccessResponse(cart, AggregateVersion(2))
     }
 
     Scenario("F231 a look-up of the stored version that fails answers its command at once, and the owner goes on") {

@@ -373,6 +373,14 @@ To diagnose a failure with its values, start a node with `-Dreactivecqrs.log-val
 then logs its statements as configured, and every failure is logged in full on the logger
 `io.reactivecqrs.detail`. Turn it off again: those lines carry personal data.
 
+### Clocks and time zones
+
+Run every JVM on UTC (`-Duser.timezone=UTC`) and keep the nodes' clocks in sync (NTP). Events take
+their time from the writing node's clock, and the outbox poller compares it with its own: a node
+whose clock is minutes off makes early or late re-deliveries and give-ups, and reads "at an instant"
+see its events at the wrong time. Some times (archives, snapshots, schema steps) are written in the
+session's zone, which pgjdbc takes from the JVM.
+
 ### PostgreSQL
 
 Watch, as for any busy PostgreSQL: connections in use (`pg_stat_activity`), autovacuum on the hot

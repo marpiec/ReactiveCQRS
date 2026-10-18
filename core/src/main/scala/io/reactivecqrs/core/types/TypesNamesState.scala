@@ -85,10 +85,13 @@ class PostgresTypesNamesState extends TypesNamesState {
   private def idFromDB(className: String): Short = {
     loadAll()
     ids.getOrElse(className, {
+      // F247: looked up first, so a name another node stored takes no id of the sequence (whose ids are SMALLINTs).
       val id = DB.localTx { implicit session =>
-        sql"""INSERT INTO types_names (id, name) VALUES (nextval('types_names_seq'), $className) ON CONFLICT (name) DO NOTHING""".update()
-        sql"""SELECT id FROM types_names WHERE name = $className""".map(_.short(1)).single()
-          .getOrElse(throw new IllegalStateException("No entry for type className '" + className + "' in types_names found"))
+        def stored = sql"""SELECT id FROM types_names WHERE name = $className""".map(_.short(1)).single()
+        stored.getOrElse {
+          sql"""INSERT INTO types_names (id, name) VALUES (nextval('types_names_seq'), $className) ON CONFLICT (name) DO NOTHING""".update()
+          stored.getOrElse(throw new IllegalStateException("No entry for type className '" + className + "' in types_names found"))
+        }
       }
       remember(id, className)
       id

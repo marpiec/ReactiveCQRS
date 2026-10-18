@@ -416,6 +416,21 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 
 ### Commands and aggregates
 
+#### F204 — The id generator trusts its configuration: a too-high installation number or a lowered sequence step hands out wrong or duplicate ids
+- **High**, unlikely · **Fixed for 1.0.1** (18/10/2026, step 4 of the risk assessment; `IdRangeSpec` "F204" ×2, red under a mutation each) · `PostgresUidGenerator`, `UidGeneratorSchemaInitializer`
+- **Fix:** only a sequence never used is moved into the installation's range; one used below it is refused at start, the sequence left as it is (moving an installation's ids is done by hand). A pool is as large as the sequence's step read with each draw (never more than the cached size), and a start never lowers the step.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F249 — With large-message destinations configured, the command size check uses the large frame for every destination
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4; `ClusterSerializerSpec` "F249", red under a mutation) · `MessageSize.frameLimit`, `AggregateCommandBusActor.tooLarge`
+- **Fix:** commands of sharded types are checked against the ordinary frame (`frameLimit`): an owner is never a large-message destination. The serializer's own limit still allows the large frame.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F250 — Fatal errors in handlers or restores are not contained, so a poison aggregate can crash-loop nodes
+- **Medium**, unlikely · **Fixed for 1.0.1** (18/10/2026, step 4; `OwnerFaultsSpec` "F250": under a mutation the run does not finish) · `AggregateOwner.contained`
+- **Fix:** a `StackOverflowError`, and only it, in a command handler, an event handler or a restore becomes an ordinary failure: the command is answered `CommandHandlingError`, a restore fails as others do. Left: mpjsons' `maxDepth` is not set.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F213 — A command expecting a version above the owner's forces a full restore on every attempt
 - **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4 of the risk assessment; `LocalOwnersSpec` "F213", red under a mutation) · `AggregateOwner.caughtUp`
 - **Fix:** the owner looks the stored version up (one key lookup, also when it is the aggregate's only owner) and catches up only when the store is ahead; otherwise the command is a conflict at once, with no restore.
@@ -922,6 +937,11 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 
 ### Performance and runtime
 
+#### F233 — Readiness says "ready" before the node has started, and stays ready while it shuts down
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4 of the risk assessment; `SerializerBindingSpec` "F233" ×2, red under a mutation each) · `Readiness`
+- **Fix:** a node waits for its start until its first event bus registers (no host call needed), and a CoordinatedShutdown task in the phase before services unbind makes it not ready for good.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F219 — `AfterCommit` keeps JVM-wide maps behind one monitor, on every projection's transaction path
 - **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4; `AfterCommitSpec` "F219" checks that concurrent transactions keep their own actions; the contention itself has no test) · `AfterCommit`
 - **Fix:** open transactions are kept in a concurrent map by session identity, each guarded by itself, so transactions take no lock in common. Left: a bare `DB.localTx` (`ProjectionRegistry`, `SpacePurge`, `SpaceImport`) still applies cache writes at once.
@@ -1156,6 +1176,11 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 
 ### Serialization (mpjsons 0.7)
 
+#### F240 — The cluster serializer's reader trusts its payload: it loads any class named in the bytes and allocates unchecked lengths
+- **Medium**, unlikely · **Fixed for 1.0.1** (18/10/2026, step 4 of the risk assessment; `ClusterSerializerSpec` "F240" ×2, red under a mutation each) · `ClusterSerializer.Reader`
+- **Fix:** a class named in a frame is loaded without being initialized and used only when it is the library's, or, as JSON, a case class or object, a collection, a string, number, boolean or character; a length past the frame's end is refused before anything is allocated. Left: Artery TLS and a NetworkPolicy in E2.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F51 — mpjsons 0.7 may serialize the `TypeTag` held by every event
 - **Closed, not a problem** (16/10/2026): mpjsons 0.7.0 skips the synthetic evidence field. `StoredFormatsSpec` shows event JSON without it, references recorded with 0.6.50 still read back, and the full suite passes on 0.7.0. Removing the `TypeTag` (D75) is still wanted for Scala 3, but no longer urgent.
 - Original concern: `api/.../Event.scala:7`
@@ -1177,6 +1202,16 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Found:** M5 close, audit of the cluster.
 
 ### Schema initialization
+
+#### F247 — The SMALLINT type-id space is consumed by every build, and by every node's first sight of a name
+- **Medium**, unlikely · **Fixed for 1.0.1** in part (18/10/2026, step 4 of the risk assessment; `PostgresTypesNamesStateSpec` "F247", red under a mutation) · `PostgresTypesNamesState`
+- **Fix:** a name is looked up before it is inserted, so a name another node stored takes no id. Left: each build still registers a subscriber name of its own (about 22 000 a year for 60 projections rebuilt nightly); widening the column is a later contract step.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F269 — Any node's start replaces the stored procedures with its own version's bodies
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4; `PostgresEventStoreStateSpec` "F269", red under a mutation) · `PostgresEventStoreSchemaInitializer.installProcedures`
+- **Fix:** `schema_steps` records `procedures:<n>` (2 since 1.0.1); a node installs its procedures only when no newer version is recorded, and logs that it left them otherwise. Nodes of 1.0.0 do not ask, so they must not start again once a 1.0.1 node has.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
 
 #### F220 — `backfillEventKeys` on a large store: a row lock and WAL per old event, a later full re-freeze, long scans that hold back vacuum, and runs that abort on concurrent deletes
 - **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 4; the backfill specs pass; the concurrent delete has no test) · `PostgresEventStoreState.backfillEventKeys`
@@ -1204,6 +1239,11 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Fix:** `schemaname = current_schema()`, `to_regclass(…)` and `'events'::regclass`, so the library works in whatever schema the connection's `search_path` selects. Also `countAllEvents` treats the `-1` estimate of a never-analyzed table (PostgreSQL 14+) like 0 and counts exactly.
 
 ### Rebuild
+
+#### F203 — Build table and sequence names are not checked against PostgreSQL's 63-byte limit: two builds can share one table, and retiring one drops the live table
+- **High**, unlikely · **Fixed for 1.0.1** (18/10/2026, step 4 of the risk assessment; `ProjectionRegistrySpec` "F203", red under a mutation) · `ProjectionBuild.fits`
+- **Fix:** a build's table or sequence name past 63 characters is refused before it is recorded or created, so the build fails visibly while the active one serves; no two builds can share a cut name.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
 
 #### F235 — A switch that the registry reports as not done leaves the supervisor stuck until a restart
 - **Medium**, unlikely · **Fixed for 1.0.1** (18/10/2026, step 4; `ProjectionsSpec` "F235", red under a mutation) · `ProjectionSupervisor.switchNow`

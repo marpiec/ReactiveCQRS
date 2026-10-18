@@ -377,6 +377,14 @@ Twoja część:
 ScalikeJDBC loguje wtedy polecenia tak, jak jest skonfigurowane, a każda awaria trafia w całości do
 loggera `io.reactivecqrs.detail`. Potem wyłącz to z powrotem: te linie zawierają dane osobowe.
 
+### Zegary i strefy czasowe
+
+Uruchamiaj każdą JVM w UTC (`-Duser.timezone=UTC`) i trzymaj zegary węzłów w zgodzie (NTP). Zdarzenia
+biorą czas z zegara węzła, który je zapisuje, a poller outboxu porównuje go z własnym: węzeł, którego
+zegar spieszy się lub spóźnia o minuty, powoduje za wczesne albo za późne ponowne dostarczenia i
+rezygnacje, a odczyty „na chwilę” widzą jego zdarzenia w złym czasie. Niektóre czasy (archiwa,
+migawki, kroki schematu) są zapisywane w strefie sesji, którą pgjdbc bierze z JVM.
+
 ### PostgreSQL
 
 Obserwuj to samo, co w każdym mocno obciążonym PostgreSQL: używane połączenia (`pg_stat_activity`),

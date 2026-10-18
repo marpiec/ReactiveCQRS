@@ -223,6 +223,14 @@ class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStore
     eventStoreState.readNewestWaitingInOutbox(2) mustBe all.reverse.take(2) // F260
   }
 
+  Scenario("F269 a node of an older version leaves the procedures of a newer one as they are") {
+    val initializer = new PostgresEventStoreSchemaInitializer()
+    DB.autoCommit(implicit session => sql"INSERT INTO schema_steps (name, completed) VALUES ('procedures:999', current_timestamp)".update())
+    try initializer.installProcedures() mustBe false
+    finally DB.autoCommit(implicit session => sql"DELETE FROM schema_steps WHERE name = 'procedures:999'".update())
+    initializer.installProcedures() mustBe true
+  }
+
   // F38, D69: the restore index is built online, once; running it again does nothing. F198: it is unique, replacing the
   // plain one, so no aggregate gets two events of one version.
   Scenario("the index of events by aggregate and version is built without blocking writes, only once, and unique (F198)") {

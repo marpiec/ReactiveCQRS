@@ -1,7 +1,8 @@
 package io.reactivecqrs.core.cluster
 
 import io.reactivecqrs.api.AggregateVersion
-import org.apache.pekko.actor.{ActorSystem, ExtendedActorSystem, Extension, ExtensionId, ExtensionIdProvider}
+import org.apache.pekko.Done
+import org.apache.pekko.actor.{ActorSystem, CoordinatedShutdown, ExtendedActorSystem, Extension, ExtensionId, ExtensionIdProvider}
 import org.apache.pekko.serialization.SerializationExtension
 import org.slf4j.LoggerFactory
 
@@ -12,12 +13,15 @@ import scala.concurrent.Future
   * answered (until then it publishes nothing, D15), which, through the singletons' proxies, also means the projections
   * that run once are up. The schema is initialized before the actors start, and a failure there stops the start.
   * F178: a node that can talk to others but whose case classes would not go to the library's serializer is never ready.
+  * F233: nor is a node before its first event bus exists (it may still be waiting for the schema), nor one that shuts
+  * down (from the phase before its services unbind).
   */
 class Readiness extends Extension {
-  private var waiting = Set[String]()
+  private var waiting = Set[String](Readiness.Starting)
 
-  /** The node is not ready until `done(what)`. */
-  def waitFor(what: String): Unit = synchronized(waiting += what)
+  /** The node is not ready until `done(what)`; the first thing waited for means the node has started. */
+  def waitFor(what: String): Unit = synchronized { waiting = waiting - Readiness.Starting + what }
+  private[cluster] def never(what: String): Unit = synchronized(waiting += what)
   /** `what` no longer keeps the node from being ready. */
   def done(what: String): Unit = synchronized(waiting -= what)
   /** Whether nothing keeps the node from taking traffic. */
@@ -30,11 +34,18 @@ class Readiness extends Extension {
 object Readiness extends ExtensionId[Readiness] with ExtensionIdProvider {
   private val log = LoggerFactory.getLogger(classOf[Readiness])
 
+  /** What a node waits for until its first event bus exists. */
+  val Starting = "the node's start: no event bus yet"
+
   override def createExtension(system: ExtendedActorSystem): Readiness = {
     val readiness = new Readiness
     serializerProblem(system).foreach { problem =>
       log.error(problem)
-      readiness.waitFor("the serializer of messages between nodes (F178)")
+      readiness.never("the serializer of messages between nodes (F178)")
+    }
+    CoordinatedShutdown(system).addTask(CoordinatedShutdown.PhaseBeforeServiceUnbind, "reactivecqrs-not-ready") { () =>
+      readiness.never("the node's shutdown")
+      Future.successful(Done)
     }
     readiness
   }
