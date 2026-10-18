@@ -146,7 +146,7 @@ class CommandKindsSpec extends CartSpec {
 
     Scenario("an asynchronous handler asks a stock service first") {
       val stock = new Stock { def available(item: String): Future[Boolean] = Future.successful(item != "caviar") }
-      val stockCheckingCarts = carts(new StockCheckingCarts(stock), "stockCheckingCarts")
+      val stockCheckingCarts = cartsOf(new StockCheckingCarts(stock), "stockCheckingCarts")
       val cartId = newCart(stockCheckingCarts)
       await(stockCheckingCarts ? AddItem(alice, cartId, AggregateVersion(1), "caviar")) mustBe
         FailureResponse(List("caviar is out of stock"))
@@ -166,7 +166,7 @@ class CommandKindsSpec extends CartSpec {
     }
 
     Scenario("serial processing: the command one too many is rejected at once") {
-      val busyCarts = carts(new BusyCarts, "busyCarts")
+      val busyCarts = cartsOf(new BusyCarts, "busyCarts")
       val cartId = newCart(busyCarts)
       val answers = await(Future.sequence((1 to 1000).map(i =>
         (busyCarts ? AddItemConcurrently(alice, cartId, "item " + i)).mapTo[CustomCommandResponse[_]])))

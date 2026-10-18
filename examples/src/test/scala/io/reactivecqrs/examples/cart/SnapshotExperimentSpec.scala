@@ -48,7 +48,7 @@ class SnapshotExperimentSpec extends CartSpec {
     }
 
     Scenario("watching it work: a snapshot at version 3, and a restore that reads it and no event") {
-      val carts = this.carts(new ShoppingCartAggregateContext {
+      val carts = cartsOf(new ShoppingCartAggregateContext {
         override val snapshots: Option[SnapshotPolicy] = Some(SnapshotPolicy(every = 3))
       }, "snapshotCarts")
       val cartId = succeeds(carts, CreateShoppingCart(None, alice, "Groceries")).aggregateId

@@ -118,10 +118,12 @@ of type `T` under keys of type `Long`, usually the aggregate's id (`cartId.asLon
 - **`MemoryDocumentStore[T]`** keeps them in a map in memory. It is meant for tests (chapter 19);
   it ignores spaces, so its `clearSpace` does nothing.
 
+Here is the store of the cart list this chapter builds, whose documents are
+`CartSummary(name: String, itemCount: Int, version: Int)`:
+
+<!-- snippet: cart/ReadModelsSpec.scala#store -->
 ```scala
 import io.reactivecqrs.core.documentstore.{MultipleTextIndex, NoopDocumentStoreCache, PostgresDocumentStore}
-
-case class CartSummary(name: String, itemCount: Int, version: Int)
 
 val cartsStore = new PostgresDocumentStore[CartSummary](
   "carts_list",                           // the table: projection_carts_list
@@ -218,6 +220,7 @@ the event bus `eventBus`, the user `alice`, and the cart command bus `carts`.
 
 1. **Write down the document and the questions.**
 
+   <!-- snippet: cart/CartsList.scala#documents -->
    ```scala
    import io.reactivecqrs.api.id.AggregateId
 
@@ -230,6 +233,7 @@ the event bus `eventBus`, the user `alice`, and the cart command bus `carts`.
 
 2. **Write the projection.**
 
+   <!-- snippet: cart/CartsList.scala#projection -->
    ```scala
    import io.reactivecqrs.core.documentstore.DocumentStore
    import io.reactivecqrs.core.projection.{ProjectionActor, SubscriptionsState}
@@ -259,22 +263,33 @@ the event bus `eventBus`, the user `alice`, and the cart command bus `carts`.
          sender() ! store.findAll().map { case (id, doc) => AggregateId(id) -> doc.document }
        case FindCartsByName(name) =>
          sender() ! store.findDocumentByPath(Seq("name"), name).values.map(_.document).toVector
+       case FindBigCarts(moreThan) =>
+         val query = DocumentStoreQuery(
+           where = Seq(ExpectedGreaterThanIntValue(Seq("itemCount"), moreThan)),
+           sortBy = Seq(SortDescInt("itemCount")),
+           offset = 0,
+           limit = 20)
+         sender() ! store.findDocument(query).map { case (id, doc) => AggregateId(id) -> doc.document }
+       case GetCartSummaryAtLeast(cartId, version) =>
+         delayIfNotAvailable(sender(), () =>
+           store.getDocument(cartId.asLong).map(_.document).filter(_.version >= version.asInt),
+           2000)
      }
    }
    ```
 
    The listener reads like the scoreboard it is: a new cart gets a document, a changed cart gets its
    document replaced, a deleted cart loses it. This is the test domain's
-   `ShoppingCartsListProjectionAggregatesBased`, plus the item count and the version.
+   `ShoppingCartsListProjectionAggregatesBased`, plus the item count and the version. It answers
+   two more questions, `FindBigCarts` and `GetCartSummaryAtLeast`, which come later in this chapter.
 
-3. **Create the notebook and the store**, once per system and once per store:
+3. **Create the notebook**, once per system; the store is the one of the section before:
 
+   <!-- snippet: cart/ReadModelsSpec.scala#notebook -->
    ```scala
    import io.reactivecqrs.core.projection.PostgresSubscriptionsState
 
    val subscriptionsState = new PostgresSubscriptionsState(typesNames).initSchema()
-   val cartsStore = new PostgresDocumentStore[CartSummary]("carts_list", mpjsons,
-     new NoopDocumentStoreCache, Seq(MultipleTextIndex(1, Seq("name"))))
    ```
 
    `initSchema()` creates the `subscriptions` table (the notebook) and `subscription_failures`
@@ -282,6 +297,7 @@ the event bus `eventBus`, the user `alice`, and the cart command bus `carts`.
 
 4. **Start the projection on the blocking dispatcher.**
 
+   <!-- snippet: cart/ReadModelsSpec.scala#start -->
    ```scala
    import org.apache.pekko.actor.Props
    import io.reactivecqrs.core.util.BlockingDispatcher
@@ -299,6 +315,7 @@ the event bus `eventBus`, the user `alice`, and the cart command bus `carts`.
    subscribers are with `RegisterSubscribers`. The projection goes on that list, together with
    every other projection, saga and listener of the system:
 
+   <!-- snippet: cart/ReadModelsSpec.scala#register -->
    ```scala
    import io.reactivecqrs.core.eventbus.EventsBusActor
 
@@ -323,8 +340,10 @@ the event bus `eventBus`, the user `alice`, and the cart command bus `carts`.
 
 ## Trying it out
 
-Create a cart, add milk, and ask:
+Create a cart, add milk, and ask. This chapter's blocks run in `ReadModelsSpec`
+(`examples/src/test/scala/io/reactivecqrs/examples/cart/`), which checks their answers:
 
+<!-- snippet: cart/ReadModelsSpec.scala#tryIt -->
 ```scala
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
@@ -338,12 +357,15 @@ implicit val timeout: Timeout = Timeout(5.seconds)
 def send(command: AnyRef): CustomCommandResponse[_] =
   Await.result((carts ? command).mapTo[CustomCommandResponse[_]], 5.seconds)
 
-val SuccessResponse(cartId, _) = send(CreateShoppingCart(None, alice, "Groceries")) // a sketch: real code checks
+val cartId = send(CreateShoppingCart(None, alice, "Groceries")) match {
+  case SuccessResponse(id, _) => id
+  case refused => throw new IllegalStateException("No cart: " + refused)
+}
 send(AddItem(alice, cartId, AggregateVersion(1), "milk"))       // SuccessResponse(Id(42),Version(2))
 
 Thread.sleep(500) // give the projection a moment; a better way comes later in this chapter
 
-Await.result((cartsList ? GetCartSummary(cartId)).mapTo[Option[CartSummary]], 5.seconds)
+val summary = Await.result((cartsList ? GetCartSummary(cartId)).mapTo[Option[CartSummary]], 5.seconds)
 // Some(CartSummary(Groceries,1,2))
 ```
 
@@ -361,14 +383,18 @@ the keys of a `JSONB` value in an order of its own).
 
 `findDocument` takes a `DocumentStoreQuery`: conditions on JSON paths, a sort order, an offset and a
 limit. A path is the list of field names leading to a value: `Seq("name")`, or
-`Seq("address", "city")` for a nested one. Here are the biggest carts, biggest first:
+`Seq("address", "city")` for a nested one. Here are the biggest carts, biggest first. The question:
 
+<!-- snippet: cart/CartsList.scala#findBigCarts -->
 ```scala
-import io.reactivecqrs.core.documentstore.{DocumentStoreQuery, ExpectedGreaterThanIntValue, SortDescInt}
-
 case class FindBigCarts(moreThan: Int) // answered with Seq[(AggregateId, CartSummary)]
+```
 
-// one more case in receiveQuery:
+and the projection's case for it (`DocumentStoreQuery`, `ExpectedGreaterThanIntValue` and
+`SortDescInt` come from `io.reactivecqrs.core.documentstore`):
+
+<!-- snippet: cart/CartsList.scala#bigCartsCase -->
+```scala
 case FindBigCarts(moreThan) =>
   val query = DocumentStoreQuery(
     where = Seq(ExpectedGreaterThanIntValue(Seq("itemCount"), moreThan)),
@@ -402,6 +428,7 @@ your `ask` fails with that exception, and the projection carries on with its wor
 Some read models are stories, not pictures. Here is a log of everything that happened to each
 cart, built from events:
 
+<!-- snippet: cart/CartActivity.scala#activity -->
 ```scala
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.documentstore.Document
@@ -455,10 +482,15 @@ You know what to wait for: the command's answer, `SuccessResponse(cartId, versio
 version your change created. So the question becomes "cart 42, as soon as it is at version 3 or
 later":
 
+<!-- snippet: cart/CartsList.scala#atLeast -->
 ```scala
 case class GetCartSummaryAtLeast(cartId: AggregateId, version: AggregateVersion) // answered with Option[CartSummary]
+```
 
-// one more case in receiveQuery:
+and the projection's case for it:
+
+<!-- snippet: cart/CartsList.scala#atLeastCase -->
+```scala
 case GetCartSummaryAtLeast(cartId, version) =>
   delayIfNotAvailable(sender(), () =>
     store.getDocument(cartId.asLong).map(_.document).filter(_.version >= version.asInt),
@@ -471,8 +503,9 @@ applies updates, and answers as soon as it finds something. When 2 000 milliseco
 luck, it searches one last time and answers what it finds, `None` if still nothing. On the calling
 side:
 
+<!-- snippet: cart/ReadModelsSpec.scala#readYourWrite -->
 ```scala
-send(AddItem(alice, cartId, AggregateVersion(2), "bread")) match {
+val withBread = send(AddItem(alice, cartId, AggregateVersion(2), "bread")) match {
   case SuccessResponse(_, version) =>
     Await.result((cartsList ? GetCartSummaryAtLeast(cartId, version)).mapTo[Option[CartSummary]], 5.seconds)
     // Some(CartSummary(Groceries,2,3)), as soon as the projection has it
@@ -507,16 +540,15 @@ search that throws, or a `Future` that fails, is answered with `Status.Failure`.
 
 ## Options worth knowing
 
-A projection takes its options in its constructor, as a `ProjectionActorOptions`. Start from
+A projection takes its options in its constructor, as a `ProjectionActorOptions`:
+`extends ProjectionActor(options)`, as E3's projection does. Start from
 `ProjectionActorOptions.DEFAULT` and change what you need:
 
+<!-- snippet: cart/ReadModelsSpec.scala#options -->
 ```scala
 import io.reactivecqrs.core.projection.ProjectionActorOptions
 
-class CartsListProjection(val subscriptionsState: SubscriptionsState, store: DocumentStore[CartSummary])
-  extends ProjectionActor(ProjectionActorOptions.DEFAULT.withGroupUpdatesDelayMillis(200).withMinimumDelayVersion(2)) {
-  // ... as before
-}
+val options = ProjectionActorOptions.DEFAULT.withGroupUpdatesDelayMillis(200).withMinimumDelayVersion(2)
 ```
 
 | Option (default) | What it does | How to set it |

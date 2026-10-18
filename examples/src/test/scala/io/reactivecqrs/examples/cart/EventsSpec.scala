@@ -66,8 +66,8 @@ class EventsSpec extends CartSpec {
   Feature("First events") {
 
     Scenario("a first event without a space is refused, and so is a plain event as the first") {
-      await(carts(new SpacelessCarts, "spacelessCarts") ? CreateShoppingCart(None, alice, "Groceries")) mustBe a[FailureResponse]
-      await(carts(new PlainFirstCarts, "plainFirstCarts") ? CreateShoppingCart(None, alice, "Groceries")) mustBe an[EventHandlingError]
+      await(cartsOf(new SpacelessCarts, "spacelessCarts") ? CreateShoppingCart(None, alice, "Groceries")) mustBe a[FailureResponse]
+      await(cartsOf(new PlainFirstCarts, "plainFirstCarts") ? CreateShoppingCart(None, alice, "Groceries")) mustBe an[EventHandlingError]
     }
   }
 
@@ -123,7 +123,7 @@ class EventsSpec extends CartSpec {
     }
 
     Scenario("a cart erased for good reads as one that never existed") {
-      val erasableCarts = carts(new ErasableCarts, "erasableCarts")
+      val erasableCarts = cartsOf(new ErasableCarts, "erasableCarts")
       val cartId = newCart(erasableCarts)
       succeeds(erasableCarts, AddItem(alice, cartId, AggregateVersion(1), "apples"))
       succeeds(erasableCarts, EraseShoppingCart(alice, cartId, AggregateVersion(2))) mustBe AggregateVersion(3)
@@ -176,7 +176,7 @@ class EventsSpec extends CartSpec {
         eventSizeLimitPerClassName = Map(classOf[ItemAdded].getName -> 1000)  // an item name never needs more
       ).initSchema()
       // #limits
-      val limitedCarts = carts(new ShoppingCartAggregateContext, "limitedCarts", eventStore)
+      val limitedCarts = cartsOf(new ShoppingCartAggregateContext, "limitedCarts", eventStore)
       val cartId = newCart(limitedCarts)
       await(limitedCarts ? AddItem(alice, cartId, AggregateVersion(1), "x" * 2000)) mustBe an[EventHandlingError]
       succeeds(limitedCarts, AddItem(alice, cartId, AggregateVersion(1), "apples")) mustBe AggregateVersion(2)

@@ -112,14 +112,14 @@ class SquashingSpec extends CartSpec {
     }
 
     Scenario("a squash event that does not give back the state is refused, unless it may change the state") {
-      val forgetful = carts(new ForgetfulCarts, "forgetfulCarts")
+      val forgetful = cartsOf(new ForgetfulCarts, "forgetfulCarts")
       val forgotten = cartWith(forgetful, "apple")
       squash(forgetful, SquashAggregate(forgotten, AggregateVersion(2))) match {
         case SquashRefused(_, reason) => reason must include("does not give back the state it replaces")
         case answer => fail("Not refused: " + answer)
       }
 
-      val archiving = carts(new ArchivingCarts, "archivingCarts")
+      val archiving = cartsOf(new ArchivingCarts, "archivingCarts")
       val cartId = cartWith(archiving, "apple", "pear", "plum")
       squash(archiving, SquashAggregate(cartId, AggregateVersion(3))) mustBe AggregateSquashed(cartId, AggregateVersion(3))
       cart(archiving, cartId).aggregateRoot.get.items.map(_.name) mustBe Vector("plum")
@@ -154,7 +154,7 @@ class SquashingSpec extends CartSpec {
     }
 
     Scenario("the scheduler squashes what the rule selects, and counts it") {
-      val carts = this.carts(new AutomaticallySquashedCarts, "automaticCarts")
+      val carts = cartsOf(new AutomaticallySquashedCarts, "automaticCarts")
       val cartId = succeeds(carts, CreateShoppingCart(None, alice, "Groceries")).aggregateId
       succeeds(carts, AddItems(alice, cartId, AggregateVersion(1), (1 to 1100).map("item " + _))) // version 1 101
       within20Seconds(outboxEmpty(cartId))
@@ -192,7 +192,7 @@ class SquashingSpec extends CartSpec {
   Feature("The archive") {
 
     Scenario("kept events move to the archive; usersOf counts them in the history and in the archive") {
-      val carts = this.carts(new AuditedCarts, "auditedCarts")
+      val carts = cartsOf(new AuditedCarts, "auditedCarts")
       val cartId = cartWith(carts, "apple", "pear")
       succeeds(carts, RemoveItem(alice, cartId, AggregateVersion(3), 1))
       succeeds(carts, AddItem(alice, cartId, AggregateVersion(4), "plum"))

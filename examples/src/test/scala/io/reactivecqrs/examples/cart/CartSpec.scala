@@ -26,15 +26,17 @@ abstract class CartSpec extends CommonSpec with BeforeAndAfterAll {
   protected val responseState = new PostgresCommandResponseState(mpjsons, typesNames).initSchema()
   protected val uidGenerator = system.actorOf(UidGeneratorActor.postgres(system), "uidGenerator")
 
-  /** A command bus of carts run by `context`, with an event bus of its own: a bus has one publisher per type. */
-  protected def carts(context: AggregateContext[ShoppingCart], name: String, store: EventStoreState = eventStore): ActorRef = {
+  /** A command bus of carts run by `context`, with an event bus of its own (a bus has one publisher per type), which
+    * delivers to `subscribers`. */
+  protected def cartsOf(context: AggregateContext[ShoppingCart], name: String, store: EventStoreState = eventStore,
+                      subscribers: List[ActorRef] = Nil): ActorRef = {
     val eventBus = system.actorOf(Props(new EventsBusActor()), name + "Events")
-    eventBus ! EventsBusActor.RegisterSubscribers(Nil)
+    eventBus ! EventsBusActor.RegisterSubscribers(subscribers)
     system.actorOf(AggregateCommandBusActor(context, uidGenerator, store, responseState, eventBus), name)
   }
 
   /** Chapter 4's command bus, here for the test domain's carts. */
-  protected val commandBus: ActorRef = carts(new ShoppingCartAggregateContext, "carts")
+  protected val commandBus: ActorRef = cartsOf(new ShoppingCartAggregateContext, "carts")
 
   override def afterAll(): Unit = TestKit.shutdownActorSystem(system)
 }

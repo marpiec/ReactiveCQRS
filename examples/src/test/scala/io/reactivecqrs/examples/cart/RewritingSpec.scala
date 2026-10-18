@@ -86,12 +86,12 @@ class RewritingSpec extends CartSpec {
     }
 
     Scenario("a rewritten event keeps its class; a rewrite without a new event is stored and keeps the version") {
-      val classChanging = carts(new ClassChangingCarts, "classChangingCarts")
+      val classChanging = cartsOf(new ClassChangingCarts, "classChangingCarts")
       val changed = succeeds(classChanging, CreateShoppingCart(None, alice, "Grocceries")).aggregateId
       await(classChanging ? RewriteCartName(alice, changed, AggregateVersion(1), "Groceries")) mustBe an[EventHandlingError]
       eventsOf[ShoppingCart](classChanging, changed).map(_.event) mustBe List(ShoppingCartCreated("Grocceries"))
 
-      val silent = carts(new SilentlyRenamingCarts, "silentlyRenamingCarts")
+      val silent = cartsOf(new SilentlyRenamingCarts, "silentlyRenamingCarts")
       val renamed = succeeds(silent, CreateShoppingCart(None, alice, "Grocceries")).aggregateId
       await(silent ? RewriteCartName(alice, renamed, AggregateVersion(1), "Groceries")) mustBe
         SuccessResponse(renamed, AggregateVersion(1))
