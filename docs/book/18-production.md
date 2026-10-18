@@ -40,6 +40,7 @@ of *all* your nodes.
 Each PostgreSQL component has an `initSchema()` that creates whatever is missing and leaves the rest
 alone, so you call them on every start:
 
+<!-- snippet: cart/ProductionSpec.scala#tables -->
 ```scala
 val mpjsons = new MPJsons
 val typesNames = new PostgresTypesNamesState().initSchema()
@@ -112,6 +113,7 @@ A projection left on the default dispatcher logs a warning when it starts.
 Both must run **once per system**: on a single node, create them once; in a cluster, start them with
 `Singletons.start` ([chapter 17](17-cluster.md)):
 
+<!-- snippet: cart/ProductionSpec.scala#singletons -->
 ```scala
 import io.reactivecqrs.core.aggregate.SquashScheduler
 import io.reactivecqrs.core.aggregate.SquashScheduler.SquashTarget
@@ -120,8 +122,8 @@ import io.reactivecqrs.core.delivery.OutboxPollerActor
 import org.apache.pekko.actor.Props
 
 // eventStore and eventBus as wired before; cartContext has an automatic squash rule, carts is its command bus
-Singletons.start(system, "outboxPoller", Props(new OutboxPollerActor(eventStore, eventBus)))
-Singletons.start(system, "squashScheduler",
+val outboxPoller = Singletons.start(system, "outboxPoller", Props(new OutboxPollerActor(eventStore, eventBus)))
+val squashScheduler = Singletons.start(system, "squashScheduler",
   Props(new SquashScheduler(eventStore, Seq(SquashTarget.of(cartContext, carts)))))
 ```
 
@@ -159,6 +161,7 @@ event after 767 ms.
 Some jobs are too heavy to run while a node starts. You run them once, in the background, after the
 version that needs them is up. Each is safe to stop and run again.
 
+<!-- snippet: cart/ProductionSpec.scala#maintenance -->
 ```scala
 eventStore.buildIndexesConcurrently()          // indexes built without blocking writes
 val spaces = eventStore.backfillSpaces()       // SpaceBackfill(filled, left)
@@ -185,11 +188,12 @@ Before you move a database to a new version, check that the new version can read
 and the projection tables you name) and only reads. Run it from your application, which has all your
 classes on its classpath, against a **copy** of production:
 
+<!-- snippet: cart/ProductionSpec.scala#check -->
 ```scala
 import io.reactivecqrs.core.tools.StoredDataCheck
 
 val report = StoredDataCheck.run(mpjsons, typesNames,
-  Seq(StoredDataCheck.ProjectionTable[ClusterCartItems]("cluster_carts_v1")))
+  Seq(StoredDataCheck.ProjectionTable[CartSummary]("carts_list")))
 println(report.text)
 ```
 
@@ -208,10 +212,11 @@ which aggregates still have events of it, in the events and in the squash archiv
 ### Metrics
 
 The library measures what it does and hands the numbers to you. You implement a small trait with
-three methods and plug it in, before or after the actors start:
+three methods,
 
+<!-- snippet: cart/ProductionSpec.scala#forwardingMetrics -->
 ```scala
-import io.reactivecqrs.core.metrics.{Metrics, ReactiveMetrics}
+import io.reactivecqrs.core.metrics.Metrics
 
 class ForwardingMetrics extends Metrics {
   override def count(name: String, tags: Map[String, String], amount: Long): Unit =
@@ -221,6 +226,13 @@ class ForwardingMetrics extends Metrics {
   override def gauge(name: String, tags: Map[String, String], value: Long): Unit =
     () // set your gauge `name` to `value`
 }
+```
+
+and plug it in, before or after the actors start:
+
+<!-- snippet: cart/ProductionSpec.scala#useMetrics -->
+```scala
+import io.reactivecqrs.core.metrics.ReactiveMetrics
 
 ReactiveMetrics(system).use(new ForwardingMetrics)
 ```
@@ -432,6 +444,7 @@ What to do:
     at once × the largest document ≤ a quarter of the heap);
   - in a cluster, raise the frame size above the largest event ([chapter 17](17-cluster.md)).
 
+<!-- snippet: cart/ProductionSpec.scala#largeEvents -->
 ```scala
 val eventStore = new PostgresEventStoreState(mpjsons, typesNames,
   fetchSize = 10,
