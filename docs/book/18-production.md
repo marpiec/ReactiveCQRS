@@ -60,6 +60,15 @@ initialization runs under a PostgreSQL advisory lock, one process at a time. A n
 minutes for the lock; after that its start fails with "The schema lock was not free for 5 minutes:
 another process initializes the schema".
 
+A start also stays out of the way of long transactions, such as a backup or an organization's export.
+`initSchema()` reads the catalog first and touches a table only when something is missing from it, so
+an ordinary start takes no table lock at all. When it does have to change a table (the first start of a
+new version, say) and a long transaction holds that table, it waits at most two seconds at a time for
+the lock, about a minute in all. Then the start fails with "The start could not finish ...: it waited
+... for the table's lock, which a long transaction holds". Look for that transaction in
+`pg_stat_activity`, and start the node again once it has ended. Meanwhile every other node keeps
+working.
+
 > **Warning:** do not skip `PostgresCommandResponseState.initSchema()`. It creates the unique index
 > that idempotent commands rely on; without it, every idempotent command fails.
 

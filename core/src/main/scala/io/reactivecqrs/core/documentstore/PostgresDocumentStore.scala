@@ -7,7 +7,7 @@ import scalikejdbc.{DB, DBSession}
 import scala.annotation.tailrec
 import scala.reflect.runtime.universe._
 import scalikejdbc._
-import io.reactivecqrs.core.util.{AfterCommit, SchemaLock}
+import io.reactivecqrs.core.util.{AfterCommit, Ddl, SchemaLock}
 import io.reactivecqrs.core.util.SqlLogging.withoutValues
 
 object PostgresDocumentStoreTrait {
@@ -41,9 +41,10 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
   init()
 
   protected def init(): Unit = SchemaLock {
-    // F43: the table and its columns change in one transaction.
-    DB.localTx { implicit session =>
-      createTableIfNotExists()
+    DB.autoCommit(implicit session => createTableIfNotExists())
+    // F43: the columns change in one transaction; F185: only when they are not as they should be (Ddl).
+    Ddl.change("migrating " + projectionTableName,
+      implicit session => Ddl.hasColumn(projectionTableName, "space_id") && !Ddl.hasColumn(projectionTableName, "metadata")) { implicit session =>
       addSpaceColumn()
       dropMetadataColumn()
     }
@@ -113,13 +114,13 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
     methodAt >= 0 && definition.startsWith("CREATE UNIQUE INDEX") == unique && reduced(definition.substring(methodAt + 7)) == reduced(method + columns)
   }
 
-  private def dropIndex(indexName: String): Unit = DB.autoCommit { implicit session =>
-    SQL(s"DROP INDEX IF EXISTS ${indexName}").execute()
-  }
+  // F185: with a bounded wait for the table's lock (Ddl).
+  private def dropIndex(indexName: String): Unit = Ddl.dropIndex(indexName)
 
-  private def createIndex(index: Index): Unit = DB.autoCommit { implicit session =>
+  private def createIndex(index: Index): Unit = {
     val (unique, method, columns) = indexSql(index)
-    SQL(s"CREATE ${if (unique) "UNIQUE " else ""}INDEX ${indexName(index.uniqueId)} ON ${projectionTableName} USING $method ($columns)").execute()
+    Ddl.createIndex(indexName(index.uniqueId),
+      s"CREATE ${if (unique) "UNIQUE " else ""}INDEX ${indexName(index.uniqueId)} ON ${projectionTableName} USING $method ($columns)")
   }
 
   /** Whether the index is unique, its method, and its expressions, as created. */

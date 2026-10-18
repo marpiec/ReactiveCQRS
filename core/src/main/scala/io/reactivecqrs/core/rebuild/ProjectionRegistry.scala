@@ -1,6 +1,6 @@
 package io.reactivecqrs.core.rebuild
 
-import io.reactivecqrs.core.util.SchemaLock
+import io.reactivecqrs.core.util.{Ddl, SchemaLock}
 
 import io.reactivecqrs.core.rebuild.ProjectionBuilder.BuildPosition
 import scalikejdbc._
@@ -96,7 +96,6 @@ class PostgresProjectionRegistry extends ProjectionRegistry {
            |  last_build INT NOT NULL,
            |  switched TIMESTAMP,
            |  pending_target TEXT)""".stripMargin.execute()
-      sql"""ALTER TABLE projections ADD COLUMN IF NOT EXISTS pending_target TEXT""".execute()
       sql"""CREATE TABLE IF NOT EXISTS projection_builds (
            |  name VARCHAR(255) NOT NULL,
            |  build INT NOT NULL,
@@ -115,6 +114,7 @@ class PostgresProjectionRegistry extends ProjectionRegistry {
            |  is_sequence BOOLEAN NOT NULL,
            |  PRIMARY KEY (name, build, object_name, is_sequence))""".stripMargin.execute()
     }
+    Ddl.addColumn("projections", "pending_target", "TEXT") // F185: only when it is missing
     this
   }
 

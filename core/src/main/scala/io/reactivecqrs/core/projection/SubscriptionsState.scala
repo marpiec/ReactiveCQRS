@@ -5,7 +5,7 @@ import java.time.Instant
 import io.reactivecqrs.api.{AggregateType, AggregateVersion}
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.types.TypesNamesState
-import io.reactivecqrs.core.util.{AfterCommit, SchemaLock}
+import io.reactivecqrs.core.util.{AfterCommit, Ddl, SchemaLock}
 import org.slf4j.Logger
 import scalikejdbc._
 
@@ -248,30 +248,30 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, eventsLogger:
     sql"""CREATE SEQUENCE IF NOT EXISTS subscriptions_seq""".execute()
   }
 
-  private def createSubscriberTypeAggregateIdIndex() = DB.autoCommit { implicit session =>
-    sql"""CREATE UNIQUE INDEX IF NOT EXISTS subscriptions_sub_type_agg_id_idx ON subscriptions (subscriber_type_id, subscription_type, aggregate_id)""".execute()
-  }
+  // F185: an index step first looks whether the index is there (Ddl).
+  private def createSubscriberTypeAggregateIdIndex(): Unit = Ddl.createIndex("subscriptions_sub_type_agg_id_idx",
+    "CREATE UNIQUE INDEX IF NOT EXISTS subscriptions_sub_type_agg_id_idx ON subscriptions (subscriber_type_id, subscription_type, aggregate_id)")
 
-
-  private def createAggregateIdIndex() = DB.autoCommit { implicit session =>
-    sql"""CREATE INDEX IF NOT EXISTS subscriptions_agg_id_idx ON subscriptions (aggregate_id)""".execute()
-  }
+  private def createAggregateIdIndex(): Unit =
+    Ddl.createIndex("subscriptions_agg_id_idx", "CREATE INDEX IF NOT EXISTS subscriptions_agg_id_idx ON subscriptions (aggregate_id)")
 
   // D20a. A table of its own rather than columns of `subscriptions`: failures are rare, read whole at a projection's
   // start, and stay apart from the version rows that the cache manages.
-  private def createFailuresTable() = DB.autoCommit { implicit session =>
-    sql"""
-         CREATE TABLE IF NOT EXISTS subscription_failures (
-           subscriber_type_id SMALLINT NOT NULL,
-           subscription_type SMALLINT NOT NULL,
-           aggregate_id BIGINT NOT NULL,
-           aggregate_type_id SMALLINT NOT NULL,
-           failed_version INT NOT NULL,
-           error TEXT NOT NULL,
-           failed_since TIMESTAMP NOT NULL,
-           PRIMARY KEY (subscriber_type_id, subscription_type, aggregate_id))
-       """.execute()
-    sql"""CREATE INDEX IF NOT EXISTS subscription_failures_agg_id_idx ON subscription_failures (aggregate_id)""".execute()
+  private def createFailuresTable(): Unit = {
+    DB.autoCommit { implicit session =>
+      sql"""
+           CREATE TABLE IF NOT EXISTS subscription_failures (
+             subscriber_type_id SMALLINT NOT NULL,
+             subscription_type SMALLINT NOT NULL,
+             aggregate_id BIGINT NOT NULL,
+             aggregate_type_id SMALLINT NOT NULL,
+             failed_version INT NOT NULL,
+             error TEXT NOT NULL,
+             failed_since TIMESTAMP NOT NULL,
+             PRIMARY KEY (subscriber_type_id, subscription_type, aggregate_id))
+         """.execute()
+    }
+    Ddl.createIndex("subscription_failures_agg_id_idx", "CREATE INDEX IF NOT EXISTS subscription_failures_agg_id_idx ON subscription_failures (aggregate_id)")
   }
 
   private val maxErrorLength = 4000

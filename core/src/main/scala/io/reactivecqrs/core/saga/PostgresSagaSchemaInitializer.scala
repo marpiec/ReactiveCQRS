@@ -1,6 +1,6 @@
 package io.reactivecqrs.core.saga
 
-import io.reactivecqrs.core.util.SchemaLock
+import io.reactivecqrs.core.util.{Ddl, SchemaLock}
 
 import org.postgresql.util.PSQLException
 import scalikejdbc._
@@ -16,9 +16,8 @@ class PostgresSagaSchemaInitializer {
   }
 
   // R17: the organization of a saga's order, when the saga says (`SagaDefinition.spaceOf`); a purge of the space removes it.
-  private def addSpaceColumn(): Unit = DB.autoCommit { implicit session =>
-    sql"""ALTER TABLE sagas ADD COLUMN IF NOT EXISTS space_id BIGINT""".execute()
-  }
+  // F185: only when the column is missing (Ddl).
+  private def addSpaceColumn(): Unit = Ddl.addColumn("sagas", "space_id", "BIGINT")
 
   private def createSagasTable(): Unit = DB.autoCommit { implicit session =>
     sql"""

@@ -1,6 +1,6 @@
 package io.reactivecqrs.core.commandhandler
 
-import io.reactivecqrs.core.util.SchemaLock
+import io.reactivecqrs.core.util.{Ddl, SchemaLock}
 
 import java.time.Instant
 
@@ -90,14 +90,14 @@ class PostgresCommandResponseState(mpjsons: MPJsons, typesNamesState: TypesNames
     sql"""CREATE SEQUENCE IF NOT EXISTS commands_responses_seq""".execute()
   }
 
-  private def addInfoColumns() = DB.autoCommit { implicit session =>
-    sql"""ALTER TABLE commands_responses ADD COLUMN IF NOT EXISTS info TEXT, ADD COLUMN IF NOT EXISTS info_type_id SMALLINT""".execute()
+  // F185: each step that changes the table first looks whether there is anything to change (Ddl).
+  private def addInfoColumns(): Unit = {
+    Ddl.addColumn("commands_responses", "info", "TEXT")
+    Ddl.addColumn("commands_responses", "info_type_id", "SMALLINT")
   }
 
   // R17: the aggregate a response is about, for a purge; rows stored before have none and expire with the retention.
-  private def addAggregateColumn() = DB.autoCommit { implicit session =>
-    sql"""ALTER TABLE commands_responses ADD COLUMN IF NOT EXISTS aggregate_id BIGINT""".execute()
-  }
+  private def addAggregateColumn(): Unit = Ddl.addColumn("commands_responses", "aggregate_id", "BIGINT")
 
   // Built CONCURRENTLY, so a large table stays writable; an invalid index left by an interrupted build is built again.
   private def createAggregateIndex() = DB.autoCommit { implicit session =>
@@ -113,14 +113,13 @@ class PostgresCommandResponseState(mpjsons: MPJsons, typesNamesState: TypesNames
 
   // Idempotency keys are global (sagaId|step), so the key alone is unique. The previous index was
   // declared on (aggregate_id, key), a column this table never had, so it could not be created.
-  private def createKeyIndex() = DB.autoCommit { implicit session =>
-    sql"""DROP INDEX IF EXISTS commands_responses_key_idx""".execute()
-    sql"""CREATE UNIQUE INDEX IF NOT EXISTS commands_responses_unique_key_idx ON commands_responses (key)""".execute()
+  private def createKeyIndex(): Unit = {
+    Ddl.dropIndex("commands_responses_key_idx")
+    Ddl.createIndex("commands_responses_unique_key_idx", "CREATE UNIQUE INDEX IF NOT EXISTS commands_responses_unique_key_idx ON commands_responses (key)")
   }
 
-  private def createHandlingTimestampIndex() = DB.autoCommit { implicit session =>
-    sql"""CREATE INDEX IF NOT EXISTS commands_responses_handling_timestamp_idx ON commands_responses (handling_timestamp)""".execute()
-  }
+  private def createHandlingTimestampIndex(): Unit = Ddl.createIndex("commands_responses_handling_timestamp_idx",
+    "CREATE INDEX IF NOT EXISTS commands_responses_handling_timestamp_idx ON commands_responses (handling_timestamp)")
 
   /** A JSON value with the id of its class. */
   private case class Stored(json: String, typeId: Short)

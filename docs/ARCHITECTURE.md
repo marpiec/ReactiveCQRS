@@ -1489,6 +1489,14 @@ instead of failing on concurrent DDL. It is reentrant on a thread, as one initia
 start another, and gives up after five minutes. The heavy jobs (`buildIndexesConcurrently`,
 `backfillSpaces`) stay separate calls.
 
+A schema statement locks its table before it looks whether there is anything to do (`ALTER TABLE …
+IF NOT EXISTS` takes ACCESS EXCLUSIVE, `CREATE INDEX IF NOT EXISTS` SHARE), and while it waits behind a
+long transaction every other statement on the table queues behind it, on every node. So each step goes
+through `util/Ddl` (F185): it reads the catalog first (`information_schema.columns`, `to_regclass`,
+`pg_sequences`; no table lock) and changes the table only when something is missing, in a transaction
+whose `lock_timeout` is 2 s, tried 30 times a second apart; then the start fails naming the wait.
+`StartupLocksSpec` holds a reader and a writer on each table while a start runs.
+
 ### 13.3 Sharded owners (D43, D72)
 
 A context with `placement = Placement.Sharded(numberOfShards)` has one owner per aggregate in the

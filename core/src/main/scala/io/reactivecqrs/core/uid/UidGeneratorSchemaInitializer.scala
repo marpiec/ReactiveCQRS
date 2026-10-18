@@ -1,6 +1,6 @@
 package io.reactivecqrs.core.uid
 
-import io.reactivecqrs.core.util.SchemaLock
+import io.reactivecqrs.core.util.{Ddl, SchemaLock}
 
 import scalikejdbc._
 import io.reactivecqrs.core.util.SqlLogging.withoutValues
@@ -16,16 +16,17 @@ class UidGeneratorSchemaInitializer {
 
   /** Creates the sequences, when missing, and sets their step. */
   def initSchema(): Unit = SchemaLock {
-    DB.autoCommit { implicit session =>
-      // The first 1000 aggregate ids are reserved for system ids.
-      initSequence("aggregates_uids_seq", start = 1001)
-      initSequence("commands_uids_seq", start = 1)
-      initSequence("sagas_uids_seq", start = 1)
-    }
+    // The first 1000 aggregate ids are reserved for system ids.
+    initSequence("aggregates_uids_seq", start = 1001)
+    initSequence("commands_uids_seq", start = 1)
+    initSequence("sagas_uids_seq", start = 1)
   }
 
-  private def initSequence(name: String, start: Long)(implicit session: DBSession): Unit = {
-    SQL(s"CREATE SEQUENCE IF NOT EXISTS $name INCREMENT BY $poolSize START $start").execute()
-    SQL(s"ALTER SEQUENCE $name INCREMENT BY $poolSize").execute()
+  // F185: the step is changed only when it is not the pool size; an ALTER SEQUENCE waits for the transactions using it.
+  private def initSequence(name: String, start: Long): Unit = {
+    DB.autoCommit(implicit session => SQL(s"CREATE SEQUENCE IF NOT EXISTS $name INCREMENT BY $poolSize START $start").execute.apply())
+    Ddl.change("setting the step of " + name, implicit session =>
+      sql"SELECT increment_by FROM pg_sequences WHERE schemaname = current_schema() AND sequencename = $name".map(_.long(1)).single().contains(poolSize.toLong)
+    )(implicit session => SQL(s"ALTER SEQUENCE $name INCREMENT BY $poolSize").execute.apply())
   }
 }

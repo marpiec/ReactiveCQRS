@@ -1,6 +1,6 @@
 package io.reactivecqrs.core.types
 
-import io.reactivecqrs.core.util.SchemaLock
+import io.reactivecqrs.core.util.{Ddl, SchemaLock}
 
 import scalikejdbc._
 
@@ -67,9 +67,8 @@ class PostgresTypesNamesState extends TypesNamesState {
     sql"""CREATE SEQUENCE IF NOT EXISTS types_names_seq""".execute()
   }
 
-  private def createNamesIndex() = DB.autoCommit { implicit session =>
-    sql"""CREATE UNIQUE INDEX IF NOT EXISTS types_names_names_idx ON types_names (name)""".execute()
-  }
+  // F185: only when the index is missing (Ddl).
+  private def createNamesIndex(): Unit = Ddl.createIndex("types_names_names_idx", "CREATE UNIQUE INDEX IF NOT EXISTS types_names_names_idx ON types_names (name)")
 
   override def typeIdByClassName(className: String): Short = ids.getOrElse(className, idFromDB(className))
 

@@ -61,6 +61,14 @@ schematu działa pod blokadą doradczą PostgreSQL (advisory lock), jeden proces
 blokadę do pięciu minut; potem jego start kończy się błędem
 „The schema lock was not free for 5 minutes: another process initializes the schema”.
 
+Start nie wchodzi też w drogę długim transakcjom, takim jak kopia zapasowa albo eksport organizacji.
+`initSchema()` najpierw czyta katalog i dotyka tabeli tylko wtedy, gdy czegoś w niej brakuje, więc
+zwykły start nie zakłada żadnej blokady tabeli. Gdy musi zmienić tabelę (na przykład przy pierwszym
+starcie nowej wersji), a długa transakcja ją trzyma, czeka na blokadę najwyżej dwie sekundy naraz, w
+sumie około minuty. Potem start kończy się błędem „The start could not finish ...: it waited ... for
+the table's lock, which a long transaction holds”. Znajdź tę transakcję w `pg_stat_activity` i uruchom
+węzeł ponownie, gdy się zakończy. W tym czasie wszystkie inne węzły pracują dalej.
+
 > **Ostrzeżenie:** nie pomijaj `PostgresCommandResponseState.initSchema()`. Tworzy unikalny indeks, na
 > którym opierają się polecenia idempotentne; bez niego każde polecenie idempotentne kończy się błędem.
 

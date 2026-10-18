@@ -1,6 +1,6 @@
 package io.reactivecqrs.core.eventstore
 
-import io.reactivecqrs.core.util.SchemaLock
+import io.reactivecqrs.core.util.{Ddl, SchemaLock}
 
 import scalikejdbc._
 import io.reactivecqrs.core.util.SqlLogging.withoutValues
@@ -56,35 +56,20 @@ class PostgresEventStoreSchemaInitializer  {
       """.execute()
   }
 
-  private def dropColumnCommandId(): Unit = DB.autoCommit { implicit session =>
-    sql"""
-        ALTER TABLE events DROP COLUMN IF EXISTS command_id
-    """.execute()
-  }
+  // F185: each step that changes a table first looks whether there is anything to change (Ddl).
+  private def dropColumnCommandId(): Unit = Ddl.dropColumn("events", "command_id")
 
-  private def createEventsIdAndAggregateIndex(): Unit = DB.autoCommit { implicit session =>
-    sql"""
-      CREATE INDEX IF NOT EXISTS events_id_aggregates_idx ON events (aggregate_id, id);
-    """.execute()
-  }
+  private def createEventsIdAndAggregateIndex(): Unit =
+    Ddl.createIndex("events_id_aggregates_idx", "CREATE INDEX IF NOT EXISTS events_id_aggregates_idx ON events (aggregate_id, id)")
 
-  private def createEventsAggregateIdIndex(): Unit = DB.autoCommit { implicit session =>
-    sql"""
-        CREATE INDEX IF NOT EXISTS events_aggregates_idx ON events (aggregate_id);
-      """.execute()
-  }
+  private def createEventsAggregateIdIndex(): Unit =
+    Ddl.createIndex("events_aggregates_idx", "CREATE INDEX IF NOT EXISTS events_aggregates_idx ON events (aggregate_id)")
 
-  private def createAggregatesTypeIndex(): Unit = DB.autoCommit { implicit session =>
-    sql"""
-        CREATE INDEX IF NOT EXISTS aggregates_type_idx ON aggregates (type_id);
-      """.execute()
-  }
+  private def createAggregatesTypeIndex(): Unit =
+    Ddl.createIndex("aggregates_type_idx", "CREATE INDEX IF NOT EXISTS aggregates_type_idx ON aggregates (type_id)")
 
-  private def createAggregatesBaseIdIndex(): Unit = DB.autoCommit { implicit session =>
-    sql"""
-        CREATE INDEX IF NOT EXISTS aggregates_base_id_idx ON aggregates (base_id);
-      """.execute()
-  }
+  private def createAggregatesBaseIdIndex(): Unit =
+    Ddl.createIndex("aggregates_base_id_idx", "CREATE INDEX IF NOT EXISTS aggregates_base_id_idx ON aggregates (base_id)")
 
 
 
@@ -110,11 +95,8 @@ class PostgresEventStoreSchemaInitializer  {
 
   // events_to_publish is the outbox: queried/joined/deleted by aggregate_id (often ordered by version)
   // on every AggregateRepositoryActor init and outbox resend. Without this index those are full table scans.
-  private def createEventsBroadcastAggregateIndex(): Unit = DB.autoCommit { implicit session =>
-    sql"""
-        CREATE INDEX IF NOT EXISTS events_to_publish_aggregate_idx ON events_to_publish (aggregate_id, version);
-      """.execute()
-  }
+  private def createEventsBroadcastAggregateIndex(): Unit =
+    Ddl.createIndex("events_to_publish_aggregate_idx", "CREATE INDEX IF NOT EXISTS events_to_publish_aggregate_idx ON events_to_publish (aggregate_id, version)")
 
   private def createAggregatesTable(): Unit = DB.autoCommit { implicit session =>
     sql"""
@@ -130,11 +112,7 @@ class PostgresEventStoreSchemaInitializer  {
       """.execute()
   }
 
-  private def addAggregateSpaceColumn(): Unit = DB.autoCommit { implicit session =>
-    sql"""
-        ALTER TABLE aggregates ADD COLUMN IF NOT EXISTS space_id BIGINT NOT NULL DEFAULT -1
-    """.execute()
-  }
+  private def addAggregateSpaceColumn(): Unit = Ddl.addColumn("aggregates", "space_id", "BIGINT NOT NULL DEFAULT -1")
 
   private def createEventsSequence(): Unit = DB.autoCommit { implicit session =>
     sql"""CREATE SEQUENCE IF NOT EXISTS events_seq""".execute()
@@ -154,78 +132,73 @@ class PostgresEventStoreSchemaInitializer  {
   }
 
   // D32: the metadata envelope of an event; null for events stored without one.
-  private def addEventsMetadataColumn(): Unit = DB.autoCommit { implicit session =>
-    sql"""ALTER TABLE events ADD COLUMN IF NOT EXISTS metadata JSONB""".execute()
-  }
+  private def addEventsMetadataColumn(): Unit = Ddl.addColumn("events", "metadata", "JSONB")
 
   // D49, D51: the version an aggregate's history is squashed up to; null when it never was.
-  private def addAggregatesSquashedVersionColumn(): Unit = DB.autoCommit { implicit session =>
-    sql"""ALTER TABLE aggregates ADD COLUMN IF NOT EXISTS squashed_version INT""".execute()
-  }
+  private def addAggregatesSquashedVersionColumn(): Unit = Ddl.addColumn("aggregates", "squashed_version", "INT")
 
   // F119: raised by every change that may make the aggregate's snapshots wrong; a snapshot is written only at the
   // generation its state was read at. Adding a column with a constant default rewrites nothing.
-  private def addAggregatesHistoryGenerationColumn(): Unit = DB.autoCommit { implicit session =>
-    sql"""ALTER TABLE aggregates ADD COLUMN IF NOT EXISTS history_generation INT NOT NULL DEFAULT 0""".execute()
-  }
+  private def addAggregatesHistoryGenerationColumn(): Unit = Ddl.addColumn("aggregates", "history_generation", "INT NOT NULL DEFAULT 0")
 
   // F38: a new or small installation gets the restore index at once; a large one builds it online
   // (`PostgresEventStoreState.buildIndexesConcurrently`), since a plain build would block writes for its duration (D69).
-  private def createEventsAggregateVersionIndexWhenSmall(): Unit = DB.autoCommit { implicit session =>
-    val estimatedRows = sql"""SELECT reltuples::bigint FROM pg_class WHERE oid = 'events'::regclass""".map(_.long(1)).single().getOrElse(0L)
-    if (estimatedRows < 100000L) {
-      sql"""CREATE INDEX IF NOT EXISTS events_aggregate_version_idx ON events (aggregate_id, version)""".execute()
-    }
+  private def createEventsAggregateVersionIndexWhenSmall(): Unit = if (small("events")) {
+    Ddl.createIndex("events_aggregate_version_idx", "CREATE INDEX IF NOT EXISTS events_aggregate_version_idx ON events (aggregate_id, version)")
   }
 
   // M6: an organization is found through its aggregates' space (D38); built online on a large installation (D69).
-  private def createAggregatesSpaceIndexWhenSmall(): Unit = DB.autoCommit { implicit session =>
-    val estimatedRows = sql"""SELECT reltuples::bigint FROM pg_class WHERE oid = 'aggregates'::regclass""".map(_.long(1)).single().getOrElse(0L)
-    if (estimatedRows < 100000L) {
-      sql"""CREATE INDEX IF NOT EXISTS aggregates_space_id_idx ON aggregates (space_id, id)""".execute()
-      sql"""DROP INDEX IF EXISTS aggregates_space_idx""".execute() // the first M6 steps' index, on the space alone
-    }
+  private def createAggregatesSpaceIndexWhenSmall(): Unit = if (small("aggregates")) {
+    Ddl.createIndex("aggregates_space_id_idx", "CREATE INDEX IF NOT EXISTS aggregates_space_id_idx ON aggregates (space_id, id)")
+    Ddl.dropIndex("aggregates_space_idx") // the first M6 steps' index, on the space alone
   }
 
   // F173: a type's aggregates, their own rows, in id order: the walks of builds and targeted rebuilds read them a page at a
   // time. Built online on a large installation (D69).
-  private def createAggregatesOwnTypeIndexWhenSmall(): Unit = DB.autoCommit { implicit session =>
-    val estimatedRows = sql"""SELECT reltuples::bigint FROM pg_class WHERE oid = 'aggregates'::regclass""".map(_.long(1)).single().getOrElse(0L)
-    if (estimatedRows < 100000L) {
-      sql"""CREATE INDEX IF NOT EXISTS aggregates_own_type_idx ON aggregates (type_id, id) WHERE id = base_id""".execute()
-    }
+  private def createAggregatesOwnTypeIndexWhenSmall(): Unit = if (small("aggregates")) {
+    Ddl.createIndex("aggregates_own_type_idx", "CREATE INDEX IF NOT EXISTS aggregates_own_type_idx ON aggregates (type_id, id) WHERE id = base_id")
+  }
+
+  private def small(table: String): Boolean = DB.readOnly { implicit session =>
+    SQL(s"SELECT reltuples::bigint FROM pg_class WHERE oid = '$table'::regclass").map(_.long(1)).single.apply().getOrElse(0L) < 100000L
   }
 
   // F124: each event's aggregate type and space, so a build of some types, or of one space, reads only their events in
   // commit order. The procedures write a key with each event, and the cascade deletes it with the event. The rows from
   // before get theirs from `PostgresEventStoreState.backfillEventKeys`, an online job (D69), which records the step in
   // `schema_steps` once every event has a key; until then builds read as before.
-  private def createEventKeysTable(): Unit = DB.autoCommit { implicit session =>
-    sql"""CREATE TABLE IF NOT EXISTS schema_steps (name VARCHAR(128) NOT NULL PRIMARY KEY, completed TIMESTAMP NOT NULL)""".execute()
-    sql"""CREATE TABLE IF NOT EXISTS event_keys (id BIGINT NOT NULL PRIMARY KEY REFERENCES events (id) ON DELETE CASCADE,
-         |  type_id SMALLINT NOT NULL, space_id BIGINT NOT NULL)""".stripMargin.execute()
-    sql"""CREATE INDEX IF NOT EXISTS event_keys_type_idx ON event_keys (type_id, id)""".execute()
-    sql"""CREATE INDEX IF NOT EXISTS event_keys_space_idx ON event_keys (space_id, type_id, id)""".execute()
+  private def createEventKeysTable(): Unit = {
+    DB.autoCommit { implicit session =>
+      sql"""CREATE TABLE IF NOT EXISTS schema_steps (name VARCHAR(128) NOT NULL PRIMARY KEY, completed TIMESTAMP NOT NULL)""".execute()
+      sql"""CREATE TABLE IF NOT EXISTS event_keys (id BIGINT NOT NULL PRIMARY KEY REFERENCES events (id) ON DELETE CASCADE,
+           |  type_id SMALLINT NOT NULL, space_id BIGINT NOT NULL)""".stripMargin.execute()
+    }
+    Ddl.createIndex("event_keys_type_idx", "CREATE INDEX IF NOT EXISTS event_keys_type_idx ON event_keys (type_id, id)")
+    Ddl.createIndex("event_keys_space_idx", "CREATE INDEX IF NOT EXISTS event_keys_space_idx ON event_keys (space_id, type_id, id)")
   }
 
   // R11: the audit events a squash keeps, as they were stored, with their undo marks; never read by restores or builds.
-  private def createEventsArchiveTable(): Unit = DB.autoCommit { implicit session =>
-    sql"""CREATE TABLE IF NOT EXISTS events_archive (id BIGINT NOT NULL PRIMARY KEY, aggregate_id BIGINT NOT NULL, version INT NOT NULL,
-         |  event_type_id SMALLINT NOT NULL, event_type_version SMALLINT NOT NULL, event TEXT NOT NULL, user_id BIGINT NOT NULL, event_time TIMESTAMP NOT NULL, metadata JSONB,
-         |  undone_from INT, archived TIMESTAMP NOT NULL)""".stripMargin.execute()
-    sql"""CREATE INDEX IF NOT EXISTS events_archive_aggregate_idx ON events_archive (aggregate_id, version)""".execute()
+  private def createEventsArchiveTable(): Unit = {
+    DB.autoCommit { implicit session =>
+      sql"""CREATE TABLE IF NOT EXISTS events_archive (id BIGINT NOT NULL PRIMARY KEY, aggregate_id BIGINT NOT NULL, version INT NOT NULL,
+           |  event_type_id SMALLINT NOT NULL, event_type_version SMALLINT NOT NULL, event TEXT NOT NULL, user_id BIGINT NOT NULL, event_time TIMESTAMP NOT NULL, metadata JSONB,
+           |  undone_from INT, archived TIMESTAMP NOT NULL)""".stripMargin.execute()
+    }
+    Ddl.createIndex("events_archive_aggregate_idx", "CREATE INDEX IF NOT EXISTS events_archive_aggregate_idx ON events_archive (aggregate_id, version)")
   }
 
   // D76: a detached copy holds a copy of its bases' state, so a complete rewrite of a base must find it: every detach
   // records the bases the copy read, at which version. And each complete rewrite leaves an audit row, never a value.
-  private def createLineageAndRewritesTables(): Unit = DB.autoCommit { implicit session =>
-    sql"""CREATE TABLE IF NOT EXISTS aggregate_lineage (aggregate_id BIGINT NOT NULL, copied_from BIGINT NOT NULL, at_version INT NOT NULL,
-         |  detached TIMESTAMP NOT NULL, PRIMARY KEY (aggregate_id, copied_from))""".stripMargin.execute()
-    sql"""CREATE INDEX IF NOT EXISTS aggregate_lineage_copied_from_idx ON aggregate_lineage (copied_from)""".execute()
-    sql"""CREATE TABLE IF NOT EXISTS history_rewrites (id BIGSERIAL PRIMARY KEY, aggregate_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
-         |  at TIMESTAMP NOT NULL, change_class VARCHAR(512) NOT NULL, classes TEXT NOT NULL, fields TEXT NOT NULL, events INT NOT NULL,
-         |  archived INT NOT NULL)""".stripMargin.execute()
-    sql"""CREATE INDEX IF NOT EXISTS history_rewrites_aggregate_idx ON history_rewrites (aggregate_id)""".execute()
+  private def createLineageAndRewritesTables(): Unit = {
+    DB.autoCommit { implicit session =>
+      sql"""CREATE TABLE IF NOT EXISTS aggregate_lineage (aggregate_id BIGINT NOT NULL, copied_from BIGINT NOT NULL, at_version INT NOT NULL,
+           |  detached TIMESTAMP NOT NULL, PRIMARY KEY (aggregate_id, copied_from))""".stripMargin.execute()
+      sql"""CREATE TABLE IF NOT EXISTS history_rewrites (id BIGSERIAL PRIMARY KEY, aggregate_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
+           |  at TIMESTAMP NOT NULL, change_class VARCHAR(512) NOT NULL, classes TEXT NOT NULL, fields TEXT NOT NULL, events INT NOT NULL,
+           |  archived INT NOT NULL)""".stripMargin.execute()
+    }
+    Ddl.createIndex("aggregate_lineage_copied_from_idx", "CREATE INDEX IF NOT EXISTS aggregate_lineage_copied_from_idx ON aggregate_lineage (copied_from)")
+    Ddl.createIndex("history_rewrites_aggregate_idx", "CREATE INDEX IF NOT EXISTS history_rewrites_aggregate_idx ON history_rewrites (aggregate_id)")
   }
 
   // An installation without events has none to backfill. Checked once the procedures write keys, so an event written
