@@ -2356,3 +2356,14 @@ Open test-infrastructure items:
   with `StoredDataCheck` and the pre-check queries (F34, F76, F49) and a table of durations it fills in,
   the stop, what carries over by itself, the checks right after, the way back, and the background jobs.
   The rehearsal itself is Neula's.
+
+**18/10/2026: chapters 10, 16 and 20 take their code from the examples**
+- Chapter 10 from E10 (the projection, the four steps in one, waiting for the switch, the repair),
+  chapter 20 from E8 (its draft region split in two: the draft, and keeping it).
+- Chapter 16's running example, a cart that remembers its shop and each shop's cart list, was
+  uncompiled. E9 is now that example instead of memos: \`ShopCart\` and \`ShopCartsList\` (a managed
+  projection whose documents carry the shop's space, with an index on the shop); its flow exports a
+  shop, imports it into an empty space under new ids, rebuilds that space's list
+  (\`RebuildAggregates(OneSpace)\`: 2 aggregates), purges the shop where it was (its documents cleared,
+  \`spaceRows\` all zero), and leaves the other shop's list as it was. Seven of the chapter's blocks are
+  E9's regions; E11's golden test follows E9's classes.

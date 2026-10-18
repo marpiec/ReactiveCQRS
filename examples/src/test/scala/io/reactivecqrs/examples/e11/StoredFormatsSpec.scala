@@ -14,7 +14,7 @@ import io.reactivecqrs.examples.e4.{ItemsReleased, ItemsReserved, PaymentCharged
 import io.reactivecqrs.examples.e5.{ChangesUndone, ItemWritten, ListCopied, ListCreated, ListSquashed, ShoppingList}
 import io.reactivecqrs.examples.e6.{ConcertScheduled, SeatBooked}
 import io.reactivecqrs.examples.e7.{NoteAdded, TicketOpened}
-import io.reactivecqrs.examples.e9.{MemoEdited, MemoSquashed, MemoWritten}
+import io.reactivecqrs.examples.e9.{ShopCartOpened, ShopCartSquashed, ShopItemAdded}
 import io.reactivecqrs.testkit.SchemaReference
 import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.must.Matchers
@@ -35,7 +35,8 @@ class StoredFormatsSpec extends AnyFeatureSpec with Matchers {
     ShoppingList("Camping", Vector("tent")),
     ConcertScheduled("Jazz night", 60), SeatBooked("customer 1"),                                     // E6
     TicketOpened("Printer jam"), NoteAdded("Paper reloaded"),                                         // E7
-    MemoWritten(SpaceId(7), "Order paper"), MemoEdited("Order toner"), MemoSquashed(SpaceId(7), "Order toner")) // E9
+    ShopCartOpened(SpaceId(42), "Groceries"), ShopItemAdded("apples"),                                // E9
+    ShopCartSquashed(SpaceId(42), "Groceries", Vector("apples")))
 
   Feature("Stored formats") {
 

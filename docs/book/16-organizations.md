@@ -73,9 +73,10 @@ detached first and keep their state (end of this chapter).
 ### A cart that remembers its shop
 
 Chapter 6 sketched `CartOpened`, a first event whose space comes from the command. Let's take that
-idea one step further, in a small example of our own (it is not in the test domain): a cart that
-belongs to a shop, and *remembers* it in its state.
+idea one step further in E9, the example of this chapter: a cart that belongs to a shop, and
+*remembers* it in its state.
 
+<!-- snippet: e9/ShopCarts.scala#domain -->
 ```scala
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
@@ -152,6 +153,7 @@ the document already has.
 The test domain's projections pass `0` everywhere, because every one of their carts lives in space
 0. With shops, pass the shop. Here is a list of each shop's carts:
 
+<!-- snippet: e9/ShopCartsList.scala#list -->
 ```scala
 import io.reactivecqrs.api.id.SpaceId
 import io.reactivecqrs.core.documentstore.{Document, DocumentStore, ExpectedSingleLongValue}
@@ -193,10 +195,8 @@ class ShopCartsList(val subscriptionsState: SubscriptionsState, documentStore: D
 Started as a managed projection, the way [chapter 10](10-rebuilding-projections.md) shows, with an
 index on the shop:
 
+<!-- snippet: e9/OrganizationsSetup.scala#start-list -->
 ```scala
-import io.reactivecqrs.core.documentstore.{MultipleLongIndex, NoopDocumentStoreCache, PostgresDocumentStore}
-import org.apache.pekko.actor.ActorRef
-
 val shopCarts: ActorRef = projections.start[ShopCartsList]("shop-carts", 1, "shopCarts") { build =>
   new ShopCartsList(subscriptionsState, new PostgresDocumentStore[ShopCartSummary](build.documentStore("shop_carts"),
     mpjsons, new NoopDocumentStoreCache, Seq(MultipleLongIndex(1, Seq("shop")))))
@@ -225,20 +225,14 @@ Two things to notice:
 
 With the space in every document, one organization's read models can be put right without touching
 anyone else's. The tool is the targeted rebuild of [chapter 10](10-rebuilding-projections.md),
-aimed at one space and sent to a managed projection's supervisor:
+aimed at one space and sent to a managed projection's supervisor. E9 rebuilds the list of the space a
+shop moved into (at the end of this chapter):
 
+<!-- snippet: e9/OrganizationsSetup.scala#rebuild -->
 ```scala
-import io.reactivecqrs.core.projection.RebuildTarget
-import io.reactivecqrs.core.rebuild.ProjectionSupervisor.{AggregatesRebuilt, RebuildAggregates, RebuildRefused}
-import org.apache.pekko.pattern.ask
-import org.apache.pekko.util.Timeout
-import scala.concurrent.Future
-import scala.concurrent.duration._
-
-implicit val timeout: Timeout = Timeout(10.minutes) // a whole organization can take a while
-
-val rebuilt: Future[Any] = shopCarts ? RebuildAggregates(RebuildTarget.OneSpace(SpaceId(42)))
-// AggregatesRebuilt(RebuildTarget.OneSpace(SpaceId(42)), aggregates), or RebuildRefused(reason)
+val rebuilt = Await.result(installation.shopCarts.ask(RebuildAggregates(RebuildTarget.OneSpace(target)))(Timeout(10.minutes)),
+  10.minutes) // a whole organization can take a while
+// AggregatesRebuilt(RebuildTarget.OneSpace(target), aggregates), or RebuildRefused(reason)
 ```
 
 The projection's `clearForRebuild(OneSpace(space))` clears that organization's documents (above),
@@ -357,20 +351,12 @@ for its space.
 
 ### Running it
 
+<!-- snippet: e9/OrganizationsSetup.scala#purge -->
 ```scala
-import io.reactivecqrs.api.AggregateType
-import io.reactivecqrs.api.id.SpaceId
-import io.reactivecqrs.core.space.SpacePurge
-
-val purge = new SpacePurge(eventStore,
-  commandBuses = Map(AggregateType.of[ShoppingCart] -> carts),   // this node's bus of every type the organization has
-  projections = Seq(cartsList),                                 // every projection with its documents
-  hooks = Seq(receiptsHook))(system)
-
-purge.purge(SpaceId(42)).foreach { report =>
-  if (report.complete) println("Shop 42 is gone: " + report.aggregates + " aggregates")
-  else println("Not done yet: " + report)
-}
+val purge = new SpacePurge(installation.eventStore,
+  commandBuses = Map(AggregateType.of[ShopCart] -> installation.carts), // this node's bus of every type the shop has
+  projections = Seq(installation.shopCarts))                            // every projection with its documents
+val purged = Await.result(purge.purge(source), 2.minutes)
 ```
 
 Run it from one node, once. It answers a `PurgeReport`:
@@ -421,15 +407,15 @@ val receiptsHook = new PurgeHook {
 }
 ```
 
-A hook runs inside each bite's transaction, so its rows go together with the library's, or not at
-all.
+Pass it to the purge with the others (`new SpacePurge(..., hooks = Seq(receiptsHook))`). A hook runs
+inside each bite's transaction, so its rows go together with the library's, or not at all.
 
 ### Checking that nothing is left
 
 ```scala
 import io.reactivecqrs.core.tools.StoredDataCheck
 
-StoredDataCheck.spaceRows(42L) // Map(aggregates -> 0, event_keys -> 0, sagas -> 0, projection_carts_list -> 0)
+StoredDataCheck.spaceRows(42L) // Map(aggregates -> 0, event_keys -> 0, sagas -> 0, projection_shop_carts_v1 -> 0)
 ```
 
 It counts what the space still has in the library's tables and in every read-model table. After a
@@ -459,13 +445,11 @@ rebuilt there.
 
 ### Packing: the export
 
+<!-- snippet: e9/OrganizationsSetup.scala#export -->
 ```scala
-import java.nio.charset.StandardCharsets
-import java.nio.file.{Files, Paths}
-import io.reactivecqrs.core.space.SpaceExport
-
-val writer = Files.newBufferedWriter(Paths.get("shop-42.jsonl"), StandardCharsets.UTF_8)
-val exported = try new SpaceExport(eventStore, contexts = Seq(new ShoppingCartAggregateContext)).write(SpaceId(42), writer)
+val file = Files.createTempFile("shop-", ".jsonl")
+val writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8)
+val exported = try new SpaceExport(installation.eventStore, contexts = Seq(new ShopCartContext)).write(source, writer)
                finally writer.close()
 // ExportReport(space, aggregates, events, archived, detached, waitingInOutbox, refused)
 ```
@@ -483,10 +467,9 @@ from its own state, just as the purge does, so it keeps exactly what it had. Wit
 
 ### Unpacking: the import
 
+<!-- snippet: e9/OrganizationsSetup.scala#import -->
 ```scala
-import io.reactivecqrs.core.space.SpaceImport
-
-val imported = new SpaceImport(eventStore, uidGenerator).read(Paths.get("shop-42.jsonl"), into = SpaceId(7))
+val imported = new SpaceImport(installation.eventStore, installation.uidGenerator).read(file, into = target)
 // ImportReport(space, aggregates, events, archived, remapped, unknownReferences, someUnknown, refused)
 ```
 

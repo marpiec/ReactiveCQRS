@@ -1,6 +1,8 @@
 package io.reactivecqrs.examples.e9
 
 import io.reactivecqrs.api.id.{SpaceId, UserId}
+import io.reactivecqrs.core.projection.RebuildTarget
+import io.reactivecqrs.core.rebuild.ProjectionSupervisor.AggregatesRebuilt
 import io.reactivecqrs.testkit.{CommonSpec, TestDatabase}
 import org.apache.pekko.util.Timeout
 
@@ -15,17 +17,18 @@ class OrganizationsSpec extends CommonSpec {
 
   Feature("E9: organizations") {
 
-    Scenario("an organization exported, imported into an empty space under new ids, and purged; the other one untouched") {
+    Scenario("a shop exported, imported into an empty space under new ids, its list rebuilt there, and purged; the other shop untouched") {
       val first = 9000000000L + System.nanoTime() % 1000000L
       val (source, other, target) = (SpaceId(first), SpaceId(first + 1), SpaceId(first + 2))
       val move = OrganizationsSetup.moveAndPurge(OrganizationsSetup.start(system), UserId(1), source, other, target)
 
       (move.exported.complete, move.exported.aggregates, move.exported.events) mustBe ((true, 2, 3L))
       (move.imported.complete, move.imported.aggregates, move.imported.remapped.size) mustBe ((true, 2, 2))
-      move.movedMemo mustBe Memo(target, "Order paper and toner")
+      move.rebuilt mustBe AggregatesRebuilt(RebuildTarget.OneSpace(target), 2)
+      move.movedCarts mustBe Set(ShopCartSummary(target.asLong, "Groceries"), ShopCartSummary(target.asLong, "Garden"))
       (move.purged.complete, move.purged.aggregates) mustBe ((true, 2))
       move.leftInSource.values.sum mustBe 0L
-      move.otherMemo mustBe Memo(other, "Another organization's memo")
+      move.otherCarts mustBe Set(ShopCartSummary(other.asLong, "Another shop's cart"))
     }
   }
 }
