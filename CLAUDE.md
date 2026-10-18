@@ -311,8 +311,9 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
 - **Snapshots are opt-in** (D30, `AggregateContext.snapshots`): without them an aggregate is
   rebuilt by replaying all its events. A change that alters the state behind a snapshot
   (undo, rewrite, squash, permanent delete) must delete it in its own transaction.
-- **Logging**: use `MyActorLogging` / slf4j. There are stray `println`s in
-  production paths (saga / uid generator) — prefer the logger when touching them.
+- **Logging**: use `MyActorLogging` / slf4j; production code has no `println`.
+- **Warnings**: the whole build (main, tests, bench) compiles without a warning (18/10/2026); keep it so, as
+  a new warning is then seen. A refutable pattern a spec relies on is marked `: @unchecked`.
 - **Metrics** (R19): measures go through `ReactiveMetrics(system).metrics` (`count`, `time`, `gauge`; no-op by
   default); the names and tags are listed in ARCHITECTURE §14, and `RecordingMetrics` records them in tests.
 - **`asInstanceOf`** is used liberally to recover generic event types after

@@ -2,7 +2,6 @@ package io.reactivecqrs.core.eventstore
 
 import java.time.Instant
 
-import org.apache.pekko.actor.ActorRef
 import io.reactivecqrs.api.{AggregateSquashedException, AggregateType, AggregateVersion, AutomaticSquash, DuplicationEvent, Event, EventMetadata, EventWithVersion, FirstEvent, HistoryChange, UndoEvent}
 import io.reactivecqrs.api.id.{AggregateId, CommandId, SpaceId, UserId}
 import io.reactivecqrs.core.eventstore.NewEvents
@@ -68,9 +67,9 @@ class TestFixture(val eventStoreState: EventStoreState) {
 
 abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends CommonSpec {
 
-  feature("Can store and retrieve correct events for aggregate") {
+  Feature("Can store and retrieve correct events for aggregate") {
 
-    scenario("Simple adding and reading events") {
+    Scenario("Simple adding and reading events") {
 
       Given("Event store state")
 
@@ -96,7 +95,7 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     }
 
 
-    scenario("Adding and reading events in batches") {
+    Scenario("Adding and reading events in batches") {
 
       Given("Event store state")
 
@@ -115,7 +114,7 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     }
   }
 
-  scenario("Adding and reading undo events") {
+  Scenario("Adding and reading undo events") {
 
     Given("Event store state")
     val f = new TestFixture(eventStoreState)
@@ -146,7 +145,7 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
 
   }
 
-  scenario("Adding and reading events for duplicated aggregates") {
+  Scenario("Adding and reading events for duplicated aggregates") {
 
     Given("Event store state")
     val f = new TestFixture(eventStoreState)
@@ -229,7 +228,7 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
   // F7: restore must see the timestamp the live path used, which is the one given with the events.
   Scenario("Events keep the timestamp they were persisted with") {
     val f = new TestFixture(eventStoreState)
-    import f.{aggregateId, commandId, userId}
+    import f.{aggregateId, userId}
 
     def persistAt(timestamp: Instant, expectedVersion: Int, events: Event[SomeAggregate]*): Unit =
       eventStoreState.localTx { session =>
@@ -274,7 +273,7 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
 
     def tail(upTo: Option[Int]): Seq[(Int, Boolean)] = {
       var read = Vector[(Int, Boolean)]()
-      eventStoreState.readAndProcessOwnEvents[SomeAggregate](f.aggregateId, AggregateVersion(2), upTo.map(AggregateVersion(_)))((_, _, _, version, noop) => read :+= (version, noop))
+      eventStoreState.readAndProcessOwnEvents[SomeAggregate](f.aggregateId, AggregateVersion(2), upTo.map(AggregateVersion(_)))((_, _, _, version, noop) => read :+= ((version, noop)))
       read
     }
     tail(None) mustBe Seq((3, true), (4, true), (5, false))
@@ -533,7 +532,7 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
       val f = new TestFixture(eventStoreState)
       f.storeEvents(EventA("first") +: (2 to events).map(EventB))
       f
-    }
+    }: @unchecked
     published(c.aggregateId)
     squash(c, 4) mustBe Right(())
     val rule = AutomaticSquash(afterEvents = 3, keepLast = 1)

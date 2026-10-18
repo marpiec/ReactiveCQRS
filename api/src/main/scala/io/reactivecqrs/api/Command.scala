@@ -45,7 +45,7 @@ trait CommandIdempotencyId {
 }
 
 case class SagaStep(sagaId: SagaId, step: Int) extends CommandIdempotencyId {
-  override def asDbKey: String = sagaId.asLong+"|"+step
+  override def asDbKey: String = s"${sagaId.asLong}|$step"
 }
 
 /** A command that takes effect once per idempotency key, however often or concurrently it is sent: the response of

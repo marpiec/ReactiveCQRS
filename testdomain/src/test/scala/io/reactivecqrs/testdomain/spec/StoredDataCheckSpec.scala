@@ -4,7 +4,7 @@ import java.time.Instant
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.{AggregateId, CommandId, SagaId, UserId}
+import io.reactivecqrs.api.id.{AggregateId, SagaId, UserId}
 import io.reactivecqrs.core.eventstore.NewEvents
 import io.reactivecqrs.core.commandhandler.PostgresCommandResponseState
 import io.reactivecqrs.core.documentstore.{NoopDocumentStoreCache, PostgresDocumentStore}
@@ -16,7 +16,6 @@ import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.CreateMultipleCarts
 import io.reactivecqrs.testdomain.shoppingcart._
 import io.reactivecqrs.testkit.{CommonSpec, TestDatabase, TestIds}
-import org.apache.pekko.actor.ActorRef
 import scalikejdbc._
 
 // D78, F52: the dry run reads every stored JSON value and reports per class which rows cannot be read.

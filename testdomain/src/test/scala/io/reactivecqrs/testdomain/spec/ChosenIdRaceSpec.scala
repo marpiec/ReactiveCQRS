@@ -64,9 +64,9 @@ class ChosenIdRaceSpec extends CommonSpec {
     read.get
   }
 
-  feature("A first command's chosen id (D39)") {
+  Feature("A first command's chosen id (D39)") {
 
-    scenario("is refused when not positive, not below 2^53, or in another installation's range; a legacy id is taken") {
+    Scenario("is refused when not positive, not below 2^53, or in another installation's range; a legacy id is taken") {
       Seq(AggregateId(-7), AggregateId(1L << 53), AggregateId(5000000000000L)).foreach { id =>
         val answer = nodes.head.askFor[CustomCommandResponse[_]](CreateShoppingCartWithId(None, userId, id, "refused"))
         answer mustBe a[FailureResponse]
@@ -77,16 +77,16 @@ class ChosenIdRaceSpec extends CommonSpec {
     }
   }
 
-  feature("A first command with a chosen id, run by two owners at once") {
+  Feature("A first command with a chosen id, run by two owners at once") {
 
-    scenario("an idempotent one: both are answered with the response of the one that won") {
+    Scenario("an idempotent one: both are answered with the response of the one that won") {
       val cartId = AggregateId(TestIds.aggregate())
       race(CreateShoppingCartWithId(Some(ClientKey("race-" + cartId.asLong)), userId, cartId, "Groceries")) mustBe
         Seq.fill(2)(SuccessResponse(cartId, AggregateVersion(1)))
       stored(cartId).version mustBe AggregateVersion(1)
     }
 
-    scenario("another one: the one that lost is answered with the conflict") {
+    Scenario("another one: the one that lost is answered with the conflict") {
       val cartId = AggregateId(TestIds.aggregate())
       val answers = race(CreateShoppingCartWithId(None, userId, cartId, "Groceries"))
       answers must contain(SuccessResponse(cartId, AggregateVersion(1)))

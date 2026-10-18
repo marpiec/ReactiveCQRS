@@ -87,7 +87,7 @@ class ClusterDeliverySpec extends AnyFeatureSpec with Matchers with Eventually w
       node.uidGenerator, sagaState, Some("cartsSaga")))
     Seq(carts)
   })
-  private val Vector(nodeA, nodeB, nodeC) = nodes
+  private val Vector(nodeA, nodeB, nodeC) = nodes: @unchecked
 
   override def afterAll(): Unit = CartCluster.stop(nodes)
 

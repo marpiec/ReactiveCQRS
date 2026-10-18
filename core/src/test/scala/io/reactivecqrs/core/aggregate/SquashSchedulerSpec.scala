@@ -26,7 +26,7 @@ class SquashSchedulerSpec extends CommonSpec {
       store.localTx(session => store.persistEvents(id, NewEvents[SomeAggregate](UserId(1), AggregateVersion.ZERO, Instant.now,
         EventA("first") +: (2 to events).map(EventB)))(session)).get
       id
-    }
+    }: @unchecked
     val bus = TestProbe()
     val scheduler: ActorRef = system.actorOf(Props(new SquashScheduler(store, Seq(SquashTarget(aggregateType, bus.ref, rule)),
       SquashSchedulerOptions(firstRunAfter = 1.hour, perRun = perRun, answerTimeout = answerTimeout))))

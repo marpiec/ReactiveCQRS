@@ -49,9 +49,9 @@ class ContendedCommandsSpec extends CommonSpec {
   private val commandBus: ActorRef = system.actorOf(AggregateCommandBusActor(carts, uidGenerator, eventStore, responses, eventBus))
   private val userId = UserId(1)
 
-  feature("Concurrent commands that conflict only with their own owner's commits (F99)") {
+  Feature("Concurrent commands that conflict only with their own owner's commits (F99)") {
 
-    scenario("forty sent to one aggregate at once all succeed, and each handler runs at most twice") {
+    Scenario("forty sent to one aggregate at once all succeed, and each handler runs at most twice") {
       val created = commandBus.askFor[CustomCommandResponse[_]](CreateShoppingCart(None, userId, "contended"))
       val cartId = created.asInstanceOf[SuccessResponse].aggregateId
       carts.handlerRuns.set(0)

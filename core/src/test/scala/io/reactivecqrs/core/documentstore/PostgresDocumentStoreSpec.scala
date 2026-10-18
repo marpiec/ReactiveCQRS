@@ -22,8 +22,8 @@ class PostgresDocumentStoreSpec extends AnyFeatureSpec with GivenWhenThen with B
 
   }
 
-  feature("can find documents by path with one array") {
-    scenario("value exists") {
+  Feature("can find documents by path with one array") {
+    Scenario("value exists") {
       Given("document store with some values")
       val documentStore = new PostgresDocumentStore[ComplexType](testTable, mpjsons, new NoopDocumentStoreCache)
       try {
@@ -46,8 +46,8 @@ class PostgresDocumentStoreSpec extends AnyFeatureSpec with GivenWhenThen with B
     }
   }
 
-  feature("can find by option value") {
-    scenario("option value exists") {
+  Feature("can find by option value") {
+    Scenario("option value exists") {
       Given("document store with one value")
       val documentStore = new PostgresDocumentStore[OptionIntType](testTable, mpjsons, new NoopDocumentStoreCache)
       try {
@@ -67,8 +67,8 @@ class PostgresDocumentStoreSpec extends AnyFeatureSpec with GivenWhenThen with B
     }
   }
 
-  feature("i can has auto id") {
-    scenario("inserting document and getting auto id back") {
+  Feature("i can has auto id") {
+    Scenario("inserting document and getting auto id back") {
       Given("empty document store")
       val documentStore = new PostgresDocumentStoreAutoId[SimpleType](testTable, mpjsons, new NoopDocumentStoreCache)
 
@@ -94,8 +94,8 @@ class PostgresDocumentStoreSpec extends AnyFeatureSpec with GivenWhenThen with B
   }
 
   // F158: the value is a parameter of the query, not a part of its text.
-  feature("searching by an object in an array") {
-    scenario("F158 a value with quotes finds its document, and a value made to change the query finds nothing") {
+  Feature("searching by an object in an array") {
+    Scenario("F158 a value with quotes finds its document, and a value made to change the query finds nothing") {
       val documentStore = new PostgresDocumentStore[Labels](testTable, mpjsons, new NoopDocumentStoreCache)
       try {
         DB.localTx { implicit session =>
@@ -113,8 +113,8 @@ class PostgresDocumentStoreSpec extends AnyFeatureSpec with GivenWhenThen with B
   }
 
   // F159: the queries a store builds are valid with no condition, sorted by numbers, and without a limit.
-  feature("queries without conditions, and queries of parts") {
-    scenario("F159 a query without conditions finds every document; parts sort by numbers without a limit") {
+  Feature("queries without conditions, and queries of parts") {
+    Scenario("F159 a query without conditions finds every document; parts sort by numbers without a limit") {
       val documentStore = new PostgresDocumentStore[Item](testTable, mpjsons, new NoopDocumentStoreCache)
       try {
         DB.localTx { implicit session =>
@@ -135,14 +135,14 @@ class PostgresDocumentStoreSpec extends AnyFeatureSpec with GivenWhenThen with B
   }
 
   // F118: PostgreSQL cuts names past 63 characters; only the names a store makes count.
-  feature("table and index names") {
-    scenario("a table of 63 characters is accepted when the store has no index") {
+  Feature("table and index names") {
+    Scenario("a table of 63 characters is accepted when the store has no index") {
       val table = "t" * (63 - "projection_".length)
       val documentStore = new PostgresDocumentStore[SimpleType](table, mpjsons, new NoopDocumentStoreCache)
       documentStore.dropTable()
     }
 
-    scenario("a table whose index name would pass 63 characters is refused") {
+    Scenario("a table whose index name would pass 63 characters is refused") {
       val table = "t" * (63 - "projection_".length - "_idx_1".length + 1)
       an[IllegalArgumentException] must be thrownBy new PostgresDocumentStore[SimpleType](table, mpjsons, new NoopDocumentStoreCache,
         Seq(MultipleLongIndex(1, Seq("field"))))

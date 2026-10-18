@@ -2312,3 +2312,15 @@ Open test-infrastructure items:
   modules give way to 1.7.1. The Docker and Kubernetes files are checked by reading and by
   `NodeSpec`, not run: this machine has no Docker (M7 design, failure circumstances); run them before
   the release. Book: chapter 17 (its code from E2, a section on the deployments).
+
+**18/10/2026: a build without warnings**
+- The build compiled with 107 warnings, 21 of them in main code, which buried new ones. Main code: a
+  stored saga phase the code does not know is named (it failed with a `MatchError`); `Projections`
+  names what it cannot run in; the memory document store leaves a field accessible instead of
+  switching it back (which raced with another thread reading the field) and says why its sessions go
+  unused; a saga step's key is built by interpolation (the same text); the test domain's events-based
+  carts list follows a rename (it wrote the old name back) and prints nothing. Specs: ScalaTest's
+  `Feature` and `Scenario`, unused imports, refutable patterns marked `@unchecked`, fixtures as
+  classes; two saga scenarios of `ReactiveTestDomainSpec` assert their answers instead of sleeping
+  10 s, and a scenario that only slept 20 s is gone. A clean compile of main, tests and bench now
+  gives no warning.

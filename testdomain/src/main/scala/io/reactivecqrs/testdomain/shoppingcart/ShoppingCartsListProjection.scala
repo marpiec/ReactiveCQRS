@@ -41,23 +41,15 @@ class ShoppingCartsListProjectionEventsBased(
         val future = (shoppingCartCommandBus ? GetAggregateForVersion(baseId, baseVersion)).mapTo[Try[Aggregate[ShoppingCart]]] // TODO try to do this without ask
       val baseShoppingCart: Try[Aggregate[ShoppingCart]] = Await.result(future, 60 seconds)
         documentStore.insertDocument(0, aggregateId.asLong, baseShoppingCart.get.aggregateRoot.get.name)
-      case ItemAdded(name) =>
-        documentStore.updateDocument(0, aggregateId.asLong, {
-          case Some(doc) => Document(doc.document)
-        })
-      case ItemRemoved(id) =>
-        documentStore.updateDocument(0, aggregateId.asLong, {
-          case Some(doc) => Document(doc.document)
-        })
       case CartNameRewritten(name) =>
-        documentStore.updateDocument(0, aggregateId.asLong, {
-          case Some(doc) => Document(doc.document)
-        })
+        documentStore.updateDocument(0, aggregateId.asLong, _ => Document(name))
       case CartSquashed(_, name, _) => // a squash event holds the whole state (D48): the document is made from it
         documentStore.updateDocument(0, aggregateId.asLong, _ => Document(name))
       case ShoppingCartDeleted() =>
         documentStore.removeDocument(aggregateId.asLong)
-      case ShoppingCartChangesUndone(count) => println("Sorry :(")
+      // Items leave the name as it is. An undo of a rename is not followed: that needs the cart's history, which a
+      // list made from events does not keep (the aggregates-based list below gets the state).
+      case _ => ()
     }
   }
 

@@ -31,6 +31,7 @@ class SerialCommandsSpec extends CommonSpec {
       new MemoryCommandResponseState, eventBus))
     case tallies: TallyContext => system.actorOf(AggregateCommandBusActor(tallies, uidGenerator, new MemoryEventStoreState,
       new MemoryCommandResponseState, eventBus))
+    case other => throw new IllegalArgumentException("No bus for " + other)
   }
 
   private class SerialCarts extends ShoppingCartAggregateContext {

@@ -165,7 +165,7 @@ class ProjectionDeliverySpec extends CommonSpec {
     ChunkItem(SubscriptionType.EVENTS, noteType, id, AggregateVersion(versions.head), AggregateVersion(versions.last),
       versions.map(v => EventInfo[Any](AggregateVersion(v), GateNoteChanged(v).asInstanceOf[Event[Any]], UserId(1), Instant.now)), None)
 
-  private def stateItem(id: AggregateId, text: String, first: Int, last: Int, startsSequence: Boolean = false): ChunkItem =
+  private def stateItem(id: AggregateId, text: String, first: Int, last: Int, startsSequence: Boolean): ChunkItem =
     ChunkItem(SubscriptionType.AGGREGATES, noteType, id, AggregateVersion(first), AggregateVersion(last), Seq.empty, Some(GateNote(text)), startsSequence)
 
   Feature("Applying deliveries (D4)") {

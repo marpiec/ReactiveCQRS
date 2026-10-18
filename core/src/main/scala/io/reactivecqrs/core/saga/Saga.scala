@@ -4,10 +4,11 @@ import io.reactivecqrs.api.id.UserId
 
 
 object SagaPhase {
-  def byName(name: String) = name match {
+  def byName(name: String): SagaPhase = name match {
     case CONTINUES.name => CONTINUES
     case REVERTING.name => REVERTING
     case ERROR.name => ERROR
+    case other => throw new IllegalArgumentException("Unknown saga phase: " + other)
   }
 }
 abstract class SagaPhase(val name: String)

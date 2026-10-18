@@ -4,7 +4,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
+import io.reactivecqrs.api.id.{SpaceId, UserId}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers

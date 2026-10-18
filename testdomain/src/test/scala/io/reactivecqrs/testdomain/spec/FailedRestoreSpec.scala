@@ -4,7 +4,7 @@ import java.time.Instant
 
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
+import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.eventstore.NewEvents
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.eventbus.EventsBusActor

@@ -89,7 +89,7 @@ class EphemeralAggregatesSpec extends CommonSpec {
       storedEvents() mustBe before
 
       val persistent = materialize(drafts, id) match {
-        case Materialized(`id`, stored) => stored
+        case Materialized(`id`, persistentId) => persistentId
         case other => fail("not materialized: " + other)
       }
       persistent.asLong must be > 0L

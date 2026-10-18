@@ -16,7 +16,7 @@ import io.reactivecqrs.core.saga.{PostgresSagaState, SagaRunner}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.core.util.BlockingDispatcher
-import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.{CreateMultipleCarts, MultipleCartCreatorSagaResponse}
+import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.{CartsCreated, CartsCreationFailure, CreateMultipleCarts, MultipleCartCreatorSagaResponse}
 import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCartAggregateContext, _}
 import io.reactivecqrs.testkit.{CommonSpec, TestDatabase}
 
@@ -31,7 +31,7 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
 
 
-  def Fixture = new {
+  private class Fixture {
 
     val system = ActorSystem("main-actor-system")
 
@@ -103,11 +103,11 @@ class ReactiveTestDomainSpec extends CommonSpec {
 
 
 
-  feature("Aggregate storing and getting with event sourcing") {
+  Feature("Aggregate storing and getting with event sourcing") {
 
-    scenario("Creation and modification of shopping cart aggregate") {
+    Scenario("Creation and modification of shopping cart aggregate") {
 
-      val fixture = Fixture
+      val fixture = new Fixture
       import fixture._
 
       step("Create shopping cart")
@@ -156,43 +156,34 @@ class ReactiveTestDomainSpec extends CommonSpec {
     }
 
 
-    scenario("Create multiple carts at once") {
+    Scenario("Create multiple carts at once") {
 
-      val fixture = Fixture
+      val fixture = new Fixture
       import fixture._
 
-      multipleCartCreatorSaga ! CreateMultipleCarts(userId, "My special cart", 100)
-
-      Thread.sleep(10000) // time to cleanup
+      multipleCartCreatorSaga.askFor[MultipleCartCreatorSagaResponse](CreateMultipleCarts(userId, "My special cart", 100), 60.seconds) match {
+        case CartsCreated(carts) => carts.size mustBe 100
+        case other => fail("Not created: " + other)
+      }
     }
 
-    scenario("Fail to create multiple carts at once") {
+    Scenario("Fail to create multiple carts at once") {
 
-      val fixture = Fixture
+      val fixture = new Fixture
       import fixture._
 
       // Will not be able to create cart ending with M 4
-      val result = multipleCartCreatorSaga.askFor[MultipleCartCreatorSagaResponse](CreateMultipleCarts(userId, "My special cart M", 5))
-
-      Thread.sleep(500) // time to cleanup
+      multipleCartCreatorSaga.askFor[MultipleCartCreatorSagaResponse](CreateMultipleCarts(userId, "My special cart M", 5)) mustBe
+        a[CartsCreationFailure]
     }
 
 
-    scenario("Reinitialization") {
-
-      val fixture = Fixture
-      import fixture._
-
-      Thread.sleep(20000)
-
-    }
-
-    scenario("History rewrite") {
+    Scenario("History rewrite") {
 
       step("Create shopping cart")
 
 
-      val fixture = Fixture
+      val fixture = new Fixture
       import fixture._
 
 

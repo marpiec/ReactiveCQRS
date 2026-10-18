@@ -30,7 +30,7 @@ class ShardedOwnersSpec extends AnyFeatureSpec with Matchers with Eventually wit
 
   // Three nodes; the last one leaves in the last scenario. Owners idle for 5 s are passivated by their shards.
   private val nodes = CartCluster.start(3, "pekko.cluster.sharding.passivation.default-idle-strategy.idle-entity.timeout = 5s")
-  private val Vector(nodeA, nodeB, nodeC) = nodes
+  private val Vector(nodeA, nodeB, nodeC) = nodes: @unchecked
 
   override def afterAll(): Unit = CartCluster.stop(nodes)
 

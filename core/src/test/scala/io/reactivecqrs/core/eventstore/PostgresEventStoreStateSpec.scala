@@ -50,7 +50,7 @@ class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStore
 
     def at(time: String): Seq[(Int, Boolean)] = {
       var read = Vector[(Int, Boolean)]()
-      eventStoreState.readAndProcessEvents[SomeAggregate](f.aggregateId, Some(Right(Instant.parse(time))))((_, _, _, _, version, noop) => read :+= (version, noop))
+      eventStoreState.readAndProcessEvents[SomeAggregate](f.aggregateId, Some(Right(Instant.parse(time))))((_, _, _, _, version, noop) => read :+= ((version, noop)))
       read
     }
     at("2026-01-01T11:30:00Z") mustBe Seq((1, false), (2, false))

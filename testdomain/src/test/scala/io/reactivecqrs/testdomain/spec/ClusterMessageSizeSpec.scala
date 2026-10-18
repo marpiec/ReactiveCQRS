@@ -55,7 +55,7 @@ class ClusterMessageSizeSpec extends AnyFeatureSpec with Matchers with Eventuall
     projectionOn.put(node.system, carts)
     Seq(carts)
   })
-  private val Vector(oldest, other) = nodes
+  private val Vector(oldest, other) = nodes: @unchecked
 
   override def afterAll(): Unit = CartCluster.stop(nodes)
 

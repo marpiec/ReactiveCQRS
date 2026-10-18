@@ -27,7 +27,7 @@ import org.apache.pekko.util.Timeout
 import scalikejdbc._
 
 import scala.concurrent.duration._
-import scala.concurrent.{Await, Future, Promise}
+import scala.concurrent.{Await, Promise}
 import scala.util.Try
 
 // R17: an organization's folders, copied within and across organizations.

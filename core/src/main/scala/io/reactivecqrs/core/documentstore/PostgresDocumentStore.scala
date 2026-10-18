@@ -580,7 +580,7 @@ class PostgresDocumentStore[T <: AnyRef](val tableName: String, val mpjsons: MPJ
 
   override def insertDocuments(spaceId: Long, documents: Seq[DocumentToInsert[T]])(implicit session: DBSession): Unit = {
     inSession { implicit session =>
-      val batchParams = documents.map(d => Seq(spaceId, d.key, mpjsons.serialize(d.document)))
+      val batchParams = documents.map(d => Seq[Any](spaceId, d.key, mpjsons.serialize(d.document)))
       sql"INSERT INTO ${tableNameSQL} (space_id, id, version, document) VALUES (?, ?, 1, ?::jsonb)"
         .batch(batchParams: _*).apply()
       documents.foreach(d => cacheAfterCommit(d.key, Some(VersionedDocument(1, d.document))))
@@ -652,7 +652,7 @@ class PostgresDocumentStoreAutoId[T <: AnyRef](val tableName: String, val mpjson
   override def insertDocuments(spaceId: Long, documents: Seq[T])(implicit session: DBSession): Unit = {
     inSession { implicit session =>
       val batchParams: Seq[Seq[Any]] = documents.map(d => Seq(spaceId, mpjsons.serialize(d)))
-      val keys = sql"INSERT INTO ${tableNameSQL} (space_id, id, version, document) VALUES (?, nextval('${sequenceNameSQL}'), 1, ?::jsonb)"
+      sql"INSERT INTO ${tableNameSQL} (space_id, id, version, document) VALUES (?, nextval('${sequenceNameSQL}'), 1, ?::jsonb)"
         .batch(batchParams: _*).apply()
     }
   }

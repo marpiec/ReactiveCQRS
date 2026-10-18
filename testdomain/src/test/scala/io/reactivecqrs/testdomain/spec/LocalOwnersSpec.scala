@@ -52,7 +52,7 @@ class LocalOwnersSpec extends AnyFeatureSpec with Matchers with GivenWhenThen wi
     subscribers += subscriber
     Seq(subscriber.ref)
   }, carts = _ => new LocalCartContext)
-  private val Vector(nodeA, nodeB) = nodes
+  private val Vector(nodeA, nodeB) = nodes: @unchecked
 
   override def afterAll(): Unit = CartCluster.stop(nodes)
 

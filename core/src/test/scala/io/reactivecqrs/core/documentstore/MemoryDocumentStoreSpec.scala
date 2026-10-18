@@ -15,8 +15,8 @@ case class OptionIntType(option: Option[Int])
 
 class MemoryDocumentStoreSpec extends AnyFeatureSpecLike with GivenWhenThen with BeforeAndAfter {
 
-  feature("can find documents by path with one array") {
-    scenario("value exists") {
+  Feature("can find documents by path with one array") {
+    Scenario("value exists") {
       Given("document store with some values")
       val documentStore = new MemoryDocumentStore[ComplexType]()
       implicit val session = NoSession
@@ -32,8 +32,8 @@ class MemoryDocumentStoreSpec extends AnyFeatureSpecLike with GivenWhenThen with
     }
   }
 
-  feature("can find by option value") {
-    scenario("option value exists") {
+  Feature("can find by option value") {
+    Scenario("option value exists") {
       Given("document store with one value")
       val documentStore = new MemoryDocumentStore[OptionIntType]()
       implicit val session = NoSession

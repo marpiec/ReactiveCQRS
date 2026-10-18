@@ -5,10 +5,13 @@ import java.util.regex.Pattern
 
 import scalikejdbc.DBSession
 
+import scala.annotation.nowarn
 import scala.collection.parallel.mutable
 
 import scala.reflect.runtime.universe._
 
+// The sessions are the document store's interface; in memory there is none to use.
+@nowarn("cat=unused-params")
 sealed trait MemoryDocumentStoreTrait[T <: AnyRef] {
 
   val store = mutable.ParHashMap[Long, Document[T]]()
@@ -179,16 +182,10 @@ sealed trait MemoryDocumentStoreTrait[T <: AnyRef] {
     }
   }
 
+  // Left accessible: switching it back raced with another thread reading the same field.
   def getPrivateValue(element: AnyRef, field: Field): AnyRef = {
-    val accessible = field.isAccessible
-    if(!accessible) {
-      field.setAccessible(true)
-    }
-    val value = field.get(element)
-    if(!accessible) {
-      field.setAccessible(false)
-    }
-    value
+    field.trySetAccessible()
+    field.get(element)
   }
 
   def getDocument(key: Long)(implicit session: DBSession = null): Option[Document[T]] = store.get(key)

@@ -62,14 +62,14 @@ class RollingUpgradeSpec extends AnyFeatureSpec with Matchers with Eventually wi
 
   // Version 1.0.0 first: the oldest node runs the projections, and the carts made now have their owners on these nodes.
   private val olds = CartCluster.start(2, subscribers = projection(1), appVersion = _ => "1.0.0")
-  private val Vector(oldest, olderToo) = olds
+  private val Vector(oldest, olderToo) = olds: @unchecked
   private val oldCarts = (1 to 4).map(i => create(oldest, "old " + i))
   eventuallyServes()
   // Then version 2.0.0 joins: new shards go only to it (D66).
   private val news = CartCluster.join(oldest, 2, subscribers = projection(2), appVersion = _ => "2.0.0", carts = _ => new ShardedCartContextV2)
 
   private def eventuallyServes(): Unit = eventually(removedProjectionServes mustBe true)
-  private val Vector(newer, newest) = news
+  private val Vector(newer, newest) = news: @unchecked
 
   override def afterAll(): Unit = CartCluster.stop(olds ++ news)
 
@@ -87,7 +87,7 @@ class RollingUpgradeSpec extends AnyFeatureSpec with Matchers with Eventually wi
   // As a client would: a node may begin to leave right after it was chosen, so a command that gets no answer in time is
   // sent again through another node, with the same idempotency key: it is applied once either way.
   private def sendRetrying(cart: AggregateId, name: String, first: TestNode): CustomCommandResponse[_] = {
-    val command = AddItemConcurrently(UserId(1), cart, name, Some(ClientKey(cart.asLong + " " + name)))
+    val command = AddItemConcurrently(UserId(1), cart, name, Some(ClientKey(s"${cart.asLong} $name")))
     Try(Await.result((first.carts ? command)(Timeout(10.seconds)), 10.seconds).asInstanceOf[CustomCommandResponse[_]])
       .getOrElse(askFor[CustomCommandResponse[_]](newest.carts, command))
   }

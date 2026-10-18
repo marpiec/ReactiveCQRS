@@ -575,7 +575,7 @@ class EventsBusActorSpec extends CommonSpec {
       val (slow, owner, commandBus, republisher) = (TestProbe(), TestProbe(), TestProbe(), TestProbe())
       val bus = windowedBus(2, Long.MaxValue, slow)
       bus ! RegisterPublisher(cartType, commandBus.ref)
-      val Seq(x, y, z) = Seq(newId(), newId(), newId())
+      val Seq(x, y, z) = Seq(newId(), newId(), newId()): @unchecked
 
       publish(bus, owner, x, 1)
       publish(bus, owner, y, 1)

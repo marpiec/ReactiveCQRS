@@ -10,7 +10,7 @@ import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCo
 import io.reactivecqrs.core.documentstore.{Document, DocumentStore, NoopDocumentStoreCache, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
-import io.reactivecqrs.core.eventstore.{AggregateScope, CommittedEvent, CommittedPage, EventStoreState, PostgresEventStoreState, StoredAggregate}
+import io.reactivecqrs.core.eventstore.{AggregateScope, CommittedPage, EventStoreState, PostgresEventStoreState, StoredAggregate}
 import io.reactivecqrs.core.projection._
 import io.reactivecqrs.core.rebuild.ProjectionBuilder._
 import io.reactivecqrs.core.rebuild.{ProjectionBuilder, ReplaySource}
@@ -83,7 +83,7 @@ abstract class RecordingNotes(identity: String, val subscriptionsState: Subscrip
 /** Every event of each note, as "version:EventClass" (D60: the sequence live delivery sent). */
 class NoteEventsLog(identity: String, subscriptionsState: SubscriptionsState, store: DocumentStore[NoteLog]) extends RecordingNotes(identity, subscriptionsState) {
   protected val listeners = List(EventsListener[BuildNote] { (id, events) => implicit session =>
-    val added = events.map(e => e.version.asInt + ":" + e.event.getClass.getSimpleName)
+    val added = events.map(e => s"${e.version.asInt}:${e.event.getClass.getSimpleName}")
     store.updateDocument(0, id.asLong, existing => Document(NoteLog(existing.map(_.document.entries).getOrElse(Vector()) ++ added)))
   })
 }
@@ -199,7 +199,7 @@ class ProjectionBuilderSpec extends CommonSpec {
   }
 
   private def builderOf(target: ActorRef, identity: String, reporter: ActorRef, store: EventStoreState = eventStore,
-                        positions: BuildPositions = new MemoryBuildPositions, settings: BuilderSettings = BuilderSettings(pageSize = 50, chunkEvents = 20),
+                        positions: BuildPositions = new MemoryBuildPositions, settings: BuilderSettings,
                         replaySources: Map[AggregateType, ReplaySource] = sources): ActorRef = {
     val plan = BuildPlan(target.askFor[Listeners](GetListeners, 5.seconds).subscriptions)
     onBlocking(Props(new ProjectionBuilder(target, identity, plan, store, subscriptions, replaySources, positions, reporter, settings)))

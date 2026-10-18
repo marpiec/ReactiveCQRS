@@ -58,7 +58,7 @@ class PostgresDocumentStoreConflictSpec extends AnyFeatureSpec with GivenWhenThe
         writeBehindTheCache(1, version = 2, Note("b"))
 
         When("the document is updated by appending 'c'")
-        val result = DB.localTx { implicit session => store.updateDocument(0, 1, { case Some(document) => appendC(document) }) }
+        val result = DB.localTx { implicit session => store.updateDocument(0, 1, existing => appendC(existing.getOrElse(fail("no document")))) }
 
         Then("the change is applied to 'b', both in the result and in the database")
         result.document mustBe Note("bc")
@@ -81,7 +81,7 @@ class PostgresDocumentStoreConflictSpec extends AnyFeatureSpec with GivenWhenThe
         val key = DB.localTx { implicit session => store.insertDocument(0, Note("a")) }
         writeBehindTheCache(key, version = 2, Note("b"))
 
-        DB.localTx { implicit session => store.updateDocument(0, key, { case Some(document) => appendC(document) }) }.document mustBe Note("bc")
+        DB.localTx { implicit session => store.updateDocument(0, key, existing => appendC(existing.getOrElse(fail("no document")))) }.document mustBe Note("bc")
         DB.localTx { implicit session => store.updateExistingDocument(key, appendC) }.document mustBe Note("bcc")
         storedNote(key) mustBe Some(Note("bcc"))
       }

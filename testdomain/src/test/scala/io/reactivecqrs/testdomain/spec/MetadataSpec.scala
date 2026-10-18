@@ -66,7 +66,7 @@ class MetadataSpec extends CommonSpec {
     }
   }
 
-  private def storedCart(metadata: Option[EventMetadata] = None): AggregateId = {
+  private def storedCart(metadata: Option[EventMetadata]): AggregateId = {
     val cartId = AggregateId(TestIds.aggregate())
     eventStore.localTx(session => eventStore.persistEvents(cartId,
       NewEvents[ShoppingCart](userId, AggregateVersion.ZERO, Instant.now, Seq(ShoppingCartCreated("Groceries")), metadata))(session)).get

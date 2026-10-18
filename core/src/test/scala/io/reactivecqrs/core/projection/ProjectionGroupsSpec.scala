@@ -176,7 +176,7 @@ class ProjectionGroupsSpec extends CommonSpec {
 
     Scenario("a listener without a transaction is applied alone, so another aggregate's failure does not repeat it") {
       val f = new Fixture
-      val Seq(first, broken) = newIds(2)
+      val Seq(first, broken) = newIds(2): @unchecked
       val task = newIds(1).head
       f.slowOn(first)
       f.failTimes(broken, 100)

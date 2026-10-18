@@ -76,6 +76,7 @@ class ClusterBehaviourSpec extends AnyFeatureSpec with Matchers with Eventually 
   private val extractShardId: ShardRegion.ExtractShardId = {
     case id: String => (math.abs(id.hashCode) % 20).toString
     case ShardRegion.StartEntity(id) => (math.abs(id.hashCode) % 20).toString
+    case other => throw new IllegalArgumentException("Not a message of this spec: " + other)
   }
 
   private def startSharding(system: ActorSystem): ActorRef =

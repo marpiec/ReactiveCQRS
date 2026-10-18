@@ -33,7 +33,7 @@ class SimpleProjection(val subscriptionsState: PostgresSubscriptionsState) exten
 
   override protected val listeners: List[Listener[Any]] = List(EventsListener(handleUpdate))
 
-  private def handleUpdate(aggregateId: AggregateId, events: Seq[EventInfo[String]]) = { implicit session: DBSession =>
+  private def handleUpdate(aggregateId: AggregateId, events: Seq[EventInfo[String]]) = { (_: DBSession) =>
     events.foreach(eventInfo => {
       sendUpdate(eventInfo.event.asInstanceOf[StringEvent].aggregate)
     })
@@ -62,12 +62,10 @@ class SimpleListener(simpleListenerProbe: TestProbe) extends Actor {
 
 class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with BeforeAndAfter {
   TestDatabase.init()
-  implicit val actorSystem = ActorSystem()
-  implicit val timeout = Timeout(10 second)
+  implicit val actorSystem: ActorSystem = ActorSystem()
+  implicit val timeout: Timeout = Timeout(10.seconds)
 
-  def fixture = new {
-
-
+  private class Fixture {
     val typesNamesState = new PostgresTypesNamesState().initSchema() // run alone, no other spec created the table
     val subscriptionsState = new PostgresSubscriptionsState(typesNamesState)
     subscriptionsState.initSchema()
@@ -85,11 +83,13 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
     val aggregateId = AggregateId(System.nanoTime())
   }
 
+  private def fixture = new Fixture
+
   val stringType = AggregateType.of[String]
 
-  feature("Can subscribe to all events") {
+  Feature("Can subscribe to all events") {
 
-    scenario("Single listener subscribes and receives updates") {
+    Scenario("Single listener subscribes and receives updates") {
 
       Given("a projection")
 
@@ -115,7 +115,7 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
       f.simpleListenerProbe.expectMsg(2 seconds, "some string")
     }
 
-    scenario("Single listener subscribes and unsubscribes") {
+    Scenario("Single listener subscribes and unsubscribes") {
       val f = fixture
 
       Given("a projection and subscribed listener")
@@ -134,10 +134,10 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
 
       Then("listener receives nothing")
 
-      f.simpleListenerProbe.expectNoMsg(2 seconds)
+      f.simpleListenerProbe.expectNoMessage(2 seconds)
     }
 
-    scenario("Multiple listeners subscribe and receive updates") {
+    Scenario("Multiple listeners subscribe and receive updates") {
       Given("a projection")
 
       val f = fixture
@@ -157,7 +157,7 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
       Then("only listener one receives update")
 
       f.simpleListenerProbe.expectMsg(2 seconds, "some string")
-      f.secondSimpleListenerProbe.expectNoMsg()
+      f.secondSimpleListenerProbe.expectNoMessage()
 
       When("listener two subscribes")
 
@@ -177,7 +177,7 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
       f.secondSimpleListenerProbe.expectMsg(2 seconds, "another string")
     }
 
-    scenario("Multiple listeners subscribe, some unsubscribe") {
+    Scenario("Multiple listeners subscribe, some unsubscribe") {
       Given("a projection")
 
       val f = fixture
@@ -209,14 +209,14 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
 
       Then("only listener two receives update")
 
-      f.simpleListenerProbe.expectNoMsg(2 seconds)
+      f.simpleListenerProbe.expectNoMessage(2 seconds)
       f.secondSimpleListenerProbe.expectMsg(2 seconds, "another string")
     }
   }
 
-  feature("Renewing a subscription") {
+  Feature("Renewing a subscription") {
 
-    scenario("a renewal of a subscription the projection does not know is answered as cancelled, so the listener subscribes again (F133)") {
+    Scenario("a renewal of a subscription the projection does not know is answered as cancelled, so the listener subscribes again (F133)") {
       val f = fixture
       val renewer = TestProbe()
 

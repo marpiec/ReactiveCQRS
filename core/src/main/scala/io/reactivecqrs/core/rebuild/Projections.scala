@@ -77,6 +77,7 @@ class Projections(actors: ActorRefFactory, val settings: ProjectionsSettings) {
   private def system: ActorSystem = actors match {
     case system: ActorSystem => system
     case context: ActorContext => context.system
+    case other => throw new IllegalArgumentException("Projections runs in an actor system or an actor's context, not in " + other)
   }
 }
 
