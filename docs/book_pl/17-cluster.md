@@ -396,7 +396,7 @@ niczego nie konfigurujesz.
 - Wyjątki biblioteki, takie jak `AggregateInIncorrectVersionException`, zachowują swoją klasę. Każdy inny
   wyjątek dociera jako `RemoteFailure`, z oryginalną nazwą klasy i komunikatem.
 
-Z tego wynikają cztery reguły dla twoich klas:
+Z tego wynika pięć reguł dla twoich klas:
 
 1. **mpjsons musi umieć je zapisać i odczytać na podstawie ich klasy:** żadnych pól, których typem jest
    `Any`, trait, `ActorRef` albo `Throwable`.
@@ -408,6 +408,10 @@ Z tego wynikają cztery reguły dla twoich klas:
    `null`, nigdy domyślną wartością pola ze Scali. Odczytaj `{"id":1}` jako `Item(id: Int, name: String)`,
    a dostaniesz `Item(1, null)`.
 4. **Pole, które zmienia typ, wymaga nowej klasy.**
+5. **Wartość wysyłana samodzielnie to case class albo obiekt, kolekcja, albo napis, liczba, wartość
+   logiczna, znak lub wartość `java.time`.** Odpowiadaj przez `Some(state)` albo case class, nie zwykłą
+   klasą, tablicą, enumem ani `FiniteDuration`: węzeł wysyłający odrzuca je wyjątkiem, który podaje
+   klasę (wewnątrz case class, jako pola, przechodzą tak, jak zapisze je mpjsons).
 
 > **Wskazówka:** test, który przepuszcza twoje komunikaty przez serializator tam i z powrotem, to kilka
 > linijek; [rozdział 19](19-testing.md) pokazuje taki test. Jeśli masz zarejestrowane własne konwertery

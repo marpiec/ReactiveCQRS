@@ -181,7 +181,7 @@ retry at start did not help, these three messages, sent to the projection, do it
 |---|---|---|
 | `RetryFailedSubscription(cartId)` | `FailedSubscriptionsHandled(cartId, count)` | asks the cart's owner for the failed version and the ones after it, again and again until they come; once the failed version is applied, the failure record is deleted |
 | `RetryAllFailedSubscriptions` | `FailedSubscriptionsRetried(count)` | the same for every failure of the projection, 20 per second |
-| `SkipFailedVersion(cartId)` | `FailedSubscriptionsHandled(cartId, count)` | marks the failed version as applied without applying it, deletes the record, and asks once for the versions after it; for a "versions missing" failure it marks nothing (those versions may not exist yet) and asks for them again |
+| `SkipFailedVersion(cartId)` | `FailedSubscriptionsHandled(cartId, count)` | marks the failed version as applied without applying it, deletes the record, and asks once for the versions after it; for a "versions missing" failure it marks nothing (those versions may not exist yet) and asks for them again, unless sent as `SkipFailedVersion(cartId, pastMissing = true)`, for versions that exist but cannot arrive (an event larger than a message between nodes may be) |
 
 `count` says how many failed subscriptions were handled; 0 means there was nothing to do.
 

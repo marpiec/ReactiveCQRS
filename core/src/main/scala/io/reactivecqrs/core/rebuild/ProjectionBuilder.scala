@@ -203,22 +203,40 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
   private def nothingToSend: Boolean = first.isEmpty && ready.isEmpty && work.isEmpty
 
   // The next chunk to send: one sent before and not taken, one made from the next aggregates missing versions, a page's.
+  // F312: when the store cannot be read for what an aggregate lacks, nothing more is sent until it is read again (the
+  // gaps go before a page's chunks).
   private def nextChunk(): Option[(ApplyChunk, Long)] = {
-    while (first.isEmpty && work.nonEmpty) chunked(aChunkOfWork().map(_ -> -1L), -1L).foreach(first.enqueue)
-    if (first.nonEmpty) Some(first.dequeue()) else if (ready.nonEmpty) Some(ready.dequeue()) else None
+    var readable = true
+    while (readable && first.isEmpty && work.nonEmpty) {
+      val (items, read) = aChunkOfWork()
+      readable = read
+      chunked(items.map(_ -> -1L), -1L).foreach(first.enqueue)
+    }
+    if (first.nonEmpty) Some(first.dequeue()) else if (readable && ready.nonEmpty) Some(ready.dequeue()) else None
   }
 
-  // The items of the next aggregates waiting, until they fill a chunk: small aggregates share one.
-  private def aChunkOfWork(): Seq[ChunkItem] = {
+  // The items of the next aggregates waiting, until they fill a chunk: small aggregates share one. F312: a transient
+  // failure of the store leaves the aggregate waiting, read again after `retryAfter` (false), as a page is; before
+  // F223's lazy reads it was a page's, and a builder stopped by it would start the reconciliation again.
+  private def aChunkOfWork(): (Seq[ChunkItem], Boolean) = {
     val items = Vector.newBuilder[ChunkItem]
     var (events, bytes) = (0, 0L)
-    while (work.nonEmpty && events < settings.chunkEvents && bytes < settings.chunkBytes) {
-      val made = work.dequeue()()
-      items ++= made
-      events += made.map(item => math.max(item.events.size, 1)).sum
-      bytes += made.map(_.bytes).sum
+    var read = true
+    while (read && work.nonEmpty && events < settings.chunkEvents && bytes < settings.chunkBytes) {
+      try {
+        val made = work.head()
+        work.dequeue()
+        items ++= made
+        events += made.map(item => math.max(item.events.size, 1)).sum
+        bytes += made.map(_.bytes).sum
+      } catch {
+        case NonFatal(e) =>
+          log.error(e, "Building " + subscriberName + " could not read what an aggregate lacks; trying again in " + settings.retryAfter)
+          retryLater()
+          read = false
+      }
     }
-    items.result()
+    (items.result(), read)
   }
 
   private def goLive(): Unit = {

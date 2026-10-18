@@ -165,6 +165,14 @@ object ClusterSerializer {
   private[cluster] def isLibrary(className: String): Boolean =
     className.startsWith("io.reactivecqrs.api.") || className.startsWith("io.reactivecqrs.core.")
 
+  /** F240, F314: what an application's value written as JSON may be: a Scala case class or object, a collection, a
+    * string, number, boolean or character, or a `java.time` value (which 1.0.0 nodes send on their own). The reader
+    * makes no other class; the writer refuses any other, so the sender learns it, not a node that drops it. */
+  private[cluster] def carriedAsJson(clazz: Class[_]): Boolean =
+    classOf[Product].isAssignableFrom(clazz) || clazz == classOf[String] || classOf[Number].isAssignableFrom(clazz) ||
+      clazz == classOf[java.lang.Boolean] || clazz == classOf[Character] || clazz.getName.startsWith("scala.collection.") ||
+      clazz.getPackageName == "java.time"
+
   private val modules = new ClassValue[java.lang.Boolean] {
     override protected def computeValue(clazz: Class[_]): java.lang.Boolean =
       clazz.getName.endsWith("$") && clazz.getFields.exists(_.getName == "MODULE$")
@@ -249,6 +257,8 @@ object ClusterSerializer {
       case p: Product if isLibrary(p.getClass.getName) => product(p.getClass.getName, p)
       case other =>
         val className = other.getClass.getName
+        if (!isLibrary(className) && !carriedAsJson(other.getClass)) throw new IllegalArgumentException("A " + className + " cannot go to another node: a " +
+          "value sent between nodes is a case class or object, a collection, a string, number, boolean, character or java.time value")
         out.writeByte(Json)
         str(className)
         str(json.serialize[Any](other, className))
@@ -408,13 +418,11 @@ object ClusterSerializer {
     private def loaded(className: String): Class[_] = system.dynamicAccess.getClassFor[AnyRef](className).get
 
     // F240: a class named in the bytes is loaded, not initialized, and used only when it is the library's (written field
-    // by field), or as JSON a Scala case class or object, a collection, a string, number, boolean or character (an
-    // application's message, event or state): no other class is made or initialized.
+    // by field), or as JSON what `carriedAsJson` allows (an application's message, event, state or answer): no other
+    // class is made or initialized.
     private def trusted(className: String, library: Boolean): Class[_] = {
       val clazz = loaded(className)
-      def plainValue = classOf[Product].isAssignableFrom(clazz) || clazz == classOf[String] || classOf[Number].isAssignableFrom(clazz) ||
-        clazz == classOf[java.lang.Boolean] || clazz == classOf[Character] || className.startsWith("scala.collection.")
-      if (!isLibrary(className) && (library || !plainValue))
+      if (!isLibrary(className) && (library || !carriedAsJson(clazz)))
         throw new IllegalArgumentException("A cluster message names " + className + ", which it may not carry")
       clazz
     }

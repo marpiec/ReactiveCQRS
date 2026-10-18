@@ -384,7 +384,7 @@ off (Pekko's default). Beyond that line, you configure nothing.
 - The library's exceptions, such as `AggregateInIncorrectVersionException`, keep their class. Any
   other exception arrives as a `RemoteFailure`, with the original class name and message.
 
-That gives your classes four rules:
+That gives your classes five rules:
 
 1. **mpjsons must be able to write and read them by their class:** no fields typed `Any`, a trait,
    an `ActorRef` or a `Throwable`.
@@ -395,6 +395,10 @@ That gives your classes four rules:
    `None`, zero or `null`, never with the field's Scala default value. Read `{"id":1}` as an
    `Item(id: Int, name: String)` and you get `Item(1, null)`.
 4. **A field that changes its type needs a new class.**
+5. **A value sent on its own is a case class or object, a collection, or a string, number, boolean,
+   character or `java.time` value.** Answer with `Some(state)` or a case class, not with a plain
+   class, an array, an enum or a `FiniteDuration`: the sending node refuses those with an exception
+   that names the class (inside a case class, as fields, they travel as mpjsons writes them).
 
 > **Tip:** a round-trip test of your messages through the serializer takes a few lines;
 > [chapter 19](19-testing.md) shows one. If you registered mpjsons converters of your own, give the

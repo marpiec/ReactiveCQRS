@@ -39,15 +39,12 @@ private[commandhandler] final class LocalOwners(context: ActorContext,
                                                 maxInactivityMillis: Long,
                                                 eventsLogger: Option[Logger]) extends Owners {
 
-  private val minimumInactivityMillis = 120000L // an owner is stopped for room only after 2 minutes without a message
-  private val StopsPerSweep = 200
-
   private val owners = mutable.HashMap[Long, ActorRef]()
   private val ownerIds = mutable.HashMap[ActorRef, Long]()
   private val activity = mutable.HashMap[Long, Long]()
   // Owners asked to stop, with the messages that arrived for them since; a new owner gets them once the old one stopped.
   private val keptForStopping = mutable.HashMap[Long, Vector[Any]]()
-  private var lastSweep = 0L
+  private var nextSweep = 0L
   private var spawnedCount = 0 // keeps actor names unique while a stopped owner's name is still taken
 
   override def send(id: AggregateId, message: Any): Unit = {
@@ -100,19 +97,41 @@ private[commandhandler] final class LocalOwners(context: ActorContext,
     }
   }
 
-  // At most every 5 minutes: beyond `keepAliveLimit` owners, the least recently used that were idle for 2 minutes, and
-  // any idle for longer than `maxInactivityMillis`. F218: at most `StopsPerSweep` at once (each may write a snapshot on
-  // the blocking dispatcher every command waits on); the rest a second later.
-  private def sweep(now: Long): Unit = if (now - lastSweep > 300000) {
-    val sorted = activity.toVector.sortBy(_._2)
-    val beyondLimit = sorted.take(math.max(sorted.length - keepAliveLimit, 0)).filter(now - _._2 > minimumInactivityMillis)
-    val inactive = sorted.filter(now - _._2 > maxInactivityMillis)
-    val due = (beyondLimit ++ inactive).map(_._1).distinct
-    due.take(StopsPerSweep).foreach { key =>
+  private def sweep(now: Long): Unit = if (now >= nextSweep) {
+    val sweep = Passivation.sweep(activity, now, keepAliveLimit, maxInactivityMillis)
+    sweep.stop.foreach { key =>
       eventsLogger.filter(_.isDebugEnabled).foreach(_.debug("Stopping aggregate " + key + ", idle"))
       stop(AggregateId(key), stale = false)
     }
-    lastSweep = if (due.size > StopsPerSweep) now - 300000 + 1000 else now
+    nextSweep = now + sweep.nextInMillis
+  }
+}
+
+/**
+  * Which idle `Local` owners a sweep stops: at most every 5 minutes, beyond `keepAliveLimit` owners the least recently
+  * used that were idle for 2 minutes, and any idle for longer than `maxInactivityMillis`. F218: not all at once (each
+  * may write a snapshot on the blocking dispatcher every command waits on), the rest a second later. F279: at least
+  * `StopsPerSweep` and a tenth of those due, so under sustained traffic the stops keep pace with the new owners and the
+  * backlog stays about ten seconds' worth, where a fixed pace let the owners grow without bound.
+  */
+private[commandhandler] object Passivation {
+
+  val SweepEveryMillis = 300000L
+  val AgainAfterMillis = 1000L
+  val MinimumInactivityMillis = 120000L // an owner is stopped for room only after 2 minutes without a message
+  val StopsPerSweep = 200
+
+  /** The owners to stop now, and when to look again. */
+  case class Sweep(stop: Vector[Long], nextInMillis: Long)
+
+  /** `activity`: each owner's last message, in milliseconds. */
+  def sweep(activity: collection.Map[Long, Long], now: Long, keepAliveLimit: Int, maxInactivityMillis: Long): Sweep = {
+    val sorted = activity.toVector.sortBy(_._2)
+    val beyondLimit = sorted.take(math.max(sorted.length - keepAliveLimit, 0)).filter(now - _._2 > MinimumInactivityMillis)
+    val inactive = sorted.filter(now - _._2 > maxInactivityMillis)
+    val due = (beyondLimit ++ inactive).map(_._1).distinct
+    val pace = math.max(StopsPerSweep, due.size / 10)
+    Sweep(due.take(pace), if (due.size > pace) AgainAfterMillis else SweepEveryMillis)
   }
 }
 

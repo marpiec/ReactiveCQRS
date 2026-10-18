@@ -2739,3 +2739,15 @@ Open test-infrastructure items:
 - Regressions of 1.0.1 to fix before its release: F275 (undo then event refused), F279 (owners grow beyond 200 new
   aggregates a second), F282 (the F202 catch-up misses the usual rollback), F314 (F240 refuses java.time and other
   values sent on their own); with F277, F285's upgrade warning and F287 (§6 of the report).
+
+
+**18/10/2026: the regressions of 1.0.1, with the tests that would have caught them**
+- Fixed: F275 (undo then event), F279 (owners bounded under sustained traffic), F282 (the catch-up after any abandoned
+  build), F304 (`SkipFailedVersion(id, pastMissing = true)`), F312 (lazy reconciliation reads retried in place), F314
+  (`java.time` values between nodes; a value no node reads refused by the sender). Each test red before its fix or under
+  a mutation.
+- The three kinds of tests that were missing: a store spec on both stores (F275 in `EventStoreStateSpec`); a corpus of
+  frames written by 1.0.0's own code (`testdomain/src/test/resources/compat/1.0.0`, writer in `docs/compat`) read by
+  `FramesOf100Spec`; behaviour over time under sustained load, simulated (`PassivationSpec`). Builders in specs run under
+  a stopping parent, as in production.
+- Still before the release (RISK-ASSESSMENT-2 §6 step 1): F277 or its upgrade note, F285's upgrade warning, F287.

@@ -93,6 +93,19 @@ class ClusterSerializerSpec extends AnyFeatureSpec with Matchers with BeforeAndA
 
   Feature("Messages that cannot leave their node") {
 
+    Scenario("F314 a value that no node would read is refused by the sending node, not dropped by the receiving one") {
+      val refused = the[IllegalArgumentException] thrownBy new ClusterSerializer(system).toBinary(new example.PlainValue(1))
+      refused.getMessage must include("cannot go to another node")
+    }
+
+    Scenario("F314 java.time values, numbers and collections travel on their own") {
+      val serializer = new ClusterSerializer(system)
+      Seq(java.time.LocalDate.of(2026, 10, 18), java.time.Duration.ofMinutes(90), java.time.ZonedDateTime.parse("2026-10-18T22:45:00Z"),
+        BigInt(12), new java.math.BigDecimal("1.25"), List(java.time.LocalDate.of(2026, 1, 1))).foreach { value =>
+        serializer.fromBinary(serializer.toBinary(value), "") mustBe value
+      }
+    }
+
     Scenario("a message defined inside a class is refused by the sending node") {
       val refused = the[IllegalArgumentException] thrownBy new ClusterSerializer(system).toBinary(new Holder().Inner(1))
       refused.getMessage must include("cannot go to another node")

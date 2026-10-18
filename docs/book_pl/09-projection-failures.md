@@ -184,7 +184,7 @@ projekcji:
 |---|---|---|
 | `RetryFailedSubscription(cartId)` | `FailedSubscriptionsHandled(cartId, count)` | prosi właściciela koszyka o wersję, na której projekcja utknęła, i wszystkie po niej, raz za razem, aż przyjdą; gdy ta wersja zostanie zastosowana, wpis o awarii jest usuwany |
 | `RetryAllFailedSubscriptions` | `FailedSubscriptionsRetried(count)` | to samo dla każdej awarii projekcji, 20 na sekundę |
-| `SkipFailedVersion(cartId)` | `FailedSubscriptionsHandled(cartId, count)` | oznacza wersję, na której projekcja utknęła, jako zastosowaną, choć jej nie stosuje, usuwa wpis i raz prosi o wersje po niej; przy awarii „brakuje wersji” niczego nie oznacza (tych wersji może jeszcze nie być) i prosi o nie ponownie |
+| `SkipFailedVersion(cartId)` | `FailedSubscriptionsHandled(cartId, count)` | oznacza wersję, na której projekcja utknęła, jako zastosowaną, choć jej nie stosuje, usuwa wpis i raz prosi o wersje po niej; przy awarii „brakuje wersji” niczego nie oznacza (tych wersji może jeszcze nie być) i prosi o nie ponownie, chyba że wyślesz `SkipFailedVersion(cartId, pastMissing = true)`, dla wersji, które istnieją, ale nie mogą dotrzeć (zdarzenie większe, niż może być komunikat między węzłami) |
 
 `count` mówi, ile nieudanych subskrypcji obsłużono; 0 znaczy, że nie było nic do zrobienia.
 

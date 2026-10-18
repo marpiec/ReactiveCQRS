@@ -143,8 +143,11 @@ case class RetryFailedSubscription(aggregateId: AggregateId)
 case object RetryAllFailedSubscriptions
 /** The answer to `RetryAllFailedSubscriptions`: how many failed subscriptions are retried. */
 case class FailedSubscriptionsRetried(count: Int)
-/** Marks each failed version of the aggregate as applied without applying it, and continues from the version after. */
-case class SkipFailedVersion(aggregateId: AggregateId)
+/** Marks each failed version of the aggregate as applied without applying it, and continues from the version after. A
+  * "versions from N are missing" failure is not marked (F201: those versions may not exist yet), only asked for again;
+  * `pastMissing` marks N too, for versions that exist but cannot arrive, such as an event larger than a message between
+  * nodes may be (F304). */
+case class SkipFailedVersion(aggregateId: AggregateId, pastMissing: Boolean = false)
 /** The answer to both: how many failed subscriptions of the aggregate were retried or skipped. */
 case class FailedSubscriptionsHandled(aggregateId: AggregateId, count: Int)
 
@@ -495,7 +498,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       val count = failed.size
       retryRateLimited(failed.keys.toVector)
       sender() ! FailedSubscriptionsRetried(count)
-    case SkipFailedVersion(aggregateId) => sender() ! FailedSubscriptionsHandled(aggregateId, skipFailedVersions(aggregateId))
+    case SkipFailedVersion(aggregateId, pastMissing) => sender() ! FailedSubscriptionsHandled(aggregateId, skipFailedVersions(aggregateId, pastMissing))
     case RetryNextFailure => retryNextFailure()
     case LoadFailures => loadFailures()
     case NothingToRepublish(aggregateId, version) => nothingAfter(aggregateId, version)
@@ -1101,19 +1104,21 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
   // Marks each failed version as applied, then asks once for the versions after it: there may be none, and a later
   // event of the aggregate asks for any that went missing. F201: a failure of versions that never came marks nothing:
-  // those versions may not exist yet, and the next event would be taken for applied; it asks for them again instead.
-  private def skipFailedVersions(aggregateId: AggregateId): Int = failed.keys.filter(_.aggregateId == aggregateId).toSeq.count { key =>
+  // those versions may not exist yet, and the next event would be taken for applied; it asks for them again instead,
+  // unless asked to move past them (F304).
+  private def skipFailedVersions(aggregateId: AggregateId, pastMissing: Boolean): Int = failed.keys.filter(_.aggregateId == aggregateId).toSeq.count { key =>
     val failure = failed(key)
+    val waitForMissing = failure.error.startsWith(MissingVersions) && !pastMissing
     Try(subscriptionsState.localTx { session =>
       // From the version applied, which is below the one before the failure where the failure is at a squash start (F113).
       val applied = appliedVersion(key)
-      if (applied < failure.version && !failure.error.startsWith(MissingVersions)) advance(key, applied, failure.version)(session)
+      if (applied < failure.version && !waitForMissing) advance(key, applied, failure.version)(session)
       subscriptionsState.clearFailure(subscriberName, key.subscriptionType, key.aggregateId)(session)
     }) match {
       case Success(_) =>
         log.warning("Projection " + projectionName + " skipped version " + failure.version.asInt + " of " + failure.aggregateType.simpleName + " " + aggregateId.asLong)
         failed -= key
-        val next = if (failure.error.startsWith(MissingVersions)) failure.version else failure.version.increment
+        val next = if (waitForMissing) failure.version else failure.version.increment
         republisher.foreach(_ ! RequestRepublish(self, failure.aggregateType, failure.aggregateId, next))
         failureCleared(failure)
         true

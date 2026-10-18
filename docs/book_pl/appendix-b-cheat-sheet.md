@@ -153,7 +153,7 @@ zarządzana, do jej nadzorcy: nadzorca przekaże je dalej.
 | `GetProjectionStatus` | `ProjectionStatus(projectionName, failures, retrying, waitingForGap, failuresTotal)` | `failures`: 100 najstarszych awarii, każdą jako `SubscriptionFailure(subscriptionType, aggregateType, aggregateId, version, error, since)` z błędem przyciętym do 500 znaków; `failuresTotal`: wszystkie; `retrying` i `waitingForGap`: najwyżej po 1 000 identyfikatorów agregatów. |
 | `RetryFailedSubscription(aggregateId)` | `FailedSubscriptionsHandled(aggregateId, count)` | Prosi właściciela ponownie o nieudane wersje; każda awaria znika, gdy jego wersja zostanie zastosowana. `count`: nieudane subskrypcje tego agregatu (po jednej na rodzaj listenera). |
 | `RetryAllFailedSubscriptions` | `FailedSubscriptionsRetried(count)` | Ponawia wszystkie awarie, 20 na sekundę. |
-| `SkipFailedVersion(aggregateId)` | `FailedSubscriptionsHandled(aggregateId, count)` | Oznacza każdą nieudaną wersję jako zastosowaną, nie stosując jej, i kontynuuje od następnej wersji. |
+| `SkipFailedVersion(aggregateId)` | `FailedSubscriptionsHandled(aggregateId, count)` | Oznacza każdą nieudaną wersję jako zastosowaną, nie stosując jej, i kontynuuje od następnej wersji; brakujące wersje tylko z `pastMissing = true`. |
 | Twoje własne zapytanie, na przykład `GetAllCartsNames()` | To, co wyśle twoje `receiveQuery` | Na zapytanie, które rzuci wyjątek, odpowiedzią jest `Status.Failure(e)`, a projekcja działa dalej. |
 
 ### Opóźnione zapytania

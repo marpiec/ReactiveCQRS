@@ -235,7 +235,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   private var caughtUp = false
   private val retiring = mutable.Map[ActorRef, BuildRecord]()
   private var targeted: Option[Targeted] = None // the job running
-  // F202: the active build served unchanged (ServeStale) while a build was abandoned: it catches up with what it missed.
+  // F202: a build was abandoned, while which the active build may have served unchanged (ServeStale): it catches up.
   private var catchUpDue = false
   private var catchingUp: Option[ActorRef] = None
   private var jobs = Vector[Job]() // the jobs waiting, in order
@@ -318,7 +318,9 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
     registered.building.filter(_.version != spec.version).foreach { stale =>
       log.info("Projection " + spec.name + " abandons build " + stale.number + " of version " + stale.version + ": the code is at version " + spec.version)
       registry.abandon(spec.name, stale.number)
-      catchUpDue = spec.whileBuilding == ServeStale && registered.active.isDefined
+      // F282: whether the active build served unchanged was the abandoned version's choice, which this code does not
+      // know, so it catches up after any abandoned build; where it missed nothing, the reconciliation applies nothing.
+      catchUpDue = registered.active.isDefined
       drop(stale)
       registered = registry.projection(spec.name).get
     }

@@ -320,6 +320,11 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
   default); the names and tags are listed in ARCHITECTURE §14, and `RecordingMetrics` records them in tests.
 - **`asInstanceOf`** is used liberally to recover generic event types after
   deserialization; type mismatches fail at runtime, not compile time.
+- **Tests of a fix** start red on the case that broke, and cover what the fix may break nearby: on PostgreSQL where
+  a memory double behaves differently (`EventStoreStateSpec` runs on both stores); against what 1.0.0 nodes send
+  (`FramesOf100Spec` reads frames written by 1.0.0's own code; a message whose shape changes updates its expected value);
+  over time under sustained load where a limit or a pace is involved (simulated, as `PassivationSpec`); and under the
+  supervision production uses (builders under a stopping parent).
 - **User docs**: the book in `docs/book/` teaches the library to its users. A change to what a user writes or
   runs (an option, a message, a default, a host step) updates its chapter in the same commit (`docs/book/STYLE.md`),
   and its Polish translation in `docs/book_pl/` (same file names and code blocks; terms in `docs/book_pl/STYLE.md`).

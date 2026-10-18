@@ -76,9 +76,18 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     val events = newEvents.events
     val metadata = metadataJson(newEvents.metadata)
     if (events.exists(e => e.isInstanceOf[UndoEvent[_]] || e.isInstanceOf[DuplicationEvent[_]])) {
+      // F275: the history the command was read from is checked once, before its first event, under the aggregate's
+      // lock (as the memory store does): its own undo raises the generation, which its later events must not take for
+      // another writer's change, and the undo and duplication procedures do not check it.
+      newEvents.expectedGeneration.filter(_ => newEvents.expectedVersion.asInt > 0).foreach { expected =>
+        val current = sql"""SELECT history_generation FROM aggregates WHERE id = ${aggregateId.asLong} AND base_id = ${aggregateId.asLong} FOR UPDATE"""
+          .map(_.int(1)).single()
+        if (current.exists(_ != expected)) throw new HistoryChangedException(aggregateId)
+      }
+      val checked = newEvents.copy(expectedGeneration = None)
       var version = newEvents.expectedVersion
       events.map { event =>
-        val (stored, size) = persistOne(aggregateId, newEvents, event, version, metadata)
+        val (stored, size) = persistOne(aggregateId, checked, event, version, metadata)
         version = stored
         StoredEvent(event, version, size)
       }

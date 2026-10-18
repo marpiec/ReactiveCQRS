@@ -526,10 +526,11 @@ class ProjectionsSpec extends CommonSpec {
       node.stop()
     }
 
+    // F282: as the book does it, only the new version serves stale while it is built; the version rolled back to does not.
     Scenario("F202 after a rollback abandons a build that the active one served unchanged for, the active one catches up") {
       Given("version 1 live, serving stale while version 2 is built, and a note changed meanwhile")
       var v1: ActorRef = null
-      val first = new Node()(projections => { v1 = notesProjection(projections, "m4p-rollback", 1, "m4p_rollback", whileBuilding = ServeStale); Seq(v1) })
+      val first = new Node()(projections => { v1 = notesProjection(projections, "m4p-rollback", 1, "m4p_rollback"); Seq(v1) })
       val note = first.create("note", "one")
       switchedTo(v1, 1)
       awaitAssert(linesOf(v1, note) mustBe Some(NoteLines("note", Vector("one"))), 10.seconds)
@@ -547,7 +548,7 @@ class ProjectionsSpec extends CommonSpec {
 
       When("the code goes back to version 1")
       var back: ActorRef = null
-      val third = new Node()(projections => { back = notesProjection(projections, "m4p-rollback", 1, "m4p_rollback", whileBuilding = ServeStale); Seq(back) })
+      val third = new Node()(projections => { back = notesProjection(projections, "m4p-rollback", 1, "m4p_rollback"); Seq(back) })
 
       Then("version 1 serves, with the change it missed")
       awaitAssert(linesOf(back, note) mustBe Some(NoteLines("note", Vector("one", "two"))), 20.seconds)

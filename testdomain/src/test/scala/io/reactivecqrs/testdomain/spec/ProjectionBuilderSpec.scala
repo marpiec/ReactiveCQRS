@@ -18,7 +18,7 @@ import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
 import io.reactivecqrs.core.util.BlockingDispatcher
 import io.reactivecqrs.testkit.{CommonSpec, TestDatabase}
-import org.apache.pekko.actor.{Actor, ActorRef, Props}
+import org.apache.pekko.actor.{Actor, ActorRef, OneForOneStrategy, Props, SupervisorStrategy}
 import org.apache.pekko.testkit.TestProbe
 import scalikejdbc._
 
@@ -158,6 +158,14 @@ class CountingReplaySource(context: AggregateContext[_], eventStore: EventStoreS
 }
 
 /** Passes everything on to the projection, recording how many events each chunk holds. */
+/** F312: a builder's parent, which stops it when it fails, as a projection's supervisor does (AR7): a test must not pass
+  * because a builder that failed was restarted. */
+class StoppingParent(child: Props) extends Actor {
+  override val supervisorStrategy: SupervisorStrategy = OneForOneStrategy() { case _ => SupervisorStrategy.Stop }
+  context.actorOf(child)
+  override def receive: Receive = PartialFunction.empty
+}
+
 class ChunkRecorder(projection: ActorRef, chunkEvents: ConcurrentLinkedQueue[Int]) extends Actor {
   override def receive: Receive = {
     case chunk: ApplyChunk =>
@@ -209,9 +217,10 @@ class ProjectionBuilderSpec extends CommonSpec {
 
   private def builderOf(target: ActorRef, identity: String, reporter: ActorRef, store: EventStoreState = eventStore,
                         positions: BuildPositions = new MemoryBuildPositions, settings: BuilderSettings,
-                        replaySources: Map[AggregateType, ReplaySource] = sources): ActorRef = {
+                        replaySources: Map[AggregateType, ReplaySource] = sources): Unit = {
     val plan = BuildPlan(target.askFor[Listeners](GetListeners, 5.seconds).subscriptions)
-    onBlocking(Props(new ProjectionBuilder(target, identity, plan, store, subscriptions, replaySources, positions, reporter, settings)))
+    system.actorOf(Props(new StoppingParent(Props(new ProjectionBuilder(target, identity, plan, store, subscriptions, replaySources, positions,
+      reporter, settings)).withDispatcher(BlockingDispatcher.id))))
   }
 
   /** Builds `target` from the store and waits until it caught up. */
@@ -459,7 +468,9 @@ class ProjectionBuilderSpec extends CommonSpec {
       DB.autoCommit(implicit s => sql"DELETE FROM aggregates WHERE id = ${broken.asLong}".update())
     }
 
-    Scenario("a store that cannot be read for a moment is read again, and fails nothing (F117)") {
+    // F312: the reconciliation reads the versions an aggregate lacks as it sends them (F223); a failure there is retried
+    // in place, not by a new builder that starts the reconciliation again.
+    Scenario("a store that cannot be read for a moment is read again, and fails nothing (F117, F312)") {
       val liveLogs = logs("m4b_flaky_live")
       val live = new Live(Seq(onBlocking(Props(new NoteEventsLog("m4b-flaky-live", subscriptions, liveLogs)))))
       val note = live.create("note")

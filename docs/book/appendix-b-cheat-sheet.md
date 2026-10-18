@@ -150,7 +150,7 @@ supervisor if it is managed: the supervisor passes them on.
 | `GetProjectionStatus` | `ProjectionStatus(projectionName, failures, retrying, waitingForGap, failuresTotal)` | `failures`: the oldest 100, each `SubscriptionFailure(subscriptionType, aggregateType, aggregateId, version, error, since)` with its error cut to 500 characters; `failuresTotal`: all of them; `retrying` and `waitingForGap`: at most 1 000 aggregate ids each. |
 | `RetryFailedSubscription(aggregateId)` | `FailedSubscriptionsHandled(aggregateId, count)` | Asks the owner for the failed versions again; each failure is cleared once its version is applied. `count`: the failed subscriptions of that aggregate (one per listener kind). |
 | `RetryAllFailedSubscriptions` | `FailedSubscriptionsRetried(count)` | Retries every failure, 20 per second. |
-| `SkipFailedVersion(aggregateId)` | `FailedSubscriptionsHandled(aggregateId, count)` | Marks each failed version as applied without applying it, then carries on from the next version. |
+| `SkipFailedVersion(aggregateId)` | `FailedSubscriptionsHandled(aggregateId, count)` | Marks each failed version as applied without applying it, then carries on from the next version; missing versions only with `pastMissing = true`. |
 | Your own query, such as `GetAllCartsNames()` | Whatever your `receiveQuery` sends | A query that throws is answered `Status.Failure(e)`, and the projection carries on. |
 
 ### Delayed queries

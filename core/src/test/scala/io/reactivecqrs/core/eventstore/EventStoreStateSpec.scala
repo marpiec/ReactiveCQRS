@@ -114,6 +114,28 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     }
   }
 
+  // F275: both stores, as the owner sends it: a command whose undo comes before another event, with the history
+  // generation its state was read at.
+  Scenario("F275 a command that undoes and then adds an event is stored; a stale history is still refused") {
+    val f = new TestFixture(eventStoreState)
+    import f._
+    storeEvents(List(EventA("one")))
+    storeEvents(List(EventB(2)))
+    def command(version: Int, generation: Int, events: Seq[Event[SomeAggregate]]) = Try(f.eventStoreState.localTx { session =>
+      f.eventStoreState.persistEvents(aggregateId, NewEvents(userId, AggregateVersion(version), Instant.now, events,
+        expectedGeneration = Some(generation)))(session).get
+    })
+    val generation = f.eventStoreState.historyGeneration(aggregateId)
+
+    command(2, generation, Seq(Undo(1), EventB(3))).isSuccess mustBe true
+    getEvents() mustBe List(EventA("one"), EventB(3))
+
+    And("a command read before that undo is refused, also when it starts with an undo")
+    command(4, generation, Seq(EventB(4))).isFailure mustBe true
+    command(4, generation, Seq(Undo(1), EventB(4))).isFailure mustBe true
+    getEvents() mustBe List(EventA("one"), EventB(3))
+  }
+
   Scenario("Adding and reading undo events") {
 
     Given("Event store state")

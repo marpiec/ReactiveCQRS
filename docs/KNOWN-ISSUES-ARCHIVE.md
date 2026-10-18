@@ -8,6 +8,11 @@ lists them all. Each entry is as it was when it was closed. Severity and confide
 
 ### Delivery and subscriptions
 
+#### F304 — Since F201, a "versions missing" failure cannot be skipped past versions that can never arrive
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, a regression of F201 found by the second risk assessment; `ProjectionDeliverySpec` "F304", red under a mutation) · `SkipFailedVersion`
+- **Fix:** `SkipFailedVersion(id, pastMissing = true)` marks the missing version as applied and asks from the next, as 1.0.0's skip did, for versions that exist but cannot arrive (an event larger than a message between nodes may be); without it F201's skip stays (marks nothing, asks again). Chapter 9 and the cheat sheet say when to use it.
+- **Found:** the second risk assessment (18/10/2026); note PROJ-4 in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md).
+
 #### F241 — Any sender can cancel, renew or take over a push subscription by its id
 - **Low**, likely · **Fixed for 1.0.1** (18/10/2026, the quick wins after the risk assessment) · `SubscribableProjectionActor`
 - **Fix:** only a subscription's listener renews or cancels it: another sender's renewal is answered as for an unknown id, and its cancel leaves the subscription and its id out of the answer (logged). Left: a subscribe with an id in use still replaces the subscription (F161), which a client that reconnects with a new actor relies on; ids should stay generated, as the book's pattern does.
@@ -811,6 +816,11 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 
 ### Event store and SQL
 
+#### F275 — A command whose events put an undo before another event is always refused on PostgreSQL
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, a regression of F195 found by the second risk assessment; `EventStoreStateSpec` "F275", on both stores, red on PostgreSQL, red under two mutations) · `PostgresEventStoreState.persist`
+- **Fix:** a command with an undo or duplication event checks the history generation once, before its first event, under the aggregate's row lock (as the memory store does); its later events are stored without the check, so its own undo is not taken for another writer's change. It also closes a gap of F195: a command that starts with an undo is now checked too.
+- **Found:** the second risk assessment (18/10/2026); notes OWN-1, STORE-1 in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md).
+
 #### F246 — The squash scheduler assumes event times grow with event ids; an import, or a node with a wrong clock, makes it squash history the policy keeps
 - **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, after step 4 of the risk assessment; `EventStoreStateSpec` "F246", red under a mutation on PostgreSQL) · `PostgresEventStoreState.squashCandidates`
 - **Fix:** with `keepNewerThan`, each aggregate's squash point is below its own first event not older than the age, by its own events' times; the binary search over all event ids is gone. An imported aggregate is judged by its original times.
@@ -989,6 +999,11 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Found:** writing the book (M6, 17/10/2026).
 
 ### Performance and runtime
+
+#### F279 — F218's pacing stops at most 200 owners a second: under sustained traffic `Local` owners grow without bound
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, a regression of F218 found by the second risk assessment; `PassivationSpec` "F279", a simulation of 10 minutes at 1 000 new aggregates a second: 540 000 owners before, bounded after; red under a mutation) · `Passivation`, `LocalOwners`
+- **Fix:** the sweep's decision moved to the pure `Passivation`; each round stops at least 200 and a tenth of those due, so the stops keep pace with the new owners and the backlog stays about ten seconds' worth. Owners live their 2 idle minutes as before.
+- **Found:** the second risk assessment (18/10/2026); note BUS-2 in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md).
 
 #### F227 — An oversized cluster message is serialized in full before the marker replaces it
 - **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, the quick wins after the risk assessment; a memory property, no test of its own) · `ClusterSerializer.Bounded`
@@ -1244,6 +1259,11 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 
 ### Serialization (mpjsons 0.7)
 
+#### F314 — F240's reader refuses values sent on their own that are not case classes (java.time, plain classes, arrays, enums), which 1.0.0 read
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, a regression of F240 found by the second risk assessment; `FramesOf100Spec`, frames written by 1.0.0's own code, red before; `ClusterSerializerSpec` "F314" ×2; red under two mutations) · `ClusterSerializer.carriedAsJson`
+- **Fix:** the reader also takes `java.time` values; the writer refuses, on the sending node, any value the reader would not make (a plain class), with an exception naming its class. The corpus showed that 1.0.0 could not send enums, arrays or `FiniteDuration` on their own at all (mpjsons refuses them), so none is in flight during the upgrade. Chapter 17 gives the rule (its fifth).
+- **Found:** the second risk assessment (18/10/2026); note CLSG-4 in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md).
+
 #### F240 — The cluster serializer's reader trusts its payload: it loads any class named in the bytes and allocates unchecked lengths
 - **Medium**, unlikely · **Fixed for 1.0.1** (18/10/2026, step 4 of the risk assessment; `ClusterSerializerSpec` "F240" ×2, red under a mutation each) · `ClusterSerializer.Reader`
 - **Fix:** a class named in a frame is loaded without being initialized and used only when it is the library's, or, as JSON, a case class or object, a collection, a string, number, boolean or character; a length past the frame's end is refused before anything is allocated. Left: Artery TLS and a NetworkPolicy in E2.
@@ -1307,6 +1327,16 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Fix:** `schemaname = current_schema()`, `to_regclass(…)` and `'events'::regclass`, so the library works in whatever schema the connection's `search_path` selects. Also `countAllEvents` treats the `-1` estimate of a never-analyzed table (PostgreSQL 14+) like 0 and counts exactly.
 
 ### Rebuild
+
+#### F282 — The F202 catch-up follows the rolled-back code's `whileBuilding`: the usual rollback gets none
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, a regression of F202 found by the second risk assessment; `ProjectionsSpec` "F202" now as the book does it, `ServeStale` on the new version only: red before, red under a mutation) · `ProjectionSupervisor.decideBuilds`
+- **Fix:** the active build catches up after any abandoned build: whether it served unchanged was the abandoned version's choice, which the code rolled back to does not know; where it missed nothing, the reconciliation applies nothing. Left: the catch-up is not recorded, so a stop during it leaves the aggregates to their next events.
+- **Found:** the second risk assessment (18/10/2026); note RBLD-2 in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md).
+
+#### F312 — Since F223, a transient error during a reconciliation stops the builder, which starts again from the beginning
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, a regression of F223 found by the second risk assessment; `ProjectionBuilderSpec` "F117, F312", red under a stopping parent, red under a mutation) · `ProjectionBuilder.aChunkOfWork`
+- **Fix:** a transient failure while reading what an aggregate lacks leaves it waiting at the head of the work and is read again after `retryAfter`, as a page is; nothing else is sent meanwhile. The builder specs now run their builders under a parent that stops them on failure, as a projection's supervisor does: the F117 test had passed only because a failed builder was restarted.
+- **Found:** the second risk assessment (18/10/2026); note RBLD-5 in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md).
 
 #### F202 — With `ServeStale`, an abandoned build leaves the active build missing every event committed during the build
 - **High**, likely · **Fixed for 1.0.1** (18/10/2026, the quick wins after the risk assessment) · `ProjectionSupervisor.catchUp`, `ReconcileOnly`

@@ -577,6 +577,22 @@ class ProjectionDeliverySpec extends CommonSpec {
       f.applied("events").filter(_._1 == skipped).map(_._2) mustBe Seq(Seq(1), Seq(2))
     }
 
+    Scenario("F304 a skip past missing versions that exist but cannot arrive moves past them, as 1.0.0's skip did") {
+      val f = new Fixture(ProjectionActorOptions.DEFAULT.withRetries(quickRetries).copy(gapRequestRepeat = 100.millis, gapGiveUpAfter = 500.millis))
+      val subscriber = classOf[RecordingProjection].getName
+      val id = newId()
+      f.events(id, 1)
+      f.acked(id)
+      f.events(id, 3) // version 2 is stored, but never arrives: larger than a message between nodes may be
+      f.failedFor(id) must include("missing")
+
+      f.projection.askFor[FailedSubscriptionsHandled](SkipFailedVersion(id, pastMissing = true), 3.seconds) mustBe FailedSubscriptionsHandled(id, 1)
+      f.state.lastVersion(subscriber, SubscriptionType.EVENTS, id) mustBe AggregateVersion(2)
+      f.requestedFrom(id) mustBe 3
+      f.events(id, 3)
+      f.acked(id) mustBe Seq(3)
+    }
+
     Scenario("F259 the history the owner gives below a live delivery of an aggregate the projection had nothing of is applied as history") {
       val f = new Fixture
       val id = newId()

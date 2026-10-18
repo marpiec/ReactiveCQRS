@@ -4,7 +4,17 @@ Notable changes of ReactiveCQRS, newest first. Dates are DD/MM/YYYY.
 
 ## 1.0.1 (not released)
 
-Fixes from [the risk assessment of 1.0.0](docs/RISK-ASSESSMENT.md), in the order of its plan (§13).
+Fixes from [the risk assessment of 1.0.0](docs/RISK-ASSESSMENT.md), in the order of its plan (§13), and the regressions
+that [the second assessment](docs/RISK-ASSESSMENT-2.md) found in them.
+
+- **Regressions of the fixes below, fixed** (F275, F279, F282, F304, F312, F314, chapters 9 and 17):
+  - A command whose events put an undo before another event is stored again on PostgreSQL (refused since F195).
+  - Idle `Local` owners are stopped as fast as new ones come (since F218, beyond 200 a second they grew without bound).
+  - After a rollback the active build catches up also when the version rolled back to does not use `ServeStale`.
+  - A transient database error during a reconciliation is retried in place, not by restarting the reconciliation.
+  - **New:** `SkipFailedVersion(id, pastMissing = true)` moves past missing versions that exist but cannot arrive.
+  - `java.time` values sent between nodes on their own are read again (refused since F240). **Changed:** a value no
+    node reads (a plain class) is refused by the sending node, with an exception naming its class.
 
 - **No values in logs** (F190, F191). The library logs no SQL statements and describes a failure without the event, state,
   order or document it was about: by its classes, SQLState, constraint, table and column. The same text goes into
