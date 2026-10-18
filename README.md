@@ -28,7 +28,7 @@ It was built for, and runs, the Neula platform.
 | [Architecture](docs/ARCHITECTURE.md) | How the library works inside: actors, tables, delivery, rebuilds, the cluster. |
 | [Scaling and limits](docs/SCALING.md) | Behaviour under high volume and load, limits, and recommendations. |
 | [Performance reports](docs/perf/README.md) | Measured numbers from the benchmark module. |
-| [Known issues and decisions](docs/KNOWN-ISSUES.md) | Every known problem with its status, and the design decisions behind the library. |
+| [Known issues and decisions](docs/KNOWN-ISSUES.md) | The open problems, the design decisions behind the library, and the architecture reviews; the closed problems are in [the archive](docs/KNOWN-ISSUES-ARCHIVE.md). |
 | [Implementation plan](docs/IMPLEMENTATION-PLAN.md) | The road to 1.0, milestone by milestone, with a progress log. |
 | [Design notes](docs/design/) | The design of each milestone, with the failure circumstances each change handles. |
 

@@ -327,9 +327,10 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
 ## 7. Known problems and planned work
 
 The catalogue of known problems that used to live here moved to `docs/KNOWN-ISSUES.md`
-(decision D5): every issue (F-numbers) with severity, confidence, the fix milestone and its
+(decision D5): the open issues (F-numbers) with severity, confidence, the fix milestone and their
 status, the decisions (D-numbers), the invariants (I1–I9) and the architecture reviews
-(AR-numbers). `docs/IMPLEMENTATION-PLAN.md` orders the work into milestones M1–M7 and keeps
+(AR-numbers); the closed issues, by area, are in `docs/KNOWN-ISSUES-ARCHIVE.md` (search both for an
+F-number named in the code). `docs/IMPLEMENTATION-PLAN.md` orders the work into milestones M1–M7 and keeps
 a progress log. Before changing behaviour, check both: a problem may already be fixed, or
 planned in a way that the change must follow. Measured performance is in `docs/perf/`;
 behaviour under high volume and load, with recommendations, is in `docs/SCALING.md`.

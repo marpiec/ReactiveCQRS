@@ -2555,3 +2555,14 @@ Open test-infrastructure items:
   (the host binds it, F178).
 - The plan's link check: `DocLinksSpec` checks every relative link of the repository's Markdown, and
   every anchor against the headings GitHub makes; 1 203 links, none broken.
+
+**18/10/2026: F179 deferred; the closed issues archived**
+- F179: the owner publishes mpjsons 0.7.0 later; until then a build resolves it from the local Maven
+  repository of a machine that has it.
+- `docs/KNOWN-ISSUES.md` keeps the decisions, the invariants, the open issues (F52 and F53, which wait
+  for the rehearsal on a copy of production, and F179), Neula's side, the index and the reviews; the 180
+  closed issues (fixed, accepted, decided, or not a problem) moved, by area and as recorded, to
+  `docs/KNOWN-ISSUES-ARCHIVE.md`. Its introduction lost two statements of 16/10/2026 that were no longer
+  true (that nothing was reproduced yet, that ARCHITECTURE describes 0.12.47), and F52 named
+  `StoredDataCheck.run` with a parameter it no longer has. The README, the CHANGELOG, SCALING and
+  CLAUDE.md point to the archive; `DocLinksSpec` finds every link resolved.

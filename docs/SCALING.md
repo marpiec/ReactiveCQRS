@@ -499,7 +499,7 @@ leaves room for bursts and lag; the owners' states set the rest (estimated).
 
 ## 11. Issues found by this analysis
 
-Recorded in [KNOWN-ISSUES](KNOWN-ISSUES.md):
+Recorded in [KNOWN-ISSUES](KNOWN-ISSUES.md); the fixed ones are in [its archive](KNOWN-ISSUES-ARCHIVE.md):
 
 | Issue | Planned in |
 | --- | --- |
