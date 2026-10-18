@@ -484,6 +484,12 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Fix:** a projection that clears a failure, by a retry that reaches the failed version or by a skip, sends the bus `Republish` for the aggregate, as the poller does: its owner re-publishes what waits in its outbox, and the acknowledged delete is carried out. A failure record removed otherwise (`clearSubscriptionsInfo`) still waits for the poller.
 - **Found:** writing the book (M6, 17/10/2026).
 
+#### F181 — The stored data check stops at a table the database does not have
+- **Low** (a tool of the upgrade), confirmed (chapter 6's spec, 18/10/2026) · **Fixed in M7** (18/10/2026; `StoredDataCheckSpec` "checks a database that lacks some tables", red first) · `StoredDataCheck.run`
+- **Symptom:** run on a database without the `sagas` table, the check failed at once with "relation "sagas" does not exist" and reported nothing. An application without sagas never makes that table (the book's chapter 4 makes three tables for a cart), and the same goes for `commands_responses` without its `initSchema()` and for a listed projection table that was never made. The archive (`events_archive`), which a database from before 1.0 lacks, was already skipped, but silently. Neula has sagas, so its rehearsal would not have met it.
+- **Fix:** every table the check reads but `events` is read only when it exists, and the report names the tables it did not find (`Report.missingTables`, and a line of `text`), so a missing table is seen, not taken for an empty one.
+- **Found:** writing chapter 6's spec (M7, 18/10/2026).
+
 #### F180 — The book's Kubernetes deployment split its cluster in a rolling restart
 - **High** (for a host that copies it), confirmed (E2 on Docker Desktop's Kubernetes, 18/10/2026) · **Fixed in M7** (18/10/2026; on Docker Desktop's Kubernetes: one cluster formed, kept through a rolling restart, a frozen node downed by the resolver with the lease and rejoined once thawed; with Docker Compose the first node restarted and rejoined; E2's `NodeSpec`: a node alone forms its cluster through Bootstrap) · E2 (`examples/deploy/e2`, `ClusterSetup.nodeConfig`), the book's chapter 17
 - **Symptom:** E2's three pods of a StatefulSet, with `shop-0` and `shop-1` as static seed nodes by their DNS names, formed one cluster at start. In a rolling restart (newest pod first), the new `shop-0` did not hear from the others within `seed-node-timeout` (5 s) and, being the first seed node, joined itself: a second cluster beside the one of `shop-1` and `shop-2`, each running the singletons (the projections' supervisors, the outbox poller, the shard coordinator). Only the database's version check then stands between the two (D46).
@@ -1322,7 +1328,7 @@ From §7 of Neula's change requests.
 | M4 | F3 ✔, F43 ✔, F49 (backfill ✔), F54 ✔, F55 ✔, F56 ✔, F57 ✔, F58 ✔, F59 ✔, F60 ✔, F61 ✔, F62 ✔, F82 ✔, F93 (throughput ✔; flow control open), F94 ✔, F98 ✔, F108–F118 ✔; Neula H1, H6, H9 |
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔, F174 ✔; F155 decided (review 8) |
-| M7 | AR5 ✔ (moved from M5 at review 7; D86); F148 ✔, F152 ✔, F153 ✔, F156 ✔, F157 ✔, F160 ✔, F161 ✔, F162 ✔, F163 ✔, F164 ✔, F165 ✔, F166 ✔, F169 ✔ (found writing the book), F170 ✔, F171 ✔, F173 ✔, F175 (accepted), F176 ✔ (found writing E10), F177 ✔ (found writing E11), F178 ✔ (found running E2 in Docker), F179 (the owner's), F180 ✔ (found running E2 on Kubernetes) |
+| M7 | AR5 ✔ (moved from M5 at review 7; D86); F148 ✔, F152 ✔, F153 ✔, F156 ✔, F157 ✔, F160 ✔, F161 ✔, F162 ✔, F163 ✔, F164 ✔, F165 ✔, F166 ✔, F169 ✔ (found writing the book), F170 ✔, F171 ✔, F173 ✔, F175 (accepted), F176 ✔ (found writing E10), F177 ✔ (found writing E11), F178 ✔ (found running E2 in Docker), F179 (the owner's), F180 ✔ (found running E2 on Kubernetes), F181 ✔ (found writing chapter 6's spec) |
 
 ---
 

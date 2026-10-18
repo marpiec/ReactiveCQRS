@@ -52,14 +52,13 @@ Two things a snapshot is not:
 
 ## Turning snapshots on
 
-One line in the context:
+One line in the context; here, a context of carts that extends the test domain's:
 
+<!-- snippet: cart/SnapshotExperimentSpec.scala#policy -->
 ```scala
 import io.reactivecqrs.api.SnapshotPolicy
 
-class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
-  // ... handlers and the rest, as in chapter 3
-
+class SnapshottedCarts extends ShoppingCartAggregateContext {
   override val snapshots: Option[SnapshotPolicy] = Some(SnapshotPolicy())
 }
 ```
@@ -88,7 +87,8 @@ A few things worth knowing about the writing:
 
 ## Watching it work
 
-A small experiment, with `SnapshotPolicy(every = 3)` on the cart context:
+A small experiment, with `SnapshotPolicy(every = 3)` on the cart context. `SnapshotExperimentSpec`
+(`examples/src/test/scala/io/reactivecqrs/examples/cart/`) runs it, step by step:
 
 1. Create a cart with `CreateShoppingCart`: version 1.
 2. Add two items with `AddItem`: versions 2 and 3. The commit that reaches version 3 also writes a
@@ -97,6 +97,7 @@ A small experiment, with `SnapshotPolicy(every = 3)` on the cart context:
    at version 3.
 4. Put the owner to sleep:
 
+   <!-- snippet: cart/SnapshotExperimentSpec.scala#passivate -->
    ```scala
    import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.PassivateAggregate
 
@@ -166,6 +167,7 @@ change make old snapshots wrong without the library noticing:
 - **The root class changes shape** (a field added, removed or renamed): an old snapshot may not read
   back as the new class. Raise `schemaVersion`, and old snapshots are ignored:
 
+  <!-- snippet: cart/SnapshotExperimentSpec.scala#schemaVersion -->
   ```scala
   override val snapshots: Option[SnapshotPolicy] = Some(SnapshotPolicy(schemaVersion = 2))
   ```
@@ -190,6 +192,7 @@ really have been several.
 It is a parameter of the event store, so it applies to every aggregate type that store keeps. To
 allow longer histories, construct the store with a larger one:
 
+<!-- snippet: cart/SnapshotExperimentSpec.scala#limit -->
 ```scala
 val eventStore = new PostgresEventStoreState(mpjsons, typesNames, aggregateVersionLimit = 50000).initSchema()
 ```

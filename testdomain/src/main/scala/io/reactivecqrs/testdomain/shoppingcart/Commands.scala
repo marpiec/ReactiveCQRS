@@ -10,15 +10,21 @@ case class CreateShoppingCart(idempotencyId: Option[SagaStep], userId: UserId, n
   extends FirstCommand[ShoppingCart, CustomCommandResponse[_]] with IdempotentCommand[SagaStep]
 // #create
 
-case class DuplicateShoppingCart(userId: UserId, baseAggregateId: AggregateId, baseAggregateVersion: AggregateVersion) extends FirstCommand[ShoppingCart, CustomCommandResponse[_]]
+// #duplicate
+case class DuplicateShoppingCart(userId: UserId, baseAggregateId: AggregateId, baseAggregateVersion: AggregateVersion)
+  extends FirstCommand[ShoppingCart, CustomCommandResponse[_]]
+// #duplicate
 
 // #addItem
 case class AddItem(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
                    name: String) extends Command[ShoppingCart, CustomCommandResponse[_]]
 // #addItem
-/** Adds an item for someone else: its event carries a metadata envelope (R13). */
-case class AddItemOnBehalf(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, name: String, metadata: EventMetadata)
+// #onBehalf
+/** Adds an item for someone else: its event carries a metadata envelope. */
+case class AddItemOnBehalf(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, name: String,
+                           metadata: EventMetadata)
   extends Command[ShoppingCart, CustomCommandResponse[_]] with WithMetadata
+// #onBehalf
 /** Adds several items in one command, one event each. */
 case class AddItems(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, names: Seq[String])
   extends Command[ShoppingCart, CustomCommandResponse[_]]
@@ -33,8 +39,10 @@ case class AddItemConcurrently(userId: UserId, aggregateId: AggregateId, name: S
 case class RemoveItem(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
                       id: Int) extends Command[ShoppingCart, CustomCommandResponse[_]]
 
+// #undo
 case class UndoShoppingCartChange(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
                                   stepsToUndo: Int) extends Command[ShoppingCart, CustomCommandResponse[_]]
+// #undo
 
 case class DeleteShoppingCart(idempotencyId: Option[SagaStep], userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion)
   extends Command[ShoppingCart, CustomCommandResponse[_]] with IdempotentCommand[SagaStep]

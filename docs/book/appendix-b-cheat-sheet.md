@@ -241,7 +241,7 @@ Not messages, but calls your application makes, mostly at start or as one-off jo
 | `eventStore.buildIndexesConcurrently()` | `Unit` | Once after an upgrade, in the background: it builds the newer indexes without blocking writes, and does nothing when they exist. |
 | `eventStore.backfillEventKeys()` | `EventKeysBackfill(written, missing)` | Once, in the background, after every node runs a version with event keys. `missing` counts events whose aggregate row is missing. |
 | `eventStore.backfillSpaces(spaceOf)` | `SpaceBackfill(filled, left)` | Once, for aggregates stored before spaces were required, before you rebuild an organization. `left` lists those it could not place. |
-| `StoredDataCheck.run(mpjsons, typesNames, projections)` | `StoredDataCheck.Report` | Before an upgrade, on a copy of production. `report.text` is a readable table; `report.unreadable` counts the rows that do not read. |
+| `StoredDataCheck.run(mpjsons, typesNames, projections)` | `StoredDataCheck.Report` | Before an upgrade, on a copy of production. `report.text` is a readable table; `report.unreadable` counts the rows that do not read; `report.missingTables` names the tables it did not find. |
 | `StoredDataCheck.usersOf(className)` | `StoredDataCheck.ClassUsers(className, events, archived, aggregates)` | Before removing an event class from the code: when `events` and `archived` are both 0, nothing uses it. |
 | `projections.retire(name)` | `Unit` | At start, for each managed projection removed from the code; it drops its tables, versions and failures. |
 | `subscriptionsState.clearSubscriptionsInfo(subscriberName)` | `Unit` | For an unmanaged projection removed from the code: forgets the versions and failures stored under its class name. |

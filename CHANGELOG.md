@@ -95,7 +95,7 @@ below with running code.
 
 ### Fixed
 
-166 issues recorded and fixed, each with the test that showed it, are in
+169 issues recorded and fixed, each with the test that showed it, are in
 [KNOWN-ISSUES.md, section 3](docs/KNOWN-ISSUES.md): among them events that were never re-delivered
 while their aggregate stayed in memory (F2), a history rewrite left half-applied (F8), idempotent
 commands that could run twice (F9), memory that grew with uptime in the bus (F1), and rebuild reads

@@ -33,8 +33,9 @@ The application's own specs pass on 1.0, against a copy of production's schema t
 On a restored copy of the production database, with the 1.0 build of the application:
 
 1. **Read every stored value with 1.0's JSON library**, before anything is changed: `StoredDataCheck.run(mpjsons,
-   typesNamesState, contexts, projectionTables)` from the application, which reads only. Every row must read; every
-   event must be at event type version 0 (D29). Unreadable rows are fixed (converters for old forms, F52) before the
+   typesNamesState, projectionTables)` from the application, which reads only. Every row must read; every
+   event must be at event type version 0 (D29). The report names the tables it did not find (F181); on a 0.12
+   database that is `events_archive`, which 1.0 makes. Unreadable rows are fixed (converters for old forms, F52) before the
    date.
 2. **Run the pre-check queries**, which must all answer zero:
 

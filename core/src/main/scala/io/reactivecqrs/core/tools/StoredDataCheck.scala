@@ -31,7 +31,10 @@ object StoredDataCheck {
 
   case class ClassResult(table: String, className: String, rows: Long, unreadable: Long, examples: Seq[String])
 
-  case class Report(results: Seq[ClassResult], aggregatesWithoutSpace: Long, eventsByTypeVersion: Map[Int, Long]) {
+  /** `missingTables`: the tables to read that the database does not have (F181), such as the saga table of an
+    * application without sagas, or the archive of a database from before 1.0. */
+  case class Report(results: Seq[ClassResult], aggregatesWithoutSpace: Long, eventsByTypeVersion: Map[Int, Long],
+                    missingTables: Seq[String] = Nil) {
 
     def unreadable: Long = results.map(_.unreadable).sum
 
@@ -39,7 +42,8 @@ object StoredDataCheck {
       val header = s"Stored data check: ${results.map(_.rows).sum} rows read, $unreadable unreadable.\n\n" +
         "| Table | Class | Rows | Unreadable | First unreadable rows |\n|---|---|---|---|---|\n"
       val rows = results.map(r => s"| ${r.table} | ${r.className} | ${r.rows} | ${r.unreadable} | ${r.examples.mkString("; ")} |").mkString("\n")
-      header + rows + s"\n\nAggregates without a space (space_id = -1): $aggregatesWithoutSpace\n" +
+      val missing = if (missingTables.isEmpty) "" else "\n\nTables not found, so not read: " + missingTables.mkString(", ")
+      header + rows + missing + s"\n\nAggregates without a space (space_id = -1): $aggregatesWithoutSpace\n" +
         "Events by event type version: " + eventsByTypeVersion.toSeq.sorted.map { case (v, n) => s"$v: $n" }.mkString(", ") + "\n"
     }
   }
@@ -57,6 +61,13 @@ object StoredDataCheck {
     def eachRow(query: SQL[Nothing, NoExtractor])(handle: WrappedResultSet => Unit): Unit =
       DB.localTx { implicit session => query.fetchSize(fetchSize).foreach(handle) }
 
+    // F181: every table but `events` may be missing: the archive before 1.0, the sagas and the command responses of an
+    // application that has none, a listed projection never made. A missing table is reported, not read.
+    val missing = Seq.newBuilder[String]
+    def ifExists(table: String)(read: => Unit): Unit =
+      if (DB.readOnly(implicit session => sql"SELECT to_regclass(${table}::text) IS NOT NULL".map(_.boolean(1)).single().get)) read
+      else missing += table
+
     eachRow(sql"SELECT id, event_type_id, event_type_version, event FROM events") { rs =>
       val eventClass = className(rs.short(2))
       // D29: 1.0 reads only version 0; a row of another version fails to restore.
@@ -66,34 +77,41 @@ object StoredDataCheck {
     }
 
     // R11: archived events are read like events.
-    if (DB.readOnly(implicit session => sql"SELECT to_regclass('events_archive') IS NOT NULL".map(_.boolean(1)).single().get)) {
+    ifExists("events_archive") {
       eachRow(sql"SELECT id, event_type_id, event FROM events_archive") { rs =>
         val eventClass = className(rs.short(2))
         results.add("events_archive", eventClass, "id " + rs.long(1), Try(mpjsons.deserialize[AnyRef](rs.string(3), eventClass)))
       }
     }
 
-    eachRow(sql"SELECT name, saga_id, order_type_id, saga_order FROM sagas") { rs =>
-      val orderClass = className(rs.int(3).toShort)
-      results.add("sagas", orderClass, rs.string(1) + " " + rs.long(2), Try(mpjsons.deserialize[AnyRef](rs.string(4), orderClass)))
+    ifExists("sagas") {
+      eachRow(sql"SELECT name, saga_id, order_type_id, saga_order FROM sagas") { rs =>
+        val orderClass = className(rs.int(3).toShort)
+        results.add("sagas", orderClass, rs.string(1) + " " + rs.long(2), Try(mpjsons.deserialize[AnyRef](rs.string(4), orderClass)))
+      }
     }
 
-    eachRow(sql"SELECT id, response, response_type_id, info, info_type_id FROM commands_responses") { rs =>
-      results.add("commands_responses", className(rs.short(3)), "id " + rs.long(1),
-        Try(responses.readResponse(rs.string(2), rs.short(3), rs.stringOpt(4), rs.shortOpt(5))))
+    ifExists("commands_responses") {
+      eachRow(sql"SELECT id, response, response_type_id, info, info_type_id FROM commands_responses") { rs =>
+        results.add("commands_responses", className(rs.short(3)), "id " + rs.long(1),
+          Try(responses.readResponse(rs.string(2), rs.short(3), rs.stringOpt(4), rs.shortOpt(5))))
+      }
     }
 
     projections.foreach { projection =>
       val table = "projection_" + projection.name
-      eachRow(SQL(s"SELECT id, document FROM $table")) { rs =>
-        results.add(table, projection.className, "id " + rs.long(1), Try(projection.read(mpjsons, rs.string(2))))
+      ifExists(table) {
+        eachRow(SQL(s"SELECT id, document FROM $table")) { rs =>
+          results.add(table, projection.className, "id " + rs.long(1), Try(projection.read(mpjsons, rs.string(2))))
+        }
       }
     }
 
     DB.readOnly { implicit session =>
       Report(results.all,
         sql"SELECT count(*) FROM aggregates WHERE space_id = -1".map(_.long(1)).single().get,
-        sql"SELECT event_type_version, count(*) FROM events GROUP BY event_type_version".map(rs => rs.int(1) -> rs.long(2)).list().toMap)
+        sql"SELECT event_type_version, count(*) FROM events GROUP BY event_type_version".map(rs => rs.int(1) -> rs.long(2)).list().toMap,
+        missing.result())
     }
   }
 

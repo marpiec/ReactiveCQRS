@@ -27,8 +27,9 @@ You ask about the past the same way you send commands: you ask the aggregate typ
 > **Remember:** unlike command responses, these answers are a `scala.util.Try`. A read that failed
 > still arrives as a *successful* `Future`, holding a `Failure`. Always look inside the `Try`.
 
-The examples use chapter 5's setup and the Groceries cart of chapter 6. Its story, with one more
-event: after Alice's undo, she removed the oranges herself.
+The examples use chapter 5's setup and the Groceries cart of chapter 6, and run in `PastSpec`, which
+checks what each one answers. The cart's story, with one more event: after Alice's undo, she removed
+the oranges herself.
 
 ```
 version 1  ShoppingCartCreated(Groceries)   Alice
@@ -41,6 +42,7 @@ version 6  ItemRemoved(2)                   Alice: no oranges after all
 
 Two more imports are needed:
 
+<!-- snippet: cart/PastSpec.scala#imports -->
 ```scala
 import java.time.Instant
 import scala.util.{Failure, Success, Try}
@@ -48,8 +50,10 @@ import scala.util.{Failure, Success, Try}
 
 ## The whole diary: GetEventsForAggregate
 
+<!-- snippet: cart/PastSpec.scala#diary -->
 ```scala
-(commandBus ? GetEventsForAggregate(cartId)).mapTo[Try[List[EventInfo[ShoppingCart]]]].foreach {
+val diary = (commandBus ? GetEventsForAggregate(cartId)).mapTo[Try[List[EventInfo[ShoppingCart]]]]
+diary.foreach {
   case Success(events) =>
     events.foreach(e => println(f"${e.version.asInt}%2d  ${e.event.toString}%-30s  ${e.metadata.actor}"))
   case Failure(error) =>
@@ -93,8 +97,9 @@ What to know about this list:
 
 The same, stopping at a version:
 
+<!-- snippet: cart/PastSpec.scala#upTo -->
 ```scala
-commandBus ? GetEventsForAggregateForVersion(cartId, AggregateVersion(3))
+val firstThree = commandBus ? GetEventsForAggregateForVersion(cartId, AggregateVersion(3))
 // Success(List(...)) with the events of versions 1, 2 and 3
 ```
 
@@ -102,8 +107,10 @@ commandBus ? GetEventsForAggregateForVersion(cartId, AggregateVersion(3))
 
 This one rebuilds the state as it stood right after a given version:
 
+<!-- snippet: cart/PastSpec.scala#atVersion -->
 ```scala
-(commandBus ? GetAggregateForVersion(cartId, AggregateVersion(4))).mapTo[Try[Aggregate[ShoppingCart]]].foreach(println)
+val atVersion4 = (commandBus ? GetAggregateForVersion(cartId, AggregateVersion(4))).mapTo[Try[Aggregate[ShoppingCart]]]
+atVersion4.foreach(println)
 ```
 
 The answer is `Success(Aggregate(cartId, AggregateVersion(4), Some(ShoppingCart("Groceries",
@@ -126,13 +133,14 @@ What to know:
 
 "What was in the cart when the order was placed, at 18:00 UTC on 16/10/2026?"
 
+<!-- snippet: cart/PastSpec.scala#atInstant -->
 ```scala
-(commandBus ? GetAggregateAtInstant(cartId, Instant.parse("2026-10-16T18:00:00Z")))
+val whenOrdered = (commandBus ? GetAggregateAtInstant(cartId, Instant.parse("2026-10-16T18:00:00Z")))
   .mapTo[Try[Aggregate[ShoppingCart]]]
-  .foreach {
-    case Success(cart)  => println(s"At that moment: version ${cart.version.asInt}, ${cart.aggregateRoot}")
-    case Failure(error) => println("Cannot read the cart: " + error.getMessage)
-  }
+whenOrdered.foreach {
+  case Success(cart)  => println(s"At that moment: version ${cart.version.asInt}, ${cart.aggregateRoot}")
+  case Failure(error) => println("Cannot read the cart: " + error.getMessage)
+}
 ```
 
 The library finds the newest version stored at or before that instant, and reads the aggregate at
@@ -164,8 +172,10 @@ shows the change. But you cannot always be sure: the reader may not be the one w
 the command may have been sent without waiting for its answer, or the change may still be on its way
 (a saga's next step, chapter 12). `GetAggregateMinVersion` turns "at least version 7" into a promise:
 
+<!-- snippet: cart/PastSpec.scala#minVersion -->
 ```scala
-(commandBus ? GetAggregateMinVersion(cartId, AggregateVersion(7), 2000)).mapTo[Try[Aggregate[ShoppingCart]]].foreach {
+val atLeast7 = (commandBus ? GetAggregateMinVersion(cartId, AggregateVersion(7), 2000)).mapTo[Try[Aggregate[ShoppingCart]]]
+atLeast7.foreach {
   case Success(cart) =>
     println(s"Up to date: version ${cart.version.asInt}")  // version 7 or later
   case Failure(e: AggregateInIncorrectVersionException) =>
@@ -200,6 +210,7 @@ The aggregate's version and state stay as they were. Its past, though, is shorte
   history they need is gone, and the library will not guess;
 - reads of version N or later work as before.
 
+<!-- snippet: cart/PastSpec.scala#squashed -->
 ```scala
 case Failure(e: AggregateSquashedException) =>
   println(s"The history before version ${e.squashedUpTo.asInt} was folded away")
@@ -214,8 +225,10 @@ Some events matter for audits even after a squash: who approved the order, who a
 policy can name the event classes to keep, and the squash then moves those events into an archive
 instead of deleting them. `GetArchivedEvents(id)` reads it:
 
+<!-- snippet: cart/PastSpec.scala#archive -->
 ```scala
-(commandBus ? GetArchivedEvents(cartId)).mapTo[Try[ArchivedEvents[ShoppingCart]]].foreach {
+val archived = (commandBus ? GetArchivedEvents(cartId)).mapTo[Try[ArchivedEvents[ShoppingCart]]]
+archived.foreach {
   case Success(archive) =>
     archive.events.foreach(a => println(s"${a.info.version.asInt}  ${a.info.event}  archived at ${a.archived}"))
   case Failure(error) =>

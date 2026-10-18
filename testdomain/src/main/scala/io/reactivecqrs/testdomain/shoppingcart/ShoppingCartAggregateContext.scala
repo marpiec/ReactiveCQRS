@@ -13,7 +13,10 @@ class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
 
   override def commandHandlers = shoppingCart => {
     case c: CreateShoppingCart => createShoppingCart(c.userId, c)
-    case c: DuplicateShoppingCart => duplicateShoppingCart(c)
+    // #duplicateHandler
+    case c: DuplicateShoppingCart =>
+      CommandSuccess(ShoppingCartDuplicated(SpaceId(0), c.baseAggregateId, c.baseAggregateVersion))
+    // #duplicateHandler
     case c: AddItem => addItem(c.userId, c.aggregateId, c.expectedVersion, shoppingCart)(c)
     case c: AddItemConcurrently => CommandSuccess(ItemAdded(c.name))
     // #addItems
@@ -29,7 +32,9 @@ class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
     // #checkCart
     case c: RemoveItem => removeItem(c)
     case c: DeleteShoppingCart => deleteShoppingCart(c)
-    case c: UndoShoppingCartChange => undoShoppingCartChange(c)
+    // #undoHandler
+    case c: UndoShoppingCartChange => CommandSuccess(ShoppingCartChangesUndone(c.stepsToUndo))
+    // #undoHandler
   }
 
   override def rewriteHistoryCommandHandlers = (events, shoppingCart) => {
@@ -37,15 +42,21 @@ class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
     case c: RewriteCartNameConcurrently => rewriteCartName(c.name, events)
   }
 
+  // #eventHandlers
   override def eventHandlers = (userId, timestamp, shoppingCart) => {
-    case e: ShoppingCartDuplicated => shoppingCart
+    // #duplicatedHandler
+    case e: ShoppingCartDuplicated => shoppingCart // the state that arrives is already the copy
+    // #duplicatedHandler
     case e: ShoppingCartCreated => shoppingCartCreated(e)
     case e: ItemAdded => itemAdded(shoppingCart, e)
     case e: ItemRemoved => itemRemoved(shoppingCart, e)
+    // #deletedHandler
     case e: ShoppingCartDeleted => null
+    // #deletedHandler
     case e: CartNameRewritten => cartNameRewritten(shoppingCart, e)
     case e: CartSquashed => ShoppingCart(e.name, e.items)
   }
+  // #eventHandlers
 
   override val squash: Option[SquashPolicy[ShoppingCart]] = Some(SquashPolicy(cart => CartSquashed(SpaceId(0), cart.name, cart.items)))
 

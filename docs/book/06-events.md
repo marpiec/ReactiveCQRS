@@ -8,7 +8,8 @@ delete an aggregate gently or for good, how to record who acted and why, how to 
 class once it is stored without breaking anything, and the limits that keep aggregates healthy.
 
 The examples continue with the setup of chapter 5: `commandBus` is the carts' command bus, and
-`alice` and `bob` are `UserId(1)` and `UserId(2)`.
+`alice` and `bob` are `UserId(1)` and `UserId(2)`. The blocks that send something run in
+`EventsSpec`, next to chapter 5's `CommandKindsSpec`, which checks what each one answers.
 
 ---
 
@@ -17,15 +18,16 @@ The examples continue with the setup of chapter 5: `commandBus` is the carts' co
 In chapter 3 you wrote event handlers for three events. The test domain's cart, the bigger sibling of
 yours, handles a few more. Here is its complete list, from `ShoppingCartAggregateContext`:
 
+<!-- snippet: shoppingcart/ShoppingCartAggregateContext.scala#eventHandlers -->
 ```scala
 override def eventHandlers = (userId, timestamp, shoppingCart) => {
-  case e: ShoppingCartDuplicated    => shoppingCart
-  case e: ShoppingCartCreated       => shoppingCartCreated(e)
-  case e: ItemAdded                 => itemAdded(shoppingCart, e)
-  case e: ItemRemoved               => itemRemoved(shoppingCart, e)
-  case e: ShoppingCartDeleted       => null
-  case e: CartNameRewritten         => cartNameRewritten(shoppingCart, e)
-  case e: CartSquashed              => ShoppingCart(e.name, e.items)
+  case e: ShoppingCartDuplicated => shoppingCart // the state that arrives is already the copy
+  case e: ShoppingCartCreated => shoppingCartCreated(e)
+  case e: ItemAdded => itemAdded(shoppingCart, e)
+  case e: ItemRemoved => itemRemoved(shoppingCart, e)
+  case e: ShoppingCartDeleted => null
+  case e: CartNameRewritten => cartNameRewritten(shoppingCart, e)
+  case e: CartSquashed => ShoppingCart(e.name, e.items)
 }
 ```
 
@@ -41,6 +43,7 @@ squash event chapter 14's. First, the handler itself. It receives three things a
 The cart does not need the first two, but plenty of aggregates do. Picture a library loan, where the
 book is due back two weeks after it was borrowed, and the borrower is whoever borrowed it:
 
+<!-- snippet: cart/Loans.scala#loan -->
 ```scala
 import java.time.Instant
 import java.time.temporal.ChronoUnit
@@ -54,8 +57,12 @@ case class LoanStarted(title: String) extends FirstEvent[Loan] {
 }
 case class LoanExtended(days: Int) extends Event[Loan]
 case class BookReturned() extends Event[Loan]
+```
 
-// in the loan's AggregateContext
+and in the loan's context, the event handlers:
+
+<!-- snippet: cart/Loans.scala#loanHandlers -->
+```scala
 override def eventHandlers = (userId, timestamp, loan) => {
   case e: LoanStarted  => Loan(e.title, borrower = userId, due = timestamp.plus(14, ChronoUnit.DAYS), returned = false)
   case e: LoanExtended => loan.copy(due = loan.due.plus(e.days.toLong, ChronoUnit.DAYS))
@@ -109,6 +116,7 @@ The first event of a new aggregate must be a `FirstEvent`. Besides being page on
 says which *space* the aggregate belongs to: the organization (the tenant, the customer company) it
 lives in. The cart lives in the platform itself, space 0:
 
+<!-- snippet: shoppingcart/Events.scala#created -->
 ```scala
 case class ShoppingCartCreated(name: String) extends FirstEvent[ShoppingCart] {
   def spaceId: SpaceId = SpaceId(0)
@@ -118,6 +126,7 @@ case class ShoppingCartCreated(name: String) extends FirstEvent[ShoppingCart] {
 In an application with many organizations the space usually comes from the command, and a case
 class field can provide it directly (an example, not in the test domain):
 
+<!-- snippet: cart/EventsSpec.scala#cartOpened -->
 ```scala
 case class CartOpened(spaceId: SpaceId, name: String) extends FirstEvent[ShoppingCart]
 ```
@@ -137,6 +146,7 @@ Spaces have a whole chapter of their own: [chapter 16](16-organizations.md).
 The cart can be deleted. Its command handler stores `ShoppingCartDeleted()`, and the event handler
 returns `null`:
 
+<!-- snippet: shoppingcart/ShoppingCartAggregateContext.scala#deletedHandler -->
 ```scala
 case e: ShoppingCartDeleted => null
 ```
@@ -164,22 +174,33 @@ version 3  ItemAdded(oranges)               Bob
 version 4  ItemRemoved(1)                   Bob, by mistake
 ```
 
-Alice presses the cart's undo button. The cart has a command and an event for it:
+Alice presses the cart's undo button. The cart has a command for it,
 
+<!-- snippet: shoppingcart/Commands.scala#undo -->
 ```scala
 case class UndoShoppingCartChange(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
                                   stepsToUndo: Int) extends Command[ShoppingCart, CustomCommandResponse[_]]
+```
 
+an undo event,
+
+<!-- snippet: shoppingcart/Events.scala#undone -->
+```scala
 case class ShoppingCartChangesUndone(eventsCount: Int) extends UndoEvent[ShoppingCart]
+```
 
-// in commandHandlers
+and a case in its command handlers that turns the one into the other:
+
+<!-- snippet: shoppingcart/ShoppingCartAggregateContext.scala#undoHandler -->
+```scala
 case c: UndoShoppingCartChange => CommandSuccess(ShoppingCartChangesUndone(c.stepsToUndo))
 ```
 
 An `UndoEvent` has an `eventsCount`: how many of the newest events it cancels.
 
+<!-- snippet: cart/EventsSpec.scala#undo -->
 ```scala
-commandBus ? UndoShoppingCartChange(alice, cartId, AggregateVersion(4), stepsToUndo = 1)
+val undone = commandBus ? UndoShoppingCartChange(alice, cartId, AggregateVersion(4), stepsToUndo = 1)
 // SuccessResponse(cartId, AggregateVersion(5)); the cart holds apples and oranges again
 ```
 
@@ -208,27 +229,42 @@ What to know about undo:
 ## Duplication: a new aggregate that starts as a copy
 
 "Save as..." in your word processor: last week's shopping list becomes the start of this week's.
-The cart can do that:
+The cart can do that, with a command
 
+<!-- snippet: shoppingcart/Commands.scala#duplicate -->
 ```scala
 case class DuplicateShoppingCart(userId: UserId, baseAggregateId: AggregateId, baseAggregateVersion: AggregateVersion)
   extends FirstCommand[ShoppingCart, CustomCommandResponse[_]]
+```
 
+and a duplication event:
+
+<!-- snippet: shoppingcart/Events.scala#duplicated -->
+```scala
 case class ShoppingCartDuplicated(spaceId: SpaceId, baseAggregateId: AggregateId, baseAggregateVersion: AggregateVersion)
   extends DuplicationEvent[ShoppingCart]
+```
 
-// in commandHandlers
+Its command handler stores the event,
+
+<!-- snippet: shoppingcart/ShoppingCartAggregateContext.scala#duplicateHandler -->
+```scala
 case c: DuplicateShoppingCart =>
   CommandSuccess(ShoppingCartDuplicated(SpaceId(0), c.baseAggregateId, c.baseAggregateVersion))
+```
 
-// in eventHandlers: the state that arrives is already the copy, so give it back unchanged
-case e: ShoppingCartDuplicated => shoppingCart
+and its event handler gives back the state it receives, unchanged:
+
+<!-- snippet: shoppingcart/ShoppingCartAggregateContext.scala#duplicatedHandler -->
+```scala
+case e: ShoppingCartDuplicated => shoppingCart // the state that arrives is already the copy
 ```
 
 Continuing the story, Alice copies the Groceries cart as it was at version 3:
 
+<!-- snippet: cart/EventsSpec.scala#duplicate -->
 ```scala
-commandBus ? DuplicateShoppingCart(alice, cartId, AggregateVersion(3))
+val copied = commandBus ? DuplicateShoppingCart(alice, cartId, AggregateVersion(3))
 // SuccessResponse(copyId, AggregateVersion(1)): a new cart with apples and oranges
 ```
 
@@ -261,19 +297,27 @@ really be gone. A `PermanentDeleteEvent` does that, in two steps:
    waiting outbox rows, its snapshot, its archived events (chapter 14) and the projections' progress
    records for it.
 
-The cart in the test domain has no permanent delete; adding one takes a few lines (the test
-`PermanentDeleteSpec` does the same for a small "memo" aggregate):
+The cart in the test domain has no permanent delete. A context of your own adds one in a few lines;
+this chapter's spec runs this one:
 
+<!-- snippet: cart/EventsSpec.scala#erase -->
 ```scala
 case class ShoppingCartErased() extends PermanentDeleteEvent[ShoppingCart]
 
 case class EraseShoppingCart(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion)
   extends Command[ShoppingCart, CustomCommandResponse[_]]
 
-// in commandHandlers
-case _: EraseShoppingCart => CommandSuccess(ShoppingCartErased())
-// in eventHandlers
-case _: ShoppingCartErased => shoppingCart
+class ErasableCarts extends ShoppingCartAggregateContext {
+  override def commandHandlers = cart => {
+    case _: EraseShoppingCart => CommandSuccess(ShoppingCartErased())
+    case other => super.commandHandlers(cart)(other)
+  }
+
+  override def eventHandlers = (userId, timestamp, cart) => {
+    case _: ShoppingCartErased => cart
+    case other => super.eventHandlers(userId, timestamp, cart)(other)
+  }
+}
 ```
 
 Afterwards the cart reads like one that never existed: `GetAggregate` answers with version 0 and no
@@ -307,6 +351,7 @@ AI agent, an integration) acted for Bob; the request came in through the public 
 support case 12. A command that mixes in `WithMetadata` gives every event it stores an
 `EventMetadata` envelope:
 
+<!-- snippet: shoppingcart/Commands.scala#onBehalf -->
 ```scala
 /** Adds an item for someone else: its event carries a metadata envelope. */
 case class AddItemOnBehalf(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, name: String,
@@ -325,10 +370,11 @@ case class AddItemOnBehalf(userId: UserId, aggregateId: AggregateId, expectedVer
 
 Only `actor` is required:
 
+<!-- snippet: cart/EventsSpec.scala#onBehalf -->
 ```scala
 val onBehalf = EventMetadata("agent:planner", correlationId = Some("case 12"), custom = Map("channel" -> "api"))
 
-commandBus ? AddItemOnBehalf(bob, cartId, AggregateVersion(1), "apple", onBehalf)
+val added = commandBus ? AddItemOnBehalf(bob, cartId, AggregateVersion(1), "apple", onBehalf)
 // SuccessResponse(cartId, AggregateVersion(2)); the ItemAdded event carries the envelope
 ```
 
@@ -386,6 +432,7 @@ case class ItemAddedV2(name: String, quantity: Int) extends Event[ShoppingCart]
 deploy, and reports, per table and class, how many rows it read and which could not be read. Run it
 from your application (which has all your classes), connected to a copy of production:
 
+<!-- snippet: cart/EventsSpec.scala#check -->
 ```scala
 import io.reactivecqrs.core.tools.StoredDataCheck
 
@@ -396,11 +443,13 @@ if (report.unreadable > 0) println("Not yet: some stored data cannot be read by 
 
 It reads the events, the archived events, the saga orders and the stored command responses, plus
 any projection tables you list (`StoredDataCheck.ProjectionTable[YourDocument]("name")`). It only
-reads. Its report also counts aggregates without a space, and events by their old type version (see
+reads. A table your database does not have, such as the saga table of an application without sagas,
+is not read, and the report names it. Its report also counts aggregates without a space, and events by their old type version (see
 [ARCHITECTURE.md, section 2.3](../ARCHITECTURE.md)).
 
 ### When can the old class go?
 
+<!-- snippet: cart/EventsSpec.scala#usersOf -->
 ```scala
 val users = StoredDataCheck.usersOf(classOf[ItemAdded].getName)
 println(s"${users.events} stored and ${users.archived} archived ItemAdded events")
@@ -425,6 +474,7 @@ Two limits guard against runaway aggregates. Both are constructor parameters of
 As the events of one command are stored together or not at all, one event too many or too large
 fails the whole command. Setting them looks like this:
 
+<!-- snippet: cart/EventsSpec.scala#limits -->
 ```scala
 val eventStore = new PostgresEventStoreState(mpjsons, typesNames,
   aggregateVersionLimit = 20000,                                       // carts with very long lives

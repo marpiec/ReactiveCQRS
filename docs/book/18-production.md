@@ -195,8 +195,10 @@ println(report.text)
 
 A projection table is named as its document store is, without the `projection_` prefix (for a
 managed projection, with its build's suffix, such as `_v1`). The report lists, per table and class,
-the rows read and the unreadable ones with examples, the aggregates still without a space, and the
-events by event type version (in 1.0 they must all be 0). `report.unreadable` must be zero.
+the rows read and the unreadable ones with examples, the aggregates still without a space, the
+events by event type version (in 1.0 they must all be 0), and the tables it did not find
+(`report.missingTables`): a name you mistyped, or on a database from before 1.0, `events_archive`.
+`report.unreadable` must be zero.
 
 Before you delete an old event class from your code, `StoredDataCheck.usersOf(className)` tells you
 which aggregates still have events of it, in the events and in the squash archive.

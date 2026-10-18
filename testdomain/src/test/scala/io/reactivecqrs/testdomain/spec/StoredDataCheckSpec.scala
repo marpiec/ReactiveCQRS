@@ -86,5 +86,26 @@ class StoredDataCheckSpec extends CommonSpec {
       after.eventsByTypeVersion.get(0).exists(_ >= 2) mustBe true
       after.text must include("unreadable")
     }
+
+    // F181: an application without sagas never makes the saga table.
+    Scenario("checks a database that lacks some tables, and names the tables it did not find") {
+      TestDatabase.inSchema("without_sagas") {
+        Given("the tables of the event store only, with a cart")
+        val typesNames = new PostgresTypesNamesState().initSchema()
+        val store = new PostgresEventStoreState(mpjsons, typesNames).initSchema()
+        store.localTx { session =>
+          store.persistEvents(AggregateId(TestIds.aggregate()), NewEvents[ShoppingCart](userId, AggregateVersion.ZERO,
+            Instant.now, Seq(ShoppingCartCreated("Without sagas"))))(session)
+        }.get
+
+        When("the check runs, with a projection table that was never made among the listed ones")
+        val report = StoredDataCheck.run(mpjsons, typesNames, Seq(ProjectionTable[String]("never_made")))
+
+        Then("it reads the events, and names the tables it did not find")
+        result(report, "events", classOf[ShoppingCartCreated].getName).rows mustBe 1L
+        report.missingTables mustBe Seq("sagas", "commands_responses", "projection_never_made")
+        report.text must include("Tables not found, so not read: sagas, commands_responses, projection_never_made")
+      }
+    }
   }
 }

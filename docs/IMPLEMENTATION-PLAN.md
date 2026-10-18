@@ -2414,3 +2414,27 @@ Open test-infrastructure items:
   every answer the chapter names, the rejection of serial processing and the refused ids included.
 - The outbox hook was mentioned in the book but taught nowhere: chapter 5 has a section on it now,
   with E6's ticket writer, and points to E6 as the program that puts the chapter's tools together.
+
+**18/10/2026: chapter 6's code is compiled and its answers checked; F181**
+- 21 of chapter 6's 23 blocks are regions: the test domain's event handlers, undo and duplication (its
+  context now states those two command handlers inline, as the chapter shows them), a library loan
+  (`Loans.scala`), and `EventsSpec`, which runs the chapter's story (the undo, a read of the old
+  version, the copy and its tomatoes, the second undo), a soft delete, a permanent delete with a
+  context of the chapter's own, the metadata envelope, the stored data check and the size limit. The
+  two blocks left are a mistake the chapter shows on purpose and a class the test domain does not have.
+- F181 (Low): `StoredDataCheck.run` stopped at the first table the database lacked, the saga table of
+  an application without sagas among them. It now skips a missing table and names it in its report
+  (`missingTables`); red first in `StoredDataCheckSpec`. The upgrade runbook called `run` with a
+  parameter it does not have (`contexts`); corrected, and it says that a 0.12 database lacks the
+  archive. The CHANGELOG counts 169 fixed issues.
+
+**18/10/2026: chapters 7 and 13's code is compiled and their answers checked**
+- Chapter 7: all eight blocks are `PastSpec`'s regions. It builds the chapter's six-version cart and
+  checks the printed diary line by line, the reads at versions 0, 4, 5, 6 and past the newest, at the
+  version of a delete, at an instant before the cart and at the instant of version 4, the
+  read-your-writes wait that fails after `maxMillis` and the one a command answers, and a read below a
+  squash point, the squash event that starts the history, and an empty archive.
+- Chapter 13: its four blocks are `SnapshotExperimentSpec`'s regions; the spec runs the chapter's
+  experiment (a snapshot at version 3, a passivation that writes none, a restore from the snapshot,
+  seen in the `reactivecqrs.restore` measure). Named so as not to be confused with the test domain's
+  `SnapshotSpec`, which the chapter cites.

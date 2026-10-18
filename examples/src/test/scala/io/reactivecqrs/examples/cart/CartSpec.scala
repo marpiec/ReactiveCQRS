@@ -4,7 +4,7 @@ import io.mpjsons.MPJsons
 import io.reactivecqrs.api.AggregateContext
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.eventbus.EventsBusActor
-import io.reactivecqrs.core.eventstore.PostgresEventStoreState
+import io.reactivecqrs.core.eventstore.{EventStoreState, PostgresEventStoreState}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.UidGeneratorActor
 import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCart, ShoppingCartAggregateContext}
@@ -27,10 +27,10 @@ abstract class CartSpec extends CommonSpec with BeforeAndAfterAll {
   private val uidGenerator = system.actorOf(UidGeneratorActor.postgres(system), "uidGenerator")
 
   /** A command bus of carts run by `context`, with an event bus of its own: a bus has one publisher per type. */
-  protected def carts(context: AggregateContext[ShoppingCart], name: String): ActorRef = {
+  protected def carts(context: AggregateContext[ShoppingCart], name: String, store: EventStoreState = eventStore): ActorRef = {
     val eventBus = system.actorOf(Props(new EventsBusActor()), name + "Events")
     eventBus ! EventsBusActor.RegisterSubscribers(Nil)
-    system.actorOf(AggregateCommandBusActor(context, uidGenerator, eventStore, responseState, eventBus), name)
+    system.actorOf(AggregateCommandBusActor(context, uidGenerator, store, responseState, eventBus), name)
   }
 
   /** Chapter 4's command bus, here for the test domain's carts. */
