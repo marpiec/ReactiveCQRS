@@ -106,8 +106,10 @@ their commands are applied.
 - **Give retried commands an idempotency key** (`IdempotentCommand`). Retry only after a timeout or
   a rejection, through any node. The key makes "applied once" hold even when the first attempt went
   through late (as `RollingUpgradeSpec` does).
-- **Make the client's timeout longer than the command timeout** (60 s), or shorten the context's
-  `commandTimeout`, so the library's answer arrives before the client gives up.
+- **Make the client's timeout longer than the command timeout** (60 s) plus the longest transaction,
+  or shorten the context's `commandTimeout`, so the library's answer arrives before the client gives
+  up. A command past its timeout is never stored (F229), but its answer can come after the owner's
+  current database work; retry only with an idempotency key.
 - **Size the JDBC pool at least as large as the blocking dispatcher** (32 threads). The bench uses
   40. PostgreSQL's `max_connections` must cover every node's pool.
 - **Use serial mode for aggregates that many clients write at once.** A full queue is answered at

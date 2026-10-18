@@ -8,11 +8,12 @@ import io.mpjsons.MPJsons
 import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 import io.reactivecqrs.api._
 import io.reactivecqrs.core.types.TypesNamesState
-import io.reactivecqrs.core.util.AfterCommit
+import io.reactivecqrs.core.util.{AfterCommit, Backoff}
 import scalikejdbc._
 
 import scala.concurrent.duration._
 import scala.util.Try
+import scala.util.control.NonFatal
 import io.reactivecqrs.core.util.SqlLogging.withoutValues
 import io.reactivecqrs.core.util.Errors
 
@@ -314,29 +315,38 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 
   /**
     * F124: gives the events written before `event_keys` their keys (their aggregate's type and space), in id order, a
-    * batch of `batchSize` ids per transaction, from the first event without one, and once every event has one, records
+    * batch of `batchSize` ids per transaction, `pause` apart, and once every event has one, records
     * the step, from which builds read by type and space. Online and idempotent (D69): run it in the background once every
     * node runs this version (a node of the previous one, started again, would write events without keys); stopped, it is
     * run again. Returns the keys it wrote and the events still without one (those of a missing aggregate row).
     */
-  def backfillEventKeys(batchSize: Int = 10000): EventKeysBackfill = {
-    val (first, last) = DB.readOnly { implicit session =>
-      (sql"""SELECT min(e.id) FROM events e WHERE NOT EXISTS (SELECT 1 FROM event_keys k WHERE k.id = e.id)""".map(_.longOpt(1)).single().flatten,
-        sql"""SELECT coalesce(max(id), 0) FROM events""".map(_.long(1)).single().get)
+  def backfillEventKeys(batchSize: Int = 10000, pause: FiniteDuration = 100.millis): EventKeysBackfill = {
+    // F220: no scan of the whole table: the walk by id range skips the events that have keys (`ON CONFLICT`) and counts,
+    // per batch, those it could not key; it pauses between batches for the database's other work, and a batch that fails
+    // (an event deleted meanwhile by a squash or a purge breaks the key's reference) is tried again, its rows read anew.
+    // Events written meanwhile get keys as they are stored.
+    val (first, last) = DB.readOnly(implicit session => sql"""SELECT coalesce(min(id), 1), coalesce(max(id), 0) FROM events""".map(rs => (rs.long(1), rs.long(2))).single().get)
+    val retries = Backoff(1.second, 30.seconds, maxAttempts = 10)
+    def batch(after: Long, upTo: Long, attempt: Int): (Int, Long) = try DB.localTx { implicit session =>
+      val keyed = sql"""INSERT INTO event_keys (id, type_id, space_id)
+           | SELECT e.id, a.type_id, a.space_id FROM events e CROSS JOIN LATERAL $ownRow a
+           | WHERE e.id > $after AND e.id <= $upTo ON CONFLICT (id) DO NOTHING""".stripMargin.update() // each finds its own row by key (F172)
+      (keyed, sql"""SELECT count(*) FROM events e WHERE e.id > $after AND e.id <= $upTo AND NOT EXISTS (SELECT 1 FROM event_keys k WHERE k.id = e.id)"""
+        .map(_.long(1)).single().get)
+    } catch {
+      case NonFatal(e) if !retries.exhausted(attempt) =>
+        PostgresEventStoreState.log.warn("Backfilling event keys after id " + after + " failed (attempt " + attempt + "), trying again: " + Errors.describe(e))
+        Thread.sleep(retries.delay(attempt + 1).toMillis)
+        batch(after, upTo, attempt + 1)
     }
-    var written = 0L
-    var after = first.map(_ - 1).getOrElse(last)
+    var (written, missing, after) = (0L, 0L, first - 1)
     while (after < last) {
       val upTo = math.min(after + batchSize, last)
-      written += DB.localTx { implicit session => // each event finds its own aggregate row by key (F172)
-        sql"""INSERT INTO event_keys (id, type_id, space_id)
-             | SELECT e.id, a.type_id, a.space_id FROM events e CROSS JOIN LATERAL $ownRow a
-             | WHERE e.id > $after AND e.id <= $upTo ON CONFLICT (id) DO NOTHING""".stripMargin.update()
-      }
+      val (keyed, without) = batch(after, upTo, 1)
+      written += keyed
+      missing += without
       after = upTo
-    }
-    val missing = DB.readOnly { implicit session =>
-      sql"""SELECT count(*) FROM events e WHERE NOT EXISTS (SELECT 1 FROM event_keys k WHERE k.id = e.id)""".map(_.long(1)).single().get
+      if (after < last) Thread.sleep(pause.toMillis)
     }
     if (missing == 0) DB.autoCommit { implicit session =>
       sql"""INSERT INTO schema_steps (name, completed) VALUES ('event_keys', current_timestamp) ON CONFLICT (name) DO NOTHING""".update()

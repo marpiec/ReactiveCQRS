@@ -70,6 +70,7 @@ class TwiceListeningProjection(val subscriptionsState: SubscriptionsState) exten
 
 case class FindNoteVersion(id: AggregateId, waitMillis: Int)
 case class FindNoteVersionOrZero(id: AggregateId, waitMillis: Int)
+case class FindThrowingAgain(waitMillis: Int)
 
 /** Each note's last version, in memory; its searches read at once and answer `searchMillis` later, so an update can be
   * applied while a search is under way (F163). */
@@ -88,6 +89,10 @@ class SearchedNotes(val subscriptionsState: SubscriptionsState, searchMillis: Lo
     case FindNoteVersion(id, wait) => delayIfNotAvailableAsync[Int](sender(), search(id), wait)
     case FindNoteVersionOrZero(id, wait) =>
       delayIfNotAvailableAsyncCustom[Int](sender(), () => search(id)().map(_.getOrElse(0)), (version: Int) => version > 0, wait)
+    case FindThrowingAgain(wait) => // finds nothing, then throws as it is started again
+      val calls = new AtomicInteger()
+      delayIfNotAvailableAsync[Int](sender(), () => if (calls.incrementAndGet() > 1) throw new IllegalStateException("pool timeout")
+        else scala.concurrent.Future.successful(None), wait)
   }
 
   override protected val projectionName: String = "SearchedNotes"
@@ -684,6 +689,40 @@ class ProjectionDeliverySpec extends CommonSpec {
       asker.expectMsg(3.seconds, 0)
       asker.send(projection, FindNoteVersion(newId(), 300))
       asker.expectMsg(3.seconds, None)
+    }
+  }
+
+  Feature("Delayed queries under load (F234)") {
+
+    Scenario("F234 a delayed query is answered at its deadline while updates keep coming") {
+      val projection = system.actorOf(Props(new SearchedNotes(new MemorySubscriptionsState, searchMillis = 10)))
+      val (busy, asker) = (newId(), TestProbe())
+      val feeding = new java.util.concurrent.atomic.AtomicBoolean(true)
+      val feeder = new Thread(() => {
+        var version = 0
+        while (feeding.get()) {
+          version += 1
+          projection ! IdentifiableEvents[GateNote](noteType, busy, Seq(EventInfo[GateNote](AggregateVersion(version), GateNoteChanged(version), UserId(1), Instant.now)))
+          Thread.sleep(2)
+        }
+      })
+      feeder.start()
+      try {
+        asker.send(projection, FindNoteVersion(newId(), 200))
+        asker.expectMsg(2.seconds, None)
+      } finally feeding.set(false)
+    }
+
+    Scenario("F234 a search that throws as the parked queries are searched again fails its query, and the others are answered") {
+      val projection = system.actorOf(Props(new SearchedNotes(new MemorySubscriptionsState, searchMillis = 10)))
+      val (first, second) = (TestProbe(), TestProbe())
+      first.send(projection, FindThrowingAgain(5000))
+      second.send(projection, FindThrowingAgain(5000))
+      Thread.sleep(200) // both parked
+      projection ! IdentifiableEvents[GateNote](noteType, newId(), Seq(EventInfo[GateNote](AggregateVersion(1), GateNoteChanged(1), UserId(1), Instant.now)))
+
+      first.expectMsgType[Status.Failure](2.seconds)
+      second.expectMsgType[Status.Failure](2.seconds)
     }
   }
 

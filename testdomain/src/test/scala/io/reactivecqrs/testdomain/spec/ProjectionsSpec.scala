@@ -129,6 +129,15 @@ class StoppingNotes(val subscriptionsState: SubscriptionsState, store: DocumentS
   override protected val projectionName: String = "StoppingNotes"
 }
 
+/** The registry, whose first switch commits and then fails, as when the answer is lost on the way back (F235). */
+class SwitchAnswerLostRegistry extends PostgresProjectionRegistry {
+  private val lost = new java.util.concurrent.atomic.AtomicBoolean(true)
+  override def switch(name: String, build: Int): Boolean = {
+    val switched = super.switch(name, build)
+    if (lost.getAndSet(false)) throw new java.sql.SQLException("connection reset", "08006") else switched
+  }
+}
+
 class BuildNoteContextV2 extends BuildNoteContext {
   override val version: Int = 2
 }
@@ -200,6 +209,16 @@ class ProjectionsSpec extends CommonSpec {
   private def tableExists(table: String): Boolean = DB.readOnly(implicit s => sql"SELECT to_regclass($table) IS NOT NULL".map(_.boolean(1)).single().get)
 
   Feature("A managed projection (D57, D70)") {
+
+    Scenario("F235 a switch that committed although it was reported failed is found done when tried again") {
+      var supervisor: ActorRef = null
+      val node = new Node(registryOf = new SwitchAnswerLostRegistry().initSchema())(projections => {
+        supervisor = notesProjection(projections, "m4p-lost-switch", 1, "m4p_lost_switch"); Seq(supervisor)
+      })
+      node.create("a", "x")
+      switchedTo(supervisor, 1)
+      node.stop()
+    }
 
     Scenario("F258 the instances of two projections have names of their own, which name the projection") {
       var supervisors = Seq.empty[ActorRef]

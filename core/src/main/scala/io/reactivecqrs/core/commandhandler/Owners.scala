@@ -40,6 +40,7 @@ private[commandhandler] final class LocalOwners(context: ActorContext,
                                                 eventsLogger: Option[Logger]) extends Owners {
 
   private val minimumInactivityMillis = 120000L // an owner is stopped for room only after 2 minutes without a message
+  private val StopsPerSweep = 200
 
   private val owners = mutable.HashMap[Long, ActorRef]()
   private val ownerIds = mutable.HashMap[ActorRef, Long]()
@@ -100,19 +101,18 @@ private[commandhandler] final class LocalOwners(context: ActorContext,
   }
 
   // At most every 5 minutes: beyond `keepAliveLimit` owners, the least recently used that were idle for 2 minutes, and
-  // any idle for longer than `maxInactivityMillis`.
+  // any idle for longer than `maxInactivityMillis`. F218: at most `StopsPerSweep` at once (each may write a snapshot on
+  // the blocking dispatcher every command waits on); the rest a second later.
   private def sweep(now: Long): Unit = if (now - lastSweep > 300000) {
-    lastSweep = now
-    if (activity.size > keepAliveLimit) {
-      val sorted = activity.toVector.sortBy(_._2)
-      sorted.take(sorted.length - keepAliveLimit).foreach { case (key, lastActive) =>
-        if (now - lastActive > minimumInactivityMillis) stop(AggregateId(key), stale = false)
-      }
-    }
-    activity.filter(now - _._2 > maxInactivityMillis).keys.foreach { key =>
-      eventsLogger.filter(_.isDebugEnabled).foreach(_.debug("Stopping aggregate " + key + " because of inactivity"))
+    val sorted = activity.toVector.sortBy(_._2)
+    val beyondLimit = sorted.take(math.max(sorted.length - keepAliveLimit, 0)).filter(now - _._2 > minimumInactivityMillis)
+    val inactive = sorted.filter(now - _._2 > maxInactivityMillis)
+    val due = (beyondLimit ++ inactive).map(_._1).distinct
+    due.take(StopsPerSweep).foreach { key =>
+      eventsLogger.filter(_.isDebugEnabled).foreach(_.debug("Stopping aggregate " + key + ", idle"))
       stop(AggregateId(key), stale = false)
     }
+    lastSweep = if (due.size > StopsPerSweep) now - 300000 + 1000 else now
   }
 }
 

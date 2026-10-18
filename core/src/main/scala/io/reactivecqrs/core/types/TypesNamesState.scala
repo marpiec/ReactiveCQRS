@@ -40,7 +40,9 @@ class MemoryTypesNamesState extends TypesNamesState {
 
 /** Ids of class names, shared by every node. A name's id never changes once stored, so the cache is never invalidated.
   * F78: the cache is read from many threads (owners, projections, the outbox poller), and a name new to several nodes at
-  * once is stored once: an insert that loses the race does nothing, and every node reads the winner's id. */
+  * once is stored once: an insert that loses the race does nothing, and every node reads the winner's id. F230: the cache
+  * is loaded by `initSchema`, and no lock is held while a name is read or stored, which callers do inside their open
+  * transactions: one waiting for its connection or for another node's insert stops no other. */
 class PostgresTypesNamesState extends TypesNamesState {
 
   private val ids = TrieMap[String, Short]()
@@ -52,6 +54,7 @@ class PostgresTypesNamesState extends TypesNamesState {
     createTypesNamesTable()
     createTypesNamesSequence()
     createNamesIndex()
+    loadAll()
     this
   }
 
@@ -79,7 +82,7 @@ class PostgresTypesNamesState extends TypesNamesState {
     names.put(id, name)
   }
 
-  private def idFromDB(className: String): Short = synchronized {
+  private def idFromDB(className: String): Short = {
     loadAll()
     ids.getOrElse(className, {
       val id = DB.localTx { implicit session =>
@@ -92,7 +95,7 @@ class PostgresTypesNamesState extends TypesNamesState {
     })
   }
 
-  private def nameFromDB(id: Short): String = synchronized {
+  private def nameFromDB(id: Short): String = {
     loadAll()
     names.getOrElse(id, {
       val name = DB.readOnly(implicit session => sql"""SELECT name FROM types_names WHERE id = $id""".map(_.string(1)).single())

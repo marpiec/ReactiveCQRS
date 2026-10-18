@@ -1175,9 +1175,10 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   }
 
   // F163: a search under way when an update was applied may have missed it, and no replay was asked for its query, which
-  // was not parked yet: it searches again.
+  // was not parked yet: it searches again, until its deadline, when it is answered (F234: updates may never stop).
   private def parkOrSearchAgain(query: DelayedQuery, searchedAt: Long)(searchAgain: => Unit): Unit =
-    if (searchedAt < updatesApplied) searchAgain else {
+    if (!query.until.isAfter(Instant.now())) answerAtDeadline(query)
+    else if (searchedAt < updatesApplied) searchAgain else {
       delayedQueries ::= query
       scheduleNearest()
     }
@@ -1191,7 +1192,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   }
 
   private def answerWith(respondTo: ActorRef, search: () => Future[Any]): Unit =
-    (try search() catch { case NonFatal(e) => Future.failed(e) }).onComplete {
+    started(search).onComplete {
       case Success(result) => respondTo ! result
       case Failure(e) => respondTo ! Status.Failure(e)
     }(context.system.dispatcher)
@@ -1222,9 +1223,12 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
     }
   }
 
+  // F234: a search that throws fails its query only, also while the parked queries are searched again.
+  private def started[T](search: () => Future[T]): Future[T] = try search() catch { case NonFatal(e) => Future.failed(e) }
+
   protected def delayIfNotAvailableAsync[T](respondTo: ActorRef, search: () => Future[Option[T]], until: Instant): Unit = {
     val searchedAt = updatesApplied
-    search().onComplete {
+    started(search).onComplete {
       case Success(result@Some(_)) => respondTo ! result
       case Success(None) => self ! AsyncDelayedQuery(until, respondTo, search, searchedAt)
       case Failure(ex) => respondTo ! Status.Failure(ex)
@@ -1233,7 +1237,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
   protected def delayIfNotAvailableAsyncCustom[T](respondTo: ActorRef, search: () => Future[T], found: T => Boolean, until: Instant): Unit = {
     val searchedAt = updatesApplied
-    search().onComplete {
+    started(search).onComplete {
       case Success(result) if found(result) => respondTo ! result
       case Success(_) => self ! AsyncDelayedQueryCustom[T](until, respondTo, search, found, searchedAt)
       case Failure(ex) => respondTo ! Status.Failure(ex)

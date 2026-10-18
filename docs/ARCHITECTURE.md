@@ -478,7 +478,8 @@ permanent delete (F244): an aggregate at the limit can still be rewritten, squas
   shard passivates the owners of a `Sharded` type itself): at most every 5
   minutes, and only when a message for some owner arrives. When more than `keepAliveLimit`
   (200) owners are tracked, the least recently used ones idle for more than 2 minutes are
-  stopped; any owner idle for more than `maxInactivityMillis` (12 h) too.
+  stopped; any owner idle for more than `maxInactivityMillis` (12 h) too; at most 200 per sweep, the rest a second
+  later (F218).
 - **Failures (AR7):** the owner never throws from `receive`: a failure that belongs to one
   command or query is answered to its caller; an unexpected failure of the owner itself is
   logged, and its state is read again from the store with the next message. The command bus's
@@ -1119,7 +1120,9 @@ after 10 minutes without `RenewSubscription`; an optional `updatesCacheTTL` repl
 updates to new subscribers. Subscriptions live in the instance's memory: a retired build hands
 them to its successor, but an instance that stops (a singleton that moves) loses them, and a
 renewal of a subscription the projection does not know is answered with
-`ProjectionSubscriptionsCancelled(List(id))`, so the listener subscribes again (F133). Listeners may call `sendUpdate` from pool threads (parallel mode):
+`ProjectionSubscriptionsCancelled(List(id))`, so the listener subscribes again (F133). Subscriptions are kept per
+type in insertion-ordered sets, the listeners watched (one that stops loses its subscriptions), at most 100 000 of
+them and 10 000 cached updates (F216). Listeners may call `sendUpdate` from pool threads (parallel mode):
 the update reaches the subscriptions through a message to the actor, sent once the listener's
 transaction has committed (`ProjectionActor.afterCommit`, kept per thread for the attempt at
 work): an attempt that rolls back pushes nothing (F161). Pushes are at most once; the store is
@@ -1159,7 +1162,8 @@ refused at once (F118); a managed projection's tables carry their build's suffix
 - **Cache after commit.** Inside an `AfterCommit.localTx` (what `PostgresSubscriptionsState`
   uses for every listener transaction) cache entries are removed at once and stored only
   after the commit, so a rollback never leaves the cache ahead of the table (fixed F16).
-  In any other session cache updates apply immediately.
+  In any other session cache updates apply immediately. The open transactions sit in a concurrent map by session
+  identity, so transactions share no lock (F219).
 - Writes need the listener's session: without one, the store opens a read-only session.
 
 ## 7. `SubscriptionsState` in depth (`SubscriptionsState.scala`)
@@ -1626,7 +1630,9 @@ alone (`cluster/Members`: a cluster with other members, or one whose members the
 know yet), it compares the stored version and history generation with its own (one key lookup)
 before it answers the state, a min-version query it has not reached (and again at the query's
 deadline), a re-publication or a squash, and before it runs a command, and reads the aggregate
-again when they differ (F131, F145): a change made on another node may keep the version (a rewrite
+again when they differ, by the events after its version alone when the generation is its own (F214), else by a
+restore (F131, F145); one told of a newer version looks it up too, also when it is the only owner (F213), and a
+lookup that fails fails only the request that asked (F231). A change made on another node may keep the version (a rewrite
 of the aggregate's base, a squash that changes its state), so a version conflict alone would not
 show it. The generation is read with every restore (F144). Reads and commands of a `Local` type on
 several nodes therefore cost a lookup each; a type read often

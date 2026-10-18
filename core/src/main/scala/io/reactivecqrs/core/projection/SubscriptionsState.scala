@@ -442,12 +442,14 @@ class PostgresSubscriptionsState(typesNamesState: TypesNamesState, eventsLogger:
 
 
 
+  // F217: a retired build's rows (millions) go in short transactions of 10 000, so none holds back vacuum for long; a
+  // drop that stops part-way is done again (D57: the drop of a retired build is run again at start).
   override def clearSubscriptionsInfo(subscriberName: String): Unit = {
     val subscriberTypeId = typesNamesState.typeIdByClassName(subscriberName)
-    DB.localTx { implicit session =>
-      sql"""DELETE FROM subscriptions WHERE subscriber_type_id = $subscriberTypeId""".update()
-      sql"""DELETE FROM subscription_failures WHERE subscriber_type_id = $subscriberTypeId""".update()
-    }
+    while (DB.autoCommit { implicit session =>
+      sql"""DELETE FROM subscriptions WHERE id IN (SELECT id FROM subscriptions WHERE subscriber_type_id = $subscriberTypeId LIMIT 10000)""".update()
+    } > 0) ()
+    DB.autoCommit(implicit session => sql"""DELETE FROM subscription_failures WHERE subscriber_type_id = $subscriberTypeId""".update())
     // F6: the cached versions of this subscriber go too.
     val ofSubscriber = s"$subscriberTypeId|"
     synchronized {

@@ -29,6 +29,21 @@ class AfterCommitSpec extends AnyFeatureSpec with Matchers {
       }
       ran mustBe false
     }
+
+    Scenario("F219 of transactions running at once, each runs its own after its own commit") {
+      import scala.concurrent.{Await, ExecutionContext, Future}
+      import scala.concurrent.duration._
+      implicit val threads: ExecutionContext = ExecutionContext.global
+      val ran = new java.util.concurrent.ConcurrentLinkedQueue[Int]()
+      val transactions = (1 to 8).map(i => Future(AfterCommit.localTx { session =>
+        AfterCommit(session)(ran.add(i))
+        Thread.sleep(50)
+        ran.contains(i) mustBe false
+        if (i % 2 == 0) throw new IllegalStateException("rollback")
+      }).recover { case _: IllegalStateException => () })
+      Await.result(Future.sequence(transactions), 10.seconds)
+      ran.toArray.toSet mustBe Set(1, 3, 5, 7)
+    }
   }
 
   Feature("Actions registered for any other session") {

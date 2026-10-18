@@ -100,6 +100,18 @@ Fixes from [the risk assessment of 1.0.0](docs/RISK-ASSESSMENT.md), in the order
   - The outbox poller reads the newest waiting aggregates too when more than `maxTracked` wait; one it first sees
     late is no longer reported undelivered 30 s after its re-publication; a full publication acknowledges events a
     re-publication to one subscriber left waiting.
+- **Owners and projections under load** (F213, F214, F216, F218, F219, F220, F229, F230, F231, F234, F235, chapters 5,
+  11 and 17):
+  - An owner checks the stored version before it restores; a `Local` owner behind another node reads only the new
+    events. A command expecting a version far ahead is a conflict at once.
+  - A command past its timeout is never read for nor stored, however busy its owner; a failed version lookup fails
+    only the request that asked.
+  - Push subscriptions: subscribers that stop lose their subscriptions; at most 100 000 subscriptions and 10 000 cached
+    updates; cancels and expiry no longer slow with their number.
+  - Delayed queries are answered at their deadline while updates keep coming; a search that throws fails its own query.
+  - The idle-owner sweep stops at most 200 owners at once; `AfterCommit` and type names take no JVM-wide lock;
+    `backfillEventKeys` scans no whole table, pauses between batches (`pause`) and retries a failed batch; a projection
+    switch whose answer was lost completes; a retired build's subscription rows go in batches.
 
 ## 1.0.0 (18/10/2026)
 

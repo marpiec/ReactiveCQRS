@@ -191,7 +191,7 @@ Changes must keep these true (from `ARCHITECTURE.md` §10, extended by the decis
 
 ## 3. Issues in the library
 
-The issues still open. The 229 closed ones (fixed, accepted, decided or found not to be a problem) are in
+The issues still open. The 240 closed ones (fixed, accepted, decided or found not to be a problem) are in
 [`KNOWN-ISSUES-ARCHIVE.md`](KNOWN-ISSUES-ARCHIVE.md), by area, as they were recorded; a number named in the code or in
 the other documents (`F99`) is found there. F185–F274 were found by the risk assessment of 1.0.0 (18/10/2026), at the end of this
 section.
@@ -239,29 +239,11 @@ on a dependency's behaviour, timing or configuration; "scenario" says how probab
 #### F204 — The id generator trusts its configuration: a too-high installation number or a lowered sequence step hands out wrong or duplicate ids
 - **High**, likely · scenario unlikely · Open · details under F204 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
-#### F213 — A command expecting a version above the owner's forces a full restore on every attempt
-- **Medium**, likely · scenario possible · Open · details under F213 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F214 — A `Local` owner on several nodes replays its whole aggregate before each read or command that follows another node's write
-- **Medium**, likely · scenario possible · Open · details under F214 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
 #### F215 — Operations on a base with many copies replay the base once per copy and hold every copy's row lock throughout
-- **Medium**, suspected · scenario possible · Open · details under F215 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F216 — Push subscriptions do not scale: every update runs every filter of its type, expiry and cancel are linear, and nothing is bounded
-- **Medium**, likely · scenario possible · Open · details under F216 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+- **Medium**, suspected · scenario possible · Open; examined 18/10/2026 and left: caching the base's state once per base version must still apply each copy's own duplication event, and locking the copies `FOR KEY SHARE` needs the SQL procedures changed; both are more than step 4 should carry · details under F215 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F217 — A large targeted rebuild, a purge's last step, or a retired build's drop each runs as one long operation on the projection's thread
-- **Medium**, likely · scenario possible · Open · details under F217 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F218 — The `Local` owners' sweep passivates in unpaced bursts, and each stop writes a snapshot on the shared blocking dispatcher
-- **Medium**, suspected · scenario possible · Open · details under F218 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F219 — `AfterCommit` keeps JVM-wide maps behind one monitor, on every projection's transaction path
-- **Medium**, likely · scenario possible · Open · details under F219 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F220 — `backfillEventKeys` on a large store: a row lock and WAL per old event, a later full re-freeze, long scans that hold back vacuum, and runs that abort on concurrent deletes
-- **Medium**, suspected · scenario likely · Open · details under F220 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
+- **Medium**, likely · scenario possible · Open; partly fixed for 1.0.1 (18/10/2026): a retired build's subscription rows are deleted in transactions of 10 000. Left: the targeted reset still reads its ids and clears in one transaction, `clearSpace` has no `space_id` index, and the drop runs on the supervisor's thread · details under F217 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F224 — An ephemeral bus keeps every idempotent response in memory for 30 days, whatever happens to its drafts
 - **Medium**, likely · scenario possible · Open · details under F224 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
@@ -269,23 +251,8 @@ on a dependency's behaviour, timing or configuration; "scenario" says how probab
 #### F227 — An oversized cluster message is serialized in full before the marker replaces it
 - **Medium**, likely · scenario unlikely · Open · details under F227 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
-#### F229 — The command timeout does not bound the answer time, and commands are persisted after their deadline
-- **Medium**, likely · scenario possible · Open · details under F229 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F230 — Registering a type name takes a second connection under a JVM-wide lock, from inside open transactions
-- **Medium**, suspected · scenario possible · Open · details under F230 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F231 — A failed version lookup in `caughtUp()` strands commands and queries, and drops the owner's state
-- **Medium**, likely · scenario possible · Open · details under F231 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
 #### F233 — Readiness says "ready" before the node has started, and stays ready while it shuts down
 - **Medium**, likely · scenario possible · Open · details under F233 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F234 — Asynchronous delayed queries ignore their deadline while updates keep coming, and a search that throws drops every parked query
-- **Medium**, likely · scenario possible · Open · details under F234 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
-
-#### F235 — A switch that the registry reports as not done leaves the supervisor stuck until a restart
-- **Medium**, likely · scenario unlikely · Open · details under F235 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
 
 #### F238 — A node's subscription version cache goes stale for subscribers whose writer runs elsewhere
 - **Medium**, likely · scenario unlikely · Open · details under F238 in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md)
@@ -401,7 +368,7 @@ From §7 of Neula's change requests.
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔, F174 ✔; F155 decided (review 8) |
 | M7 | AR5 ✔ (moved from M5 at review 7; D86); F148 ✔, F152 ✔, F153 ✔, F156 ✔, F157 ✔, F160 ✔, F161 ✔, F162 ✔, F163 ✔, F164 ✔, F165 ✔, F166 ✔, F169 ✔ (found writing the book), F170 ✔, F171 ✔, F173 ✔, F175 (accepted), F176 ✔ (found writing E10), F177 ✔ (found writing E11), F178 ✔ (found running E2 in Docker), F179 (deferred: the owner publishes mpjsons later), F180 ✔ (found running E2 on Kubernetes), F181 ✔ (found writing chapter 6's spec), F182 ✔ (found by E2's fault tests in Docker), F183 ✔ (found writing the Scaladoc), F184 (open, found by review 9's bench) |
-| After 1.0 | F185–F274, found by the risk assessment of 18/10/2026 ([RISK-ASSESSMENT.md](RISK-ASSESSMENT.md) §13 orders them); its step 1, for 1.0.1: F185 ✔, F186 ✔, F187 ✔, F188 ✔, F189 ✔, F190 ✔, F191 ✔, F193 ✔, F200 ✔, F252 (keys ✔), F255 ✔, F272 ✔; D87; step 2: F192 ✔, F194 ✔, F195 ✔, F196 ✔, F197 ✔, F198 ✔, F199 ✔, F225 ✔, F226 ✔, F201 ✔, F237 ✔, F244 ✔, F245 ✔, F248 ✔, F254 ✔, F259 ✔, F261 ✔; step 3: F205 ✔, F206 ✔, F207 ✔, F208 ✔, F209 ✔, F232 ✔, F236 ✔, F256 ✔, F257 ✔; step 4: F210 ✔, F211 ✔, F212 ✔, F221 ✔, F222 ✔, F223 ✔, F228 ✔, F258 ✔, F260 ✔, F264 ✔, F268 ✔, F273 ✔ |
+| After 1.0 | F185–F274, found by the risk assessment of 18/10/2026 ([RISK-ASSESSMENT.md](RISK-ASSESSMENT.md) §13 orders them); its step 1, for 1.0.1: F185 ✔, F186 ✔, F187 ✔, F188 ✔, F189 ✔, F190 ✔, F191 ✔, F193 ✔, F200 ✔, F252 (keys ✔), F255 ✔, F272 ✔; D87; step 2: F192 ✔, F194 ✔, F195 ✔, F196 ✔, F197 ✔, F198 ✔, F199 ✔, F225 ✔, F226 ✔, F201 ✔, F237 ✔, F244 ✔, F245 ✔, F248 ✔, F254 ✔, F259 ✔, F261 ✔; step 3: F205 ✔, F206 ✔, F207 ✔, F208 ✔, F209 ✔, F232 ✔, F236 ✔, F256 ✔, F257 ✔; step 4: F210 ✔, F211 ✔, F212 ✔, F221 ✔, F222 ✔, F223 ✔, F228 ✔, F258 ✔, F260 ✔, F264 ✔, F268 ✔, F273 ✔; item 15: F213 ✔, F214 ✔, F216 ✔, F218 ✔, F219 ✔, F220 ✔, F229 ✔, F230 ✔, F231 ✔, F234 ✔, F235 ✔, F217 (part), F215 open |
 
 ---
 

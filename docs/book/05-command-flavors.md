@@ -481,6 +481,8 @@ cores is enough.
 Every context has a `commandTimeout`: 60 seconds unless you override it. It counts from the moment
 the aggregate's owner takes the command. When it passes, the caller gets `CommandHandlingError`, and
 the command is dead: if the handler finishes later, its result is thrown away and nothing is stored.
+That holds also when the owner is busy with other commands' database work when the time comes: a
+command past its timeout is neither read for nor stored, though its answer may come a little late.
 You can give a context more time:
 
 <!-- snippet: cart/CommandKindsSpec.scala#patient -->

@@ -2693,3 +2693,14 @@ Open test-infrastructure items:
   capped at 100 items with totals. F258: instances named after their projection. F260: the poller reads the newest
   half too. F264: full publications adopt deliveries without a publisher. F268: `lastTry` gates the give-up.
 - Each fix red under a mutation (nine). Chapter 9 and appendix B (EN, PL), ARCHITECTURE §5, §8, SCALING §5.
+
+**18/10/2026: a review of steps 2–4 for needless complexity; the risk assessment, step 4, item 15**
+- Four reviewers read the fixes of steps 2–4; about 100 lines went (one narrowing loop in the bus, one work queue in the
+  builder, one order queue in the saga runner, dead job branches, duplicated store readers, status totals), and three
+  bugs they found were fixed: a restarted saga runner hung new orders, joined saga callers went unanswered, each command
+  bus restart added a sweep timer. Kept on purpose: the import's three passes, format 1, the type check's log mode, the
+  memory store's per-aggregate rollback (each simpler version is riskier).
+- Item 15: F213, F214 (catch up from the stored version, by the new events), F229, F231, F216, F234, F235, F230, F219,
+  F218, F220 closed; F217 partly (a retired build's rows deleted in batches; paging the targeted reset and a `space_id`
+  index left); F215 left open: a per-base cache must also apply each copy's duplication event, and the lock modes need
+  the SQL procedures changed.

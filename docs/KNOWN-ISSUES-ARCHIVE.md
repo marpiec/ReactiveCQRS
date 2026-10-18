@@ -8,6 +8,16 @@ lists them all. Each entry is as it was when it was closed. Severity and confide
 
 ### Delivery and subscriptions
 
+#### F216 — Push subscriptions do not scale: every update runs every filter of its type, expiry and cancel are linear, and nothing is bounded
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4; `SubscribableSpec` "F216", red under a mutation) · `SubscribableProjectionActor`
+- **Fix:** subscriptions are kept per type in insertion-ordered sets, so a cancel or an expiry costs the same however many there are; subscribers are watched and lose their subscriptions when they stop; at most 100 000 subscriptions (one more is answered `ProjectionSubscriptionsCancelled`) and 10 000 cached updates. Left: each update still runs every filter of its type (no routing key).
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F234 — Asynchronous delayed queries ignore their deadline while updates keep coming, and a search that throws drops every parked query
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4; `ProjectionDeliverySpec` "F234" ×2, red under a mutation each) · `ProjectionActor.parkOrSearchAgain`
+- **Fix:** a query whose search ended past its deadline is answered (with a last search) instead of searched again; a search that throws as it starts fails its own query only, also while parked queries are searched again.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F212 — Every bus tick scans and copies all deliveries, so a long lag slows the node's only bus
 - **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4 of the risk assessment; `InFlightSpec` "F212", red under a mutation) · `eventbus/InFlight`, `EventsBusActor`
 - **Fix:** the bus keeps its deliveries in `InFlight`: in first-sent order (a deadline takes the expired ones from the head), with a queue of last sends (a stall check takes the old ones from its head) and a count of the held ones (the gauge). Ending deliveries visits the expired keys only; a subscriber's stop or removal still visits every delivery, without copying them. Left: the 5-minute summary still walks every delivery, and the flow control's aggregates behind are filtered in place each tick.
@@ -405,6 +415,31 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 - **Found:** writing E10 (M7, 18/10/2026).
 
 ### Commands and aggregates
+
+#### F213 — A command expecting a version above the owner's forces a full restore on every attempt
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4 of the risk assessment; `LocalOwnersSpec` "F213", red under a mutation) · `AggregateOwner.caughtUp`
+- **Fix:** the owner looks the stored version up (one key lookup, also when it is the aggregate's only owner) and catches up only when the store is ahead; otherwise the command is a conflict at once, with no restore.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F214 — A `Local` owner on several nodes replays its whole aggregate before each read or command that follows another node's write
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4; `LocalOwnersSpec` "F214", red under a mutation) · `AggregateOwner.caughtUp`, `AggregateRestorer.caughtUp`
+- **Fix:** when the stored history generation is the owner's (no undo, rewrite or state-changing squash since), the owner applies only the events after its version, as the snapshot path does (one shared `applyAfter`); otherwise, or if that read ends below the stored version, it restores.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F218 — The `Local` owners' sweep passivates in unpaced bursts, and each stop writes a snapshot on the shared blocking dispatcher
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4; no test of its own: the sweep's clock is not injectable) · `LocalOwners.sweep`
+- **Fix:** a sweep stops at most 200 owners; when more are due, the next sweep comes a second later. Left: a passivation snapshot is still written for an owner that was only read, as `onPassivation` promises.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F229 — The command timeout does not bound the answer time, and commands are persisted after their deadline
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4; `OwnerFaultsSpec` "F229", red under a mutation) · `AggregateOwner.pastDeadline`
+- **Fix:** a command past its timeout is answered `CommandHandlingError` instead of being read for (the idempotency and version look-ups) or persisted, whenever its turn comes; SCALING's client advice now adds the longest transaction. Left: the answer can still come after the owner's current database work.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F231 — A failed version lookup in `caughtUp()` strands commands and queries, and drops the owner's state
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4; `OwnerFaultsSpec` "F231", red under a mutation) · `AggregateOwner.caughtUp`
+- **Fix:** a lookup that fails fails the request that asked (a command's `CommandHandlingError`, a query's failure), the state stays, and expired version queries are answered as before.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
 
 #### F208 — A materialization that timed out lets the draft change again; the next one returns the older stored copy and drops the draft with its newer edits
 - **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 3 of the risk assessment; `EphemeralAggregatesSpec` "F208", red under a mutation) · `AggregateOwner.materialize`
@@ -887,6 +922,16 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 
 ### Performance and runtime
 
+#### F219 — `AfterCommit` keeps JVM-wide maps behind one monitor, on every projection's transaction path
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4; `AfterCommitSpec` "F219" checks that concurrent transactions keep their own actions; the contention itself has no test) · `AfterCommit`
+- **Fix:** open transactions are kept in a concurrent map by session identity, each guarded by itself, so transactions take no lock in common. Left: a bare `DB.localTx` (`ProjectionRegistry`, `SpacePurge`, `SpaceImport`) still applies cache writes at once.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F230 — Registering a type name takes a second connection under a JVM-wide lock, from inside open transactions
+- **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4; `PostgresTypesNamesStateSpec` "F230", red under a mutation) · `PostgresTypesNamesState`
+- **Fix:** `initSchema` loads the cache, and no lock is held while a name is read or stored (the insert is `ON CONFLICT DO NOTHING` and every node reads the winner), so one waiting for a connection or another node's insert stops no other. Left: a new name still takes a second connection from inside the caller's transaction.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F172 — A builder's page of events read every event of the store once the tables were analyzed
 - **High** (performance at scale), confirmed (measured) · **Fixed in M6** (17/10/2026) · `PostgresEventStoreState.readCommittedPage`, `pageOf`, `backfillEventKeys`
 - **Symptom:** in the short JSON keys bench (IMPLEMENTATION-PLAN §7.1), a managed rebuild over 1 000 000 events ran at about 4 400 events/s, then at about 2 500 once PostgreSQL's autoanalyze had run on the tables. `EXPLAIN ANALYZE` of one page over 2 000 000 events of 2 000 aggregates: 786 ms, 643 ms of them reading all 2 000 000 events through `events (aggregate_id)`. Every page did so, so a rebuild's reading grew with the store's size times its pages.
@@ -1133,6 +1178,11 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 
 ### Schema initialization
 
+#### F220 — `backfillEventKeys` on a large store: a row lock and WAL per old event, a later full re-freeze, long scans that hold back vacuum, and runs that abort on concurrent deletes
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 4; the backfill specs pass; the concurrent delete has no test) · `PostgresEventStoreState.backfillEventKeys`
+- **Fix:** no whole-table scan: the walk by id range skips events with keys and counts, per batch, those it could not key; it pauses between batches (`pause`, 100 ms) and tries a failed batch again (up to 10 times, backing off), so an event deleted meanwhile no longer ends the run. Left: the key's foreign key still locks and dirties each old event's row (WAL, a later freeze); measure it in the D81 rehearsal.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F185 — Every node start takes exclusive locks on the event tables, with no lock timeout
 - **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 1 of the risk assessment; `StartupLocksSpec`: 14 of its 16 scenarios red first) · every `*SchemaInitializer` and `initSchema()`, `PostgresDocumentStore`
 - **Symptom:** `ALTER TABLE ... IF NOT EXISTS` takes an ACCESS EXCLUSIVE lock and `CREATE INDEX IF NOT EXISTS` a SHARE lock before they look: a node's start queued behind a long transaction, and every statement on the table queued behind the start.
@@ -1154,6 +1204,11 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Fix:** `schemaname = current_schema()`, `to_regclass(…)` and `'events'::regclass`, so the library works in whatever schema the connection's `search_path` selects. Also `countAllEvents` treats the `-1` estimate of a never-analyzed table (PostgreSQL 14+) like 0 and counts exactly.
 
 ### Rebuild
+
+#### F235 — A switch that the registry reports as not done leaves the supervisor stuck until a restart
+- **Medium**, unlikely · **Fixed for 1.0.1** (18/10/2026, step 4; `ProjectionsSpec` "F235", red under a mutation) · `ProjectionSupervisor.switchNow`
+- **Fix:** a switch the registry answers `false` is found done when the registry names the build active (an earlier attempt committed, its answer lost), and the supervisor completes it in memory.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
 
 #### F223 — The reconciliation and gap fills hold every missing event of a page of up to 1 000 aggregates in memory at once
 - **Medium**, possible · **Fixed for 1.0.1** (18/10/2026, step 4 of the risk assessment; `ProjectionBuilderSpec` "F223", red under a mutation) · `ProjectionBuilder`

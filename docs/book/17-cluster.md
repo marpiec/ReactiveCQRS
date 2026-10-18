@@ -211,11 +211,12 @@ lets only one of them store each version.
 
 It costs a little, though. On a node that is not alone in its cluster, an owner does not know what
 the other nodes wrote, so before it answers the state, or runs a command, it compares its version
-with the stored one (one key lookup) and reads the aggregate again when another node changed it.
+with the stored one (one key lookup) and, when another node changed it, reads the new events only
+(or, after an undo or a rewrite, the whole aggregate).
 
 Idle Local owners are put to sleep by their node's command bus. At most every 5 minutes it sweeps:
 beyond 200 owners, the least recently used ones idle for 2 minutes are stopped, and any owner idle for
-12 hours is stopped. Both numbers are parameters of `AggregateCommandBusActor(...)`:
+12 hours is stopped; at most 200 at once, the rest a second later. Both numbers are parameters of `AggregateCommandBusActor(...)`:
 `keepAliveLimit` (200) and `maxInactivityMillis` (12 hours).
 
 ### Sharded: one owner per aggregate in the whole cluster

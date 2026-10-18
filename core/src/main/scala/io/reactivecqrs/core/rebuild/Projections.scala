@@ -483,8 +483,10 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
 
   private def buildJobsWaiting: Boolean = (targeted.map(_.job) ++ jobs).exists(_.build.isDefined)
 
+  // F235: a switch that committed although its caller saw a failure is found done when it is tried again.
   private def switchNow(): Unit = building.foreach { b =>
-    val switched = try Some(registry.switch(spec.name, b.record.number)) catch {
+    val switched = try Some(registry.switch(spec.name, b.record.number) ||
+      registry.projection(spec.name).flatMap(_.active).exists(_.number == b.record.number)) catch {
       case NonFatal(e) =>
         log.error(e, "Projection " + spec.name + " could not switch to build " + b.record.number + "; it tries again in " + settings.restartAfter)
         context.system.scheduler.scheduleOnce(settings.restartAfter, self, CheckSwitch)(context.dispatcher)

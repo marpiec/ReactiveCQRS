@@ -216,6 +216,19 @@ class SubscribableSpec extends AnyFeatureSpecLike with GivenWhenThen with Before
 
   Feature("Renewing a subscription") {
 
+    Scenario("F216 a listener that stops loses its subscriptions at once, not at their expiry") {
+      val f = fixture
+      val code = "stopping " + System.nanoTime()
+      f.simpleListenerProbe.send(f.simpleProjectionActor, SubscribeForAll(code, f.simpleListener))
+      f.simpleListenerProbe.expectMsg(2 seconds, SubscribedForProjectionUpdates(code))
+
+      actorSystem.stop(f.simpleListener)
+      Thread.sleep(300)
+      val renewer = TestProbe()
+      renewer.send(f.simpleProjectionActor, RenewSubscription(code))
+      renewer.expectMsg(2 seconds, ProjectionSubscriptionsCancelled(List(code)))
+    }
+
     Scenario("a renewal of a subscription the projection does not know is answered as cancelled, so the listener subscribes again (F133)") {
       val f = fixture
       val renewer = TestProbe()

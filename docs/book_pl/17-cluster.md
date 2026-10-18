@@ -215,11 +215,12 @@ w bazie danych pozwala zapisać każdą wersję tylko jednemu z nich.
 
 Ma to jednak niewielki koszt. Na węźle, który nie jest w klastrze sam, właściciel nie wie, co zapisały
 inne węzły, więc zanim poda stan albo wykona polecenie, porównuje swoją wersję z zapisaną (jedno
-wyszukanie po kluczu) i czyta agregat od nowa, jeśli zmienił go inny węzeł.
+wyszukanie po kluczu), a jeśli zmienił go inny węzeł, czyta tylko nowe zdarzenia (albo, po cofnięciu lub
+przepisaniu historii, cały agregat).
 
 Bezczynnych właścicieli Local usypia szyna poleceń ich węzła. Nie częściej niż co 5 minut robi porządki:
 gdy właścicieli jest ponad 200, zatrzymuje najdawniej używanych spośród bezczynnych od 2 minut, a każdy
-właściciel bezczynny od 12 godzin zostaje zatrzymany. Obie liczby to parametry
+właściciel bezczynny od 12 godzin zostaje zatrzymany; najwyżej 200 naraz, reszta sekundę później. Obie liczby to parametry
 `AggregateCommandBusActor(...)`: `keepAliveLimit` (200) i `maxInactivityMillis` (12 godzin).
 
 ### Sharded: jeden właściciel agregatu w całym klastrze

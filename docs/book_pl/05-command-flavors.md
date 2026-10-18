@@ -494,7 +494,9 @@ wystarczy mniej więcej tyle wątków, ile procesor ma rdzeni.
 Każdy kontekst ma `commandTimeout`: 60 sekund, chyba że go nadpiszesz. Czas liczy się od chwili, gdy
 właściciel agregatu przyjmie polecenie. Gdy minie, wywołujący dostaje `CommandHandlingError`, a
 polecenie jest martwe: jeśli handler skończy później, jego wynik zostanie wyrzucony i nic nie zostanie
-zapisane. Kontekstowi możesz dać więcej czasu:
+zapisane. Dotyczy to także chwili, gdy właściciel jest zajęty pracą bazy danych innych poleceń:
+polecenie po upływie limitu nie jest już ani odczytywane, ani zapisywane, choć odpowiedź może przyjść
+trochę później. Kontekstowi możesz dać więcej czasu:
 
 <!-- snippet: cart/CommandKindsSpec.scala#patient -->
 ```scala

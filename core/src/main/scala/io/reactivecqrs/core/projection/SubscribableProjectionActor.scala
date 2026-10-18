@@ -2,7 +2,7 @@ package io.reactivecqrs.core.projection
 
 import java.time.{Duration, Instant}
 
-import org.apache.pekko.actor.ActorRef
+import org.apache.pekko.actor.{ActorRef, Terminated}
 import io.reactivecqrs.core.projection.SubscribableProjectionActor._
 
 import scala.collection.mutable
@@ -15,6 +15,10 @@ object SubscribableProjectionActor {
 
   /** How long a subscription lives without a renewal, in milliseconds: 10 minutes. */
   val defaultSubscriptionTTL = 600000
+
+  /** F216: the most subscriptions a projection keeps, and the most updates its cache keeps. */
+  val MaxSubscriptions = 100000
+  val MaxCachedUpdates = 10000
 
   /** To a subscriber: its subscription is registered under `subscriptionId`. */
   case class SubscribedForProjectionUpdates(subscriptionId: String)
@@ -56,6 +60,10 @@ case class SubscriptionInfo(subscriptionId: String, listener: ActorRef, acceptor
   * @param updatesCacheTTL how long updates are kept, so that a new subscription gets those it missed
   *                        (`missedUpdatesFilter`); `Duration.ZERO` keeps none
   * @param subscriptionTTL how long a subscription lives without a `RenewSubscription`, in milliseconds
+  *
+  * F216: at most `MaxSubscriptions` subscriptions (one beyond is answered `ProjectionSubscriptionsCancelled` at once) and
+  * `MaxCachedUpdates` cached updates; a subscriber that stops loses its subscriptions at once; a cancel or an expiry costs
+  * the same however many there are. Each update still runs every filter of its type.
   */
 abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.ZERO, subscriptionTTL: Int = SubscribableProjectionActor.defaultSubscriptionTTL, options: ProjectionActorOptions = ProjectionActorOptions.DEFAULT) extends ProjectionActor(options) {
 
@@ -71,6 +79,7 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
     case ClearIdleSubscriptions => clearIdleSubscriptions()
     case SendUpdate(u, typeName) => deliverUpdate(u, typeName)
     case SubscriptionsHandedOver(handed) => handed.foreach(add)
+    case Terminated(listener) if byListener.contains(listener) => byListener.get(listener).toList.flatten.foreach(handleUnsubscribe)
   }
 
   override protected def onRetired(successor: Option[ActorRef]): Unit =
@@ -79,7 +88,8 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
   override protected def receiveUpdate = super.receiveUpdate orElse receiveSubscription
 
   private val subscriptions = mutable.HashMap[String, SubscriptionInfo]()
-  private val subscriptionsPerType = mutable.HashMap[String, List[String]]()
+  private val subscriptionsPerType = mutable.HashMap[String, mutable.LinkedHashSet[String]]()
+  private val byListener = mutable.HashMap[ActorRef, Set[String]]() // watched, so a stopped one's go (F216)
   private val updatesCache: mutable.Queue[UpdateCacheEntry] = mutable.Queue.empty
 
   // Expires idle subscriptions and trims the updates cache; created with each instance and cancelled when it stops (F95).
@@ -106,6 +116,11 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
       // F161: an id used again replaces its subscription; a listener it took the id from is told it is cancelled.
       subscriptions.get(subscriptionId).filter(_.listener != listener)
         .foreach(replaced => replaced.listener ! ProjectionSubscriptionsCancelled(List(subscriptionId)))
+      if (subscriptions.size >= MaxSubscriptions && !subscriptions.contains(subscriptionId)) {
+        log.warning("Projection " + projectionName + " holds " + MaxSubscriptions + " subscriptions; " + subscriptionId + " is refused")
+        listener ! ProjectionSubscriptionsCancelled(List(subscriptionId))
+        return
+      }
       add(SubscriptionInfo(subscriptionId, listener, filter, typeName, Instant.now()))
 
       listener ! SubscribedForProjectionUpdates(subscriptionId)
@@ -128,7 +143,9 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
   private def add(subscription: SubscriptionInfo): Unit = {
     handleUnsubscribe(subscription.subscriptionId)
     subscriptions += subscription.subscriptionId -> subscription
-    subscriptionsPerType += subscription.typeName -> (subscription.subscriptionId :: subscriptionsPerType.getOrElse(subscription.typeName, Nil))
+    subscriptionsPerType.getOrElseUpdate(subscription.typeName, mutable.LinkedHashSet()) += subscription.subscriptionId
+    if (!byListener.contains(subscription.listener)) context.watch(subscription.listener)
+    byListener(subscription.listener) = byListener.getOrElse(subscription.listener, Set.empty) + subscription.subscriptionId
   }
 
   // Listeners call this, and in parallel mode they run on pool threads: the update reaches the subscriptions through a
@@ -142,7 +159,7 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
 
   private def trimUpdatesCache(): Unit = {
     val shouldArriveAfter = Instant.now().minus(updatesCacheTTL)
-    updatesCache.dequeueAll(e => e.arrived.isBefore(shouldArriveAfter))
+    while (updatesCache.headOption.exists(e => e.arrived.isBefore(shouldArriveAfter)) || updatesCache.size > MaxCachedUpdates) updatesCache.dequeue()
   }
 
   private def deliverUpdate(u: Any, typeName: String): Unit = {
@@ -152,16 +169,7 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
         trimUpdatesCache()
       }
 
-      // Find subscriptions for given type
-      //TODO what to do if subscriptions.get returns none?
-      subscriptionsPerType.getOrElse(typeName, List.empty).filter(s => {
-        if(subscriptions.contains(s)) {
-          true
-        } else {
-          log.warning("Subscription not found for key " + s + "!")
-          false
-        }
-      }).map(subscriptions) foreach { subscription =>
+      subscriptionsPerType.get(typeName).toList.flatten.flatMap(subscriptions.get) foreach { subscription =>
         // F161: each subscription on its own: a filter that throws keeps the update from no other.
         Try(subscription.acceptor.asInstanceOf[Any => Option[_]](u)) match { // and translate data to message for subscriber
           case Success(result) => result.foreach(r => subscription.listener ! SubscriptionUpdated(subscription.subscriptionId, r)) // and send message if not None
@@ -185,45 +193,21 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
   private def clearIdleSubscriptions(): Unit = {
     trimUpdatesCache()
     val now = Instant.now()
-    val subscriptionsToInvalidate = subscriptions.values.filter(_.renewal.plusMillis(subscriptionTTL).isBefore(now))
-
-    subscriptions --= subscriptionsToInvalidate.map(_.subscriptionId)
-
-    subscriptionsToInvalidate.foreach(subscription => {
-      val subscriptionsForType = subscriptionsPerType(subscription.typeName)
-
-      val subscriptionId = subscription.subscriptionId
-      if(subscriptionsForType.length == 1) {
-        subscriptionsPerType -= subscription.typeName
-      } else {
-        subscriptionsPerType += subscription.typeName -> subscriptionsForType.filterNot(_ == subscriptionId)
-      }
-    })
-
-    if(subscriptionsToInvalidate.nonEmpty && log.isDebugEnabled) {
-      log.debug("Invalidated idle subscriptions " + subscriptionsToInvalidate+ ", remains " + subscriptions.size+" subscriptions")
-    }
-
+    val idle = subscriptions.values.filter(_.renewal.plusMillis(subscriptionTTL).isBefore(now)).map(_.subscriptionId).toVector
+    idle.foreach(handleUnsubscribe)
+    if (idle.nonEmpty && log.isDebugEnabled) log.debug("Invalidated idle subscriptions " + idle + ", remains " + subscriptions.size + " subscriptions")
   }
 
-  private def handleUnsubscribe(subscriptionId: String): Unit = {
-
-    subscriptions.get(subscriptionId) match {
-      case None => () // nothing to do
-      case Some(subscription) =>
-        subscriptions -= subscriptionId
-
-        val subscriptionsForType = subscriptionsPerType(subscription.typeName)
-
-        if(subscriptionsForType.length == 1) {
-          subscriptionsPerType -= subscription.typeName
-        } else {
-          subscriptionsPerType += subscription.typeName -> subscriptionsForType.filterNot(_ == subscriptionId)
-        }
+  private def handleUnsubscribe(subscriptionId: String): Unit = subscriptions.remove(subscriptionId).foreach { subscription =>
+    subscriptionsPerType.get(subscription.typeName).foreach { ids =>
+      ids -= subscriptionId
+      if (ids.isEmpty) subscriptionsPerType -= subscription.typeName
     }
-
-    if(log.isDebugEnabled) {
-      log.debug("Subscription cancelled for subscription id " + subscriptionId+", subscriptions count: "+subscriptions.size)
+    val left = byListener.getOrElse(subscription.listener, Set.empty) - subscriptionId
+    if (left.nonEmpty) byListener(subscription.listener) = left else {
+      byListener -= subscription.listener
+      context.unwatch(subscription.listener)
     }
+    if (log.isDebugEnabled) log.debug("Subscription cancelled for subscription id " + subscriptionId + ", subscriptions count: " + subscriptions.size)
   }
 }

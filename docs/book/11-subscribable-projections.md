@@ -244,7 +244,11 @@ chapter 4 wired up. The code is in `examples/src/test/scala/io/reactivecqrs/exam
 Subscriptions live in the projection's memory, not in the database, and they do not live forever:
 
 - A subscription that has not been renewed for **10 minutes** expires. The projection checks once a
-  minute and drops expired subscriptions without a word.
+  minute and drops expired subscriptions without a word. One whose subscriber actor stops goes at
+  once: the projection watches its subscribers.
+- A projection keeps at most 100 000 subscriptions; one more is answered
+  `ProjectionSubscriptionsCancelled` at once. Each update runs the filter of every subscription of
+  its type, so keep filters cheap.
 - **`RenewSubscription(id)`** for a subscription the projection knows renews it, and gets no answer.
   For one it does not know, the answer is **`ProjectionSubscriptionsCancelled(List(id))`**: the
   subscription expired, or the projection restarted, or, in a cluster, it moved to another node

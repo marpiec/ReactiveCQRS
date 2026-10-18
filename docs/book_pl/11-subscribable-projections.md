@@ -249,7 +249,11 @@ co połączyliśmy w rozdziale 4. Kod leży w `examples/src/test/scala/io/reacti
 Subskrypcje żyją w pamięci projekcji, a nie w bazie danych, i nie żyją wiecznie:
 
 - Subskrypcja nieodnowiona przez **10 minut** wygasa. Projekcja sprawdza to raz na minutę i bez słowa
-  usuwa wygasłe subskrypcje.
+  usuwa wygasłe subskrypcje. Subskrypcje aktora subskrybenta, który się zatrzyma, znikają od razu:
+  projekcja obserwuje swoich subskrybentów.
+- Projekcja trzyma najwyżej 100 000 subskrypcji; kolejna dostaje od razu
+  `ProjectionSubscriptionsCancelled`. Każda aktualizacja uruchamia filtr każdej subskrypcji swojego
+  typu, więc filtry powinny być tanie.
 - **`RenewSubscription(id)`** dla subskrypcji, którą projekcja zna, odnawia ją i nie dostaje
   odpowiedzi. Dla nieznanej odpowiedzią jest **`ProjectionSubscriptionsCancelled(List(id))`**:
   subskrypcja wygasła, projekcja się zrestartowała albo, w klastrze, przeniosła się na inny węzeł

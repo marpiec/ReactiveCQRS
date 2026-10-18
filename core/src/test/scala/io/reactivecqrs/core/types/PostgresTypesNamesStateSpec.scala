@@ -25,5 +25,16 @@ class PostgresTypesNamesStateSpec extends CommonSpec {
         nodes.map(_.classNameById(ids.head)).distinct mustBe Seq(name)
       }
     }
+
+    Scenario("F230 a name that waits for another node's insert holds up no other name") {
+      val (state, waiting, other) = (new PostgresTypesNamesState().initSchema(), "io.example.Waiting." + System.nanoTime(), "io.example.Other." + System.nanoTime())
+      scalikejdbc.DB.localTx { implicit session => // another node inserts the name, not committed yet
+        scalikejdbc.SQL("INSERT INTO types_names (id, name) VALUES (nextval('types_names_seq'), ?)").bind(waiting).update()
+        val blocked = Future(state.typeIdByClassName(waiting))
+        Thread.sleep(300) // it waits for this transaction
+        Await.result(Future(state.typeIdByClassName(other)), 3.seconds) must be > 0.toShort
+        blocked.isCompleted mustBe false
+      }
+    }
   }
 }
