@@ -782,7 +782,11 @@ each has answered `MessageAck` or `MessageFailed` (both carry the kind), when th
 passes (10 minutes: "undelivered", no ack, logged and listed by `GetDeliveryStatus`), or when
 the subscriber stops (watched). A stopped subscriber keeps its subscriptions, marked stopped:
 the deliveries it would take end without an owner ack, so their rows stay in the outbox
-until the next start (F87); `DeliveryStatus.stopped` lists it.
+until the next start (F87); `DeliveryStatus.stopped` lists it. The stop is logged as an error
+only when nothing replaces the subscriber before the next start: one that stops as its node
+shuts down, or while the registered subscriber that answered with it is asked again (the
+instance behind a singleton's proxy or a managed projection's supervisor), is logged at INFO
+(F176).
 Only a delivery ended by acks and failures acknowledges the owner, grouped per owner and
 aggregate; one ended by the deadline or a stop keeps its outbox rows. An event published
 again while its delivery waits goes only to the subscribers it waits for. A re-publication

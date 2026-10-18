@@ -2,7 +2,7 @@ package io.reactivecqrs.core.eventbus
 
 import java.time.Instant
 
-import org.apache.pekko.actor.{Actor, ActorRef, Stash, Status, Terminated}
+import org.apache.pekko.actor.{Actor, ActorRef, CoordinatedShutdown, Stash, Status, Terminated}
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.cluster.{MessageSize, Readiness}
@@ -266,12 +266,12 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
   // singleton's proxy, are asked again: a projection's singleton that moved answers with its new instances (M5).
   private def stoppedOrUnregistered(subscriber: ActorRef): Unit = {
     registered -= subscriber
-    subscriberStopped(subscriber)
-    answeredWith.collect { case (r, subscribers) if subscribers.contains(subscriber) && r != subscriber && registered.contains(r) && !asking.contains(r) => r }
-      .foreach { r =>
-        asking += r
-        r ! GetSubscriptionRequests(r)
-      }
+    val askedAgain = answeredWith.collect { case (r, subscribers) if subscribers.contains(subscriber) && r != subscriber && registered.contains(r) => r }
+    subscriberStopped(subscriber, askedAgain)
+    askedAgain.filterNot(asking.contains).foreach { r =>
+      asking += r
+      r ! GetSubscriptionRequests(r)
+    }
   }
 
   // ****************** RUNNING
@@ -485,10 +485,16 @@ class EventsBusActor(options: DeliveryOptions = DeliveryOptions(), eventsLogger:
 
   // A subscriber that stops takes no more deliveries: its waiting ones end without an ack, held ones too, and so do
   // later ones of its aggregate types, so their outbox rows stay for the next start while the other subscribers keep
-  // flowing (D20b).
-  private def subscriberStopped(subscriber: ActorRef): Unit = {
+  // flowing (D20b). It is an error only when nothing replaces it before the next start (F176): it stopped neither as its
+  // node shuts down (a singleton does so as its node leaves) nor while a registered subscriber is asked for its replacement.
+  private def subscriberStopped(subscriber: ActorRef, askedAgain: Iterable[ActorRef]): Unit = {
     if (!stopped.contains(subscriber)) {
-      log.error("Subscriber " + subscriber.path + " stopped; its events stay in the outbox until the next start")
+      if (CoordinatedShutdown(context.system).shutdownReason().isDefined)
+        log.info("Subscriber " + subscriber.path + " stopped as the node shuts down; its events stay in the outbox")
+      else if (askedAgain.nonEmpty)
+        log.info("Subscriber " + subscriber.path + " stopped; its events stay in the outbox until " +
+          askedAgain.map(_.path.name).mkString(", ") + " answers with its replacement")
+      else log.error("Subscriber " + subscriber.path + " stopped; its events stay in the outbox until the next start")
       stopped += subscriber
       flow.remove(subscriber)
       endDeliveries(_.subscriber == subscriber, _ => true)

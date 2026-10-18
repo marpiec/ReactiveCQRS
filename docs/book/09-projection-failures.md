@@ -359,12 +359,17 @@ caught up 89 seconds after the burst ended (`docs/perf/flow-M5.md`).
 
 A projection does not stop because a listener or a query fails: it answers with the failure and
 goes on. But an actor can still stop: somebody stops it, or part of the system shuts down. The bus
-watches its subscribers, and when one stops, the bus logs
+watches its subscribers, and when one stops, the bus logs an error,
 `Subscriber …/user/CartsList stopped; its events stay in the outbox until the next start`, lists it
 in `DeliveryStatus.stopped`, and sends it nothing more. Its events wait in the outbox (the poller
 keeps trying, and the other subscribers acknowledge the repeats) until the system starts again with
 it. The other subscribers are not affected. A managed projection (chapter 10) is replaced
 automatically after a short wait.
+
+Two stops are no error, and the bus logs them at INFO instead: a subscriber that stops because its
+node shuts down, and one whose replacement is already on its way, such as the instance of a
+managed projection (its supervisor starts a new one) or of a projection that runs once in a cluster
+and moves to another node (chapter 17).
 
 ## What waits for a failed subscription
 

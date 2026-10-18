@@ -1,7 +1,7 @@
 package io.reactivecqrs.testdomain.spec
 
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.{ConcurrentHashMap, ConcurrentLinkedQueue}
 
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
@@ -14,7 +14,9 @@ import io.reactivecqrs.core.rebuild.{PostgresProjectionRegistry, Projections, Pr
 import io.reactivecqrs.core.saga.{PostgresSagaState, SagaRunner}
 import io.reactivecqrs.testdomain.shoppingcart.MultipleCartCreatorSaga.{CartsCreated, CreateMultipleCarts}
 import io.reactivecqrs.testdomain.shoppingcart._
+import io.reactivecqrs.testkit.ErrorRecorder
 import org.apache.pekko.actor.{ActorRef, ActorSystem, Props}
+import org.apache.pekko.event.Logging
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
 import org.scalatest.concurrent.Eventually
@@ -25,6 +27,7 @@ import org.scalatest.{BeforeAndAfterAll, GivenWhenThen}
 
 import scala.concurrent.Await
 import scala.concurrent.duration._
+import scala.jdk.CollectionConverters._
 
 case class ClusterCartItems(items: Vector[String])
 case class GetClusterCartItems(id: AggregateId)
@@ -153,6 +156,10 @@ class ClusterDeliverySpec extends AnyFeatureSpec with Matchers with Eventually w
       before.foreach(cart => addItem(nodeC, cart, "apple"))
       eventually(before.foreach(cart => itemsOn(nodeC, cart) mustBe Some(Vector("apple"))))
 
+      And("every node keeps the errors it logs")
+      val errors = new ConcurrentLinkedQueue[String]()
+      nodes.foreach(node => node.system.eventStream.subscribe(node.system.actorOf(Props(new ErrorRecorder(errors))), classOf[Logging.Error]))
+
       When("the oldest node, where the projection, the poller and the saga run, leaves while items are added")
       nodeA.cluster.leave(nodeA.cluster.selfAddress)
       val during = (1 to 6).map(i => create(nodeB, "during " + i))
@@ -168,6 +175,9 @@ class ClusterDeliverySpec extends AnyFeatureSpec with Matchers with Eventually w
         after.foreach(cart => itemsOn(nodeC, cart) mustBe Some(Vector("plum")))
       }
       ClusterCartsProjection.running.get mustBe 1
+
+      And("no bus logged the instance or the proxies that stopped as errors: the singleton's move is no failure (F176)")
+      errors.asScala.filter(_.startsWith("Subscriber ")) mustBe empty
     }
   }
 }

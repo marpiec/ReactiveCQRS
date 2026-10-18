@@ -2275,3 +2275,11 @@ Open test-infrastructure items:
   starts the application again. Version 2 is built in tables of its own while version 1 serves, and
   takes over (`GetBuilds`); a cart's document damaged by hand-written SQL is repaired by
   `RebuildAggregates(OneAggregate)`. A runnable main and `RebuildSpec`, also as a cluster of one.
+
+**18/10/2026: F176, no errors from an orderly stop**
+- Found writing E10: a cluster node's bus logged each singleton instance and proxy that stopped as
+  the node left at ERROR, and the other nodes' buses the moved instance (four errors per leave in
+  `ClusterDeliverySpec`). The bus now logs a stop at ERROR only when nothing replaces the
+  subscriber before the next start; a stop during its node's coordinated shutdown, or while the
+  registered subscriber that answered with it is asked again, is INFO. `EventsBusActorSpec` (two
+  scenarios) and `ClusterDeliverySpec`, red first. Book: chapters 9 and 18.

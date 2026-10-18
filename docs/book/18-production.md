@@ -274,7 +274,7 @@ node; ask each node's bus separately.
 |---|---|---|
 | "Undelivered: ..." | outbox poller | an aggregate's events waited 10 minutes for some subscriber; they are tried again every 30 minutes |
 | "Undelivered after ..." or "Held for a full window after ..." | event bus | a delivery reached its 10-minute deadline; its outbox row stays |
-| "Subscriber ... stopped" | event bus | a subscriber stopped; its events stay in the outbox until the next start |
+| "Subscriber ... stopped" (an error) | event bus | a subscriber stopped and nothing replaces it; its events stay in the outbox until the next start. The same line at INFO is normal: the node shuts down, or a projection's replacement is on its way |
 | "Event bus waits for the subscriptions of: ..." | event bus | at start: a registered subscriber has not answered; the node is not ready |
 | "Event bus asked ... for its subscriptions and got a failure" | event bus | a subscriber could not answer; it is asked again at every tick, and the line gives the cause |
 | "Event bus registered ... after its start" | event bus | a `RegisterSubscribers` came after the start: those subscribers missed what was published before |

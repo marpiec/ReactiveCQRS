@@ -1,18 +1,22 @@
 package io.reactivecqrs.core.eventbus
 
 import java.time.Instant
+import java.util.concurrent.ConcurrentLinkedQueue
 
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.cluster.Readiness
 import io.reactivecqrs.core.delivery.{RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
-import io.reactivecqrs.testkit.{CommonSpec, TestIds}
-import org.apache.pekko.actor.{ActorRef, Props, Status}
+import io.reactivecqrs.testkit.{CommonSpec, ErrorRecorder, TestIds, TestSystems}
+import org.apache.pekko.Done
+import org.apache.pekko.actor.{ActorRef, CoordinatedShutdown, Props, Status}
 import org.apache.pekko.event.Logging
 import org.apache.pekko.testkit.TestProbe
 
 import scala.concurrent.duration._
+import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.jdk.CollectionConverters._
 
 case class BusCart(name: String)
 case class BusItemAdded(n: Int) extends Event[BusCart]
@@ -228,6 +232,19 @@ class EventsBusActorSpec extends CommonSpec {
       proxy.receiveWhile(100.millis) { case _: GetSubscriptionRequests => () } // asked before the answer came
       proxy.expectNoMessage(300.millis)
     }
+
+    Scenario("an instance that stops is no error: the proxy is asked for its replacement (F176)") {
+      val (proxy, supervisor, instance, errors) = (TestProbe(), TestProbe(), TestProbe(), TestProbe())
+      val bus = busBehindProxy(proxy, supervisor, instance)
+      statusOf(bus)
+      system.eventStream.subscribe(errors.ref, classOf[Logging.Error])
+      try {
+        proxy.ignoreNoMsg()
+        system.stop(instance.ref)
+        proxy.expectMsg(3.seconds, GetSubscriptionRequests(proxy.ref)) // asked after the bus logged the stop
+        errors.receiveWhile(300.millis) { case e: Logging.Error => e.message.toString }.filter(_.contains(instance.ref.path.name)) mustBe empty
+      } finally system.eventStream.unsubscribe(errors.ref)
+    }
   }
 
   Feature("Acknowledging the owner") {
@@ -427,14 +444,19 @@ class EventsBusActorSpec extends CommonSpec {
     }
 
     Scenario("a subscriber that stops ends its deliveries without an ack; the others keep flowing, and later events stay in the outbox for it") {
-      val (a, b, owner) = (TestProbe(), TestProbe(), TestProbe())
+      val (a, b, owner, errors) = (TestProbe(), TestProbe(), TestProbe(), TestProbe())
       val bus = busWith(a, b)
       val id = newId()
       publish(bus, owner, id, 1)
       delivered(a); delivered(b)
       ack(bus, b, id, 1)
 
-      system.stop(a.ref)
+      system.eventStream.subscribe(errors.ref, classOf[Logging.Error])
+      try {
+        system.stop(a.ref)
+        // F176: nothing replaces it before the next start, so it is an error
+        errors.fishForMessage(3.seconds) { case e: Logging.Error => e.message.toString.contains(a.ref.path.name) }
+      } finally system.eventStream.unsubscribe(errors.ref)
       awaitAssert(statusOf(bus).waiting mustBe 0, 3.seconds, 50.millis)
       owner.expectNoMessage(300.millis) // version 1 stays in the outbox for the stopped subscriber
       statusOf(bus).stopped mustBe Seq(a.ref.path.name)
@@ -444,6 +466,37 @@ class EventsBusActorSpec extends CommonSpec {
       ack(bus, b, id, 2)
       owner.expectNoMessage(300.millis) // version 2 too: after a restart the subscriber gets both
       statusOf(bus).waiting mustBe 0
+    }
+
+    Scenario("a subscriber that stops while its node shuts down is no error (F176)") {
+      Given("a node whose bus has a subscriber, and keeps the errors it logs")
+      val node = TestSystems.newSystem("f176")
+      val errors = new ConcurrentLinkedQueue[String]()
+      val recorder = node.actorOf(Props(new ErrorRecorder(errors)))
+      node.eventStream.subscribe(recorder, classOf[Logging.Error])
+      val (subscriber, asker) = (TestProbe()(node), TestProbe()(node))
+      val bus = node.actorOf(Props(new EventsBusActor(options)))
+      bus ! RegisterSubscribers(Seq(subscriber.ref))
+      subscriber.expectMsg(GetSubscriptionRequests(subscriber.ref))
+      subscriber.reply(SubscriptionRequests(Seq(SubscribeForEvents(cartType, subscriber.ref)), subscriber.ref))
+
+      When("the subscriber stops during the node's shutdown, before the bus, as a cluster singleton does as its node leaves")
+      CoordinatedShutdown(node).addTask(CoordinatedShutdown.PhaseBeforeActorSystemTerminate, "stop-subscriber") { () =>
+        Future {
+          node.stop(subscriber.ref)
+          awaitAssert({
+            bus.tell(GetDeliveryStatus, asker.ref)
+            asker.expectMsgType[DeliveryStatus](3.seconds).stopped mustBe Seq(subscriber.ref.path.name)
+          }, 3.seconds, 50.millis)
+          recorder.tell("ping", asker.ref)
+          asker.expectMsg(3.seconds, "pong") // what the bus logged is kept
+          Done
+        }(ExecutionContext.global)
+      }
+      Await.ready(node.terminate(), 30.seconds)
+
+      Then("the bus logged no error about it")
+      errors.asScala.filter(_.contains(subscriber.ref.path.name)) mustBe empty
     }
   }
 
