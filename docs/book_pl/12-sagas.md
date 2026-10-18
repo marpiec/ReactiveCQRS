@@ -150,14 +150,16 @@ private def createShoppingCart(sagaStep: SagaStep, userId: UserId, cartName: Str
       case c: FailureResponse =>
         SagaFailed(CartsCreationFailure(c.exceptions))
       case other =>
-        SagaFailed(CartsCreationFailure(List("The cart was not created: " + other)))
+        throw new SagaStepNotDone("The cart was not created: " + other.getClass.getSimpleName)
     }
 }
 ```
 
 Koszyk powstał, a mają powstać kolejne: idziemy dalej, z nowym koszykiem dopisanym do listy. Powstał
-ostatni koszyk: sukces, z całą listą. Koszyk został odrzucony albo przyszła jakakolwiek inna
-odpowiedź: porażka. `?` używa `timeout`, który dostała definicja. `Some(sagaStep)` to identyfikator
+ostatni koszyk: sukces, z całą listą. Koszyk został odrzucony: porażka. Każda inna odpowiedź (błąd,
+odrzucenie w trakcie aktualizacji) może się zmienić, gdy polecenie zostanie wysłane jeszcze raz, więc
+krok rzuca `SagaStepNotDone`, a runner wykonuje go ponownie z tym samym kluczem (zobacz „Gdy krok się
+nie uda”). `?` używa `timeout`, który dostała definicja. `Some(sagaStep)` to identyfikator
 idempotencji polecenia; niżej dostanie własną sekcję.
 
 (`handleCreateMultipleCarts` wywołuje tę metodę, gdy `cartsCount > 0`. W przeciwnym razie od razu
@@ -180,13 +182,13 @@ private def revertCreateRemainingCarts(sagaStep: SagaStep, userId: UserId, cartN
       case c: FailureResponse =>
         SagaRevertFailed(c.exceptions)
       case other =>
-        SagaRevertFailed(List("The cart was not deleted: " + other))
+        throw new SagaStepNotDone("The cart was not deleted: " + other.getClass.getSimpleName)
     }
 }
 ```
 
-Jeden koszyk na krok wycofania: usuń najnowszy, potem przejdź do reszty listy. Odmowa albo
-jakakolwiek inna odpowiedź kończy wycofanie porażką.
+Jeden koszyk na krok wycofania: usuń najnowszy, potem przejdź do reszty listy. Odmowa kończy
+wycofanie porażką; każda inna odpowiedź wykonuje krok wycofania ponownie, jak przy kroku.
 
 ### Przebieg, który się udaje
 
@@ -293,13 +295,17 @@ Każdy krok przebiega tak samo:
 2. Runner zapisuje postęp: następne zlecenie i numer kroku albo przejście do `REVERTING`.
 3. Wykonuje się następny krok.
 
-Gdy zadanie się kończy (`SagaSucceded` albo zakończone wycofanie), wiersz zostaje usunięty.
+Gdy zadanie się kończy (`SagaSucceded` albo zakończone wycofanie), wiersz zostaje usunięty; wiersz
+sagi uruchomionej zleceniem z kluczem zostaje, jako zakończony, razem z odpowiedzią (zobacz „Zlecenia
+wysłane dwa razy” niżej). Nadawca dowiaduje się o porażce dopiero wtedy, gdy przejście sagi do
+`REVERTING` jest zapisane, więc to, co usłyszał, zgadza się z tym, co mówi magazyn.
 
 Zapis, który się nie uda, bo baza na chwilę zniknęła, jest ponawiany: po 100 ms, potem za każdym
-razem po dwa razy dłuższej przerwie, aż do 30 sekund, łącznie dziesięć prób. Jeśli wszystkie
-zawiodą, saga zostaje na ostatnim zapisanym kroku aż do następnego startu. Tę regułę wyznacza
-wartość `persistRetries` definicji, czyli `Backoff` (z `io.reactivecqrs.core.util`), który możesz
-nadpisać; domyślnie wygląda tak:
+razem po dwa razy dłuższej przerwie, aż do 30 sekund, łącznie dziesięć prób. Potem runner ponawia
+go co 30 sekund, zapisując błąd w logu, dopóki zapis się nie uda: saga nigdy nie przepada, póki jej
+runner działa. (Nowa saga, której pierwszy zapis nigdy się nie udał, jest za to odrzucana: nadawca
+dostaje `SagaFailureResponse`.) Tę regułę wyznacza wartość `persistRetries` definicji, czyli
+`Backoff` (z `io.reactivecqrs.core.util`), który możesz nadpisać; domyślnie wygląda tak:
 
 <!-- snippet: cart/SagasSpec.scala#persistRetries -->
 ```scala
@@ -359,6 +365,26 @@ wznawia się po restarcie, a każdy koszyk istnieje tylko raz.
 
 > **Pamiętaj:** zapisane odpowiedzi są domyślnie przechowywane przez 30 dni (okres retencji
 > `PostgresCommandResponseState`). Saga wznowiona później wysłałaby polecenie swojego kroku od nowa.
+
+## Zlecenia wysłane dwa razy
+
+`SagaStep` sprawia, że krok można bezpiecznie wykonać dwa razy. Samo zlecenie to inna sprawa: nadawca,
+który w porę nie dostaje odpowiedzi (przeniesienie runnera na inny węzeł zajmuje sporą część minuty,
+rozdział 17), wysyła zlecenie ponownie, a każde zlecenie uruchamia własną sagę, która znowu rezerwuje i
+pobiera opłatę.
+
+Daj takiemu zleceniu klucz wybrany przez nadawcę, ten sam dla każdej kopii, rozszerzając
+`IdempotentSagaOrder`:
+
+```scala
+case class PayInvoice(userId: UserId, invoiceId: AggregateId, orderKey: String) extends IdempotentSagaOrder
+```
+
+Drugie zlecenie z tym samym `orderKey` (najwyżej 256 znaków) niczego nie uruchamia: dopóki pierwsza
+saga działa, dołącza do niej i obaj nadawcy dostają jej odpowiedź; gdy saga już się zakończyła, dostaje
+odpowiedź, którą dostał pierwszy nadawca. Wiersz zakończonej sagi trzyma tę odpowiedź przez
+`answersKeptFor` (domyślnie 30 dni), potem znika. Klucz wywodź z tego, co nadawca ma na myśli, na
+przykład `"pay-" + invoiceId`, nigdy z danych osobowych: jest zapisywany.
 
 ## Twoja własna saga: rezerwacja, potem płatność
 
@@ -421,12 +447,13 @@ class CheckoutSaga(stock: ActorRef, payments: ActorRef)(implicit executionContex
       }
   }
 
-  // Any answer but a success counts as a refusal, so no answer falls through the match.
+  // A refusal ends the step; any other answer (an error, a rejection during an upgrade) may change when the command is
+  // sent again, so the step runs again with the same key (F205).
   private def send(bus: ActorRef, command: AnyRef): Future[Either[List[String], AggregateId]] =
     (bus ? command).mapTo[CustomCommandResponse[_]].map {
       case SuccessResponse(id, _) => Right(id)
       case FailureResponse(reasons) => Left(reasons)
-      case other => Left(List(other.toString))
+      case other => throw new SagaStepNotDone(other.getClass.getSimpleName)
     }
 }
 ```
@@ -446,11 +473,26 @@ Warto przejąć cztery nawyki:
   `AggregateConcurrentModificationError`, sprawia, że `Future` kroku kończy się porażką. W zwykłym
   kroku oznacza to `SagaFailureResponse` i wycofanie; o kroku wycofania mówi następna sekcja.
 
+## Gdy krok się nie uda
+
+`Future` kroku, który zawiedzie (zapytanie, któremu minął czas, wyjątek, handler, który nie przyjmuje
+zlecenia), nie kończy sagi od razu. Runner wykonuje ten sam krok jeszcze raz, z tym samym `SagaStep`,
+po 1 sekundzie, potem za każdym razem po dwa razy dłuższej przerwie, aż do 30 sekund, łącznie pięć
+prób (`stepRetries` definicji). Polecenie zastosowane z opóźnieniem, już po tym, jak zapytanie się
+poddało, odpowiada wtedy zapisaną odpowiedzią, a saga idzie dalej. Dopiero krok, który wciąż zawodzi,
+każe sadze się wycofać, a jej nadawca dostaje `SagaFailureResponse`.
+
+Zdecyduj więc, które odpowiedzi są odmowami. Zwracaj `SagaFailed` przy odmowie, która się nie zmieni
+(`FailureResponse`: towaru nie ma). Pozwól `Future` zawieść przy odpowiedzi, która może się zmienić,
+gdy polecenie zostanie wysłane jeszcze raz: `CommandRejected` (w trakcie aktualizacji, rozdział 17),
+`CommandHandlingError`, `EventHandlingError` albo brak odpowiedzi w czasie. Przykłady z tego rozdziału
+robią jedno i drugie.
+
 ## Gdy wycofanie się nie uda
 
-Jeśli krok wycofania się nie powiedzie (jego `Future` zawiedzie, krok rzuci wyjątek albo zwróci
-`SagaRevertFailed`), runner zapisuje błąd w logu i usuwa sagę. Nic nie ponawia wycofania, a nadawca
-nie dostaje już żadnej wiadomości.
+Krok wycofania, którego `Future` zawiedzie, wykonuje się ponownie w ten sam sposób. Jeśli dalej
+zawodzi albo zwraca `SagaRevertFailed`, runner zapisuje błąd w logu i kończy sagę; nadawca nie dostaje
+już żadnej wiadomości.
 
 Dlatego pisz wycofania tak, żeby trudno je było odrzucić. Wycofanie w domenie testowej usuwa każdy
 koszyk w wersji, z którą ten koszyk powstał: jeśli ktoś w międzyczasie dodał do niego produkt,
@@ -474,6 +516,12 @@ Singleton dostaje nazwę od `name` definicji (podaj `actorName`, gdy ta nazwa ni
 nazwą aktora). W systemie aktorów, który nie jest klastrem, `SagaRunner.start` po prostu uruchamia
 aktora. W klastrze zlecenia i odpowiedzi podróżują między węzłami, więc muszą być klasami, które
 serializer biblioteki potrafi zapisać i odczytać (rozdział 17).
+
+Gdy runner startuje albo przenosi się na inny węzeł, zlecenia czekają, aż przeczyta zapisane sagi, a
+sagi, którą już wykonuje, nigdy nie uruchamia drugi raz. Każdy zapis postępu podaje fazę i krok, z
+których przechodzi, więc nieaktualna kopia sagi (spóźniony zapis starego runnera) zatrzymuje się,
+zamiast nadpisać nowszą. `GetSagaStatus` (w `SagaRunner`) odpowiada, ile sag działa, ile zleceń czeka i
+ile sag nie da się w tej chwili zapisać.
 
 ## Sagi organizacji
 

@@ -58,6 +58,20 @@ Fixes from [the risk assessment of 1.0.0](docs/RISK-ASSESSMENT.md), in the order
   - An aggregate sent to another type's command bus is refused there (queries, commands, squashes), naming both
     types. `reactivecqrs.aggregate-type-check = "log"` only logs it; `StoredDataCheck.run(..., contexts = ...)`
     reports aggregate types none of the contexts has.
+- **Sagas under faults** (F205, F206, F207, F232, chapter 12):
+  - A step whose future fails runs again with its `SagaStep` key (`stepRetries`: 1 s doubling to 30 s, five attempts)
+    before the saga reverts. A step throws `SagaStepNotDone` for an answer that may change and returns `SagaFailed`
+    only for a refusal; the book's sagas do so.
+  - A caller hears a saga's outcome only once it is stored; a progress write that keeps failing is tried again for
+    as long as the runner runs (`reactivecqrs.saga.write.failed`), never dropped. `GetSagaStatus` reports running
+    sagas, waiting orders and failing writes.
+  - Orders extending `IdempotentSagaOrder` carry an `orderKey`: a repeat joins the saga under way or gets its stored
+    answer, kept `answersKeptFor` (30 days). New columns and a unique index on `sagas`, added at start.
+  - Orders wait for the runner's first load, a load does not start a running saga again, and writes compare the
+    stored phase and step.
+  - **Source change** for a host with its own `SagaState`: `createSaga` takes the order key and returns
+    `SagaCreation`, writes take the phase and step they move from, new `finishSaga` and `removeFinished`,
+    `loadAllSagas` gives a `StoredSaga`.
 
 ## 1.0.0 (18/10/2026)
 

@@ -1372,24 +1372,37 @@ purge of that organization deletes the saga (§4.7).
 Since 1.0 (fixed F35, F17, F36, F34) every step result and every write of saga progress
 comes back to the runner as a message, so all decisions run on the runner's thread;
 `handleOrder` and `handleRevert` are called there too and must only start the work and
-return a Future. A definition is not an actor, so its code cannot touch the runner's state. A failed write is retried with back-off (`persistRetries`, a `Backoff` from 100 ms,
-doubling up to 30 s, 10 attempts; the last wait is 25.6 s). After that the saga stays at
-its last stored step and resumes from it at the next start, which repeats that step; its
-commands must therefore be idempotent. An order that cannot be stored at all, or gets no saga
-id, is answered with `SagaFailureResponse` (F75). Pending sagas are read completely before
-any is started, so a failed load is retried (without limit) without starting a saga twice,
-and a restart of the actor does not load them again (F75). `updateSaga` and `deleteSaga` report whether the row was
-there; a saga whose row vanished is stopped with an error log. The table has a unique
-index on `(name, saga_id)`, built `CONCURRENTLY`. Saga ids come from pools fetched ahead
-(F23); an order that arrives while none is at hand waits for the pool, and is refused if the
-pool does not come. The saga state's JDBC calls run on the blocking dispatcher (F27).
+return a Future. A definition is not an actor, so its code cannot touch the runner's state.
+
+A step (or revert step) whose future fails runs again with the same `SagaStep` key (`stepRetries`, 1 s doubling to
+30 s, five attempts) before the saga reverts (F205), so a command that timed out but was applied answers with its
+stored response and the saga goes on; a step throws `SagaStepNotDone` for an answer that may change, and returns
+`SagaFailed` only for a refusal. A caller hears an outcome only once it is stored: the move to `REVERTING` or the
+finish (F206). A failed write is retried with back-off (`persistRetries`, a `Backoff` from 100 ms, doubling up to 30 s,
+10 attempts); a progress write is then tried again at the longest delay for as long as the runner runs (an error
+log, `reactivecqrs.saga.write.failed`, `GetSagaStatus.failingWrites`), never dropped; only a new saga whose first
+write fails every attempt is refused (`SagaFailureResponse`, as is an order that gets no saga id, F75). Creates are
+`ON CONFLICT DO NOTHING`, so an attempt that committed without an answer counts as stored. Every progress write and
+finish names the phase and step it moves from (a compare-and-set); a write that finds the saga elsewhere stops that
+copy (F232). Orders wait until the runner's first load has read all pending sagas (retried without limit), and a
+load skips the sagas the runner already runs, so `LoadPendingSagas` never starts one twice (F75, F232). A stored
+order or phase that no longer reads is logged and left out (F151, F252). The table has a unique index on
+`(name, saga_id)`, built `CONCURRENTLY`. Saga ids come from pools fetched ahead (F23); an order that arrives while none
+is at hand waits for the pool, and is refused if the pool does not come. The saga state's JDBC calls run on the
+blocking dispatcher (F27).
+
+An order extending `IdempotentSagaOrder` carries an `orderKey` (at most 256 characters), stored in `sagas.order_key`
+under a unique partial index on `(name, order_key)` (F207). A second order with the key joins the saga under way (its
+caller gets the first caller's answer) or, once it is done, gets the stored answer: a keyed saga's row stays in phase
+`finished` with its answer for `answersKeptFor` (30 days); the runner removes older ones daily. A join that reads the
+key before the saga stored its answer reads again with `persistRetries`' delays.
 
 In a cluster the runner is a singleton (D46). It stores its caller's path with the caller's node
 address (also for an ask made on its own node, F137), so it answers from whichever node it runs
-on. A saga answers before the write that ends it is stored: when the runner's node stops in
-between, the next runner runs that step again and answers again. Answers are therefore at least
-once (F136): an `ask` keeps the first, and a caller that is a long-lived actor treats a second
-answer for the same saga as a repeat.
+on. Since the outcome is answered after the write that stores it, a runner that stops in between answers nothing;
+the next one runs on from the stored state and answers then, so an answer can still come twice (a step that ran
+again after a stop): answers are at least once (F136). An `ask` keeps the first, and a caller that is a long-lived
+actor treats a second answer for the same saga as a repeat.
 
 ---
 

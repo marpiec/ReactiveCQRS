@@ -13,7 +13,20 @@ class PostgresSagaSchemaInitializer {
     createSagasTable()
     addSpaceColumn()
     createSagaKeyIndex()
+    addOrderKeyAndAnswerColumns()
+    createOrderKeyIndex()
   }
+
+  // F207: the key of a keyed order, and the answer its caller was given, kept for repeats of the order.
+  private def addOrderKeyAndAnswerColumns(): Unit = {
+    Ddl.addColumn("sagas", "order_key", "VARCHAR(256)")
+    Ddl.addColumn("sagas", "answer", "TEXT")
+    Ddl.addColumn("sagas", "answer_type_id", "INT")
+  }
+
+  // F207: one saga per name and order key; sagas without a key are not in it.
+  private def createOrderKeyIndex(): Unit = Ddl.createIndex("sagas_name_order_key_idx",
+    "CREATE UNIQUE INDEX IF NOT EXISTS sagas_name_order_key_idx ON sagas (name, order_key) WHERE order_key IS NOT NULL")
 
   // R17: the organization of a saga's order, when the saga says (`SagaDefinition.spaceOf`); a purge of the space removes it.
   // F185: only when the column is missing (Ddl).

@@ -2656,3 +2656,14 @@ Open test-infrastructure items:
   not attempts. F259: history below the first live delivery of an aggregate at version 0 is applied as history.
   F261: a permanent delete keeps its responses' keys without their info.
 - Six mutations, each caught by its scenario. Step 2 (items 7 to 10) ends here: twenty findings closed.
+
+**18/10/2026: the risk assessment, step 3, item 11: sagas under faults**
+- F205: failed steps (and revert steps) run again with their key (`stepRetries`), `SagaStepNotDone` for answers that
+  may change; the book's sagas and E4 refuse only on `FailureResponse`.
+- F206: outcomes answered once stored; progress writes never dropped while the runner runs (`persistRetries` then
+  their longest delay, `reactivecqrs.saga.write.failed`); creates `ON CONFLICT DO NOTHING`; `GetSagaStatus`.
+- F207: `IdempotentSagaOrder` with `orderKey`, a unique `(name, order_key)` index, joins and stored answers kept
+  `answersKeptFor` (30 days) in finished rows. F232: orders wait for the first load, running sagas are not loaded again,
+  writes compare the stored phase and step. F252's unknown saga phases are now left out like unreadable orders.
+- `SagaState` changed (create returns `SagaCreation`, writes take `from`, new `finishSaga`, `removeFinished`,
+  `loadAllSagas` gives `StoredSaga`): a source change for a host's own `SagaState`, noted in the CHANGELOG.

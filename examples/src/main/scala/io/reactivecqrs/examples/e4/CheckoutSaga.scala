@@ -49,12 +49,13 @@ class CheckoutSaga(stock: ActorRef, payments: ActorRef)(implicit executionContex
       }
   }
 
-  // Any answer but a success counts as a refusal, so no answer falls through the match.
+  // A refusal ends the step; any other answer (an error, a rejection during an upgrade) may change when the command is
+  // sent again, so the step runs again with the same key (F205).
   private def send(bus: ActorRef, command: AnyRef): Future[Either[List[String], AggregateId]] =
     (bus ? command).mapTo[CustomCommandResponse[_]].map {
       case SuccessResponse(id, _) => Right(id)
       case FailureResponse(reasons) => Left(reasons)
-      case other => Left(List(other.toString))
+      case other => throw new SagaStepNotDone(other.getClass.getSimpleName)
     }
 }
 // #saga

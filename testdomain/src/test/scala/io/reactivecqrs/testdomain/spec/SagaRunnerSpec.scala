@@ -28,6 +28,7 @@ case class Shout(userId: UserId, text: String) extends SagaOrder
 
 /** Takes no order, so its first step fails with a MatchError whose message is the whole order; and it cannot undo. */
 class Mute(val name: String) extends SagaDefinition {
+  override val stepRetries: io.reactivecqrs.core.util.Backoff = io.reactivecqrs.core.util.Backoff(10.millis, 10.millis, maxAttempts = 2)
   override def handleOrder(step: SagaStep): ReceiveOrder = PartialFunction.empty
   override def handleRevert(step: SagaStep): ReceiveRevert = { case _ => Future.successful(SagaRevertFailed(List("nothing can be undone"))) }
 }

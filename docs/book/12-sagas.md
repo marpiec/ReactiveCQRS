@@ -145,13 +145,15 @@ private def createShoppingCart(sagaStep: SagaStep, userId: UserId, cartName: Str
       case c: FailureResponse =>
         SagaFailed(CartsCreationFailure(c.exceptions))
       case other =>
-        SagaFailed(CartsCreationFailure(List("The cart was not created: " + other)))
+        throw new SagaStepNotDone("The cart was not created: " + other.getClass.getSimpleName)
     }
 }
 ```
 
 A cart is made, and more are to come: continue, with the new cart added to the list. The last cart
-is made: succeed, with the whole list. The cart is refused, or any other answer comes: fail. The `?` uses the `timeout` the
+is made: succeed, with the whole list. The cart is refused: fail. Any other answer (an error, a
+rejection during an upgrade) may change when the command is sent again, so the step throws
+`SagaStepNotDone`, and the runner runs it again with the same key (see "When a step fails"). The `?` uses the `timeout` the
 definition was given. `Some(sagaStep)` is the idempotency id of the command; it gets a section of its
 own below.
 
@@ -175,13 +177,13 @@ private def revertCreateRemainingCarts(sagaStep: SagaStep, userId: UserId, cartN
       case c: FailureResponse =>
         SagaRevertFailed(c.exceptions)
       case other =>
-        SagaRevertFailed(List("The cart was not deleted: " + other))
+        throw new SagaStepNotDone("The cart was not deleted: " + other.getClass.getSimpleName)
     }
 }
 ```
 
-One cart per revert step: delete the newest, then continue with the rest of the list. A refusal, or
-any other answer, ends the revert as failed.
+One cart per revert step: delete the newest, then continue with the rest of the list. A refusal ends
+the revert as failed; any other answer runs the revert step again, as for a step.
 
 ### A run that succeeds
 
@@ -286,12 +288,17 @@ the step number and the current order, as JSON with its class. Every step goes t
 2. The runner stores the progress: the next order and step number, or the move to `REVERTING`.
 3. The next step runs.
 
-When the job is done (`SagaSucceded`, or a revert that has finished), the row is deleted.
+When the job is done (`SagaSucceded`, or a revert that has finished), the row is deleted; the row of
+a saga started by a keyed order stays, finished, with its answer (see "Orders sent twice" below).
+A caller hears of a failure only once the saga's move to `REVERTING` is stored, so what it was told
+is what the store says.
 
 A write that fails, because the database is away for a moment, is tried again: after 100 ms, then
-twice as long each time, up to 30 seconds, ten attempts in all. If every attempt fails, the saga
-stays at its last stored step until the next start. The rule is the `persistRetries` value of the
-definition, a `Backoff` (from `io.reactivecqrs.core.util`) you can override; this is the default:
+twice as long each time, up to 30 seconds, ten attempts in all. After that the runner keeps trying
+every 30 seconds, logging an error, until the write is stored: a saga is never dropped while its
+runner runs. (A new saga whose first write never succeeded is refused instead: its caller gets a
+`SagaFailureResponse`.) The rule is the `persistRetries` value of the definition, a `Backoff` (from
+`io.reactivecqrs.core.util`) you can override; this is the default:
 
 <!-- snippet: cart/SagasSpec.scala#persistRetries -->
 ```scala
@@ -348,6 +355,25 @@ cart, but could not store that it had, resumes after a restart, and each cart ex
 > **Remember:** stored responses are kept for 30 days by default (the retention of
 > `PostgresCommandResponseState`). A saga that resumes later than that would send its step's command
 > afresh.
+
+## Orders sent twice
+
+`SagaStep` makes a step safe to run twice. The order itself is another matter: a caller that hears
+nothing in time (the runner moving to another node takes the better part of a minute, chapter 17)
+sends its order again, and each order starts a saga of its own, which reserves and charges again.
+
+Give such an order a key of the caller's choosing, the same for every copy, by extending
+`IdempotentSagaOrder`:
+
+```scala
+case class PayInvoice(userId: UserId, invoiceId: AggregateId, orderKey: String) extends IdempotentSagaOrder
+```
+
+A second order with the same `orderKey` (at most 256 characters) starts nothing: while the first
+saga runs, it joins it, and both callers get its answer; once the saga is done, it gets the answer
+the first caller got. The finished saga's row keeps that answer for `answersKeptFor` (30 days by
+default), then goes. Derive the key from what the caller means, such as `"pay-" + invoiceId`, never
+from personal data: it is stored.
 
 ## A saga of your own: reserve, then charge
 
@@ -410,12 +436,13 @@ class CheckoutSaga(stock: ActorRef, payments: ActorRef)(implicit executionContex
       }
   }
 
-  // Any answer but a success counts as a refusal, so no answer falls through the match.
+  // A refusal ends the step; any other answer (an error, a rejection during an upgrade) may change when the command is
+  // sent again, so the step runs again with the same key (F205).
   private def send(bus: ActorRef, command: AnyRef): Future[Either[List[String], AggregateId]] =
     (bus ? command).mapTo[CustomCommandResponse[_]].map {
       case SuccessResponse(id, _) => Right(id)
       case FailureResponse(reasons) => Left(reasons)
-      case other => Left(List(other.toString))
+      case other => throw new SagaStepNotDone(other.getClass.getSimpleName)
     }
 }
 ```
@@ -434,10 +461,24 @@ Four habits are worth copying:
   `AggregateConcurrentModificationError`, fails the step's `Future`. In a forward step that means a
   `SagaFailureResponse` and a revert; in a revert step, see the next section.
 
+## When a step fails
+
+A step's `Future` that fails (an ask that timed out, an exception, a handler that does not take the
+order) does not end the saga at once. The runner runs the same step again, with the same `SagaStep`,
+after 1 second, then twice as long each time, up to 30 seconds, five attempts in all (the
+definition's `stepRetries`). A command that was applied late, after the ask gave up, then answers
+with its stored response, and the saga goes on forward. Only a step that keeps failing makes the
+saga revert, with a `SagaFailureResponse` for its caller.
+
+So decide which answers are refusals. Return `SagaFailed` for a refusal that will not change (a
+`FailureResponse`: the stock is not there). Fail the `Future` for an answer that may change when
+the command is sent again: `CommandRejected` (during an upgrade, chapter 17), `CommandHandlingError`,
+`EventHandlingError`, or no answer in time. The examples of this chapter do both.
+
 ## When a revert fails
 
-If a revert step fails (its `Future` fails, it throws, or it returns `SagaRevertFailed`), the runner
-logs an error and removes the saga. Nothing retries a revert, and the caller is not told again.
+A revert step whose `Future` fails runs again in the same way. If it still fails, or it returns
+`SagaRevertFailed`, the runner logs an error and ends the saga; the caller is not told again.
 
 So make reverts hard to refuse. The test domain's revert deletes each cart at the version it was
 created with: if someone added an item to that cart in the meantime, the delete meets a version
@@ -459,6 +500,12 @@ The singleton is named after the definition's `name` (pass `actorName` when the 
 actor name). On an actor system that is not a cluster, `SagaRunner.start` simply starts the actor.
 In a cluster, orders and responses travel between nodes, so they must be classes the library's
 serializer can write and read (chapter 17).
+
+When the runner starts, or moves to another node, orders wait until it has read the stored sagas,
+and a saga it runs already is never started a second time. Each write of progress names the phase
+and step it moves from, so a stale copy of a saga (an old runner's late write) stops instead of
+writing over a newer one. `GetSagaStatus` (in `SagaRunner`) answers how many sagas run, how many
+orders wait, and how many sagas cannot be stored right now.
 
 ## Sagas of an organization
 

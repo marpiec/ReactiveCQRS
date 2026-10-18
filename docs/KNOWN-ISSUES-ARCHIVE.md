@@ -971,6 +971,26 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 
 ### Sagas
 
+#### F205 — A saga step whose command timed out is reverted, but the command can still be applied later, and nothing undoes it
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 3 of the risk assessment; `SagaFaultsSpec` "F205", red under a mutation) · `SagaRunning`, `SagaDefinition.stepRetries`, the book's examples
+- **Fix:** a step whose future fails runs again with the same `SagaStep` key (`stepRetries`: 1 s doubling to 30 s, five attempts) before the saga reverts, so a command applied late answers with its stored response and the saga goes on; revert steps likewise. `SagaStepNotDone` is what a step throws for an answer that may change (`CommandRejected`, `CommandHandlingError`, `EventHandlingError`); the book's sagas and chapter 12 return `SagaFailed` for refusals only.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F206 — A saga answered "failed" can run forward to success at the runner's next start, days later
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 3; `SagaFaultsSpec` "F206" and `PostgresSagaStateSpec`, red under a mutation) · `SagaRunning`, `PostgresSagaState`
+- **Fix:** a caller hears a saga's outcome only once it is stored (the move to `REVERTING`, the finish); a progress write that keeps failing is tried again at `persistRetries`' longest delay for as long as the runner runs, with an error and a metric (`reactivecqrs.saga.write.failed`), never dropped. A create is `ON CONFLICT DO NOTHING`, an earlier attempt's row counting as stored. `GetSagaStatus` reports running sagas, waiting orders and failing writes. Left: a new saga whose first write fails every retry is still refused, so one whose commit was stored but not acknowledged on its last attempt runs at the next start; and the runner's in-flight writes are not drained before it stops (the compare-and-set writes of F232 stop a late one).
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F207 — Saga orders cannot be made idempotent, so a caller that retries during a singleton move starts the saga twice
+- **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 3; `SagaFaultsSpec` "F207", `PostgresSagaStateSpec`, red under a mutation) · `IdempotentSagaOrder`, `SagaRunning`, `PostgresSagaState`, the `sagas` table
+- **Fix:** an order extending `IdempotentSagaOrder` carries an `orderKey`, stored with its saga under a unique `(name, order_key)` index. A second order with the key joins the saga under way (its caller answered with the first's) or, once it is done, gets the stored answer: a keyed saga's row stays, `finished`, with the answer its caller got, for `answersKeptFor` (30 days), then the runner removes it. A repeat that reads the key before the saga stored its answer reads again.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
+#### F232 — One saga can run twice at once in one runner, and saga rows have no compare-and-set to stop the stale copy
+- **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, step 3; `SagaFaultsSpec` "F232", `PostgresSagaStateSpec` "F232", red under a mutation) · `SagaRunning`, `PostgresSagaState`
+- **Fix:** orders wait until the runner's first load is done (it is tried until it succeeds); the runner keeps the ids of the sagas it runs and ignores loads of them, so `LoadPendingSagas` (kept public) resumes only sagas not under way; every progress write and finish names the phase and step it moves from, and a write that finds the saga elsewhere stops that copy.
+- **Found:** the risk assessment of 1.0.0 (18/10/2026); scenario, mechanism and validation under the same number in [RISK-ASSESSMENT.md](RISK-ASSESSMENT.md).
+
 #### F17 — Saga uses `ActorContext` off its thread
 - **Low**, likely · **Fixed in M1** (16/10/2026, with F35) · `SagaActor.scala:96, 99`
 - **Fix:** step results come back as messages; replies and decisions run on the actor's thread.

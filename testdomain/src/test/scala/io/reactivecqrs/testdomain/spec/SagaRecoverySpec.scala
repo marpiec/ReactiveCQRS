@@ -32,19 +32,26 @@ class FlakySagaState(underlying: SagaState, createFailures: Int, updateFailures:
   def updateAttempts: Int = updates.get
   def loadsOfPendingSagas: Int = loads.get
 
-  override def createSaga(name: String, sagaId: SagaId, respondTo: String, order: SagaInternalOrder, spaceId: Option[SpaceId]) = {
+  override def createSaga(name: String, sagaId: SagaId, respondTo: String, order: SagaInternalOrder, spaceId: Option[SpaceId],
+                          orderKey: Option[String]) = {
     if (creates.incrementAndGet() <= createFailures) throw new IllegalStateException("database unavailable")
-    underlying.createSaga(name, sagaId, respondTo, order, spaceId)
+    underlying.createSaga(name, sagaId, respondTo, order, spaceId, orderKey)
   }
 
-  override def updateSaga(name: String, sagaId: SagaId, order: SagaInternalOrder, phase: SagaPhase, step: Int) = {
+  override def updateSaga(name: String, sagaId: SagaId, order: SagaInternalOrder, phase: SagaPhase, step: Int,
+                          from: Option[(SagaPhase, Int)], answer: Option[SagaResponse]) = {
     if (updates.incrementAndGet() <= updateFailures) throw new IllegalStateException("database unavailable")
-    underlying.updateSaga(name, sagaId, order, phase, step)
+    underlying.updateSaga(name, sagaId, order, phase, step, from, answer)
   }
 
-  override def deleteSaga(name: String, sagaId: SagaId) = underlying.deleteSaga(name, sagaId)
+  override def deleteSaga(name: String, sagaId: SagaId, from: Option[(SagaPhase, Int)]) = underlying.deleteSaga(name, sagaId, from)
 
-  override def loadAllSagas(name: String, handler: (SagaId, UserId, String, SagaPhase, Int, SagaInternalOrder) => Unit): Unit = {
+  override def finishSaga(name: String, sagaId: SagaId, answer: Option[SagaResponse], from: Option[(SagaPhase, Int)]) =
+    underlying.finishSaga(name, sagaId, answer, from)
+
+  override def removeFinished(name: String, olderThan: scala.concurrent.duration.FiniteDuration) = underlying.removeFinished(name, olderThan)
+
+  override def loadAllSagas(name: String, handler: StoredSaga => Unit): Unit = {
     loads.incrementAndGet()
     underlying.loadAllSagas(name, handler)
   }
@@ -122,7 +129,7 @@ class SagaRecoverySpec extends CommonSpec {
       val caller = TestProbe()
       val firstRun = newSaga(sagaName, failingState)
       firstRun.tell(CreateMultipleCarts(userId, cartName, 3), caller.ref)
-      awaitAssert(failingState.updateAttempts mustBe 3, 5.seconds, 50.millis)
+      awaitAssert(failingState.updateAttempts must be >= 3, 5.seconds, 50.millis) // tried on until the runner stops (F206)
       eventsNamed(cartName + " 1") mustBe 1
 
       When("the saga actor restarts with a working database")

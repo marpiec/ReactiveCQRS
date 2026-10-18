@@ -9,6 +9,7 @@ object SagaPhase {
     case CONTINUES.name => CONTINUES
     case REVERTING.name => REVERTING
     case ERROR.name => ERROR
+    case FINISHED.name => FINISHED
     case other => throw new IllegalArgumentException("Unknown saga phase: " + other)
   }
 }
@@ -20,6 +21,8 @@ case object CONTINUES extends SagaPhase("continues")
 case object REVERTING extends SagaPhase("reverting")
 /** Reserved: the runner never puts a saga there. */
 case object ERROR extends SagaPhase("error")
+/** F207: a saga of a keyed order that is done, kept with its answer for repeats of the order; never run. */
+case object FINISHED extends SagaPhase("finished")
 
 
 /** The message a saga hands itself for its next step (a `SagaOrder` is one too); stored with each step. */
@@ -30,6 +33,18 @@ trait SagaInternalOrder {
 
 /** The message a caller sends to start a saga. */
 trait SagaOrder extends SagaInternalOrder
+
+/** F205: what a step throws, or fails its future with, when its work could not be done now (an error, a rejection
+  * during an upgrade): the runner runs the step again with the same key (`SagaDefinition.stepRetries`), and reverts only
+  * once it keeps failing. `reason` reaches the logs: name the answer's class, not its values. */
+class SagaStepNotDone(reason: String) extends RuntimeException(reason)
+
+/** F207: an order a caller may send again (a retry after a timeout, through another node): a second order with the same
+  * `orderKey` joins the saga the first started, or, once it is done, gets its answer (kept `answersKeptFor`), instead of
+  * starting the saga twice. At most 256 characters. */
+trait IdempotentSagaOrder extends SagaOrder {
+  def orderKey: String
+}
 
 /** What the caller of a saga gets back. */
 trait SagaResponse

@@ -36,9 +36,19 @@ trait SagaDefinition {
     * default, leaves the saga out of purges. */
   def spaceOf(order: SagaInternalOrder): Option[SpaceId] = None
 
-  /** Retries of a failed write of a saga's progress; after them the saga waits at its last stored step until the runner
-    * starts again (F35). */
+  /** Retries of a failed write of a saga's progress; after them the write is tried again at their longest delay until
+    * it is stored, as the saga is never dropped while its runner runs (F35, F206). A new saga whose first write fails
+    * them all is refused. */
   def persistRetries: Backoff = SagaDefinition.defaultPersistRetries
+
+  /** F205: how a step whose future failed (an ask that timed out, an exception) runs again, with the same `SagaStep`,
+    * before the saga reverts: a command applied late then answers with its stored response. Fail the future for an
+    * answer that may change when sent again (`CommandRejected`, `CommandHandlingError`, `EventHandlingError`), and return
+    * `SagaFailed` for a refusal. */
+  def stepRetries: Backoff = SagaDefinition.defaultStepRetries
+
+  /** F207: how long the answer of a saga started by an `IdempotentSagaOrder` is kept for repeats of its order. */
+  def answersKeptFor: FiniteDuration = 30.days
 }
 
 object SagaDefinition {
@@ -49,4 +59,6 @@ object SagaDefinition {
 
   /** From 100 ms, doubling, at most 30 s, 10 attempts. */
   val defaultPersistRetries: Backoff = Backoff(100.millis, 30.seconds, maxAttempts = 10)
+  /** From 1 s, doubling, at most 30 s, 5 attempts. */
+  val defaultStepRetries: Backoff = Backoff(1.second, 30.seconds, maxAttempts = 5)
 }

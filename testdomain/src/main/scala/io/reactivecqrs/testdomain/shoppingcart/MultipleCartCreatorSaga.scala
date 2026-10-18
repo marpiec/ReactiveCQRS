@@ -73,7 +73,7 @@ class MultipleCartCreatorSaga(shoppingCartCommandBus: ActorRef)(implicit executi
         case c: FailureResponse =>
           SagaFailed(CartsCreationFailure(c.exceptions))
         case other =>
-          SagaFailed(CartsCreationFailure(List("The cart was not created: " + other)))
+          throw new SagaStepNotDone("The cart was not created: " + other.getClass.getSimpleName)
       }
   }
   // #step
@@ -91,7 +91,7 @@ class MultipleCartCreatorSaga(shoppingCartCommandBus: ActorRef)(implicit executi
         case c: FailureResponse =>
           SagaRevertFailed(c.exceptions)
         case other =>
-          SagaRevertFailed(List("The cart was not deleted: " + other))
+          throw new SagaStepNotDone("The cart was not deleted: " + other.getClass.getSimpleName)
       }
   }
   // #revert
