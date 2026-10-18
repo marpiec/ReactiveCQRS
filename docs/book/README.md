@@ -2,6 +2,8 @@
 
 *A friendly guide to building event-sourced Scala applications, one small step at a time.*
 
+*Po polsku: [ReactiveCQRS, krok po kroku](../book_pl/README.md).*
+
 ---
 
 ## Who this book is for

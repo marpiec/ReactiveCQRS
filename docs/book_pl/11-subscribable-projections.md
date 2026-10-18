@@ -1,109 +1,118 @@
 # Rozdział 11. Aktualizacje na żywo z projekcjami subskrybowalnymi
 
-Pod koniec tego rozdziału strona koszyka będzie aktualizować się automatycznie za każdym razem, gdy ktoś zmieni zawartość koszyka:
-Bob otwiera wózek „Zakupy” rodziny, Alicja dodaje mleko do swojego telefonu, a mleko pojawia się na
-Ekran Boba bez kiwnięcia palcem. Bez przycisku odświeżania, bez proszenia co kilka sekund. Będziesz…
-użyj `SubscribableProjectionActor`: projekcji z rozdziału 8, która przechowuje również listę
-subskrybentów i przesyła im najnowsze informacje.
+Pod koniec tego rozdziału strona koszyka będzie się sama odświeżać, gdy ktoś inny zmieni koszyk: Bob
+ma otwarty rodzinny koszyk „Zakupy”, Alicja dodaje mleko w telefonie, a mleko pojawia się na ekranie
+Boba, choć ten nie kiwnął nawet palcem. Bez przycisku odświeżania i bez dopytywania co kilka sekund.
+Użyjesz do tego `SubscribableProjectionActor`: projekcji z rozdziału 8, która dodatkowo prowadzi listę
+subskrybentów i wypycha im nowości.
 
 ---
 
-## Od proszenia do otrzymania polecenia
+## Od dopytywania do powiadomień
 
-Zamówiłeś tort urodzinowy. Możesz dzwonić do cukierni co dziesięć minut, żeby zapytać, czy jest gotowy.
-albo możesz zostawić swój numer i pozwolić im do Ciebie napisać. Drugi sposób oznacza mniej pracy dla wszystkich, ponieważ
-dopóki piekarnia pamięta twój numer i dopóki od czasu do czasu będziesz im mówić, że nadal
-opieka (piekarnia, która wysyła SMS-y na każdy numer, jaki kiedykolwiek jej podano, wkrótce zacznie wysyłać SMS-y do nieznajomych).
+Zamawiasz tort urodzinowy. Możesz co dziesięć minut dzwonić do cukierni z pytaniem, czy już jest
+gotowy, albo zostawić swój numer i poczekać na SMS-a. Drugi sposób to mniej pracy dla wszystkich, o
+ile cukiernia pamięta twój numer i o ile co jakiś czas dajesz znać, że wciąż ci zależy (cukiernia,
+która pisze na każdy numer, jaki kiedykolwiek dostała, wkrótce pisałaby do obcych ludzi).
 
-To jest **subskrypcja push**:
+Tak działa **subskrypcja typu push**:
 
-- **subskrybujesz**: „opowiedz mi o koszyku 42”;
-- projekcja **wypycha** aktualizację za każdym razem, gdy zmienia się wózek 42;
-- **odnawiasz** od czasu do czasu: „nadal zainteresowany”;
-- **anulujesz**, gdy strona się zamknie.
+- **subskrybujesz**: „daj mi znać o koszyku 42”;
+- projekcja **wypycha** aktualizację za każdym razem, gdy koszyk 42 się zmieni;
+- co jakiś czas **odnawiasz**: „nadal mnie to interesuje”;
+- **anulujesz**, gdy strona się zamyka.
 
-`SubscribableProjectionActor` to zwykła projekcja (nasłuchiwacze, magazyn dokumentów, zapytania,
-wszystko z rozdziału 8) co obejmuje wszystkie cztery.
+`SubscribableProjectionActor` to zwykła projekcja (listenery, magazyn dokumentów, zapytania,
+wszystko z rozdziału 8), która robi wszystkie cztery rzeczy.
 
 ```
-projekcja LiveCarts dla sesji strony
+page session                                        LiveCarts projection
      │── WatchCart("7f3c...", 42) ──────────────────────▶│ handleSubscribe
      │◀────────────── SubscribedForProjectionUpdates("7f3c...")
-     │ │◀── zmieniono kartę 42 (z magistrali zdarzeń):
-     │ │ słuchacz zapisuje, a następnie wysyła funkcję sendUpdate(...)
-     │◀─────────────── SubscriptionUpdated("7f3c...", CartPageUpdate(...))
-     │── RenewSubscription("7f3c...") ───────────────────▶│ co kilka minut
-     │── CancelProjectionSubscriptions(List("7f3c...")) ▶│ gdy strona się zamknie
+     │                                                   │◀── cart 42 changed (from the event bus):
+     │                                                   │    the listener writes, then sendUpdate(...)
+     │◀────────────── SubscriptionUpdated("7f3c...", CartPageUpdate(...))
+     │── RenewSubscription("7f3c...") ──────────────────▶│ every few minutes
+     │── CancelProjectionSubscriptions(List("7f3c...")) ▶│ when the page closes
 ```
 
-## Jak aktualizacja dociera do swoich subskrybentów
+## Jak aktualizacja trafia do subskrybentów
 
-Projekcja subskrybowana dodaje do projekcji trzy rzeczy:
+Projekcja subskrybowalna dodaje do projekcji trzy rzeczy:
 
-- **`receiveSubscriptionRequest`**, `Receive`, który piszesz i który obsługuje Twoją własną subskrypcję
-  wiadomości, podobnie jak `receiveQuery` obsługuje zapytania;
-- **`handleSubscribe[DATA, UPDATE](subscriptionId, listener, filter)`**, którą tam wywołujesz
-  dodaj subskrypcję;
-- **`sendUpdate[DATA](data)`**, którą wywołują Twoi słuchacze, aby ogłosić zmianę.
+- **`receiveSubscriptionRequest`**, czyli `Receive` pisany przez ciebie, który obsługuje twoje własne
+  komunikaty subskrypcji, podobnie jak `receiveQuery` obsługuje zapytania;
+- **`handleSubscribe[DATA, UPDATE](subscriptionId, listener, filter)`**, które tam wywołujesz, żeby
+  dodać subskrypcję;
+- **`sendUpdate[DATA](data)`**, które wywołują twoje listenery, żeby ogłosić zmianę.
 
-„DANE” to to, co ogłasza projekcja; „AKTUALIZACJA” to to, co otrzymuje subskrybent. Każda
-`sendUpdate[DATA](data)` jest oferowane dla każdej subskrypcji utworzonej przy użyciu tego samego typu `DATA` i każdej
-**filtr** subskrypcji, funkcja `DATA => Option[UPDATE]`, decyduje: `None` oznacza „nie dla
-„me”, „Some(update)” oznacza „wyślij to”. Subskrybent otrzymuje wtedy
+`DATA` oznacza to, co ogłasza projekcja, a `UPDATE` to, co dostaje subskrybent. Każde
+`sendUpdate[DATA](data)` jest podsuwane każdej subskrypcji założonej z tym samym typem `DATA`, a
+**filtr** subskrypcji, funkcja `DATA => Option[UPDATE]`, decyduje: `None` znaczy „nie dla mnie”,
+`Some(update)` znaczy „wyślij to”. Subskrybent dostaje wtedy
 `SubscriptionUpdated(subscriptionId, update)`.
 
-Wiadomości wysyłane i odbierane przez subskrybenta na żywo w elemencie towarzyszącym `SubscribableProjectionActor`:
-`SubscribedForProjectionUpdates`, `SubscriptionUpdated`, `OdnówSubskrypcję`,
-`CancelProjectionSubscriptions` i `ProjectionSubscriptionsCancelled`.
+Komunikaty, które subskrybent wysyła i dostaje, mieszkają w obiekcie towarzyszącym
+`SubscribableProjectionActor`: `SubscribedForProjectionUpdates`, `SubscriptionUpdated`,
+`RenewSubscription`, `CancelProjectionSubscriptions` i `ProjectionSubscriptionsCancelled`.
 
-## Tworzenie strony koszyka na żywo, krok po kroku
+## Tworzymy stronę koszyka na żywo, krok po kroku
 
-Ponownie wykorzystujemy `CartSummary` z rozdziału 8 (nazwa, liczba pozycji i wersja koszyka) i wszystko
-rozdział 4 podłączony.
+Użyjemy znów `CartSummary` z rozdziału 8 (nazwa, liczba pozycji i wersja koszyka) oraz wszystkiego,
+co połączyliśmy w rozdziale 4. Kod leży w `examples/src/test/scala/io/reactivecqrs/examples/cart/`:
+`LiveCarts.scala` oraz `LiveUpdatesSpec`, który otwiera stronę i sprawdza, co ona pokazuje.
 
 1. **Zapisz aktualizację i komunikaty.**
 
+   <!-- snippet: cart/LiveCarts.scala#messages -->
    ```scala
-   importuj io.reactivecqrs.api.id.AggregateId
+   import io.reactivecqrs.api.id.AggregateId
 
-   klasa przypadku CartPageUpdate(cartId: AggregateId, summary: Option[CartSummary]) // Brak: nie ma już takiego koszyka
+   case class CartPageUpdate(cartId: AggregateId, summary: Option[CartSummary]) // None: no such cart (any more)
 
-   klasa przypadku WatchCart(subscriptionId: String, cartId: AggregateId) // subskrybuj jeden koszyk
-   klasa przypadku GetCartPage(cartId: AggregateId) // odpowiedź udzielona za pomocą CartPageUpdate
+   case class WatchCart(subscriptionId: String, cartId: AggregateId) // subscribe to one cart
+   case class GetCartPage(cartId: AggregateId)                       // answered with a CartPageUpdate
    ```
 
-   Zapytanie odpowiada tym samym typem co polecenie push, więc strona może traktować oba typy tak samo.
+   Zapytanie odpowiada tym samym typem co wypychane aktualizacje, więc strona może traktować jedno i
+   drugie tak samo.
 
 2. **Napisz projekcję.**
 
+   <!-- snippet: cart/LiveCarts.scala#projection -->
    ```scala
-   import io.reactivecqrs.core.documentstore.{Dokument, Magazyn dokumentów}
+   import java.time.Duration
+   import io.reactivecqrs.core.documentstore.{Document, DocumentStore}
    import io.reactivecqrs.core.projection.{SubscribableProjectionActor, SubscriptionsState}
    import io.reactivecqrs.testdomain.shoppingcart.ShoppingCart
 
-   klasa LiveCartsProjection(val subscriptionsState: SubscriptionsState,
-                             sklep: DocumentStore[CartSummary]) rozszerza SubscribableProjectionActor {
+   class LiveCartsProjection(val subscriptionsState: SubscriptionsState,
+                             store: DocumentStore[CartSummary],
+                             updatesCacheTTL: Duration = Duration.ZERO,
+                             subscriptionTTL: Int = SubscribableProjectionActor.defaultSubscriptionTTL)
+     extends SubscribableProjectionActor(updatesCacheTTL, subscriptionTTL) {
 
-     nadpisz chronioną wartość projectionName: String = "LiveCarts"
+     override protected val projectionName: String = "LiveCarts"
 
-     chronionych słuchaczy wartości = Lista(
-       AggregateListener[ShoppingCart] { (cartId, wersja, utworzony, koszyk) => niejawna sesja =>
-         podsumowanie wartości = cart.map(c => CartSummary(c.name, c.items.size, version.asInt))
-         podsumowanie dopasowania {
-           przypadek Some(s) => store.updateDocument(0, cartId.asLong, _ => Document(s))
-           przypadek None => store.removeDocument(cartId.asLong)
+     protected val listeners = List(
+       AggregateListener[ShoppingCart] { (cartId, version, created, cart) => implicit session =>
+         val summary = cart.map(c => CartSummary(c.name, c.items.size, version.asInt))
+         summary match {
+           case Some(s) => store.updateDocument(0, cartId.asLong, _ => Document(s))
+           case None => store.removeDocument(cartId.asLong)
          }
-         jeśli (!rebuilding) sendUpdate[CartPageUpdate](CartPageUpdate(cartId, summary))
+         if (!rebuilding) sendUpdate[CartPageUpdate](CartPageUpdate(cartId, summary))
        })
 
-     nadpisz chronione def receiveSubscriptionRequest: Receive = {
-       przypadek WatchCart(subscriptionId, cartId) =>
+     override protected def receiveSubscriptionRequest: Receive = {
+       case WatchCart(subscriptionId, cartId) =>
          handleSubscribe[CartPageUpdate, CartPageUpdate](subscriptionId, sender(),
-           aktualizacja => jeśli (aktualizacja.cartId == cartId) Some(aktualizacja) else None)
+           filter = update => if (update.cartId == cartId) Some(update) else None,
+           missedUpdatesFilter = update => update.cartId == cartId)
      }
 
-     nadpisz chronione def receiveQuery: Receive = {
-       przypadek GetCartPage(cartId) =>
+     override protected def receiveQuery: Receive = {
+       case GetCartPage(cartId) =>
          sender() ! CartPageUpdate(cartId, store.getDocument(cartId.asLong).map(_.document))
      }
    }
@@ -111,224 +120,259 @@ rozdział 4 podłączony.
 
    Linijka po linijce:
 
-    - Słuchacz utrzymuje dokument na bieżąco, jak w rozdziale 8 (`updateDocument` wstawia
-      dokumentu, gdy jeszcze go nie ma), a następnie ogłasza zmianę za pomocą `sendUpdate`.
-    - `if (!rebuilding)`: podczas gdy projekcja jest odbudowywana z historii (rozdział 10), jej słuchacze
-      odtwarzać stare wydarzenia. Nikt nie chce, żeby mleko z zeszłego roku było wyświetlane na jego ekranie.
-    - `handleSubscribe[CartPageUpdate, CartPageUpdate]` nadaje nazwy obu typom: co ogłasza `sendUpdate`
-      i co otrzymuje abonent. Tutaj są one takie same.
-    - Filtr zachowuje aktualizacje jednego koszyka, który obserwuje dany subskrybent.
-    - Nasłuchiwaczem jest `sender()`: ktokolwiek wysłał `WatchCart`, otrzymuje aktualizacje. Projekcja potwierdza
-      z `SubscribedForProjectionUpdates(subscriptionId)`, wysłanym do tego odbiornika.
+   - Listener utrzymuje dokument w aktualnym stanie jak w rozdziale 8 (`updateDocument` wstawia
+     dokument, gdy jeszcze go nie ma), a potem ogłasza zmianę przez `sendUpdate`.
+   - `if (!rebuilding)`: gdy projekcja jest przebudowywana z historii (rozdział 10), jej listenery
+     odtwarzają stare zdarzenia. Nikt nie potrzebuje na ekranie zeszłorocznego mleka.
+   - `handleSubscribe[CartPageUpdate, CartPageUpdate]` podaje oba typy: to, co ogłasza `sendUpdate`,
+     i to, co dostaje subskrybent. Tutaj są takie same.
+   - Filtr przepuszcza aktualizacje tylko tego jednego koszyka, który obserwuje dany subskrybent.
+   - Listenerem subskrypcji jest `sender()`: kto wysłał `WatchCart`, ten dostaje aktualizacje.
+     Projekcja potwierdza to komunikatem `SubscribedForProjectionUpdates(subscriptionId)`, wysłanym
+     do tego listenera.
+   - Dwa ostatnie parametry konstruktora zostają tu przy wartościach domyślnych biblioteki, a
+     `missedUpdatesFilter` ma znaczenie tylko z pamięcią podręczną: o obu mowa pod koniec rozdziału.
 
-3. **Uruchom go i zarejestruj**, dokładnie tak jak w rozdziale 8, z własną tabelą:
+3. **Uruchom ją i zarejestruj**, dokładnie jak w rozdziale 8, z własną tabelą:
 
+   <!-- snippet: cart/LiveUpdatesSpec.scala#start -->
    ```scala
    val liveCarts = system.actorOf(
-     Rekwizyty (nowe LiveCartsProjection (stan subskrypcji,
-       nowy PostgresDocumentStore[CartSummary]("live_carts", mpjsons, nowy NoopDocumentStoreCache)))
+     Props(new LiveCartsProjection(subscriptionsState,
+       new PostgresDocumentStore[CartSummary]("live_carts", mpjsons, new NoopDocumentStoreCache)))
        .withDispatcher(BlockingDispatcher.id),
-     „LiveCarts”)
+     "LiveCarts")
 
    eventBus ! EventsBusActor.RegisterSubscribers(List(cartsList, liveCarts))
    ```
 
-   Trafia na tę samą listę, co każdy inny abonent; autobus korzysta z tej listy tylko raz, na starcie.
+   Trafia na tę samą listę co wszyscy pozostali subskrybenci; szyna przyjmuje tę listę raz, przy
+   starcie.
 
-4. **Napisz stronę strony.** Każda otwarta strona ma swojego własnego małego aktora, sesję, która
-   subskrybuje po rozpoczęciu, przekazuje wiadomości do przeglądarki, odnawia subskrypcję i
-   anuluje, gdy się zatrzyma:
+4. **Napisz obsługę strony.** Każda otwarta strona dostaje własnego małego aktora, sesję, która po
+   starcie subskrybuje, przekazuje nowości do przeglądarki, odnawia subskrypcję i anuluje ją, gdy się
+   zatrzymuje:
 
+   <!-- snippet: cart/LiveCarts.scala#session -->
    ```scala
-   importuj java.util.UUID
-   import org.apache.pekko.actor.{Actor, ActorRef, Timery}
+   import java.util.UUID
+   import org.apache.pekko.actor.{Actor, ActorRef, Timers}
    import io.reactivecqrs.core.projection.SubscribableProjectionActor._
    import scala.concurrent.duration._
 
-   obiekt CartPageSession {
-     prywatny obiekt sprawy Odnów
+   object CartPageSession {
+     private case object Renew
    }
 
-   /** Jedna otwarta strona koszyka; `push` wysyła zmianę do przeglądarki (ta część to Twoja warstwa internetowa). */
-   klasa CartPageSession(liveCarts: ActorRef, cartId: AggregateId, push: CartPageUpdate => Unit)
-     rozszerza aktora o timery {
-     importuj CartPageSession.Renew
+   /** One open cart page; `push` sends a change to the browser (that part is your web layer). */
+   class CartPageSession(liveCarts: ActorRef, cartId: AggregateId, push: CartPageUpdate => Unit)
+     extends Actor with Timers {
+     import CartPageSession.Renew
 
-     prywatna zmienna subscriptionId = ""
-     prywatna zmienna pokazanoVersion = 0
+     private var subscriptionId = ""
+     private var shownVersion = 0
 
-     nadpisz def preStart(): Jednostka = subscribe()
+     override def preStart(): Unit = subscribe()
 
-     prywatna def subscribe(): Jednostka = {
+     private def subscribe(): Unit = {
        subscriptionId = UUID.randomUUID().toString
-       liveCarts ! WatchCart(subscriptionId, cartId) // pierwsza subskrypcja,
-       liveCarts ! GetCartPage(cartId) // następnie załaduj to, co jest teraz
+       liveCarts ! WatchCart(subscriptionId, cartId) // first subscribe,
+       liveCarts ! GetCartPage(cartId)               // then load what is there now
      }
 
-     nadpisz def receive: Receive = {
-       przypadek SubscribedForProjectionUpdates(id), jeśli id ​​== subscriptionId =>
-         timers.startTimerWithFixedDelay(Odnów, Odnów, 3.minuty)
-       przypadek SubscriptionUpdated(id, aktualizacja: CartPageUpdate) jeśli id ​​== subscriptionId =>
-         pokaż(aktualizuj)
-       aktualizacja przypadku: CartPageUpdate => // odpowiedź na GetCartPage
-         pokaż(aktualizuj)
-       sprawa Odnów =>
-         liveCarts! Odnów subskrypcję (subscriptionId)
-       przypadek ProjectionSubscriptionsCancelled(ids), jeśli ids.contains(subscriptionId) =>
-         subscribe() // projekcja o nas zapomniała: zasubskrybuj ponownie i załaduj ponownie
+     override def receive: Receive = {
+       case SubscribedForProjectionUpdates(id) if id == subscriptionId =>
+         timers.startTimerWithFixedDelay(Renew, Renew, 3.minutes)
+       case SubscriptionUpdated(id, update: CartPageUpdate) if id == subscriptionId =>
+         show(update)
+       case update: CartPageUpdate => // the answer to GetCartPage
+         show(update)
+       case Renew =>
+         liveCarts ! RenewSubscription(subscriptionId)
+       case ProjectionSubscriptionsCancelled(ids) if ids.contains(subscriptionId) =>
+         subscribe() // the projection forgot us: subscribe again, and load again
      }
 
-     // Przesyłanie i odpowiedzi mogą się wzajemnie nakładać: wyświetlaj tylko te elementy, które są nowsze od strony.
-     prywatna def show(aktualizacja: CartPageUpdate): Jednostka = aktualizacja.podsumowanie dopasowanie {
-       przypadek Some(podsumowanie) jeśli summary.version <= shownVersion => ()
-       przypadek Some(podsumowanie) =>
-         pokazanoVersion = podsumowanie.wersja
-         push(aktualizacja)
-       przypadek None => push(aktualizacja)
+     // Pushes and answers can overtake each other: show only what is newer than the page.
+     private def show(update: CartPageUpdate): Unit = update.summary match {
+       case Some(summary) if summary.version <= shownVersion => ()
+       case Some(summary) =>
+         shownVersion = summary.version
+         push(update)
+       case None => push(update)
      }
 
-     nadpisz def postStop(): Unit = liveCarts ! CancelProjectionSubscriptions(List(subscriptionId))
+     override def postStop(): Unit = liveCarts ! CancelProjectionSubscriptions(List(subscriptionId))
    }
    ```
 
-   Gdy strona się otworzy, rozpocznij sesję; gdy się zamknie, zatrzymaj ją:
+   Gdy strona się otwiera, uruchom sesję,
 
+   <!-- snippet: cart/LiveUpdatesSpec.scala#openSession -->
    ```scala
    val session = system.actorOf(Props(new CartPageSession(liveCarts, cartId, update => browser.send(update))))
-   // ... i kiedy strona się zamknie:
-   system.stop(sesja)
    ```
 
-   (`browser.send` oznacza warstwę internetową: WebSocket, zdarzenia wysyłane przez serwer, cokolwiek używasz.)
+   a gdy się zamyka, zatrzymaj ją:
 
-> **Wskazówka:** najpierw zasubskrybuj, a następnie załaduj i zachowaj najwyższą wersję. Zasubskrybowanie najpierw oznacza brak zmian.
-> może prześlizgnąć się między obciążeniem a subskrypcją; wersja informuje stronę, która z dwóch
-> Wiadomości są nowsze, gdy push i odpowiedź na `GetCartPage` się krzyżują. Dlatego `CartSummary`
-> niesie wersję wózka.
+   <!-- snippet: cart/LiveUpdatesSpec.scala#closeSession -->
+   ```scala
+   system.stop(session)
+   ```
 
-> **Wskazówka:** nadaj każdej subskrypcji nowy identyfikator, taki jak UUID, tak jak robi to sesja. Identyfikator użyty dwukrotnie
-> w jednej projekcji miesza dwie subskrypcje.
+   (`browser.send` zastępuje tu twoją warstwę webową: WebSocket, server-sent events, czegokolwiek
+   używasz.)
 
-## Co się stanie, gdy Alicja doda mleka
+> **Wskazówka:** najpierw subskrybuj, potem wczytuj i trzymaj najwyższą wersję. Dzięki temu, że
+> subskrypcja idzie pierwsza, żadna zmiana nie prześlizgnie się między wczytaniem a subskrypcją.
+> Wersja z kolei mówi stronie, która z dwóch wiadomości jest nowsza, gdy wypchnięta aktualizacja i
+> odpowiedź na `GetCartPage` miną się po drodze. Dlatego `CartSummary` niesie wersję koszyka.
 
-1. Strona Boba pokazuje koszyk 42 w wersji 3: „Artykuły spożywcze”, dwa artykuły. Jego sesja została zasubskrybowana
-   identyfikator `"7f3c..."`.
-2. Alicja wysyła `AddItem(alicja, cartId, AggregateVersion(3), "milk")`. Wózek przechodzi do wersji 4.
-3. Szyna zdarzeń dostarcza nowy stan do „LiveCarts”. Słuchacz zapisuje dokument i wywołuje
-   `sendUpdate[CartPageUpdate](CartPageUpdate(cartId, Some(CartSummary("Artykuły spożywcze", 3, 4))))`.
-4. Projekcja oferuje aktualizację każdej subskrypcji „CartPageUpdate”. Odpowiedzi Boba na filtry
-   `Some(update)`; Carol, która obserwuje wózek nr 7, odpowiada `None`.
-5. Sesja Boba otrzymuje `SubscriptionUpdated("7f3c...", CartPageUpdate(...))`, widzi tę wersję
-   Wersja 4 jest nowsza niż wersja 3, którą pokazuje, i przesyła ją do przeglądarki. Mleko!
+> **Wskazówka:** dawaj każdej subskrypcji świeży identyfikator, na przykład UUID, tak jak robi to
+> sesja. Identyfikator użyty dwa razy w jednej projekcji miesza ze sobą obie subskrypcje.
+
+## Co się dzieje, gdy Alicja dodaje mleko
+
+1. Strona Boba pokazuje koszyk 42 w wersji 3: „Zakupy”, dwie pozycje. Jego sesja ma subskrypcję o
+   identyfikatorze `"7f3c..."`.
+2. Alicja wysyła `AddItem(alice, cartId, AggregateVersion(3), "milk")`. Koszyk przechodzi do
+   wersji 4.
+3. Szyna zdarzeń dostarcza nowy stan do `LiveCarts`. Listener zapisuje dokument i wywołuje
+   `sendUpdate[CartPageUpdate](CartPageUpdate(cartId, Some(CartSummary("Groceries", 3, 4))))`.
+4. Projekcja podsuwa aktualizację każdej subskrypcji `CartPageUpdate`. Filtr Boba odpowiada
+   `Some(update)`; filtr Karoliny, która obserwuje koszyk 7, odpowiada `None`.
+5. Sesja Boba dostaje `SubscriptionUpdated("7f3c...", CartPageUpdate(...))`, widzi, że wersja 4 jest
+   nowsza niż pokazywana 3, i wypycha ją do przeglądarki. Mleko!
 
 ## Odnawianie, wygasanie i anulowanie
 
-Subskrypcje są przechowywane w pamięci projekcji, a nie w bazie danych, i nie są przechowywane wiecznie:
+Subskrypcje żyją w pamięci projekcji, a nie w bazie danych, i nie żyją wiecznie:
 
-- Subskrypcja, która nie została odnowiona przez **10 minut**, wygasa. Projekcja sprawdza raz
-  minutę i bez słowa usuwa wygasłe subskrypcje.
-- **`RenewSubscription(id)`** dla subskrypcji, o której projekcja wie, że ją odnawia, ale nie otrzymuje odpowiedzi.
-  Po pierwsze, nie wie, że odpowiedź brzmi **`ProjectionSubscriptionsCancelled(List(id))`**:
-  subskrypcja wygasła, projekcja została ponownie uruchomiona lub w klastrze została przeniesiona na inny węzeł
-  (rozdział 17). Następnie powyższa sesja ponownie się subskrybuje i ponownie ładuje koszyk, ponieważ może
-  W międzyczasie przegapiłem aktualizacje.
-- **`CancelProjectionSubscriptions(ids)`** kończy subskrypcje i otrzymuje odpowiedź
-  `ProjectionSubscriptionsCancelled(ids)`. Identyfikatory, których projekcja nie zna, są po prostu ignorowane.
-  sesja wysyła ją w momencie zatrzymania, więc odpowiedź nie trafia donikąd, co jest w porządku.
+- Subskrypcja nieodnowiona przez **10 minut** wygasa. Projekcja sprawdza to raz na minutę i bez słowa
+  usuwa wygasłe subskrypcje.
+- **`RenewSubscription(id)`** dla subskrypcji, którą projekcja zna, odnawia ją i nie dostaje
+  odpowiedzi. Dla nieznanej odpowiedzią jest **`ProjectionSubscriptionsCancelled(List(id))`**:
+  subskrypcja wygasła, projekcja się zrestartowała albo, w klastrze, przeniosła się na inny węzeł
+  (rozdział 17). Sesja z przykładu wyżej subskrybuje wtedy ponownie i jeszcze raz wczytuje koszyk, bo
+  w międzyczasie mogła przegapić aktualizacje.
+- **`CancelProjectionSubscriptions(ids)`** kończy subskrypcje, a odpowiedzią jest
+  `ProjectionSubscriptionsCancelled(ids)`. Identyfikatory, których projekcja nie zna, są po prostu
+  pomijane. Sesja wysyła ten komunikat, gdy się zatrzymuje, więc odpowiedź trafia donikąd, i to nie
+  szkodzi.
 
-Czas życia jest parametrem konstruktora podanym w milisekundach:
+Czas życia to parametr konstruktora `SubscribableProjectionActor`, w milisekundach, który projekcja
+koszyków na żywo przekazuje dalej. Dla 5 minut zamiast 10:
 
+<!-- snippet: cart/LiveUpdatesSpec.scala#ttl -->
 ```scala
-klasa LiveCartsProjection(val subscriptionsState: SubscriptionsState, store: DocumentStore[CartSummary])
-  rozszerza SubscribableProjectionActor(subscriptionTTL = 5 * 60 * 1000) { // 5 minut zamiast 10
-  // ... jak poprzednio
+val patientLiveCarts = Props(new LiveCartsProjection(subscriptionsState,
+  new PostgresDocumentStore[CartSummary]("live_carts", mpjsons, new NoopDocumentStoreCache),
+  subscriptionTTL = 5 * 60 * 1000)) // 5 minutes instead of 10
+```
+
+> **Pamiętaj:** odnawiaj z dużym zapasem przed upływem czasu życia (na przykład co 3 minuty przy 10)
+> i traktuj `ProjectionSubscriptionsCancelled` jako „zasubskrybuj ponownie i wczytaj ponownie”.
+
+## Nadrabianie przegapionych aktualizacji: pamięć podręczna aktualizacji
+
+Czasem subskrybent przychodzi chwilę za późno: strona, która wysyła polecenie i zaraz potem
+subskrybuje, może przegapić aktualizację o własnej zmianie. Na takie sytuacje projekcja
+subskrybowalna może przez krótki czas pamiętać wysłane aktualizacje i odtwarzać je nowym
+subskrybentom. Włączają to dwie rzeczy: parametr konstruktora `updatesCacheTTL`, typu
+`java.time.Duration` (domyślne `Duration.ZERO` nie zachowuje niczego), który projekcja koszyków na
+żywo przekazuje dalej,
+
+<!-- snippet: cart/LiveUpdatesSpec.scala#cache -->
+```scala
+val cachingLiveCarts = system.actorOf(
+  Props(new LiveCartsProjection(subscriptionsState,
+    new PostgresDocumentStore[CartSummary]("cached_live_carts", mpjsons, new NoopDocumentStoreCache),
+    updatesCacheTTL = java.time.Duration.ofSeconds(30)))
+    .withDispatcher(BlockingDispatcher.id),
+  "CachingLiveCarts")
+```
+
+oraz `missedUpdatesFilter` w `handleSubscribe`, który wybiera spośród zapamiętanych aktualizacji te,
+których chce dany subskrybent (domyślnie żadnych). Subskrypcja koszyków na żywo ma taki filtr:
+
+<!-- snippet: cart/LiveCarts.scala#subscribe -->
+```scala
+override protected def receiveSubscriptionRequest: Receive = {
+  case WatchCart(subscriptionId, cartId) =>
+    handleSubscribe[CartPageUpdate, CartPageUpdate](subscriptionId, sender(),
+      filter = update => if (update.cartId == cartId) Some(update) else None,
+      missedUpdatesFilter = update => update.cartId == cartId)
 }
 ```
 
-> **Pamiętaj:** odnawiaj się dobrze w czasie życia (np. co 3 minuty przez 10 minut) i lecz
-> `ProjectionSubscriptionsCancelled` jako „zapisz się ponownie i załaduj ponownie”.
+Nowa subskrypcja dostaje teraz, zaraz po `SubscribedForProjectionUpdates`, każdą aktualizację z
+ostatnich 30 sekund, która przejdzie przez `missedUpdatesFilter`, a każda z nich jak zwykle przechodzi
+też przez `filter`. Projekcja trzyma w pamięci każdą aktualizację ogłoszoną w tym czasie, więc w
+ruchliwej projekcji ustaw ten czas krótko.
+Na naszej stronie zasada „najpierw subskrybuj, potem wczytuj” już zamyka tę lukę; pamięć podręczna
+przydaje się subskrybentom, którzy nie mają czego wczytywać.
 
-## Nadrabianie pominiętych aktualizacji: pamięć podręczna aktualizacji
+## O czym pamiętać
 
-Czasami subskrybent pojawia się chwilę za późno: strona wysyła polecenie i od razu subskrybuje
-po tym, jak może przegapić impuls własnej zmiany. W tym celu projekcja subskrybowana może zachować krótki
-zapamiętuje wysłane aktualizacje i odtwarza je nowym subskrybentom. Dwie rzeczy go włączają:
-konstruktora `updatesCacheTTL`, `java.time.Duration` (`Duration.ZERO`, wartość domyślna, zachowuje
-nic) i filtr „missedUpdatesFilter” w „handleSubscribe”, który wybiera zapamiętane aktualizacje
-abonent chce (domyślnie nic):
+> **Ostrzeżenie:** subskrypcje i aktualizacje są dopasowywane po typie `DATA`, porównywanym po nazwie,
+> i po obu stronach musi to być dokładnie ten sam typ. `sendUpdate` z podtypem albo nadtypem typu, z
+> którym założono subskrypcję, nie dociera do nikogo, i to bez żadnego błędu. Wpisywanie parametru
+> typu w obu wywołaniach, jak w `handleSubscribe[CartPageUpdate, CartPageUpdate]` i
+> `sendUpdate[CartPageUpdate]`, pilnuje, żeby się zgadzały.
 
-```scala
-klasa LiveCartsProjection(val subscriptionsState: SubscriptionsState, store: DocumentStore[CartSummary])
-  rozszerza SubscribableProjectionActor(updatesCacheTTL = java.time.Duration.ofSeconds(30)) {
+> **Ostrzeżenie:** aktualizacja wychodzi dopiero wtedy, gdy transakcja twojego listenera zostanie
+> zatwierdzona, nigdy wcześniej. Jeśli transakcja zostanie wycofana (zawiódł inny koszyk z tej samej
+> grupy albo twój listener rzucił wyjątek po wywołaniu `sendUpdate`), nic nie zostaje wypchnięte, a
+> przebieg, który się powiedzie, wypycha aktualizację raz. Ale aktualizacja wciąż może przepaść, gdy
+> węzeł zatrzyma się tuż po zatwierdzeniu, a strona może przy subskrypcji zobaczyć aktualizację drugi
+> raz, z pamięci podręcznej aktualizacji. Prawdą jest model odczytu: wypychaj całe dokumenty z ich
+> wersją, a nie różnice, i wczytuj wszystko od nowa, gdy subskrypcja zostanie anulowana.
 
-  // ... słuchacze i zapytania jak poprzednio
+> **Ostrzeżenie:** każda aktualizacja uruchamia po kolei filtr każdej subskrypcji swojego typu, w
+> wątku projekcji. Niech filtry ograniczają się do szybkiego porównania. Gdy filtr rzuci wyjątek,
+> trafia to do logu, a tę aktualizację traci tylko jego własna subskrypcja.
 
-  nadpisz chronione def receiveSubscriptionRequest: Receive = {
-    przypadek WatchCart(subscriptionId, cartId) =>
-      handleSubscribe[CartPageUpdate, CartPageUpdate](subscriptionId, sender(),
-        filtr = aktualizacja => jeśli (aktualizacja.cartId == cartId) Some(aktualizacja) else None,
-        missingUpdatesFilter = aktualizacja => aktualizacja.cartId == cartId)
-  }
-}
-```
+> **Pamiętaj:** identyfikator subskrypcji oznacza jedną subskrypcję. Ponowna subskrypcja z
+> identyfikatorem, który jest już w użyciu, zastępuje tamtą subskrypcję, a listener, do którego
+> należał ten identyfikator, dostaje `ProjectionSubscriptionsCancelled`. Losowy identyfikator dla
+> każdej strony, taki, jaki robi `CartPageSession`, nigdy nie trafi na inny.
 
-Nowa subskrypcja otrzymuje teraz, zaraz po `SubscribedForProjectionUpdates`, każdą aktualizację ostatniej
-30 sekund, które przechodzą przez filtr „missedUpdatesFilter”, każdy jak zwykle przez swój „filtr”. Projekcja
-przechowuje w pamięci każdą aktualizację ogłoszoną w tym czasie, więc nie marnuj czasu na zajęty
-występ.
-Na naszej stronie „najpierw subskrybuj, potem ładuj” już wypełnia lukę; pamięć podręczna jest przeznaczona dla subskrybentów
-które nie mają nic do załadowania.
+> **Pamiętaj:** w klastrze projekcja uruchomiona przez `Projections.start` działa na jednym węźle, a
+> komunikaty do niej mogą przechodzić przez sieć (rozdział 17). Twoje własne komunikaty nie mogą mieć
+> pól `ActorRef`, i to kolejny powód, żeby brać listenera z `sender()`, a nie z pola `WatchCart`.
+> Aktualizacje podróżują wewnątrz bibliotecznego `SubscriptionUpdated`, więc `CartPageUpdate` musi
+> być zwykłą case class, którą serializator klastra potrafi zapisać, tak jak każda odpowiedź na
+> zapytanie.
 
-## Rzeczy, o których należy pamiętać
+> **Pod maską:** `sendUpdate` dociera do subskrypcji przez komunikat, który projekcja wysyła sama do
+> siebie, gdy transakcja listenera zostanie zatwierdzona (`afterCommit`, z którego mogą korzystać też
+> twoje projekcje), więc listener może je wywołać nawet z wątków `parallelUpdateProcessing`. Gdy
+> projekcja zarządzana przełącza się na nową budowę (rozdział 10), stara instancja przekazuje nowej
+> swoje subskrypcje, razem z filtrami, a strony niczego nie zauważają; dlatego też filtr nie może
+> korzystać z magazynów starej budowy. Sprawdzanie raz na minutę, które kończy wygasłe subskrypcje,
+> przy okazji przycina pamięć podręczną aktualizacji. Zobacz
+> [ARCHITECTURE.md, sekcja 6.6](../ARCHITECTURE.md).
 
-> **Ostrzeżenie:** subskrypcje i aktualizacje są dopasowywane według typu `DATA`, porównywane według nazwy i
-> musi być dokładnie tego samego typu po obu stronach. `sendUpdate` podtypu lub nadtypu tego samego typu
-> zasubskrybowałeś z „nie dociera do nikogo”, bez błędu. Zapisuję parametr typu w obu wywołaniach,
-> jak w `handleSubscribe[CartPageUpdate, CartPageUpdate]` i `sendUpdate[CartPageUpdate]`, zachowuje
-> ich w kroku.
+Własne testy biblioteki używają projekcji subskrybowalnych w `SubscribableSpec` (w module `core`) i w
+`ProjectionsSpec`, którego `ManagedNotes` wypycha linie każdej notatki, chyba że trwa przebudowa, i
+zachowuje swoich subskrybentów przez całą przebudowę.
 
-> **Ostrzeżenie:** aktualizacja może dotrzeć dwa razy lub trochę wcześniej. `sendUpdate` powoduje wysłanie aktualizacji o
-> raz, gdy transakcja słuchacza jest nadal otwarta. Jeśli ta transakcja zostanie wycofana,
-> (inny wózek w tej samej grupie nie powiódł się lub Twój program nasłuchujący zgłosił błąd po wywołaniu `sendUpdate`),
-> program nasłuchujący zostanie uruchomiony ponownie, a strona może otrzymać tę samą aktualizację dwa razy; jeśli program nasłuchujący będzie się powtarzał,
-> strona może nawet zobaczyć zmianę, której model odczytu nigdy nie zapisał. Dlatego przesyłaj całe dokumenty za pomocą
-> ich wersji, a nie różnic, i wywołaj `sendUpdate` jako ostatnią czynność wykonywaną przez program nasłuchujący.
+## Co już umiesz
 
-> **Ostrzeżenie:** każda aktualizacja uruchamia filtr każdej subskrypcji tego typu, jedną po drugiej,
-> w wątku projekcji. Zachowaj filtry do szybkiego porównania. Filtr, który generuje błąd, jest rejestrowany,
-> i aktualizacja w tym miejscu się zatrzymuje: subskrypcje znajdujące się po niej nie otrzymują jej.
-
-> **Pamiętaj:** w klastrze projekcja uruchomiona za pomocą `Projections.start` działa na jednym węźle i
-> wiadomości do niego mogą przekraczać sieć (rozdział 17). Twoje własne wiadomości nie mogą zawierać atrybutu `ActorRef`
-> pola, co stanowi kolejny powód, aby pobrać obiekt nasłuchujący z `sender()`, a nie z pola
-> `WatchCart`. Aktualizacje są przesyłane w ramach `SubscriptionUpdated` biblioteki, więc `CartPageUpdate`
-> musi być prostą klasą przypadku, którą serializator klastra może zapisać, jak dowolną odpowiedź na zapytanie.
-
-> **Pod maską:** `sendUpdate` dociera do subskrypcji za pomocą wiadomości wysyłanej przez projekcję
-> do siebie, więc słuchacz może wywołać go nawet z wątków `parallelUpdateProcessing`. Kiedy
-> zarządzana projekcja przełącza się na nową kompilację (rozdział 10), stara instancja przekazuje swoją
-> subskrypcje, filtry dołączone do nowego, a strony nie zauważają; dlatego też
-> Filtr nie może korzystać ze starych magazynów kompilacji. Raz na minutę, co powoduje wygaśnięcie subskrypcji.
-> przycina również pamięć podręczną aktualizacji. Zobacz [ARCHITECTURE.md, sekcja 6.6](../ARCHITECTURE.md).
-
-Własne testy biblioteki wykorzystują projekcje subskrybowalne w `SubscribableSpec` (w module `core`)
-i w `ProjectionsSpec`, którego `ManagedNotes` wypycha linie każdej notatki, chyba że jest w trakcie przebudowy, i
-utrzymuje swoich abonentów podczas odbudowy.
-
-## Czego się nauczyłeś
-
-- **`SubscribableProjectionActor`** to projekcja, która również wysyła aktualizacje do subskrybentów.
-- Subskrybent wysyła własną wiadomość subskrybującą; `receiveSubscriptionRequest` obsługuje ją za pomocą
-  **`handleSubscribe(subscriptionId, listener, filter)`**, a słuchacz otrzymuje
+- **`SubscribableProjectionActor`** to projekcja, która dodatkowo wypycha aktualizacje do
+  subskrybentów.
+- Subskrybent wysyła twój własny komunikat subskrypcji; `receiveSubscriptionRequest` obsługuje go
+  przez **`handleSubscribe(subscriptionId, listener, filter)`**, a listener dostaje
   `SubscribedForProjectionUpdates`.
-- Słuchacze ogłaszają zmiany za pomocą **`sendUpdate[DATA](data)`**, pomijane podczas `odbudowy`; każdy
-  Filtr subskrypcji zmienia aktualizację na `SubscriptionUpdated(id, update)` lub na nic.
-- Subskrypcje są zapisywane w pamięci: **odnów** je w ciągu 10 minut za pomocą opcji `RenewSubscription`,
-  `ProjectionSubscriptionsCancelled` jako „subskrybuj ponownie i odśwież” i **anuluj** za pomocą
-  `Anuluj subskrypcje projekcji`.
-- **Najpierw zasubskrybuj, potem załaduj i zachowaj najwyższą wersję**: pushe mogą się powtarzać i mogą się krzyżować
-  odpowiedzi na zapytania.
-- `updatesCacheTTL` z `missedUpdatesFilter` odtwarza ostatnie aktualizacje nowym subskrybentom.
+- Listenery ogłaszają zmiany przez **`sendUpdate[DATA](data)`**, pomijane podczas przebudowy
+  (`rebuilding`); filtr każdej subskrypcji zamienia aktualizację w `SubscriptionUpdated(id, update)`
+  albo w nic.
+- Subskrypcje żyją w pamięci: **odnawiaj** je przed upływem 10 minut przez `RenewSubscription`,
+  traktuj `ProjectionSubscriptionsCancelled` jako „zasubskrybuj ponownie i wczytaj od nowa”, a
+  **anuluj** przez `CancelProjectionSubscriptions`.
+- **Najpierw subskrybuj, potem wczytuj i trzymaj najwyższą wersję**: wypchnięte aktualizacje mogą
+  się powtarzać i mijać z odpowiedziami na zapytania.
+- `updatesCacheTTL` razem z `missedUpdatesFilter` odtwarza nowym subskrybentom niedawne aktualizacje.
 
-Dalej: [rozdział 12](12-sagas.md) pozostawia modele odczytu i uruchamia kilka agregatów
-razem.
+W [rozdziale 12](12-sagas.md) zostawiamy modele odczytu i sprawiamy, że kilka agregatów zaczyna ze
+sobą współpracować.

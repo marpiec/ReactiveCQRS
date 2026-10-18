@@ -1,272 +1,277 @@
 # Rozdział 16. Organizacje (przestrzenie)
 
-Witamy w części VI, gdzie Twoja aplikacja się rozwija. Większość aplikacji biznesowych obsługuje więcej niż
-jedna organizacja klienta z jednej instalacji: sklepy, firmy, szkoły, kluby. Do końca
-w tym rozdziale dowiesz się, jak ReactiveCQRS śledzi, która organizacja jest każdym agregatem
-należy do, w jaki sposób sprawić, by Twoje modele odczytu zawierały tę wiedzę, aby dane jednej organizacji mogły być
-wyczyszczone i odbudowane samodzielnie, które jednorazowe kroki instalacji ze starszymi danymi i jak to zrobić
-usunąć organizację na dobre.
+Witaj w części VI, w której twoja aplikacja dorasta. Większość aplikacji biznesowych obsługuje z
+jednej instalacji więcej niż jedną organizację-klienta: sklepy, firmy, szkoły, kluby. Na końcu tego
+rozdziału będziesz wiedzieć, jak ReactiveCQRS pilnuje, do której organizacji należy każdy agregat, jak
+sprawić, by twoje modele odczytu też to wiedziały, żeby dane jednej organizacji dało się wyczyścić i
+przebudować osobno, jakie jednorazowe kroki wykonuje instalacja ze starszymi danymi i jak usunąć
+organizację na dobre.
 
 ---
 
 ## Wiele sklepów, jeden budynek
 
-Wyobraź sobie centrum handlowe. Wiele sklepów mieści się pod jednym dachem: dzielą budynek, prąd i…
-i ochroniarzy, ale każdy sklep ma swój własny asortyment, kasy i paragony. Kiedy jeden sklep
-przestawia swoje półki, inni tego nie zauważają; gdy jeden sklep się wyprowadza, opróżnia swój lokal,
-nie całe centrum handlowe.
+Pomyśl o centrum handlowym. Pod jednym dachem mieszka wiele sklepów: dzielą budynek, prąd i
+ochroniarzy, ale towar, kasy i paragony każdy sklep ma własne. Kiedy jeden sklep przestawia półki,
+inne tego nie zauważają; kiedy jeden sklep się wyprowadza, opróżnia własny lokal, a nie całe centrum.
 
-W ReactiveCQRS budynkiem jest Twoja instalacja (Twoja aplikacja i jej baza danych), a każdy sklep
-jest **organizacją**, nazywaną **przestrzenią** i zapisywaną jako `SpaceId`. Własny zarząd centrum handlowego
-Biuro to także przestrzeń: **przestrzeń 0**, platforma, dla agregatów, które nie należą do żadnego klienta
-(ustawienia, lista organizacji, szablony, które każdy może skopiować).
+W ReactiveCQRS budynkiem jest twoja instalacja (twoja aplikacja i jej baza danych), a każdy sklep to
+**organizacja**, nazywana **przestrzenią** (space) i zapisywana jako `SpaceId`. Biuro zarządcy
+centrum też jest przestrzenią: to **przestrzeń 0**, platforma, dla agregatów, które nie należą do
+żadnego klienta (ustawienia, lista organizacji, szablony, które każdy może skopiować).
 
 ```scala
-importuj io.reactivecqrs.api.id.SpaceId
+import io.reactivecqrs.api.id.SpaceId
 
 val platform = SpaceId(0)
-val cornerShop = SpaceId(42) // cornerShop.asLong == 42
+val cornerShop = SpaceId(42)  // cornerShop.asLong == 42
 ```
 
-Istnieje również `SpaceId.unknown` (-1), co oznacza „brak spacji”. Spotkasz się z tym tylko w starych danych.
+Jest też `SpaceId.unknown` (-1), co znaczy „brak przestrzeni”. Tę wartość spotkasz tylko w starych
+danych.
 
-> **Wskazówka:** jeśli organizacje są agregatami w Twojej aplikacji, `SpaceId(organizationId)` zmienia
-> `AggregateId` organizacji do swojej przestrzeni, więc oba będą miały tę samą liczbę.
+> **Wskazówka:** jeśli w twojej aplikacji organizacje są agregatami, `SpaceId(organizationId)` zamienia
+> `AggregateId` organizacji w jej przestrzeń, więc jedno i drugie to ta sama liczba.
 
-## Każdy agregat należy do przestrzeni
+## Każdy agregat należy do jakiejś przestrzeni
 
-Agregat otrzymuje swoją przestrzeń raz, od pierwszego zdarzenia, w momencie utworzenia. Dlatego każdy
+Agregat dostaje przestrzeń raz, od swojego pierwszego zdarzenia, gdy powstaje. Dlatego każde
 `FirstEvent` ma `spaceId` ([rozdział 6](06-events.md)). W domenie testowej każdy koszyk należy do
-platforma:
+platformy:
 
+<!-- snippet: shoppingcart/Events.scala#created -->
 ```scala
-klasa przypadku ShoppingCartCreated(nazwa: String) rozszerza FirstEvent[ShoppingCart] {
+case class ShoppingCartCreated(name: String) extends FirstEvent[ShoppingCart] {
   def spaceId: SpaceId = SpaceId(0)
 }
 ```
 
-Biblioteka przechowuje przestrzeń z agregatem w momencie zapisania pierwszego zdarzenia i zachowuje ją na później.
-całe życie całości. Późniejsze wydarzenia tego nie powtórzą.
+Biblioteka zapisuje przestrzeń razem z agregatem, gdy zapisuje jego pierwsze zdarzenie, i trzyma ją
+przez całe życie agregatu. Późniejsze zdarzenia jej nie powtarzają.
 
-### Brak spacji, brak agregatu
+### Bez przestrzeni nie ma agregatu
 
-Nowy agregat, którego pierwsze zdarzenie daje ujemną przestrzeń, np. `SpaceId.unknown`, jest odrzucany
-przed napisaniem czegokolwiek: na polecenie odpowiadamy komunikatem `FailureResponse`, którego wiadomość rozpoczyna się
-„Nowy agregat potrzebuje miejsca”, nazywa zdarzenie i przestrzeń, którą ono zapewniło, i sugeruje „SpaceId(0)”
-dla platformy. Agregat nie jest tworzony.
+Nowy agregat, którego pierwsze zdarzenie podaje ujemną przestrzeń, na przykład `SpaceId.unknown`,
+zostaje odrzucony, zanim cokolwiek się zapisze: polecenie dostaje odpowiedź `FailureResponse`, której
+komunikat zaczyna się od „A new aggregate needs a space”, wymienia zdarzenie i podaną w nim przestrzeń
+oraz podpowiada `SpaceId(0)` dla platformy. Agregat nie powstaje.
 
-> **Pamiętaj:** nie ma domyślnej organizacji. Każde pierwsze zdarzenie decyduje, a dla platformy
-> własnych agregatów mówi na głos `SpaceId(0)`.
+> **Pamiętaj:** nie ma domyślnej organizacji. Decyduje każde pierwsze zdarzenie, a dla własnych
+> agregatów platformy mówi to wprost: `SpaceId(0)`.
 
-### Kopie nazywają własną przestrzeń
+### Kopie podają własną przestrzeń
 
-Zdarzenie duplikacji ([rozdział 6](06-events.md)) jest również pierwszym zdarzeniem, więc kopia nadaje *własną* nazwę
-przestrzeń, która może różnić się od oryginału. Szablon koszyka przechowywany przez platformę w przestrzeni 0 może być
-skopiowano do sklepu 42, a kopia należy do sklepu 42. W domenie testowej `DuplicateShoppingCart`
-tworzy `ShoppingCartDuplicated(SpaceId(0), baseAggregateId, baseAggregateVersion)`, więc jego kopie
-Zostań na platformie.
+Zdarzenie duplikacji ([rozdział 6](06-events.md)) też jest pierwszym zdarzeniem, więc kopia podaje
+*własną* przestrzeń, która może się różnić od przestrzeni oryginału. Szablon koszyka, który platforma
+trzyma w przestrzeni 0, można skopiować do sklepu 42, a kopia należy wtedy do sklepu 42. W domenie
+testowej `DuplicateShoppingCart` tworzy
+`ShoppingCartDuplicated(SpaceId(0), baseAggregateId, baseAggregateVersion)`, więc jego kopie zostają
+na platformie.
 
-Kopia odczytuje historię oryginału aż do wersji, w której została skopiowana, nawet gdy dwie wersje są niekompletne.
-mieszkają w różnych organizacjach. Pamiętaj o tym; gdy organizacja zostanie usunięta, takie kopie zostaną
-najpierw odłączyć i zachować ich stan (koniec tego rozdziału).
+Kopia nadal czyta historię oryginału aż do wersji, przy której ją skopiowano, nawet gdy oba agregaty
+żyją w różnych organizacjach. Miej to w pamięci; gdy organizacja jest usuwana, takie kopie są
+najpierw odłączane i zachowują swój stan (koniec tego rozdziału).
 
-### Wózek, który pamięta swój sklep
+### Koszyk, który pamięta swój sklep
 
-W rozdziale 6 naszkicowano „CartOpened”, pierwsze zdarzenie, którego przestrzeń pochodzi z polecenia. Weźmy to
-pomysł o krok dalej, w małym przykładzie naszego własnego (nie jest to domena testowa): wózek, który
-należy do sklepu i *pamięta* go w jego stanie.
+W rozdziale 6 pojawił się szkic `CartOpened`, pierwszego zdarzenia, którego przestrzeń pochodzi z
+polecenia. Pójdźmy z tym pomysłem o krok dalej w E9, przykładzie z tego rozdziału: koszyk należy do
+sklepu i *pamięta* go w swoim stanie.
 
+<!-- snippet: e9/ShopCarts.scala#domain -->
 ```scala
-importuj io.reactivecqrs.api._
+import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 
-klasa przypadku ShopCart(sklep: SpaceId, nazwa: String, elementy: Vector[String])
+case class ShopCart(shop: SpaceId, name: String, items: Vector[String])
 
-klasa przypadku ShopCartOpened(spaceId: SpaceId, nazwa: String) rozszerza FirstEvent[ShopCart]
-klasa przypadku ShopItemAdded(nazwa: String) rozszerza Event[ShopCart]
-klasa przypadku ShopCartSquashed(spaceId: SpaceId, nazwa: String, elementy: Vector[String]) rozszerza FirstEvent[ShopCart]
+case class ShopCartOpened(spaceId: SpaceId, name: String) extends FirstEvent[ShopCart]
+case class ShopItemAdded(name: String) extends Event[ShopCart]
+case class ShopCartSquashed(spaceId: SpaceId, name: String, items: Vector[String]) extends FirstEvent[ShopCart]
 
-klasa przypadku OpenShopCart(userId: UserId, shop: SpaceId, name: String)
-  rozszerza FirstCommand[ShopCart, CustomCommandResponse[_]]
-klasa przypadku AddShopItem(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, name: String)
-  rozszerza polecenie [ShopCart, CustomCommandResponse [_]]
+case class OpenShopCart(userId: UserId, shop: SpaceId, name: String)
+  extends FirstCommand[ShopCart, CustomCommandResponse[_]]
+case class AddShopItem(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, name: String)
+  extends Command[ShopCart, CustomCommandResponse[_]]
 
-klasa ShopCartContext rozszerza AggregateContext[ShopCart] {
-  nadpisz wersję val: Int = 1
-  nadpisanie def initialAggregateRoot: ShopCart = ShopCart(SpaceId.unknown, "", Vector.empty)
+class ShopCartContext extends AggregateContext[ShopCart] {
+  override val version: Int = 1
+  override def initialAggregateRoot: ShopCart = ShopCart(SpaceId.unknown, "", Vector.empty)
 
-  nadpisz def commandHandlers = _ => {
-    przypadek c: OpenShopCart => CommandSuccess(ShopCartOpened(c.shop, c.name))
-    przypadek c: AddShopItem => CommandSuccess(ShopItemAdded(c.name))
+  override def commandHandlers = _ => {
+    case c: OpenShopCart => CommandSuccess(ShopCartOpened(c.shop, c.name))
+    case c: AddShopItem => CommandSuccess(ShopItemAdded(c.name))
   }
 
-  nadpisz def eventHandlers = (_, _, cart) => {
-    przypadek e: ShopCartOpened => ShopCart(e.spaceId, e.name, Vector.empty)
-    przypadek e: ShopItemAdded => cart.copy(items = cart.items :+ e.name)
-    przypadek e: ShopCartSquashed => ShopCart(e.spaceId, e.name, e.items)
+  override def eventHandlers = (_, _, cart) => {
+    case e: ShopCartOpened => ShopCart(e.spaceId, e.name, Vector.empty)
+    case e: ShopItemAdded => cart.copy(items = cart.items :+ e.name)
+    case e: ShopCartSquashed => ShopCart(e.spaceId, e.name, e.items)
   }
 
-  // Zawody w squasha są również pierwszymi wydarzeniami: nadają nazwę sklepowi, w którym znajduje się wózek, o czym pamięta stan.
-  nadpisz val squash: Option[SquashPolicy[ShopCart]] =
+  // A squash event is a first event too: it names the cart's own shop, which the state remembers.
+  override val squash: Option[SquashPolicy[ShopCart]] =
     Some(SquashPolicy(cart => ShopCartSquashed(cart.shop, cart.name, cart.items)))
 }
 ```
 
-Wysyłanie `OpenShopCart(userId, SpaceId(42), "Groceries")` do magistrali poleceń tego typu jest odpowiedzią
-`SuccessResponse(cartId, AggregateVersion(1))`, a od tej pory koszyk należy do sklepu 42.
+Na `OpenShopCart(userId, SpaceId(42), "Groceries")` wysłane do szyny poleceń tego typu przychodzi
+odpowiedź `SuccessResponse(cartId, AggregateVersion(1))` i od tej chwili koszyk należy do sklepu 42.
 
-Po co utrzymywać sklep w takim stanie, skoro biblioteka już o tym wie? Bo dwa twoje własne dzieła…
-potrzeba przestrzeni długo po pierwszym wydarzeniu:
+Po co trzymać sklep w stanie, skoro biblioteka już go zna? Bo dwa elementy twojego kodu potrzebują
+przestrzeni długo po pierwszym zdarzeniu:
 
-- zdarzenie **squash** ([rozdział 14](14-squash.md)), które staje się pierwszym zdarzeniem agregatu i
-  powinien nazwać tę samą przestrzeń; `toEvent` pobiera tylko stan, więc stan musi go znać;
-- **projekcje nasłuchujące stanów** (`AggregateListener`, [rozdział 8](08-projections.md)), które
-  nigdy nie zobaczyć pierwszego wydarzenia.
+- **zdarzenie squasha** ([rozdział 14](14-squash.md)), które staje się pierwszym zdarzeniem agregatu
+  i powinno podawać tę samą przestrzeń; `toEvent` dostaje tylko stan, więc stan musi ją znać;
+- **projekcje, które słuchają stanów** (`AggregateListener`, [rozdział 8](08-projections.md)), bo
+  samego pierwszego zdarzenia nigdy nie widzą.
 
-> **Pamiętaj:** `EventMetadata` ma również pole `spaceId` ([rozdział 6](06-events.md)). To jest
-> opcjonalna część koperty metadanych, którą mogą wypełniać Twoje polecenia, na przykład w celu nagrywania z
-> w jakiej organizacji ktoś działał. Biblioteka nie używa jej do umieszczania agregatów: tylko pierwszy
-> wydarzenie to powoduje.
+> **Pamiętaj:** `EventMetadata` też ma pole `spaceId` ([rozdział 6](06-events.md)). To opcjonalna
+> część koperty metadanych, którą mogą wypełniać twoje polecenia, na przykład żeby zapisać, z której
+> organizacji ktoś działał. Biblioteka nie używa go, żeby przypisać agregat do przestrzeni: robi to
+> tylko pierwsze zdarzenie.
 
-> **Pod maską:** przestrzeń znajduje się w tabeli `aggregates` (`space_id`), zapisanej przez przechowywany
-> procedura, która tworzy wiersz agregatu z jego pierwszego zdarzenia (lub w przypadku kopii z jego
-> zdarzenie duplikacji). Sprawdzanie, które odrzuca spację ujemną, odbywa się u właściciela agregatu, przed
-> transakcja się rozpoczyna (decyzja D38). Zobacz
+> **Pod maską:** przestrzeń mieszka w tabeli `aggregates` (`space_id`), a zapisuje ją procedura
+> składowana, która tworzy wiersz agregatu z jego pierwszego zdarzenia (albo, dla kopii, ze zdarzenia
+> duplikacji). Sprawdzenie, które odrzuca ujemną przestrzeń, działa we właścicielu agregatu, zanim
+> zacznie się transakcja (decyzja D38). Zobacz
 > [ARCHITECTURE.md, sekcje 2.2 i 4.1](../ARCHITECTURE.md).
 
-## Modele do czytania również zajmują dużo miejsca
+## Modele odczytu też znają przestrzeń
 
-Biblioteka zna przestrzeń każdego agregatu. Twoje modele odczytu również muszą ją znać, jeśli kiedykolwiek zechcesz.
-wyczyścić lub odbudować dokumenty jednej organizacji bez naruszania pozostałych. Każdy dokument w
-magazyn dokumentów ma spację ustawianą podczas wstawiania dokumentu ([rozdział 8](08-projections.md)):
+Biblioteka zna przestrzeń każdego agregatu. Twoje modele odczytu też muszą ją znać, jeśli
+kiedykolwiek zechcesz wyczyścić albo przebudować dokumenty jednej organizacji, nie ruszając
+pozostałych. Każdy dokument w magazynie dokumentów ma przestrzeń, ustawianą przy wstawianiu dokumentu
+([rozdział 8](08-projections.md)):
 
 ```scala
 def insertDocument(spaceId: Long, key: Long, document: T)(implicit session: DBSession): Unit
 def updateDocument(spaceId: Long, key: Long, modify: Option[Document[T]] => Document[T])(implicit session: DBSession): Document[T]
 ```
 
-Należy pamiętać, że spacja jest tutaj zwykłym `Long`: należy przekazać `space.asLong`. `updateDocument` używa jej tylko wtedy, gdy
-musi wstawić brakujący dokument; `overwriteDocument` i `updateExistingDocument` zachowują przestrzeń
-dokument już ma.
+Zwróć uwagę, że przestrzeń jest tu zwykłym `Long`: przekazuj `space.asLong`. `updateDocument` używa
+jej tylko wtedy, gdy musi wstawić brakujący dokument; `overwriteDocument` i `updateExistingDocument`
+zachowują przestrzeń, którą dokument już ma.
 
-Projekcje domeny testowej wszędzie przechodzą przez `0`, ponieważ każdy z ich wózków znajduje się w przestrzeni
-0. W sklepach, przejdź obok sklepu. Oto lista wózków w każdym sklepie:
+Projekcje domeny testowej wszędzie przekazują `0`, bo wszystkie ich koszyki mieszkają w przestrzeni
+0. Przy sklepach przekazuj sklep. Oto lista koszyków każdego sklepu:
 
+<!-- snippet: e9/ShopCartsList.scala#list -->
 ```scala
-importuj io.reactivecqrs.api.id.SpaceId
-import io.reactivecqrs.core.documentstore.{Dokument, Magazyn dokumentów, Oczekiwana pojedyncza długa wartość}
+import io.reactivecqrs.api.id.SpaceId
+import io.reactivecqrs.core.documentstore.{Document, DocumentStore, ExpectedSingleLongValue}
 import io.reactivecqrs.core.projection.{ProjectionActor, RebuildTarget, SubscriptionsState}
 import scalikejdbc.DBSession
 
-klasa przypadku ShopCartSummary(sklep: Long, nazwa: String)
-klasa przypadku GetShopCarts(sklep: SpaceId)
+case class ShopCartSummary(shop: Long, name: String)
+case class GetShopCarts(shop: SpaceId)
 
-klasa ShopCartsList(val subscriptionsState: SubscriptionsState, documentStore: DocumentStore[ShopCartSummary])
-  rozszerza ProjectionActor {
+class ShopCartsList(val subscriptionsState: SubscriptionsState, documentStore: DocumentStore[ShopCartSummary])
+  extends ProjectionActor {
 
-  chronione val listeners = List(EventsListener[ShopCart] { (aggregateId, events) => niejawna sesja =>
+  protected val listeners = List(EventsListener[ShopCart] { (aggregateId, events) => implicit session =>
     events.foreach(_.event match {
-      przypadek ShopCartOpened(sklep, nazwa) =>
+      case ShopCartOpened(shop, name) =>
         documentStore.insertDocument(shop.asLong, aggregateId.asLong, ShopCartSummary(shop.asLong, name))
-      case ShopCartSquashed(shop, name, _) => // co najpierw spełnia odbudowa w przypadku zgniecionego koszyka
+      case ShopCartSquashed(shop, name, _) => // what a rebuild meets first for a squashed cart
         documentStore.updateDocument(shop.asLong, aggregateId.asLong, _ => Document(ShopCartSummary(shop.asLong, name)))
-      przypadek _ => ()
+      case _ => ()
     })
   })
 
-  // Co najpierw rozwiązuje celowa przebudowa (rozdział 10): jedna organizacja to jedno połączenie.
-  nadpisz chronione def clearForRebuild(target: RebuildTarget)(implicit session: DBSession): Unit = target match {
-    przypadek RebuildTarget.OneAggregate(id) => documentStore.removeDocument(id.asLong)
-    przypadek RebuildTarget.OneSpace(space) => documentStore.clearSpace(space.asLong)
-    przypadek RebuildTarget.OneType(_) => documentStore.clearAllData()
+  // What a targeted rebuild clears first (chapter 10): one organization is one call.
+  override protected def clearForRebuild(target: RebuildTarget)(implicit session: DBSession): Unit = target match {
+    case RebuildTarget.OneAggregate(id) => documentStore.removeDocument(id.asLong)
+    case RebuildTarget.OneSpace(space) => documentStore.clearSpace(space.asLong)
+    case RebuildTarget.OneType(_) => documentStore.clearAllData()
   }
 
-  nadpisz chronione def receiveQuery: Receive = {
-    przypadek GetShopCarts(sklep) =>
+  override protected def receiveQuery: Receive = {
+    case GetShopCarts(shop) =>
       sender() ! documentStore.findDocumentByPath(ExpectedSingleLongValue(Seq("shop"), shop.asLong)).values.map(_.document).toVector
   }
 
-  nadpisz chronioną wartość projectionName: String = "ShopCartsList"
+  override protected val projectionName: String = "ShopCartsList"
 }
 ```
 
-Rozpoczęto jako projekcję zarządzaną, jak pokazano w [rozdziale 10](10-rebuilding-projections.md), z
-indeks sklepu:
+Uruchamiamy ją jako projekcję zarządzaną, tak jak pokazuje [rozdział 10](10-rebuilding-projections.md),
+z indeksem na sklepie:
 
+<!-- snippet: e9/OrganizationsSetup.scala#start-list -->
 ```scala
-import io.reactivecqrs.core.documentstore.{MultipleLongIndex, NoopDocumentStoreCache, PostgresDocumentStore}
-import org.apache.pekko.actor.ActorRef
-
 val shopCarts: ActorRef = projections.start[ShopCartsList]("shop-carts", 1, "shopCarts") { build =>
-  nowy ShopCartsList(subscriptionsState, nowy PostgresDocumentStore[ShopCartSummary](build.documentStore("shop_carts"),
-    mpjsons, nowy NoopDocumentStoreCache, Seq(MultipleLongIndex(1, Seq("sklep")))))
+  new ShopCartsList(subscriptionsState, new PostgresDocumentStore[ShopCartSummary](build.documentStore("shop_carts"),
+    mpjsons, new NoopDocumentStoreCache, Seq(MultipleLongIndex(1, Seq("shop")))))
 }
 ```
 
-Dwie rzeczy, na które należy zwrócić uwagę:
+Dwie rzeczy warte uwagi:
 
-- **Przestrzeń dokumentu służy do czyszczenia, a nie do zadawania pytań.** Magazyn dokumentów nie ma funkcji „znajdź według”
-  „Space”: kolumna „space” to to, co „clearSpace” i odbudowa organizacji. Aby wymienić jedną
-  koszyki sklepowe, dokument zawiera również sklep (`ShopCartSummary.shop`), zapytanie go wyszukuje
-  tą ścieżką, a indeks na tej ścieżce sprawia, że ​​zapytanie jest szybkie.
-- **Wydarzenie squasha jest traktowane jak stworzenie**, ponieważ projekcja jest odbudowywana po spotkaniu squasha
-  najpierw to ([rozdział 14](14-squash.md)), a ono zabiera ze sobą przestrzeń.
+- **Przestrzeń dokumentu służy do czyszczenia, nie do zadawania pytań.** Magazyn dokumentów nie ma
+  „szukaj według przestrzeni”: jego kolumną przestrzeni kierują się `clearSpace` i przebudowa
+  organizacji. Żeby wypisać koszyki jednego sklepu, dokument niesie też sklep
+  (`ShopCartSummary.shop`), zapytanie szuka go po tej ścieżce, a indeks na tej ścieżce sprawia, że
+  zapytanie jest szybkie.
+- **Zdarzenie squasha jest obsługiwane jak utworzenie**, bo projekcja przebudowywana po squashu
+  spotyka je jako pierwsze ([rozdział 14](14-squash.md)), a ono przynosi ze sobą przestrzeń.
 
-> **Ostrzeżenie:** przekazana przestrzeń jest przestrzenią, której `clearSpace` i odbudowa organizacji będzie zaufana.
-> Projekcja, która zapisuje `0` dla każdego dokumentu, tak jak robią to projekcje pojedynczego sklepu domeny testowej,
-> działa dobrze do dnia, w którym wyczyścisz lub odbudujesz jedną organizację: wtedy nie wyczyści niczego lub, na przykład,
-> przestrzeń 0, wszystko. Przekaż rzeczywistą przestrzeń agregatu od początku.
+> **Ostrzeżenie:** przestrzeni, którą przekażesz, zaufają `clearSpace` i przebudowa organizacji.
+> Projekcja, która dla każdego dokumentu zapisuje `0`, tak jak jednosklepowe projekcje domeny
+> testowej, działa dobrze aż do dnia, w którym wyczyścisz albo przebudujesz jedną organizację: wtedy
+> nie czyści nic albo, dla przestrzeni 0, wszystko. Od początku przekazuj prawdziwą przestrzeń
+> agregatu.
 
-> **Pamiętaj:** `MemoryDocumentStore`, magazyn pamięci dla testów, ignoruje spacje: jego
-> `clearSpace` nic nie robi. Przetestuj czyszczenie organizacji w `PostgresDocumentStore`.
+> **Pamiętaj:** `MemoryDocumentStore`, magazyn w pamięci do testów, przechowuje przestrzeń każdego
+> dokumentu tak jak PostgreSQL: ustawia ją przy pierwszym zapisie dokumentu, potem ją zachowuje, a
+> `clearSpace` usuwa dokumenty tej przestrzeni. Test sprzątania po organizacji może więc działać
+> właśnie na nim.
 
-## Oczyszczanie i odbudowa jednej organizacji
+## Czyszczenie i przebudowa jednej organizacji
 
-Dzięki wolnej przestrzeni w każdym dokumencie można poprawić modele odczytu danej organizacji bez konieczności ich dotykania
-czyjegoś innego. Narzędziem jest celowa przebudowa [rozdziału 10](10-rebuilding-projections.md),
-skierowane do jednej przestrzeni i wysłane do kierownika zarządzanej projekcji:
+Gdy każdy dokument zna swoją przestrzeń, modele odczytu jednej organizacji można naprawić, nie
+ruszając niczyich innych. Narzędziem jest przebudowa celowana z
+[rozdziału 10](10-rebuilding-projections.md), wycelowana w jedną przestrzeń i wysłana do nadzorcy
+projekcji zarządzanej. E9 przebudowuje listę dla przestrzeni, do której przeprowadził się sklep (pod
+koniec tego rozdziału):
 
+<!-- snippet: e9/OrganizationsSetup.scala#rebuild -->
 ```scala
-import io.reactivecqrs.core.projection.RebuildTarget
-import io.reactivecqrs.core.rebuild.ProjectionSupervisor.{AgregatyOdbudowane, OdbudowaneAgregaty, OdbudowaneOdrzucone}
-zaimportuj org.apache.pekko.pattern.ask
-import org.apache.pekko.util.Timeout
-import scala.concurrent.Future
-import scala.concurrent.duration._
-
-niejawna wartość limitu czasu: Limit czasu = Limit czasu (10 minut) // cała organizacja może potrzebować trochę czasu
-
-val odbudowany: Future[Any] = shopCarts ? RebuildAggregates(RebuildTarget.OneSpace(SpaceId(42)))
-// AggregatesRebuilt(RebuildTarget.OneSpace(SpaceId(42)), agregaty), lub RebuildRefused(powód)
+val rebuilt = Await.result(installation.shopCarts.ask(RebuildAggregates(RebuildTarget.OneSpace(target)))(Timeout(10.minutes)),
+  10.minutes) // a whole organization can take a while
+// AggregatesRebuilt(RebuildTarget.OneSpace(target), aggregates), or RebuildRefused(reason)
 ```
 
-Projekcja `clearForRebuild(OneSpace(space))` czyści dokumenty tej organizacji (powyżej),
-projekcja zapomina, jak daleko zaszła z agregatami organizacji i otrzymuje ich
-wydarzenia ponownie ze sklepu, w kolejności ich zapisu. Dokumenty pozostałych organizacji są
-nietknięte, a projekcja w międzyczasie nadal obsługuje zapytania. Odpowiedź,
-`AggregatesRebuilt(target, aggregates)`, informuje, ile agregatów zostało odbudowanych.
+`clearForRebuild(OneSpace(space))` projekcji czyści dokumenty tej organizacji (patrz wyżej),
+projekcja zapomina, dokąd doszła z agregatami organizacji, i dostaje ich zdarzenia jeszcze raz z
+magazynu, w kolejności zapisu. Dokumenty innych organizacji zostają nietknięte, a projekcja w tym
+czasie dalej odpowiada na zapytania. Odpowiedź, `AggregatesRebuilt(target, aggregates)`, mówi, ile
+agregatów przebudowano.
 
-Odbudowa jednej organizacji jest odrzucana („RebuildRefused”), podczas gdy jakakolwiek zbiorcza część projekcji
-typy nie mają jeszcze wolnej przestrzeni: agregaty przechowywane w starszych wersjach biblioteki mogą jej nie mieć, a
-Rozum podpowiada, żeby najpierw uruchomić `backfillSpaces`. To jest następna sekcja.
+Przebudowa jednej organizacji jest odrzucana (`RebuildRefused`), dopóki któryś agregat z typów
+projekcji nie ma jeszcze przestrzeni: agregatom zapisanym przez starsze wersje biblioteki może jej
+brakować, a powód odmowy podpowiada, żeby najpierw uruchomić `backfillSpaces`. O tym jest następna
+sekcja.
 
-> **Pod maską:** sklep wyszukuje wydarzenia organizacji za pomocą wąskiej tabeli kluczy,
-> `event_keys`, który rejestruje łączny typ i przestrzeń każdego zdarzenia. Gdy każde starsze zdarzenie ma swój
-> klucz, odbudowa jednej organizacji odczytuje tylko wydarzenia tej organizacji, a nie cały magazyn
-> (wydanie F124). Zobacz [ARCHITECTURE.md, sekcja 8](../ARCHITECTURE.md).
+> **Pod maską:** magazyn znajduje zdarzenia organizacji przez wąską tabelę kluczy, `event_keys`,
+> która zapisuje typ agregatu i przestrzeń każdego zdarzenia. Gdy każde starsze zdarzenie ma już swój
+> klucz, przebudowa jednej organizacji czyta tylko zdarzenia tej organizacji, a nie cały magazyn
+> (problem F124). Zobacz [ARCHITECTURE.md, sekcję 8](../ARCHITECTURE.md).
 
-## Aktualizacja instalacji, która już zawiera dane
+## Aktualizacja instalacji, która ma już dane
 
-Instalacja działająca przez pewien czas może gromadzić agregaty zgromadzone przed każdym pierwszym
-wydarzenie musiało nazwać spację (ich spacja wynosi -1), dokumenty napisane przed dokumentami miały spację (również
--1) i zdarzenia zapisane przed pojawieniem się kluczy zdarzeń. Kilka pojedynczych prac to naprawiło. Wszystkie
-uruchamiać online, podczas gdy Twoja aplikacja działa, w małych transakcjach, a wszystkie z nich można zatrzymać i
-ponownie uruchomić: kontynuują od miejsca, w którym skończyły. [Rozdział 18](18-production.md) wymienia je z
-inne etapy produkcji. Oto, co oznaczają one dla organizacji.
+Instalacja, która działa już od jakiegoś czasu, może przechowywać agregaty zapisane, zanim każde
+pierwsze zdarzenie musiało podawać przestrzeń (ich przestrzeń to -1), dokumenty zapisane, zanim
+dokumenty dostały przestrzeń (też -1), i zdarzenia zapisane, zanim pojawiły się klucze zdarzeń.
+Naprawia to kilka jednorazowych zadań. Wszystkie działają online, w trakcie pracy aplikacji, w małych
+transakcjach, i wszystkie można zatrzymać i uruchomić ponownie: ruszają dalej od miejsca, w którym
+skończyły. [Rozdział 18](18-production.md) wymienia je razem z innymi krokami produkcyjnymi; tutaj
+zobaczysz, co znaczą dla organizacji.
 
-1. **Policz, co wymaga naprawy.** `StoredDataCheck` odczytuje zapisane dane na kopii produkcyjnej
-   ([rozdział 6](06-events.md)), a jego raport zawiera agregaty bez spacji:
+1. **Policz, co trzeba naprawić.** `StoredDataCheck` czyta twoje zapisane dane na kopii produkcji
+   ([rozdział 6](06-events.md)), a jego raport obejmuje też agregaty bez przestrzeni:
 
+   <!-- snippet: e9/OrganizationsSpec.scala#withoutSpace -->
    ```scala
    import io.reactivecqrs.core.tools.StoredDataCheck
 
@@ -274,277 +279,280 @@ inne etapy produkcji. Oto, co oznaczają one dla organizacji.
    println(report.aggregatesWithoutSpace)
    ```
 
-2. **Budowanie indeksów** bez blokowania zapisu:
+2. **Zbuduj indeksy**, nie blokując zapisów:
 
+   <!-- snippet: e9/OrganizationsSpec.scala#buildIndexes -->
    ```scala
    eventStore.buildIndexesConcurrently()
    ```
 
-   Buduje indeks, który przywraca odczyty i znajduje agregaty organizacji,
-   z funkcją `CREATE INDEX CONCURRENTLY` w PostgreSQL. Nie robi nic, gdy istnieją, i kompiluje się ponownie.
-   indeks, który po przerwaniu działania stał się nieprawidłowy. (Nowa lub mała baza danych otrzymuje je w ramach swojego schematu)
-   stworzony.)
+   Buduje indeks, przez który czyta odtwarzanie agregatów, i indeks, który znajduje agregaty
+   organizacji, poleceniem PostgreSQL `CREATE INDEX CONCURRENTLY`. Gdy indeksy już istnieją, nic nie
+   robi, a indeks, który przerwane uruchomienie zostawiło jako nieprawidłowy, buduje od nowa. (Nowa
+   albo mała baza danych dostaje je przy tworzeniu schematu.)
 
-3. **Daj starym agregatom przestrzeń:**
+3. **Nadaj starym agregatom przestrzeń:**
 
+   <!-- snippet: e9/OrganizationsSpec.scala#backfillSpaces -->
    ```scala
    import io.reactivecqrs.core.eventstore.SpaceBackfill
 
-   przestrzenie val: SpaceBackfill = eventStore.backfillSpaces() // SpaceBackfill(wypełniony, lewy)
+   val spaces: SpaceBackfill = eventStore.backfillSpaces()  // SpaceBackfill(filled, left)
    ```
 
-   Każdy agregat przechowywany bez spacji otrzymuje przestrzeń swojego pierwszego zdarzenia (lub swojej spacji)
-   zdarzenie, jeśli zostało zmiażdżone), w partiach po 1 000 agregatów (`batchSize`), po jednej transakcji.
-   Niektóre stare, pierwsze zdarzenia nie znają swojej przestrzeni: wyświetlają się jako „SpaceId.unknown”. W takim przypadku należy przekazać
-   funkcja decydująca na podstawie typu agregatu, jego identyfikatora i pierwszego zdarzenia:
+   Każdy agregat zapisany bez przestrzeni dostaje przestrzeń swojego pierwszego zdarzenia (albo
+   zdarzenia squasha, jeśli jego historię zwinięto), w partiach po 1 000 agregatów (`batchSize`),
+   każda w osobnej transakcji. Niektóre stare pierwsze zdarzenia nie znają swojej przestrzeni: mówią
+   `SpaceId.unknown`. Dla nich przekaż funkcję, która zdecyduje na podstawie typu agregatu, jego
+   identyfikatora i pierwszego zdarzenia:
 
+   <!-- snippet: e9/OrganizationsSpec.scala#backfillByEvent -->
    ```scala
    val spaces = eventStore.backfillSpaces((aggregateType, aggregateId, firstEvent) => firstEvent match {
-     przypadek e: LegacyCartCreated => Some(SpaceId(e.shopNumber))
-     przypadek _ => Brak
+     case e: LegacyCartCreated => Some(SpaceId(e.shopNumber))
+     case _ => None
    })
    ```
 
-   (`LegacyCartCreated` oznacza pierwsze wydarzenie, które utrzymuje organizację w
-   pole własne.) `filled` zlicza agregaty, które otrzymały spację; `left` wyświetla te, które
-   ani wydarzenie ani twoja funkcja nie mogły zostać umiejscowione: spójrz na nie ręcznie.
+   (`LegacyCartCreated` zastępuje tu dowolne twoje stare pierwsze zdarzenie, które trzyma
+   organizację we własnym polu; spec E9 ma takie zdarzenie, żeby te kroki dało się skompilować i
+   uruchomić.) `filled` liczy agregaty, które dostały przestrzeń; `left` wymienia te, których
+   przestrzeni nie ustaliło ani zdarzenie, ani twoja funkcja: przejrzyj je ręcznie.
 
-4. **Przypisz starym wydarzeniom ich klucze**, gdy *każdy* węzeł uruchomi nową wersję:
+4. **Nadaj starym zdarzeniom klucze**, gdy już *każdy* węzeł działa na nowej wersji:
 
+   <!-- snippet: e9/OrganizationsSpec.scala#backfillKeys -->
    ```scala
    import io.reactivecqrs.core.eventstore.EventKeysBackfill
 
-   klucze val: EventKeysBackfill = eventStore.backfillEventKeys() // EventKeysBackfill(zapisane, brakujące)
+   val keys: EventKeysBackfill = eventStore.backfillEventKeys()  // EventKeysBackfill(written, missing)
    ```
 
-   Działa na podstawie zdarzeń w partiach po 10 000 (`batchSize`) i rejestruje moment wystąpienia każdego zdarzenia.
-   jego klucz; od tego momentu odbudowa jednej organizacji lub kompilacja kilku typów odczytuje tylko jej
-   własne wydarzenia. Do tego czasu czytają cały sklep, co jest poprawne, tylko powolne. `brakuje`
-   zlicza zdarzenia, których nie udało się zidentyfikować (te, których wiersz agregatu jest nieobecny).
+   Przechodzi przez zdarzenia w partiach po 10 000 (`batchSize`) i zapisuje moment, w którym każde
+   zdarzenie ma już klucz; od tej pory przebudowa jednej organizacji albo budowa kilku typów czyta
+   tylko własne zdarzenia. Do tego czasu czytają cały magazyn, co jest poprawne, tylko wolne.
+   `missing` liczy zdarzenia, którym nie udało się nadać klucza (te, których agregat nie ma swojego
+   wiersza).
 
-5. **Przebuduj modele odczytu, które nie zapisały żadnej rzeczywistej przestrzeni**: dokumenty napisane przed dokumentami, które miały
-   spacja lub `0` dla wszystkiego. Pełna przebudowa ([rozdział 10](10-rebuilding-projections.md))
-   zapisuje je ponownie, z przestrzeniami, które teraz przekracza twoja projekcja.
+5. **Przebuduj modele odczytu, które nie zapisywały prawdziwej przestrzeni**: dokumenty zapisane,
+   zanim dokumenty dostały przestrzeń, albo z `0` dla wszystkiego. Pełna przebudowa
+   ([rozdział 10](10-rebuilding-projections.md)) zapisze je od nowa, z przestrzeniami, które twoja
+   projekcja teraz przekazuje.
 
-> **Ostrzeżenie:** po zakończeniu `backfillEventKeys` nie należy powracać do starszej wersji
-> biblioteka: starsze wersje zapisują zdarzenia bez kluczy, a kompilacje pomijały te zdarzenia.
+> **Ostrzeżenie:** gdy `backfillEventKeys` skończy pracę, nie wracaj do starszej wersji biblioteki:
+> starsze wersje zapisują zdarzenia bez kluczy, a budowy pominęłyby te zdarzenia.
 
-> **Wskazówka:** uruchamiaj te zadania z zadania konserwacyjnego lub wątku w tle, nigdy na swoim komputerze.
-> ścieżka startowa aplikacji. W dużym sklepie zajmuje to trochę czasu i żadna z nich nie wymaga
-> wniosek o czekanie.
+> **Wskazówka:** uruchamiaj te zadania z zadania serwisowego albo z wątku w tle, nigdy na ścieżce
+> startu aplikacji. Na dużym magazynie trwają dłuższą chwilę, a żadne z nich nie wymaga, żeby
+> aplikacja czekała.
 
-## Usuwanie organizacji: czyszczenie
+## Usuwanie organizacji (purge)
 
-Sklep wyprowadza się z centrum handlowego. Jego półki, szyldy i paragony w zapleczu.
-Wszystko jest w porządku, sąsiednie sklepy nadal handlują, a ich klienci niczego nie zauważają. Kiedy klient
-jeśli organizacja opuści Twoją platformę lub poprosi o usunięcie swoich danych, **oczyszczenie** zrobi to samo
-ze względu na przestrzeń.
+Sklep wyprowadza się z centrum handlowego. Znikają jego półki, szyldy i paragony z zaplecza,
+sąsiednie sklepy handlują dalej, a ich klienci niczego nie zauważają. Gdy organizacja-klient odchodzi
+z twojej platformy albo prosi o wymazanie swoich danych, **usunięcie organizacji** (purge) robi to
+samo z jej przestrzenią.
 
 ### Zanim zaczniesz
 
-1. **Ucisz organizację.** Najpierw zatrzymaj jej użytkowników: biblioteka nie może wstrzymać polecenia
-   wysłane, gdy trwa oczyszczanie. (Jeśli ktoś się przedostanie i utworzy agregat, oczyszczanie to zauważy i
-   (okrąża jeszcze raz, nawet trzy razy.)
-2. **Sprawdź swoje prognozy.** Każda prognoza zawierająca dokumenty organizacji musi
-   zaimplementuj `clearForRebuild` dla `RebuildTarget.OneSpace` ([rozdział 10](10-rebuilding-projections.md)),
-   i nikt nie może się w tym czasie odbudowywać. Czystka pyta najpierw każdego i odmawia, jeśli ktoś nie może
-   wziąć udział.
-3. **Pomyśl o swoich własnych tabelach.** Wiersze, o których biblioteka nie wie (np. paragony i skrzynka nadawcza)
-   (sklepy Writer obok wydarzeń) potrzebują Twojego małego `PurgeHook`, pokazanego poniżej.
-4. **Oznacz swoje sagi.** Saga, której rozkazy należą do organizacji, oznacza to poprzez nadpisanie
-   `spaceOf` ([rozdział 12](12-sagas.md)); czyszczenie usuwa sagi oznaczone etykietą spacja.
+1. **Wycisz organizację.** Najpierw zatrzymaj jej użytkowników: biblioteka nie wstrzyma polecenia
+   wysłanego w trakcie usuwania. (Jeśli jakieś się prześlizgnie i utworzy agregat, usuwanie to
+   zauważy i zrobi kolejne okrążenie, najwyżej trzy razy.)
+2. **Sprawdź projekcje.** Każda projekcja, która trzyma dokumenty organizacji, musi implementować
+   `clearForRebuild` dla `RebuildTarget.OneSpace` ([rozdział 10](10-rebuilding-projections.md)) i
+   żadna nie może być w tym czasie przebudowywana. Usuwanie najpierw pyta każdą z nich i odmawia,
+   jeśli któraś nie może wziąć udziału.
+3. **Pomyśl o własnych tabelach.** Wiersze, o których biblioteka nie wie (na przykład paragony, które
+   writer outboxu zapisuje obok zdarzeń), potrzebują twojego małego `PurgeHook`, pokazanego niżej.
+4. **Oznacz swoje sagi.** Saga, której zlecenia należą do organizacji, mówi o tym, nadpisując
+   `spaceOf` ([rozdział 12](12-sagas.md)); usuwanie kasuje sagi oznaczone tą przestrzenią.
 
 ### Uruchomienie
 
+<!-- snippet: e9/OrganizationsSetup.scala#purge -->
 ```scala
-importuj io.reactivecqrs.api.AggregateType
-importuj io.reactivecqrs.api.id.SpaceId
-importuj io.reactivecqrs.core.space.SpacePurge
-
-val purge = new SpacePurge(eventStore,
-  commandBuses = Map(AggregateType.of[ShoppingCart] -> carts), // autobus tego węzła każdego typu, jaki ma organizacja
-  projekcje = Seq(cartsList), // każda projekcja z jej dokumentami
-  haki = Seq(hak paragonów))(system)
-
-purge.purge(SpaceId(42)).foreach { raport =>
-  jeśli (report.complete) println("Sklep 42 zniknął: " + report.aggregates + " aggregates")
-  else println("Nie wykonano jeszcze: " + zgłoś)
-}
+val purge = new SpacePurge(installation.eventStore,
+  commandBuses = Map(AggregateType.of[ShopCart] -> installation.carts), // this node's bus of every type the shop has
+  projections = Seq(installation.shopCarts))                            // every projection with its documents
+val purged = Await.result(purge.purge(source), 2.minutes)
 ```
 
-Uruchom go z jednego węzła, raz. Odpowiada na `PurgeReport`:
+Uruchom je z jednego węzła, raz. W odpowiedzi dostaniesz `PurgeReport`:
 
-| Pole | Co ci mówi |
+| Pole | Co mówi |
 |---|---|
-| `complete` | prawda, gdy nic nie zostało odrzucone, nic nie zawiodło i nic z przestrzeni nie pozostało |
-| `agregaty`, `wiersze` | ile agregatów zostało utworzonych i ile wierszy na tabelę (hak pod nazwą) |
-| `odłączone` | kopie w *innych* organizacjach, które teraz działają samodzielnie (poniżej) |
-| `projekcje`, `nieudane` | projekcje, które oczyściły przestrzeń i wszystko, co nie spełniło swojej roli, z wyjaśnieniem dlaczego |
-| `odmówiono` | dlaczego się nie uruchomiło; nic nie zostało usunięte |
-| `przepustki`, `pozostałe` | ile rund to zajęło i ile agregatów przestrzeni jest nadal przechowywanych |
+| `complete` | true, gdy nic nie zostało odrzucone, nic nie zawiodło i z przestrzeni nic nie zostało |
+| `aggregates`, `rows` | ile agregatów usunięto i ile wierszy z każdej tabeli (wiersze hooka pod jego nazwą) |
+| `detached` | kopie w *innych* organizacjach, które teraz stoją na własnych nogach (niżej) |
+| `projections`, `failed` | projekcje, które wyczyściły przestrzeń, i wszystko, co nie zrobiło swojej części, z powodem |
+| `refused` | dlaczego się nie zaczęło; nic nie zostało usunięte |
+| `passes`, `remaining` | ile okrążeń to zajęło i ile agregatów przestrzeni wciąż jest zapisanych |
 
 ### Co robi, krok po kroku
 
-1. **Najpierw następuje sprawdzenie.** Każdy typ przestrzeni wymaga magistrali poleceń w `commandBuses`, a każda
-   Projekcja musi być w stanie oczyścić przestrzeń. Jeśli nie, raport podaje powód w formie „odmowy” i nic
-   uległo zmianie.
-2. **Oddziela kopie w innych organizacjach.** Pamiętaj o szablonie koszyka skopiowanym z
-   platforma do sklepu 42? Tutaj liczy się odwrotna sytuacja: kopia, którą sklep 7 wykonał z jednego ze sklepów
-   Wózki 42 nadal odczytują historię sklepu 42. Zanim historia zniknie, kopia otrzymuje pierwsze zdarzenie.
-   własnego, utworzonego za pomocą zdarzenia squasha typu ([rozdział 14](14-squash.md)) z własnego stanu, więc
-   zachowuje dokładnie to, co miał. Typ bez zdarzenia squash nie może tego zrobić, a czyszczenie odmawia.
-3. **Usuwa małymi porcjami.** Maksymalnie 1 000 agregatów i 100 000 zdarzeń na raz, w każdym kęsie
-   jedna transakcja: zdarzenia, archiwum, wiersze skrzynki nadawczej,
-   migawki, księgowość projekcji, przechowywane odpowiedzi poleceń idempotentnych, agregat
-   rzędy i rzędy twoich haczyków. Po każdym ugryzieniu właściciele tych agregatów są zatrzymywani i każdy
-   projekcja ma o nich zapomnieć.
-4. **Usuwa sagi kosmiczne.**
-5. **Czyści projekcje**: uruchamia się `clearForRebuild(OneSpace(space))` każdego z nich, a
-   dokumenty organizacji zniknęły.
+1. **Najpierw sprawdza.** Każdy typ przestrzeni potrzebuje szyny poleceń w `commandBuses`, a każda
+   projekcja musi umieć wyczyścić przestrzeń. Jeśli nie, raport podaje powód w `refused` i nic się
+   nie zmienia.
+2. **Odłącza kopie w innych organizacjach.** Pamiętasz szablon koszyka skopiowany z platformy do
+   sklepu 42? Tutaj liczy się kierunek odwrotny: kopia, którą sklep 7 zrobił z jednego z koszyków
+   sklepu 42, wciąż czyta historię sklepu 42. Zanim ta historia zniknie, kopia dostaje własne
+   pierwsze zdarzenie, zrobione z jej własnego stanu za pomocą zdarzenia squasha jej typu
+   ([rozdział 14](14-squash.md)), więc zachowuje dokładnie to, co miała. Typ bez zdarzenia squasha
+   tego nie potrafi i wtedy usuwanie odmawia.
+3. **Usuwa małymi kęsami.** Najwyżej 1 000 agregatów i 100 000 zdarzeń naraz, każdy kęs w jednej
+   transakcji: zdarzenia, archiwum, wiersze outboxu, migawki, zapiski projekcji, zapisane odpowiedzi
+   poleceń idempotentnych, wiersze agregatów i wiersze twoich hooków. Po każdym kęsie właściciele tych
+   agregatów są zatrzymywani, a każda projekcja dowiaduje się, że ma o nich zapomnieć.
+4. **Usuwa sagi przestrzeni.**
+5. **Czyści projekcje**: w każdej uruchamia się `clearForRebuild(OneSpace(space))` i dokumenty
+   organizacji znikają.
 
-> **Wskazówka:** każdy krok można powtórzyć. Czyszczenie, które zostało odrzucone, nie powiodło się w połowie lub nie zostało ukończone
-> jest po prostu uruchamiany ponownie, gdy przyczyna zostanie ustalona; czyści również projekcje, nawet gdy nie ma
-> Agregat jest pozostawiony do usunięcia.
+> **Wskazówka:** każdy krok można powtórzyć. Usuwanie, które zostało odrzucone, przerwało się w
+> połowie albo nie dobiegło końca, po prostu uruchamiasz jeszcze raz, gdy uporasz się z przyczyną;
+> ono też jeszcze raz czyści projekcje, nawet gdy nie został już żaden agregat do usunięcia.
 
 ### Twoje własne tabele: `PurgeHook`
 
+<!-- snippet: e9/OrganizationsSpec.scala#purgeHook -->
 ```scala
 import io.reactivecqrs.api.id.{AggregateId, SpaceId}
 import io.reactivecqrs.core.space.PurgeHook
-import scalikeydbc._
+import scalikejdbc._
 
-val receiptsHook = nowy PurgeHook {
-  nadpisz def name: String = "paragons"
-  nadpisz def purge(space: SpaceId, aggregateIds: Seq[AggregateId])(niejawna sesja: DBSession): Long =
-    sql"USUŃ Z paragonów GDZIE cart_id W (${aggregateIds.map(_.asLong)})".update().toLong
+val receiptsHook = new PurgeHook {
+  override def name: String = "receipts"
+  override def purge(space: SpaceId, aggregateIds: Seq[AggregateId])(implicit session: DBSession): Long =
+    sql"DELETE FROM receipts WHERE cart_id IN (${aggregateIds.map(_.asLong)})".update().toLong
 }
 ```
 
-Hak jest uruchamiany w transakcji każdego bitu, więc jego wiersze są połączone z wierszami biblioteki lub nie.
-Wszystko.
+Przekaż go do `SpacePurge` razem z resztą (`new SpacePurge(..., hooks = Seq(receiptsHook))`). Hook
+działa w transakcji każdego kęsa, więc jego wiersze znikają razem z wierszami biblioteki albo wcale.
 
-### Sprawdzanie, czy nic nie zostało
+### Sprawdzamy, czy nic nie zostało
 
+<!-- snippet: e9/OrganizationsSpec.scala#spaceRows -->
 ```scala
 import io.reactivecqrs.core.tools.StoredDataCheck
 
-StoredDataCheck.spaceRows(42L) // Mapa(agregaty -> 0, klucze_zdarzeń -> 0, sagi -> 0, lista_wózków_projekcyjnych -> 0)
+val left = StoredDataCheck.spaceRows(42L) // Map(aggregates -> 0, event_keys -> 0, sagas -> 0, projection_shop_carts_v1 -> 0)
 ```
 
-Liczy, ile miejsca pozostało w tabelach biblioteki i w każdej tabeli modelu odczytu. Po
-całkowita czystka, wszystkie wyniki są zerowe.
+Liczy, co przestrzeń wciąż ma w tabelach biblioteki i w każdej tabeli modelu odczytu. Po kompletnym
+usunięciu każda liczba wynosi zero.
 
-> **Ostrzeżenie:** kilka rzeczy jest poza zasięgiem czyszczenia. W klastrze właściciel czyszczonego
-> agregat na *innym* węźle zachowuje swój stan w pamięci do następnego użycia, które nie znajduje niczego
-> przechowywane lub do momentu uśpienia z powodu bezczynności ([rozdział 17](17-cluster.md)). Odpowiedzi na pytania
-> polecenia idempotentne przechowywane w starszych wersjach biblioteki nie określają, który agregat
-> należą, więc czekają, aż ich retencja wygaśnie (domyślnie 30 dni). Sagi bez
-> `spaceOf`, agregaty bez spacji (najpierw `backfillSpaces`) i tabele bez haka
-> zostań też.
+> **Ostrzeżenie:** kilka rzeczy jest poza zasięgiem usuwania. W klastrze właściciel usuniętego
+> agregatu na *innym* węźle trzyma swój stan w pamięci do następnego użycia, które nie znajdzie już nic
+> zapisanego, albo dopóki nie zostanie uśpiony z powodu bezczynności ([rozdział 17](17-cluster.md)).
+> Odpowiedzi poleceń idempotentnych zapisane przez starsze wersje biblioteki nie mówią, do którego
+> agregatu należą, więc czekają, aż minie ich okres przechowywania (domyślnie 30 dni). Zostają też
+> sagi bez `spaceOf`, agregaty bez przestrzeni (najpierw `backfillSpaces`) i twoje tabele bez hooka.
 
-> **Pod maską:** zaraz po ugryzieniu projekcja może nadal otrzymać zdarzenie oczyszczonego koszyka
-> to już było w drodze. Przez pół godziny (`purgedDropWindow`) potwierdza takie dostawy
-> bez ich stosowania, więc nic nie zapisuje dokumentu ponownie; zachowuje 8 bajtów na wyczyszczony agregat
-> tymczasem. Zobacz [ARCHITECTURE.md, sekcja 4.7](../ARCHITECTURE.md) i projekt w
+> **Pod maską:** tuż po kęsie projekcja może jeszcze dostać zdarzenie usuniętego koszyka, które było
+> już w drodze. Przez pół godziny (`purgedDropWindow`) potwierdza takie dostarczenia, nie stosując
+> ich, więc nic nie zapisze dokumentu z powrotem; w tym czasie trzyma 8 bajtów na każdy usunięty
+> agregat. Zobacz [ARCHITECTURE.md, sekcję 4.7](../ARCHITECTURE.md) i projekt w
 > [docs/design/M6-organizations.md](../design/M6-organizations.md).
 
-## Przenoszenie organizacji do innej instalacji
+## Przeprowadzka organizacji do innej instalacji
 
-Sklep przenosi się do centrum handlowego w innym mieście. Jego asortyment, książki i historia pakują się w
-pudełka, podróżują i są rozpakowywane w pustym pomieszczeniu, gdzie umieszczane są znaki nowego centrum
-dla niego. Przenoszenie organizacji między instalacjami wygląda tak samo: **eksport** pakuje pudła,
-**import** rozpakowuje je do pustej przestrzeni innej instalacji, a modele odczytu są
-odbudowany tam.
+Sklep przenosi się do centrum handlowego w innym mieście. Jego towar, księgi i historia trafiają do
+pudeł, jadą i zostają rozpakowane w pustym lokalu na miejscu, gdzie nowe centrum wiesza dla niego
+swoje szyldy. Przenoszenie organizacji między instalacjami wygląda tak samo: **eksport** pakuje pudła,
+**import** rozpakowuje je do pustej przestrzeni drugiej instalacji, a tam przebudowuje się modele
+odczytu.
 
 ### Pakowanie: eksport
 
+<!-- snippet: e9/OrganizationsSetup.scala#export -->
 ```scala
-importuj java.nio.charset.StandardCharsets
-import java.nio.file.{Pliki, Ścieżki}
-import io.reactivecqrs.core.space.SpaceExport
-
-val writer = Files.newBufferedWriter(Paths.get("shop-42.jsonl"), StandardCharsets.UTF_8)
-val exported = wypróbuj nowy SpaceExport(eventStore, contexts = Seq(new ShoppingCartAggregateContext)).write(SpaceId(42), writer)
-               na koniec writer.close()
-// ExportReport(przestrzeń, agregaty, zdarzenia, zarchiwizowane, odłączone, waitingInOutbox, odrzucone)
+val file = Files.createTempFile("shop-", ".jsonl")
+val writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8)
+val exported = try new SpaceExport(installation.eventStore, contexts = Seq(new ShopCartContext)).write(source, writer)
+               finally writer.close()
+// ExportReport(space, aggregates, events, archived, detached, waitingInOutbox, refused)
 ```
 
-Plik zawiera jedną linię JSON na agregat i na zdarzenie, zdarzenia w kolejności, w jakiej wystąpiły.
-przechowywane, a także zarchiwizowane wydarzenia ([rozdział 14](14-squash.md)); migawki, modele odczytu i sagi pozostają
-z tyłu. Eksportuj cichą organizację: `waitingInOutbox` informuje, ile jej zdarzeń nie zostało
-jeszcze nie dostarczono.
+Plik zawiera jedną linię JSON na każdy agregat i każde zdarzenie, zdarzenia w kolejności zapisu, a do
+tego zarchiwizowane zdarzenia ([rozdział 14](14-squash.md)); migawki, modele odczytu i sagi zostają na
+miejscu. Eksportuj wyciszoną organizację: `waitingInOutbox` mówi, ile jej zdarzeń nie zostało jeszcze
+dostarczonych.
 
-„Konteksty” to zbiorcze konteksty typów organizacji. Mają one znaczenie w jednym przypadku:
-Skopiuj ten sklep 42 z czyjegoś koszyka, aby odczytać historię tej innej organizacji, która
-nie podróżuje. Eksport daje takiej kopii pierwsze własne zdarzenie, utworzone za pomocą zdarzenia squash tego typu
-z własnego stanu, tak jak robi to czystka, więc zachowuje dokładnie to, co miał. Bez wydarzenia squash
-(lub bez kontekstu), eksport odmawia i nic nie zapisuje.
+`contexts` to konteksty agregatów typów organizacji. Mają znaczenie w jednym przypadku: kopia, którą
+sklep 42 zrobił z czyjegoś koszyka, czyta historię tamtej organizacji, a ta nie wyjeżdża razem ze
+sklepem. Eksport daje takiej kopii własne pierwsze zdarzenie, zrobione z jej stanu za pomocą
+zdarzenia squasha jej typu, tak samo jak przy usuwaniu organizacji, więc kopia zachowuje dokładnie
+to, co miała. Bez zdarzenia squasha (albo bez kontekstu) eksport odmawia i niczego nie zapisuje.
 
 ### Rozpakowywanie: import
 
+<!-- snippet: e9/OrganizationsSetup.scala#import -->
 ```scala
-importuj io.reactivecqrs.core.space.SpaceImport
-
-val imported = new SpaceImport(eventStore, uidGenerator).read(Paths.get("shop-42.jsonl"), into = SpaceId(7))
-// ImportReport(przestrzeń, agregaty, zdarzenia, zarchiwizowane, ponownie zmapowane, nieznane odniesienia, niektóre nieznane, odrzucone)
+val imported = new SpaceImport(installation.eventStore, installation.uidGenerator).read(file, into = target)
+// ImportReport(space, aggregates, events, archived, remapped, unknownReferences, someUnknown, refused)
 ```
 
-Działa na innej instalacji, w przestrzeni, która musi być pusta. Odczytuje plik dwukrotnie:
+Działa na drugiej instalacji i wczytuje dane do przestrzeni, która musi być pusta. Czyta plik dwa
+razy:
 
-1. **Najpierw sprawdza**, nic nie zapisując: każda klasa w pliku musi tu istnieć, każde zdarzenie musi
-   musi mieścić się w granicach tej instalacji ([rozdział 6](06-events.md)), a przestrzeń musi być pusta. Każdy
-   problem kończy się na `odmówiono`.
-2. **Następnie zapisuje**: agregaty, następnie zdarzenia w ich oryginalnej kolejności, z ich cofnięciem
-   znaki, a następnie zarchiwizowane wydarzenia.
+1. **Najpierw sprawdza**, niczego nie zapisując: każda klasa z pliku musi tu istnieć, każde zdarzenie
+   musi mieścić się w limitach tej instalacji ([rozdział 6](06-events.md)), a przestrzeń musi być
+   pusta. Każdy problem trafia do `refused`.
+2. **Potem zapisuje**: agregaty, następnie zdarzenia w ich pierwotnej kolejności, razem ze
+   znacznikami cofnięć, a na końcu zarchiwizowane zdarzenia.
 
-Dwie instalacje utworzyły swoje identyfikatory w swoich własnych zakresach (numer instalacji z rozdziału 2), więc
-Identyfikatory rzadko kolidują; identyfikatory sprzed wersji 1.0 mogą. Agregat, którego identyfikator jest tu pobierany, otrzymuje nowy, a
-każde odniesienie do niego następuje: import odczytuje każde zdarzenie z własną instancją mpjsons, która
-zastępuje przeniesione wartości `AggregateId` i `UserId` i zmienia `SpaceId` starej organizacji na
-nowy. `remapped` wyświetla identyfikatory, które zostały przeniesione.
+Dwie instalacje tworzyły identyfikatory we własnych zakresach (numer instalacji z rozdziału 2), więc
+identyfikatory rzadko się zderzają; te sprzed 1.0 mogą. Agregat, którego identyfikator jest tu już
+zajęty, dostaje nowy, a za nim idą wszystkie odwołania do niego: import czyta każde zdarzenie własną
+instancją mpjsons, która podmienia przeniesione wartości `AggregateId` i `UserId`, a `SpaceId` starej
+organizacji zamienia na nowy. `remapped` wymienia identyfikatory, które się zmieniły.
 
-> **Ostrzeżenie:** import widzi tylko identyfikatory wpisane. Identyfikator przechowywany jako zwykły `Long` lub w
-> tekst („user:5” w aktorze metadanych) jest dla niego niewidoczny. Nadaj importowi wartość `ImportRewriter` dla
-> każdy typ, który zawiera takie odniesienia (`rewriters = Map(AggregateType.of[ShoppingCart] -> ...)`): to
-> pobiera każde zdarzenie z funkcją, która mapuje stare identyfikatory na nowe. A jeśli zarejestrowałeś konwertery
-> w swoich mpjsonach przekaż `newMPJsons = () => yourConfiguredMPJsons()`, aby import odczytał Twoje klasy
-> tak jak ty.
+> **Ostrzeżenie:** import widzi tylko typowane identyfikatory. Identyfikator trzymany jako zwykły
+> `Long` albo wewnątrz tekstu („user:5” w aktorze metadanych) jest dla niego niewidoczny. Daj
+> importowi `ImportRewriter` dla każdego typu, który ma takie odwołania
+> (`rewriters = Map(AggregateType.of[ShoppingCart] -> ...)`): dostaje on każde zdarzenie razem z
+> funkcją, która zamienia stare identyfikatory na nowe. A jeśli w swoim mpjsons masz zarejestrowane
+> konwertery, przekaż `newMPJsons = () => yourConfiguredMPJsons()`, żeby import czytał twoje klasy tak
+> samo jak ty.
 
-`unknownReferences` zlicza dla Ciebie odniesienia do agregatów, które nie podróżowały ani tu nie istnieją
-patrzeć; pozostawia się je takimi, jakie są.
+`unknownReferences` liczy odwołania do agregatów, które ani nie przyjechały, ani tu nie istnieją.
+Przejrzyj je; import zostawia je takie, jakie są.
 
 ### Po przeprowadzce
 
-1. **Przebuduj modele odczytu** nowej przestrzeni: wyślij każdą projekcję
+1. **Przebuduj modele odczytu** nowej przestrzeni: wyślij do każdej projekcji
    `RebuildAggregates(RebuildTarget.OneSpace(SpaceId(7)))` ([rozdział 10](10-rebuilding-projections.md)).
-   Import nie zapisuje żadnych wierszy skrzynki nadawczej, więc nic nie jest dostarczane na bieżąco.
-2. **Wskaż użytkownikom organizacji** nową instalację.
-3. **Usuń starą kopię**, gdy będziesz mieć pewność ([wcześniej w tym rozdziale](#usuwanie-organizacji-czyszczenie)).
+   Import nie zapisuje wierszy outboxu, więc nic nie jest dostarczane na żywo.
+2. **Skieruj użytkowników organizacji** do nowej instalacji.
+3. **Usuń starą kopię**, gdy będziesz mieć pewność
+   ([wcześniej w tym rozdziale](#usuwanie-organizacji-purge)).
 
-> **Wskazówka:** import, który zatrzymał się w połowie lub chcesz go powtórzyć, można łatwo powtórzyć: wyczyść
-> przestrzeń docelowa i ponownie zaimportuj ten sam plik.
+> **Wskazówka:** import, który zatrzymał się w połowie albo który chcesz powtórzyć, łatwo zrobić
+> jeszcze raz: usuń przestrzeń docelową i zaimportuj ten sam plik ponownie.
 
-> **Wskazówka:** jeśli uruchamiasz więcej niż jedną instalację, nadaj każdej z nich własny
-> `reactivecqrs.installation-number` tak wcześnie, jak to możliwe ([rozdział 18](18-production.md)). Każdy
-> instalacja następnie tworzy identyfikatory zbiorcze w swoim własnym zakresie, dzięki czemu organizacje mogą później przenosić
-> między instalacjami bez dwóch agregatów współdzielących identyfikator. Zobacz
-> [ARCHITECTURE.md, sekcja 13.5](../ARCHITECTURE.md).
+> **Wskazówka:** jeśli masz więcej niż jedną instalację, jak najwcześniej nadaj każdej własny
+> `reactivecqrs.installation-number` ([rozdział 18](18-production.md)). Każda instalacja tworzy wtedy
+> identyfikatory agregatów we własnym zakresie, więc organizacje mogą później przenosić się między
+> instalacjami bez ryzyka, że dwa agregaty dostaną ten sam identyfikator. Zobacz
+> [ARCHITECTURE.md, sekcję 13.5](../ARCHITECTURE.md).
 
-## Czego się nauczyłeś
+## Co już umiesz
 
 - Organizacja to **przestrzeń** (`SpaceId`); przestrzeń 0 to sama platforma.
-- Pierwsze zdarzenie każdego agregatu nadaje nazwę jego przestrzeni, a nowy agregat bez takiego zdarzenia jest odrzucany; kopia
-  nadaje nazwę własnej przestrzeni.
-- Utrzymuj przestrzeń w stanie, w którym jest to wymagane podczas zawodów squasha lub projekcji na żywo.
-- Dokumenty zawierają przestrzeń (`insertDocument(space.asLong, key, document)`), więc jedna organizacja
-  dokumenty mogą być czyszczone (`clearSpace`) i odbudowywane (`RebuildAggregates(RebuildTarget.OneSpace(space))`).
-- Instalacja ze starszymi danymi uruchamia `buildIndexesConcurrently`, `backfillSpaces` i
-  `backfillEventKeys` raz, online.
-- `SpacePurge` usuwa organizację: najpierw sprawdza, odłącza kopie innych organizacji,
-  usuwa w małych transakcjach za pomocą `PurgeHook`, czyści projekcje i raporty; uruchom go
-  ponownie, aż do `zakończenia` i sprawdź za pomocą `StoredDataCheck.spaceRows`.
-- `SpaceExport` pakuje organizację do pliku zawierającego linie JSON, a `SpaceImport` rozpakowuje ją do
-  pusta przestrzeń innej instalacji, przenosząca pobrane identyfikatory i odniesienia do nich; następnie
-  odbudować modele odczytu przestrzeni.
+- Pierwsze zdarzenie każdego agregatu podaje jego przestrzeń, a nowy agregat bez niej jest
+  odrzucany; kopia podaje własną przestrzeń.
+- Trzymaj przestrzeń w stanie, gdy potrzebuje jej zdarzenie squasha albo projekcja słuchająca
+  stanów.
+- Dokumenty niosą przestrzeń (`insertDocument(space.asLong, key, document)`), więc dokumenty jednej
+  organizacji można wyczyścić (`clearSpace`) i przebudować
+  (`RebuildAggregates(RebuildTarget.OneSpace(space))`).
+- Instalacja ze starszymi danymi uruchamia raz, online, `buildIndexesConcurrently`, `backfillSpaces`
+  i `backfillEventKeys`.
+- `SpacePurge` usuwa organizację: najpierw sprawdza, odłącza kopie należące do innych organizacji,
+  usuwa w małych transakcjach razem z twoimi `PurgeHook`, czyści projekcje i składa raport;
+  uruchamiaj je ponownie aż do `complete` i sprawdź wynik przez `StoredDataCheck.spaceRows`.
+- `SpaceExport` pakuje organizację do pliku z liniami JSON, a `SpaceImport` rozpakowuje go do pustej
+  przestrzeni innej instalacji, zmieniając zajęte identyfikatory i typowane odwołania do nich; potem
+  przebuduj modele odczytu tej przestrzeni.
 
-Następnie: [rozdział 17](17-cluster.md) rozkłada to wszystko na kilka maszyn.
+Dalej: [rozdział 17](17-cluster.md) rozkłada to wszystko na kilka maszyn.

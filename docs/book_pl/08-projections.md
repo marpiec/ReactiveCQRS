@@ -1,554 +1,602 @@
-# Rozdział 8. Projekcje: widoki, które ludzie mogą kwerendować
+# Rozdział 8. Projekcje: widoki, o które można pytać
 
-Pod koniec tego rozdziału będziesz mieć listę koszyków zakupowych w PostgreSQL, która sama się przechowuje
-na bieżąco i będziesz mógł zadać mu pytania takie jak „co jest w koszyku 42?” lub „które koszyki
-Czy można przechowywać więcej niż trzy elementy? Spotkasz trzy rodzaje słuchaczy: magazyn dokumentów, który
-przechowuje dane i jest to trik pozwalający ludziom zobaczyć resztę od razu po jej dokonaniu.
+Pod koniec tego rozdziału będziesz mieć w PostgreSQL listę koszyków zakupowych, która sama dba o swoją
+aktualność, i będziesz móc zadawać jej pytania w rodzaju „co jest w koszyku 42?” albo „które koszyki
+mają więcej niż trzy produkty?”. Poznasz trzy rodzaje listenerów, magazyn dokumentów, w którym leżą
+dane, i sztuczkę, dzięki której ludzie widzą swoją zmianę w tej samej chwili, w której ją wprowadzają.
 
 ---
 
-## Tablica ogłoszeń na korytarzu
+## Tablica ogłoszeń w przedpokoju
 
-Pamiętasz dziennik rodzinny z rozdziału 1? Czytasz cały dziennik za każdym razem, gdy ktoś pyta: „Co się dzieje?”
-„Na liście?” szybko się nudzi. Ktoś więc wiesza tablicę ogłoszeń na korytarzu i za każdym razem, gdy pojawia się nowa linia,
-Wchodzi do dziennika, aktualizują tablicę. Nikt nie pisze bezpośrednio na tablicy: ona zawsze…
-Zgodnie z dziennikiem. Jeśli tablica się zniszczy, zdejmujesz ją i układasz od nowa z dziennika.
+Wróćmy do rodzinnego pamiętnika z rozdziału 1. Czytanie całego pamiętnika za każdym razem, gdy ktoś
+pyta „co jest na liście?”, szybko się nudzi. Ktoś więc wiesza w przedpokoju tablicę ogłoszeń i za
+każdym razem, gdy w pamiętniku pojawia się nowa linijka, aktualizuje tablicę. Nikt nie pisze na
+tablicy bezpośrednio: ona zawsze tylko podąża za pamiętnikiem. Gdy tablica się zniszczy, zdejmujesz ją
+i odtwarzasz z pamiętnika.
 
-Płytka to **model do odczytu**: dane ukształtowane do odczytu. Osoba, która ją aktualizuje, to
-**projekcja**. W ReactiveCQRS projekcja to aktor, podklasa `ProjectionActor`, która
+Tablica to **model odczytu**: dane ułożone tak, żeby wygodnie się je czytało. Osoba, która dba o jej
+aktualność, to **projekcja**. W ReactiveCQRS projekcja jest aktorem, podklasą `ProjectionActor`,
+który:
 
-- nasłuchuje zdarzeń jednego lub więcej typów agregatów,
-- zapisuje to, czego się uczy, do swojego modelu odczytu, zwykle **magazynu dokumentów** (tabela PostgreSQL
-  dokumenty JSON),
-- odpowiada na zadawane mu pytania, jak każdy aktor: wysyłasz mu wiadomość, on odpowiada.
+- słucha zdarzeń jednego lub kilku typów agregatów,
+- zapisuje to, czego się dowie, w swoim modelu odczytu, zwykle w **magazynie dokumentów** (tabeli
+  PostgreSQL z dokumentami JSON),
+- odpowiada na pytania o ten model jak każdy aktor: wysyłasz mu wiadomość, a on odpowiada.
 
 ```
-właściciel koszyka ──wydarzenia──▶ magistrala zdarzeń ──▶ projekcja CartsList ──zapisy──▶ tabela projekcja_listy_wózków
-                                         ▲ │
-                       GetCartSummary(42)│ │Some(CartSummary(...))
-                                         │ ▼
-                                      Twój kod (strona internetowa, raport)
+cart owner ──events──▶ event bus ──▶ CartsList projection ──writes──▶ table projection_carts_list
+                                         ▲           │
+                       GetCartSummary(42)│           │Some(CartSummary(...))
+                                         │           ▼
+                                      your code (a web page, a report)
 ```
 
-Domena testowa ma dwie małe projekcje koszyków w `ShoppingCartsListProjection.scala`: jedną
-który słucha zdarzeń i taki, który słucha stanów. W tym rozdziale budujemy nieco bogatszą
-kuzyn drugiego, krok po kroku.
+Domena testowa ma dwie małe projekcje koszyków, w `ShoppingCartsListProjection.scala`: jedną, która
+słucha zdarzeń, i drugą, która słucha stanów. W tym rozdziale krok po kroku zbudujemy nieco bogatszą
+kuzynkę tej drugiej.
 
-## Cztery puste pola projekcji
+## Cztery pola do wypełnienia
 
-Każda projekcja wypełnia te same cztery luki:
+Każda projekcja wypełnia te same cztery pola:
 
 ```scala
-klasa MyProjection(val subscriptionsState: SubscriptionsState) rozszerza ProjectionActor {
-  nadpisz chronioną wartość projectionName: String = "MyProjection"
-  protected val listeners = List(...) // co następuje i co robi
-  nadpisz chronione def receiveQuery: Receive = { ... } // pytania, na które odpowiada
+class MyProjection(val subscriptionsState: SubscriptionsState) extends ProjectionActor {
+  override protected val projectionName: String = "MyProjection"
+  protected val listeners = List(...)                      // what it follows, and what it does
+  override protected def receiveQuery: Receive = { ... }   // the questions it answers
 }
 ```
 
 - **`subscriptionsState`** to notatnik projekcji: dla każdego agregatu ostatnia wersja, którą
-  Zastosowano. Dzięki temu projekcja wie, gdzie zatrzymała się po restarcie i rozpoznaje
-  wydarzenie, które już widziałeś (rozdział 9 opowiada tę historię). Tworzysz jeden `PostgresSubscriptionsState`
-  na system i podaj go każdej projekcji.
-- **`projectionName`** to etykieta dla wierszy dziennika i raportów stanu.
-- **`słuchacze`** określają, jakie typy agregatów uwzględnia projekcja i co robi z ich wiadomościami.
+  zastosowała. Dzięki niemu projekcja po restarcie wie, gdzie skończyła, i rozpoznaje zdarzenie, które
+  już kiedyś widziała (o tym opowiada rozdział 9). Tworzysz jeden `PostgresSubscriptionsState` na cały
+  system i przekazujesz go każdej projekcji.
+- **`projectionName`** to etykieta w liniach logu i raportach o stanie.
+- **`listeners`** mówią, za którymi typami agregatów projekcja podąża i co robi z wieściami o nich.
 - **`receiveQuery`** odpowiada na pytania.
 
 ## Trzy sposoby słuchania
 
-Wyobraź sobie mecz piłkarski, na który nie możesz pójść. Możesz go śledzić w radiu, gdzie komentator
-informuje Cię o każdym golu w momencie jego zdobycia; możesz spojrzeć na tablicę wyników, która pokazuje tylko wynik
-już teraz; albo możesz obejrzeć w telewizji, z komentarzem i wynikiem w rogu. Projekcja
-ma te same trzy możliwości:
+Wyobraź sobie mecz piłkarski, na który nie możesz pójść. Możesz śledzić go w radiu, gdzie komentator
+relacjonuje każdego gola na bieżąco; możesz zerknąć na tablicę wyników, która pokazuje tylko aktualny
+wynik; albo możesz oglądać go w telewizji, z komentarzem i wynikiem w rogu ekranu. Projekcja ma te same
+trzy możliwości:
 
-| Słuchacz | Twoja funkcja otrzymuje | Lubię to |
+| Listener | Twoja funkcja dostaje | Jak |
 |---|---|---|
 | `EventsListener[R]` | `(AggregateId, Seq[EventInfo[R]])` | radio: każde nowe zdarzenie |
-| `AggregateListener[R]` | `(AggregateId, AggregateVersion, Boolean, Option[R])` | tablica wyników: stan obecny |
-| `AggregateWithEventsListener[R]` | `(AggregateId, AggregateVersion, Option[R], Seq[EventInfo[R]])` | telewizor: oba |
+| `AggregateListener[R]` | `(AggregateId, AggregateVersion, Boolean, Option[R])` | tablica wyników: stan w tej chwili |
+| `AggregateWithEventsListener[R]` | `(AggregateId, AggregateVersion, Option[R], Seq[EventInfo[R]])` | telewizja: jedno i drugie |
 
-`R` to klasa nadrzędna agregatu: `ShoppingCart` dla koszyków. Każda funkcja zwraca inną funkcję,
-`DBSession => Unit`, czyli praca, którą należy wykonać w ramach transakcji bazy danych (więcej na ten temat wkrótce).
-Parametry w kolejności:
+`R` to klasa korzenia agregatu: dla koszyków to `ShoppingCart`. Każda z tych funkcji zwraca kolejną
+funkcję, `DBSession => Unit`, czyli pracę do wykonania w transakcji bazy danych (więcej o tym za
+chwilę). Parametry po kolei:
 
 - **`AggregateId`**: który koszyk.
-- **`Seq[EventInfo[R]]`**: nowe zdarzenia, najstarsze na początku. `EventInfo` zawiera `wersję`,
-  samo `wydarzenie`, `userId` osoby, która je spowodowała, jego `znacznik czasu` i jego `metadane` (rozdział 6).
-  Może być ich kilka naraz (polecenie, które zapisało trzy zdarzenia lub dostawy, które dotarły)
-  razem), więc zawsze należy je powtarzać.
+- **`Seq[EventInfo[R]]`**: nowe zdarzenia, od najstarszego. `EventInfo` zawiera wersję (`version`),
+  samo zdarzenie (`event`), `userId` osoby, która je wywołała, jego `timestamp` i `metadata`
+  (rozdział 6). Może ich być kilka naraz (polecenie, które zapisało trzy zdarzenia, albo dostarczenia,
+  które przyszły razem), więc zawsze przechodź po nich w pętli.
 - **`AggregateVersion`**: wersja koszyka po tych zdarzeniach.
-- **`Boolean`**, flaga `created` nasłuchiwacza stanu: prawda, gdy jest to pierwszy raz
-  projekcja słyszy o wózku, zwykle w wersji 1. To jest sygnał, aby wstawić nowy
-  dokument zamiast go aktualizować.
-- **`Opcja[R]`**: stan wózka po tych zdarzeniach. `Brak` oznacza, że ​​wózek zniknął: stan wózka
-  Obsługujący zdarzenie dla `ShoppingCartDeleted` zwraca `null`, a projekcja otrzymuje `None`.
+- **`Boolean`**, flaga `created` listenera stanu: prawda, gdy projekcja słyszy o koszyku po raz
+  pierwszy, zwykle przy wersji 1. To sygnał, żeby wstawić nowy dokument, a nie aktualizować
+  istniejący.
+- **`Option[R]`**: stan koszyka po tych zdarzeniach. `None` oznacza, że koszyka już nie ma: handler
+  zdarzenia `ShoppingCartDeleted` w koszyku zwraca `null`, a projekcja dostaje `None`.
 
-Słuchacz stanu widzi stan po całym pakiecie, a nie po każdym kroku. To jest dokładnie to,
-co robi tablica wyników.
+Listener stanu widzi stan po całej paczce zdarzeń, a nie każdy krok po drodze. Dokładnie tak działa
+tablica wyników.
 
-Którą opcję wybrać?
+Który wybrać?
 
-- Wybierz **stan** (`AggregateListener`), gdy model odczytu jest obrazem bieżącego stanu
-  stan, na przykład lista wózków z ich nazwami i rozmiarami. Cofanie, duplikowanie, przepisywanie historii
-  i squash (rozdziały 6, 14 i 15) są darmowe, bo stan, który otrzymujesz, jest już odpowiedni.
-- Wybierz **wydarzenia** (`EventsListener`), jeśli zależy Ci na tym, co się wydarzyło, a nie gdzie to nastąpiło
-  Zakończono: dziennik aktywności, jak często dolewane jest mleko, kto co usunął.
-- Wybierz **oba** (`AggregateWithEventsListener`), jeśli potrzebujesz obrazu i historii.
+- Wybierz **stan** (`AggregateListener`), gdy twój model odczytu jest obrazem bieżącego stanu, na
+  przykład listą koszyków z ich nazwami i rozmiarami. Cofnięcia, duplikowanie, przepisywanie historii i
+  squash (rozdziały 6, 14 i 15) masz wtedy za darmo, bo stan, który dostajesz, jest już poprawny.
+- Wybierz **zdarzenia** (`EventsListener`), gdy obchodzi cię to, co się wydarzyło, a nie to, jak się
+  skończyło: dziennik aktywności, jak często ktoś dodaje mleko, kto co usunął.
+- Wybierz **jedno i drugie** (`AggregateWithEventsListener`), gdy potrzebujesz i obrazu, i opowieści.
 
-> **Pamiętaj:** obiekt nasłuchujący zdarzeń otrzymuje każdą klasę zdarzeń swojego typu: zdarzenia cofania, zdarzenia squasha
-> wydarzenie z rozdziału 14 i wszystkie klasy, które dodasz w przyszłym roku. Dopasowanie bez `case _ =>`, które
-> napotyka zdarzenie, o którym nie wie, zgłasza błąd `MatchError`, a obiekt nasłuchujący, który zgłasza błąd, jest błędem
-> (rozdział 9). Lista koszyków oparta na zdarzeniach domeny testowej drukuje przeprosiny tylko wtedy, gdy widzi
-> cofnij: ustalenie, co zostało cofnięte, to twoje zadanie w przypadku zdarzeń, a niczyje zadanie w przypadku stanów.
+> **Pamiętaj:** listener zdarzeń dostaje każdą klasę zdarzenia swojego typu: zdarzenia cofnięcia,
+> zdarzenie squasha z rozdziału 14 i wszystkie klasy, które dodasz w przyszłym roku. `match` bez
+> `case _ =>`, który natrafi na nieznane zdarzenie, rzuca `MatchError`, a listener, który rzuca
+> wyjątek, to awaria (rozdział 9). Oparta na zdarzeniach lista koszyków z domeny testowej, gdy widzi
+> cofnięcie, tylko wypisuje przeprosiny: przy zdarzeniach ustalenie, co zostało cofnięte, to twoje
+> zadanie, a przy stanach niczyje.
 
-Dwie małe zasady: jeden nasłuchiwacz na rodzaj na typ agregatu (wymień dwa `EventsListener[ShoppingCart]`
-i tylko ostatnia opcja się liczy), a typ musi być rzeczywistą klasą, ponieważ `Any` i `Nothing` są odrzucane.
+Dwie drobne zasady: jeden listener danego rodzaju na typ agregatu, a typ musi być prawdziwą klasą.
+Wpisz na listę dwa `EventsListener[ShoppingCart]` albo jeden dla `Any` lub `Nothing`, a projekcja
+odmówi startu: szyna nigdy nie dostanie jej subskrypcji i będzie czekać bez końca, a w logu
+przeczytasz dlaczego („Projection ... declares 2 EventsListeners of ...”).
 
-## Gdzie znajdują się modele odczytu: magazyny dokumentów
+## Gdzie mieszkają modele odczytu: magazyny dokumentów
 
-Wyobraź sobie szafkę na dokumenty z jedną szufladą na każdy rodzaj dokumentu i jednym segregatorem na każdy wózek.
-oznaczonych numerem koszyka. To jest **magazyn dokumentów**: `DocumentStore[T]` przechowuje dokumenty
-typu `T` pod kluczami typu `Long`, zwykle identyfikator agregatu (`cartId.asLong`).
+Wyobraź sobie szafkę na dokumenty z jedną szufladą na każdy rodzaj dokumentów i jedną teczką na każdy
+koszyk, opisaną jego numerem. To jest **magazyn dokumentów**: `DocumentStore[T]` trzyma dokumenty
+typu `T` pod kluczami typu `Long`, zwykle identyfikatorami agregatów (`cartId.asLong`).
 
-- **`PostgresDocumentStore[T]`** przechowuje je w tabeli o nazwie `projection_<name>`, z kolumnami
-  `space_id`, `id`, `version` i `document` (dokument w formacie `JSONB`, zapisany przez mpjsons).
-  tworzy tabelę i indeksy, o które prosisz podczas tworzenia sklepu.
-- **`MemoryDocumentStore[T]`** przechowuje je na mapie w pamięci. Jest to przeznaczone do testów (rozdział 19);
-  ignoruje spacje, więc polecenie `clearSpace` nic nie robi.
+- **`PostgresDocumentStore[T]`** trzyma je w tabeli `projection_<name>` z kolumnami `space_id`, `id`,
+  `version` i `document` (dokument jako `JSONB`, zapisany przez mpjsons). Tabelę i indeksy, o które
+  prosisz, zakłada w chwili tworzenia magazynu.
+- **`MemoryDocumentStore[T]`** trzyma je w mapie w pamięci. Jest przeznaczony do testów (rozdział 19);
+  ignoruje przestrzenie, więc jego `clearSpace` nic nie robi.
 
+Oto magazyn listy koszyków, którą budujemy w tym rozdziale. Jej dokumenty to
+`CartSummary(name: String, itemCount: Int, version: Int)`:
+
+<!-- snippet: cart/ReadModelsSpec.scala#store -->
 ```scala
 import io.reactivecqrs.core.documentstore.{MultipleTextIndex, NoopDocumentStoreCache, PostgresDocumentStore}
 
-klasa przypadku CartSummary(nazwa: String, liczba elementów: Int, wersja: Int)
-
-val cartsStore = nowy PostgresDocumentStore[CartSummary](
-  "carts_list", // tabela: projection_carts_list
-  mpjsons, // pliki MPJsons, które utworzyłeś w rozdziale 4
-  nowy NoopDocumentStoreCache, // pamięć podręczna, która niczego nie przechowuje
-  Seq(MultipleTextIndex(1, Seq("name")))) // indeks w polu JSON "name"
+val cartsStore = new PostgresDocumentStore[CartSummary](
+  "carts_list",                           // the table: projection_carts_list
+  mpjsons,                                // the MPJsons you made in chapter 4
+  new NoopDocumentStoreCache,             // a cache that keeps nothing
+  Seq(MultipleTextIndex(1, Seq("name")))) // an index on the JSON field "name"
 ```
 
-- **Nazwa** może zawierać wyłącznie litery, cyfry i podkreślenia, a także najdłuższą nazwę utworzoną przez sklep
-  (tabela lub indeks, taki jak `projection_carts_list_idx_1`) musi być zgodny z 63-bitowym standardem PostgreSQL
-  znaków. W przeciwnym razie sklep odmawia uruchomienia z wyjątkiem `IllegalArgumentException`.
-- **Pamięć podręczna**: `NoopDocumentStoreCache` niczego nie przechowuje, więc każdy odczyt trafia do bazy danych. Pamięć podręczna
-  implementuje własną cechę `DocumentStoreCache`.
-- **Indeksy** przyspieszają wyszukiwanie w polach JSON: `MultipleTextIndex`, `UniqueTextIndex`,
+- **Nazwa** może zawierać tylko litery, cyfry i podkreślenia, a najdłuższa nazwa, jaką tworzy
+  magazyn (tabeli albo indeksu, takiego jak `projection_carts_list_idx_1`), musi się zmieścić w 63
+  znakach, na które pozwala PostgreSQL. Inaczej magazyn odmówi startu, rzucając
+  `IllegalArgumentException`.
+- **Pamięć podręczna**: `NoopDocumentStoreCache` niczego nie przechowuje, więc każdy odczyt idzie do
+  bazy danych. Własna pamięć podręczna implementuje niewielki trait `DocumentStoreCache`.
+- **Indeksy** przyspieszają wyszukiwanie po polach JSON: `MultipleTextIndex`, `UniqueTextIndex`,
   `MultipleIntIndex`, `UniqueIntIndex`, `MultipleLongIndex`, `UniqueLongIndex`,
-  `MultipleTextArrayIndex` i `MultipleCombinedIndex` lub `UniqueCombinedIndex` na kilku
-  Ścieżki. Liczba (tutaj `1`) określa indeks. Na początku sklep tworzy indeksy, których nie
-  jeszcze nie ma i usuwa te, których już nie ma na liście.
+  `MultipleTextArrayIndex`, a także `MultipleCombinedIndex` lub `UniqueCombinedIndex` na kilku
+  ścieżkach naraz. Numer (tutaj `1`) jest nazwą indeksu. Przy starcie magazyn tworzy indeksy, których
+  jeszcze nie ma, usuwa te, których nie ma już na liście, i buduje od nowa taki, którego definicja się
+  zmieniła (inna ścieżka albo inny rodzaj pod tym samym numerem), zostawiając w logu ostrzeżenie.
 
-> **Ostrzeżenie:** sklep rozpoznaje indeks wyłącznie na podstawie jego numeru. Zmień ścieżkę indeksu 1, ale
-> Zachowaj numer, a stary indeks pozostanie bez zmian. Zmienionemu indeksowi nadaj nowy numer.
+> **Ostrzeżenie:** ponowne budowanie indeksu blokuje zapisy projekcji na cały czas swojego trwania, a
+> projekcja startuje dopiero, gdy się zakończy: w tabeli z milionami dokumentów może to trwać
+> minutami. Przy dużej tabeli zmieniaj indeks razem z nową wersją projekcji zarządzanej (rozdział 10):
+> nowa budowa dostaje nowe tabele, które powstają, podczas gdy stare wciąż obsługują zapytania.
 
-Operacje, z których będziesz korzystać najczęściej:
+Operacje, których będziesz używać najczęściej:
 
-| Zadzwoń | Co to robi |
+| Wywołanie | Co robi |
 |---|---|
-| `insertDocument(spaceId, key, document)` | dodaje nowy dokument; kończy się niepowodzeniem, jeśli klucz jest zajęty |
-| `overwriteDocument(klucz, dokument)` | zastępuje istniejący dokument; kończy się niepowodzeniem, jeśli nie ma żadnego dokumentu |
-| `updateDocument(spaceId, key, modify)` | odczytuje, zmienia i zapisuje z powrotem; `modify` pobiera `Option[Document[T]]` (`None`: jeszcze nie ma dokumentu) i zwraca nowy `Document[T]` |
-| `updateExistingDocument(klucz, modyfikuj)` | to samo, dla dokumentu, który musi istnieć |
-| `removeDocument(key)` | usuwa go |
-| `getDocument(klucz)` | `Opcja[Dokument[T]]` |
-| `getDocuments(keys)` | `Map[Long, Document[T]]` znalezionych |
-| `findAll()` | każdy dokument, jako `Map[Long, Document[T]]` |
+| `insertDocument(spaceId, key, document)` | dodaje nowy dokument; kończy się błędem, jeśli klucz jest zajęty |
+| `overwriteDocument(key, document)` | zastępuje istniejący dokument; kończy się błędem, jeśli go nie ma |
+| `updateDocument(spaceId, key, modify)` | czyta, zmienia i zapisuje z powrotem; `modify` dostaje `Option[Document[T]]` (`None`: dokumentu jeszcze nie ma) i zwraca nowy `Document[T]` |
+| `updateExistingDocument(key, modify)` | to samo dla dokumentu, który musi istnieć |
+| `removeDocument(key)` | usuwa dokument |
+| `getDocument(key)` | `Option[Document[T]]` |
+| `getDocuments(keys)` | `Map[Long, Document[T]]` z tymi, które udało się znaleźć |
+| `findAll()` | wszystkie dokumenty jako `Map[Long, Document[T]]` |
 | `countAll()` | ile ich jest |
-| `findDocumentByPath(ścieżka, wartość)` | dokumenty, których tekst w ścieżce `ścieżka` jest równy `wartość` |
+| `findDocumentByPath(path, value)` | dokumenty, w których tekst pod ścieżką `path` jest równy `value` |
+| `findDocumentByPaths(conditions*)` | dokumenty, które spełniają wszystkie warunki, na przykład `ExpectedSingleLongValue(Seq("shop"), 7)` |
 | `findDocument(query)` | wyszukiwanie z warunkami, sortowaniem i stronicowaniem (dalej w tym rozdziale) |
-| `clearSpace(spaceId)`, `clearAllData()` | usuwa dokumenty jednej organizacji lub wszystkie z nich |
+| `clearSpace(spaceId)`, `clearAllData()` | usuwa dokumenty jednej organizacji albo wszystkie |
 
-`Document[T]` to maleńki wrapper: `Document(summary)` zawija, `doc.document` rozwija. `spaceId`
-to organizacja, do której należy dokument (rozdział 16). Wszystkie nasze koszyki znajdują się w przestrzeni 0, ponieważ
-to jest to co mówi `ShoppingCartCreated` (`spaceId = SpaceId(0)`).
+`Document[T]` to malutkie opakowanie: `Document(summary)` opakowuje, `doc.document` wyjmuje z
+opakowania. `spaceId` to organizacja, do której należy dokument (rozdział 16). Wszystkie nasze koszyki
+mieszkają w przestrzeni 0, bo tak mówi `ShoppingCartCreated` (`spaceId = SpaceId(0)`).
 
-> **Pamiętaj:** `updateDocument` może wywołać funkcję `modify` więcej niż raz: jeśli inny autor
-> zmienił dokument w międzyczasie, odczytuje nowy i próbuje ponownie, nawet 10 razy. Zachowaj
-> `modyfikuj` czysto: obliczaj, nie działaj.
+> **Pamiętaj:** `updateDocument` może wywołać twoją funkcję `modify` więcej niż raz: jeśli w
+> międzyczasie dokument zmienił ktoś inny, czyta nową wersję i próbuje jeszcze raz, maksymalnie 10
+> razy. Niech `modify` będzie czysta: tylko oblicza, niczego nie robi.
 
-> **Wskazówka:** kolumna `wersja` tabeli zlicza zapisy dokumentu, a nie jest kolumną koszyka
-> wersja. Jeśli potrzebujesz wersji koszyka w modelu do odczytu (a będziesz jej potrzebować później w tym rozdziale),
-> zachowaj je w dokumencie, tak jak robi to `CartSummary`.
+> **Wskazówka:** kolumna `version` w samej tabeli liczy zapisy dokumentu; to nie jest wersja koszyka.
+> Jeśli potrzebujesz wersji koszyka w modelu odczytu (a dalej w tym rozdziale będzie potrzebna),
+> trzymaj ją w samym dokumencie, tak jak robi to `CartSummary`.
 
-## Transakcja, w której działa Twój słuchacz
+## Transakcja, w której działa listener
 
-Każdy zapis wymaga niejawnej sesji DBS. W programie nasłuchującym ta sesja jest transakcją.
-projekcja otwarta dla Ciebie, a ta sama transakcja rejestruje postęp projekcji: „koszyk
-42 jest stosowany do wersji 3". Tak więc model odczytu i zakładka są zatwierdzane razem lub wcale.
-Jeśli słuchacz rzuci w połowie, ani dokument, ani zakładka nie poruszą się, a projekcja
-próbuje ponownie (rozdział 9).
+Każdy zapis przyjmuje niejawny parametr `DBSession`. Wewnątrz listenera ta sesja to transakcja, którą
+projekcja otworzyła za ciebie, i ta sama transakcja zapisuje postęp projekcji: „koszyk 42 jest
+zastosowany do wersji 3”. Model odczytu i zakładka są więc zatwierdzane razem albo wcale. Jeśli
+listener w połowie rzuci wyjątek, nie ruszy się ani dokument, ani zakładka, a projekcja spróbuje
+jeszcze raz (rozdział 9).
 
-Dlatego nasłuchiwacz to funkcja, która przyjmuje sesję. Oznacz ją jako „niejawną”, a następnie zapisz
-połączenia wewnątrz odbierają się same:
+Dlatego listener jest funkcją, która przyjmuje sesję. Oznacz ją jako `implicit`, a wywołania magazynu
+w środku same ją podchwycą:
 
 ```scala
-AggregateListener[ShoppingCart] { (cartId, wersja, utworzony, koszyk) => niejawna sesja =>
-  // każde wywołanie sklepu tutaj jest uruchamiane w `session`
+AggregateListener[ShoppingCart] { (cartId, version, created, cart) => implicit session =>
+  // every store call here runs in `session`
 }
 ```
 
-> **Ostrzeżenie:** nigdy nie zatwierdzaj ani nie wycofuj sesji, którą Ci udostępniono, i nigdy nie otwieraj transakcji
-> własne dla modelu do odczytu. Gdy aktualizacje pojawiają się szybko, prognoza dotyczy do 100 kart.
-> aktualizacje w jednej transakcji; jeśli jedna z nich się nie powiedzie, wycofuje je wszystkie i stosuje każdy koszyk na raz
-> swój własny, tak aby ponowna próba dotyczyła tylko wadliwego koszyka. Twoje zatwierdzenie mogłoby to zepsuć.
+> **Ostrzeżenie:** nigdy nie zatwierdzaj ani nie wycofuj sesji, którą dostajesz, i nigdy nie otwieraj
+> dla modelu odczytu własnej transakcji. Gdy aktualizacje napływają szybko, projekcja stosuje w jednej
+> transakcji aktualizacje nawet 100 koszyków; jeśli któraś zawiedzie, wycofuje je wszystkie i stosuje
+> każdy koszyk osobno, tak żeby ponawiany był tylko ten wadliwy. Twoje własne zatwierdzenie by to
+> zepsuło.
 
-Poza słuchaczem (w skrypcie, teście lub zadaniu naprawczym) samodzielnie otwierasz sesję, np.
-z `DB.localTx { implicit session => ... }` ScalikeJDBC. Odczyty takie jak `getDocument` i
-`findAll` nie wymaga sesji: bez niej otwiera własną sesję tylko do odczytu.
+Poza listenerem (w skrypcie, teście albo zadaniu naprawczym) sesję otwierasz samodzielnie, na przykład
+przez `DB.localTx { implicit session => ... }` ze ScalikeJDBC. Odczyty takie jak `getDocument` i
+`findAll` nie potrzebują sesji: bez niej otwierają własną sesję tylko do odczytu. Wewnątrz listenera
+każdy odczyt też działa w sesji listenera, więc widzi to, co listener zapisał chwilę wcześniej, i nie
+zabiera z puli drugiego połączenia.
 
-> **Pod maską:** transakcja pochodzi z `SubscriptionsState.localTx`, a projekcja
-> wersja porusza się z porównaniem i ustawieniem, więc dwóch autorów nigdy nie może jej jednocześnie przenosić. Grupowanie i jego
-> awaryjne są opisane w [ARCHITECTURE.md, sekcja 6.3](../ARCHITECTURE.md); magazyn dokumentów
-> w sekcji 6.8; notatnik (`SubscriptionsState`) w sekcji 7.
+> **Pod maską:** transakcja pochodzi z `SubscriptionsState.localTx`, a wersja projekcji przesuwa się
+> operacją compare-and-set, więc z dwóch piszących przesunąć ją może tylko jeden. Grupowanie i jego
+> wariant awaryjny opisuje [ARCHITECTURE.md, sekcja 6.3](../ARCHITECTURE.md), magazyn dokumentów
+> sekcja 6.8, a notatnik (`SubscriptionsState`) sekcja 7.
 
-## Tworzenie listy koszyka krok po kroku
+## Budujemy listę koszyków krok po kroku
 
-Nasz model odczytu przechowuje jeden dokument na koszyk: jego nazwę, liczbę zawartych w nim pozycji i numer koszyka.
-Wersja. Wykorzystujemy ponownie to, co zbudowaliśmy w rozdziale 4: system aktorów „system”, „mpjsons”, „typesNames”,
-szyna zdarzeń `eventBus`, użytkownik `alice` i szyna poleceń koszyka `carts`.
+Nasz model odczytu ma po jednym dokumencie na koszyk, z jego nazwą, liczbą produktów i wersją.
+Korzystamy z tego, co powstało w rozdziale 4: systemu aktorów `system`, `mpjsons`, `typesNames`, szyny
+zdarzeń `eventBus`, użytkownika `alice` i szyny poleceń koszyków `carts`.
 
-1. **Zapisz dokument i pytania.**
+1. **Spisz dokument i pytania.**
 
+   <!-- snippet: cart/CartsList.scala#documents -->
    ```scala
-   importuj io.reactivecqrs.api.id.AggregateId
+   import io.reactivecqrs.api.id.AggregateId
 
-   klasa przypadku CartSummary(nazwa: String, liczba elementów: Int, wersja: Int)
+   case class CartSummary(name: String, itemCount: Int, version: Int)
 
-   klasa przypadku GetCartSummary(cartId: AggregateId) // odpowiedź udzielona za pomocą opcji [CartSummary]
-   obiekt przypadku GetAllCarts // odpowiedź udzielona za pomocą Map[AggregateId, CartSummary]
-   klasa przypadku FindCartsByName(name: String) // odpowiedź udzielona za pomocą Vector[CartSummary]
+   case class GetCartSummary(cartId: AggregateId)   // answered with Option[CartSummary]
+   case object GetAllCarts                          // answered with Map[AggregateId, CartSummary]
+   case class FindCartsByName(name: String)         // answered with Vector[CartSummary]
    ```
 
 2. **Napisz projekcję.**
 
+   <!-- snippet: cart/CartsList.scala#projection -->
    ```scala
    import io.reactivecqrs.core.documentstore.DocumentStore
-   import io.reactivecqrs.core.projection.{ProjectionActor, SubscriptionsState}
+   import io.reactivecqrs.core.projection.{ProjectionActor, ProjectionActorOptions, SubscriptionsState}
    import io.reactivecqrs.testdomain.shoppingcart.ShoppingCart
 
-   klasa CartsListProjection(val subscriptionsState: SubscriptionsState,
-                             sklep: DocumentStore[CartSummary]) rozszerza ProjectionActor {
+   class CartsListProjection(val subscriptionsState: SubscriptionsState,
+                             store: DocumentStore[CartSummary],
+                             options: ProjectionActorOptions = ProjectionActorOptions.DEFAULT) extends ProjectionActor(options) {
 
-     nadpisz chronioną wartość projectionName: String = "CartsList"
+     override protected val projectionName: String = "CartsList"
 
-     chronionych słuchaczy wartości = Lista(
-       AggregateListener[ShoppingCart] { (cartId, wersja, utworzony, koszyk) => niejawna sesja =>
-         dopasowanie koszyka {
-           przypadek Some(c) =>
+     protected val listeners = List(
+       AggregateListener[ShoppingCart] { (cartId, version, created, cart) => implicit session =>
+         cart match {
+           case Some(c) =>
              val summary = CartSummary(c.name, c.items.size, version.asInt)
-             jeśli (utworzono) store.insertDocument(0, cartId.asLong, summary)
-             w przeciwnym razie przechowuj.overwriteDocument(cartId.asLong, summary)
-           przypadek Żaden =>
-             sklep.usuńDokument(cartId.asLong)
+             if (created) store.insertDocument(0, cartId.asLong, summary)
+             else store.overwriteDocument(cartId.asLong, summary)
+           case None =>
+             store.removeDocument(cartId.asLong)
          }
        })
 
-     nadpisz chronione def receiveQuery: Receive = {
-       przypadek GetCartSummary(cartId) =>
-         nadawca() ! store.getDocument(cartId.asLong).map(_.document)
-       przypadek GetAllCarts =>
+     override protected def receiveQuery: Receive = {
+       case GetCartSummary(cartId) =>
+         sender() ! store.getDocument(cartId.asLong).map(_.document)
+       case GetAllCarts =>
          sender() ! store.findAll().map { case (id, doc) => AggregateId(id) -> doc.document }
-       przypadek FindCartsByName(nazwa) =>
+       case FindCartsByName(name) =>
          sender() ! store.findDocumentByPath(Seq("name"), name).values.map(_.document).toVector
+       case FindBigCarts(moreThan) =>
+         val query = DocumentStoreQuery(
+           where = Seq(ExpectedGreaterThanIntValue(Seq("itemCount"), moreThan)),
+           sortBy = Seq(SortDescInt("itemCount")),
+           offset = 0,
+           limit = 20)
+         sender() ! store.findDocument(query).map { case (id, doc) => AggregateId(id) -> doc.document }
+       case GetCartSummaryAtLeast(cartId, version) =>
+         delayIfNotAvailable(sender(), () =>
+           store.getDocument(cartId.asLong).map(_.document).filter(_.version >= version.asInt),
+           2000)
      }
    }
    ```
 
-   Słuchacz czyta jak tablicę wyników: nowy wózek otrzymuje dokument, zmieniony wózek otrzymuje swój
-   Dokument zastąpiony, usunięty koszyk go utraci. To jest domena testowa
-   `ShoppingCartsListProjectionAggregatesBased`, a także liczba pozycji i wersja.
+   Listener czyta się jak tablica wyników, bo nią właśnie jest: nowy koszyk dostaje dokument,
+   zmieniony dostaje nowy w miejsce starego, a usunięty swój traci. To projekcja
+   `ShoppingCartsListProjectionAggregatesBased` z domeny testowej, uzupełniona o liczbę produktów i
+   wersję. Projekcja odpowiada jeszcze na dwa pytania, `FindBigCarts` i `GetCartSummaryAtLeast`, które
+   pojawią się dalej w tym rozdziale, a jej trzeci parametr, czyli opcje, poznasz na końcu rozdziału.
 
-3. **Utwórz notatnik i sklep**, raz dla każdego systemu i raz dla każdego sklepu:
+3. **Utwórz notatnik**, raz na system; magazyn to ten z poprzedniej sekcji:
 
+   <!-- snippet: cart/ReadModelsSpec.scala#notebook -->
    ```scala
    import io.reactivecqrs.core.projection.PostgresSubscriptionsState
 
    val subscriptionsState = new PostgresSubscriptionsState(typesNames).initSchema()
-   val cartsStore = nowy PostgresDocumentStore[CartSummary]("carts_list", mpjsons,
-     nowy NoopDocumentStoreCache, Seq(MultipleTextIndex(1, Seq("name"))))
    ```
 
-   `initSchema()` tworzy tabelę `subscriptions` (notatnik) i `subscription_failures`
-   (rozdział 9) jeśli jeszcze tam nie są.
+   `initSchema()` tworzy tabelę `subscriptions` (notatnik) i `subscription_failures` (rozdział 9),
+   jeśli jeszcze ich nie ma.
 
-4. **Rozpocznij projekcję na blokującym dyspozytorze.**
+4. **Uruchom projekcję na dispatcherze blokującym.**
 
+   <!-- snippet: cart/ReadModelsSpec.scala#start -->
    ```scala
-   importuj org.apache.pekko.actor.Props
-   importuj io.reactivecqrs.core.util.BlockingDispatcher
+   import org.apache.pekko.actor.Props
+   import io.reactivecqrs.core.util.BlockingDispatcher
 
    val cartsList = system.actorOf(
-     Rekwizyty (nowa projekcja listy koszyków (stan subskrypcji, sklep z koszykami)).withDispatcher (BlockingDispatcher.id),
-     „Lista koszyków”)
+     Props(new CartsListProjection(subscriptionsState, cartsStore)).withDispatcher(BlockingDispatcher.id),
+     "CartsList")
    ```
 
-   Projekcja komunikuje się z PostgreSQL w ramach własnego wątku. `BlockingDispatcher.id`, czyli
-   `reactivecqrs.blocking-dispatcher` (32 wątki, chyba że skonfigurujesz inaczej), to pula
-   Biblioteka jest przeznaczona do tego typu zadań, więc reszta systemu nigdy nie czeka w kolejce po wolne zapytanie.
+   Projekcja rozmawia z PostgreSQL na własnym wątku. `BlockingDispatcher.id`, czyli
+   `reactivecqrs.blocking-dispatcher` (32 wątki, chyba że skonfigurujesz inaczej), to pula, którą
+   biblioteka trzyma właśnie na taką pracę, dzięki czemu reszta systemu nigdy nie czeka w kolejce za
+   wolnym zapytaniem.
 
-5. **Umieść go na liście subskrybentów magistrali zdarzeń.** W rozdziale 4 gospodarz poinformował magistralę, kto jest jego
-   Subskrybenci są zarejestrowani w sekcji „RegisterSubscribers”. Projekcja trafia na tę listę wraz z
-   każda inna projekcja, saga i słuchacz systemu:
+5. **Dopisz ją do listy subskrybentów szyny zdarzeń.** W rozdziale 4 aplikacja powiedziała szynie przez
+   `RegisterSubscribers`, kim są jej subskrybenci. Projekcja trafia na tę listę razem ze wszystkimi
+   innymi projekcjami, sagami i listenerami systemu:
 
+   <!-- snippet: cart/ReadModelsSpec.scala#register -->
    ```scala
    import io.reactivecqrs.core.eventbus.EventsBusActor
 
    eventBus ! EventsBusActor.RegisterSubscribers(List(cartsList))
    ```
 
-   Autobus pyta każdego abonenta, czego chce (projekcja odpowiada sama, jedna subskrypcja
-   na słuchacza) i nie publikuje niczego, dopóki wszyscy subskrybenci na liście nie odpowiedzą. Podczas gdy
-   czeka, rejestruje co kilka sekund komunikat „Magistrala zdarzeń czeka na subskrypcje: ...”, co jest przydatne
-   gdy zapomniałeś zacząć któregoś z nich.
+   Szyna pyta każdego subskrybenta, czego chce (projekcja odpowiada sama, po jednej subskrypcji na
+   listener), i niczego nie publikuje, dopóki nie odpowie każdy subskrybent z listy. Czekając, co kilka
+   sekund zapisuje w logu `Event bus waits for the subscriptions of: ...`, co bardzo się przydaje, gdy
+   zapomnisz uruchomić któregoś z nich.
 
-> **Ostrzeżenie:** uruchom projekcję na domyślnym dyspozytorze i nadal działa, ale rejestruje
-> ostrzeżenie na starcie („uruchamia transakcje nasłuchujące na domyślnym dyspozytorze; utwórz go za pomocą
-> Props(...).withDispatcher(BlockingDispatcher.id)"), a każde zapytanie i każda wykonywana przez niego transakcja są zachowywane
-> wątki potrzebne reszcie Pekko. Zawsze dodawaj `.withDispatcher(BlockingDispatcher.id)`.
+> **Ostrzeżenie:** projekcja uruchomiona na domyślnym dispatcherze też działa, ale przy starcie
+> zapisuje w logu ostrzeżenie („runs its listener transactions on the default dispatcher; create it
+> with Props(...).withDispatcher(BlockingDispatcher.id)”), a każde jej zapytanie i każda transakcja
+> zajmują wątki potrzebne reszcie Pekko. Zawsze dodawaj `.withDispatcher(BlockingDispatcher.id)`.
 
-> **Ostrzeżenie:** projekcja rozpoczęta w ten sposób przechowuje swój notatnik pod **nazwą klasy** (na przykład
-> przykład `com.example.CartsListProjection`), a nie pod `projectionName`. Zmień nazwę lub przenieś klasę
-> a projekcja zapomina, co zastosowała: następne zdarzenie każdego wózka powoduje, że uruchamia ten wózek
-> ponownie z wersji 1, bezpośrednio do dokumentów, które już istnieją. Zarządzane projekcje
-> rozdział 10 zachowaj swój notatnik pod nazwą, którą wybierzesz.
+> **Ostrzeżenie:** projekcja uruchomiona w ten sposób trzyma swój notatnik pod **nazwą klasy** (na
+> przykład `com.example.CartsListProjection`), a nie pod `projectionName`. Gdy zmienisz nazwę klasy
+> albo ją przeniesiesz, projekcja zapomni, co już zastosowała: przy następnym zdarzeniu każdego
+> koszyka zacznie go od nowa, od wersji 1, wprost na dokumentach, które już istnieją. Projekcje
+> zarządzane z rozdziału 10 trzymają notatnik pod nazwą wybraną przez ciebie.
 
-## Wypróbowuję
+## Wypróbujmy
 
-Utwórz koszyk, dodaj mleko i zapytaj:
+Utwórz koszyk, dodaj mleko i zapytaj. Bloki kodu z tego rozdziału działają w `ReadModelsSpec`
+(`examples/src/test/scala/io/reactivecqrs/examples/cart/`), który sprawdza ich odpowiedzi:
 
+<!-- snippet: cart/ReadModelsSpec.scala#tryIt -->
 ```scala
-zaimportuj org.apache.pekko.pattern.ask
+import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
-importuj io.reactivecqrs.api._
+import io.reactivecqrs.api._
 import io.reactivecqrs.testdomain.shoppingcart._
 import scala.concurrent.Await
 import scala.concurrent.duration._
 
-niejawny limit czasu wartości: Limit czasu = Limit czasu (5 sekund)
+implicit val timeout: Timeout = Timeout(5.seconds)
 
-def send(polecenie: AnyRef): CustomCommandResponse[_] =
-  Await.result((carts ? command).mapTo[CustomCommandResponse[_]], 5 sekund)
+def send(command: AnyRef): CustomCommandResponse[_] =
+  Await.result((carts ? command).mapTo[CustomCommandResponse[_]], 5.seconds)
 
-val SuccessResponse(cartId, _) = send(CreateShoppingCart(None, alice, "Groceries")) // szkic: prawdziwe kontrole kodu
-send(AddItem(alicja, cartId, AggregateVersion(1), "mleko")) // SuccessResponse(Id(42),Version(2))
+val cartId = send(CreateShoppingCart(None, alice, "Groceries")) match {
+  case SuccessResponse(id, _) => id
+  case refused => throw new IllegalStateException("No cart: " + refused)
+}
+send(AddItem(alice, cartId, AggregateVersion(1), "milk"))       // SuccessResponse(Id(42),Version(2))
 
-Thread.sleep(500) // daj projekcji chwilę; lepszy sposób pojawi się później w tym rozdziale
+Thread.sleep(500) // give the projection a moment; a better way comes later in this chapter
 
-Await.result((cartsList ? GetCartSummary(cartId)).mapTo[Option[CartSummary]], 5.sekund)
-// Some(CartSummary(Spożywcze,1,2))
+val summary = Await.result((cartsList ? GetCartSummary(cartId)).mapTo[Option[CartSummary]], 5.seconds)
+// Some(CartSummary(Groceries,1,2))
 ```
 
-Sprawdź w PostgreSQL, a znajdziesz wiersz koszyka w `projection_carts_list`, z
-`{"name": "Artykuły spożywcze", "version": 2, "itemCount": 1}` w swojej kolumnie `document` (PostgreSQL zachowuje
-klucze wartości `JSONB` w określonej kolejności).
+Zajrzyj do PostgreSQL, a znajdziesz wiersz koszyka w `projection_carts_list`, z
+`{"name": "Groceries", "version": 2, "itemCount": 1}` w kolumnie `document` (PostgreSQL układa klucze
+wartości `JSONB` po swojemu).
 
-> **Pamiętaj:** projekcja rozpoczęta w ten sposób odbiera tylko zdarzenia opublikowane po jej dołączeniu.
-> Wózek, który istniał wcześniej, pojawia się przy następnej zmianie: projekcja zauważa, że
-> pominięte wersje od 1 do 3, pyta o nie właściciela wózka, a następnie stosuje wersje od 1 do 4 w kolejności (
-> `DeliveryEndToEndSpec` biblioteki pokazuje dokładnie to). Koszyk, który nigdy się nie zmienia, nigdy nie jest wyświetlany
-> w górę. Aby wypełnić nową projekcję całą historią, uruchom ją jako projekcję zarządzaną (rozdział 10).
+> **Pamiętaj:** projekcja uruchomiona w ten sposób słyszy tylko o zdarzeniach opublikowanych po tym, jak
+> dołączyła. Koszyk, który istniał wcześniej, pojawi się przy swojej następnej zmianie: projekcja
+> zauważy, że przegapiła wersje od 1 do 3, poprosi o nie właściciela koszyka, a potem zastosuje po
+> kolei wersje od 1 do 4 (dokładnie to pokazuje `DeliveryEndToEndSpec` z biblioteki). Koszyk, który już
+> nigdy się nie zmieni, nigdy się nie pojawi. Żeby wypełnić nową projekcję całą historią, uruchom ją
+> jako projekcję zarządzaną (rozdział 10).
 
-## Zadawanie bardziej precyzyjnych pytań
+## Bardziej precyzyjne pytania
 
-`findDocument` przyjmuje `DocumentStoreQuery`: warunki dotyczące ścieżek JSON, kolejność sortowania, przesunięcie i
-limit. Ścieżka to lista nazw pól prowadzących do wartości: `Seq("name")` lub
-`Seq("adres", "miasto")` dla zagnieżdżonego. Oto największe koszyki, od największych na początku:
+`findDocument` przyjmuje `DocumentStoreQuery`: warunki na ścieżkach JSON, kolejność sortowania,
+przesunięcie (offset) i limit. Ścieżka to lista nazw pól prowadzących do wartości: `Seq("name")` albo
+`Seq("address", "city")` dla pola zagnieżdżonego. Oto największe koszyki, od największego. Pytanie:
 
+<!-- snippet: cart/CartsList.scala#findBigCarts -->
 ```scala
-import io.reactivecqrs.core.documentstore.{DocumentStoreQuery, ExpectedGreaterThanIntValue, SortDescInt}
+case class FindBigCarts(moreThan: Int) // answered with Seq[(AggregateId, CartSummary)]
+```
 
-klasa przypadku FindBigCarts(moreThan: Int) // odpowiedź udzielona za pomocą Seq[(AggregateId, CartSummary)]
+a oto jego obsługa w projekcji (`DocumentStoreQuery`, `ExpectedGreaterThanIntValue` i `SortDescInt`
+pochodzą z `io.reactivecqrs.core.documentstore`):
 
-// jeszcze jeden przypadek w receiveQuery:
-przypadek FindBigCarts(moreThan) =>
-  zapytanie val = DocumentStoreQuery(
-    gdzie = Seq(Oczekiwana Wartość Większa Niż Int(Seq("liczba elementów"), więcej niż)),
+<!-- snippet: cart/CartsList.scala#bigCartsCase -->
+```scala
+case FindBigCarts(moreThan) =>
+  val query = DocumentStoreQuery(
+    where = Seq(ExpectedGreaterThanIntValue(Seq("itemCount"), moreThan)),
     sortBy = Seq(SortDescInt("itemCount")),
-    przesunięcie = 0,
-    granica = 20)
+    offset = 0,
+    limit = 20)
   sender() ! store.findDocument(query).map { case (id, doc) => AggregateId(id) -> doc.document }
 ```
 
-Wszystkie warunki muszą być spełnione. Oprócz `ExpectedGreaterThanIntValue` istnieją
-`ExpectedSingleTextValue`, `ExpectedSingleTextValueLike` (wzorzec SQL `ILIKE` taki jak `"%groc%"`),
-`ExpectedMultipleTextValues` (jeden z kilku), `ExpectedSingleIntValue`, `ExpectedSingleLongValue`,
-`ExpectedSingleBooleanValue`, `ExpectedLessThanIntValue`, `ExpectedNoValue` i kilka innych dla
-tablice. Sortowanie odbywa się jako `SortAscText`, `SortDescText`, `SortAscInt`, `SortDescInt`, `SortAscLong` i
-`SortDescLong`. `Limit` równy `-1` oznacza brak limitu, a `DocumentStoreQuery.basic(where)` to
-skrót od „te warunki, brak sortowania, brak ograniczeń”.
+Wszystkie warunki muszą być spełnione naraz. Oprócz `ExpectedGreaterThanIntValue` są jeszcze
+`ExpectedSingleTextValue`, `ExpectedSingleTextValueLike` (wzorzec SQL `ILIKE`, na przykład `"%groc%"`),
+`ExpectedMultipleTextValues` (jedna z kilku wartości), `ExpectedSingleIntValue`, `ExpectedSingleLongValue`,
+`ExpectedSingleBooleanValue`, `ExpectedLessThanIntValue`, `ExpectedNoValue` i kilka innych dla tablic.
+Do sortowania służą `SortAscText`, `SortDescText`, `SortAscInt`, `SortDescInt`, `SortAscLong` i
+`SortDescLong`. `limit` równy `-1` oznacza brak limitu, a `DocumentStoreQuery.basic(where)` to skrót od
+„te warunki, bez sortowania, bez limitu”.
 
-> **Wskazówka:** zapytanie z pustym polem `where` znajdzie każdy dokument posortowany i podzielony na strony zgodnie z Twoim zapytaniem; dla wszystkich
-> z nich naraz, `findAll()` jest prostsze.
+> **Wskazówka:** zapytanie z pustym `where` znajduje wszystkie dokumenty, posortowane i podzielone na
+> strony tak, jak sobie życzysz; jeśli chcesz dostać wszystkie naraz, prościej użyć `findAll()`.
 
-Co się dzieje, gdy zapytanie się nie powiedzie? Na zapytanie, które powoduje błąd, odpowiadamy `Status.Failure`, więc
-Twoje `zapytanie` kończy się niepowodzeniem z powodu tego wyjątku, a projekcja kontynuuje swoją pracę.
+A co, gdy zapytanie się nie uda? Na zapytanie, które rzuci wyjątek, projekcja odpowiada
+`Status.Failure`, więc twój `ask` kończy się tym wyjątkiem, a projekcja spokojnie pracuje dalej.
 
-> **Pamiętaj:** zapytania i aktualizacje następują na zmianę w tej samej skrzynce pocztowej. Zanim odpowie na zapytanie,
-> projekcja dotyczy każdej dostawy, którą już otrzymała, więc odpowiedzi są spójne; ale podczas gdy
-> zapytanie jest uruchamiane, aktualizacja nie jest stosowana. Zadbaj o szybkość zapytań: wyszukiwanie według klucza, przeszukiwanie indeksów,
-> i strona z `limit`.
+> **Pamiętaj:** zapytania i aktualizacje czekają na swoją kolej w tej samej skrzynce odbiorczej. Zanim
+> projekcja odpowie na zapytanie, stosuje wszystkie dostarczenia, które już otrzymała, więc odpowiedzi
+> są spójne; ale dopóki trwa zapytanie, żadna aktualizacja nie jest stosowana. Pilnuj, żeby zapytania
+> były szybkie: szukaj po kluczu, korzystaj z indeksów i dziel wyniki na strony za pomocą `limit`.
 
-## Ten sam pomysł z wydarzeniami: dziennik aktywności
+## Ten sam pomysł ze zdarzeniami: dziennik aktywności
 
-Niektóre modele to historie, a nie obrazy. Oto dziennik wszystkiego, co się z nimi działo.
-wózek, zbudowany ze zdarzeń:
+Niektóre modele odczytu to opowieści, a nie obrazki. Oto dziennik wszystkiego, co działo się z każdym
+koszykiem, zbudowany ze zdarzeń:
 
+<!-- snippet: cart/CartActivity.scala#activity -->
 ```scala
-importuj io.reactivecqrs.api._
-importuj io.reactivecqrs.core.documentstore.Document
+import io.reactivecqrs.api._
+import io.reactivecqrs.core.documentstore.Document
 
-klasa przypadku CartActivity(linie: Vector[String])
-klasa przypadku GetCartActivity(cartId: AggregateId) // odpowiedź udzielona za pomocą opcji [CartActivity]
+case class CartActivity(lines: Vector[String])
+case class GetCartActivity(cartId: AggregateId) // answered with Option[CartActivity]
 
-klasa CartActivityProjection(val subscriptionsState: SubscriptionsState,
-                             sklep: DocumentStore[CartActivity]) rozszerza ProjectionActor {
+class CartActivityProjection(val subscriptionsState: SubscriptionsState,
+                             store: DocumentStore[CartActivity]) extends ProjectionActor {
 
-  nadpisz chronioną wartość projectionName: String = "CartActivity"
+  override protected val projectionName: String = "CartActivity"
 
-  chronionych słuchaczy wartości = Lista(
-    EventsListener[ShoppingCart] { (cartId, events) => niejawna sesja =>
+  protected val listeners = List(
+    EventsListener[ShoppingCart] { (cartId, events) => implicit session =>
       val lines = events.map(e => "v" + e.version.asInt + ", user " + e.userId.asLong + ": " + describe(e.event))
       store.updateDocument(0, cartId.asLong, existing =>
-        Dokument(CartActivity(existing.map(_.document.lines).getOrElse(Vector.empty) ++ lines)))
+        Document(CartActivity(existing.map(_.document.lines).getOrElse(Vector.empty) ++ lines)))
     })
 
-  prywatna def describe(event: Event[ShoppingCart]): String = event match {
-    przypadek ShoppingCartCreated(name) => "utworzono \"" + nazwa + "\""
-    case ShoppingCartDuplicated(_, baseId, baseVersion) => "skopiowano z koszyka" + baseId.asLong + " w wersji" + baseVersion.asInt
-    przypadek ItemAdded(nazwa) => "dodano" + nazwa
-    przypadek ItemRemoved(itemId) => "usunięty element" + itemId
-    case ShoppingCartChangesUndone(count) => "cofnięto ostatnią " + count + " zmianę(y)"
-    case ShoppingCartDeleted() => "usunięto koszyk"
-    przypadek inny => other.getClass.getSimpleName // cokolwiek innego, zdarzenie squash uwzględnione
+  private def describe(event: Event[ShoppingCart]): String = event match {
+    case ShoppingCartCreated(name) => "created \"" + name + "\""
+    case ShoppingCartDuplicated(_, baseId, baseVersion) => "copied from cart " + baseId.asLong + " at version " + baseVersion.asInt
+    case ItemAdded(name) => "added " + name
+    case ItemRemoved(itemId) => "removed item " + itemId
+    case ShoppingCartChangesUndone(count) => "undid the last " + count + " change(s)"
+    case ShoppingCartDeleted() => "deleted the cart"
+    case other => other.getClass.getSimpleName // anything else, the squash event included
   }
 
-  nadpisz chronione def receiveQuery: Receive = {
-    przypadek GetCartActivity(cartId) => sender() ! store.getDocument(cartId.asLong).map(_.document)
+  override protected def receiveQuery: Receive = {
+    case GetCartActivity(cartId) => sender() ! store.getDocument(cartId.asLong).map(_.document)
   }
 }
 ```
 
-Należy zwrócić uwagę na dwie rzeczy. `updateDocument` wstawia dokument, gdy jeszcze go nie ma (`existing` to
-`None`), więc ten nasłuchujący nie potrzebuje flagi `created`. A cofnięcie to po prostu kolejny wiersz w logu:
-W przypadku historii wydarzenia są naturalnym wyborem. Zaczynasz i rejestrujesz je dokładnie tak samo, jak listę w koszyku.
+Zwróć uwagę na dwie rzeczy. `updateDocument` wstawia dokument, gdy jeszcze go nie ma (`existing` to
+`None`), więc ten listener nie potrzebuje flagi `created`. A cofnięcie to po prostu kolejna linijka w
+dzienniku: do opowieści zdarzenia pasują najlepiej. Tę projekcję uruchamiasz i rejestrujesz dokładnie
+tak samo jak listę koszyków.
 
-## Od razu widać zmiany
+## Własna zmiana widoczna od razu
 
-Alicja dodaje chleb, a jej strona natychmiast przeładowuje koszyk. Polecenie powiodło się, ale jego zdarzenie
-może być jeszcze w drodze do projekcji, więc strona pokazuje wózek bez chleba. Denerwujące!
+Alicja dodaje chleb, a jej strona od razu przeładowuje koszyk. Polecenie się powiodło, ale jego
+zdarzenie może jeszcze być w drodze do projekcji, więc strona pokazuje koszyk bez chleba. Irytujące!
 
-Pracownik szatni ma z tym do czynienia przez cały dzień: oddaje płaszcz i prosi o jego zwrot następnego dnia.
-Po drugie. Dobry pracownik nie mówi „nie mamy twojego płaszcza”, tylko „chwileczkę” i patrzy
-ponownie, gdy płaszcz dotrze na wieszak. **Opóźnione zapytanie** to ten, który go obsługuje: kiedy odpowiedź nie brzmi
-na razie projekcja czeka na kolejne aktualizacje zanim powie „nie”.
+W szatni zdarza się to przez cały dzień: oddajesz płaszcz, a sekundę później prosisz o niego z
+powrotem. Dobry szatniarz nie powie „nie mamy takiego płaszcza”, tylko „chwileczkę”, i spojrzy
+jeszcze raz, gdy płaszcz trafi na wieszak. **Opóźnione zapytanie** to właśnie taki szatniarz: gdy odpowiedzi
+jeszcze nie ma, projekcja czeka na swoje kolejne aktualizacje, zanim powie „nie”.
 
-Wiesz, na co czekać: odpowiedź polecenia „SuccessResponse(cartId, version)” informuje Cię,
-Wersja, którą utworzyłeś/aś. Pytanie brzmi więc: „koszyk 42, gdy tylko osiągnie wersję 3 lub
-później":
+Wiesz, na co czekać: odpowiedź na polecenie, `SuccessResponse(cartId, version)`, podaje wersję, którą
+utworzyła twoja zmiana. Pytanie brzmi więc: „koszyk 42, gdy tylko będzie w wersji 3 albo późniejszej”:
 
+<!-- snippet: cart/CartsList.scala#atLeast -->
 ```scala
-klasa przypadku GetCartSummaryAtLeast(cartId: AggregateId, version: AggregateVersion) // odpowiedź udzielona za pomocą opcji [CartSummary]
+case class GetCartSummaryAtLeast(cartId: AggregateId, version: AggregateVersion) // answered with Option[CartSummary]
+```
 
-// jeszcze jeden przypadek w receiveQuery:
-przypadek GetCartSummaryAtLeast(cartId, wersja) =>
+a oto jego obsługa w projekcji:
+
+<!-- snippet: cart/CartsList.scala#atLeastCase -->
+```scala
+case GetCartSummaryAtLeast(cartId, version) =>
   delayIfNotAvailable(sender(), () =>
     store.getDocument(cartId.asLong).map(_.document).filter(_.version >= version.asInt),
-    (2000)
+    2000)
 ```
 
-`delayIfNotAvailable(respondTo, search, forMaximumMillis)` uruchamia `search` natychmiast. `Some` przechodzi do
-`respondTo` od razu. `None` parkuje zapytanie: projekcja uruchamia wyszukiwanie ponownie po nim.
-stosuje aktualizacje i odpowiada natychmiast po znalezieniu czegoś. Gdy minie 2000 milisekund bez
-szczęście, odpowiada „Brak”. Po stronie wywołującej:
+`delayIfNotAvailable(respondTo, search, forMaximumMillis)` od razu uruchamia `search`. `Some` trafia
+natychmiast do `respondTo`. `None` odkłada zapytanie na bok: projekcja powtarza wyszukiwanie, gdy
+zastosuje aktualizacje, i odpowiada, gdy tylko coś znajdzie. Gdy minie 2 000 milisekund bez
+powodzenia, szuka ostatni raz i odpowiada tym, co znajdzie, czyli `None`, jeśli wciąż nic nie ma. Po
+stronie wywołującej:
 
+<!-- snippet: cart/ReadModelsSpec.scala#readYourWrite -->
 ```scala
-wyślij(AddItem(alicja, cartId, AggregateVersion(2), "chleb")) dopasuj {
-  przypadek SuccessResponse(_, wersja) =>
+val withBread = send(AddItem(alice, cartId, AggregateVersion(2), "bread")) match {
+  case SuccessResponse(_, version) =>
     Await.result((cartsList ? GetCartSummaryAtLeast(cartId, version)).mapTo[Option[CartSummary]], 5.seconds)
-    // Some(CartSummary(Groceries,2,3)), jak tylko projekcja to ma
-  case other => println("Nie dodano: " + other)
+    // Some(CartSummary(Groceries,2,3)), as soon as the projection has it
+  case other => println("Not added: " + other)
 }
 ```
 
-> **Wskazówka:** ustaw czas oczekiwania na odpowiedź (tutaj 5 sekund) na dłuższy niż czas oczekiwania (2 sekundy), aby uzyskać
-> projekcja `None` zamiast `AskTimeoutException`.
+> **Wskazówka:** ustaw limit czasu `ask` (tutaj 5 sekund) dłuższy niż czas czekania (2 sekundy), żeby
+> dostać od projekcji `None`, a nie `AskTimeoutException`.
 
-> **Wskazówka:** to działa, ponieważ dokument zawiera wersję koszyka. Umieść wersję agregatu
-> do każdego dokumentu, z którego chcesz odczytać własne zapisy. Kiedy potrzebujesz samego koszyka, a nie
-> niż model odczytu, zapytaj jego magistralę poleceń za pomocą `GetAggregateMinVersion` (rozdział 7).
+> **Wskazówka:** to działa, bo dokument przechowuje wersję koszyka. Wkładaj wersję agregatu do każdego
+> dokumentu, z którego chcesz odczytywać własne zapisy. Gdy potrzebujesz samego koszyka, a nie modelu
+> odczytu, zapytaj jego szynę poleceń przez `GetAggregateMinVersion` (rozdział 7).
 
-Zwykła wersja uruchamia wyszukiwanie w wątku projekcji, co jest wystarczające w przypadku wyszukiwania według klucza.
-Jeśli chcesz wykonać bardziej szczegółowe wyszukiwanie, możesz zlecić to zadanie „Przyszłości”:
+Zwykła wersja szuka na wątku projekcji, co przy wyszukiwaniu po kluczu w zupełności wystarcza.
+Cięższe wyszukiwanie możesz przekazać do `Future`:
 
 | Metoda | `search` zwraca | Odpowiedź |
 |---|---|---|
-| `delayIfNotAvailable(respondTo, search, maxMillis)` | `Option[T]` | `Some(t)` lub `None` w terminie ostatecznym |
-| `delayIfNotAvailableAsync(respondTo, search, maxMillis)` | `Future[Option[T]]` | `Some(t)` lub `None` w terminie ostatecznym |
-| `delayIfNotAvailableAsyncCustom(respondTo, search, found, maxMillis)` | `Future[T]`, plus `found: T => Boolean` | `T` gdy `found` oznacza tak, lub `None` w momencie ostatecznym |
+| `delayIfNotAvailable(respondTo, search, maxMillis)` | `Option[T]` | `Some(t)` albo, po upływie terminu, wynik ostatniego wyszukiwania |
+| `delayIfNotAvailableAsync(respondTo, search, maxMillis)` | `Future[Option[T]]` | `Some(t)` albo, po upływie terminu, wynik ostatniego wyszukiwania |
+| `delayIfNotAvailableAsyncCustom(respondTo, search, found, maxMillis)` | `Future[T]` oraz `found: T => Boolean` | `T`, gdy tylko `found` powie „tak”, albo, po upływie terminu, `T` z ostatniego wyszukiwania |
 
-Każdy z nich występuje również w formie, w której termin końcowy jest „natychmiastowy”, a nie milisekundowy.
-wyszukiwanie, które powoduje błąd lub `Future`, którego wynik się nie powiedzie, jest obsługiwane za pomocą `Status.Failure`.
+Każda z nich ma też wariant, który przyjmuje termin jako `Instant` zamiast milisekund. Na
+wyszukiwanie, które rzuci wyjątek, albo `Future`, który się nie powiedzie, odpowiedzią jest
+`Status.Failure`.
 
-> **Ostrzeżenie:** wariant niestandardowy odpowiada Twoim `T`, gdy się powiedzie, ale `None`, gdy czas
-> się kończy. Wywołujący musi być gotowy na obie rzeczy: proste `mapTo[T]` nie powiedzie się w przypadku `None`.
-
-> **Pod maską:** zaparkowane zapytanie czeka wewnątrz projekcji (jako prywatne `SyncDelayedQuery`,
-> `AsyncDelayedQuery` lub `AsyncDelayedQueryCustom`; nigdy nie tworzysz ich samodzielnie). Jest to wyszukiwane
-> ponownie raz na serię zastosowanych aktualizacji, a nie raz na aktualizację, a po upływie terminu zostanie udzielona odpowiedź
-> „Brak” bez kolejnego wyszukiwania. Warianty asynchroniczne parkują zapytanie tylko wtedy, gdy jego „Przyszłość” zostanie
-> odpowiedział, więc aktualizacja zastosowana podczas działania `Future` jest zauważana dopiero przy następnej aktualizacji; dla
-> wyszukiwanie według klucza, prosta wersja jest bezpiecznym wyborem. Zobacz
-> [ARCHITECTURE.md, sekcja 6.5](../ARCHITECTURE.md).
+> **Pod maską:** odłożone zapytanie czeka wewnątrz projekcji (jako prywatny `SyncDelayedQuery`,
+> `AsyncDelayedQuery` albo `AsyncDelayedQueryCustom`; tych klas nigdy nie tworzysz samodzielnie).
+> Wyszukiwanie powtarza się raz na serię zastosowanych aktualizacji, nie przy każdej z osobna; gdy mija
+> termin, zapytanie dostaje jeszcze jedno, ostatnie wyszukiwanie. Asynchroniczne
+> wyszukiwanie, które wciąż trwa w chwili zastosowania aktualizacji, po swojej odpowiedzi rusza jeszcze
+> raz, więc nigdy tej aktualizacji nie przegapi. Zobacz [ARCHITECTURE.md, sekcja 6.5](../ARCHITECTURE.md).
 
 ## Opcje, które warto znać
 
-Projekcja przyjmuje swoje opcje w konstruktorze, jako `ProjectionActorOptions`. Zacznij od
+Projekcja dostaje opcje w konstruktorze, jako `ProjectionActorOptions`: to trzeci parametr listy
+koszyków, który przekazuje ona dalej przez `extends ProjectionActor(options)`. Zacznij od
 `ProjectionActorOptions.DEFAULT` i zmień to, czego potrzebujesz:
 
+<!-- snippet: cart/ReadModelsSpec.scala#options -->
 ```scala
 import io.reactivecqrs.core.projection.ProjectionActorOptions
 
-klasa CartsListProjection(val subscriptionsState: SubscriptionsState, store: DocumentStore[CartSummary])
-  rozszerza ProjectionActor(ProjectionActorOptions.DEFAULT.withGroupUpdatesDelayMillis(200).withMinimumDelayVersion(2)) {
-  // ... jak poprzednio
-}
+val options = ProjectionActorOptions.DEFAULT.withGroupUpdatesDelayMillis(200).withMinimumDelayVersion(2)
 ```
 
-| Opcja (domyślna) | Co robi | Jak ją ustawić |
+| Opcja (domyślnie) | Co robi | Jak ją ustawić |
 |---|---|---|
-| `groupUpdatesDelayMillis` (0) | czeka tak długo przed zastosowaniem dostaw z koszyka, tak aby kilka aktualizacji jednego koszyka zostało zastosowanych jednocześnie | `withGroupUpdatesDelayMillis(200)` |
-| `minimumDelayVersion` (1) | dostawy rozpoczynające się poniżej tej wersji nigdy nie czekają; przy wersji 2 nowy koszyk pojawia się od razu | `withMinimumDelayVersion(2)` |
-| `eventsToProcessImmediately` (brak) | klasy zdarzeń, które nigdy nie czekają (na słuchaczy odbierających zdarzenia) | `withEventsToProcessImmediately(classOf[ShoppingCartDeleted])` |
-| `maxBatchesPerTransaction` (100) | gdy dostawy się kumulują, do ilu aktualizacji koszyków można zastosować jedną transakcję; 1 dotyczy każdego koszyka osobno | `.copy(maxBatchesPerTransaction = 1)` |
-| `parallelUpdateProcessing` (0) | powyżej 1, tyle wątków stosuje aktualizacje; każdy koszyk nadal zachowuje swoją kolejność | `withParallelUpdateProcessing(4)` |
-| `eventsLogger` (brak) | rejestrator, który pobiera linię debugowania dla każdej dostawy i każdej zastosowanej partii | `withEventsLogger(LoggerFactory.getLogger("carts-list"))` |
-| `retries`, `retryFailuresOnStart`, `gapRequestRepeat`, `gapGiveUpAfter`, `failureRetryInterval` | Co się dzieje, gdy coś pójdzie nie tak | rozdział 9 |
+| `groupUpdatesDelayMillis` (0) | czeka tyle milisekund, zanim zastosuje dostarczenia koszyka, żeby kilka aktualizacji jednego koszyka zastosować razem | `withGroupUpdatesDelayMillis(200)` |
+| `minimumDelayVersion` (1) | dostarczenia zaczynające się poniżej tej wersji nigdy nie czekają; przy 2 nowy koszyk pojawia się od razu | `withMinimumDelayVersion(2)` |
+| `eventsToProcessImmediately` (brak) | klasy zdarzeń, które nigdy nie czekają (dla listenerów, które dostają zdarzenia) | `withEventsToProcessImmediately(classOf[ShoppingCartDeleted])` |
+| `maxBatchesPerTransaction` (100) | gdy dostarczenia się piętrzą: aktualizacje ilu koszyków może zastosować jedna transakcja; 1 stosuje każdy koszyk osobno | `.copy(maxBatchesPerTransaction = 1)` |
+| `parallelUpdateProcessing` (0) | powyżej 1: tyle wątków stosuje aktualizacje; każdy koszyk wciąż zachowuje swoją kolejność | `withParallelUpdateProcessing(4)` |
+| `eventsLogger` (brak) | logger, który dostaje linię na poziomie debug przy każdym dostarczeniu i każdej zastosowanej paczce | `withEventsLogger(LoggerFactory.getLogger("carts-list"))` |
+| `retries`, `retryFailuresOnStart`, `gapRequestRepeat`, `gapGiveUpAfter`, `failureRetryInterval` | co się dzieje, gdy coś pójdzie nie tak | rozdział 9 |
 
-Pierwsze trzy mają znaczenie tylko razem: przy `groupUpdatesDelayMillis` na poziomie 0 (domyślnie) nic się nie dzieje
-czeka w każdym razie. `withEventsLogger` przyjmuje `Logger` SLF4J.
+Pierwsze trzy mają znaczenie tylko razem: gdy `groupUpdatesDelayMillis` wynosi 0 (domyślnie), i tak
+nic nie czeka. `withEventsLogger` przyjmuje `Logger` z SLF4J.
 
-> **Ostrzeżenie:** w przypadku `parallelUpdateProcessing` Twoje programy nasłuchujące działają na kilku wątkach jednocześnie, na
-> te same obiekty: muszą być bezpieczne pod kątem wątków, a pula JDBC wymaga co najmniej takiej samej liczby połączeń.
-> Wyłącza również grupowanie `maxBatchesPerTransaction`. Większość projekcji działa bez niego.
+> **Ostrzeżenie:** z `parallelUpdateProcessing` twoje listenery działają na kilku wątkach naraz, na
+> tych samych obiektach: muszą być bezpieczne wątkowo, a pula JDBC potrzebuje co najmniej tylu
+> połączeń. Ta opcja wyłącza też grupowanie z `maxBatchesPerTransaction`. Większość projekcji świetnie
+> radzi sobie bez niej.
 
-> **Wskazówka:** w przypadku projekcji bez żadnych zapytań, np. takiej, która jedynie zasila inny system,
-> rozszerz `AggregateListenerActor` zamiast `ProjectionActor`: to jest to samo, co
-> `receiveQuery`, które ignoruje każdą wiadomość. Rozdział 9 używa takiego zapytania.
+> **Wskazówka:** dla projekcji bez żadnych zapytań, na przykład takiej, która tylko zasila inny system,
+> rozszerzaj `AggregateListenerActor` zamiast `ProjectionActor`: to to samo, tylko z `receiveQuery`,
+> które ignoruje każdą wiadomość. Rozdział 9 korzysta z takiej projekcji.
 
-## Czego się nauczyłeś
+## Co już umiesz
 
-- **Projekcja** to `ProjectionActor` z nasłuchiwaczami, modelem odczytu i zapytaniami; jego notatnikiem,
-  `SubscriptionsState` rejestruje zbiorczo ostatnią zastosowaną wersję.
-- Istnieją trzy **listenery**: `AggregateListener` dla stanu (obrazy),
-  `EventsListener` dla zdarzeń (historii) i `AggregateWithEventsListener` dla obu.
-- **Magazyn dokumentów** przechowuje dokumenty JSON według klucza: `PostgresDocumentStore` w tabeli
-  `projection_<name>` z kolumną `space_id`, `MemoryDocumentStore` do testów.
-- Słuchacz działa w **transakcji**, która również rejestruje postęp projekcji; przekazuje ją do
-  przechowuj i nigdy nie twórz go samodzielnie.
-- Rozpocznij projekcję za pomocą `Props(...).withDispatcher(BlockingDispatcher.id)` i umieść ją na
-  lista `RegisterSubscribers` serwisu bus.
-- **Opóźnione zapytania** (`delayIfNotAvailable` i podobne) pozwalają innym użytkownikom odczytywać własne zapisy.
+- **Projekcja** to `ProjectionActor` z listenerami, modelem odczytu i zapytaniami; jej notatnik,
+  `SubscriptionsState`, zapisuje dla każdego agregatu ostatnią zastosowaną wersję.
+- Są trzy **listenery**: `AggregateListener` do stanu (obrazki), `EventsListener` do zdarzeń
+  (opowieści) i `AggregateWithEventsListener` do jednego i drugiego.
+- **Magazyn dokumentów** trzyma dokumenty JSON pod kluczami: `PostgresDocumentStore` w tabeli
+  `projection_<name>` z kolumną `space_id`, `MemoryDocumentStore` w testach.
+- Listener działa w **transakcji**, która zapisuje też postęp projekcji; przekazuj ją magazynowi i
+  nigdy nie zatwierdzaj jej samodzielnie.
+- Projekcję uruchamiasz przez `Props(...).withDispatcher(BlockingDispatcher.id)` i dopisujesz do listy
+  `RegisterSubscribers` szyny.
+- **Opóźnione zapytania** (`delayIfNotAvailable` i spółka) pozwalają ludziom odczytać własne zapisy.
 
-Dalej: [rozdział 9](09-projection-failures.md) celowo psuje rzeczy i pokazuje, jak projekcje
-odzyskiwać.
+Dalej: [rozdział 9](09-projection-failures.md) celowo coś psuje i pokazuje, jak projekcje dochodzą do
+siebie.

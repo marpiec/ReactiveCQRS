@@ -1,256 +1,268 @@
-# Rozdział 9. Kiedy w projekcjach coś idzie nie tak
+# Rozdział 9. Kiedy w projekcjach coś pójdzie nie tak
 
-Projekcje to kod, a kod ulega uszkodzeniu: błąd w programie nasłuchującym, baza danych, która zawodzi, projekcja
-wolniejszy niż polecenia, które wykonuje, maszyna, która umiera milisekundę po zatwierdzeniu. W tym
-w rozdziale zobaczysz, co ReactiveCQRS obiecuje w kwestii dostarczania zdarzeń i co robi samo, gdy
-coś idzie nie tak, a garść wiadomości, których używasz, aby przyjrzeć się uszkodzeniom i je naprawić. Przez
-na końcu będziesz mógł przeczytać linie logu, zapytać projekcję, co jest z nią nie tak i uzyskać odpowiedź
-zablokowany wózek znów rusza.
+Projekcje to kod, a kod się psuje: błąd w listenerze, baza danych, która na moment się zatnie,
+projekcja wolniejsza od poleceń, za którymi podąża, maszyna, która pada milisekundę po zatwierdzeniu
+transakcji. W tym rozdziale zobaczysz, co ReactiveCQRS obiecuje w sprawie dostarczania zdarzeń, co
+robi samo, gdy coś pójdzie nie tak, i jakiej garści komunikatów używasz, żeby obejrzeć szkody i je
+naprawić. Na koniec będziesz umieć czytać linie logu, zapytać projekcję, co jej dolega, i ruszyć z
+miejsca koszyk, który utknął.
 
 ---
 
-## Obietnica wyrażona prostymi słowami
+## Obietnica w prostych słowach
 
-Wyobraź sobie list polecony. Listonosz dzwoni, aż ktoś podpisze, a jeśli nikt tego nie zrobi, wraca.
-Kolejny dzień. Każdy list od nadawcy ma numer. A w domu jest notes: „od
-bank, ostatni otwarty list: numer 7". Litera 7, która pojawia się dwa razy, jest rozpoznawana i umieszczana
-na bok. List 9, który się pojawia, podczas gdy 8 nigdy nie nadszedł, sprawia, że ​​domownicy dzwonią do banku: „proszę wysłać
-numer 8 ponownie".
+Wyobraź sobie listy polecone. Listonosz dzwoni do drzwi, aż ktoś pokwituje odbiór, a jeśli nikt tego
+nie zrobi, przychodzi innego dnia. Każdy list od danego nadawcy ma numer. A domownicy prowadzą
+notatnik: „z banku, ostatni otwarty list: numer 7”. List numer 7, który przyjdzie drugi raz, zostaje
+rozpoznany i odłożony na bok. Gdy przychodzi list 9, a 8 nigdy nie dotarł, domownicy dzwonią do banku:
+„prosimy jeszcze raz wysłać numer 8”.
 
-Właśnie to obiecuje projekcja ReactiveCQRS:
+Dokładnie to ReactiveCQRS obiecuje projekcji:
 
-1. **Przynajmniej raz.** Każde zdarzenie dociera do każdej projekcji, która słucha jego typu zbiorczego, nawet
-   podczas awarii i ponownych uruchomień. Czasami więcej niż raz.
-2. **W kolejności, w ujęciu zbiorczym.** Zdarzenia z koszyka 42 są stosowane w kolejności wersji. Nie ma
-   obietnica dotycząca wszystkich koszyków: wersja 5 z koszyka 7 może zostać zastosowana przed wersją 2 z koszyka 42, nawet jeśli
-   Wózek 42 został zatwierdzony jako pierwszy.
-3. **Zastosowano raz.** Notatnik jest tabelą `subskrypcji`: dla każdej projekcji, rodzaj słuchacza
-   i zbiorczo, ostatnia zastosowana wersja. Jest zapisywana w tej samej transakcji, co Twój odczyt.
-   model. Dostawa na poziomie tej wersji lub niższym jest duplikatem: potwierdzonym, nie zastosowanym ponownie.
-4. **Brak dziur.** Wersja wykraczająca poza oczekiwaną oznacza, że ​​niektóre z nich zaginęły. Projekcja
-   prosi właściciela agregatu o ponowne ich opublikowanie i stosuje wszystko po kolei, gdy już zostaną opublikowane
-   przyjechać.
+1. **Co najmniej raz.** Każde zdarzenie dociera do każdej projekcji, która słucha jego typu agregatu,
+   nawet po awariach i restartach. Czasem więcej niż raz.
+2. **Po kolei, w obrębie agregatu.** Zdarzenia koszyka 42 są stosowane w kolejności wersji. Między
+   różnymi koszykami nie ma żadnej obietnicy: wersja 5 koszyka 7 może zostać zastosowana przed wersją
+   2 koszyka 42, nawet jeśli ta druga została zatwierdzona wcześniej.
+3. **Zastosowane raz.** Notatnik to tabela `subscriptions`: dla każdej projekcji, rodzaju listenera i
+   agregatu ostatnia zastosowana wersja. Zapisuje się ją w tej samej transakcji co twój model odczytu.
+   Dostarczenie z tą wersją albo niższą to duplikat: zostaje potwierdzone, ale nie jest stosowane
+   ponownie.
+4. **Bez dziur.** Wersja wyższa niż następna oczekiwana oznacza, że jakieś wersje zaginęły. Projekcja
+   prosi właściciela agregatu, żeby opublikował je ponownie, i gdy dotrą, stosuje wszystko po kolei.
 
-> **Pamiętaj:** zamówienie jest tylko zbiorcze. Model odczytu, który łączy kilka koszyków (łącznie ponad
-> wszystkie wózki, powiedzmy) nie mogą zakładać, że zdarzenia różnych wózków przybywają w kolejności, w jakiej zostały dostarczone
-> zaangażowany.
+> **Pamiętaj:** kolejność obowiązuje tylko w obrębie jednego agregatu. Model odczytu, który łączy kilka
+> koszyków (powiedzmy, sumę po wszystkich koszykach), nie może zakładać, że zdarzenia różnych koszyków
+> przychodzą w kolejności, w jakiej zostały zatwierdzone.
 
-## Dlaczego Twój słuchacz musi być bezpieczny, aby uruchomić go dwa razy
+## Dlaczego listener musi być odporny na powtórki
 
-Zasada „Zastosowano raz” odnosi się do tego, co słuchacz zapisuje w trakcie sesji: te zapisy są zatwierdzane
-notatnik lub cofnij się do niego. Wszystko inne, co robi Twój słuchacz, nie jest objęte i może
-wydarzyć się więcej niż raz:
+„Zastosowane raz” dotyczy tego, co twój listener zapisuje przez swoją sesję: te zapisy są zatwierdzane
+razem z notatnikiem albo razem z nim wycofywane. Wszystko inne, co robi listener, nie jest tym objęte
+i może się wydarzyć więcej niż raz:
 
-- aktualizacje do 100 koszyków współdzielą jedną transakcję; w przypadku awarii jednego koszyka wszystkie są wycofywane
-  z powrotem i każdy biegnie dalej sam;
-- słuchacz, który nie spełnia wymagań, jest poddawany próbie aż dziewięć razy (następna sekcja);
-- obiekt nasłuchujący `noDBSession` uruchamia się przed zapisaniem jego wersji, więc jeśli zapis się nie powiedzie, widzi
-  te same wydarzenia jeszcze raz;
-- odbudowa (rozdział 10) odtwarza historię za pośrednictwem słuchaczy.
+- aktualizacje nawet 100 koszyków dzielą jedną transakcję; gdy jeden koszyk zawiedzie, wszystkie
+  zostają wycofane i każdy jest uruchamiany ponownie osobno;
+- listener, który zawodzi, jest uruchamiany do dziewięciu razy (następna sekcja);
+- listener `noDBSession` działa, zanim zostanie zapisana jego wersja, więc jeśli ten zapis się nie
+  uda, zobaczy te same zdarzenia jeszcze raz;
+- przebudowa (rozdział 10) odtwarza historię przez twoje listenery.
 
-Dlatego trzymaj e-maile, połączenia HTTP i wiadomości do innych aktorów poza zasięgiem zwykłych słuchaczy. Ich miejsce jest w
-saga (rozdział 12) lub w swoim własnym programie nasłuchującym, który używa `noDBSession` (bez transakcji, nigdy
-zgrupowane z innymi wózkami), nie robi nic, podczas gdy `odbudowa` jest prawdą i jest idempotentne: wykonuje
-ta sama rzecz dwa razy musi być nieszkodliwa.
+Dlatego e-maile, wywołania HTTP i wiadomości do innych aktorów trzymaj z dala od zwykłych listenerów.
+Ich miejsce jest w sadze (rozdział 12) albo w osobnym listenerze, który używa `noDBSession` (bez
+transakcji, nigdy w grupie z innymi koszykami), nic nie robi, dopóki `rebuilding` ma wartość true, i
+jest idempotentny: zrobienie tego samego dwa razy musi być nieszkodliwe.
 
+<!-- snippet: cart/CartDeletedMailer.scala#mailer -->
 ```scala
 import io.reactivecqrs.core.projection.{AggregateListenerActor, SubscriptionsState}
-import io.reactivecqrs.testdomain.shoppingcart.{Koszyk, Koszyk usunięty}
+import io.reactivecqrs.testdomain.shoppingcart.{ShoppingCart, ShoppingCartDeleted}
 
-cecha Mailer { def sendOnce(key: String, text: String): Unit } // twoja własna usługa: jeden e-mail na klucz
+trait Mailer { def sendOnce(key: String, text: String): Unit } // your own service: one mail per key
 
-klasa CartDeletedMailer(val subscriptionsState: SubscriptionsState, mailer: Mailer) rozszerza AggregateListenerActor {
-  nadpisz chronioną wartość projectionName: String = "CartDeletedMailer"
+class CartDeletedMailer(val subscriptionsState: SubscriptionsState, mailer: Mailer) extends AggregateListenerActor {
+  override protected val projectionName: String = "CartDeletedMailer"
 
-  chronionych słuchaczy wartości = Lista(
+  protected val listeners = List(
     EventsListener.noDBSession[ShoppingCart] { (cartId, events) =>
-      jeśli (!rebuilding && events.exists(_.event == ShoppingCartDeleted()))
-        mailer.sendOnce("cart-deleted-" + cartId.asLong, "Twój koszyk " + cartId.asLong + " został usunięty.")
+      if (!rebuilding && events.exists(_.event == ShoppingCartDeleted()))
+        mailer.sendOnce("cart-deleted-" + cartId.asLong, "Your cart " + cartId.asLong + " was deleted.")
     })
 }
 ```
 
-`AggregateListenerActor` to projekcja, której `receiveQuery` ignoruje każdą wiadomość: obiekt nasłuchujący
-nie mając o co pytać. Zaczynasz i rejestrujesz to jak każdą projekcję (rozdział 8).
+`AggregateListenerActor` to projekcja, której `receiveQuery` ignoruje każdą wiadomość: listener,
+którego nie ma o co pytać. Uruchamiasz go i rejestrujesz jak każdą projekcję (rozdział 8).
 
-## Kiedy słuchacz rzuca
+## Gdy listener rzuca wyjątek
 
-Zepsujmy coś celowo. Załóżmy, że zdecydowaliśmy, że nazwy koszyków muszą być unikalne na naszej liście.
-i nadał sklepowi z rozdziału 8 unikalny indeks:
+Zepsujmy coś celowo. Przyjmijmy, że nazwy koszyków na naszej liście muszą być unikalne, i dajmy jej
+magazyn taki jak w rozdziale 8, ale z unikalnym indeksem (tutaj we własnej tabeli):
 
+<!-- snippet: cart/FailuresSpec.scala#uniqueStore -->
 ```scala
-nowy PostgresDocumentStore[CartSummary]("carts_list", mpjsons, nowy NoopDocumentStoreCache,
-  Seq(UniqueTextIndex(1, Seq("nazwa"))))
+val cartsStore = new PostgresDocumentStore[CartSummary]("unique_carts", mpjsons, new NoopDocumentStoreCache,
+  Seq(UniqueTextIndex(1, Seq("name"))))
 ```
 
-Alicja ma wózek o nazwie „Spożywcze”. Następnie Bob tworzy wózek o tej samej nazwie. Strona pisząca…
-nie ma problemu, ponieważ nazwy koszyków nie są tam unikalne, ale nasz `insertDocument` słuchacza dla Boba
-Wózek (wózek 43) przerywa indeks. Oto, co dzieje się dalej:
+Bloki kodu z tego rozdziału działają w `FailuresSpec`
+(`examples/src/test/scala/io/reactivecqrs/examples/cart/`), który opowiada tę historię z trzema
+szybkimi ponowieniami zamiast dziewięciu powolnych. Alicja ma koszyk o nazwie „Zakupy”. Potem Bob
+tworzy koszyk o tej samej nazwie. Stronie zapisu to nie przeszkadza, bo tam nazwy koszyków nie muszą
+być unikalne, ale `insertDocument` naszego listenera dla koszyka Boba (koszyka 43) narusza indeks. Oto,
+co dzieje się dalej:
 
-1. Wstawianie powoduje błąd. Transakcja zostaje wycofana: brak dokumentu, a notatnik nadal wyświetla komunikat „nic”.
-   „zastosowano” dla koszyka 43. W dzienniku pojawia się ostrzeżenie:
+1. Wstawienie rzuca wyjątek. Transakcja zostaje wycofana: nie ma dokumentu, a notatnik dla koszyka 43
+   wciąż mówi „nic nie zastosowano”. W logu pojawia się ostrzeżenie:
 
    ```
-   Niepowodzenie projekcji CartsList w ShoppingCart 43 w wersjach 1-1 (próba 1), ponawianie próby: org.postgresql.util.PSQLException: BŁĄD: zduplikowana wartość klucza narusza ograniczenie unikatowości ...
+   Projection CartsList failed on ShoppingCart 43 versions 1-1 (attempt 1), retrying: org.postgresql.util.PSQLException: ERROR: duplicate key value violates unique constraint ...
    ```
 
-2. Projekcja próbuje ponownie po 1, 2, 4, 8, 16, 30, 30 i 30 sekundach: dziewięć prób w ciągu około
-   Dwie minuty. Późniejsze wydarzenia z wózka 43 czekają za tym, który uległ awarii. Każdy kolejny wózek jedzie dalej.
-   zwykły.
-3. Jeśli próba się powiedzie (np. po awarii bazy danych), to koniec: brak rekordu, nic
-   naprawić.
-4. Po dziewiątej porażce projekcja rezygnuje z karty 43. Zapisuje wiersz do
-   `subscription_failures` (wersja, której nie można zastosować, błąd i od kiedy) i rejestruje
+2. Projekcja próbuje ponownie po 1, 2, 4, 8, 16, 30, 30 i 30 sekundach: dziewięć prób w mniej więcej
+   dwie minuty. Późniejsze zdarzenia koszyka 43 czekają za tym, które zawodzi. Wszystkie inne koszyki
+   idą dalej jak zwykle.
+3. Jeśli któraś próba się powiedzie (na przykład po chwilowej czkawce bazy danych), na tym koniec:
+   żadnego wpisu, nic do naprawiania.
+4. Po dziewiątej nieudanej próbie projekcja daje za wygraną w sprawie koszyka 43. Dodaje wiersz do
+   `subscription_failures` (wersję, której nie mogła zastosować, błąd i od kiedy) i zapisuje w logu
    błąd:
 
    ```
-   Projection CartsList zrezygnował z ShoppingCart 43 w wersji 1 (PSQLException: BŁĄD: zduplikowana wartość klucza...); dostawy kończą się niepowodzeniem do momentu ponowienia próby lub pominięcia
+   Projection CartsList gave up on ShoppingCart 43 at version 1 (PSQLException: ERROR: duplicate key value ...); deliveries of it fail until it is retried or skipped
    ```
 
-5. Od tej pory na każdą dostawę koszyka 43 odpowiada komunikatem „MessageFailed”, bez konieczności podejmowania kolejnych prób.
-   Szyna zdarzeń uznaje to za odpowiedź (i za każdym razem rejestruje ostrzeżenie), więc wiersze skrzynki nadawczej wózka 43
-   są usuwane jak zwykle. Wiersz w `subscription_failures` przypomina teraz o tym, co pozostało do zrobienia.
+5. Od teraz na każde dostarczenie koszyka 43 odpowiada od razu `MessageFailed`, nawet nie próbując.
+   Szyna zdarzeń liczy to jako odpowiedź (i za każdym razem zapisuje w logu ostrzeżenie), więc wiersze
+   outboxu koszyka 43 są usuwane jak zwykle. Teraz to wiersz w `subscription_failures` przypomina o
+   tym, co zostało do zrobienia.
 
-Jeszcze jeden przypadek: jeśli nawet awarii nie da się zapisać, bo sama baza danych jest nieczynna,
-projekcja nie odpowiada na nic i próbuje ponownie wykonać partię co 30 sekund, aż będzie mogła ją zastosować
-lub zarejestruj awarię.
+Jeszcze jeden przypadek: jeśli nie da się zapisać nawet samej awarii, bo nie działa baza danych,
+projekcja nic nie odpowiada i co 30 sekund próbuje jeszcze raz z tą samą paczką, aż albo ją zastosuje,
+albo zapisze awarię.
 
-> **Pamiętaj:** awaria dotyczy jednej projekcji, jednego rodzaju słuchacza i jednego agregatu. Koszyk 43 to
-> utknąłem w `CartsList`; ten sam wózek w innych projekcjach i każdy inny wózek w tej są
-> dobrze.
+> **Pamiętaj:** awaria dotyczy jednej projekcji, jednego rodzaju listenera i jednego agregatu. Koszyk
+> 43 utknął w `CartsList`; ten sam koszyk w innych projekcjach i wszystkie inne koszyki w tej projekcji
+> mają się dobrze.
 
-> **Wskazówka:** model odczytu to niewłaściwe miejsce na reguły biznesowe. O zmianie dowiaduje się dopiero po
-> zmiana jest zapisywana, więc jedyne, co może się zdarzyć, to błąd. Reguły należą do strony zapisu, gdzie polecenie
-> nadal może zostać odrzucona.
+> **Wskazówka:** model odczytu to złe miejsce na reguły biznesowe. O zmianie dowiaduje się dopiero
+> wtedy, gdy jest już zapisana, więc jedyne, co może zrobić, to zawieść. Reguły należą do strony
+> zapisu, gdzie polecenie wciąż można odrzucić.
 
-## Przyglądamy się uszkodzeniom: GetProjectionStatus
+## Oględziny szkód: GetProjectionStatus
 
 Zapytaj samą projekcję:
 
+<!-- snippet: cart/FailuresSpec.scala#status -->
 ```scala
 import io.reactivecqrs.core.projection.{GetProjectionStatus, ProjectionStatus}
 
-status val = Await.result((cartsList ? GetProjectionStatus).mapTo[ProjectionStatus], 5.sekund)
+val status = Await.result((cartsList ? GetProjectionStatus).mapTo[ProjectionStatus], 5.seconds)
 status.failures.foreach { f =>
-  println(f.aggregateType.simpleName + " " + f.aggregateId.asLong + " utknąłem na wersji " + f.version.asInt + ": " + f.error)
+  println(f.aggregateType.simpleName + " " + f.aggregateId.asLong + " stuck at version " + f.version.asInt + ": " + f.error)
 }
-// ShoppingCart 43 utknął w wersji 1: PSQLException: BŁĄD: zduplikowana wartość klucza narusza ograniczenie unikatowości ...
+// ShoppingCart 43 stuck at version 1: PSQLException: ERROR: duplicate key value violates unique constraint ...
 ```
 
-Odpowiedź brzmi `ProjectionStatus(projectionName, failures, retrying, waitingForGap)`:
+Odpowiedź to `ProjectionStatus(projectionName, failures, retrying, waitingForGap)`:
 
-- **`failures`**: jeden `SubscriptionFailure` na zablokowaną subskrypcję, z jej `subscriptionType`
-  (jaki rodzaj słuchacza), `aggregateType`, `aggregateId`, `version` (pierwsza wersja nie została zastosowana),
-  `błąd` i `od`;
-- **`retrying`**: karty, których program nasłuchujący uległ awarii i jest właśnie ponawiany (krok 2 powyżej);
-- **`waitingForGap`**: wózki czekające na brakujące wersje (dalej w tym rozdziale).
+- **`failures`**: po jednym `SubscriptionFailure` na każdą subskrypcję, która utknęła, z jej
+  `subscriptionType` (który rodzaj listenera), `aggregateType`, `aggregateId`, `version` (pierwsza
+  niezastosowana wersja), `error` i `since`;
+- **`retrying`**: koszyki, których listener zawiódł i jest właśnie ponawiany (krok 2 powyżej);
+- **`waitingForGap`**: koszyki czekające na brakujące wersje (dalej w tym rozdziale).
 
-Trzy puste listy oznaczają, że wszystko jest w porządku. Awarie znajdują się w tabeli `subscription_failures`, więc
-przetrwanie ponownych uruchomień: zablokowany wózek pozostaje zablokowany, dopóki ktoś nie podejmie z tym działań.
+Trzy puste listy znaczą, że wszystko w porządku. Awarie są przechowywane w tabeli
+`subscription_failures`, więc przetrwają restart: koszyk, który utknął, stoi w miejscu, dopóki ktoś
+czegoś z tym nie zrobi.
 
-> **Wskazówka:** umieść `GetProjectionStatus` za stroną administracyjną lub kontrolą stanu dla każdej projekcji.
-> Rozdział 18 zawiera więcej informacji na temat monitorowania działającego systemu.
+> **Wskazówka:** podepnij `GetProjectionStatus` każdej projekcji pod panel administracyjny albo health
+> check. Więcej o obserwowaniu działającego systemu znajdziesz w rozdziale 18.
 
-## Naprawianie: ponów próbę lub pomiń
+## Naprawa: ponowić czy pominąć
 
-Najpierw napraw przyczynę. Tutaj zamieniamy indeks unikalny na zwykły, pod nowym numerem (pod
-start, sklep usuwa indeks 1 i tworzy indeks 2), a następnie restart:
+Najpierw usuń przyczynę. Tutaj zamieniamy unikalny indeks na zwykły, pod nowym numerem (przy starcie
+magazyn usunie indeks 1 i utworzy indeks 2), i robimy restart:
 
+<!-- snippet: cart/FailuresSpec.scala#indexSwap -->
 ```scala
-Seq(MultipleTextIndex(2, Seq("nazwa")))
+Seq(MultipleTextIndex(2, Seq("name")))
 ```
 
-Być może nie będzie trzeba robić nic więcej: zarejestrowane wcześniej błędy zostaną automatycznie powtórzone, gdy
-Projekcja rozpoczyna się natychmiast po jej zarejestrowaniu przez magistralę, 20 na sekundę. Po tym restarcie, karta
-43 otrzymuje swój dokument bez kiwnięcia palcem. Kiedy naprawisz przyczynę bez restartu lub
-ponowna próba uruchomienia nie pomogła, te trzy wiadomości, wysłane do projekcji, robią to ręcznie:
+Być może nic więcej nie trzeba robić: gdy projekcja startuje, zaraz po tym, jak szyna ją zarejestruje,
+sama ponawia próby dla awarii zapisanych wcześniej, 20 na sekundę. Po tym restarcie koszyk 43 dostanie
+więc swój dokument, a ty nie musisz nawet kiwnąć palcem. Gdy usuwasz przyczynę bez restartu albo
+ponowienie przy starcie nie pomogło, to samo zrobisz ręcznie trzema komunikatami wysłanymi do
+projekcji:
 
-| Wiadomość | Odpowiedź | Co robi |
+| Komunikat | Odpowiedź | Co robi |
 |---|---|---|
-| `RetryFailedSubscription(cartId)` | `FailedSubscriptionsHandled(cartId, count)` | pyta właściciela koszyka o nieudaną wersję i kolejne, aż do ich znalezienia; po zastosowaniu nieudanej wersji rekord błędu jest usuwany |
-| `RetryAllFailedSubscriptions` | `FailedSubscriptionsRetried(count)` | to samo dla każdego niepowodzenia projekcji, 20 na sekundę |
-| `SkipFailedVersion(cartId)` | `FailedSubscriptionsHandled(cartId, count)` | oznacza nieudaną wersję jako zastosowaną bez jej stosowania, usuwa rekord i pyta raz o wersje po nim |
+| `RetryFailedSubscription(cartId)` | `FailedSubscriptionsHandled(cartId, count)` | prosi właściciela koszyka o wersję, na której projekcja utknęła, i wszystkie po niej, raz za razem, aż przyjdą; gdy ta wersja zostanie zastosowana, wpis o awarii jest usuwany |
+| `RetryAllFailedSubscriptions` | `FailedSubscriptionsRetried(count)` | to samo dla każdej awarii projekcji, 20 na sekundę |
+| `SkipFailedVersion(cartId)` | `FailedSubscriptionsHandled(cartId, count)` | oznacza wersję, na której projekcja utknęła, jako zastosowaną, choć jej nie stosuje, usuwa wpis i raz prosi o wersje po niej |
 
-`count` informuje, ile nieudanych subskrypcji zostało obsłużonych; 0 oznacza, że ​​nic nie trzeba było zrobić.
+`count` mówi, ile nieudanych subskrypcji obsłużono; 0 znaczy, że nie było nic do zrobienia.
 
+<!-- snippet: cart/FailuresSpec.scala#retry -->
 ```scala
-import io.reactivecqrs.core.projection.{Obsłużone nieudane subskrypcje, Ponów nieudaną subskrypcję}
+import io.reactivecqrs.core.projection.{FailedSubscriptionsHandled, RetryFailedSubscription}
 
-Await.result((cartsList ? RetryFailedSubscription(cartId)).mapTo[FailedSubscriptionsHandled], 5.sekund)
-// Obsługiwane nieudane subskrypcje (Id(43),1)
+val handled = Await.result((cartsList ? RetryFailedSubscription(cartId)).mapTo[FailedSubscriptionsHandled], 5.seconds)
+// FailedSubscriptionsHandled(Id(43),1)
 ```
 
-Gdy to zadziała, w dzienniku pojawi się informacja: „Projection CartsList odzyskał sprawność po awarii w ShoppingCart 43”.
-Jeśli nasłuchiwanie nadal nie powiedzie się, wrócisz do kroku 1: ponownych prób, a następnie nowego rekordu.
+Gdy się uda, w logu pojawi się `Projection CartsList recovered from its failure on ShoppingCart 43`.
+Jeśli listener nadal zawodzi, wracasz do kroku 1: ponowienia, a potem nowy wpis.
 
-> **Ostrzeżenie:** pomijanie powoduje utratę czegoś, a to, co tracimy, zależy od słuchacza. Stan
-> słuchacz otrzymuje cały stan wraz z następną wersją, więc jego dokument jest ponownie poprawny
-> w miarę zmian w koszyku (jeśli w ogóle do nich dojdzie). Słuchacz zdarzeń nigdy więcej nie widzi pominiętego zdarzenia: jego
-> efekt zniknął na dobre. Istnieje pułapka dla słuchaczy stanu, którzy polegają na `created`: jeśli
-> pominięta wersja to ta, która utworzyła dokument, następna wersja próbuje
-> `overwriteDocument` dokument, który nie istnieje i kończy się niepowodzeniem. Nasłuchiwacz napisany z
-> `updateDocument(0, cartId.asLong, _ => Document(summary))`, który wstawia, gdy nic nie ma
-> jeszcze do tego nie pasuje.
+> **Ostrzeżenie:** pominięcie oznacza utratę czegoś, a czego, zależy od listenera. Listener stanu
+> dostaje z następną wersją cały stan, więc jego dokument znów jest poprawny, gdy tylko koszyk się
+> zmieni (o ile kiedykolwiek to nastąpi). Listener zdarzeń już nigdy nie zobaczy pominiętego zdarzenia:
+> jego skutek przepada na dobre. Jest też pułapka na listenery stanu, które polegają na `created`:
+> jeśli pominięta wersja to ta, która tworzyła dokument, następna wersja spróbuje wykonać
+> `overwriteDocument` na dokumencie, który nie istnieje, i zawiedzie. Listener napisany z
+> `updateDocument(0, cartId.asLong, _ => Document(summary))`, które wstawia dokument, gdy jeszcze nic
+> nie ma, w nią nie wpadnie.
 
 ## Brakujące wersje
 
-Czasami przesyłka nigdy nie dociera: wiadomość została utracona, gdy węzeł przestał działać lub projekcja, która
-dołączyły po pierwszych wydarzeniach w wózku (rozdział 8). Projekcja informuje, kiedy nastąpi kolejna dostawa
-Pojawia się: „Jestem w wersji 3, a to jest wersja 5”. Następnie:
+Czasem dostarczenie nigdy nie dociera: wiadomość ginie, gdy pada węzeł, albo projekcja dołącza dopiero
+po pierwszych zdarzeniach koszyka (rozdział 8). Projekcja zauważa to, gdy przychodzi następne
+dostarczenie: „jestem na wersji 3, a to jest wersja 5”. Wtedy:
 
-1. Prosi właściciela wózka, za pośrednictwem magistrali, o ponowne opublikowanie wszystkiego od wersji 4 do tej
-   Tylko projekcja. W dzienniku jest napisane: „Projekcja CartsList prosi o wersje z 4 z ShoppingCart 42”.
+1. Prosi właściciela koszyka, przez szynę, żeby ponownie opublikował wszystko od wersji 4, tylko dla
+   tej projekcji. W logu widać `Projection CartsList asks for versions from 4 of ShoppingCart 42`.
    Wersja 5 czeka.
-2. Po otrzymaniu wersji stosuje kolejno numery 4 i 5 i potwierdza oczekiwaną dostawę.
-3. Jeśli nie ma odpowiedzi, pyta ponownie po 10 sekundach, potem po 20, 40 i tak dalej, aż do jednego razu
-   5 minut.
-4. Jeżeli po 10 minutach wersje nadal nie nadchodzą, rejestruje błąd w wersji 4 („wersje
-   z 4 brakuje: zapytano … razy w ciągu 10 minut bez odpowiedzi"), z którymi radzisz sobie jak z każdym innym
-   inna awaria.
+2. Gdy wersje dotrą, stosuje po kolei 4 i 5 i potwierdza dostarczenie, które czekało.
+3. Gdy nie ma odpowiedzi, pyta znowu po 10 sekundach, potem po 20, 40 i tak dalej, aż do jednego razu
+   na 5 minut.
+4. Jeśli po 10 minutach wersje wciąż nie przyszły, zapisuje awarię na wersji 4 („versions from 4 are
+   missing: asked … times in 10 minutes without an answer”), którą obsługujesz jak każdą inną awarię.
 
-`ProjectionStatus.waitingForGap` wyświetla koszyki w krokach od 1 do 3.
+`ProjectionStatus.waitingForGap` wymienia koszyki, które są na etapie kroków od 1 do 3.
 
-## Opcje awarii
+## Opcje na wypadek awarii
 
-Opcje z rozdziału 8 `ProjectionActorOptions` kształtują wszystko powyżej:
+Wszystko powyższe kształtują te opcje `ProjectionActorOptions` z rozdziału 8:
 
-| Opcja (domyślna) | Co kontroluje |
+| Opcja (domyślnie) | Na co wpływa |
 |---|---|
-| `retries` (`Backoff(1.second, 30.seconds, maxAttempts = 9)`) | w jaki sposób ponawiany jest nieudany nasłuchiwacz przed zarejestrowaniem błędu: oczekiwanie rozpoczyna się od pierwszego czasu trwania i podwaja się do drugiego, dla takiej samej liczby prób |
-| `retryFailuresOnStart` (prawda) | ponów próby wykonania błędów zarejestrowanych przed rozpoczęciem |
-| `failureRetryInterval` (50 milisekund) | tempo ponawiania prób w przypadku wielu błędów: na początku i dla `RetryAllFailedSubscriptions` |
-| `gapRequestRepeat` (10 sekund) | jak długo żądanie brakujących wersji czeka przed ponownym wysłaniem, czas ten ulega podwojeniu do 5 minut |
-| `gapGiveUpAfter` (10 minut) | jak długo brakujące wersje są żądane, zanim luka stanie się odnotowaną awarią |
+| `retries` (`Backoff(1.second, 30.seconds, maxAttempts = 9)`) | jak ponawiany jest zawodzący listener, zanim awaria zostanie zapisana: czekanie zaczyna się od pierwszego czasu i podwaja się aż do drugiego, łącznie przez tyle prób |
+| `retryFailuresOnStart` (true) | czy przy starcie ponawiać próby dla awarii zapisanych przed nim |
+| `failureRetryInterval` (50 milisekund) | tempo ponawiania prób, gdy awarii jest wiele: przy starcie i dla `RetryAllFailedSubscriptions` |
+| `gapRequestRepeat` (10 sekund) | ile prośba o brakujące wersje czeka, zanim zostanie wysłana ponownie; ten czas podwaja się aż do 5 minut |
+| `gapGiveUpAfter` (10 minut) | jak długo projekcja prosi o brakujące wersje, zanim luka zostanie zapisana jako awaria |
 
+<!-- snippet: cart/FailuresSpec.scala#retries -->
 ```scala
 import io.reactivecqrs.core.projection.ProjectionActorOptions
 import io.reactivecqrs.core.util.Backoff
 
-OpcjeAktoraProjekcji.DOMYŚLNE
-  .withRetries(Backoff(1.second, 10.seconds, maxAttempts = 4)) // cztery próby, około 7 sekund oczekiwania
-  .copy(gapGiveUpAfter = 30 minut)
+val options = ProjectionActorOptions.DEFAULT
+  .withRetries(Backoff(1.second, 10.seconds, maxAttempts = 4)) // four attempts, about 7 seconds of waiting
+  .copy(gapGiveUpAfter = 30.minutes)
 ```
 
-## Tymczasem w autobusie eventowym
+## Tymczasem w szynie zdarzeń
 
-Szyna zdarzeń przechowuje mały rejestr dla każdego dostarczanego zdarzenia, dla każdego rodzaju abonenta i słuchacza,
-dopóki subskrybent nie odpowie komunikatem `MessageAck` (zastosowano teraz lub wcześniej) lub `MessageFailed` (podano
-(w górę). Następnie:
+Szyna zdarzeń prowadzi małą notatkę o każdym dostarczanym zdarzeniu, osobno dla każdego subskrybenta
+i rodzaju listenera, dopóki subskrybent nie odpowie `MessageAck` (zastosowane, teraz albo wcześniej)
+albo `MessageFailed` (poddał się). Wtedy:
 
-- Gdy każdy abonent odpowie, magistrala przekazuje polecenie magistrali wózka, która usuwa
-  wiersz zdarzenia ze skrzynki nadawczej.
-- Przesyłka bez odpowiedzi przez minutę jest rejestrowana jednokrotnie, np.
-  `Dostawa czeka 1 minutę: ShoppingCart 42 wersja 3 do CartsList (AggregatesDelivery)`.
-  Większość z 10 takich linijek jest pisana co 5 sekund, a podsumowanie co 5 minut.
-- Przesyłka bez odpowiedzi przez 10 minut kończy się:
-  `Niedostarczone po 10 minutach: ShoppingCart 42 wersja 3 do CartsList (AggregatesDelivery); pozostaje w skrzynce nadawczej do momentu ponownej publikacji`.
-  Autobus o tym zapomina, a rząd skrzynek nadawczych pozostaje.
+- Gdy odpowiedzą wszyscy subskrybenci, szyna daje znać szynie poleceń koszyka, a ta usuwa wiersz
+  zdarzenia z outboxu.
+- Dostarczenie, na które przez minutę nie ma odpowiedzi, trafia raz do logu, na przykład
+  `Delivery waits for 1 minute: ShoppingCart 42 version 3 to CartsList (AggregatesDelivery)`. Takich
+  linii powstaje co najwyżej 10 co 5 sekund, a co 5 minut podsumowanie.
+- Dostarczenie, na które przez 10 minut nie ma odpowiedzi, kończy się wpisem w logu:
+  `Undelivered after 10 minutes: ShoppingCart 42 version 3 to CartsList (AggregatesDelivery); it stays in the outbox until it is published again`.
+  Szyna o nim zapomina, a wiersz w outboxie zostaje.
 
-(Magistrala nadaje nazwę abonentowi według nazwy jego aktora, tej, którą podałeś `system.actorOf`; projekcja
-Własne wiersze logu używają swojej `projectionName`. Oba nazwaliśmy „CartsList”.)
+(Szyna nazywa subskrybenta nazwą jego aktora, tą podaną w `system.actorOf`; własne linie logu
+projekcji używają jej `projectionName`. U nas obie nazwy to „CartsList”.)
 
-Zapytaj autobus, jak sobie radzi z funkcją `GetDeliveryStatus`:
+Zapytaj szynę, jak jej idzie, wysyłając `GetDeliveryStatus`:
 
+<!-- snippet: cart/FailuresSpec.scala#delivery -->
 ```scala
 import io.reactivecqrs.core.eventbus.EventsBusActor.{DeliveryStatus, GetDeliveryStatus}
 
@@ -259,148 +271,161 @@ val delivery = Await.result((eventBus ? GetDeliveryStatus).mapTo[DeliveryStatus]
 
 | Pole | Znaczenie |
 |---|---|
-| `oczekiwanie` | przesyłki oczekujące na odpowiedź |
-| `niedostarczone` | najnowsze, które zakończyły się przed upływem terminu (przechowywanych jest maksymalnie 1000), każdy o nazwie `Niedostarczone(aggregateType, aggregateId, version, subscriber, kind, at)` |
-| `zatrzymany` | subskrybenci, którzy przestali (dalej w tym rozdziale) |
-| `trzymane`, `za` | kontrola przepływu (dalej w tym rozdziale) |
+| `waiting` | dostarczenia czekające na odpowiedź |
+| `undelivered` | ostatnie dostarczenia zakończone po upływie terminu (przechowywanych jest do 1 000), każde jako `Undelivered(aggregateType, aggregateId, version, subscriber, kind, at)` |
+| `stopped` | subskrybenci, którzy się zatrzymali (dalej w tym rozdziale) |
+| `held`, `behind` | kontrola przepływu (dalej w tym rozdziale) |
 
-Autobus pobiera swoje czasy z `DeliveryOptions`, które możesz przekazać podczas jego tworzenia, np.
-przykład `Props(new EventsBusActor(DeliveryOptions(deadline = 20.minute)))`. Pola dla tego
-sekcje to `deadline` (10 minut), `stallAfter` (1 minuta), `summaryInterval` (5 minut),
-`tickInterval` (5 sekund) i `stallLinesPerTick` (10).
+Szyna bierze swoje czasy z `DeliveryOptions`, które możesz przekazać przy jej tworzeniu, na przykład
+`Props(new EventsBusActor(DeliveryOptions(deadline = 20.minutes)))`. Pola dotyczące tej sekcji to
+`deadline` (10 minut), `stallAfter` (1 minuta), `summaryInterval` (5 minut), `tickInterval` (5 sekund)
+i `stallLinesPerTick` (10).
 
-## Skrzynka nadawcza: lista zadań, która przetrwa awarię
+## Outbox: lista zadań odporna na awarie
 
-Każde zdarzenie otrzymuje wiersz w `events_to_publish`, **outbox**, w tej samej transakcji, w której jest przechowywane
-Zdarzenie. Wiersz jest usuwany dopiero po tym, jak wszyscy abonenci odpowiedzieli. Tak więc, gdy maszyna umiera,
-po zatwierdzeniu lub zakończeniu dostawy w terminie spór nadal trwa i ktoś musi
-dostarcz ponownie zdarzenie: `OutboxPollerActor`, jeden na system, którego działanie rozpocząłeś w rozdziale 4.
+Każde zdarzenie dostaje wiersz w `events_to_publish`, czyli w **outboxie**, w tej samej transakcji,
+która zapisuje zdarzenie. Wiersz znika dopiero wtedy, gdy odpowiedzą wszyscy subskrybenci. Kiedy więc
+maszyna padnie tuż po zatwierdzeniu transakcji albo dostarczenie skończy się po upływie terminu,
+wiersz wciąż tam jest i ktoś musi dostarczyć zdarzenie jeszcze raz: `OutboxPollerActor`, jeden na
+system, uruchomiony w rozdziale 4.
 
-Co 30 sekund (pierwszy raz 10 sekund po uruchomieniu) sonda odczytuje, które agregaty są jeszcze
-ma rzędy oczekujących, maksymalnie 100 000 z nich, najdłużej czekający pierwszy, i decyduje:
+Co 30 sekund (pierwszy raz 10 sekund po starcie) poller sprawdza, które agregaty wciąż mają czekające
+wiersze, najwyżej 100 000 agregatów, zaczynając od tych, które czekają najdłużej, i decyduje:
 
-| Najstarsze oczekujące zdarzenie zostało zapisane | Ankieta |
+| Najstarsze czekające zdarzenie zapisano | Poller |
 |---|---|
-| 3 minuty temu | prosi właściciela koszyka o ponowne opublikowanie |
-| 6 minut temu | pyta ponownie |
-| 10 minut temu | logi `Niedostarczone: ShoppingCart 42 od wersji 3 nadal czeka w skrzynce nadawczej po 10 minutach; jest ponownie publikowany co 30 minut`, raz |
-| już dawno temu | pyta ponownie co 30 minut, na wypadek gdyby subskrybent wrócił |
+| 3 minuty temu | prosi właściciela koszyka, żeby opublikował je ponownie |
+| 6 minut temu | prosi jeszcze raz |
+| 10 minut temu | jednorazowo zapisuje w logu `Undelivered: ShoppingCart 42 from version 3 still waits in the outbox after 10 minutes; it is re-published again every 30 minutes` |
+| dawniej | prosi znowu co 30 minut, na wypadek gdyby subskrybent wrócił |
 
-Wiersze napisane przed rozpoczęciem procesu są publikowane w pierwszym głosowaniu, następnie po 3 i 6 minutach
-później. Subskrybenci, którzy już mają dostęp do wydarzeń, po prostu potwierdzają je ponownie. Maksymalnie 1000
-agregaty są publikowane ponownie według sondażu, przy czym najdłużej oczekujące dane są najpierw publikowane, tak aby po ankiecie nie było zaległości.
-przerwa w dostawie prądu nie budzi wszystkich właścicieli od razu.
+Wiersze zapisane przed startem procesu są publikowane przy pierwszym przebiegu pollera, a potem po 3 i
+6 minutach. Subskrybenci, którzy już mają te zdarzenia, po prostu potwierdzają je jeszcze raz. W
+jednym przebiegu ponownie publikuje się co najwyżej 1 000 agregatów, najpierw te, które czekają
+najdłużej, żeby zaległości po awarii nie obudziły naraz wszystkich właścicieli.
 
+<!-- snippet: cart/FailuresSpec.scala#outboxStatus -->
 ```scala
 import io.reactivecqrs.core.delivery.OutboxPollerActor.{GetOutboxStatus, OutboxStatus}
 
-val outbox = Await.result((outboxPoller ? GetOutboxStatus).mapTo[OutboxStatus], 5.sekund)
-// outbox.waiting: agreguje z wierszami oczekującymi na ostatnie sprawdzenie; outbox.gaveUp: te zgłoszone jako niedostarczone
+val outbox = Await.result((outboxPoller ? GetOutboxStatus).mapTo[OutboxStatus], 5.seconds)
+// outbox.waiting: aggregates with rows waiting at the last poll; outbox.gaveUp: those reported undelivered
 ```
 
-Możesz zmienić czasy za pomocą `OutboxPollerOptions` podczas tworzenia sondy:
+Czasy możesz zmienić przez `OutboxPollerOptions` przy tworzeniu pollera:
 
+<!-- snippet: cart/FailuresSpec.scala#pollerOptions -->
 ```scala
 import io.reactivecqrs.core.delivery.{OutboxPollerActor, OutboxPollerOptions, RedeliveryPolicy}
 
-val outboxPoller = system.actorOf(Props(nowy OutboxPollerActor(eventStore, eventBus,
+val outboxPoller = system.actorOf(Props(new OutboxPollerActor(eventStore, eventBus,
   OutboxPollerOptions(redelivery = RedeliveryPolicy.Options(maxRepublishPerPoll = 5000)))), "outboxPoller")
 ```
 
-Domyślne wartości: `firstPollAfter` 10 sekund, `pollInterval` 30 sekund, `maxTracked` 100 000 i w
-`RedeliveryPolicy.Options`: `attemptsAfter` po 3 i 6 minutach, `giveUpAfter` po 10 minutach,
+Wartości domyślne: `firstPollAfter` 10 sekund, `pollInterval` 30 sekund, `maxTracked` 100 000, a w
+`RedeliveryPolicy.Options`: `attemptsAfter` 3 i 6 minut, `giveUpAfter` 10 minut,
 `maxRepublishPerPoll` 1 000 i `retryGivenUpEvery` 30 minut.
 
-> **Pamiętaj:** obiekt nasłuchujący, który nie działa, *nie* powoduje, że wiersze skrzynki odbiorczej czekają: jego
-> `MessageFailed` to odpowiedź. Moduł sondujący jest tam, gdzie panuje cisza (utracone wiadomości, awarie komputerów,
-> zatrzymanych abonentów); błędy występują w rekordach błędów i komunikatach powyżej.
+> **Pamiętaj:** listener, który zawodzi na dobre, *nie* zatrzymuje wierszy w outboxie: jego
+> `MessageFailed` też jest odpowiedzią. Poller jest od ciszy (zgubionych wiadomości, maszyn, które
+> padły, zatrzymanych subskrybentów); od awarii są wpisy o awariach i opisane wyżej komunikaty.
 
-> **Pod maską:** „opublikuj ponownie” oznacza, że ​​sonda wysyła polecenie „Republish” do magistrali zdarzeń, co
-> przekazuje `RepublishOutbox` do magistrali poleceń typu koszyka, która przekazuje ją właścicielowi koszyka
-> (budząc go, jeśli to konieczne). Właściciel publikuje od najstarszej oczekującej wersji do bieżącej,
-> z jego obecnym stanem; długi zakres obejmuje części 1000 zdarzeń lub 16 MB. Zobacz
-> [ARCHITECTURE.md, sekcja 5.1](../ARCHITECTURE.md).
+> **Pod maską:** „opublikuj ponownie” oznacza, że poller wysyła `Republish` do szyny zdarzeń, ta
+> przekazuje `RepublishOutbox` szynie poleceń typu koszyka, a ta przekazuje go właścicielowi koszyka
+> (w razie potrzeby go budząc). Właściciel publikuje od swojej najstarszej czekającej wersji do
+> bieżącej, ze swoim bieżącym stanem; długi zakres idzie w częściach po 1 000 zdarzeń albo 16 MB.
+> Zobacz [ARCHITECTURE.md, sekcja 5.1](../ARCHITECTURE.md).
 
-## Powolna projekcja: kontrola przepływu
+## Wolna projekcja: kontrola przepływu
 
-Wyobraź sobie kelnera obsługującego stolik dla ośmiu osób. Kuchnia nie wysyła wszystkich czterdziestu dań na raz:
-Kelner przynosi tyle, ile mieści się na stole, a reszta pozostaje ciepła w kuchni, dopóki nie zwolni się miejsce.
-Szyna zdarzeń wykonuje to samo w przypadku projekcji, która nie nadąża:
+Wyobraź sobie kelnera, który obsługuje stolik dla ośmiu osób. Kuchnia nie wydaje wszystkich
+czterdziestu dań naraz: kelner przynosi tyle, ile zmieści się na stole, a reszta czeka ciepła w
+kuchni, aż zrobi się miejsce. Szyna zdarzeń robi to samo z projekcją, która nie nadąża:
 
-- Projekcja wysyła maksymalnie **okno** zdarzeń, na które jeszcze nie odpowiedziała: 10 000 zdarzeń lub
-  64 MB rozmiaru przechowywanych danych, w zależności od tego, co nastąpi pierwsze.
-- To, co się nie zmieści, jest **zachowane**: zdarzenia pozostają w bazie danych, ich wiersze w skrzynce nadawczej również, a magistrala
-  pamięta tylko, które wózki są z tyłu.
-- Gdy projekcja odpowiedziała na połowę swojego okna, autobus prosi właścicieli trzymanych wózków, aby
-  Opublikuj je ponownie w tej samej projekcji, najpierw najstarsze, maksymalnie 100 koszyków na raz. Podczas gdy koszyki są
-  odbywają się nowe wydarzenia, które zajmują co najwyżej połowę okna, więc te odbywające się w czasie są kontynuowane.
-- Szybka projekcja obok wolnej nie jest pomijana: każdy abonent ma własne okno.
+- Projekcja dostaje co najwyżej **okno** zdarzeń, na które jeszcze nie odpowiedziała: 10 000 zdarzeń
+  albo 64 MB ich zapisanego rozmiaru, w zależności od tego, co nastąpi pierwsze.
+- To, co się nie mieści, jest **wstrzymywane**: zdarzenia zostają w bazie danych, ich wiersze w
+  outboxie również, a szyna pamięta tylko, które koszyki zostały w tyle.
+- Gdy projekcja odpowie na połowę swojego okna, szyna prosi właścicieli wstrzymanych koszyków, żeby
+  opublikowali je ponownie dla tej projekcji, od najstarszych, po co najwyżej 100 koszyków naraz.
+  Dopóki jakieś koszyki są wstrzymane, nowe zdarzenia zajmują najwyżej połowę okna, więc wstrzymane
+  wciąż posuwają się naprzód.
+- Szybka projekcja obok wolnej nie jest przez nią spowalniana: każdy subskrybent ma własne okno.
 
-`GetDeliveryStatus` pokazuje wszystko: `held` zlicza wstrzymane dostawy, a `behind` mapuje każdą z nich
-abonent z wózkami, ile ich jest. Pięciominutowe podsumowanie autobusu zawiera również nazwiska abonentów.
+`GetDeliveryStatus` pokazuje to wszystko: `held` liczy wstrzymane dostarczenia, a `behind` przypisuje
+każdemu subskrybentowi ze wstrzymanymi koszykami ich liczbę. Subskrybentów, którzy zostali w tyle,
+wymienia też pięciominutowe podsumowanie szyny.
 
-Aby nadać projekcjom większe lub mniejsze okno, przekaż na przykład `DeliveryOptions` do magistrali
-`DeliveryOptions(window = 20000, windowBytes = 128L * 1024 * 1024)`. Większe okno pozwala
-projekcja pobiera więcej danych naraz, kosztem pamięci w swojej skrzynce pocztowej. W klastrze magistrala każdego węzła
-ma własne okno (rozdział 17).
+Żeby dać projekcjom większe albo mniejsze okno, przekaż szynie `DeliveryOptions`, na przykład
+`DeliveryOptions(window = 20000, windowBytes = 128L * 1024 * 1024)`. Większe okno pozwala projekcji
+wziąć więcej naraz, kosztem pamięci zajmowanej przez jej skrzynkę pocztową. W klastrze szyna każdego
+węzła ma własne okno (rozdział 17).
 
-Jak szybko to wystarczająco szybko? Pomiary biblioteki dają pewne pojęcie, a nie liczbę określającą pojemność: pojedyncze
-działa na jednej maszynie z systemem Windows (12 wątków procesora, PostgreSQL na tej samej maszynie), pomiary z dnia 17.10.2026 r.
-Projekcja oparta na zdarzeniach zastosowała 2732 zdarzenia na sekundę podczas wykonywania poleceń
-(`docs/perf/baseline-M4.md`) i po 60-sekundowej serii 671 768 poleceń, dwie projekcje miały
-nadrobiono 89 sekund po zakończeniu serii (`docs/perf/flow-M5.md`).
+Jak szybko to wystarczająco szybko? Pomiary samej biblioteki dają pewne wyobrażenie, ale nie są
+deklaracją przepustowości: to pojedyncze uruchomienia na jednej maszynie z Windows (12 wątków
+procesora, PostgreSQL na tej samej maszynie), zmierzone 17/10/2026. Projekcja oparta na zdarzeniach
+stosowała 2 732 zdarzenia na sekundę, podczas gdy wykonywały się polecenia
+(`docs/perf/baseline-M4.md`), a po 60-sekundowej serii 671 768 poleceń dwie projekcje nadrobiły
+zaległości 89 sekund po jej zakończeniu (`docs/perf/flow-M5.md`).
 
-> **Wskazówka:** zadbaj o to, aby słuchacze byli tani, zostaw margines między szybkością polecenia a najwolniejszą
-> projekcja i obserwowanie „trzymane” i „za”. Projekcja, która znacznie odstała, często
-> szybsza odbudowa (rozdział 10) niż karmienie. [SCALING.md, sekcja 5](../SCALING.md) zawiera
-> szczegóły.
+> **Wskazówka:** dbaj, żeby listenery były tanie, zostaw zapas między tempem poleceń a najwolniejszą
+> projekcją i obserwuj `held` i `behind`. Projekcję, która została daleko w tyle, często szybciej jest
+> przebudować (rozdział 10), niż dokarmiać. Szczegóły znajdziesz w [SCALING.md, sekcja 5](../SCALING.md).
 
 ## Projekcja, która się zatrzymuje
 
-Projekcja nie zatrzymuje się z powodu niepowodzenia programu nasłuchującego lub zapytania: odpowiada informacją o niepowodzeniu i
-Trwa. Ale aktor nadal może się zatrzymać: ktoś to zatrzyma albo część systemu się wyłączy. Autobus
-pilnuje swoich abonentów, a gdy któryś się zatrzyma, autobus rejestruje
-`Subskrybent …/user/CartsList został zatrzymany; jego zdarzenia pozostają w skrzynce nadawczej do następnego uruchomienia`, wyświetla je
-w `DeliveryStatus.stopped` i nie wysyła niczego więcej. Jego zdarzenia czekają w skrzynce nadawczej (pomijarka
-próbuje dalej, a pozostali subskrybenci potwierdzają powtórzenia) aż do ponownego uruchomienia systemu
-To. Pozostali subskrybenci nie są dotknięci. Zarządzana projekcja (rozdział 10) zostaje zastąpiona
-automatycznie po krótkim oczekiwaniu.
+Projekcja nie zatrzymuje się dlatego, że zawiódł listener albo zapytanie: odpowiada informacją o
+awarii i działa dalej. Ale aktor wciąż może się zatrzymać: ktoś go zatrzyma albo wyłącza się część
+systemu. Szyna obserwuje swoich subskrybentów i gdy któryś się zatrzyma, zapisuje w logu błąd
+`Subscriber …/user/CartsList stopped; its events stay in the outbox until the next start`, wpisuje go
+do `DeliveryStatus.stopped` i nic mu już nie wysyła. Jego zdarzenia czekają w outboxie (poller wciąż
+próbuje, a pozostali subskrybenci potwierdzają powtórki), aż system wystartuje ponownie razem z nim.
+Pozostałych subskrybentów to nie dotyczy. Projekcja zarządzana (rozdział 10) jest po krótkiej chwili
+automatycznie zastępowana.
 
-## Co czeka na nieudaną subskrypcję
+Dwa rodzaje zatrzymania nie są błędem, więc szyna zapisuje je w logu na poziomie INFO: subskrybent
+zatrzymuje się, bo wyłącza się jego węzeł, albo jego następca jest już w drodze, jak w przypadku
+instancji projekcji zarządzanej (jej nadzorca uruchamia nową) lub projekcji, która w klastrze działa w
+jednym egzemplarzu i przenosi się na inny węzeł (rozdział 17).
 
-Rekord awarii to obietnica: „ten wózek wciąż coś zawdzięcza tej projekcji”. Dwie operacje
-to byłoby złamaniem tej obietnicy, poczekaj, aż płyta zniknie:
+## Co wstrzymuje awaria subskrypcji
 
-- **Squash** (rozdział 14): Na `SquashAggregate(cartId, upTo)` odpowiada się
-  `SquashRefused(cartId, "subskrypcja agregatu nie powiodła się")`.
-- **Trwałe usunięcie** (rozdział 6): wózek nie został jeszcze usunięty. Rejestry magistrali poleceń
-  `Agregat 43 typu ShoppingCart nie został jeszcze usunięty: jego subskrypcja nie powiodła się`, a
-  Wiersz skrzynki nadawczej zdarzenia usuwania pozostaje. Po ponownym próbie usunięcia lub pominięciu błędu, następna publikacja
-  ten wiersz w harmonogramie sondy powyżej kończy usuwanie.
+Wpis o awarii to obietnica: „ten koszyk wciąż jest coś winien tej projekcji”. Dwie operacje, które
+złamałyby tę obietnicę, czekają, aż wpis zniknie:
 
-> **Ostrzeżenie:** projekcja, którą usuniesz z kodu, pozostawia po sobie rekordy błędów, a one
-> odrzucaj spychanie i trwałe usuwanie w oczekiwaniu. W przypadku zarządzanej projekcji,
-> `Projections.retire(name)` czyści (rozdział 10). W przypadku projektu, który sam uruchomiłeś, wywołaj
-> `subscriptionsState.clearSubscriptionsInfo("com.example.CartsListProjection")` z pełną klasą
-> nazwa: zapomina o wersjach i błędach projekcji.
+- **Squash** (rozdział 14): na `SquashAggregate(cartId, upTo)` odpowiedzią jest
+  `SquashRefused(cartId, "a subscription of the aggregate is failed")`.
+- **Trwałe usunięcie** (rozdział 6): koszyk na razie nie zostaje usunięty. Szyna poleceń zapisuje w
+  logu `Aggregate 43 of type ShoppingCart is not deleted yet: a subscription of it is failed`, a
+  wiersz outboxu ze zdarzeniem usunięcia zostaje. Gdy awaria zniknie dzięki ponowieniu albo
+  pominięciu, projekcja od razu prosi właściciela koszyka o ponowne opublikowanie tego wiersza i
+  usunięcie dobiega końca. Wpisu o awarii usuniętego w inny sposób (`clearSubscriptionsInfo` niżej)
+  nikt nie zauważa: usunięcie czeka wtedy na następną rundę pollera, najwyżej 30 minut.
 
-## Czego się nauczyłeś
+> **Ostrzeżenie:** projekcja usunięta z kodu zostawia po sobie wpisy o awariach, przez które squashe
+> wciąż są odrzucane, a trwałe usunięcia czekają. W przypadku projekcji zarządzanej posprząta
+> `Projections.retire(name)` (rozdział 10). Dla projekcji uruchamianej samodzielnie wywołaj
+> `subscriptionsState.clearSubscriptionsInfo("com.example.CartsListProjection")` z pełną nazwą jej
+> klasy: to wywołanie zapomina o wersjach i awariach tej projekcji.
 
-- Dostawa jest **przynajmniej jednorazowa, w kolejności zbiorczej, stosowana jednorazowo**, dzięki notatnikowi
-  (`subskrypcje`) zapisane w transakcji słuchacza. Zapisy w trakcie sesji są bezpieczne.
-  powtórz; inne skutki uboczne nie występują i należą do sag lub idempotentnych słuchaczy.
-- Słuchacz, który zgłasza błąd, jest **ponownie sprawdzany przez około dwie minuty**, po czym błąd jest **rejestrowany**,
-  odpowiedź na to pytanie brzmi: czy ten wózek nie powiódł się w tej projekcji, a wszystko inne płynie dalej.
-- **`GetProjectionStatus`** pokazuje błędy, ponowne próby i przerwy; **`RetryFailedSubscription`**,
-  **`RetryAllFailedSubscriptions`** i **`SkipFailedVersion`** naprawiają je, a awarie są
-  ponawiane przy każdym starcie.
-- Brakujące wersje są wymagane od właściciela agregatu; po 10 minutach luka staje się awarią.
-- **Skrzynka nadawcza** przechowuje to, co nie zostało dostarczone; **aplet skrzynki nadawczej** publikuje to ponownie w punktach 3 i 6
-  minut, raportuje o 10, a następnie próbuje ponownie co 30 minut. **`GetDeliveryStatus`** i
-  **`GetOutboxStatus`** pokazuje aktualną sytuację.
-- **Kontrola przepływu** wysyła powolną projekcję maksymalnie 10 000 zdarzeń lub 64 MB na raz; reszta czeka
-  w bazie danych.
-- Nieudana subskrypcja wstrzymuje **squash** i **trwałe usunięcie** jej agregatu.
+## Co już umiesz
 
-Dalej: [rozdział 10](10-rebuilding-projections.md) pokazuje, jak odbudować projekcję ze zdarzenia
-Przechowywać, dopóki stary nadal służy.
+- Dostarczanie działa **co najmniej raz, po kolei w obrębie agregatu i z jednokrotnym zastosowaniem**
+  dzięki notatnikowi (`subscriptions`) zapisywanemu w transakcji twojego listenera. Zapisy przez sesję
+  można bezpiecznie powtarzać; innych skutków ubocznych nie, a ich miejsce jest w sagach albo w
+  osobnych, idempotentnych listenerach.
+- Listener, który rzuca wyjątek, jest **ponawiany przez około dwie minuty**; potem awaria zostaje
+  **zapisana**, ta projekcja odpowiada na dostarczenia tego koszyka awarią, a cała reszta płynie dalej.
+- **`GetProjectionStatus`** pokazuje awarie, ponowienia i luki; **`RetryFailedSubscription`**,
+  **`RetryAllFailedSubscriptions`** i **`SkipFailedVersion`** je naprawiają, a przy każdym starcie
+  projekcja ponawia próby dla zapisanych awarii.
+- O brakujące wersje projekcja prosi właściciela agregatu; po 10 minutach luka staje się awarią.
+- **Outbox** przechowuje to, co nie zostało dostarczone; **poller outboxu** publikuje to ponownie po 3
+  i 6 minutach, zgłasza po 10, a potem próbuje znowu co 30 minut. **`GetDeliveryStatus`** i
+  **`GetOutboxStatus`** pokazują, jak sprawy stoją.
+- **Kontrola przepływu** wysyła wolnej projekcji naraz co najwyżej 10 000 zdarzeń albo 64 MB; reszta
+  czeka w bazie danych.
+- Nieudana subskrypcja wstrzymuje **squash** i **trwałe usunięcie** swojego agregatu.
+
+Dalej: [rozdział 10](10-rebuilding-projections.md) pokazuje, jak przebudować projekcję z magazynu
+zdarzeń, podczas gdy stara wciąż obsługuje zapytania.

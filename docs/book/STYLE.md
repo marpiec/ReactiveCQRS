@@ -64,4 +64,6 @@ Use exactly these four, as block quotes with a bold label:
 
 Every change that alters what a user writes or runs updates its chapter in the same commit: a new
 option, a new message, a changed default, a new host step. A feature that lands replaces its
-"coming" note with a section of its own.
+"coming" note with a section of its own. The Polish translation in `../book_pl/` follows in the same
+commit or the next: same file names, the same code blocks (`BookSnippetsSpec` checks them), and the terms
+of its own `STYLE.md`.

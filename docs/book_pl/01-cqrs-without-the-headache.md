@@ -1,215 +1,214 @@
-# Rozdział 1. CQRS i pozyskiwanie zdarzeń bez bólu głowy
+# Rozdział 1. CQRS i event sourcing bez bólu głowy
 
-Do końca tego rozdziału będziesz wiedział, czym są *polecenia*, *wydarzenia*, *agregaty* i *projekcje*
-dlaczego ktoś miałby tworzyć oprogramowanie w ten sposób i jaką część zadania wykonuje za Ciebie ReactiveCQRS.
-Nie ma jeszcze kodu do wpisania. Napij się kawy.
+Pod koniec tego rozdziału będziesz wiedzieć, czym są *polecenia*, *zdarzenia*, *agregaty* i *projekcje*,
+po co w ogóle pisać oprogramowanie w ten sposób i które części pracy ReactiveCQRS wykonuje za ciebie.
+Na razie nie ma tu kodu do wpisywania. Zrób sobie kawę.
 
 ---
 
 ## Tablica i pamiętnik
 
-Wyobraź sobie listę zakupów na tablicy w swojej kuchni. Ktoś pisze „mleko”, ktoś inny dodaje
-„Chleb”, ktoś wyciera „mleko”, bo kupił je w drodze do domu. W każdej chwili
-Tablica pokazuje *aktualną* listę. Nie może jednak powiedzieć, w jaki sposób lista się tam znalazła: kto
-Dodałeś chleb? Czy było na nim mleko dziś rano? Czy ktoś kiedyś napisał „czekolada” i cicho…
-wytrzeć to?
+Wyobraź sobie listę zakupów na tablicy w kuchni. Ktoś pisze „mleko”, ktoś inny dopisuje „chleb”, a jeszcze
+ktoś ściera „mleko”, bo kupił je w drodze do domu. W każdej chwili tablica pokazuje *bieżącą* listę.
+Nie powie ci jednak, jak ta lista powstała: kto dopisał chleb? Czy rano było na niej mleko? Czy ktoś
+kiedyś napisał „czekolada” i po cichu to starł?
 
-Wyobraź sobie teraz, że zamiast tablicy rodzina prowadzi **dziennik**, w którym zapisuje listę:
+Teraz wyobraź sobie, że zamiast tablicy rodzina prowadzi **pamiętnik** tej listy:
 
 1. Poniedziałek 08:10, Alicja: *dodała mleko*
 2. Poniedziałek 12:30, Bob: *dodał chleb*
-3. Poniedziałek 18:05, Alicja: *wyjęła mleko*
+3. Poniedziałek 18:05, Alicja: *usunęła mleko*
 
-Dziennik nigdy nie zmienia tego, co zostało napisane; nowe linijki pojawiają się tylko na dole. I kiedykolwiek
-chcesz aktualną listę, czytasz pamiętnik od góry i powtarzasz każdą linijkę: mleko, potem chleb, potem
-Brak mleka. Wynik: chleb. Ta sama odpowiedź, co na tablicy, plus cała historia.
+W pamiętniku nigdy nie zmienia się tego, co już zapisano; przybywają tylko nowe linijki na dole. A kiedy
+potrzebujesz bieżącej listy, czytasz pamiętnik od góry i odtwarzasz linijkę po linijce: mleko, potem
+chleb, potem już bez mleka. Wynik: chleb. Ta sama odpowiedź co na tablicy, a do tego cała historia.
 
-To jest **źródło zdarzeń** w jednym akapicie. Każdy wiersz dziennika to **wydarzenie**: fakt dotyczący
-coś, co się wydarzyło, napisane w czasie przeszłym. Aktualna lista to **stan**, a ty otrzymujesz
-poprzez odtwarzanie wydarzeń w kolejności. Dziennik jest źródłem prawdy; tablica jest tylko
-wygodny obrazek, który możesz przerysować w każdej chwili.
+Oto **event sourcing** w jednym akapicie. Każda linijka pamiętnika to **zdarzenie**: fakt o czymś, co się
+wydarzyło, zapisany w czasie przeszłym. Bieżąca lista to **stan**, a dostajesz go, odtwarzając zdarzenia
+po kolei. Pamiętnik jest źródłem prawdy; tablica to tylko wygodny obrazek, który w każdej chwili można
+narysować od nowa.
 
-> **Pamiętaj:** wydarzenia to fakty z przeszłości. Zdanie „dodano mleko” pozostaje prawdziwe na zawsze, nawet po
-> ktoś wyjmuje mleko. Wyjęcie to *nowe* wydarzenie, a nie gumka.
+> **Pamiętaj:** zdarzenia to fakty z przeszłości. „Dodano mleko” pozostaje prawdą na zawsze, nawet gdy
+> ktoś później usunie mleko. Usunięcie to *nowe* zdarzenie, a nie gumka do mazania.
 
-## Polecenia: proś grzecznie
+## Polecenia: grzeczne prośby
 
-Nikt nie pisze bezpośrednio w pamiętniku. *Prosisz* o zmianę: „proszę dodać czekoladę do listy”.
-To żądanie to **polecenie**. W przeciwieństwie do zdarzenia, polecenie można odrzucić: być może lista jest pełna,
-Może czekolada jest zakazana do kolacji. Ktoś musi spojrzeć na aktualną listę i zastosować
-zasady domowe i podejmij decyzję.
+Nikt nie pisze w pamiętniku bezpośrednio. O zmianę się *prosi*: „dopisz, proszę, czekoladę do listy”.
+Taka prośba to **polecenie**. W odróżnieniu od zdarzenia polecenie można odrzucić: może lista jest pełna,
+a może czekolady nie wolno jeść przed obiadem. Ktoś musi spojrzeć na bieżącą listę, zastosować domowe
+zasady i zdecydować.
 
-- Jeśli odpowiedź brzmi tak, decyzję zapisuje się jako jedno lub więcej zdarzeń ("dodano czekoladę").
-- Jeśli odpowiedź brzmi „nie”, nic nie jest napisane i zostajesz poinformowany dlaczego.
+- Jeśli odpowiedź brzmi „tak”, decyzja zostaje zapisana jako jedno lub więcej zdarzeń („dodano czekoladę”).
+- Jeśli brzmi „nie”, nic nie zostaje zapisane, a ty dowiadujesz się, dlaczego.
 
-Więc przepływ jest zawsze taki sam:
+Przebieg jest więc zawsze taki sam:
 
 ```
-polecenie → decyzja (spójrz na stan bieżący, zastosuj zasady) → zdarzenia (lub odmowa)
+command  →  decision (look at the current state, apply the rules)  →  events (or a refusal)
 ```
 
-W ReactiveCQRS polecenia są klasami przypadków Scala, takimi jak `AddItem(...)`, a decyzja jest funkcją
-piszesz coś, co nazywa się **obsługą poleceń**, a zdarzenia są klasami przypadków, takimi jak `ItemAdded("milk")`.
+W ReactiveCQRS polecenia to case classy Scali, na przykład `AddItem(...)`, decyzję podejmuje napisana
+przez ciebie funkcja zwana **handlerem polecenia**, a zdarzenia to case classy, na przykład
+`ItemAdded("milk")`.
 
-## Agregaty: jeden dziennik na rzecz
+## Agregaty: każda rzecz ma swój pamiętnik
 
-Prawdziwa aplikacja nie ma jednej listy zakupów; ma tysiące koszyków zakupowych, po jednym na każdy
-Klient. Każdy wózek ma swój własny dziennik. Rzecz, która jest właścicielem dziennika i zasady, które go strzegą,
-nazywa się **agregatem**. Koszyk zakupowy jest agregatem, podobnie jak faktura, konto użytkownika czy
-rada projektowa.
+Prawdziwa aplikacja nie ma jednej listy zakupów, tylko tysiące koszyków, po jednym na klienta. Każdy
+koszyk dostaje własny pamiętnik. Rzecz, do której należy pamiętnik, razem z zasadami, które go strzegą,
+to **agregat**. Koszyk zakupów jest agregatem; tak samo faktura, konto użytkownika czy tablica projektu.
 
 Każdy agregat ma:
 
-- **id**, dzięki któremu można znaleźć jego dziennik (`AggregateId`, liczba),
-- **wersja**: ile wydarzeń zawiera jej dziennik. Pomyśl o tym jak o numerze strony ostatniego wiersza.
-  Nowy wózek zaczyna się od wersji 0, po pierwszym zdarzeniu jest w wersji 1 itd.
-- **stan**: to, co otrzymujesz, odtwarzając zdarzenia (w przypadku koszyka: jego nazwa i przedmioty).
+- **id**, po którym znajdziesz jego pamiętnik (`AggregateId`, czyli liczbę),
+- **wersję**: liczbę zdarzeń w jego pamiętniku. Możesz ją traktować jak numer strony z ostatnią linijką.
+  Nowy koszyk zaczyna od wersji 0, po pierwszym zdarzeniu ma wersję 1 i tak dalej,
+- **stan**: to, co dostajesz, odtwarzając jego zdarzenia (w koszyku: nazwę i produkty).
 
-Dlaczego wyznaczać granicę wokół jednego wózka, a nie wokół „wszystkich wózków”? Ponieważ zasady dotyczące wózka obowiązują tylko
-Potrzebuję tego jednego wózka. „Nie więcej niż pięć przedmiotów” można sprawdzić, patrząc na pojedynczy wózek.
-małe agregaty oznaczają, że wiele z nich może zmieniać się w tym samym czasie, nie wchodząc sobie nawzajem w drogę
-palce u stóp.
+Dlaczego granica biegnie wokół jednego koszyka, a nie wokół „wszystkich koszyków”? Bo zasady koszyka
+zawsze potrzebują tylko tego jednego koszyka. „Nie więcej niż pięć produktów” da się sprawdzić, patrząc na
+pojedynczy koszyk. A skoro agregaty są małe, wiele z nich może zmieniać się w tym samym czasie i nie
+wchodzić sobie w drogę.
 
-### Kiedy dwie osoby piszą jednocześnie
+### Gdy dwie osoby piszą naraz
 
-Alicja otwiera wózek na telefonie, Bob na laptopie. Oboje widzą wersję 3. Alicja dodaje mleko; wózek
-Przechodzi do wersji 4. Bob, wciąż patrząc na wersję 3, dodaje chleb. Czy zmiana Boba powinna zostać wprowadzona?
-Być może; być może zasady mówiłyby coś innego o wersji 4. ReactiveCQRS pozwala
-wybierać:
+Alicja otwiera koszyk w telefonie, Bob w laptopie. Oboje widzą wersję 3. Alicja dodaje mleko; koszyk
+przechodzi do wersji 4. Bob, wciąż patrząc na wersję 3, dodaje chleb. Czy zmiana Boba powinna przejść?
+Może tak, a może zasady powiedziałyby coś innego o wersji 4. ReactiveCQRS pozwala ci wybrać:
 
-- Zwykłym poleceniem mówisz „Zmieniam wersję 3”. Jeśli wózek w międzyczasie się przesunął,
-  polecenie zostało odrzucone z odpowiedzią *współbieżna modyfikacja*, można więc sprawdzić jeszcze raz i spróbować jeszcze raz.
-  To się nazywa **optymistyczne blokowanie**: nikt niczego nie blokuje z góry; kolizje są zauważane, gdy
-  zdarzają się.
-- W przypadku polecenia *współbieżnego* mówisz „jakakolwiek jest aktualna wersja”, a biblioteka próbuje ponownie
-  na starciu.
+- Zwykłym poleceniem mówisz: „zmieniam wersję 3”. Jeśli koszyk w międzyczasie poszedł dalej, polecenie
+  zostaje odrzucone z odpowiedzią o *współbieżnej modyfikacji*, a ty możesz spojrzeć jeszcze raz
+  i ponowić próbę. To się nazywa **blokowanie optymistyczne**: nikt niczego nie blokuje z góry, a konflikty
+  wychodzą na jaw wtedy, gdy się zdarzą.
+- Poleceniem *współbieżnym* mówisz: „jakakolwiek jest teraz wersja”, a w razie konfliktu biblioteka sama
+  ponawia próbę.
 
-Rozdział 5 pokazuje oba.
+Rozdział 5 pokazuje oba sposoby.
 
-## CQRS: jeden model do pisania, inne do czytania
+## CQRS: jeden model do zapisu, inne do odczytu
 
-Odtwarzanie pamiętnika za każdym razem, gdy ktoś chce obejrzeć koszyk, działa, ale jest powolne, jeśli pytanie
-„Pokaż mi każdy wózek, który zawiera czekoladę”. W przypadku takich pytań potrzebujesz tabeli, którą możesz…
-wyszukiwanie, jeden wiersz na koszyk, na bieżąco aktualizowane.
+Odtwarzanie pamiętnika za każdym razem, gdy ktoś chce zajrzeć do koszyka, działa, ale jest powolne, gdy
+pytanie brzmi: „pokaż mi wszystkie koszyki z czekoladą”. Do takich pytań przyda się tabela, którą da się
+przeszukiwać, z jednym wierszem na koszyk, stale aktualna.
 
-Więc zachowujesz **dwie strony**:
+Dlatego prowadzisz **dwie strony**:
 
-- **strona pisemna** (polecenia, agregaty, zdarzenia), gdzie podejmowane są decyzje i ujawniana jest prawda
-  przechowywane;
-- **strona odczytu**, w której zdarzenia są przekształcane w kształt najłatwiejszy do zapytania: lista
-  koszyki na klienta, liczba artykułów na produkt, indeks wyszukiwania.
+- **stronę zapisu** (polecenia, agregaty, zdarzenia), gdzie zapadają decyzje i gdzie przechowywana jest
+  prawda;
+- **stronę odczytu**, gdzie zdarzenia przybierają taki kształt, o jaki najłatwiej pytać: lista koszyków
+  każdego klienta, liczba pozycji dla każdego produktu, indeks wyszukiwania.
 
-Ten podział ma nazwę: **CQRS**, Command Query Responsibility Segregation. Wielkie słowa dla prostego
-nawyk: *model, z którym piszesz, nie musi być modelem, z którym czytasz.*
+Ten podział ma swoją nazwę: **CQRS**, Command Query Responsibility Segregation. Wielkie słowa na określenie
+prostego nawyku: *model, którym zapisujesz, nie musi być modelem, z którego czytasz.*
 
-Części strony odczytu nazywane są **projekcjami**. Projekcja nasłuchuje zdarzeń i aktualizuje
-własne tabele. Wyobraź sobie bank: księga główna rejestruje każdą transakcję (wydarzenia), podczas gdy bank
-Aplikacja pokazuje Ci przejrzyste podsumowanie Twoich kont (projekcję księgi głównej). Jeśli podsumowanie kiedykolwiek…
-Jeśli dane zostaną uszkodzone, bank może je odtworzyć z rejestru. Dokładnie to samo można zrobić z projekcjami.
-(rozdział 10).
+Elementy strony odczytu nazywamy **projekcjami**. Projekcja nasłuchuje zdarzeń i aktualizuje własne
+tabele. Pomyśl o banku: księga główna zapisuje każdą transakcję (zdarzenia), a aplikacja bankowa pokazuje
+ci schludne podsumowanie twoich kont (projekcję księgi). Gdyby podsumowanie kiedyś się zepsuło, bank mógłby
+je odtworzyć z księgi. Z projekcjami możesz zrobić dokładnie to samo (rozdział 10).
 
-> **Pamiętaj:** strona odczytu jest *ostatecznie* aktualna. Po pomyślnym wykonaniu polecenia jego zdarzenia docierają
-> projekcje chwilę później, zazwyczaj w ciągu milisekund. Kiedy ekran musi wyświetlić Twój własny
-> zmienić od razu, są do tego narzędzia (rozdziały 7 i 8).
+> **Pamiętaj:** strona odczytu nadąża za zmianami *z opóźnieniem*. Gdy polecenie się powiedzie, jego
+> zdarzenia docierają do projekcji chwilę później, zwykle w ciągu milisekund. Kiedy ekran musi od razu
+> pokazać twoją własną zmianę, są na to narzędzia (rozdziały 7 i 8).
 
-## Co ReactiveCQRS dla Ciebie robi
+## Co ReactiveCQRS robi za ciebie
 
-Napisanie tego wszystkiego ręcznie wymaga sporo pracy: bezpiecznego przechowywania zdarzeń, obsługi dwóch pisarzy jednocześnie.
-raz, dostarczając każde zdarzenie do każdej projekcji, nawet po awarii, odbudowując modele odczytu.
-Biblioteka zajmuje się hydrauliką; Ty piszesz części dotyczące Twojej firmy.
+Pisanie tego wszystkiego ręcznie to mnóstwo hydrauliki: bezpieczne przechowywanie zdarzeń, obsługa dwóch
+piszących naraz, dostarczanie każdego zdarzenia do każdej projekcji nawet po awarii, przebudowa modeli
+odczytu. Hydraulikę bierze na siebie biblioteka; ty piszesz te części, które dotyczą twojego biznesu.
 
-**Piszesz:**
+**Ty piszesz:**
 
-- stan agregatu (klasa przypadku),
-- jego polecenia i zdarzenia (więcej klas przypadków),
-- procedury obsługi poleceń (reguły) i procedury obsługi zdarzeń (sposób, w jaki każde zdarzenie zmienia stan),
+- stan agregatu (case class),
+- jego polecenia i zdarzenia (kolejne case classy),
+- handlery poleceń (zasady) i handlery zdarzeń (jak każde zdarzenie zmienia stan),
 - projekcje (jak zdarzenia stają się modelami odczytu),
-- a gdy zadanie obejmuje kilka agregatów – sagi (rozdział 12).
+- a gdy zadanie obejmuje kilka agregatów, także sagi (rozdział 12).
 
-**ReactiveCQRS dba o:**
+**ReactiveCQRS zajmuje się:**
 
-- kierowanie każdego polecenia do właściwego agregatu i upewnianie się, że dwa polecenia nigdy nie mogą jednocześnie zapisać
-  ta sama wersja,
-- przechowywanie agregatów w pamięci, gdy są zajęte i uśpienie ich, gdy są bezczynne,
-- przechowywanie zdarzeń w PostgreSQL w jednej transakcji, z blokadą optymistyczną,
-- dostarczanie wydarzeń do projekcji i sag *przynajmniej raz, w kolejności zbiorczej*, przy czym każdy
-  zdarzenie zastosowane *raz*, nawet w przypadku awarii i ponownych uruchomień,
-- ponawianie prób, rejestrowanie i raportowanie błędów, dzięki czemu nic nie ginie bezpowrotnie,
-- odbudowywanie projekcji, migawek dla długich historii, eliminowanie starej historii i uruchamianie
-  klaster kilku maszyn.
+- kierowaniem każdego polecenia do właściwego agregatu i pilnowaniem, by dwa polecenia nigdy nie zapisały
+  tej samej jego wersji,
+- trzymaniem agregatów w pamięci, gdy mają co robić, i usypianiem ich, gdy są bezczynne,
+- zapisywaniem zdarzeń w PostgreSQL w jednej transakcji, z blokadą optymistyczną,
+- dostarczaniem zdarzeń do projekcji i sag *co najmniej raz, po kolei w obrębie każdego agregatu*, przy
+  czym każde zdarzenie zostaje zastosowane *raz*, nawet mimo awarii i restartów,
+- ponawianiem, zapisywaniem i zgłaszaniem błędów, żeby nic nie zginęło po cichu,
+- przebudową projekcji, migawkami dla długich historii, zwijaniem starej historii (squash) i pracą
+  w klastrze złożonym z kilku maszyn.
 
 Oto cała podróż jednego polecenia:
 
 ```
-ty ──polecenie──▶ magistrala poleceń ──▶ właściciel agregatu ──wydarzenia──▶ PostgreSQL (wydarzenia + skrzynka nadawcza)
+you ──command──▶ command bus ──▶ aggregate owner ──events──▶ PostgreSQL (events + outbox)
                                        │
-                                       └──publikuj──▶ szyna zdarzeń ──┬──▶ projekcje ──▶ odczytaj modele
-                                                                 └──▶ sagi
+                                       └──publish──▶ event bus ──┬──▶ projections ──▶ read models
+                                                                 └──▶ sagas
 ```
 
-- **Magistrala poleceń** jest bramą wejściową dla jednego typu agregatu (jednego dla wózków, drugiego dla faktur).
-- **Właściciel agregatu** dba o jeden agregat (jeden wózek): utrzymuje jego stan, zarządza nim
-  program obsługi poleceń i przechowuje zdarzenia.
-- **PostgreSQL** przechowuje zdarzenia, a także **skrzynkę nadawczą**: listę zadań do wykonania, którą niektórzy subskrybenci
-  Nie zostało to jeszcze potwierdzone. W ten sposób nic nie ginie, gdy maszyna restartuje się w połowie.
-- **Autobus zdarzeń** przekazuje zdarzenia wszystkim osobom, które się zapisały, i czeka, aż każde z nich je otrzyma.
-  powiedz "zrozumiałem".
+- **Szyna poleceń** to drzwi wejściowe dla jednego typu agregatu (osobna dla koszyków, osobna dla faktur).
+- **Właściciel agregatu** opiekuje się jednym agregatem (jednym koszykiem): trzyma jego stan, uruchamia
+  twój handler polecenia i zapisuje zdarzenia.
+- **PostgreSQL** przechowuje zdarzenia, a do tego **outbox**: listę zadań ze zdarzeniami, których któryś
+  subskrybent jeszcze nie potwierdził. Dzięki temu nic nie ginie, gdy maszyna zrestartuje się w połowie
+  pracy.
+- **Szyna zdarzeń** przekazuje zdarzenia wszystkim, którzy je subskrybują, i czeka, aż każdy z nich
+  odpowie „mam”.
 
-> **Pod maską:** pełna trasa z każdym stołem i wiadomością znajduje się w
-> [ARCHITECTURE.md, sekcja 1](../ARCHITECTURE.md).
+> **Pod maską:** pełny przegląd, z każdą tabelą i każdym komunikatem, znajdziesz w
+> [ARCHITECTURE.md, w sekcji 1](../ARCHITECTURE.md).
 
 ## Aktorzy w sześćdziesiąt sekund
 
-ReactiveCQRS opiera się na aktorach **Apache Pekko**. Spotkasz ich, więc oto wszystko, czego potrzebujesz.
-Teraz.
+ReactiveCQRS jest zbudowany na aktorach **Apache Pekko**. Jeszcze ich spotkasz, więc oto wszystko, czego
+na razie potrzebujesz.
 
-**Aktor** to mały pracownik ze skrzynką pocztową. Nigdy nie wywołujesz jego metod, tylko umieszczasz w nim wiadomość.
-skrzynkę pocztową i obsługuje wiadomości pojedynczo, w kolejności ich nadejścia. Ponieważ zawsze działa tylko
-jedna rzecz na raz, może zachować swój własny stan bez blokad.
+**Aktor** to mały pracownik ze skrzynką pocztową. Nigdy nie wywołujesz jego metod; wrzucasz wiadomość do
+jego skrzynki, a on obsługuje wiadomości jedną po drugiej, w kolejności, w jakiej przyszły. Ponieważ
+zawsze robi tylko jedną rzecz naraz, może trzymać własny stan bez żadnych blokad.
 
 Z aktorami rozmawia się na dwa sposoby:
 
-- **tell**, napisane `actor ! message`: wrzuć wiadomość do skrzynki pocztowej i odejdź;
-- **zapytaj**, napisane `aktor ? wiadomość`: wpisz wiadomość i otrzymaj `Przyszłość` z odpowiedzią.
+- **tell**, w kodzie `actor ! message`: wrzucasz wiadomość do skrzynki i odchodzisz;
+- **ask**, w kodzie `actor ? message`: wrzucasz wiadomość i dostajesz z powrotem `Future` z odpowiedzią.
 
 ```scala
-zaimportuj org.apache.pekko.pattern.ask
+import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
 import scala.concurrent.duration._
 
-niejawny limit czasu wartości: Limit czasu = Limit czasu (5 sekund)
+implicit val timeout: Timeout = Timeout(5.seconds)
 
-val answer = commandBus ? AddItem(userId, cartId, AggregateVersion(1), "milk") // Przyszłość
+val answer = commandBus ? AddItem(userId, cartId, AggregateVersion(1), "milk")  // a Future
 ```
 
-Szyna poleceń, właściciele agregatów, szyna zdarzeń, projekcje i sagi – to wszystko są aktorzy.
-Obsługujące polecenia i zdarzenia funkcje to zwykłe funkcje; aktorzy wywołują je za ciebie.
+Szyna poleceń, właściciele agregatów, szyna zdarzeń, projekcje i sagi – wszystko to aktorzy. Twoje
+handlery poleceń i handlery zdarzeń to zwykłe funkcje; aktorzy wywołują je za ciebie.
 
-## Kiedy go używać, a kiedy nie
+## Kiedy warto, a kiedy nie
 
-ReactiveCQRS sprawdza się, gdy:
+ReactiveCQRS świetnie się sprawdza, gdy:
 
-- musisz wiedzieć, **jak** dane stały się takie, jakie są: audyty, „kto to zmienił?”, cofanie;
+- musisz wiedzieć, **jak** dane doszły do obecnej postaci: audyty, „kto to zmienił?”, cofanie zmian;
 - kilka ekranów potrzebuje tych samych danych w **różnych kształtach**;
-- reguły biznesowe dotyczą **rzeczy z tożsamością** (koszyk, zamówienie, projekt), które
-  zmieniać się w czasie;
-- chcesz modeli, które możesz **odbudować**, gdy wymagania się zmienią.
+- reguły biznesowe kręcą się wokół **rzeczy z tożsamością** (koszyka, zamówienia, projektu), które
+  zmieniają się w czasie;
+- chcesz mieć modele odczytu, które da się **przebudować**, gdy zmienią się wymagania.
 
-To prawdopodobnie przesada, gdy:
+Prawdopodobnie to strzelanie z armaty do wróbla, gdy:
 
-- aplikacja składa się głównie z prostych formularzy nad tabelą, bez zapisywania historii;
-- wszędzie potrzebujesz transakcji krzyżowych („przesyłaj pieniądze między dowolnymi dwoma z miliona”
-  konta, atomowo, cały czas"). Agregaty są spójne pojedynczo; działają w obrębie nich
-  przechodzi przez sagi, które wymagają większej uwagi.
+- aplikacja to głównie proste formularze nad tabelą i nie trzeba przechowywać żadnej historii;
+- wszędzie potrzebujesz transakcji obejmujących wiele rekordów („przelewaj pieniądze między dowolnymi
+  dwoma z miliona kont, atomowo, bez przerwy”). Każdy agregat jest spójny sam w sobie; praca obejmująca
+  kilka z nich idzie przez sagi, które wymagają więcej staranności.
 
-## Czego się nauczyłeś
+## Co już umiesz
 
-- **Wydarzenie** to fakt w czasie przeszłym; dziennik wydarzeń jest źródłem prawdy.
-- **Polecenie** to prośba, którą można odrzucić. O tym decyduje **osoba obsługująca polecenie**.
-- **Agregat** to coś, co ma swój własny dziennik, identyfikator, wersję i stan.
-- Obsługa dwóch pisarzy naraz odbywa się za pomocą **blokady optymistycznej** (lub za pomocą współbieżnych poleceń, które ponawiają próbę).
-- **CQRS** przechowuje stronę zapisu i stronę odczytu; **projekcje** budują stronę odczytu na podstawie zdarzeń.
-- ReactiveCQRS zajmuje się instalacją (trasowaniem, przechowywaniem, dostarczaniem, ponawianiem prób i odbudową) na Pekko
-  aktorów i PostgreSQL; Ty piszesz części biznesowe.
+- **Zdarzenie** to fakt w czasie przeszłym; pamiętnik zdarzeń jest źródłem prawdy.
+- **Polecenie** to prośba, którą można odrzucić; decyduje **handler polecenia**.
+- **Agregat** to jedna rzecz z własnym pamiętnikiem, id, wersją i stanem.
+- Dwóch piszących naraz to zadanie dla **blokowania optymistycznego** (albo dla poleceń współbieżnych,
+  które same ponawiają próbę).
+- **CQRS** rozdziela stronę zapisu i stronę odczytu; **projekcje** budują stronę odczytu ze zdarzeń.
+- ReactiveCQRS robi hydraulikę (kierowanie, zapisywanie, dostarczanie, ponawianie, przebudowę) na aktorach
+  Pekko i PostgreSQL; ty piszesz części biznesowe.
 
-Następnie: [rozdział 2](02-setting-up.md) zawiera narzędzia, które trafią na Twoje biurko.
+Dalej: [rozdział 2](02-setting-up.md) rozkłada narzędzia na twoim biurku.

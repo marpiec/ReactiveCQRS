@@ -1,518 +1,651 @@
 # Rozdział 19. Testowanie domeny
 
-Kod oparty na zdarzeniach jest przyjemny w testowaniu: reguły są prostymi funkcjami, historia jest prostymi danymi,
-a biblioteka dostarcza zamienniki w pamięci dla swoich części bazy danych. Do końca tego rozdziału
-przetestuje Twoje agregaty na trzech poziomach: ich obsługi jako zwykłych funkcji, całego systemu w
-pamięć i prawdziwy problem w PostgreSQL. Zobaczysz również, jak chronić format przechowywanych danych.
-zdarzenia, jak sprawdzać wiadomości przechodzące przez węzły i jak biblioteka uruchamia klaster w jednym węźle
-test.
+Kod oparty na event sourcingu przyjemnie się testuje: reguły to zwykłe funkcje, historia to zwykłe
+dane, a biblioteka ma zamienniki działające w pamięci dla swoich części bazodanowych. Pod koniec tego
+rozdziału będziesz testować agregaty na trzech poziomach: ich handlery jako zwykłe funkcje, cały
+system w pamięci i całość na prawdziwym PostgreSQL. Zobaczysz też, jak pilnować formatu zapisanych
+zdarzeń, jak sprawdzać komunikaty, które przechodzą między węzłami, i jak biblioteka uruchamia klaster
+w jednym teście.
 
 ---
 
-## Kuchnia testowa z trzema blatami
+## Kuchnia testowa z trzema stanowiskami
 
-Dobry szef kuchni testuje nowe danie na trzy sposoby. Najpierw próbuje sosu na raz: szybko i potrafi
-dwadzieścia razy na godzinę. Następnie gotuje całe danie na kuchence turystycznej, żeby sprawdzić, czy wszystkie części działają.
-razem. Na koniec podaje ją raz w prawdziwej kuchni, z prawdziwymi piekarnikami, zanim trafi na
-menu.
+Dobra szefowa kuchni sprawdza nowe danie na trzy sposoby. Najpierw próbuje samego sosu: to szybkie i
+może to zrobić dwadzieścia razy w ciągu godziny. Potem gotuje całe danie na turystycznej kuchence, żeby
+zobaczyć, czy wszystko ze sobą współgra. Na koniec, zanim danie trafi do karty, podaje je raz w
+prawdziwej kuchni, z prawdziwymi piecami.
 
-Testy domeny ReactiveCQRS mają te same trzy liczniki:
+Testy domeny w ReactiveCQRS mają te same trzy stanowiska:
 
-| Poziom | Co działa | Potrzeby | Łapie |
+| Poziom | Co działa | Czego wymaga | Co wyłapuje |
 |---|---|---|---|
-| 1. Proste funkcje | twoje polecenia i procedury obsługi zdarzeń, wywoływane bezpośrednio | nic | złe reguły, złe zmiany stanu |
-| 2. W pamięci | prawdziwi aktorzy (szyna poleceń, właściciele, szyna zdarzeń, projekcje) w magazynach w pamięci | system aktorów | okablowanie, wersje, współbieżność, idempotentność, co tworzy projekcja |
-| 3. PostgreSQL | wszystko, co w produkcji | lokalny PostgreSQL | formaty przechowywane, SQL, transakcje, dostarczanie przez skrzynkę nadawczą |
+| 1. Zwykłe funkcje | twoje handlery poleceń i zdarzeń, wywoływane bezpośrednio | niczego | złe reguły, złe zmiany stanu |
+| 2. W pamięci | prawdziwi aktorzy (szyna poleceń, właściciele, szyna zdarzeń, projekcje) na magazynach w pamięci | systemu aktorów | błędy w składaniu systemu, wersjach, współbieżności, idempotencji i w tym, co tworzy projekcja |
+| 3. PostgreSQL | wszystko, tak jak na produkcji | lokalnego PostgreSQL | błędy w zapisanych formatach, SQL-u, transakcjach i dostarczaniu przez outbox |
 
-Napisz wiele testów na poziomie 1, odpowiednią liczbę na poziomie 2 i wystarczającą liczbę na poziomie 3, aby pokryć każdą ścieżkę, którą
-dotyka bazy danych. Czwarty poziom, kilka węzłów w jednej wirtualnej maszynie Java, znajduje się na końcu rozdziału.
+Pisz dużo testów na poziomie 1, sporo na poziomie 2, a na poziomie 3 tyle, żeby objąć każdą ścieżkę,
+która dotyka bazy danych. Czwarty poziom, kilka węzłów w jednej JVM, pojawi się pod koniec rozdziału.
 
-## Co biblioteka udostępnia do testowania
+## Co biblioteka daje ci do testów
 
 Dwa rodzaje pomocy:
 
-- **W opublikowanym module `core`:** zastępcze moduły w pamięci (w tym rozdziale nazywamy je *podwójnymi*) i
-  `RecordingMetrics`. Twoje testy mogą z nich korzystać bezpośrednio.
-- **W module `testutils`:** własny zestaw testowy biblioteki: `CommonSpec`, `ActorAskSupport` (
-  `??` helper), `TestDatabase`, `TestIds`, `TestClock` i `SchemaReference`. Jego klasy znajdują się w
-  `src/test`, a kompilacja nie publikuje klas testowych (`Test / publishArtifact := false` w
-  `project/Common.scala`), więc Twój projekt nie może na nich polegać. Są krótkie (żaden nie jest dużo dłuższy)
-  Więcej niż 60 linii): skopiuj te, które Ci się podobają. Zestaw testowy dla aplikacji będzie dostępny w wersji 1.0.
+- **W module `core`:** zamienniki działające w pamięci (w tym rozdziale nazywamy je *dublerami*) i
+  `RecordingMetrics`. Twoje testy mogą używać ich bezpośrednio.
+- **W test kicie** `reactivecqrs-testkit`, osobnym module dla twoich testów:
 
-Poniższe przykłady są napisane jako własne specyfikacje biblioteki: Specyfikacje funkcji ScalaTest 3.2 z
-„obowiązkowe” narzędzia dopasowujące i zestaw testowy Pekko.
+  ```scala
+  libraryDependencies += "io.reactivecqrs" %% "reactivecqrs-testkit" % "1.0.0-SNAPSHOT" % Test
+  ```
 
-> **Pamiętaj:** każdy przykład w tym rozdziale pochodzi ze specyfikacji lub jest na niej wzorowany.
-> `testdomain/src/test/scala/io/reactivecqrs/testdomain/spec/`. Aby zobaczyć więcej, otwórz
-> specyfikację podaną obok.
+  Są w nim `TestDatabase` (osobny schemat na każde uruchomienie testów), `TestIds`, `TestClock`,
+  `SchemaReference` (wzorcowy test zapisanych formatów), `TestSystems` (systemy aktorów, które na
+  życzenie działają jako klaster z jednego węzła), `TestCluster` (kilka węzłów w jednej JVM) i
+  `ActorAskSupport` (`askFor`, zapytanie, które czeka na odpowiedź), wszystkie w
+  `io.reactivecqrs.testkit`. Test kit nie zależy od żadnego frameworka testowego: jego funkcje
+  pomocnicze zwracają wartości albo rzucają wyjątki.
 
-## Poziom 1: obsługa poleceń jako zwykłe funkcje
+Przykłady poniżej to specy E11 z `examples/src/test/scala/io/reactivecqrs/examples/e11/`; testują
+koszyki z E1 z rozdziału 2. Są napisane w stylu feature spec ze ScalaTest 3.2, z matcherami `must`, i
+korzystają z TestKitu Pekko (`pekko-testkit`, który dodajesz do projektu samodzielnie). Te, które
+potrzebują aktorów, rozszerzają małą klasę bazową, którą piszesz raz:
 
-Twój `AggregateContext` przechowuje Twoje reguły jako funkcje: `commandHandlers` przyjmuje bieżący stan i
-Zwraca częściową funkcję z polecenia do wyniku. Można ją wywołać bez widocznego aktora:
-
+<!-- snippet: e11/ShopSpec.scala#base -->
 ```scala
-importuj io.reactivecqrs.api._
+import io.reactivecqrs.testkit.{ActorAskSupport, TestSystems}
+import org.apache.pekko.testkit.TestKit
+import org.scalatest.featurespec.AnyFeatureSpecLike
+import org.scalatest.matchers.must.Matchers
+import org.scalatest.{BeforeAndAfterAll, GivenWhenThen}
+
+/** Pekko's TestKit on an actor system of the test kit: a cluster of one when the tests run with
+  * -Dreactivecqrs.test.clusterOfOne=true. */
+abstract class ShopSpec extends TestKit(TestSystems.newSystem()) with AnyFeatureSpecLike
+  with GivenWhenThen with ActorAskSupport with Matchers with BeforeAndAfterAll {
+
+  override def afterAll(): Unit = TestKit.shutdownActorSystem(system)
+}
+```
+
+> **Pamiętaj:** każdy przykład w tym rozdziale to spec, który działa razem z zestawami testów
+> biblioteki. Po więcej zajrzyj do własnych speców biblioteki w
+> `testdomain/src/test/scala/io/reactivecqrs/testdomain/spec/`; tekst podpowiada, który otworzyć.
+
+## Poziom 1: handlery poleceń jako zwykłe funkcje
+
+Twój `AggregateContext` trzyma reguły jako funkcje: `commandHandlers` bierze bieżący stan i daje
+funkcję częściową, która zamienia polecenie w wynik. Możesz ją wywołać bez żadnego aktora w zasięgu
+wzroku:
+
+<!-- snippet: e11/CartRulesSpec.scala#rules -->
+```scala
+import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
-import io.reactivecqrs.testdomain.shoppingcart._
+import io.reactivecqrs.examples.e1.{AddItem, Item, ItemAdded, ShoppingCart, ShoppingCartContext}
 import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.must.Matchers
 
 import scala.concurrent.Await
 import scala.concurrent.duration._
 
-klasa CartRulesSpec rozszerza AnyFeatureSpec z Matchers {
+class CartRulesSpec extends AnyFeatureSpec with Matchers {
 
-  prywatny kontekst wartości = nowy ShoppingCartAggregateContext
-  prywatna wartość alice = UserId(1)
-  prywatna wartość cartId = AggregateId(1001)
+  private val context = new ShoppingCartContext
+  private val user = UserId(1)
+  private val cartId = AggregateId(1001)
 
-  /** Co decyduje obiekt obsługujący dla `command` na `cart`; oczekiwana jest decyzja podjęta w przyszłości. */
-  prywatna def decide(koszyk: Koszyk, polecenie: Any): GenericCommandResult[Any] =
-    context.commandHandlers(koszyk)(polecenie) dopasuj {
-      przypadek AsyncCommandResult(przyszłość) => Await.result(przyszłość, 5.sekund)
-      sprawa rozstrzygnięta => rozstrzygnięta
+  /** What the handler decides for `command` on `cart`; a decision made in a Future is awaited. */
+  private def decide(cart: ShoppingCart, command: AnyRef): GenericCommandResult[Any] =
+    context.commandHandlers(cart)(command) match {
+      case AsyncCommandResult(future) => Await.result(future, 5.seconds)
+      case answered => answered
     }
 
-  prywatna def cartWith(items: String*): ShoppingCart =
-    Koszyk("Artykuły spożywcze", items.zipWithIndex.map { case (name, i) => Item(i + 1, name) }.toVector)
+  private def cartWith(items: String*): ShoppingCart =
+    ShoppingCart("Groceries", items.zipWithIndex.map { case (name, i) => Item(i + 1, name) }.toVector)
 
-  Funkcja("Dodawanie elementów") {
+  Feature("Adding items") {
 
-    Scenariusz ("element został dodany za pomocą ItemAdded") {
-      zdecyduj(cartWith("mleko"), AddItem(alicja, cartId, AggregateVersion(2), "chleb")) musi być
-        CommandSuccess(ItemAdded("bread"))
+    Scenario("a cart of four items takes a fifth") {
+      decide(cartWith("a", "b", "c", "d"), AddItem(user, cartId, AggregateVersion(5), "e")) mustBe
+        CommandSuccess(ItemAdded("e"))
     }
 
-    Scenariusz ("wózek z sześcioma przedmiotami odmawia przyjęcia siódmego")
-      zdecyduj(koszykZ("a", "b", "c", "d", "e", "f"), DodajElement(alicja, identyfikator koszyka, wersja zbiorcza(7), "g")) musi być
-        CommandFailure("Nie możesz mieć więcej niż 5 produktów w koszyku")
+    Scenario("a cart of five items refuses a sixth") {
+      decide(cartWith("a", "b", "c", "d", "e"), AddItem(user, cartId, AggregateVersion(6), "f")) mustBe
+        CommandFailure("Cannot have more than 5 items in your cart")
     }
   }
 }
 ```
 
-Kilka rzeczy, na które należy zwrócić uwagę:
+Na co warto zwrócić uwagę:
 
-- **Wersja podana w poleceniu nie ma tutaj znaczenia.** Sprawdzenie `expectedVersion` jest zadaniem właściciela,
-  nie osoby obsługującej; to testujesz na poziomie 2.
-- **Niektóre procedury obsługi odpowiadają później.** Procedura obsługi `AddItem` zwraca `AsyncCommandResult` (typ `Future`),
-  `AddItemConcurrently``od razu zamienia się w `CommandSuccess`. `decide` traktuje oba tak samo.
-- **Wyniki są porównywane według wartości.** `CommandSuccess(ItemAdded("bread"))` jest równe temu, co zbudował moduł obsługi, więc
-  `mustBe` brzmi jak sama reguła.
+- **Wersja w poleceniu nie ma tu znaczenia.** Sprawdzanie `expectedVersion` to zadanie właściciela,
+  nie handlera; to przetestujesz na poziomie 2.
+- **Niektóre handlery odpowiadają później.** Handler może zwrócić `AsyncCommandResult` (`Future`)
+  zamiast od razu `CommandSuccess` (rozdział 4). `decide` traktuje oba przypadki tak samo, więc spec
+  się nie zmienia, kiedy zmienia się handler.
+- **Wyniki porównuje się po wartości.** `CommandSuccess(ItemAdded("e"))` jest równe temu, co zbudował
+  handler, więc `mustBe` czyta się jak sama reguła.
 
-Czy zauważyłeś niespodziankę? W odmowie napisano „więcej niż 5 przedmiotów”, a test wymaga wózka z *sześcioma*
-przedmiotów, aby go zobaczyć. Obsługa odmawia, gdy wózek mieści już więcej niż pięć, więc szósty przedmiot wciąż
-wchodzi. Czy to jest zasada, o której mówiłeś, to pytanie do właściciela sklepu; test dwuliniowy to
-gdzie takie pytania pojawiają się, na długo zanim klient je znajdzie.
+> **Wskazówka:** testuj brzegi każdej reguły: ostatnią wartość, która przechodzi, i pierwszą, która
+> nie przechodzi. Tutaj: koszyk z czterema produktami przyjmuje piąty, a z pięcioma odmawia szóstego.
+> Reguła zapisana jako `> 5` zamiast `>= 5` wpuściłaby szósty produkt, a drugi scenariusz powiedziałby
+> o tym na długo przed klientem.
 
-> **Wskazówka:** przetestuj krawędzie każdej reguły: ostatnią wartość, która spełnia warunek, i pierwszą, która nie spełnia warunku. Tutaj:
-> pięć pozycji bierze szóstą, sześć pozycji odmawia siódmej.
+## Poziom 1: handlery zdarzeń i odtwarzanie historii
 
-## Poziom 1: obsługa zdarzeń i odtwarzanie historii
+Handlery zdarzeń to też funkcje: `eventHandlers(userId, timestamp, state)` daje funkcję częściową,
+która zamienia zdarzenie w następny stan. Odtworzenie historii to fold, czyli to samo, co robi
+właściciel, kiedy czyta agregat.
 
-Obsługujące zdarzenia są również funkcjami: `eventHandlers(userId, timestamp, state)` daje częściową funkcję
-ze zdarzenia do następnego stanu. Odtwarzanie historii to składanie, to samo, co robi właściciel, gdy
-odczytuje agregat:
+Ten sam fold sprawdza twoje **zdarzenie squasha** ([rozdział 14](14-squash.md)). Każdy squash
+sprawdza, czy handlery zdarzeń, zastosowane do samego zdarzenia squasha, oddają dokładnie ten stan,
+który ono zastępuje; jeśli nie, squash zostaje odrzucony. Lepiej dowiedzieć się tego z testu. Koszyki
+z E1 nie mają zdarzenia squasha, więc drugi scenariusz bierze listy zakupów z E5, które je mają:
 
+<!-- snippet: e11/ReplaySpec.scala#replay -->
 ```scala
-importuj java.time.Instant
+import java.time.Instant
 
-prywatna def replay(wydarzenia: Wydarzenie[Koszyk]*): Koszyk =
-  wydarzenia.foldLeft(kontekst.initialAggregateRoot) { (koszyk, zdarzenie) =>
-    context.eventHandlers(alicja, Instant.now, koszyk)(zdarzenie)
+import io.reactivecqrs.api.id.UserId
+import io.reactivecqrs.api.{AggregateContext, Event}
+import io.reactivecqrs.examples.e1.{Item, ItemAdded, ItemRemoved, ShoppingCart, ShoppingCartContext, ShoppingCartCreated}
+import io.reactivecqrs.examples.e5.{ItemWritten, ListCreated, ShoppingListContext}
+import org.scalatest.featurespec.AnyFeatureSpec
+import org.scalatest.matchers.must.Matchers
+
+class ReplaySpec extends AnyFeatureSpec with Matchers {
+
+  /** The state that `events` make, as an owner makes it when it reads the aggregate. */
+  private def replay[R](context: AggregateContext[R], events: Event[R]*): R =
+    events.foldLeft(context.initialAggregateRoot) { (state, event) =>
+      context.eventHandlers(UserId(1), Instant.EPOCH, state)(event)
+    }
+
+  Feature("Replaying a history") {
+
+    Scenario("a cart's history replays to the cart") {
+      replay(new ShoppingCartContext, ShoppingCartCreated("Groceries"), ItemAdded("apples"), ItemAdded("oranges"), ItemRemoved(1)) mustBe
+        ShoppingCart("Groceries", Vector(Item(2, "oranges")))
+    }
+
+    Scenario("a shopping list's squash event gives the list back (E5)") {
+      val lists = new ShoppingListContext
+      val list = replay(lists, ListCreated("Camping"), ItemWritten("tent"), ItemWritten("stove"))
+      replay(lists, lists.squash.get.toEvent(list)) mustBe list
+    }
   }
-
-Scenariusz ("historia jest odtwarzana w koszyku") {
-  odtwarzanie(ShoppingCartCreated("Artykuły spożywcze"), ItemAdded("mleko"), ItemAdded("chleb"), ItemRemoved(1)) musi być
-    Koszyk("Artykuły spożywcze", Wektor(Pozycja(2, "chleb"))))
 }
 ```
 
-Ta sama fałda sprawdza twoje zdarzenie **squash** ([rozdział 14](14-squash.md)). Każde zdarzenie squash sprawdza, że
-procedury obsługi zdarzeń, stosowane wyłącznie do zdarzenia squash, zwracają dokładnie taki sam stan, jaki zastępują; jeśli
-Jeśli nie, dynia jest odrzucana. Zamiast tego sprawdź w teście:
+> **Ostrzeżenie:** fold handlerów zdarzeń nic nie wie o **cofnięciu** ani o **duplikowaniu**. W
+> magazynie cofnięcie oznacza wcześniejsze zdarzenia jako anulowane, a odtworzenie je pomija; kopia
+> najpierw czyta historię agregatu, z którego powstała. Twoje handlery zdarzeń w ogóle nie mają
+> przypadku dla zdarzenia cofnięcia (rozdział 6), więc fold, który na nie trafi, kończy się błędem.
+> Cofnięcie i duplikowanie testuj przez szynę poleceń, na poziomie 2 albo 3.
 
-```scala
-Scenariusz („wydarzenie squashowe oddaje wózek”) {
-  val cart = replay(ShoppingCartCreated("Artykuły spożywcze"), ItemAdded("mleko"), ItemAdded("chleb"))
-  replay(context.squash.get.toEvent(cart)) mustBe cart
-}
-```
+## Poziom 2: dublery w pamięci
 
-> **Ostrzeżenie:** obsługa zdarzeń nie wie nic o **cofnięciu** ani **duplikacji**. W magazynie
-> cofnij oznacza wcześniejsze zdarzenia jako anulowane, a przywracanie je pomija, a duplikat odczytuje swoją bazę
-> historia najpierw. Obsługa koszyka dla `ShoppingCartChangesUndone` po prostu zwraca koszyk bez zmian,
-> więc proste złożenie nadal będzie stosować cofnięte zdarzenia. Przetestuj cofanie i duplikację za pomocą polecenia
-> autobus, na poziomie 2 lub 3.
+Każda bazodanowa część biblioteki ma w `core` swojego dublera działającego w pamięci:
 
-## Poziom 2: podwojenia w pamięci
-
-Każda część bazy danych biblioteki ma w pamięci zmienną double w `core`:
-
-| Podwójne | Zastępuje | Pamiętaj |
+| Dubler | Zastępuje | O czym pamiętać |
 |---|---|---|
-| `MemoryEventStoreState` (`core.eventstore`) | `PostgresEventStoreState` | przechowuje obiekty, a nie JSON; nie ma transakcji do wycofania; odczyt natychmiast kończy się niepowodzeniem |
-| `MemoryCommandResponseState` (`core.commandhandler`) | `PostgresCommandResponseState` | nietransakcyjne: odpowiedź pozostaje zapisana, gdy później utrwalanie zawiedzie |
-| `MemorySubscriptionsState` (`core.projection`) | `PostgresSubscriptionsState` | te same reguły porównywania i ustawiania dla wersji projekcji; brak transakcji |
-| `MemoryDocumentStore[T]`, `MemoryDocumentStoreAutoId[T]` (`core.documentstore`) | `PostgresDocumentStore` | warunki zapytania odzwierciedlają warunki PostgreSQL; organizacje (spacje) są ignorowane |
-| `MemoryUidGenerator` (`core.uid`) | `PostgresUidGenerator` | pule 100 identyfikatorów, od 1001 |
-| `MemoryTypesNamesState` (`core.types`) | `PostgresTypesNamesState` | identyfikatory nazw klas, numerowane w miarę pojawiania się pytań |
-| `MemoryProjectionRegistry` (`core.rebuild`) | `PostgresProjectionRegistry` | porzucenie kompilacji powoduje jedynie jej zapomnienie |
+| `MemoryEventStoreState` (`core.eventstore`) | `PostgresEventStoreState` | trzyma obiekty, nie JSON; nie ma transakcji, którą można by wycofać; odczyty stanu z wybranej chwili kończą się błędem |
+| `MemoryCommandResponseState` (`core.commandhandler`) | `PostgresCommandResponseState` | nie jest transakcyjny: odpowiedź zostaje zapisana, nawet gdy późniejszy zapis zdarzeń się nie powiedzie |
+| `MemorySubscriptionsState` (`core.projection`) | `PostgresSubscriptionsState` | te same reguły „porównaj i ustaw” dla wersji projekcji; bez transakcji |
+| `MemoryDocumentStore[T]`, `MemoryDocumentStoreAutoId[T]` (`core.documentstore`) | `PostgresDocumentStore` | warunki zapytań działają tak jak w PostgreSQL; każdy dokument zachowuje przestrzeń, z którą zapisano go pierwszy raz, a `clearSpace` usuwa dokumenty przestrzeni |
+| `MemoryUidGenerator` (`core.uid`) | `PostgresUidGenerator` | pule po 100 identyfikatorów, od 1001 |
+| `MemoryTypesNamesState` (`core.types`) | `PostgresTypesNamesState` | identyfikatory nazw klas, numerowane w kolejności, w jakiej padają pytania |
+| `MemoryProjectionRegistry` (`core.rebuild`) | `PostgresProjectionRegistry` | usunięcie budowy sprowadza się do zapomnienia o niej |
 
-Brak stanu sagi w pamięci: sagi testowe są wykonywane w systemie PostgreSQL (`SagaRecoverySpec`).
+Nie ma stanu sag w pamięci: sagi testuj na PostgreSQL (tak robi `SagaRecoverySpec`).
 
-> **Ostrzeżenie:** liczby zmiennoprzecinkowe służą do przyspieszenia, a nie do udowodnienia. Przechowują obiekty i nigdy nie zapisują JSON-a, więc
-> klasa zdarzenia lub dokumentu, której mpjson nie może odczytać, przechodzi każdy test w pamięci i kończy się niepowodzeniem
-> PostgreSQL. Nic nie jest wycofywane, a żadna procedura SQL nie chroni wersji. Uruchom ścieżki, które
-> ma to również znaczenie na poziomie 3.
+> **Ostrzeżenie:** dublery są dla szybkości, nie dla dowodu. Trzymają obiekty i nigdy nie piszą
+> JSON-a, więc klasa zdarzenia albo dokumentu, której mpjsons nie umie odczytać z powrotem, przechodzi
+> każdy test w pamięci i wykłada się na PostgreSQL. Nic nie jest wycofywane i żadna procedura SQL nie
+> pilnuje wersji. Ważne ścieżki uruchamiaj też na poziomie 3.
 
-## Poziom 2: cały system wózków w pamięci
+## Poziom 2: cały system koszyków w pamięci
 
-Oto kompletny system bez bazy danych: generator UID, magistrala zdarzeń bez subskrybentów i
-magistrala poleceń koszyka, wszystko na liczbach podwójnych. Następuje po `AggregateOwnerSpec` i `SerialCommandsSpec`:
+Oto kompletny system bez bazy danych: E1 złożony tak jak w rozdziale 2 (generator identyfikatorów,
+szyna zdarzeń, szyna poleceń koszyków i lista koszyków), w całości na dublerach. Wzoruje się na
+`AggregateOwnerSpec` i `SerialCommandsSpec`:
 
+<!-- snippet: e11/CartsInMemorySpec.scala#memory -->
 ```scala
-importuj io.reactivecqrs.api._
-importuj io.reactivecqrs.api.id.UserId
+import io.reactivecqrs.api._
+import io.reactivecqrs.api.id.{AggregateId, UserId}
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, MemoryCommandResponseState}
+import io.reactivecqrs.core.documentstore.MemoryDocumentStore
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
 import io.reactivecqrs.core.eventstore.MemoryEventStoreState
-import io.reactivecqrs.core.uid.{Generator UidPamięci, Aktor Generatora Uid}
-import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testutils.CommonSpec
-import org.apache.pekko.actor.{ActorRef, Rekwizyty}
+import io.reactivecqrs.core.projection.MemorySubscriptionsState
+import io.reactivecqrs.core.uid.{MemoryUidGenerator, UidGeneratorActor}
+import io.reactivecqrs.examples.e1._
+import org.apache.pekko.actor.{ActorRef, Props}
 
 import scala.util.Try
 
-klasa CartInMemorySpec rozszerza CommonSpec {
+class CartsInMemorySpec extends ShopSpec {
 
-  prywatna wartość uidGenerator = system.actorOf(Props(nowy UidGeneratorActor(
-    nowy MemoryUidGenerator, nowy MemoryUidGenerator, nowy MemoryUidGenerator)))
-  prywatna wartość eventBus = system.actorOf(Props(nowy EventsBusActor()))
-  eventBus! Zarejestruj subskrybentów (brak)
-  prywatne koszyki wartości: ActorRef = system.actorOf(AggregateCommandBusActor(nowy ShoppingCartAggregateContext,
-    uidGenerator, nowy MemoryEventStoreState, nowy MemoryCommandResponseState, eventBus))
+  private val uidGenerator = system.actorOf(Props(new UidGeneratorActor(
+    new MemoryUidGenerator, new MemoryUidGenerator, new MemoryUidGenerator)))
+  private val eventBus = system.actorOf(Props(new EventsBusActor()))
+  private val carts: ActorRef = system.actorOf(AggregateCommandBusActor(new ShoppingCartContext,
+    uidGenerator, new MemoryEventStoreState, new MemoryCommandResponseState, eventBus))
+  private val cartsList: ActorRef = system.actorOf(Props(new CartsListProjection(
+    new MemorySubscriptionsState, new MemoryDocumentStore[CartSummary])))
+  eventBus ! RegisterSubscribers(List(cartsList)) // RegisterSubscribers(Nil) when there are none
 
-  prywatna wartość alice = UserId(1)
+  private val user = UserId(1)
 
-  Funkcja("Dwie osoby zmieniają jeden wózek") {
+  private def send(command: AnyRef): CustomCommandResponse[_] = carts.askFor[CustomCommandResponse[_]](command)
 
-    Scenariusz ("polecenie, które oczekuje starej wersji, zostało odrzucone")
-      Podano("wózek z mlekiem w środku")
-      val created: CustomCommandResponse[_] = carts ?? CreateShoppingCart(None, alice, "Groceries")
-      val cartId = created.asInstanceOf[SuccessResponse].aggregateId
-      val first: CustomCommandResponse[_] = carts ?? AddItem(alice, cartId, AggregateVersion(1), "milk")
-      najpierw musi być SuccessResponse(cartId, AggregateVersion(2))
+  private def newCart(): AggregateId = send(CreateShoppingCart(user, "Groceries")) match {
+    case SuccessResponse(cartId, _) => cartId
+    case refused => fail("Not created: " + refused)
+  }
 
-      Kiedy("ktoś, kto nadal patrzy na wersję 1, dodaje chleb")
-      val late: CustomCommandResponse[_] = carts ?? AddItem(alice, cartId, AggregateVersion(1), "bread")
+  Feature("A cart in memory") {
 
-      Następnie („polecenie zostaje odrzucone, a wóz zostaje tylko z mlekiem”)
-      późny musi być AggregateConcurrentModificationError(cartId, AggregateType.of[ShoppingCart], AggregateVersion(1), AggregateVersion(2))
-      val cart: Try[Aggregate[ShoppingCart]] = carts ?? GetAggregate(cartId)
-      cart.get.aggregateRoot.get.items.map(_.name) mustBe Vector("mleko")
+    Scenario("an item added reaches the read model") {
+      val cartId = newCart()
+      send(AddItem(user, cartId, AggregateVersion(1), "apples")) mustBe SuccessResponse(cartId, AggregateVersion(2))
+      val summary = cartsList.askFor[Option[CartSummary]](GetCartSummaryAtLeast(cartId, AggregateVersion(2)))
+      summary mustBe Some(CartSummary("Groceries", 1, 2))
+    }
+
+    Scenario("the command that expects an old version is refused") {
+      Given("a cart with apples in it")
+      val cartId = newCart()
+      send(AddItem(user, cartId, AggregateVersion(1), "apples")) mustBe SuccessResponse(cartId, AggregateVersion(2))
+
+      When("someone still looking at version 1 adds pears")
+      val late = send(AddItem(user, cartId, AggregateVersion(1), "pears"))
+
+      Then("the command is refused, and the cart keeps only the apples")
+      late mustBe AggregateConcurrentModificationError(cartId, AggregateType.of[ShoppingCart], AggregateVersion(1), AggregateVersion(2))
+      val cart = carts.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId))
+      cart.get.aggregateRoot.get.items.map(_.name) mustBe Vector("apples")
     }
   }
 }
 ```
 
-Dwoje pomocników ułatwia sprawę:
+Ten kod jest krótki dzięki dwóm pomocnikom:
 
-- **`CommonSpec`** to zestaw testowy Pekko ze specyfikacją funkcji ScalaTest, `Given`/`When`/`Then`, `must`
-  matchers i `ActorAskSupport` są wymieszane. `system` jest systemem aktorów TestKit.
-- **`??`** (z `ActorAskSupport`) zadaje pytanie aktorowi i czeka na odpowiedź, do 10 sekund; typ
-  oczekujesz, że (`CustomCommandResponse[_]`, `Try[Aggregate[ShoppingCart]]`) to typ, który otrzymasz.
-  `askActor[R](message)(timeout)` wykonuje to samo z wybranym przez Ciebie limitem czasu.
+- **`ShopSpec`**, klasa bazowa pokazana wyżej: `TestKit` Pekko, do którego domieszano feature spec ze
+  ScalaTest, `Given`/`When`/`Then`, matchery `must` i `ActorAskSupport`. `system` to system aktorów
+  TestKitu.
+- **`askFor[T](message)`** (z `ActorAskSupport`) pyta aktora, czeka na odpowiedź do 10 sekund i
+  zwraca ją jako `T`; `askFor[T](message, 3.seconds)` czeka tyle, ile podasz. Odpowiedź innej klasy kończy się
+  błędem, którego opis wymienia aktora, komunikat i obie klasy, a odpowiedź `Status.Failure(e)` kończy
+  się wyjątkiem `e`. Typ w nawiasach kwadratowych podawaj za każdym razem: to z nim porównywana jest
+  odpowiedź.
 
-Uwaga `eventBus ! RegisterSubscribers(Nil)`: magistrala nie publikuje niczego, dopóki nie zostanie poinformowana o swoim
-abonentów, nawet jeśli ich nie ma.
+Zwróć uwagę na `eventBus ! RegisterSubscribers(...)`: szyna nic nie publikuje, dopóki nie pozna
+swoich subskrybentów, nawet gdy ich nie ma (`RegisterSubscribers(Nil)`).
 
-Na tym poziomie możesz testować wszystko, co robi właściciel: sprawdzanie wersji, polecenia idempotentne, połączenia szeregowe
-przetwarzanie (`SerialCommandsSpec` wysyła 1000 poleceń na raz do jednego koszyka i otrzymuje 1000 wersji w
-wiersz), przekroczenia limitu czasu (`AggregateOwnerSpec`), cofanie i duplikowanie.
+Na tym poziomie przetestujesz wszystko, co robi właściciel: sprawdzanie wersji, polecenia
+idempotentne, przetwarzanie szeregowe (`SerialCommandsSpec` wysyła naraz 1 000 poleceń do jednego
+koszyka i dostaje 1 000 kolejnych wersji), limity czasu (`AggregateOwnerSpec`), cofnięcie i
+duplikowanie.
 
-## Poziom 2: projekcja sama w sobie
+## Poziom 2: projekcja w pojedynkę
 
-Nie potrzebujesz strony zapisu, aby przetestować projekcję. Odtwórz magistralę zdarzeń samodzielnie za pomocą `TestProbe`:
-przedstaw się jako autobus, przekaż projekcji przesyłkę i zobacz, co odpowie i co powie
-Wykonano. Następuje po `ProjectionDeliverySpec`, z projekcją listy koszyków domeny testowej:
+Do przetestowania projekcji nie potrzebujesz strony zapisu. Zagraj rolę szyny zdarzeń za pomocą sondy
+`TestProbe`: przedstaw się projekcji jako szyna, przekaż jej dostarczenie i zobacz, co odpowie i co
+zbuduje. Ten przykład wzoruje się na `ProjectionDeliverySpec` i używa listy koszyków z E1:
 
+<!-- snippet: e11/CartsListAloneSpec.scala#alone -->
 ```scala
-importuj io.reactivecqrs.api._
-importuj io.reactivecqrs.api.id.AggregateId
+import io.reactivecqrs.api._
+import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.documentstore.MemoryDocumentStore
 import io.reactivecqrs.core.eventbus.EventsBusActor.{AggregatesDelivery, GetSubscriptionRequests, MessageAck, SubscriptionRequests}
 import io.reactivecqrs.core.projection.MemorySubscriptionsState
-importuj io.reactivecqrs.core.util.BlockingDispatcher
-import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testdomain.shoppingcart.ShoppingCartsListProjection.GetAllCartsNames
-importuj org.apache.pekko.actor.Props
-zaimportuj org.apache.pekko.testkit.TestProbe
+import io.reactivecqrs.examples.e1.{CartSummary, CartsListProjection, GetCartSummary, ShoppingCart}
+import org.apache.pekko.actor.Props
+import org.apache.pekko.testkit.TestProbe
 
 import scala.concurrent.duration._
 
-Scenario("nazwa nowego koszyka pojawia się na liście") { // w CommonSpec, takim jak powyżej
-  projekcja val = system.actorOf(Props(nowy ShoppingCartsListProjectionAggregatesBased(
-    nowy MemorySubscriptionsState, nowy MemoryDocumentStore[String])).withDispatcher(BlockingDispatcher.id))
-  val bus = TestProbe()
-  bus.send(projekcja, GetSubscriptionRequests(projekcja))
-  bus.expectMsgType[SubscriptionRequests](3 sekundy)
+class CartsListAloneSpec extends ShopSpec {
 
-  val CartId = AggregateId(1001)
-  bus.send(projekcja, AggregateWithType[Koszyk](AggregateType.of[Koszyk], cartId,
-    AggregateVersion(1), Seq(AggregateVersion(1)), Some(ShoppingCart("Spożywcze", Vector.empty))))
-  bus.expectMsg(3.sekundy, MessageAck(projekcja, cartId, Seq(AggregateVersion(1)), AggregatesDelivery))
+  Feature("The carts list, fed by hand") {
 
-  val names: Vector[String] = projection ?? GetAllCartsNames()
-  nazwy muszą być wektorem Vector("Artykuły spożywcze")
-}
-```
+    Scenario("a new cart's summary appears in the list") {
+      val projection = system.actorOf(Props(new CartsListProjection(
+        new MemorySubscriptionsState, new MemoryDocumentStore[CartSummary])))
+      val bus = TestProbe()
+      bus.send(projection, GetSubscriptionRequests(projection))
+      bus.expectMsgType[SubscriptionRequests](3.seconds)
 
-Co się stało: projekcja przekazała sondzie, do czego się ona stosuje, zastosowała wersję 1 karty 1001
-(nowy wózek, więc jego odbiornik wstawił dokument), potwierdził to komunikatem `MessageAck` i odpowiedział
-zapytanie z jego pamięci masowej dokumentów.
+      val cartId = AggregateId(1001)
+      bus.send(projection, AggregateWithType[ShoppingCart](AggregateType.of[ShoppingCart], cartId,
+        AggregateVersion(1), Seq(AggregateVersion(1)), Some(ShoppingCart("Groceries", Vector.empty))))
+      bus.expectMsg(3.seconds, MessageAck(projection, cartId, Seq(AggregateVersion(1)), AggregatesDelivery))
 
-Ten sam trik sprawdza trudniejsze przypadki: wyślij wersję 3 przed wersją 2, a projekcja poprosi o
-gap (`RequestRepublish`); wyślij wersję 1 dwa razy, a druga zostanie tylko potwierdzona. W przypadku projekcji
-który przyjmuje zdarzenia zamiast stanów, wysyła `IdentifiableEvents` zamiast `AggregateWithType`.
-
-## Poziom 3: przeciwko PostgreSQL
-
-Prawdziwa baza danych wychwytuje to, czego nie potrafią zrobić podwójne: JSON, którego nie da się odczytać, SQL, transakcje,
-Skrzynka nadawcza. Specyfikacja biblioteki wykorzystuje lokalny PostgreSQL z bazą danych `reactivecqrs`, której użytkownik i
-hasła to `reactivecqrs` i `TestDatabase` z `testutils`:
-
-- **`TestDatabase.init()`** konfiguruje pulę połączeń ScalikeJDBC raz na maszynę wirtualną Java na **schemacie swojej maszyny wirtualnej Java
-  własny dla tego przebiegu testowego** (`test_run_<sekundy>_<losowy>`). Przebieg nigdy nie widzi tego, co pozostało po poprzednim przebiegu.
-  z tyłu, a każdy przebieg tworzy schemat od podstaw; schematy przebiegów starszych niż sześć godzin są
-  porzucony. Aby zachować stały schemat (aby móc go później obejrzeć), uruchom z
-  `-Dreactivecqrs.test.schema=<nazwa>`.
-- **Pakiety są uruchamiane pojedynczo**, ponieważ współdzielą bazę danych (`Test / parallelExecution := false` i
-  jedno zadanie testowe na raz w `build.sbt`).
-- **Specyfikacje jednego przebiegu współdzielą schemat**, więc każdy scenariusz ma własne identyfikatory: `TestIds.aggregate()`
-  nadaje nowy identyfikator, znacznie wyższy od identyfikatorów nadawanych przez pule, dla poleceń, które wybierają swój identyfikator
-  (`UtwórzKoszykZakupowyZIdentyfikatorem`).
-
-Oto specyfikacja poziomu 3, oparta na „MetricsSpec” i „DeliveryEndToEndSpec”. Rejestruje ona również
-metryki biblioteki z `RecordingMetrics`:
-
-```scala
-importuj io.mpjsons.MPJsons
-importuj io.reactivecqrs.api._
-import io.reactivecqrs.api.id.{AggregateId, UserId}
-import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
-import io.reactivecqrs.core.eventbus.EventsBusActor
-import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
-import io.reactivecqrs.core.eventstore.PostgresEventStoreState
-import io.reactivecqrs.core.metrics.{ReactiveMetrics, RecordingMetrics}
-import io.reactivecqrs.core.types.PostgresTypesNamesState
-importuj io.reactivecqrs.core.uid.UidGeneratorActor
-import io.reactivecqrs.testdomain.shoppingcart._
-import io.reactivecqrs.testutils.{CommonSpec, TestDatabase, TestIds}
-importuj org.apache.pekko.actor.Props
-
-import scala.concurrent.duration._
-
-Klasa CartsOnPostgresSpec rozszerza CommonSpec {
-
-  TestDatabase.init()
-
-  prywatna wartość mpjsons = nowe MPJsons
-  prywatna val typesNames = new PostgresTypesNamesState().initSchema()
-  prywatna wartość eventStore = nowy PostgresEventStoreState(mpjsons, typesNames).initSchema()
-  prywatne odpowiedzi val = nowy PostgresCommandResponseState(mpjsons, typesNames).initSchema()
-  prywatna wartość uidGenerator = system.actorOf(UidGeneratorActor.postgres(system))
-  prywatna wartość eventBus = system.actorOf(Props(nowy EventsBusActor()))
-  eventBus! Zarejestruj subskrybentów (brak)
-  prywatne val carts = system.actorOf(AggregateCommandBusActor(nowy ShoppingCartAggregateContext,
-    uidGenerator, eventStore, odpowiedzi, eventBus))
-
-  prywatne metryki wartości = nowe RecordingMetrics
-  ReactiveMetrics(system).use(metryki)
-
-  Funkcja("Koszyki w PostgreSQL") {
-
-    Scenariusz ("nowy koszyk jest przechowywany, publikowany i mierzony") {
-      val cartId = AggregateId(TestIds.aggregate())
-      val created: CustomCommandResponse[_] = carts ?? CreateShoppingCartWithId(None, UserId(1), cartId, "Groceries")
-      utworzono mustBe SuccessResponse(cartId, AggregateVersion(1))
-
-      eventStore.readEventsRange[ShoppingCart](cartId, AggregateVersion(1), AggregateVersion(1)).map(_.event) mustBe
-        Seq(ShoppingCartCreated("Artykuły spożywcze"))
-      waitAssert(eventStore.oldestVersionToPublish(cartId) mustBe None, 5.seconds, 50.millis)
-      metrics.counted("reactivecqrs.events.stored", Map("type" -> "ShoppingCart")) musi być >= 1L
+      val summary = projection.askFor[Option[CartSummary]](GetCartSummary(cartId))
+      summary mustBe Some(CartSummary("Groceries", 0, 1))
     }
   }
 }
 ```
 
-- `eventStore.oldestVersionToPublish(cartId)` ma wartość `None`, gdy w skrzynce nadawczej nie ma niczego, co czekałoby w koszyku:
-  jego wydarzenia były dostępne dla wszystkich (w tym przypadku: dla nikogo) i potwierdzane.
-- **`awaitAssert`** (z TestKit Pekko) powtarza asercję, aż zostanie ona spełniona lub upłynie czas.
-  Dostawa, projekcje i skrzynka nadawcza są ostatecznie spójne: czekaj na nie, nie
-  `Thread.sleep`. Funkcja `eventually` w ScalaTest robi to samo.
-- **`RecordingMetrics`** przechowuje wszystkie pomiary w pamięci: `counted(nazwa, tagi)` sumuje liczby,
-  `timed(nazwa, tagi)` wyświetla czasy, `gauged(nazwa, tagi)` zwraca ostatnie wartości wskaźników. Nazywasz
-  tagi, które Cię interesują; miary z większą liczbą tagów również pasują. `MetricsSpec` sprawdza główne miary
-  [rozdział 18](18-production.md) tędy.
+Co się stało: projekcja powiedziała sondzie, co subskrybuje, zastosowała wersję 1 koszyka 1001 (nowy
+koszyk, więc jej listener wstawił dokument), potwierdziła ją przez `MessageAck` i odpowiedziała na
+zapytanie ze swojego magazynu dokumentów w pamięci.
 
-### Testy trwające minuty, w milisekundach
+Ten sam trik sprawdza trudniejsze przypadki: wyślij wersję 3 przed wersją 2, a projekcja poprosi o
+uzupełnienie luki (`RequestRepublish`); wyślij wersję 1 dwa razy, a druga zostanie tylko potwierdzona.
+Projekcji, która przyjmuje zdarzenia zamiast stanów, wysyłaj `IdentifiableEvents` zamiast
+`AggregateWithType`.
 
-Program sondujący skrzynkę nadawczą czeka kilka minut przed ponowną publikacją ([rozdział 18](18-production.md)).
-`TestClock` to `java.time.Clock`, który przesuwa się tylko wtedy, gdy test go przesuwa; `OutboxPollerSpec` daje
-jeden do osoby przeprowadzającej ankietę, przy czym sondaże są przeprowadzane w dużych odstępach czasu, tak aby sonda była przeprowadzana tylko wtedy, gdy zostanie jej wydane polecenie:
+## Poziom 3: na PostgreSQL
 
+Prawdziwa baza wyłapuje to, czego dublery nie potrafią: JSON, którego nie da się odczytać z powrotem,
+SQL, transakcje, outbox. Specy biblioteki używają lokalnego PostgreSQL z bazą danych `reactivecqrs`,
+której użytkownik i hasło też brzmią `reactivecqrs`, oraz `TestDatabase` z test kitu:
+
+- **`TestDatabase.init()`** ustawia pulę połączeń ScalikeJDBC, raz na JVM, na **osobnym schemacie dla
+  tego uruchomienia testów** (`test_run_<seconds>_<random>`). Uruchomienie nigdy nie widzi tego, co
+  zostawiło poprzednie, i każde tworzy schemat od zera; schematy uruchomień starszych niż sześć godzin
+  są usuwane. Żeby zachować stały schemat (i obejrzeć go potem), uruchom testy z
+  `-Dreactivecqrs.test.schema=<name>`. Inną bazę wskazujesz przez `-Dreactivecqrs.test.url=<jdbc url>`,
+  razem z `-Dreactivecqrs.test.user` i `-Dreactivecqrs.test.password`; niech to będzie baza tylko do
+  testów, bo schematy starych uruchomień są w niej usuwane.
+- **Zestawy testów działają po kolei**, bo dzielą bazę danych (`Test / parallelExecution := false` i
+  jedno zadanie testowe naraz w `build.sbt`).
+- **Specy jednego uruchomienia dzielą schemat.** Identyfikatory z pul nigdy się nie powtarzają, więc
+  koszyki tworzone poleceniami (jak w E1) same się nie mieszają. Dla polecenia, które samo wybiera
+  identyfikator (`CreateShoppingCartWithId` z domeny testowej), `TestIds.aggregate()` daje nowy,
+  znacznie powyżej identyfikatorów rozdawanych przez pule.
+
+Oto spec poziomu 3. Uruchamia sklep własną funkcją E1, `BasicSetup.start`, tą samą, którą uruchamia
+jego aplikacja (host), więc test obejmuje też składanie systemu, a metryki biblioteki zapisuje przez
+`RecordingMetrics`:
+
+<!-- snippet: e11/CartsOnPostgresSpec.scala#postgres -->
+```scala
+import io.reactivecqrs.api.id.UserId
+import io.reactivecqrs.core.metrics.{ReactiveMetrics, RecordingMetrics}
+import io.reactivecqrs.examples.e1.{BasicSetup, CartSummary}
+import io.reactivecqrs.testkit.TestDatabase
+import org.apache.pekko.util.Timeout
+
+import scala.concurrent.duration._
+
+class CartsOnPostgresSpec extends ShopSpec {
+
+  TestDatabase.init() // the connection pool, on a schema of its own for this test run
+
+  private val metrics = new RecordingMetrics
+  ReactiveMetrics(system).use(metrics)
+  private val shop = BasicSetup.start(system) // what the host starts
+
+  Feature("Carts in PostgreSQL") {
+
+    Scenario("a cart is stored, reaches the read model through the outbox, and is measured") {
+      implicit val timeout: Timeout = Timeout(30.seconds)
+      BasicSetup.fillCart(shop, UserId(1)) mustBe Some(CartSummary("Groceries", 1, 2))
+      metrics.counted("reactivecqrs.events.stored", Map("type" -> "ShoppingCart")) mustBe 2L
+    }
+  }
+}
+```
+
+- `fillCart` (rozdział 2) pyta listę koszyków opóźnionym zapytaniem (`GetCartSummaryAtLeast`,
+  rozdział 8), więc odpowiedź przychodzi dopiero wtedy, gdy zdarzenia przeszły z magazynu przez outbox
+  i szynę do projekcji.
+- **Czekaj na efekt, nigdy nie śpij.** Dostarczanie, projekcje i outbox są ostatecznie spójne.
+  Opóźnione zapytanie czeka w projekcji; `awaitAssert` (z TestKitu Pekko) i `eventually` ze ScalaTest
+  powtarzają asercję, aż przejdzie albo skończy się czas. Nie używaj `Thread.sleep`.
+- **`RecordingMetrics`** trzyma każdy pomiar w pamięci: `counted(name, tags)` sumuje liczniki,
+  `timed(name, tags)` zwraca listę czasów, `gauged(name, tags)` podaje ostatnie wartości wskaźników.
+  Podajesz tylko tagi, które cię interesują; pomiary z większą liczbą tagów też pasują. W ten sposób
+  `MetricsSpec` sprawdza główne pomiary z [rozdziału 18](18-production.md).
+
+### Testy, które trwają minuty, w milisekundach
+
+Poller outboxu czeka całe minuty, zanim opublikuje coś ponownie ([rozdział 18](18-production.md)).
+`TestClock` to `java.time.Clock`, który przesuwa się tylko wtedy, gdy przesunie go test.
+`DeliveriesSpec` z E11 daje taki zegar pollerowi, tak jak robi to `OutboxPollerSpec` biblioteki, i
+ustawia przeglądy tak daleko od siebie, żeby poller przeglądał outbox tylko wtedy, gdy test mu każe:
+
+<!-- snippet: e11/DeliveriesSpec.scala#clock -->
 ```scala
 import io.reactivecqrs.core.delivery.{OutboxPollerActor, OutboxPollerOptions}
-importuj io.reactivecqrs.testutils.TestClock
+import io.reactivecqrs.testkit.TestClock
 
-val clock = nowy TestClock()
+val clock = new TestClock()
 val poller = system.actorOf(Props(new OutboxPollerActor(eventStore, eventBus,
   OutboxPollerOptions(firstPollAfter = 1.hour, pollInterval = 1.hour), clock)))
 
-przesunięcie zegara o 3 minuty + 1 sekundę
-poller ! OutboxPollerActor.Poll // sonduje teraz, jakby minęły 3 minuty
+clock.advance(3.minutes + 1.second)
+poller ! OutboxPollerActor.Poll   // polls now, as if 3 minutes had passed
 ```
 
-## Ochrona zapisanych formatów
+## Pilnowanie zapisanych formatów
 
-Przechowywane zdarzenia są przechowywane przez lata i każde z nich musi pozostać czytelne dzięki kodowi, który napiszesz w przyszłym roku (
-powód [rozdział 6](06-events.md) mówi, że należy dodać klasę `V2` zamiast zmieniać klasę zapisaną).
-`SchemaReference` zamienia to w test. Podajesz mu jedną próbkę każdej przechowywanej klasy; porównuje
-każdy z plikiem JSON referencyjnym o nazwie odpowiadającej klasie i raportuje, czego już nie odczytuje. To jest
-`StoredFormatsSpec`, w skrócie:
+Zapisane zdarzenia żyją latami i każde musi dać się przeczytać kodem, który napiszesz za rok (dlatego
+[rozdział 6](06-events.md) radzi dodać klasę `V2` zamiast zmieniać tę już zapisaną). `SchemaReference`
+zamienia tę zasadę w test. Dajesz mu po jednej próbce każdej zapisywanej klasy; porównuje każdą z
+referencyjnym plikiem JSON nazwanym tak jak klasa i zgłasza, czego nie da się już przeczytać. Oto
+`StoredFormatsSpec` z E11, który pilnuje tego, co zapisują wszystkie przykłady:
 
+<!-- snippet: e11/StoredFormatsSpec.scala#formats -->
 ```scala
-importuj java.nio.file.Paths
-importuj io.mpjsons.MPJsons
-import io.reactivecqrs.testutils.SchemaReference
+import java.nio.file.Paths
 
-klasa StoredFormatsSpec rozszerza AnyFeatureSpec z Matchers {
+import io.mpjsons.MPJsons
+import io.reactivecqrs.api.AggregateVersion
+import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
+import io.reactivecqrs.examples.e1.{ItemAdded, ItemRemoved, ShoppingCartCreated}
+import io.reactivecqrs.examples.e4.CheckoutSaga.{Charge, Checkout}
+import io.reactivecqrs.examples.e4.{ItemsReleased, ItemsReserved, PaymentCharged, PaymentOpened, StockOpened}
+import io.reactivecqrs.examples.e5.{ChangesUndone, ItemWritten, ListCopied, ListCreated, ListSquashed, ShoppingList}
+import io.reactivecqrs.examples.e6.{ConcertScheduled, SeatBooked}
+import io.reactivecqrs.examples.e7.{NoteAdded, TicketOpened}
+import io.reactivecqrs.examples.e9.{ShopCartOpened, ShopCartSquashed, ShopItemAdded}
+import io.reactivecqrs.testkit.SchemaReference
+import org.scalatest.featurespec.AnyFeatureSpec
+import org.scalatest.matchers.must.Matchers
 
-  prywatna wartość referenceDir = Paths.get("testdomain", "src", "test", "resources", "schema-reference")
+class StoredFormatsSpec extends AnyFeatureSpec with Matchers {
 
-  prywatne próbki wartości: Seq[AnyRef] = Seq(
-    ShoppingCartCreated("Artykuły spożywcze"), ItemAdded("jabłko"), ItemRemoved(1), CartNameRewritten("Żywność"),
-    Odpowiedź sukcesu (AggregateId (1001), AggregateVersion (2)))
+  // One JSON file per class, committed next to this spec; the tests run from the build's root.
+  private val references = Paths.get("examples", "src", "test", "resources", "schema-reference")
 
-  Funkcja("Zapisane formaty pozostają czytelne") {
-    Scenariusz("wydarzenia i odpowiedzi poleceń pasują do zatwierdzonych odniesień") {
-      SchemaReference.verify(new MPJsons, referenceDir, samples) musi być pusty
+  // A sample of every class the examples store: events, saga orders, and the states of snapshots.
+  private val samples: Seq[AnyRef] = Seq(
+    ShoppingCartCreated("Groceries"), ItemAdded("apples"), ItemRemoved(1),                            // E1
+    StockOpened(10), ItemsReserved(2), ItemsReleased(2), PaymentOpened(10000), PaymentCharged(2500),  // E4
+    Checkout(UserId(1), AggregateId(1), AggregateId(2), 2, 2500),
+    Charge(UserId(1), AggregateId(1), AggregateId(2), 2, 2500),
+    ListCreated("Camping"), ItemWritten("tent"), ChangesUndone(1),                                    // E5
+    ListCopied(SpaceId(0), AggregateId(1), AggregateVersion(2)), ListSquashed(SpaceId(0), "Camping", Vector("tent")),
+    ShoppingList("Camping", Vector("tent")),
+    ConcertScheduled("Jazz night", 60), SeatBooked("customer 1"),                                     // E6
+    TicketOpened("Printer jam"), NoteAdded("Paper reloaded"),                                         // E7
+    ShopCartOpened(SpaceId(42), "Groceries"), ShopItemAdded("apples"),                                // E9
+    ShopCartSquashed(SpaceId(42), "Groceries", Vector("apples")))
+
+  Feature("Stored formats") {
+
+    Scenario("every stored class reads its committed reference, and what it writes now reads back") {
+      SchemaReference.verify(new MPJsons, references, samples) mustBe empty
     }
   }
 }
 ```
 
-Klasa przechodzi, gdy jej zatwierdzone odniesienie jest nadal odczytywane jako próbka (stare dane pozostają
-czytelny) i zapisana próbka teraz odczytuje się jako sama (nowe dane są czytelne). Brakuje odniesienia
-jest błędem, chyba że uruchomisz `-Dreactivecqrs.schema.record=true`, który go zapisze (dla
-`ItemAdded("apple")` plik zawiera `{"name":"apple"}`). Zatwierdź pliki: od tego momentu zmiana w
-przechowywana klasa, która psuje stare dane, powoduje, że ten test staje się czerwony.
+Klasa przechodzi test, gdy jej plik referencyjny z repozytorium wciąż odczytuje się jako próbka (stare
+dane pozostają czytelne), a próbka zapisana teraz odczytuje się jako ona sama (nowe dane są czytelne).
+Brak pliku referencyjnego to błąd, chyba że uruchomisz testy z `-Dreactivecqrs.schema.record=true`:
+wtedy plik zostanie zapisany (dla `ItemAdded("apples")` zawiera `{"name":"apples"}`). Zatwierdź te
+pliki w repozytorium: od tej pory zmiana zapisywanej klasy, która psuje stare dane, zabarwi ten test
+na czerwono.
 
-> **Wskazówka:** dodaj próbkę każdej nowej klasy zdarzeń, kolejności sagi i zapisanej klasy odpowiedzi w dniu, w którym
-> napisz to. Pliki referencyjne to Twój kontrakt z danymi już w produkcji.
+Co musi być na liście próbek:
 
-## Wiadomości, które przekraczają węzły
+- **Każda klasa zdarzenia**, łącznie z klasami `V2`.
+- **Każde zlecenie sagi**, także wewnętrzne: runner zapisuje zlecenie każdego kroku (rozdział 12).
+  Wewnętrznego zlecenia, które saga trzyma jako `private`, nie da się utworzyć w teście; dlatego E4
+  trzyma `Charge` jako prywatne w obrębie pakietu.
+- **Korzeń każdego kontekstu z migawkami** (rozdział 13): migawka to JSON korzenia.
+- **Dodatkowa informacja (info) w odpowiedzi każdego polecenia idempotentnego**, jeśli to twoja własna
+  klasa; `SuccessResponse` i `FailureResponse` należą do biblioteki, która pilnuje ich sama.
 
-Jeśli uruchomisz klaster ([rozdział 17](17-cluster.md)), Twoje polecenia, zdarzenia, stany i odpowiedzi na zapytania
-Przechodzą przez serializator klastra. Podróż w obie strony to szybki test, czy potrafią.
-`ClusterSerializationSpec` działa w ten sposób, w systemie aktora z dostawcą klastra (potrzeba
-nie dołączać do klastra):
+> **Wskazówka:** dodaj próbkę tego samego dnia, w którym piszesz klasę. Pliki referencyjne to twoja
+> umowa z danymi, które już są na produkcji.
 
+## Komunikaty, które przechodzą między węzłami
+
+Jeśli uruchamiasz klaster ([rozdział 17](17-cluster.md)), twoje polecenia, zdarzenia, stany i
+odpowiedzi na zapytania podróżują przez serializator klastra. Przepuszczenie ich przez niego tam i z
+powrotem to szybki test, czy dadzą radę. Potrzebny jest do tego system aktorów z providerem klastra,
+który nie musi dołączać do żadnego klastra; `TestSystems.clusterConfig` to właśnie taka konfiguracja,
+przygotowana tak, żeby dzielić JVM z innymi węzłami. Przykład wzoruje się na `ClusterSerializationSpec`
+biblioteki:
+
+<!-- snippet: e11/CrossNodeSpec.scala#nodes -->
 ```scala
-importuj com.typesafe.config.ConfigFactory
+import com.typesafe.config.ConfigFactory
+import io.reactivecqrs.api.AggregateVersion
+import io.reactivecqrs.api.id.{AggregateId, UserId}
+import io.reactivecqrs.examples.e1._
+import io.reactivecqrs.testkit.TestSystems
 import org.apache.pekko.actor.{ActorSystem, ExtendedActorSystem}
-import org.apache.pekko.serialization.{Serializacja, Rozszerzenie serializacji, Serializatory}
+import org.apache.pekko.serialization.{Serialization, SerializationExtension, Serializers}
+import org.scalatest.BeforeAndAfterAll
+import org.scalatest.featurespec.AnyFeatureSpec
+import org.scalatest.matchers.must.Matchers
 
-prywatny węzeł val = ActorSystem("serializacja", ConfigFactory.parseString(
-  """pekko.actor.provider = klaster
-    |pekko.remote.artery.canonical { nazwa_hosta = "127.0.0.1", port = 0 }""".stripMargin).withFallback(ConfigFactory.load()))
-prywatna serializacja wartości = SerializationExtension(węzeł)
+import scala.concurrent.Await
+import scala.concurrent.duration._
 
-prywatna def roundTrip(wartość: AnyRef): AnyRef =
-  Serializacja.zInformacjamiTransportowymi(węzeł.asInstanceOf[ExtendedActorSystem]) { () =>
-    val serializer = serialization.findSerializerFor(wartość)
-    serializacja.deserialize(serializer.toBinary(wartość), serializer.identyfikator, Serializery.manifestFor(serializer, wartość)).get
+class CrossNodeSpec extends AnyFeatureSpec with Matchers with BeforeAndAfterAll {
+
+  // An actor system with the cluster provider serializes as between nodes; it need not join a cluster.
+  private val node = ActorSystem("serialization", TestSystems.clusterConfig.withFallback(ConfigFactory.load()))
+  private val serialization = SerializationExtension(node)
+
+  override def afterAll(): Unit = Await.ready(node.terminate(), 30.seconds)
+
+  private def roundTrip(value: AnyRef): AnyRef =
+    Serialization.withTransportInformation(node.asInstanceOf[ExtendedActorSystem]) { () =>
+      val serializer = serialization.findSerializerFor(value)
+      serialization.deserialize(serializer.toBinary(value), serializer.identifier, Serializers.manifestFor(serializer, value)).get
+    }
+
+  Feature("Messages between nodes") {
+
+    Scenario("the carts' commands, events, states and questions cross nodes") {
+      Seq(CreateShoppingCart(UserId(1), "Groceries"), AddItem(UserId(1), AggregateId(7), AggregateVersion(3), "pears"),
+        RemoveItem(UserId(1), AggregateId(7), AggregateVersion(4), 1), ItemAdded("pears"), ItemRemoved(1),
+        ShoppingCart("Groceries", Vector(Item(1, "apples"))), GetCartSummary(AggregateId(7)),
+        CartSummary("Groceries", 1, 2)).foreach(message => roundTrip(message) mustBe message)
+    }
   }
-
-Scenariusz ("wiadomości wózków przekraczają węzły") {
-  Seq(AddItem(UserId(1), AggregateId(7), AggregateVersion(3), "gruszka"), ItemAdded("gruszka"),
-    Koszyk("koszyk", Wektor(Przedmiot(1, "jabłko")))).foreach(wiadomość => roundTrip(wiadomość) musi być wiadomością)
 }
 ```
 
-Klasa z polem typu `Any`, cechą lub `ActorRef` tutaj nie działa na Twoim komputerze zamiast
-między dwoma węzłami produkcyjnymi.
+Klasa z polem typu `Any`, typu jakiegoś traitu albo `ActorRef` wyłoży się tutaj, na twojej maszynie,
+a nie między dwoma węzłami produkcyjnymi.
 
-## Kilka węzłów w jednej maszynie wirtualnej Java
+## Kilka węzłów w jednej JVM
 
-Biblioteka testuje zachowanie klastra, uruchamiając w ramach jednego testu kilka systemów aktorów, z których każdy jest
-węzeł na porcie lokalnym, w całym schemacie PostgreSQL uruchomienia. `TestCluster` w domenie testowej
-źródła, czy to:
+Biblioteka testuje swoje zachowanie w klastrze, uruchamiając w jednym teście kilka systemów aktorów:
+każdy to węzeł na lokalnym porcie, a wszystkie pracują na schemacie PostgreSQL danego uruchomienia.
+`TestCluster` z test kitu robi to samo dla twoich testów. `ClusterSpec` z E2 uruchamia swoje trzy
+węzły tak, z zaimportowanym `io.reactivecqrs.testkit.{TestCluster, TestDatabase}`:
 
-- `TestCluster.start(3, extra)` uruchamia trzy węzły, łączy je i czeka, aż wszystkie będą aktywne; każdy
-  `TestNode` zawiera system aktorów węzła, magazyny, magistralę zdarzeń i magistralę poleceń koszyka. `extra` to
-  konfiguracja na górze, np. krótki czas bezczynności dla właścicieli partycjonowanych.
-- `TestCluster.join(to, 2, appVersion = _ => "2.0.0", ...)` dodaje później węzły innej wersji,
-  uaktualnienia ciągłe; `TestCluster.stop(nodes)` wyłącza je.
-- Konfiguracja każdego węzła to dostawca klastra na `127.0.0.1` z portem 0, podzielony mózg
-  resolver z krótkim `stable-after` i ustawieniami, które pozwalają kilku węzłom na współdzielenie jednej maszyny wirtualnej Java
+<!-- snippet: e2/ClusterSpec.scala#threeNodes -->
+```scala
+TestDatabase.init()
+private val systems = TestCluster.start(3, name = "shop")
+private val nodes = systems.map(system => ClusterSetup.startNode(system)) // what the host starts on a node
+
+override def afterAll(): Unit = TestCluster.stop(systems)
+```
+
+- `TestCluster.start(count, extra, appVersion, name)` uruchamia węzły, łączy je w klaster i czeka, aż
+  wszystkie będą działać; pierwszy jest najstarszy. `extra` to dodatkowa konfiguracja na wierzchu, na
+  przykład `"pekko.cluster.sharding.passivation.default-idle-strategy.idle-entity.timeout = 3s"`;
+  `name` nadaje nazwę systemom aktorów.
+- `TestCluster.join(to, 2, appVersion = _ => "2.0.0")` dodaje później węzły w innej wersji, na
+  potrzeby aktualizacji kroczących; `TestCluster.stop(systems)` je wyłącza.
+- Konfiguracja każdego węzła to provider klastra na `127.0.0.1` z portem 0, split brain resolver z
+  krótkim `stable-after` i ustawienia, dzięki którym kilka węzłów może dzielić jedną JVM
   (`pekko.cluster.jmx.multi-mbeans-in-same-jvm = on`, `pekko.coordinated-shutdown.exit-jvm = off`).
 
-Dzięki niemu `ShardedOwnersSpec`, `ClusterDeliverySpec`, `LocalOwnersSpec`, `ClusterMessageSizeSpec` i
-`RollingUpgradeSpec` sprawdza zachowanie opisane w rozdziale 17 (17-cluster.md). `TestCluster` to test
-kod biblioteki, takiej jak `testutils`; wielowęzłowy interfejs dla aplikacji pojawi się w wersji 1.0. Do
-Następnie skopiuj pomysł: ma około 120 linijek.
+Własny `CartCluster` biblioteki (w źródłach testów modułu testdomain) buduje na każdym z nich
+`TestNode`: magazyny, szynę zdarzeń i szynę poleceń koszyków. Dzięki niemu `ShardedOwnersSpec`,
+`ClusterDeliverySpec`, `LocalOwnersSpec`, `ClusterMessageSizeSpec` i `RollingUpgradeSpec` sprawdzają
+zachowanie opisane w [rozdziale 17](17-cluster.md).
 
-Istnieje również tania sztuczka: uruchom wszystkie pozostałe specyfikacje na **grupie jednej**. Biblioteka
-`CommonSpec` wykonuje to, gdy testy są uruchamiane z `-Dreactivecqrs.test.clusterOfOne=true` i klasterem
-jeden musi zachowywać się dokładnie tak, jak pojedynczy węzeł.
+Jest też tani trik: uruchom wszystkie pozostałe specy na **klastrze z jednego węzła**.
+`TestSystems.newSystem()` tworzy taki klaster, gdy testy działają z
+`-Dreactivecqrs.test.clusterOfOne=true`, a klaster z jednego węzła musi zachowywać się dokładnie tak
+jak pojedynczy węzeł; biblioteka uruchamia cały swój zestaw testów na oba sposoby.
 
-## Wzorce warte ukradzenia ze specyfikacji domeny testowej
+## Wzorce warte podkradzenia ze speców testdomain
 
-- **Wstrzymaj polecenie w trakcie lotu za pomocą obietnicy.** Polecenie `CountWhenReleased` klasy `AggregateOwnerSpec`
-  ma procedurę obsługi zwracającą `AsyncCommandResult` dotyczącą przyszłości, w której test zostanie ukończony w wybranym przez niego momencie.
-  W międzyczasie test może sparaliżować właściciela, wysłać inne polecenia lub poczekać na upływ czasu.
-- **Sonda jako abonent.** W `OutboxPollerSpec` `TestProbe` jest jedynym abonentem magistrali:
-  odpowiada na pytanie samego autobusu, a następnie przechwytuje dostawy, pomijając te z wózków innych specyfikacji:
+- **Zatrzymaj polecenie w połowie drogi dzięki obietnicy (promise).** Polecenie `CountWhenReleased`
+  z `AggregateOwnerSpec` ma handler, który zwraca `AsyncCommandResult` z `Future`, który test kończy,
+  kiedy zechce. W międzyczasie test może wywołać pasywację właściciela, wysłać inne polecenia albo
+  poczekać, aż minie limit czasu.
+- **Sonda jako subskrybent.** W `DeliveriesSpec` z E11, tak jak w `OutboxPollerSpec` biblioteki,
+  jedynym subskrybentem szyny jest `TestProbe`. Sonda sama odpowiada na pytanie szyny,
 
+  <!-- snippet: e11/DeliveriesSpec.scala#probe -->
   ```scala
   val subscriber = TestProbe()
-  val bus = system.actorOf(Props(nowy EventsBusActor()))
-  autobus ! Zarejestruj subskrybentów (Seq (subscriber.ref))
+  val bus = system.actorOf(Props(new EventsBusActor()))
+  bus ! RegisterSubscribers(Seq(subscriber.ref))
   subscriber.expectMsg(GetSubscriptionRequests(subscriber.ref))
   subscriber.reply(SubscriptionRequests(Seq(SubscribeForEvents(AggregateType.of[ShoppingCart], subscriber.ref)), subscriber.ref))
-
-  // ... po poleceniu na cartId:
-  val versions = subscriber.fishForSpecificMessage(10.seconds) {
-    przypadek e: IdentifiableEvents[_] jeśli e.aggregateId == cartId => e.events.map(_.version.asInt)
-  }
-  autobus ! MessageAck(subscriber.ref, cartId, versions.map(AggregateVersion(_)), EventsDelivery)
   ```
 
-- **Czekaj na coś, nigdy nie śpij.** `awaitAssert` i `ewentualnie` kończą się, gdy tylko warunek zostanie spełniony
-  trzyma i zawodzi z jasnym komunikatem, kiedy nigdy tego nie robi.
-- **Identyfikatory własnego testu.** `TestIds.aggregate()` z poleceniem, które wybiera jego identyfikator, zachowuje scenariusze
-  oddzielnie w ramach współdzielonego schematu.
-- **Dane, Kiedy, Wtedy.** Specyfikacje określają, co konfigurują, co robią i czego oczekują, słowami
-  kolega może przeczytać w raporcie z testu.
-- **Uruchom jedną specyfikację na raz, podczas gdy nad nią pracujesz:**
+  a po poleceniu na `cartId` wyławia dostarczenie tego koszyka, pomijając dostarczenia koszyków z
+  innych speców, i je potwierdza:
+
+  <!-- snippet: e11/DeliveriesSpec.scala#catch -->
+  ```scala
+  val versions = subscriber.fishForSpecificMessage(10.seconds) {
+    case e: IdentifiableEvents[_] if e.aggregateId == cartId => e.events.map(_.version.asInt)
+  }
+  bus ! MessageAck(subscriber.ref, cartId, versions.map(AggregateVersion(_)), EventsDelivery)
+  ```
+
+- **Czekaj na efekt, nigdy nie śpij.** `awaitAssert` i `eventually` kończą się, gdy tylko warunek
+  jest spełniony, a gdy nie spełni się nigdy, zawodzą z czytelnym komunikatem.
+- **Własne identyfikatory testu.** `TestIds.aggregate()` z poleceniem, które samo wybiera
+  identyfikator, oddziela scenariusze od siebie we wspólnym schemacie.
+- **`Given`, `When`, `Then`.** Specy mówią, co przygotowują, co robią i czego oczekują, słowami, które
+  ktoś z zespołu przeczyta w raporcie z testów.
+- **Podczas pracy nad jednym specem uruchamiaj tylko jego:**
   `sbt "testdomain/testOnly *ShardedOwnersSpec"`.
 
-## Czego się nauczyłeś
+## Co już umiesz
 
-- Testowanie na trzech poziomach: obsługa jako proste funkcje, prawdziwi aktorzy ponad duplikatami w pamięci i
-  wszystko na bazie PostgreSQL, z dużo większą liczbą testów na pierwszym poziomie niż na ostatnim.
-- Obsługujące polecenia i zdarzenia są funkcjami kontekstu: wywołuj je bezpośrednio, zwijaj zdarzenia w celu ich odtworzenia
-  historię i sprawdź, czy twoje wydarzenie w squasha oddaje stan.
-- Podwójne operacje w pamięci w `core` umożliwiają szybkie testy systemowe, ale nie zapisują żadnego JSON-a i nie generują niczego
-  z powrotem, więc ważne ścieżki również są uruchamiane w PostgreSQL, według własnego schematu dla każdego uruchomienia.
-- `TestProbe` odtwarzający magistralę zdarzeń testuje projekcję samodzielnie; `RecordingMetrics` i
-  `TestClock` mierzy pomiary i czasy w minutach.
-- `SchemaReference` chroni zapisane formaty, a podróż w obie strony przez serializator chroni wiadomości
-  między węzłami, a `TestCluster` pokazuje, jak uruchomić kilka węzłów w jednym teście.
+- Testujesz na trzech poziomach: handlery jako zwykłe funkcje, prawdziwych aktorów na dublerach w
+  pamięci i całość na PostgreSQL, z dużo większą liczbą testów na pierwszym poziomie niż na ostatnim.
+- Handlery poleceń i zdarzeń to funkcje kontekstu: wywołujesz je bezpośrednio, foldem po zdarzeniach
+  odtwarzasz historię i sprawdzasz, czy twoje zdarzenie squasha oddaje stan.
+- Dublery w pamięci z `core` dają szybkie testy całego systemu, ale nie piszą JSON-a i niczego nie
+  wycofują, więc ważne ścieżki działają też na PostgreSQL, na osobnym schemacie dla każdego
+  uruchomienia.
+- `askFor[T](message)` pyta aktora i sprawdza klasę odpowiedzi; `TestProbe` w roli szyny zdarzeń
+  testuje projekcję w pojedynkę; `RecordingMetrics` i `TestClock` pozwalają testować pomiary i
+  zależności czasowe liczone w minutach.
+- `SchemaReference` pilnuje zapisanych formatów, serializacja tam i z powrotem pilnuje komunikatów
+  między węzłami, a `TestCluster` z test kitu uruchamia kilka węzłów w jednym teście.
 
-Dalej: [rozdział 20](20-ephemeral-aggregates.md), ostatni, dotyczy agregatów, które żyją tylko w
-pamięć: szkice, które zachowujesz, gdy są istotne.
+Dalej: [rozdział 20](20-ephemeral-aggregates.md), ostatni, opowiada o agregatach, które żyją tylko w
+pamięci: o szkicach, które zachowujesz, kiedy okażą się ważne.

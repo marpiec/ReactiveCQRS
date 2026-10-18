@@ -370,10 +370,11 @@ written down, put in an envelope and posted: **serialized**. And the envelope ha
 
 ### One serializer for everything
 
-The library's `reference.conf` binds one serializer, `ClusterSerializer`, to `java.io.Serializable`,
-so the case classes and Scala collections that cross nodes go through it (Pekko keeps a few of its
-own, such as `Some` and `None`). Java serialization stays off (Pekko's default). You configure
-nothing.
+One serializer, `ClusterSerializer`, is bound to `java.io.Serializable`, so the case classes and
+Scala collections that cross nodes go through it (Pekko keeps a few of its own, such as `Some` and
+`None`). The library's `reference.conf` binds it, and so does your configuration (its first item,
+above): which `reference.conf` wins depends on the order of the classpath. Java serialization stays
+off (Pekko's default). Beyond that line, you configure nothing.
 
 - The library's own messages are written field by field; the events in deliveries take about 33
   bytes each besides their JSON.

@@ -1,290 +1,300 @@
-# Załącznik B. Ściągawka: Wiadomości i odpowiedzi
+# Dodatek B. Ściągawka: komunikaty i odpowiedzi
 
-Ten dodatek to strona, którą trzymasz otwartą obok edytora. Zawiera listę wiadomości, które wysyłasz do
-aktorzy biblioteki, pogrupowani według tego, kto ich otrzymuje i co dokładnie wraca: klasa i czy
-Jest on dostarczany w pakiecie „Try”. Na końcu znajdziesz metody, które Twoja aplikacja wywołuje sama.
-(konfiguracja schematu, uzupełnianie, sprawdzanie) oraz ustawienia domyślne, które warto znać na pamięć.
+Ten dodatek to strona, którą trzymasz otwartą obok edytora. Zebrane są tu komunikaty, które wysyłasz
+do aktorów biblioteki, pogrupowane według odbiorcy, i dokładnie to, co wraca: klasa oraz to, czy
+przychodzi opakowana w `Try`. Na końcu znajdziesz metody, które twoja aplikacja wywołuje sama
+(przygotowanie schematu, uzupełnienia wsteczne, kontrole), i wartości domyślne, które warto znać na
+pamięć.
 
-Każdy wiersz został sprawdzony pod kątem zgodności z kodem ReactiveCQRS 1.0 (`1.0.0-SNAPSHOT`). Biblioteka wysyła wiadomości
-wysyłane tylko do siebie są pomijane.
+Każdy wiersz sprawdzono z kodem ReactiveCQRS 1.0 (`1.0.0-SNAPSHOT`). Komunikatów, które biblioteka
+wysyła tylko sama do siebie, tu nie ma.
 
 ---
 
-## Jak prosić i dwa rodzaje „nie”
+## Jak pytać i dwa rodzaje „nie”
 
-We wszystkich przykładach użyto funkcji Pekko `ask` z limitem czasu i `mapTo` do nazwania typu odpowiedzi:
+Wszystkie przykłady używają `ask` z Pekko (z limitem czasu) i `mapTo`, które podaje typ odpowiedzi:
 
+<!-- snippet: cart/CommandKindsSpec.scala#basics -->
 ```scala
-zaimportuj org.apache.pekko.pattern.ask
+import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
-importuj io.reactivecqrs.api._
+import io.reactivecqrs.api._
 import scala.concurrent.Future
 import scala.concurrent.duration._
 import scala.util.Try
 
-niejawny limit czasu wartości: Limit czasu = Limit czasu (5 sekund)
+implicit val timeout: Timeout = Timeout(5.seconds)
 
-// Polecenie: odpowiedź jest odpowiedzią na polecenie.
-dodano wartość: Future[CustomCommandResponse[_]] =
+// A command: the answer is a command response.
+val added: Future[CustomCommandResponse[_]] =
   (commandBus ? AddItem(userId, cartId, AggregateVersion(1), "milk")).mapTo[CustomCommandResponse[_]]
 
-// Zapytanie: odpowiedzią jest Try.
+// A query: the answer is a Try.
 val cart: Future[Try[Aggregate[ShoppingCart]]] =
   (commandBus ? GetAggregate(cartId)).mapTo[Try[Aggregate[ShoppingCart]]]
 ```
 
-> **Pamiętaj:** istnieją dwa sposoby, aby odpowiedzieć „nie”. `Failure(e)` wewnątrz `Try` to
-> zwykła odpowiedź: Twój `Future` kończy się sukcesem i zawiera nieudany `Try`. `Status.Failure(e)` tworzy
-> Samo `Future` kończy się niepowodzeniem z `e`. Poniższe tabele podają, z którego z nich korzysta każda wiadomość.
+> **Pamiętaj:** odpowiedź może powiedzieć „nie” na dwa sposoby. `Failure(e)` wewnątrz `Try` to zwykła
+> odpowiedź: twój `Future` kończy się sukcesem i zawiera nieudany `Try`. `Status.Failure(e)` sprawia,
+> że sam `Future` kończy się błędem `e`. Tabele poniżej mówią, którego sposobu używa każdy komunikat.
 
 ---
 
-## Magistrala poleceń (`AggregateCommandBusActor`)
+## Szyna poleceń (`AggregateCommandBusActor`)
 
-Jeden na typ agregatu (i na węzeł). ​​Wiadomości z `io.reactivecqrs.api._`, z wyjątkiem
-`PassivateAggregate`, który znajduje się w `io.reactivecqrs.core.commandhandler.AggregateCommandBusActor`.
+Jedna na typ agregatu (i na węzeł). Komunikaty z `io.reactivecqrs.api._`, poza `PassivateAggregate`,
+który mieszka w `io.reactivecqrs.core.commandhandler.AggregateCommandBusActor`.
 
-| Wysyłasz | Dostajesz z powrotem | Warto wiedzieć |
+| Wysyłasz | Dostajesz | Warto wiedzieć |
 |---|---|---|
-| Polecenie `FirstCommand`, takie jak `CreateShoppingCart(None, userId, "Groceries")` | Odpowiedź polecenia (następna sekcja), na przykład `SuccessResponse(newId, AggregateVersion(1))` | Magistrala nadaje nowemu agregatowi identyfikator, chyba że `chosenAggregateId` polecenia go określa. Wybrany identyfikator, który nie jest dodatni, nie jest mniejszy niż 2^53 ani nie mieści się w zakresie innej instalacji, otrzymuje odpowiedź `FailureResponse` przed uruchomieniem czegokolwiek. |
-| Polecenie `Command`, takie jak `AddItem(userId, cartId, AggregateVersion(1), "milk")` | Odpowiedź na polecenie | Oczekiwana wersja musi być wersją bieżącą agregatu, w przeciwnym razie odpowiedzią jest `AggregateConcurrentModificationError`. |
-| A `ConcurrentCommand` | Odpowiedź na polecenie | Działa na bieżącej wersji; po kolizji uruchamia się ponownie, maksymalnie 10 prób. |
-| `RewriteHistoryCommand` lub `RewriteHistoryConcurrentCommand` | Odpowiedź na polecenie | Zobacz [rozdział 15](15-rewriting-history.md). |
-| `ReserveAggregateId` | `AggregateId` (niezapakowane) | Dla `chosenAggregateId`. Jeśli pula identyfikatorów nie jest dostępna, magistrala odpowiada `Status.Failure`, więc zapytanie kończy się niepowodzeniem. |
-| `GetAggregate(id)` | `Try[Aggregate[R]]`: `Success(Aggregate(id, version, Some(root)))` | `aggregateRoot` ma wartość `None` w wersji 0 (agregat nigdy nie istniał) i po zwróceniu przez obsługę zdarzeń wartości `null` (usunięty). `Failure(AggregateRestoreFailedException)`, gdy nie można odczytać agregatu z magazynu. |
-| `GetAggregateMinVersion(id, version, maxMillis)` | `Try[Aggregate[R]]`, gdy agregat osiągnie `version` | `Failure(AggregateInIncorrectVersionException)`, gdy nie osiągnie `maxMillis` lub gdy jego właściciel zatrzyma się pierwszy; `Failure(AggregateRestoreFailedException)`, gdy nie można go odczytać z magazynu. |
-| `GetAggregateForVersion(id, version)` | `Try[Aggregate[R]]`: stan w tej wersji | Odczyt ze sklepu, a nie od właściciela. `Failure(AggregateSquashedException)` poniżej punktu squasha. |
-| `GetAggregateAtInstant(id, instant)` | `Try[Aggregate[R]]`: stan w tym momencie | `Failure(AggregateSquashedException)` na chwilę przed czasem zdarzenia squash. |
-| `GetEventsForAggregate(id)` | `Try[List[EventInfo[R]]]`: wszystkie zdarzenia, najstarsze na początku | Dołączono zdarzenia niewykonane; lista duplikatów zaczyna się od zdarzeń z bazy. Cała historia jest zawarta w jednej wiadomości. |
-| `GetEventsForAggregateForVersion(id, version)` | `Try[List[EventInfo[R]]]`: zdarzenia do `version` | `Failure(AggregateSquashedException)` poniżej punktu zgniecenia. |
-| `GetArchivedEvents(id)` | `Try[ArchivedEvents[R]]`: `ArchivedEvents(id, events)` | Każde `ArchivedEvent(info, undoneFrom, archived)`: zdarzenie w takiej formie, w jakiej zostało zapisane, wersja operacji cofania, która je anulowała (jeśli taka istniała) oraz data archiwizacji przez squash. Najpierw najstarsze. |
-| `SquashAggregate(id, upTo)`, opcjonalnie z `userId` i `metadata` | `AggregateSquashed(id, upTo)` lub `SquashRefused(id, reason)`, niezapakowane | Oba rozszerzają `SquashResponse`. Dodatek C wyjaśnia każdą odmowę. |
-| `Materialize(id, userId)`, do efemerycznej magistrali | `Materialize(id, persistentId)` lub `MaterializeRefused(id, reason)`, niezapakowane | Oba rozszerzają `MaterializeResponse`; projekt jest usuwany po materializacji ([rozdział 20](20-ephemeral-aggregates.md)). Polecenia dla identyfikatora, którego magistrala nie obsługuje, otrzymują `EphemeralAggregateLost` lub `EphemeralAggregateUnknown`. |
-| `RewriteEverywhere(id, change, userId)` | `HistoryRewritten(id, events, archived, fields)` lub `RewriteRefused(id, reason)`, niezapakowane | Całkowite przepisanie jednego agregatu w jego właścicielu; oba rozszerzają `RewriteResponse`. `HistoryRewriter` wysyła to również do każdej kopii ([rozdział 15](15-rewriting-history.md)). |
-| `AggregateCommandBusActor.PassivateAggregate(id)` | Nic | Zatrzymuje właściciela agregatu po udzieleniu odpowiedzi na polecenia, które uruchomił; następna wiadomość uruchamia nowego właściciela. |
-| Coś jeszcze | `Status.Failure(IllegalArgumentException)` | Zapytanie kończy się niepowodzeniem z błędem „Nie można obsłużyć tego rodzaju wiadomości”. |
+| `FirstCommand`, na przykład `CreateShoppingCart(None, userId, "Groceries")` | Odpowiedź na polecenie (następna sekcja), na przykład `SuccessResponse(newId, AggregateVersion(1))` | Szyna nadaje nowemu agregatowi identyfikator, chyba że wskazuje go `chosenAggregateId` polecenia. Na wybrany identyfikator, który nie jest dodatni, nie jest mniejszy niż 2^53 albo należy do zakresu innej instalacji, szyna odpowiada `FailureResponse`, zanim cokolwiek się wykona. |
+| `Command`, na przykład `AddItem(userId, cartId, AggregateVersion(1), "milk")` | Odpowiedź na polecenie | Oczekiwana wersja musi być bieżącą wersją agregatu, inaczej odpowiedzią jest `AggregateConcurrentModificationError`. |
+| `ConcurrentCommand` | Odpowiedź na polecenie | Wykonuje się na bieżącej wersji; po kolizji wykonuje się ponownie, łącznie najwyżej 10 prób. |
+| `RewriteHistoryCommand` albo `RewriteHistoryConcurrentCommand` | Odpowiedź na polecenie | Zob. [rozdział 15](15-rewriting-history.md). |
+| `ReserveAggregateId` | `AggregateId` (bez opakowania) | Do `chosenAggregateId`. Jeśli nie da się zdobyć puli identyfikatorów, szyna odpowiada `Status.Failure`, więc ask kończy się błędem. |
+| `GetAggregate(id)` | `Try[Aggregate[R]]`: `Success(Aggregate(id, version, Some(root)))` | `aggregateRoot` to `None` w wersji 0 (agregat nigdy nie istniał) oraz wtedy, gdy handler zdarzenia zwrócił `null` (agregat usunięty). `Failure(AggregateRestoreFailedException)`, gdy agregatu nie da się odczytać z magazynu. |
+| `GetAggregateMinVersion(id, version, maxMillis)` | `Try[Aggregate[R]]`, gdy tylko agregat osiągnie `version` | `Failure(AggregateInIncorrectVersionException)`, gdy nie dojdzie do niej w ciągu `maxMillis` albo gdy jego właściciel wcześniej się zatrzyma; `Failure(AggregateRestoreFailedException)`, gdy nie da się go odczytać z magazynu. |
+| `GetAggregateForVersion(id, version)` | `Try[Aggregate[R]]`: stan w tej wersji | Czytany z magazynu, nie od właściciela. `Failure(AggregateSquashedException)` poniżej punktu squasha. |
+| `GetAggregateAtInstant(id, instant)` | `Try[Aggregate[R]]`: stan w tej chwili | `Failure(AggregateSquashedException)` dla chwili sprzed czasu zdarzenia squasha. |
+| `GetEventsForAggregate(id)` | `Try[List[EventInfo[R]]]`: wszystkie zdarzenia, od najstarszego | Razem z cofniętymi; lista duplikatu zaczyna się od zdarzeń jego bazy. Cała historia przychodzi w jednym komunikacie. |
+| `GetEventsForAggregateForVersion(id, version)` | `Try[List[EventInfo[R]]]`: zdarzenia do `version` | `Failure(AggregateSquashedException)` poniżej punktu squasha. |
+| `GetArchivedEvents(id)` | `Try[ArchivedEvents[R]]`: `ArchivedEvents(id, events)` | Każde zdarzenie to `ArchivedEvent(info, undoneFrom, archived)`: zdarzenie w postaci, w jakiej je zapisano, wersja cofnięcia, które je anulowało (jeśli było), i chwila, w której squash je zarchiwizował. Od najstarszego. |
+| `SquashAggregate(id, upTo)`, opcjonalnie z `userId` i `metadata` | `AggregateSquashed(id, upTo)` albo `SquashRefused(id, reason)`, bez opakowania | Oba rozszerzają `SquashResponse`. Każdą odmowę wyjaśnia dodatek C. |
+| `Materialize(id, userId)`, do szyny efemerycznej | `Materialized(id, persistentId)` albo `MaterializeRefused(id, reason)`, bez opakowania | Oba rozszerzają `MaterializeResponse`; po materializacji szkic znika ([rozdział 20](20-ephemeral-aggregates.md)). Polecenia dla identyfikatora, którego szyna nie trzyma, dostają `EphemeralAggregateLost` albo `EphemeralAggregateUnknown`. |
+| `RewriteEverywhere(id, change, userId)` | `HistoryRewritten(id, events, archived, fields)` albo `RewriteRefused(id, reason)`, bez opakowania | Pełne przepisanie historii jednego agregatu, wykonywane w jego właścicielu; oba rozszerzają `RewriteResponse`. `HistoryRewriter` wysyła ten komunikat także do każdej kopii ([rozdział 15](15-rewriting-history.md)). |
+| `AggregateCommandBusActor.PassivateAggregate(id)` | Nic | Zatrzymuje właściciela agregatu, gdy ten odpowie na rozpoczęte polecenia; następny komunikat uruchamia nowego właściciela. |
+| Cokolwiek innego | `Status.Failure(IllegalArgumentException)` | Ask kończy się błędem „Cannot handle this kind of message”. |
 
-Odczyty historyczne (`GetAggregateForVersion`, `GetAggregateAtInstant` i listy zdarzeń) są zawijane
-jakiekolwiek inne problemy ze sklepem w `Failure(AggregateRestoreFailedException)`.
+Odczyty historyczne (`GetAggregateForVersion`, `GetAggregateAtInstant` i listy zdarzeń) każdy inny
+kłopot z magazynem opakowują w `Failure(AggregateRestoreFailedException)`.
 
-> **Ostrzeżenie:** w klastrze odpowiedź pochodząca od właściciela innego węzła musi mieścić się w jednym
-> wiadomość między węzłami (około 248 KiB z domyślnym rozmiarem ramki Pekko). Większy rozmiar sprawia, że
-> zapytanie kończy się niepowodzeniem z wyjątkiem `MessageTooLargeException`. `GetEventsForAggregate` i innymi odczytami historycznymi
-> odpowiedzi zawsze są udzielane na Twoim własnym węźle, z magazynu. Więcej w [rozdziale 17](17-cluster.md).
+> **Ostrzeżenie:** w klastrze odpowiedź od właściciela z innego węzła musi zmieścić się w jednym
+> komunikacie między węzłami (około 248 KiB przy domyślnym rozmiarze ramki Pekko). Przy większej twój
+> ask kończy się błędem `MessageTooLargeException`. Na `GetEventsForAggregate` i pozostałe odczyty
+> historyczne odpowiedź powstaje zawsze na twoim własnym węźle, z magazynu. Więcej
+> w [rozdziale 17](17-cluster.md).
 
 ---
 
 ## Odpowiedzi na polecenia (`CustomCommandResponse.scala`)
 
-Każde polecenie otrzymuje dokładnie jedno z nich. Kopia idempotentnego polecenia, które zostało już zastosowane.
-otrzymuje odpowiedź, jaką otrzymała pierwsza kopia.
+Każde polecenie dostaje dokładnie jedną z nich. Kopia polecenia idempotentnego, które zostało już
+zastosowane, dostaje tę samą odpowiedź co pierwsza kopia.
 
-| Odpowiedź | Co to oznacza | Typowe powody |
+| Odpowiedź | Co oznacza | Typowe przyczyny |
 |---|---|---|
-| `SuccessResponse(aggregateId, aggregateVersion)` | Zdarzenia są zapisywane; `aggregateVersion` to nowa wersja. | Twój moduł obsługi zwrócił `CommandSuccess(...)`. Bez zdarzeń nic nie jest zapisywane, a wersja pozostaje. |
-| `CustomSuccessResponse(aggregateId, aggregateVersion, info)` | To samo, ale z Twoim `info`. | Twój moduł obsługi zwrócił `CommandSuccess(event, info)`, podobnie jak `AddItemWithReceipt` zwraca `ItemReceipt`. |
-| `FailureResponse(exceptions)` | Odrzucono; nic nie zostało zapisane. `exceptions` to `List[String]` komunikatów. | Twój handler zwrócił `CommandFailure("...")`. Biblioteka również odrzuca: wybrany identyfikator, którego nie dopuszcza, nowy agregat, którego pierwsze zdarzenie nie zawiera spacji, polecenie typu sharded, zbyt duże, aby wysłać je między węzłami. |
-| `AggregateConcurrentModificationError(aggregateId, aggregateType, expected, was)` | Konflikt wersji; nic nie zostało zapisane. `expected` to to, co powiedziałeś, `was` to, co ma agregat. | `Command` ze starą, oczekiwaną wersją; agregat, który nie istnieje (`was` to wersja 0); `ConcurrentCommand`, który kolidował 10 razy; `FirstCommand`, którego wybrany identyfikator jest już zajęty. |
-| `CommandHandlingError(commandName, errorId, commandId)` | Nie można obsłużyć polecenia; nic nie zostało zapisane. W dzienniku przyczyna jest podana pod `errorId`. | Przekroczono limit czasu polecenia; program obsługi zgłosił lub nie obsłużył polecenia; nie można przywrócić agregatu; nie istnieje lub został usunięty; nie można uzyskać identyfikatorów (wówczas `commandId` to `CommandId(0)`). |
-| `EventHandlingError(eventName, errorId, commandId)` | Zdarzenia nie mogły zostać zastosowane ani zapisane; nic nie zostało zapisane. W dzienniku przyczyna jest podana pod `errorId`. | Obsługa zdarzeń zgłosiła błąd; zdarzenie jest zbyt duże; agregat ma zbyt wiele zdarzeń; baza danych uległa awarii lub nie miała wolnego połączenia. |
-| `CommandRejected(aggregateId, reason)` | Nie uruchamia się wcale; ponowne wysłanie może zadziałać. | W trybie szeregowym kolejka agregatu jest pełna; podczas aktualizacji stopniowej jest to klasa zdarzeń, której nie każdy węzeł może jeszcze odczytać. |
+| `SuccessResponse(aggregateId, aggregateVersion)` | Zdarzenia są zapisane; `aggregateVersion` to nowa wersja. | Twój handler zwrócił `CommandSuccess(...)`. Bez zdarzeń nic nie jest zapisywane, a wersja się nie zmienia. |
+| `CustomSuccessResponse(aggregateId, aggregateVersion, info)` | To samo, z twoim `info`. | Twój handler zwrócił `CommandSuccess(event, info)`, tak jak `AddItemWithReceipt` z `ItemReceipt`. |
+| `FailureResponse(exceptions)` | Odmowa; nic nie zapisano. `exceptions` to `List[String]` z komunikatami. | Twój handler zwrócił `CommandFailure("...")`. Odmawia też biblioteka: wybrany identyfikator, na który nie pozwala, nowy agregat, którego pierwsze zdarzenie nie ma przestrzeni, polecenie typu shardowanego zbyt duże, by przesłać je między węzłami. |
+| `AggregateConcurrentModificationError(aggregateId, aggregateType, expected, was)` | Kolizja wersji; nic nie zapisano. `expected` to wersja podana przez ciebie, `was` to wersja agregatu. | `Command` ze starą oczekiwaną wersją; agregat, który nie istnieje (`was` to wersja 0); `ConcurrentCommand`, który zderzył się 10 razy; `FirstCommand`, którego wybrany identyfikator jest już zajęty. |
+| `CommandHandlingError(commandName, errorId, commandId)` | Polecenia nie udało się obsłużyć; nic nie zapisano. Przyczyna jest w logu pod `errorId`. | Polecenie przekroczyło limit czasu; twój handler rzucił wyjątek albo nie obsłużył polecenia; agregatu nie da się odtworzyć; agregat nie istnieje albo jest usunięty; nie udało się zdobyć identyfikatorów (wtedy `commandId` to `CommandId(0)`). |
+| `EventHandlingError(eventName, errorId, commandId)` | Zdarzeń nie udało się zastosować ani zapisać; nic nie zapisano. Przyczyna jest w logu pod `errorId`. | Twój handler zdarzenia rzucił wyjątek; zdarzenie jest za duże; agregat ma za dużo zdarzeń; baza danych zawiodła albo nie miała wolnego połączenia. |
+| `CommandRejected(aggregateId, reason)` | Polecenie w ogóle się nie wykonało; ponowne wysłanie później może się udać. | W trybie szeregowym kolejka agregatu jest pełna; podczas aktualizacji kroczącej klasa zdarzenia, której jeszcze nie każdy węzeł potrafi odczytać. |
 
-W załączniku C znajduje się sekcja poświęcona każdej odpowiedzi na błąd: co go powoduje i co należy zrobić.
+Dodatek C ma osobną sekcję dla każdej odpowiedzi z błędem: co ją powoduje i co z tym zrobić.
 
 ---
 
 ## Szyna zdarzeń (`EventsBusActor`)
 
-Po jednym na węzeł. Wiadomości od `io.reactivecqrs.core.eventbus.EventsBusActor._`.
+Jedna na węzeł. Komunikaty z `io.reactivecqrs.core.eventbus.EventsBusActor._`.
 
-| Wysyłasz | Dostajesz z powrotem | Warto wiedzieć |
+| Wysyłasz | Dostajesz | Warto wiedzieć |
 |---|---|---|
-| `RegisterSubscribers(subscribers)` | Nic | Wyślij raz na początku, z każdą projekcją, aktorem słuchaczem i nadzorcą zarządzanej projekcji. Szyna pyta każdego o subskrypcje i nic nie publikuje, dopóki wszyscy nie odpowiedzą; w międzyczasie loguje co 5 sekund, na kogo czeka. `RegisterSubscribers(Nil)` uruchamia szynę bez subskrybentów. |
-| `GetDeliveryStatus` | `DeliveryStatus(oczekiwanie, niedoręczenie, zatrzymanie, wstrzymanie, opóźnienie)` | Odebrano, nawet gdy autobus czekał na abonentów. Zobacz poniżej. |
+| `RegisterSubscribers(subscribers)` | Nic | Wyślij raz na starcie, ze wszystkimi projekcjami, aktorami-listenerami i nadzorcami projekcji zarządzanych. Szyna pyta każdego o subskrypcje i niczego nie publikuje, dopóki wszyscy nie odpowiedzą; w tym czasie co 5 sekund zapisuje w logu, na kogo czeka. `RegisterSubscribers(Nil)` uruchamia szynę bez subskrybentów. |
+| `GetDeliveryStatus` | `DeliveryStatus(waiting, undelivered, stopped, held, behind)` | Szyna odpowiada nawet wtedy, gdy jeszcze czeka na subskrybentów. Szczegóły niżej. |
 
-Pola „DeliveryStatus”:
+Pola `DeliveryStatus`:
 
-- `waiting: Int`: przesyłki w trakcie realizacji (wysłane lub wstrzymane, jeszcze nieodebrane);
-- `undelivered: Seq[Undelivered]`: ostatnie dostawy, na które nikt nie odpowiedział w ciągu 10 minut,
-  każdy `Niedostarczony(aggregateType, aggregateId, wersja, subskrybent, rodzaj, w)`;
-- `stopped: Seq[String]`: subskrybenci, którzy zatrzymali subskrypcję; ich zdarzenia pozostają w skrzynce nadawczej;
-- `held: Int`: dostawy wstrzymane, ponieważ okno abonenta było pełne;
-- `behind: Map[String, Int]`: dla każdego subskrybenta znajdującego się za, ile agregatów jest dla niego przechowywanych.
+- `waiting: Int`: dostarczenia w drodze (wysłane albo wstrzymane, jeszcze bez odpowiedzi);
+- `undelivered: Seq[Undelivered]`: ostatnie dostarczenia, na które nikt nie odpowiedział w ciągu
+  10 minut, każde jako `Undelivered(aggregateType, aggregateId, version, subscriber, kind, at)`;
+- `stopped: Seq[String]`: subskrybenci, którzy się zatrzymali; ich zdarzenia zostają w outboxie;
+- `held: Int`: dostarczenia wstrzymane, bo okno subskrybenta było pełne;
+- `behind: Map[String, Int]`: dla każdego subskrybenta, który zostaje w tyle, liczba agregatów
+  wstrzymanych dla niego.
 
-### Jeśli piszesz subskrybenta ręcznie
+### Jeśli piszesz subskrybenta samodzielnie
 
-`ProjectionActor` robi to wszystko za Ciebie, w tym sprawdzanie wersji. Jeśli kiedykolwiek napiszesz
-abonent od podstaw, oto rozmowa, jaką musi odbyć z autobusem:
+`ProjectionActor` robi to wszystko za ciebie, łącznie ze sprawdzaniem wersji. Jeśli kiedyś napiszesz
+subskrybenta od zera, oto rozmowa, którą musi on prowadzić z szyną:
 
-| Autobus cię wysyła | Odpowiadasz |
+| Szyna wysyła ci | Odpowiadasz |
 |---|---|
-| `GetSubscriptionRequests(registered)` | `SubscriptionRequests(requests, registered)`, z jednym `SubscribeForEvents(aggregateType, self)`, `SubscribeForAggregates(aggregateType, self)` lub `SubscribeForAggregatesWithEvents(aggregateType, self)` na subskrypcję |
-| `IdentifiableEvents(aggregateType, aggregateId, events, startsAtSquash)` | `MessageAck(self, aggregateId, versions, EventsDelivery)` po zastosowaniu (lub zastosowaniu wcześniej); `MessageFailed(self, aggregateId, versions, error, EventsDelivery)` po rezygnacji |
-| `AggregateWithType(aggregateType, id, version, events, aggregateRoot, startsAtSquash)` | To samo z `AggregatesDelivery` |
-| `AggregateWithTypeAndEvents(aggregateType, id, aggregateRoot, events, startsAtSquash)` | To samo z `AggregatesWithEventsDelivery` |
-| (nic: zauważyłeś brakujące wersje) | `RequestRepublish(self, aggregateType, aggregateId, from)` do magistrali, która dostarczyła |
+| `GetSubscriptionRequests(registered)` | `SubscriptionRequests(requests, registered)`, z jednym `SubscribeForEvents(aggregateType, self)`, `SubscribeForAggregates(aggregateType, self)` albo `SubscribeForAggregatesWithEvents(aggregateType, self)` na każdą subskrypcję |
+| `IdentifiableEvents(aggregateType, aggregateId, events, startsAtSquash)` | `MessageAck(self, aggregateId, versions, EventsDelivery)` po zastosowaniu (albo gdy zastosowano je już wcześniej); `MessageFailed(self, aggregateId, versions, error, EventsDelivery)`, gdy się poddajesz |
+| `AggregateWithType(aggregateType, id, version, events, aggregateRoot, startsAtSquash)` | To samo, z `AggregatesDelivery` |
+| `AggregateWithTypeAndEvents(aggregateType, id, aggregateRoot, events, startsAtSquash)` | To samo, z `AggregatesWithEventsDelivery` |
+| (nic: sam zauważasz brakujące wersje) | `RequestRepublish(self, aggregateType, aggregateId, from)` do szyny, która dostarczyła zdarzenia |
 
-Odpowiedz aktorowi, który wysłał Ci przesyłkę.
+Odpowiadaj temu aktorowi, który przysłał ci dostarczenie.
 
 ---
 
-## Odpytywanie skrzynki nadawczej („OutboxPollerActor”)
+## Poller outboxu (`OutboxPollerActor`)
 
-Jeden na system. Wiadomości od `io.reactivecqrs.core.delivery.OutboxPollerActor._`.
+Jeden na system. Komunikaty z `io.reactivecqrs.core.delivery.OutboxPollerActor._`.
 
-| Wysyłasz | Dostajesz z powrotem | Warto wiedzieć |
+| Wysyłasz | Dostajesz | Warto wiedzieć |
 |---|---|---|
-| `GetOutboxStatus` | `OutboxStatus(waiting, gaveUp)` | `waiting`: ile agregatów ze zdarzeniami w skrzynce nadawczej śledzi moduł sondujący od czasu ostatniego sondowania (maksymalnie 100 000). `gaveUp`: zgłoszone jako niedostarczone, każde `WaitingInOutbox(aggregateType, aggregateId, lowestVersion, since)`. |
-| `Ankieta` | Nic | Teraz odczytuje skrzynkę nadawczą. Własny timer wysyła ją co 30 sekund, pierwszy raz 10 sekund po uruchomieniu. |
+| `GetOutboxStatus` | `OutboxStatus(waiting, gaveUp)` | `waiting`: ile agregatów miało zdarzenia czekające w outboxie przy ostatnim przeglądzie pollera (czyta najwyżej 100 000). `gaveUp`: agregaty zgłoszone jako niedostarczone, każdy jako `WaitingInOutbox(aggregateType, aggregateId, oldestVersion, since)`. |
+| `Poll` | Nic | Czyta outbox od razu. Własny timer pollera wysyła ten komunikat co 30 sekund, pierwszy raz 10 sekund po starcie. |
 
 ---
 
 ## Projekcje (`ProjectionActor`)
 
-Wiadomości z `io.reactivecqrs.core.projection._`. Wyślij je do projekcji lub do jej
-przełożonego, jeżeli jest zarządzane: przełożony przekazuje je dalej.
+Komunikaty z `io.reactivecqrs.core.projection._`. Wysyłaj je do projekcji albo, jeśli jest
+zarządzana, do jej nadzorcy: nadzorca przekaże je dalej.
 
-| Wysyłasz | Dostajesz z powrotem | Warto wiedzieć |
+| Wysyłasz | Dostajesz | Warto wiedzieć |
 |---|---|---|
-| `GetProjectionStatus` | `ProjectionStatus(projectionName, błędy, ponawianie, waitingForGap)` | `błędy`: każde `SubscriptionFailure(subscriptionType, aggregateType, aggregateId, wersja, błąd, od)`; `ponowne wypróbowanie` i `waitingForGap`: zbiorcze identyfikatory. |
-| `RetryFailedSubscription(aggregateId)` | `FailedSubscriptionsHandled(aggregateId, count)` | Ponownie pyta właściciela o nieudane wersje; każda nieudana subskrypcja jest czyszczona po zastosowaniu jej wersji. `count`: nieudane subskrypcje danego agregatu (jedna na każdy rodzaj nasłuchiwacza). |
-| `RetryAllFailedSubscriptions` | `FailedSubscriptionsRetried(count)` | Ponawianie prób po każdym błędzie, 20 na sekundę. |
-| `SkipFailedVersion(aggregateId)` | `FailedSubscriptionsHandled(aggregateId, count)` | Oznacza każdą nieudaną wersję jako zastosowaną bez jej stosowania, a następnie kontynuuje od następnej wersji. |
-| Twoje własne zapytanie, np. `GetAllCartsNames()` | Cokolwiek wyśle ​​Twoje `receiveQuery` | Na zapytanie, które rzuca zapytanie, odpowiada `Status.Failure(e)`, a projekcja jest kontynuowana. |
+| `GetProjectionStatus` | `ProjectionStatus(projectionName, failures, retrying, waitingForGap)` | `failures`: każdą awarię jako `SubscriptionFailure(subscriptionType, aggregateType, aggregateId, version, error, since)`; `retrying` i `waitingForGap`: identyfikatory agregatów. |
+| `RetryFailedSubscription(aggregateId)` | `FailedSubscriptionsHandled(aggregateId, count)` | Prosi właściciela ponownie o nieudane wersje; każda awaria znika, gdy jego wersja zostanie zastosowana. `count`: nieudane subskrypcje tego agregatu (po jednej na rodzaj listenera). |
+| `RetryAllFailedSubscriptions` | `FailedSubscriptionsRetried(count)` | Ponawia wszystkie awarie, 20 na sekundę. |
+| `SkipFailedVersion(aggregateId)` | `FailedSubscriptionsHandled(aggregateId, count)` | Oznacza każdą nieudaną wersję jako zastosowaną, nie stosując jej, i kontynuuje od następnej wersji. |
+| Twoje własne zapytanie, na przykład `GetAllCartsNames()` | To, co wyśle twoje `receiveQuery` | Na zapytanie, które rzuci wyjątek, odpowiedzią jest `Status.Failure(e)`, a projekcja działa dalej. |
 
 ### Opóźnione zapytania
 
-W `receiveQuery` możesz odpowiedzieć zapytaniem, które czeka na swoje dane. Są to metody, które
-wywołanie z `sender()` jako `respondTo`:
+W `receiveQuery` możesz odpowiedzieć zapytaniem, które czeka na swoje dane. To metody, które
+wywołujesz, z `sender()` jako `respondTo`:
 
-| Ty dzwonisz | Pytający otrzymuje |
+| Wywołujesz | Pytający dostaje |
 |---|---|
-| `delayIfNotAvailable(respondTo, search, forMaximumMillis)`, z `search: () => Option[T]` | `Some(result)`, gdy `search` go znajdzie (uruchamia się ponownie po każdej zastosowanej aktualizacji); `None`, gdy `forMaximumMillis` zakończono; `Status.Failure(e)`, jeśli `search` rzuci |
+| `delayIfNotAvailable(respondTo, search, forMaximumMillis)`, z `search: () => Option[T]` | `Some(result)`, gdy tylko `search` go znajdzie (uruchamia się ponownie po każdej zastosowanej aktualizacji); po upływie `forMaximumMillis` wynik jeszcze jednego, ostatniego wyszukiwania (`None`, jeśli nadal nic); `Status.Failure(e)`, jeśli `search` rzuci wyjątek |
 | `delayIfNotAvailableAsync(respondTo, search, forMaximumMillis)`, z `search: () => Future[Option[T]]` | To samo |
-| `delayIfNotAvailableAsyncCustom(respondTo, search, found, forMaximumMillis)`, z `search: () => Future[T]` i `found: T => Boolean` | Sam wynik, `T` (niezawinięty), gdy `found(result)` jest prawdą; `None` w momencie ostatecznym; `Status.Failure(e)` w przypadku niepowodzenia |
+| `delayIfNotAvailableAsyncCustom(respondTo, search, found, forMaximumMillis)`, z `search: () => Future[T]` i `found: T => Boolean` | Sam wynik, `T` (bez opakowania), gdy `found(result)` jest prawdą; po terminie `T` z jeszcze jednego, ostatniego wyszukiwania; `Status.Failure(e)` przy błędzie |
 
+Tak na swoje zapytanie odpowiada projekcja nazw koszyków z przykładu E10:
+
+<!-- snippet: e10/CartNames.scala#query -->
 ```scala
-nadpisz chronione def receiveQuery: Receive = {
-  case GetCartName(cartId) => // własna wiadomość zapytania
-    delayIfNotAvailable(sender(), () => documentStore.getDocument(cartId.asLong).map(_.document), 2000)
+override protected def receiveQuery: Receive = {
+  case GetCartName(id) => delayIfNotAvailable(sender(), () => store.getDocument(id.asLong).map(_.document), 2000)
 }
 ```
 
-Wycofana kompilacja zarządzanej projekcji odpowiada na oczekujące zapytania wartością `None`.
+Budowa projekcji zarządzanej, którą wycofano z użycia, odpowiada na czekające zapytania wartością
+`None`.
 
 ### Projekcje subskrybowalne (`SubscribableProjectionActor`)
 
-Wiadomości od `io.reactivecqrs.core.projection.SubscribableProjectionActor._`.
+Komunikaty z `io.reactivecqrs.core.projection.SubscribableProjectionActor._`.
 
-| Wysyłasz (lub dzwonisz) | Otrzymujesz z powrotem |
+| Wysyłasz (albo wywołujesz) | Dostajesz |
 |---|---|
-| Twoja własna wiadomość subskrypcji, którą projekcja obsługuje w `receiveSubscriptionRequest` poprzez wywołanie `handleSubscribe(subscriptionId, listener, filter)` | Słuchacz otrzymuje `SubscribedForProjectionUpdates(subscriptionId)`, a następnie `SubscriptionUpdated(subscriptionId, data)` dla każdej aktualizacji (`sendUpdate`), którą filtr zamienia na `Some(data)` |
-| `RenewSubscription(subscriptionId)` | Nic, dopóki projekcja zna subskrypcję; `ProjectionSubscriptionsCancelled(List(subscriptionId))`, gdy jej nie zna (ponowna subskrypcja) |
-| `Anuluj subskrypcje projekcji (subskrypcje)` | `Anulowano subskrypcje projekcji (subskrypcje)` |
+| Twój własny komunikat subskrypcji, który projekcja obsługuje w `receiveSubscriptionRequest`, wywołując `handleSubscribe(subscriptionId, listener, filter)` | Listener dostaje `SubscribedForProjectionUpdates(subscriptionId)`, a potem `SubscriptionUpdated(subscriptionId, data)` przy każdej aktualizacji (`sendUpdate`), którą filtr zamieni w `Some(data)` |
+| `RenewSubscription(subscriptionId)` | Nic, dopóki projekcja zna subskrypcję; `ProjectionSubscriptionsCancelled(List(subscriptionId))`, gdy jej nie zna (zasubskrybuj ponownie) |
+| `CancelProjectionSubscriptions(subscriptions)` | `ProjectionSubscriptionsCancelled(subscriptions)` |
 
-Subskrypcja push, która nie zostanie odnowiona w ciągu 10 minut, wygasa.
+Subskrypcja push, której nikt nie odnowi przez 10 minut, wygasa.
 
 ---
 
-## Zarządzani nadzorcy projekcji (`ProjectionSupervisor`)
+## Nadzorcy projekcji zarządzanych (`ProjectionSupervisor`)
 
-`ActorRef` zwracany przez `Projections.start`. Wiadomości z
-`io.reactivecqrs.core.rebuild.ProjectionSupervisor._`; `RebuildTarget` pochodzi z
-`io.reactivecqrs.core.projection`.
+`ActorRef`, który zwraca `Projections.start`. Komunikaty
+z `io.reactivecqrs.core.rebuild.ProjectionSupervisor._`; `RebuildTarget` pochodzi
+z `io.reactivecqrs.core.projection`.
 
-| Wysyłasz | Dostajesz z powrotem | Warto wiedzieć |
+| Wysyłasz | Dostajesz | Warto wiedzieć |
 |---|---|---|
-| `RebuildProjection` | `RebuildStarted(build)` lub `RebuildRefused(reason)` | Rozpoczyna nową kompilację bieżącej wersji projekcji; zastępuje aktywną kompilację po jej dogonieniu. Odrzucona podczas uruchamiania innej kompilacji lub docelowej kompilacji. |
-| `RebuildAggregates(target)`, z `RebuildTarget.OneAggregate(id)`, `RebuildTarget.OneType(aggregateType)` lub `RebuildTarget.OneSpace(spaceId)` | `AggregatesRebuilt(target, aggregates)` po zakończeniu lub `RebuildRefused(reason)` | Przebudowuje w miejscu, w aktywnej kompilacji. Odpowiedź pojawia się dopiero po zakończeniu przebudowy, więc daj pytanie o długi czas oczekiwania. Odrzucane, gdy projekcja nie implementuje `clearForRebuild`, podczas kompilacji w toku oraz dla organizacji, gdy niektóre z jej agregatów nie mają jeszcze wolnej przestrzeni. |
-| `GetBuilds` | `Builds(name, active, building, caughtUp)` | `active` i `building` to `Option[BuildRecord]`, każdy `BuildRecord(name, number, version, suffix, subscriber, contexts, position)`. `caughtUp`: trwająca kompilacja zawiera wszystkie zdarzenia. |
-| `ToBuildInProgress(message)` | Niezależnie od odpowiedzi na trwającą kompilację lub `RebuildRefused("brak uruchomionej kompilacji")` | Na przykład `ToBuildInProgress(RetryAllFailedSubscriptions)`: kompilacja z nieudanymi subskrypcjami nie zastępuje aktywnej. |
-| Coś jeszcze (Twoje zapytania, `GetProjectionStatus`, komunikaty ponownych prób) | Odpowiedź instancji, która obsługuje | Nadzorca przekazuje ją dalej, zachowując Cię jako nadawcę. |
+| `RebuildProjection` | `RebuildStarted(build)` albo `RebuildRefused(reason)` | Rozpoczyna nową budowę bieżącej wersji projekcji; nowa budowa zastępuje aktywną, gdy nadrobi zaległości. Odmowa, gdy trwa inna budowa albo przebudowa celowana. |
+| `RebuildAggregates(target)`, z `RebuildTarget.OneAggregate(id)`, `RebuildTarget.OneType(aggregateType)` albo `RebuildTarget.OneSpace(spaceId)` | `AggregatesRebuilt(target, aggregates)` po zakończeniu albo `RebuildRefused(reason)` | Przebudowuje w miejscu, na aktywnej budowie. Odpowiedź przychodzi dopiero po zakończeniu przebudowy, więc daj wywołaniu ask hojny limit czasu. Odmowa, gdy projekcja nie implementuje `clearForRebuild`, gdy trwa budowa, a dla organizacji także wtedy, gdy część jej agregatów nie ma jeszcze przestrzeni. |
+| `GetBuilds` | `Builds(name, active, building, caughtUp)` | `active` i `building` to `Option[BuildRecord]`, każdy jako `BuildRecord(name, number, version, suffix, subscriber, contexts, position)`; `position` budowy w toku to pozycja, którą jej builder zapisał ostatnio. `caughtUp`: budowa w toku ma już wszystkie zdarzenia. |
+| `GetBuildStatus` (z `ProjectionBuilder`) | `BuildStatus(phase, position, eventsSent, gapsFilled, handedOver, unreadable)` | Stan działającego buildera: `phase` to `Bulk`, `GoingLive`, `Reconciling` albo `CaughtUp`; gdy żaden builder nie pracuje, `Waiting` albo `NoBuild`. Działa też dla buildera przebudowy celowanej. |
+| `ToBuildInProgress(message)` | To, co odpowie budowa w toku, albo `RebuildRefused("no build is running")` | Na przykład `ToBuildInProgress(RetryAllFailedSubscriptions)`: budowa z nieudanymi subskrypcjami nie zastąpi aktywnej. |
+| Cokolwiek innego (twoje zapytania, `GetProjectionStatus`, komunikaty ponawiania) | Odpowiedź instancji, która obsługuje zapytania | Nadzorca przekazuje komunikat dalej, zostawiając ciebie jako nadawcę. |
 
-Wiadomość, której nie udało się rozwiązać samemu nadzorcy, ma odpowiedź `Status.Failure(e)`.
+Jeśli błąd wystąpi w samym nadzorcy, odpowiedzią jest `Status.Failure(e)`.
 
 ---
 
-## Harmonogram squasha (`SquashScheduler`)
+## Scheduler squasha (`SquashScheduler`)
 
-Po jednym na system. Wiadomości z `io.reactivecqrs.core.aggregate.SquashScheduler._`.
+Jeden na system. Komunikaty z `io.reactivecqrs.core.aggregate.SquashScheduler._`.
 
-| Wysyłasz | Dostajesz z powrotem | Warto wiedzieć |
+| Wysyłasz | Dostajesz | Warto wiedzieć |
 |---|---|---|
-| `GetSquashStatus` | `SquashStatus(squashed, denied, waiting)` | Zlicza od momentu uruchomienia harmonogramu; `waiting` to czas, który bieżące uruchomienie jeszcze się nie zakończył. |
-| `Uruchom` | Nic | Rozpoczyna teraz bieg, chyba że ktoś jeszcze nie wykonuje biegu. Jego timer wysyła go co godzinę, pierwszy raz minutę po rozpoczęciu. |
+| `GetSquashStatus` | `SquashStatus(squashed, refused, waiting)` | Liczniki od startu schedulera; `waiting` to to, czego bieżący przebieg jeszcze nie skończył. |
+| `Run` | Nic | Uruchamia przebieg od razu, chyba że poprzedni jeszcze trwa. Timer schedulera wysyła ten komunikat co godzinę, pierwszy raz minutę po starcie. |
 
 ---
 
-## Biegacze Sagi (`SagaActor`)
+## Runnery sag (`SagaRunner`)
 
-Wiadomości od `io.reactivecqrs.core.saga._`.
+Komunikaty z `io.reactivecqrs.core.saga._`.
 
-| Wysyłasz | Dostajesz z powrotem | Warto wiedzieć |
+| Wysyłasz | Dostajesz | Warto wiedzieć |
 |---|---|---|
-| Twój `SagaOrder`, na przykład `CreateMultipleCarts(userId, "Groceries", 3)` | `SagaResponse`, którą Twój krok zwraca w `SagaSucceded(response)` lub `SagaFailed(response)` | `SagaFailureResponse(exceptions)`, gdy krok kończy się niepowodzeniem z powodu wyjątku, gdy nie można uzyskać identyfikatora sagi lub gdy nie można jej zapisać. W klastrze odpowiedź może pojawić się dwukrotnie: potraktuj drugą odpowiedź dla tej samej sagi jako powtórzenie. |
+| Twój `SagaOrder`, na przykład `CreateMultipleCarts(userId, "Groceries", 3)` | `SagaResponse`, które twój krok podaje w `SagaSucceded(response)` albo `SagaFailed(response)` | `SagaFailureResponse(exceptions)`, gdy krok kończy się wyjątkiem, gdy nie da się zdobyć identyfikatora sagi albo gdy sagi nie da się zapisać. W klastrze odpowiedź może przyjść dwa razy: drugą odpowiedź dla tej samej sagi traktuj jako powtórkę. |
 
 ---
 
-## Operacje hosta (metody, które wywołujesz)
+## Operacje aplikacji (metody, które wywołujesz)
 
-Nie wiadomości, lecz połączenia wykonywane przez Twoją aplikację, głównie na początku lub jako jednorazowe zadania.
+To nie komunikaty, tylko wywołania, które robi twoja aplikacja, zwykle na starcie albo jako
+jednorazowe zadania.
 
-| Ty dzwonisz | Ono wraca | Kiedy |
+| Wywołujesz | Zwraca | Kiedy |
 |---|---|---|
-| `new PostgresTypesNamesState().initSchema()` | `PostgresTypesNamesState` | Przy każdym starcie, przed innymi. |
-| `new PostgresEventStoreState(mpjsons, typesNames).initSchema()` | `PostgresEventStoreState` | Przy każdym uruchomieniu. |
-| `new PostgresCommandResponseState(mpjsons, typesNames).initSchema()` | `PostgresCommandResponseState` | Przy każdym uruchomieniu. Bez niego polecenia idempotentne nie mogą przechowywać swoich odpowiedzi i kończą się niepowodzeniem. |
-| `new PostgresSubscriptionsState(typesNames).initSchema()` | `PostgresSubscriptionsState` | Przy każdym uruchomieniu, gdy masz projekcje. |
-| `new PostgresSagaState(mpjsons, typesNames).initSchema()` | `Unit` | Przy każdym starcie, gdy masz sagi. |
-| `new PostgresProjectionRegistry().initSchema()` | `PostgresProjectionRegistry` | Przy każdym uruchomieniu, gdy zarządzasz projekcjami. |
-| `eventStore.buildIndexesConcurrently()` | `Unit` | Raz po uaktualnieniu, w tle: buduje nowsze indeksy bez blokowania zapisu i nie robi nic, gdy istnieją. |
-| `eventStore.backfillEventKeys()` | `EventKeysBackfill(written, missing)` | Raz, w tle, po uruchomieniu przez każdy węzeł wersji z kluczami zdarzeń. `missing` zlicza zdarzenia, których wiersz agregatu brakuje. |
-| `eventStore.backfillSpaces(spaceOf)` | `SpaceBackfill(filled, left)` | Kiedyś dla agregatów przechowywanych zanim wymagane były spacje, przed odbudowaniem organizacji. `left` wyświetla te, których nie udało się umieścić. |
-| `StoredDataCheck.run(mpjsons, typesNames, projections)` | `StoredDataCheck.Report` | Przed uaktualnieniem, na kopii produkcyjnej. `report.text` to czytelna tabela; `report.unreadable` zlicza wiersze, których nie da się odczytać. |
-| `StoredDataCheck.usersOf(className)` | `StoredDataCheck.ClassUsers(className, events, archived, aggregates)` | Przed usunięciem klasy zdarzeń z kodu: gdy `events` i `archived` mają wartość 0, nic z niej nie korzysta. |
-| `projections.retire(name)` | `Jednostka` | Na początku, po usunięciu każdej zarządzanej projekcji z kodu, usuwa jej tabele, wersje i awarie. |
-| `subscriptionsState.clearSubscriptionsInfo(subscriberName)` | `Jednostka` | W przypadku niezarządzanej projekcji usuniętej z kodu: zapomina wersje i błędy przechowywane pod nazwą jej klasy. |
-| `ReactiveMetrics(system).use(metrics)` | `Jednostka` | W dowolnym momencie; do tego czasu nic nie jest mierzone. |
-| `UidGeneratorActor.postgres(system)` | `Props` | Na początku, aby utworzyć generator uid. |
-| `Singletons.start(system, name, props)` | `ActorRef` serwera proxy | W klastrze, dla programu sondującego skrzynkę nadawczą, harmonogramu squasha i każdego programu uruchamiającego sagę. |
-| `Readiness(system).ready`, `Readiness(system).waitingFor` | `Boolean`, `Set[String]` | Podczas kontroli stanu: czy węzeł jest gotowy i na co jeszcze czeka. |
+| `new PostgresTypesNamesState().initSchema()` | `PostgresTypesNamesState` | Przy każdym starcie, przed pozostałymi. |
+| `new PostgresEventStoreState(mpjsons, typesNames).initSchema()` | `PostgresEventStoreState` | Przy każdym starcie. |
+| `new PostgresCommandResponseState(mpjsons, typesNames).initSchema()` | `PostgresCommandResponseState` | Przy każdym starcie. Gdy go zabraknie, polecenia idempotentne nie mogą zapisać swoich odpowiedzi i kończą się błędem. |
+| `new PostgresSubscriptionsState(typesNames).initSchema()` | `PostgresSubscriptionsState` | Przy każdym starcie, jeśli masz projekcje. |
+| `new PostgresSagaState(mpjsons, typesNames).initSchema()` | `Unit` | Przy każdym starcie, jeśli masz sagi. |
+| `new PostgresProjectionRegistry().initSchema()` | `PostgresProjectionRegistry` | Przy każdym starcie, jeśli masz projekcje zarządzane. |
+| `eventStore.buildIndexesConcurrently()` | `Unit` | Raz po aktualizacji, w tle: buduje nowsze indeksy bez blokowania zapisów, a gdy już istnieją, nic nie robi. |
+| `eventStore.backfillEventKeys()` | `EventKeysBackfill(written, missing)` | Raz, w tle, gdy każdy węzeł działa już w wersji z kluczami zdarzeń. `missing` liczy zdarzenia, którym brakuje wiersza agregatu. |
+| `eventStore.backfillSpaces(spaceOf)` | `SpaceBackfill(filled, left)` | Raz, dla agregatów zapisanych, zanim przestrzenie stały się obowiązkowe, przed przebudową organizacji. `left` wymienia te, którym nie udało się przypisać przestrzeni. |
+| `StoredDataCheck.run(mpjsons, typesNames, projections)` | `StoredDataCheck.Report` | Przed aktualizacją, na kopii produkcji. `report.text` to czytelna tabela; `report.unreadable` liczy wiersze, których nie da się odczytać; `report.missingTables` wymienia tabele, których nie znaleziono. |
+| `StoredDataCheck.usersOf(className)` | `StoredDataCheck.ClassUsers(className, events, archived, aggregates)` | Przed usunięciem klasy zdarzenia z kodu: gdy `events` i `archived` wynoszą 0, nic jej nie używa. |
+| `projections.retire(name)` | `Unit` | Na starcie, dla każdej projekcji zarządzanej usuniętej z kodu; usuwa jej tabele, wersje i zapisane awarie. |
+| `subscriptionsState.clearSubscriptionsInfo(subscriberName)` | `Unit` | Dla projekcji niezarządzanej usuniętej z kodu: zapomina wersje i awarie zapisane pod nazwą jej klasy. |
+| `ReactiveMetrics(system).use(metrics)` | `Unit` | W dowolnej chwili; do tego czasu nic nie jest mierzone. |
+| `UidGeneratorActor.postgres(system)` | `Props` | Na starcie, żeby utworzyć generator identyfikatorów. |
+| `Singletons.start(system, name, props)` | `ActorRef` proxy | W klastrze: dla pollera outboxu, schedulera squasha i każdego runnera sagi. |
+| `Readiness(system).ready`, `Readiness(system).waitingFor` | `Boolean`, `Set[String]` | W kontrolach stanu (health checks): czy węzeł jest gotowy i na co jeszcze czeka. |
 
-`StoredDataCheck` znajduje się w `io.reactivecqrs.core.tools`; `Singletons` i `Readiness` w
-`io.reactivecqrs.core.cluster`; `ReactiveMetrics` w `io.reactivecqrs.core.metrics`. Identyfikator użytkownika
-Generator i magazyny dokumentów tworzą własne tabele i sekwencje.
+`StoredDataCheck` mieszka w `io.reactivecqrs.core.tools`; `Singletons` i `Readiness`
+w `io.reactivecqrs.core.cluster`; `ReactiveMetrics` w `io.reactivecqrs.core.metrics`. Generator
+identyfikatorów i magazyny dokumentów same tworzą swoje tabele i sekwencje.
 
 ---
 
-## Domyślne ustawienia, które warto znać
+## Wartości domyślne, które warto znać
 
-Są to wartości w kodzie; ostatnia kolumna wskazuje, gdzie je zmienić.
+To wartości zapisane w kodzie; ostatnia kolumna mówi, gdzie je zmienić.
 
-| Co | Domyślne | Zmieniono za pomocą |
+| Co | Domyślnie | Gdzie zmienić |
 |---|---|---|
 | Limit czasu polecenia | 60 s | `AggregateContext.commandTimeout` |
-| Próby wykonania polecenia współbieżnego | 10, oczekiwanie 10 ms, podwojenie do 500 ms | (naprawiono) |
-| Kolejka w trybie szeregowym | 1 000 oczekujących poleceń na agregację | `CommandProcessing.Serial(maxQueuePerAggregate)` |
-| Rozmiar zdarzenia | 100 000 znaków JSON | `PostgresEventStoreState(eventSizeLimit, eventSizeLimitPerClassName)` |
-| Liczba zdarzeń w agregacie | 10 000 | `PostgresEventStoreState(aggregateVersionLimit)` |
-| Migawki, raz włączone | co 200 zdarzeń i gdy właściciel zatrzyma | `SnapshotPolicy(every, onPassivation)` |
-| Bezczynni właściciele (typy `Lokalne`) | czyszczenie, maksymalnie co 5 minut, zatrzymuje te bezczynne 2 minuty po 200 ostatnio używanych i wszystkie bezczynne 12 godzin | `AggregateCommandBusActor(..., maxInactivityMillis, keepAliveLimit)` |
+| Próby polecenia współbieżnego | 10, z przerwą 10 ms podwajaną do 500 ms | (na stałe) |
+| Kolejka trybu szeregowego | 1 000 czekających poleceń na agregat | `CommandProcessing.Serial(maxQueuePerAggregate)` |
+| Rozmiar zdarzenia | 100 000 znaków JSON-a | `PostgresEventStoreState(eventSizeLimit, eventSizeLimitPerClassName)` |
+| Zdarzenia na agregat | 10 000 | `PostgresEventStoreState(aggregateVersionLimit)` |
+| Migawki, gdy są włączone | co 200 zdarzeń i przy zatrzymaniu właściciela | `SnapshotPolicy(every, onPassivation)` |
+| Bezczynni właściciele (typy `Local`) | sprzątanie, najwyżej co 5 minut, zatrzymuje bezczynnych od 2 minut spoza 200 ostatnio używanych oraz każdego bezczynnego od 12 godzin | `AggregateCommandBusActor(..., maxInactivityMillis, keepAliveLimit)` |
 | Bezczynni właściciele (typy `Sharded`) | pasywowani przez Pekko po 120 s bezczynności | `pekko.cluster.sharding.passivation` |
-| Właściciel, który nie mógł przywrócić | odpowiada błędem, a następnie zostaje zastąpiony po 5 s | `AggregateCommandBusActor(..., failedRestoreRetryAfter)` |
-| Przechowywanie idempotentnych odpowiedzi | 30 dni | `PostgresCommandResponseState(mpjsons, typesNames, retention)` |
-| Termin dostawy | 10 minut | `Opcje dostawy (termin)` |
-| Okno na abonenta | 10 000 zdarzeń i 64 MB | `DeliveryOptions(window, windowBytes)` |
-| Ankieta Outbox | ankieta co 30 sekund; publikuje ponownie po 3 i 6 minutach; „niedostarczona” po 10 minutach; następnie co 30 minut; maksymalnie 1000 agregatów na ankietę | `OutboxPollerOptions`, `RedeliveryPolicy.Options` |
-| Ponowne próby projekcji nieudanego odbiornika | około 2 minuty (1 sek. podwaja się do 30 sek., 9 prób) | `ProjectionActorOptions(retries)` |
-| Po 10 minutach następuje przerwa | `ProjectionActorOptions(gapGiveUpAfter)` |
+| Właściciel, który nie zdołał odtworzyć stanu | odpowiada błędem, po 5 s zostaje zastąpiony | `AggregateCommandBusActor(..., failedRestoreRetryAfter)` |
+| Przechowywanie odpowiedzi idempotentnych | 30 dni | `PostgresCommandResponseState(mpjsons, typesNames, retention)` |
+| Termin dostarczenia | 10 minut | `DeliveryOptions(deadline)` |
+| Okno na subskrybenta | 10 000 zdarzeń i 64 MB | `DeliveryOptions(window, windowBytes)` |
+| Poller outboxu | przegląd co 30 s; ponowna publikacja po 3 i 6 minutach; „niedostarczone” po 10; potem co 30 minut; najwyżej 1 000 agregatów na przegląd | `OutboxPollerOptions`, `RedeliveryPolicy.Options` |
+| Ponawianie nieudanego listenera w projekcji | około 2 minut (od 1 s, podwajane do 30 s, 9 prób) | `ProjectionActorOptions(retries)` |
+| Rezygnacja z luki | po 10 minutach | `ProjectionActorOptions(gapGiveUpAfter)` |
 | Agregaty na transakcję projekcji | do 100 | `ProjectionActorOptions(maxBatchesPerTransaction)` |
-| Kompilacje w tym samym czasie | 2 | `ProjectionsSettings(buildsAtOnce)` |
-| Harmonogram Squash | pierwsze uruchomienie po 1 minucie, następnie co godzinę, do 100 agregatów na typ na uruchomienie | `SquashSchedulerOptions` |
+| Budowy jednocześnie | 2 | `ProjectionsSettings(buildsAtOnce)` |
+| Scheduler squasha | pierwszy przebieg po 1 minucie, potem co godzinę, do 100 agregatów na typ w jednym przebiegu | `SquashSchedulerOptions` |
 | Subskrypcje push | wygasają po 10 minutach bez odnowienia | `SubscribableProjectionActor(subscriptionTTL)` |
-| Wątki dotyczące właścicieli i pracy z bazą danych | 32 | `reactivecqrs.blocking-dispatcher` |
-| Wątki dla procedur obsługi poleceń | 32 | `reactivecqrs.handler-dispatcher` |
-| Przekazanie właścicieli shardingu | 90 s | `pekko.cluster.sharding.handoff-timeout` |
-| Wiadomość między węzłami | 248 KiB (ramka Pekko o rozmiarze 256 KiB minus 8 KiB) | `pekko.remote.artery.advanced.maximum-frame-size` |
+| Wątki dla właścicieli i pracy z bazą danych | 32 | `reactivecqrs.blocking-dispatcher` |
+| Wątki dla handlerów poleceń | 32 | `reactivecqrs.handler-dispatcher` |
+| Przekazanie właścicieli typów shardowanych | 90 s | `pekko.cluster.sharding.handoff-timeout` |
+| Komunikat między węzłami | 248 KiB (ramka Pekko 256 KiB minus 8 KiB) | `pekko.remote.artery.advanced.maximum-frame-size` |
 
 ---
 
-Dalej: [Dodatek C](appendix-c-troubleshooting.md) na wypadek, gdyby odpowiedź nie była taka, na jaką liczyłeś.
+Dalej: [dodatek C](appendix-c-troubleshooting.md), na wypadek gdy odpowiedź nie jest tą, na którą
+liczysz.

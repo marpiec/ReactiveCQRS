@@ -500,8 +500,9 @@ reading from a snapshot 12 ms (a single run on one development machine,
 - A new aggregate starts with a `FirstEvent` that names its space; `SpaceId(0)` is the platform.
 - Returning `null` deletes an aggregate gently, keeping its history; a `PermanentDeleteEvent` removes
   it for good once every subscriber has seen it.
-- An `UndoEvent` cancels the newest events still in effect, and a `DuplicationEvent` starts a new
-  aggregate as a copy of another at a version; your handlers return the state unchanged for both.
+- An `UndoEvent` cancels the newest events still in effect, and needs no case in your handlers; a
+  `DuplicationEvent` starts a new aggregate as a copy of another at a version, and its case returns
+  the state it gets, which is already the copy.
 - A command that mixes in `WithMetadata` labels its events with an `EventMetadata` envelope that
   projections and history reads see.
 - A stored event class never changes shape: add a `V2` class, handle both, and check stored data

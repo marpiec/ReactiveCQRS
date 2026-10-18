@@ -1,112 +1,129 @@
 # ReactiveCQRS, krok po kroku
 
-*Przyjazny przewodnik po tworzeniu aplikacji Scala opartych na zdarzeniach, krok po kroku.*
+*Przyjazny przewodnik: jak małymi krokami budować w Scali aplikacje oparte na event sourcingu.*
+
+*In English: [ReactiveCQRS, Step by Step](../book/README.md).*
 
 ---
 
 ## Dla kogo jest ta książka
 
-Piszesz w Scali. Słyszałeś takie słowa jak *CQRS*, *event sourcing* i *projekcje*, może skinąłeś głową.
-grzecznie na spotkaniu, a teraz musisz coś zbudować z ReactiveCQRS. Dobra wiadomość: nie musisz
-Nie musisz być ekspertem w żadnej z tych dziedzin. Ta książka zaczyna od zera i stopniowo dodaje jeden pomysł na raz.
+Piszesz w Scali. Słowa takie jak *CQRS*, *event sourcing* i *projekcje* znasz ze słyszenia, może nawet
+zdarzyło ci się grzecznie przytaknąć, gdy padły na spotkaniu, a teraz masz coś zbudować
+z ReactiveCQRS. Dobra wiadomość: w żadnej z tych dziedzin nie musisz być ekspertem. Ta książka zaczyna
+od zera i dokłada jeden pomysł naraz.
 
-Będziesz potrzebować:
+Przyda ci się:
 
-- trochę Scali (klasy przypadków, dopasowywanie wzorców, `Future`),
-- trochę SQL (głównie będziesz obserwował, jak biblioteka to pisze),
-- mgliste wspomnienie o tym, kim jest aktor. Jeśli nie masz, to też dobrze: rozdział 1 wyjaśnia
-  potrzebne Ci części.
+- trochę Scali (case class, dopasowanie wzorców, `Future`),
+- odrobina SQL-a (głównie popatrzysz, jak pisze go biblioteka),
+- mgliste wspomnienie tego, czym jest aktor. Jeśli i tego brak, nic nie szkodzi: rozdział 1 wyjaśnia
+  to, czego potrzebujesz.
 
-## Jak zorganizowana jest ta książka
+## Jak ułożona jest ta książka
 
-Rozdziały są podzielone od prostych do zaawansowanych. Przeczytaj części I i II po kolei; następnie przejdź do kolejnych.
-czego potrzebuje Twój projekt już dziś.
+Rozdziały prowadzą od prostych do zaawansowanych. Części I i II przeczytaj po kolei, a dalej skacz do
+tego, czego twój projekt potrzebuje dzisiaj.
 
-- **Część I, Pierwsze kroki**: czym jest biblioteka, jak ją zainstalować, Twój pierwszy agregat i Twoje
+- **Część I, Pierwsze kroki**: czym jest biblioteka, jak ją zainstalować, twój pierwszy agregat i twoje
   pierwsze polecenie.
-- **Część II, Polecenia i zdarzenia szczegółowo**: każdy rodzaj polecenia, wszystko, co mogą zrobić zdarzenia i
-  jak czytać przeszłość.
-- **Część III, Odczyt modeli**: projekcje, które zmieniają zdarzenia w dane, które ludzie mogą kwerendować, w jaki sposób
-  jak odzyskać dane po awariach, jak je odbudować i jak publikować aktualizacje na żywo.
-- **Część IV, Procesy**: sagi dotyczące pracy obejmującej kilka zbiorów.
-- **Część V, Życie z długą historią**: migawki, squash, archiwum audytów i przepisywanie historii.
-- **Część VI, Organizacje, klastry i produkcja**: organizacje (przestrzenie) działające na kilku
-  węzły, obsługa wszystkiego i testowanie.
-- **Część VII, Brudne zapiski**: ulotne zbiory, które żyją w pamięci do momentu, aż je zachowasz.
-- **Dodatki**: słownik, ściągawka z komunikatami i przewodnik rozwiązywania problemów.
+- **Część II, Polecenia i zdarzenia od podszewki**: każdy rodzaj polecenia, wszystko, co potrafią
+  zdarzenia, i jak odczytać przeszłość.
+- **Część III, Modele odczytu**: projekcje, które zamieniają zdarzenia w dane, o które można pytać, jak
+  podnoszą się po awariach, jak się je przebudowuje i jak wysyłają aktualizacje na żywo.
+- **Część IV, Procesy**: sagi – do zadań, które obejmują kilka agregatów.
+- **Część V, Życie z długą historią**: migawki, squash, archiwum audytowe i przepisywanie historii.
+- **Część VI, Organizacje, klastry i produkcja**: organizacje (przestrzenie), praca na kilku węzłach,
+  utrzymanie tego wszystkiego w ruchu i testowanie.
+- **Część VII, Brudnopis**: agregaty efemeryczne, które żyją w pamięci, dopóki ich nie zachowasz.
+- **Dodatki**: słownik pojęć, ściągawka z komunikatów, poradnik rozwiązywania problemów, architektura
+  w obrazkach i wszystkie ustawienia w jednym miejscu.
 
-## Ikony używane w tej książce
+## Ramki w tej książce
 
-> **Wskazówka:** skrót lub dobry nawyk, który pozwoli Ci zaoszczędzić czas.
+> **Wskazówka:** skrót albo dobry nawyk, który oszczędza ci czas.
 
-> **Zapamiętaj**: coś na tyle ważnego, że warto o tym pamiętać po zamknięciu książki.
+> **Pamiętaj:** coś na tyle ważnego, że warto mieć to w głowie jeszcze po zamknięciu książki.
 
-> **Ostrzeżenie:** błąd, który łatwo popełnić i który jest kosztowny w naprawie. Przeczytaj to dwa razy.
+> **Ostrzeżenie:** błąd, który łatwo popełnić, a drogo naprawić. Takie ramki czytaj dwa razy.
 
-> **Pod maską:** jak to działa w środku. Można to pominąć; przydatne, gdy coś Cię zaskoczy.
+> **Pod maską:** jak to działa w środku. Tę ramkę można bez obaw pominąć, ale przydaje się, gdy coś cię
+> zaskoczy.
 
 ## Spis treści
 
 **Część I: Pierwsze kroki**
 
-1. [CQRS i pozyskiwanie zdarzeń bezproblemowe](01-cqrs-without-the-headache.md)
-2. [Konfigurowanie warsztatu](02-setting-up.md)
-3. [Twój pierwszy agregat: koszyk zakupowy](03-first-aggregate.md)
-4. [Podłączanie i wysyłanie pierwszego polecenia](04-first-command.md)
+1. [CQRS i event sourcing bez bólu głowy](01-cqrs-without-the-headache.md)
+2. [Przygotowanie warsztatu](02-setting-up.md)
+3. [Twój pierwszy agregat: koszyk zakupów](03-first-aggregate.md)
+4. [Łączymy wszystko i wysyłamy pierwsze polecenie](04-first-command.md)
 
-**Część II: Polecenia i zdarzenia szczegółowo**
+**Część II: Polecenia i zdarzenia od podszewki**
 
-5. [Polecenia mają swoje smaki](05-command-flavors.md)
-6. [Wydarzenia: Twoje jedyne źródło prawdy](06-events.md)
-7. [Patrząc wstecz w czasie](07-reading-the-past.md)
+5. [Polecenia mają różne smaki](05-command-flavors.md)
+6. [Zdarzenia: jedyne źródło prawdy](06-events.md)
+7. [Spojrzenie w przeszłość](07-reading-the-past.md)
 
-**Część III: Odczyt modeli**
+**Część III: Modele odczytu**
 
-8. [Projekcje: widoki, które ludzie mogą kwerendować](08-projections.md)
-9. [Kiedy prognozy idą źle](09-projection-failures.md)
-10. [Odbudowa projekcji bez przestoju](10-rebuilding-projections.md)
-11. [Aktualizacje na żywo z projekcjami do subskrypcji](11-subscribable-projections.md)
+8. [Projekcje: widoki, o które można pytać](08-projections.md)
+9. [Kiedy w projekcjach coś pójdzie nie tak](09-projection-failures.md)
+10. [Przebudowa projekcji bez przestojów](10-rebuilding-projections.md)
+11. [Aktualizacje na żywo z projekcjami subskrybowalnymi](11-subscribable-projections.md)
 
 **Część IV: Procesy**
 
-12. [Sagas: Jak sprawić, by agregaty współpracowały](12-sagas.md)
+12. [Sagi: jak sprawić, by agregaty współpracowały](12-sagas.md)
 
 **Część V: Życie z długą historią**
 
-13. [Utrzymywanie szybkości agregatów za pomocą migawek](13-snapshots.md)
-14. [Squash: Odrzucanie starej historii](14-squash.md)
-15. [Przepisywanie historii z rozwagą](15-rewriting-history.md)
+13. [Szybkie agregaty dzięki migawkom](13-snapshots.md)
+14. [Squash: zwijanie starej historii](14-squash.md)
+15. [Przepisywanie historii, ostrożnie](15-rewriting-history.md)
 
 **Część VI: Organizacje, klastry i produkcja**
 
 16. [Organizacje (przestrzenie)](16-organizations.md)
-17. [Przejście na tryb rozproszony: uruchamianie w klastrze](17-cluster.md)
-18. [Uruchomienie w środowisku produkcyjnym](18-production.md)
+17. [Na wielu węzłach: praca w klastrze](17-cluster.md)
+18. [Na produkcji](18-production.md)
 19. [Testowanie domeny](19-testing.md)
 
 **Część VII: Brudnopis**
 
-20. [Ephemeral Aggregates: Drafts That Live in Memory](20-ephemeral-aggregates.md)
+20. [Agregaty efemeryczne: szkice, które żyją w pamięci](20-ephemeral-aggregates.md)
 
-**Załączniki**
+**Dodatki**
 
-- A. [Słownik](appendix-a-glossary.md)
-- B. [Ściągawka: Wiadomości i odpowiedzi](appendix-b-cheat-sheet.md)
+- A. [Słownik pojęć](appendix-a-glossary.md)
+- B. [Ściągawka: komunikaty i odpowiedzi](appendix-b-cheat-sheet.md)
 - C. [Rozwiązywanie problemów](appendix-c-troubleshooting.md)
+- D. [Architektura w obrazkach](appendix-d-architecture.md)
+- E. [Konfiguracja](appendix-e-configuration.md)
 
 ## Skąd pochodzą przykłady
 
-Prawie każdy przykład pochodzi z domeny koszyka zakupowego w domenie „testdomain” lub jest na niej wzorowany
-moduł tego repozytorium (`testdomain/src/main/scala/io/reactivecqrs/testdomain/shoppingcart/`).
-To prawdziwy kod uruchamiany przez zestaw testów, więc możesz go otworzyć, uruchomić i zmodyfikować.
+Kod w tej książce jest kompilowany i uruchamiany. Pochodzi z trzech miejsc w tym repozytorium:
 
-## Wersja opisana w tej książce
+- **Przykłady książki, od E1 do E11**, w `examples/src/main/scala/io/reactivecqrs/examples/`: małe
+  programy; każdy ma `main`, który możesz uruchomić, i spec, który uruchamia ten sam kod.
+- **Koszyk zakupów z domeny testowej**, w `testdomain/src/main/scala/io/reactivecqrs/testdomain/shoppingcart/`,
+  z którego korzystają rozdziały od 5 do 18. To ten sam koszyk, na którym działają testy samej biblioteki.
+- **Testy tych rozdziałów**, w `examples/src/test/scala/io/reactivecqrs/examples/cart/`: każdy blok,
+  który coś wysyła, jest regionem jednego z nich i stoi tuż przed liniami, które sprawdzają odpowiedź
+  opisaną w rozdziale.
 
-ReactiveCQRS **1.0** (obecnie `1.0.0-SNAPSHOT`) na Scala 2.13, Apache Pekko 1.7 i PostgreSQL.
-Niektóre funkcje wersji 1.0 są nadal opracowywane; rozdziały, które o nich wspominają, mówią o tym wyraźnie i nigdy nie
-udawać, że już tam są.
+Blok wzięty z któregoś z tych miejsc ma w źródle rozdziału komentarz z nazwą pliku i regionu,
+a `BookSnippetsSpec` sprawdza, że każdy taki blok jest dokładnie tym regionem, słowo w słowo. Nieliczne
+bloki bez takiego znacznika pokazują jedno wywołanie albo linijkę konfiguracji, albo kod, który rozdział
+przedstawia jako hipotetyczny lub celowo błędny.
 
-Dla opiekunów: opis działania biblioteki w środku można znaleźć w pliku [`../ARCHITECTURE.md`](../ARCHITECTURE.md);
-znane problemy i decyzje znajdują się w [`../KNOWN-ISSUES.md`](../KNOWN-ISSUES.md); zachowanie w ramach
-„Ciężkie obciążenie” znajduje się w [`../SCALING.md`](../SCALING.md). Jak pisać do tej książki, znajdziesz w
+## Wersja, którą opisuje ta książka
+
+ReactiveCQRS **1.0** (na razie `1.0.0-SNAPSHOT`), na Scali 2.13, Apache Pekko 1.7, Javie 21
+i PostgreSQL. Każda funkcja, którą pokazuje książka, jest zbudowana i przetestowana.
+
+Dla opiekunów biblioteki: jak działa ona w środku, opisuje [`../ARCHITECTURE.md`](../ARCHITECTURE.md);
+znane problemy i podjęte decyzje są w [`../KNOWN-ISSUES.md`](../KNOWN-ISSUES.md); zachowanie pod dużym
+obciążeniem opisuje [`../SCALING.md`](../SCALING.md). Jak pisać do tej książki, mówi
 [`STYLE.md`](STYLE.md).

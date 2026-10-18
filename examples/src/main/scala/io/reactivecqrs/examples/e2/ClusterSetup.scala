@@ -38,7 +38,7 @@ object ClusterSetup {
   /** Where a node sends its commands and its questions. */
   final case class Node(carts: ActorRef, cartsList: ActorRef)
 
-  /** E2's node, with E1's carts run by `cartContext` (the fault tests' adds a command, `FaultTests`). */
+  /** E2's node, with E1's carts run by `cartContext` (the fault tests' `FaultTestCartContext` adds two commands). */
   def startNode(system: ActorSystem, cartContext: ShardedCartContext = new ShardedCartContext): Node = {
     // #node
     // The same code on every node (system: this node's ActorSystem; cartContext: E1's carts, sharded, see below)

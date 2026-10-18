@@ -1,250 +1,255 @@
-# Rozdział 13. Utrzymywanie szybkości agregatów za pomocą migawek
+# Rozdział 13. Szybkie agregaty dzięki migawkom
 
-Pod koniec tego rozdziału będziesz wiedział, dlaczego agregat z długą historią budzi się powoli,
-jak jeden wiersz w kontekście sprawia, że ​​jest on znów szybki, gdy biblioteka wyrzuca migawkę i
-Co powstrzymuje agregat przed nieustannym wzrostem? Migawki są najdelikatniejszą cechą w tej części
-książka: nie zmieniają niczego w historii i możesz je wyłączyć w dowolnym momencie.
+Pod koniec tego rozdziału będziesz wiedzieć, dlaczego agregat z długą historią powoli się budzi, jak jedna
+linijka w jego kontekście znów go przyspiesza, kiedy biblioteka wyrzuca migawkę i co powstrzymuje agregat
+przed rośnięciem bez końca. Migawki to najłagodniejsza funkcja w tej części książki: niczego nie zmieniają
+w twojej historii i w każdej chwili możesz je z powrotem wyłączyć.
 
 ---
 
-## Dlaczego długie historie stają się powolne
+## Dlaczego długa historia spowalnia
 
-Powrót do dziennika z rozdziału 1. Aby poznać aktualną listę zakupów, przeczytaj dziennik od góry
-i odtworzyć każdy wers. Za jedną stronę, która zajmie chwilę. Za pamiętnik tysiąca stron, będziesz
-najpierw chcę filiżankę kawy.
+Wróćmy do pamiętnika z rozdziału 1. Żeby poznać aktualną listę zakupów, czytasz pamiętnik od początku
+i przechodzisz przez każdą linijkę. Przy jednej stronie to chwila. Przy pamiętniku na tysiąc stron najpierw
+przyda się kubek kawy.
 
-Właściciel agregatu robi dokładnie to samo. Podczas gdy agregat jest zajęty, jego właściciel utrzymuje stan w
-pamięć, a polecenia są szybkie. Ale za każdym razem, gdy właściciel uruchamia, **przywraca** agregat,
-odtwarzając każde z wydarzeń:
+Właściciel agregatu robi dokładnie to samo. Dopóki agregat jest w użyciu, jego właściciel trzyma stan
+w pamięci i polecenia są szybkie. Ale za każdym razem, gdy właściciel startuje, **odtwarza** agregat,
+stosując po kolei każde z jego zdarzeń:
 
-- w pierwszej wiadomości dla agregatu po uruchomieniu aplikacji;
-- po zatrzymaniu właściciela z powodu bezczynności, aby zwolnić pamięć: domyślnie węzeł zatrzymuje właścicieli
-  poza 200 ostatnio używanymi, gdy są bezczynne przez 2 minuty, a każdy właściciel jest bezczynny przez
-  12 godzin;
-- po przekazaniu do innego węzła klastra (rozdział 17);
-- po tym jak coś poszło nie tak i stan trzeba było odczytać ponownie ze sklepu.
+- przy pierwszym komunikacie dla agregatu po starcie aplikacji;
+- po tym, jak właściciel został zatrzymany z powodu bezczynności, żeby zwolnić pamięć: domyślnie węzeł
+  zatrzymuje właścicieli spoza 200 ostatnio używanych, gdy są bezczynni od 2 minut, oraz każdego
+  właściciela bezczynnego od 12 godzin;
+- po przekazaniu agregatu innemu węzłowi klastra (rozdział 17);
+- gdy coś poszło nie tak i stan trzeba było ponownie odczytać z magazynu.
 
-Koszt rośnie wraz z historią. Pomiar z dnia 17.10.2026 r. (obciążenie ławki – bieg M5, jeden bieg na jednym
-maszyna: Windows 10, 12 wątków procesora, OpenJDK 17 z pamięcią 2 GB, PostgreSQL 17.4 na tym samym komputerze
-maszyna), nowy właściciel przywrócił łącznie 50 000 zdarzeń, każde z notatką składającą się z 200 znaków,
-392 ms, a w międzyczasie rozmiar stosu wzrósł z 17 do 52 MB. Polecenie po przywróceniu zajęło 3 ms.
+Koszt rośnie razem z historią. W pomiarze z 17/10/2026 (przebieg `load-M5` benchmarku, jedno uruchomienie
+na jednej maszynie: Windows 10, 12 wątków CPU, OpenJDK 17 ze stertą 2 GB, PostgreSQL 17.4 na tej samej
+maszynie) nowy właściciel odtwarzał agregat z 50 000 zdarzeń, każde z 200-znakową notatką, przez 392 ms,
+a sterta urosła w tym czasie z 17 do 52 MB. Polecenie po odtworzeniu trwało 3 ms.
 
-Dzięki temu polecenia nie stają się wolniejsze wraz ze wzrostem historii: po przywróceniu właściciel zachowuje stan, a nie
-Wydarzenia. To przebudzenie staje się wolniejsze. I chociaż właściciel odnawia, to wciąż jest jeden z
-blokowanie 32 wątków dyspozytora i połączenia z bazą danych, dzięki czemu każdy inny właściciel węzła czeka
-jeszcze trochę dłużej.
+Polecenia nie zwalniają więc wraz ze wzrostem historii: po odtworzeniu właściciel trzyma stan, a nie
+zdarzenia. Wolniejsze robi się samo budzenie. A gdy właściciel odtwarza agregat, zajmuje jeden z 32 wątków
+dispatchera blokującego i połączenie z bazą danych, więc każdy inny właściciel na tym węźle też czeka trochę
+dłużej.
 
-## Zakładka z notatką
+## Zakładka z karteczką
 
-Teraz wyobraź sobie zakładkę w dzienniku na stronie 200 z karteczką samoprzylepną: „w tym momencie lista jest
-chleb, jajka i kawa”. Następnym razem, gdy otworzysz pamiętnik na zakładce, przeczytaj notatkę i odtwórz ją.
-tylko linijki po nim.
+Teraz wyobraź sobie zakładkę w pamiętniku na stronie 200 z przyklejoną karteczką: „w tym miejscu lista to
+chleb, jajka i kawa”. Następnym razem otwierasz pamiętnik na zakładce, czytasz karteczkę i przechodzisz tylko
+przez linijki po niej.
 
-To jest **migawka**: stan agregatu w danej wersji, zapisany tak, aby można było rozpocząć przywracanie
-i przeczytaj tylko wydarzenia następujące po nim.
+To jest **migawka**: stan agregatu w danej wersji, zapisany po to, żeby odtwarzanie mogło od niego zacząć
+i przeczytać tylko zdarzenia po nim.
 
-Dwie rzeczy, których migawka nie jest:
+Są dwie rzeczy, którymi migawka nie jest:
 
-- **Nie jest częścią historii.** Wydarzenia pozostają prawdą. Wyrzuć każdą migawkę, a nic nie zostanie.
-  Utracone: przywraca tylko odczyt wszystkich zdarzeń. Dlatego migawka nazywa się *jednorazowa*.
-- **Nie jest to squash.** squash (rozdział 14) zastępuje stare wydarzenia jednym wydarzeniem. Migawka zmienia
-  nic w historii i nic w wersjach.
+- **Nie jest częścią historii.** Prawdą pozostają zdarzenia. Wyrzuć wszystkie migawki, a nic nie przepadnie:
+  odtwarzanie po prostu znów przeczyta wszystkie zdarzenia. Dlatego mówi się, że migawka jest
+  *do wyrzucenia*.
+- **Nie jest squashem.** Squash (rozdział 14) zastępuje stare zdarzenia jednym zdarzeniem. Migawka nie
+  zmienia niczego w historii ani w wersjach.
 
 ## Włączanie migawek
 
-Jeden wiersz w kontekście:
+Wystarczy jedna linijka w kontekście; tutaj w kontekście koszyków, który rozszerza kontekst z domeny
+testowej:
 
+<!-- snippet: cart/SnapshotExperimentSpec.scala#policy -->
 ```scala
 import io.reactivecqrs.api.SnapshotPolicy
 
-klasa ShoppingCartAggregateContext rozszerza AggregateContext[ShoppingCart] {
-  // ... handlerów i reszty, jak w rozdziale 3
-
-  nadpisanie migawek val: Option[SnapshotPolicy] = Some(SnapshotPolicy())
+class SnapshottedCarts extends ShoppingCartAggregateContext {
+  override val snapshots: Option[SnapshotPolicy] = Some(SnapshotPolicy())
 }
 ```
 
-`snapshots` domyślnie ma wartość `None`. `SnapshotPolicy` ma trzy parametry, wszystkie z wartościami domyślnymi:
+Domyślnie `snapshots` to `None`. `SnapshotPolicy` ma trzy parametry, wszystkie z wartościami domyślnymi:
 
-| Parametr | Domyślny | Znaczenie |
+| Parametr | Domyślnie | Znaczenie |
 | --- | --- | --- |
-| `every` | `200` | Właściciel zapisuje migawkę zaraz po zatwierdzeniu, która przenosi wersję agregatu do następnej wielokrotności `every`: 200, 400, 600 itd. |
-| `onPassivation` | `true` | Właściciel zapisuje go również wtedy, gdy agregat jest zatrzymany (pasywowany), jeśli od ostatniej migawki nastąpił ruch. |
-| `schemaVersion` | `1` | Wywołuje wyjątek, gdy klasa stanu zmienia kształt (patrz poniżej). |
+| `every` | `200` | Właściciel zapisuje migawkę zaraz po zatwierdzeniu, które doprowadza wersję agregatu do kolejnej wielokrotności `every`: przy 200, 400, 600 i tak dalej. |
+| `onPassivation` | `true` | Właściciel zapisuje migawkę także wtedy, gdy zostaje zatrzymany (pasywacja), jeśli agregat zmienił się od ostatniej migawki. |
+| `schemaVersion` | `1` | Podnieś, gdy klasa stanu zmienia kształt (zobacz niżej). |
 
-Kilka rzeczy, które warto wiedzieć o pisaniu:
+Kilka rzeczy, które warto wiedzieć o zapisywaniu migawek:
 
-- **Jedna migawka na agregat.** Najnowsza zastępuje poprzednią; tabela `snapshots` przechowuje jedną migawkę.
-  wiersz na agregat.
-- **Najważniejsza jest migawka pasywacji.** Właściciel zostaje zatrzymany, gdy jest bezczynny, gdy jest przekazywany
-  do innego węzła lub gdy zapytasz `PassivateAggregate`. Następny właściciel przywróci prawa
-  z tej migawki: często nie ma w ogóle zdarzeń do odczytania.
-- **Zapis nigdy nie przeszkadza.** Migawka przechodzi w krótką transakcję po
-  Zatwierdzenie polecenia. Jeśli się nie powiedzie, zostanie ono tylko zarejestrowane, a późniejsze przywrócenie po prostu odczyta więcej zdarzeń.
+- **Jedna migawka na agregat.** Najnowsza zastępuje poprzednią; tabela `snapshots` ma jeden wiersz na
+  agregat.
+- **Najważniejsza jest migawka przy pasywacji.** Właściciel jest zatrzymywany, gdy był bezczynny, gdy
+  przekazuje się go innemu węzłowi albo gdy poprosisz o to komunikatem `PassivateAggregate`. Następny
+  właściciel odtwarza stan prosto z tej migawki: często nie ma do przeczytania żadnych zdarzeń.
+- **Zapis nigdy nie przeszkadza.** Migawka trafia do bazy we własnej, krótkiej transakcji, po zatwierdzeniu
+  polecenia. Jeśli zapis się nie uda, zostaje tylko odnotowany w logu, a późniejsze odtwarzanie po prostu
+  przeczyta więcej zdarzeń.
 
-> **Wskazówka:** `SnapshotSpec` włącza migawki dla koszyków z `SnapshotPolicy(every = 3)`, więc
-> migawka pojawia się po kilku poleceniach. Użyj małego `every`, takiego jak to, aby je obejrzeć w teście;
-> zachowaj ustawienia domyślne w produkcji.
+> **Wskazówka:** `SnapshotSpec` włącza migawki dla koszyków przez `SnapshotPolicy(every = 3)`, więc migawka
+> pojawia się już po kilku poleceniach. Takiego małego `every` używaj, gdy chcesz obserwować migawki
+> w teście; na produkcji zostaw wartość domyślną.
 
-## Oglądanie jak to działa
+## Zobaczmy to w działaniu
 
-Mały eksperyment z `SnapshotPolicy(every = 3)` w kontekście koszyka:
+Mały eksperyment z `SnapshotPolicy(every = 3)` w kontekście koszyka. `SnapshotExperimentSpec`
+(`examples/src/test/scala/io/reactivecqrs/examples/cart/`) przeprowadza go krok po kroku:
 
-1. Utwórz koszyk za pomocą `CreateShoppingCart`: wersja 1.
-2. Dodaj dwa elementy za pomocą `AddItem`: wersje 2 i 3. Zatwierdzenie, które osiągnie wersję 3, również zapisuje
-   migawka w wersji 3.
-3. Spójrz na tabelę: `SELECT aggregate_id, version FROM snapshots` pokazuje jeden wiersz dla koszyka,
+1. Utwórz koszyk przez `CreateShoppingCart`: wersja 1.
+2. Dodaj dwie pozycje przez `AddItem`: wersje 2 i 3. Zatwierdzenie, które dochodzi do wersji 3, zapisuje też
+   migawkę w wersji 3.
+3. Zajrzyj do tabeli: `SELECT aggregate_id, version FROM snapshots` pokazuje jeden wiersz dla koszyka,
    w wersji 3.
 4. Uśpij właściciela:
 
+   <!-- snippet: cart/SnapshotExperimentSpec.scala#passivate -->
    ```scala
    import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.PassivateAggregate
 
-   wózki ! PassivateAggregate(cartId)
+   carts ! PassivateAggregate(cartId)
    ```
 
-   Agregat nie uległ zmianie od wersji 3, dlatego nie jest tworzona żadna nowa migawka.
-5. Wyślij kolejne polecenie. Nowy właściciel uruchamia migawkę, odczytuje ją i nie znajduje po niej żadnego zdarzenia.
-   powtórna rozgrywka.
+   Agregat nie zmienił się od wersji 3, więc nowa migawka nie jest zapisywana.
+5. Wyślij kolejne polecenie. Startuje nowy właściciel, czyta migawkę i nie znajduje po niej żadnego zdarzenia
+   do odtworzenia.
 
-W produkcji można obserwować to samo za pomocą metryk (rozdział 18): każde przywracanie jest mierzone czasowo
-jako `reactivecqrs.restore`, ze znacznikiem `from` ustawionym na `snapshot` lub `events`.
+Na produkcji to samo widać w metrykach (rozdział 18): czas każdego odtwarzania jest mierzony jako
+`reactivecqrs.restore`, z tagiem `from` ustawionym na `snapshot` albo `events`.
 
-## Co przywracanie robi z migawką
+## Co odtwarzanie robi z migawką
 
-Przywracanie wykorzystuje migawkę agregatu, gdy:
+Odtwarzanie korzysta z migawki agregatu, gdy:
 
-- zostało napisane w aktualnej `wersji` kontekstu;
-- został napisany przy użyciu aktualnej wersji polityki `schemaVersion`;
-- w przypadku starszej wersji, jest ona równa lub starsza od tej wersji.
+- migawkę zapisano przy obecnej wartości `version` kontekstu;
+- migawkę zapisano przy obecnej wartości `schemaVersion` polityki;
+- przy odczycie starszej wersji migawka leży w tej wersji lub przed nią.
 
-Następnie odczytuje tylko zdarzenia agregatu po migawce. W przeciwnym razie (brak migawki, jedno z drugiego)
-wersja, której nie da się odczytać) odczytuje każde zdarzenie dokładnie tak samo, jak bez migawek. Migawka
-nigdy nie powoduje niepowodzenia przywracania; przywracanie, którego nie można odczytać, jest rejestrowane jako ostrzeżenie i pomijane.
+Wtedy czyta tylko zdarzenia agregatu po migawce. W przeciwnym razie (brak migawki, migawka z innej wersji,
+migawka, której nie da się odczytać) czyta wszystkie zdarzenia, dokładnie tak jak bez migawek. Migawka
+nigdy nie sprawi, że odtwarzanie się nie uda: jeśli nie da się jej odczytać, trafia to do logu jako
+ostrzeżenie, a migawka zostaje pominięta.
 
-Te same zasady obowiązują także poza granicami właściciela:
+Te same zasady obowiązują także poza właścicielem:
 
-- **Odczyty z przeszłości** (rozdział 7): `GetAggregateForVersion` może rozpocząć się od migawki w wersji lub niższej
-  wersja, o którą prosiłeś. `GetAggregateAtInstant` nigdy jej nie używa, ponieważ migawka nie rejestruje
-  kiedy osiągnięto jego wersję.
-- **Kompilacje projekcji** (rozdział 10) przywracają potrzebne stany w ten sam sposób, dzięki czemu migawki stają się szybsze
-  przebudować projekcje, które również otrzymują państwa.
+- **Odczyty przeszłości** (rozdział 7): `GetAggregateForVersion` może zacząć od migawki w żądanej wersji lub
+  poniżej niej. `GetAggregateAtInstant` nigdy z migawek nie korzysta, bo migawka nie zapamiętuje, kiedy
+  agregat osiągnął jej wersję.
+- **Budowy projekcji** (rozdział 10) odtwarzają potrzebne stany w ten sam sposób, więc migawki przyspieszają
+  też przebudowę projekcji, które dostają stany.
 
-`SnapshotSpec` sprawdza, czy jest to niewidoczne: w przypadku losowych historii koszyków z funkcją cofania i duplikowania,
-Przywracanie za pomocą migawek daje ten sam stan, co pełne odtworzenie, w każdej wersji. Przywraca również
-koszyk 100 000 zdarzeń z jednej migawki bez odczytywania ani jednego zdarzenia, a po kolejnych 150 zdarzeniach
-odczytuje tylko te 150.
+`SnapshotSpec` sprawdza, że nic z tego nie widać z zewnątrz: dla losowych historii koszyków z cofnięciami
+i duplikacją odtwarzanie z migawkami daje w każdej wersji ten sam stan co pełne odtworzenie. Odtwarza też
+koszyk ze 100 000 zdarzeń z jednej migawki, nie czytając ani jednego zdarzenia, a po 150 kolejnych
+zdarzeniach czyta tylko te 150.
 
 ## Kiedy migawki są wyrzucane
 
-Historia może się zmienić w ramach migawki, a wtedy migawka będzie leżeć. Tak więc każda zmiana, która
-można popełnić jeden błąd usuwając go w ramach własnej transakcji zmiany:
+Historia może się zmienić pod migawką, a wtedy migawka by kłamała. Dlatego każda zmiana, która mogłaby
+uczynić migawkę błędną, usuwa ją w swojej własnej transakcji:
 
-| Zmiana | Usunięto migawki |
+| Zmiana | Usuwane migawki |
 | --- | --- |
-| cofnięcie (rozdział 6) | agregat |
-| przepisanie historii (rozdział 15) | całości i jej duplikatów |
-| squash (rozdział 14) | agregatu, gdy znajduje się w punkcie squasha lub poniżej; ze zdarzeniem squasha, które może zmienić stan, agregatu i duplikatów, które go odczytują |
-| trwałe usunięcie (rozdział 6) | agregatu |
+| cofnięcie (rozdział 6) | migawka agregatu |
+| przepisanie historii (rozdział 15) | migawka agregatu i migawki jego duplikatów |
+| squash (rozdział 14) | migawka agregatu, gdy leży w punkcie squasha lub poniżej; przy zdarzeniu squasha, które może zmienić stan, migawka agregatu i migawki duplikatów, które go czytają |
+| trwałe usunięcie (rozdział 6) | migawka agregatu |
 
-Dwie inne zmiany pozostawiają migawkę w tabeli, ale czynią ją bezużyteczną: nowa „wersja”
-kontekst i nową „wersję schematu” polityki. Stara migawka jest następnie ignorowana, a
-Następna migawka agregatu zastępuje go.
+Dwie inne zmiany zostawiają migawkę w tabeli, ale czynią ją bezużyteczną: nowa wartość `version` kontekstu
+i nowa wartość `schemaVersion` polityki. Stara migawka jest wtedy pomijana, a następna migawka agregatu ją
+zastępuje.
 
-> **Pod maską:** każda z tych zmian powoduje również *generowanie historii* agregatu,
-> licznik w tabeli `aggregates`. Przywrócenie odczytuje generację sprzed historii, a
-> migawka jest zapisywana tylko wtedy, gdy agregat jest przechowywany w wersji migawki lub nowszej i w
-> pokolenie, w którym odczytano jego stan. Zatem właściciel nadal posiada stan sprzed zmiany
-> nie można tego zapisać jako migawki (D30, F119). Pełna historia:
-> [ARCHITECTURE.md, sekcja 4.3](../ARCHITECTURE.md).
+> **Pod maską:** każda z tych zmian podnosi też *generację historii* agregatu, czyli licznik w tabeli
+> `aggregates`. Odtwarzanie czyta generację przed historią, a migawka jest zapisywana tylko wtedy, gdy
+> agregat w magazynie jest w wersji migawki lub późniejszej i ma tę generację, przy której odczytano jego
+> stan. Właściciel, który wciąż trzyma stan sprzed zmiany, nie może więc zapisać go z powrotem jako migawki
+> (D30, F119). Pełny opis: [ARCHITECTURE.md, sekcja 4.3](../ARCHITECTURE.md).
 
-## Zmiana klasy stanu lub obsługi zdarzeń
+## Zmiana klasy stanu albo handlerów zdarzeń
 
-Migawka przechowuje stan jako JSON Twojej zagregowanej klasy głównej, tutaj „ShoppingCart”. Dwa rodzaje
-zmiana powoduje, że stare migawki stają się błędne bez wiedzy biblioteki:
+Migawka przechowuje stan jako JSON klasy korzenia twojego agregatu, tutaj `ShoppingCart`. Dwa rodzaje zmian
+psują stare migawki tak, że biblioteka tego nie zauważy:
 
-- **Klasa główna zmienia kształt** (pole zostaje dodane, usunięte lub nazwane): stara migawka może nie zostać odczytana
-  z powrotem jako nowa klasa. Wywołaj `schemaVersion`, a stare migawki zostaną zignorowane:
+- **Klasa korzenia zmienia kształt** (pole dodane, usunięte albo przemianowane): starej migawki może nie dać
+  się odczytać jako nowej klasy. Podnieś `schemaVersion`, a stare migawki będą pomijane:
 
+  <!-- snippet: cart/SnapshotExperimentSpec.scala#schemaVersion -->
   ```scala
-  nadpisanie migawek val: Option[SnapshotPolicy] = Some(SnapshotPolicy(schemaVersion = 2))
+  override val snapshots: Option[SnapshotPolicy] = Some(SnapshotPolicy(schemaVersion = 2))
   ```
 
-- **Obsługa zdarzeń zmienia sposób, w jaki przetwarza zdarzenia**: stare migawki przechowują stany utworzone przez
-  stary handler. Podnieś `wersję` kontekstu. To również sprawi, że stare migawki staną się bezużyteczne i
-  odbudowuje zarządzane projekcje, które odbierają stany agregatu (rozdział 10), które zawierają
-  stany dokonane również przez starego handlera.
+- **Handler zdarzenia zmienia to, co robi ze zdarzeń**: stare migawki trzymają stany zrobione przez stary
+  handler. Podnieś `version` kontekstu. To również czyni stare migawki bezużytecznymi, a do tego
+  przebudowuje projekcje zarządzane, które dostają stany agregatu (rozdział 10), bo i one trzymają stany
+  zrobione przez stary handler.
 
-> **Ostrzeżenie:** zapomnienie o podniesieniu któregokolwiek z nich powoduje przywrócenie stanu, w którym obecny kod by się znajdował
-> nie tworzyć. Nic nie zawodzi: agregat jest po cichu błędny, a jego kolejna migawka przenosi błąd
-> wł. W razie wątpliwości podnieś `schemaVersion`: kosztuje to jedno pełne odtworzenie na agregat, raz.
+> **Ostrzeżenie:** jeśli zapomnisz podnieść którąś z tych wartości, odtwarzanie zacznie od stanu, którego
+> obecny kod by nie zrobił. Nic się nie wywróci: agregat będzie po cichu błędny, a jego następna migawka
+> poniesie błąd dalej. W razie wątpliwości podnieś `schemaVersion`: kosztuje to jedno pełne odtworzenie na
+> agregat, jednorazowo.
 
 ## Jak długa może być historia?
 
-Agregat nie może rosnąć w nieskończoność. Magazyn zdarzeń odmawia przechowywania zdarzeń po
-`aggregateVersionLimit`, domyślnie 10 000. Polecenie, którego zdarzenia przekroczyłyby limit, kończy się niepowodzeniem:
-Wywołujący otrzymuje błąd `EventHandlingError`, a log nazywa `TooManyEventsException`. Limit jest wartownikiem
-przed niekontrolowanymi agregatami, takimi jak błąd dodający zdarzenie w pętli lub jeden agregat, który powinien
-Tak naprawdę było ich kilka.
+Agregat nie może rosnąć w nieskończoność. Magazyn zdarzeń odmawia zapisania zdarzenia ponad
+`aggregateVersionLimit`, domyślnie 10 000. Polecenie, którego zdarzenia przekroczyłyby ten limit, kończy się
+niepowodzeniem: wywołujący dostaje `EventHandlingError`, a w logu pojawia się `TooManyEventsException`.
+Limit chroni przed agregatami, które wymknęły się spod kontroli: na przykład przed błędem, który w pętli
+dodaje zdarzenia, albo przed jednym agregatem, który tak naprawdę powinien być kilkoma.
 
-Jest to parametr magazynu zdarzeń, więc dotyczy każdego typu agregatu przechowywanego w magazynie.
-pozwól na dłuższe historie, zbuduj sklep z większą historią:
+To parametr magazynu zdarzeń, więc dotyczy każdego typu agregatu, który ten magazyn przechowuje. Żeby
+pozwolić na dłuższe historie, utwórz magazyn z większym limitem:
 
+<!-- snippet: cart/SnapshotExperimentSpec.scala#limit -->
 ```scala
 val eventStore = new PostgresEventStoreState(mpjsons, typesNames, aggregateVersionLimit = 50000).initSchema()
 ```
 
-(`SnapshotSpec` używa `aggregateVersionLimit = 200000` dla swojego koszyka zawierającego 100 000 zdarzeń.)
+(`SnapshotSpec` używa `aggregateVersionLimit = 200000` dla swojego koszyka ze 100 000 zdarzeń.)
 
-> **Pamiętaj:** limit obejmuje wersje, a squash nie obniża wersji (rozdział 14).
-> zgnieciony agregat nadal zatrzymuje się na granicy. Migawki pozwalają na szybkie odtworzenie długiej historii;
-> nie pozwól na to.
+> **Pamiętaj:** limit liczy wersje, a squash nie obniża wersji (rozdział 14). Agregat po squashu też
+> zatrzyma się na limicie. Migawki sprawiają, że długą historię szybko się odtwarza; nie sprawiają, że staje
+> się dozwolona.
 
-## Kiedy je włączyć
+## Kiedy je włączać
 
-`docs/SCALING.md` (sekcja 3) zaleca migawki dla każdego typu, którego agregaty rosną powyżej kilku
-Tysiąc zdarzeń. Pomiary pokazują dlaczego. Czasy przywracania własnego agregatu ławki, zdarzenia
-Notatka 200-znakowa, zmierzona 17.10.2026 r. w przebiegu „baseline-M4” (jeden przebieg na maszynie o nazwie
-powyżej, z zniesionym limitem na jednostkę łączną):
+`docs/SCALING.md` (sekcja 3) zaleca migawki dla każdego typu, którego agregaty przekraczają kilka tysięcy
+zdarzeń. Pomiary pokazują dlaczego. Oto czasy odtwarzania własnego agregatu benchmarku, ze zdarzeniami
+niosącymi 200-znakową notatkę, zmierzone 17/10/2026 w przebiegu `baseline-M4` (jedno uruchomienie na
+opisanej wyżej maszynie, ze zniesionym limitem zdarzeń na agregat):
 
-| Wydarzenia | Pełna powtórka | Z migawki |
+| Zdarzenia | Pełne odtworzenie | Z migawki |
 | --- | --- | --- |
 | 1 000 | 16 ms | 5 ms |
 | 10 000 | 58 ms | 2 ms |
 | 100 000 | 356 ms | 2 ms |
 | 500 000 | 2 088 ms | 1 ms |
 
-`load-M5` tego samego dnia daje 392 ms na pełne odtworzenie 50 000 zdarzeń w porównaniu z 12 ms od
-Migawka. To pojedyncze przebiegi na jednej maszynie: dobre do porównania, nie są to dane dotyczące pojemności dla Twojej maszyny.
+`load-M5` z tego samego dnia daje 392 ms dla pełnego odtworzenia 50 000 zdarzeń wobec 12 ms z migawki. To
+pojedyncze uruchomienia na jednej maszynie: dobre do porównań, ale nie mówią, ile udźwignie twoja maszyna.
 
-Na podstawie tych liczb `docs/SCALING.md` szacuje, że jeden węzeł może odtworzyć około 80 agregatów
-50 000 zdarzeń na sekundę bez migawek i około 2 700 z nimi (szacunkowo, nie mierzono: 32
-wątków podzielonych przez 0,392 s i przez 0,012 s). W przypadku krótkich agregatów wystarczy kilka milisekund.
-ratować.
+Na podstawie tych liczb `docs/SCALING.md` szacuje, że jeden węzeł może odtworzyć na sekundę około 80
+agregatów po 50 000 zdarzeń bez migawek i około 2 700 z migawkami (oszacowane, nie zmierzone: 32 wątki
+podzielone przez 0,392 s i przez 0,012 s). Przy krótkich agregatach oszczędzasz zaledwie kilka milisekund.
 
 Ile kosztują migawki:
 
-- jeden dodatkowy zapis co każde zdarzenie `every` i jeden, gdy właściciel zostanie zatrzymany;
-- jeden wiersz na agregat, przechowujący cały stan w formacie JSON. Duży stan tworzy dużą migawkę: zachowaj
-  duże dokumenty z zbiorczych stanów (rozdział 18).
+- jeden dodatkowy zapis co `every` zdarzeń i jeden przy zatrzymaniu właściciela;
+- jeden wiersz na agregat, z całym jego stanem jako JSON. Duży stan to duża migawka: nie trzymaj dużych
+  dokumentów w stanach agregatów (rozdział 18).
 
-A co pomaga oprócz migawek: zaprojektuj agregaty tak, aby były krótkie (podziel je naturalnym
-granica, np. jedna na miesiąc lub jedna na wersję dokumentu), zmiażdż starą historię (rozdział 14),
-i nigdy nie proś od razu o całą historię długiego zbioru (rozdział 18).
+A co pomaga poza migawkami: projektuj agregaty tak, by były krótkie (dziel je wzdłuż naturalnej granicy, na
+przykład jeden na miesiąc albo jeden na wersję dokumentu), zwijaj starą historię squashem (rozdział 14)
+i nigdy nie proś naraz o całą historię długiego agregatu (rozdział 18).
 
-## Czego się nauczyłeś
+## Co już umiesz
 
-- Właściciel przywraca swój agregat, odtwarzając każde zdarzenie za każdym razem, gdy się ono zaczyna; przywracane dane rosną wraz z
-  historia, polecenia nie.
-- Migawka to stan w danej wersji; przywrócenie odczytuje ją i tylko zdarzenia następujące po niej.
-  jednorazowe i nigdy nie będące częścią historii.
-- `override val snapshots = Some(SnapshotPolicy())` włącza je: migawka co 200 zdarzeń i
-  jeden, gdy właściciel zostaje zatrzymany.
-- Cofnij, przepisz historię, zmiksuj i usuń trwale migawki, które zostały wykonane nieprawidłowo; nowa
-  kontekst `version` lub `schemaVersion` powoduje ignorowanie starych.
-- Podnieś `schemaVersion`, gdy klasa stanu zmienia kształt, a `version` kontekstu, gdy
-  Obsługa zdarzeń zmienia sposób, w jaki zdarzenia są traktowane.
-- `aggregateVersionLimit` (domyślnie 10 000) ogranicza każdą wersję agregatu, a squash nie
-  obniż to.
+- Właściciel przy każdym starcie odtwarza swój agregat, stosując wszystkie jego zdarzenia; czas odtwarzania
+  rośnie razem z historią, czas poleceń nie.
+- Migawka to stan w danej wersji; odtwarzanie czyta ją i tylko zdarzenia po niej. Jest do wyrzucenia
+  i nigdy nie należy do historii.
+- `override val snapshots = Some(SnapshotPolicy())` je włącza: migawka co 200 zdarzeń i jedna przy
+  zatrzymaniu właściciela.
+- Cofnięcie, przepisanie historii, squash i trwałe usunięcie usuwają migawki, które czynią błędnymi; nowa
+  wartość `version` kontekstu albo `schemaVersion` sprawia, że stare migawki są pomijane.
+- Podnieś `schemaVersion`, gdy klasa stanu zmienia kształt, a `version` kontekstu, gdy handler zdarzenia
+  zmienia to, co robi ze zdarzeń.
+- `aggregateVersionLimit` (domyślnie 10 000) ogranicza wersję każdego agregatu, a squash jej nie obniża.
 
-Następnie: [rozdział 14](14-squash.md) raz na zawsze odrzuca starą historię.
+Dalej: [rozdział 14](14-squash.md) zwija starą historię na dobre.

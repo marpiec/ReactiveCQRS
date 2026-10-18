@@ -1,396 +1,435 @@
-# Załącznik A. Słownik
+# Dodatek A. Słownik pojęć
 
-Każde specjalne słowo użyte w tej książce, ułożone w kolejności alfabetycznej, z jednym lub dwoma zdaniami i
-Rozdział, który to właściwie wyjaśnia. Nazwy w czcionce „code font” to te, które spotkasz w kodzie:
-Klasy, wiadomości, ustawienia i tabele. Gdy słowo odsyła do innego wpisu („patrz *Spacja*”),
-w tym wpisie jest opisana cała historia.
+Każde szczególne słowo, którego używa ta książka, w porządku alfabetycznym: z angielskim
+odpowiednikiem, znaczeniem w jednym lub dwóch zdaniach i rozdziałem, który omawia je porządnie. Nazwy
+zapisane `taką czcionką` spotkasz w kodzie: to klasy, komunikaty, ustawienia i tabele. Gdy hasło
+odsyła cię do innego („zob. *Przestrzeń*”), właśnie tam znajdziesz pełne wyjaśnienie.
 
 ---
 
 ## A
 
-- **Ack** (`MessageAck`): subskrybent „otrzymał” potwierdzenie dostarczenia zdarzeń. Raz na
-  subskrypcja potwierdziła zdarzenie lub zgłosiła dla niego komunikat „MessageFailed”, zdarzenie opuszcza
-  skrzynka nadawcza. ([rozdział 9](09-projection-failures.md))
-- **Aktor**: mały pracownik ze skrzynką pocztową, która obsługuje jedną wiadomość na raz. Wszystko w
-  ReactiveCQRS to aktor Apache Pekko. ([rozdział 1](01-cqrs-without-the-headache.md))
-- **Agregat**: jedna rzecz z własnym dziennikiem zdarzeń, np. jeden koszyk zakupowy. Ma identyfikator,
-  wersja i stan, a ich reguły są sprawdzane zbiorczo w danym momencie.
+- **Agregat** (*aggregate*): jedna rzecz z własnym pamiętnikiem zdarzeń, na przykład jeden koszyk
+  zakupów. Ma identyfikator, wersję i stan, a reguły sprawdza się zawsze w obrębie jednego agregatu.
   ([rozdział 1](01-cqrs-without-the-headache.md), [rozdział 3](03-first-aggregate.md))
-- **Kontekst agregatu** (`AggregateContext`): klasa, którą piszesz dla jednego typu agregatu: jego
-  stan początkowy (`initialAggregateRoot`), procedury obsługi poleceń, procedury obsługi zdarzeń, jego `wersja` i
-  funkcje opcjonalne (migawki, squash, tryb szeregowy, rozmieszczanie). ([rozdział 3](03-first-aggregate.md))
-- **Identyfikator agregatu** (`AggregateId`): liczba (długa) oznaczająca jeden agregat. Magistrala poleceń
-  nadaje nowemu agregatowi swój identyfikator, chyba że polecenie wybrało jeden. ([rozdział 4](04-first-command.md))
-- **Właściciel agregatu** (`AggregateOwner`): aktor, który opiekuje się jednym agregatem. Przywraca
-  stan, uruchamia polecenia za pośrednictwem Twoich modułów obsługi, przechowuje zdarzenia i publikuje je; zaczyna się od
-  pierwsza wiadomość i zostaje zatrzymana, gdy jest bezczynna. ([rozdział 1](01-cqrs-without-the-headache.md),
-  [rozdział 4](04-pierwsze-polecenie.md))
-- **Korzeń agregatu**: niezmienna klasa przypadków przechowująca stan agregatu, np.
-  `ShoppingCart(nazwa, pozycje)`. Obsługujący zdarzenie moduł, który zwraca `null`, oznacza, że ​​agregat został usunięty.
-  ([rozdział 3](03-first-aggregate.md))
-- **Typ agregatu** (`AggregateType`): pełna nazwa klasy głównego agregatu. Klucze do routingu,
-  subskrypcje i przechowywane wiersze, więc zmiana nazwy lub przeniesienie klasy głównej powoduje utworzenie nowego typu.
-  ([rozdział 3](03-first-aggregate.md))
-- **Wersja aplikacji**: numer wydania ogłaszany przez każdy węzeł klastra
-  `pekko.cluster.app-version`. Podczas aktualizacji ciągłej decyduje, gdzie trafią nowe shardy i kiedy nowe
-  można zapisać klasy zdarzeń. ([rozdział 17](17-cluster.md))
-- **Archiwum** (`events_archive`): gdzie squash przechowuje zdarzenia klas audytu nazwanych w
-  `SquashPolicy.keep`, zamiast je usuwać. Tylko `GetArchivedEvents` je odczytuje.
+- **Agregat bazowy** (*base aggregate*): agregat, z którego skopiowano duplikat. Zob. *Duplikowanie*.
+  ([rozdział 6](06-events.md))
+- **Agregat efemeryczny** (*ephemeral aggregate*): agregat efemerycznej szyny poleceń
+  (`AggregateCommandBusActor.ephemeral`), który żyje w pamięci jednego węzła z ujemnym identyfikatorem
+  i nie jest nigdzie zapisywany ani publikowany, dopóki się go nie zmaterializuje.
+  ([rozdział 20](20-ephemeral-aggregates.md))
+- **Aktor** (*actor*): mały pracownik ze skrzynką odbiorczą, który obsługuje jeden komunikat naraz.
+  Wszystko, co w ReactiveCQRS działa, jest aktorem Apache Pekko.
+  ([rozdział 1](01-cqrs-without-the-headache.md))
+- **Aktor-listener** (*listener actor*, `AggregateListenerActor`): projekcja bez zapytań, do efektów
+  ubocznych, takich jak powiadomienia. Dostaje te same dostarczenia i te same gwarancje.
+  ([rozdział 8](08-projections.md))
+- **Aktualizacja krocząca** (*rolling upgrade*): aktualizowanie klastra po jednym węźle, tak że przez
+  jakiś czas stara i nowa wersja działają obok siebie, bez przestoju. ([rozdział 17](17-cluster.md))
+- **Aplikacja** (*host*): twój program, który tworzy magazyny i aktorów biblioteki, a potem łączy je
+  ze sobą. ([rozdział 4](04-first-command.md))
+- **Archiwum** (*archive*, `events_archive`): miejsce, w którym squash zachowuje zdarzenia klas
+  audytowych wymienionych w `SquashPolicy.keep`, zamiast je usuwać. Czyta je tylko `GetArchivedEvents`.
   ([rozdział 14](14-squash.md))
-- **Zapytaj**: wysyłanie wiadomości z `?` i otrzymywanie odpowiedzi w postaci `Przyszłości`; wymagane jest
-  dorozumiane „Timeout”. Zobacz także *Tell*. ([rozdział 1](01-cqrs-without-the-headache.md))
-- **Wynik polecenia asynchronicznego** (`AsyncCommandResult`): wynik obsługi polecenia, który dociera później,
-  owinięte wokół „Przyszłości”. W kontekście agregatu „Przyszłość” wyniku jest przekształcana w jeden
-  dla ciebie. ([rozdział 3](03-first-aggregate.md), [rozdział 5](05-command-flavors.md))
-- **Przynajmniej raz**: obietnica dostarczenia. Każde wydarzenie dociera do każdego subskrybenta przynajmniej raz,
-  czasami więcej; projekcje pomijają powtórzenia według wersji, więc każde zdarzenie jest stosowane raz.
-  ([rozdział 1](01-cqrs-without-the-headache.md), [rozdział 9](09-projection-failures.md))
-- **Automatyczne squash** (`AutomaticSquash`): reguła w `SquashPolicy.automatic`, która pozwala
-  harmonogram squash wybiera agregaty do squasha: po zdarzeniach `afterEvents`, zachowując najnowsze
-  `keepLast` i te młodsze niż `keepNewerThan`. ([rozdział 14](14-squash.md))
+- **Ask**: wysłanie komunikatu przez `?` i odebranie odpowiedzi jako `Future`; wymaga niejawnego
+  (implicit) `Timeout`. Zob. też *Tell*. ([rozdział 1](01-cqrs-without-the-headache.md))
+- **Asynchroniczny wynik polecenia** (*async command result*, `AsyncCommandResult`): wynik handlera
+  polecenia, który przychodzi później, opakowany w `Future`. W kontekście agregatu `Future` z wynikiem
+  zamienia się w `AsyncCommandResult` bez twojego udziału. ([rozdział 3](03-first-aggregate.md),
+  [rozdział 5](05-command-flavors.md))
+- **Automatyczny squash** (*automatic squash*, `AutomaticSquash`): reguła w `SquashPolicy.automatic`,
+  według której scheduler squasha sam wybiera agregaty do zwinięcia: po `afterEvents` zdarzeniach,
+  z zachowaniem `keepLast` najnowszych i tych młodszych niż `keepNewerThan`.
+  ([rozdział 14](14-squash.md))
 
 ## B
 
-- **Uzupełnianie**: zadanie online, które uzupełnia dane w wierszach zapisanych przed utworzeniem funkcji.
-  `backfillSpaces` przypisuje starym agregatom ich przestrzeń; `backfillEventKeys` przypisuje starym zdarzeniom ich przestrzeń
-  klucze. ([rozdział 16](16-organizations.md), [rozdział 18](18-production.md))
-- **Agregat bazowy**: agregat, z którego skopiowano duplikat. Zobacz *Duplikacja*.
-  ([rozdział 6](06-events.md))
-- **Blokujący dyspozytor** (`reactivecqrs.blocking-dispatcher`): pula 32 wątków, w których
-  Właściciele agregatów i baza danych biblioteki działają. Twórz na ich podstawie projekcje za pomocą
-  `Props(...).withDispatcher(BlockingDispatcher.id)`. ([rozdział 8](08-projections.md),
-  [rozdział 18](18-production.md))
-- **Kompilacja**: jedna wersja zarządzanej projekcji, z własnymi tabelami i własnym postępem. Nowa
-  kompilacja jest wypełniana ze sklepu zdarzeń, podczas gdy aktywna kompilacja nadal działa, a następnie zastępuje ją
-  jeden przełącznik. ([rozdział 10](10-rebuilding-projections.md))
+- **Blokada schematu** (*schema lock*, `SchemaLock`): blokada doradcza (advisory lock) PostgreSQL,
+  dzięki której procesy inicjalizują schemat po kolei. Proces czeka na nią do pięciu minut.
+  ([rozdział 2](02-setting-up.md))
+- **Blokowanie optymistyczne** (*optimistic locking*): nikt niczego nie blokuje z góry; zapis, który
+  zakładał starszą wersję, zostaje odrzucony w chwili zapisywania.
+  ([rozdział 1](01-cqrs-without-the-headache.md), [rozdział 5](05-command-flavors.md))
+- **Budowa** (*build*): jedna wersja projekcji zarządzanej, z własnymi tabelami i własnym postępem.
+  Nową budowę wypełnia się z magazynu zdarzeń, podczas gdy aktywna budowa nadal obsługuje zapytania,
+  a potem nowa zastępuje ją jednym przełączeniem. ([rozdział 10](10-rebuilding-projections.md))
 
 ## C
 
-- **Wybrany identyfikator agregatu** (`chosenAggregateId`): identyfikator, który rezerwujesz jako pierwszy za pomocą `ReserveAggregateId`
-  i umieść w `FirstCommand`, więc dwukrotne wysłanie utworzenia nigdy nie utworzy dwóch agregatów.
-  ([rozdział 5](05-command-flavors.md))
-- **Klaster**: kilka węzłów (maszyn wirtualnych Java) uruchamiających jedną instalację razem, na jednej bazie danych, przez
-  Gromada Pekko. ([rozdział 17](17-cluster.md))
-- **Serializator klastra** (`ClusterSerializer`): jeden serializator każdej wiadomości pomiędzy węzłami,
-  zbudowano na mpjsons; serializacja Javy pozostaje wyłączona. ([rozdział 17](17-cluster.md))
-- **Polecenie**: żądanie zmiany jednego agregatu, zapisane jako klasa przypadku. W przeciwieństwie do zdarzenia, może
-  zostać odrzuconym. `Command` to także nazwa rodzaju, który niesie oczekiwaną wersję.
-  ([rozdział 1](01-cqrs-without-the-headache.md), [rozdział 5](05-command-flavors.md))
-- **Magistrala poleceń** (`AggregateCommandBusActor`): drzwi wejściowe jednego typu agregatu. Przyjmuje
-  polecenia i zapytania, rozdaje identyfikatory, kieruje każdą wiadomość do właściciela agregatu i odpowiada
-  historyczne czyta się samo. ([rozdział 1](01-cqrs-without-the-headache.md),
-  [rozdział 4](04-pierwsze-polecenie.md))
-- **Obsługa poleceń**: funkcja, która pobiera bieżący stan i polecenie, a następnie zwraca
-  `CommandSuccess` (ze zdarzeniami), `CommandFailure` (odmowa) lub `AsyncCommandResult`.
-  ([rozdział 3](03-first-aggregate.md))
-- **Odpowiedź na polecenie**: to, co osoba wywołująca otrzymuje w odpowiedzi na polecenie: `SuccessResponse`,
-  `CustomSuccessResponse`, `FailureResponse`, `AggregateConcurrentModificationError`,
-  `CommandHandlingError`, `EventHandlingError` lub `CommandRejected`. W załączniku B wymieniono je wszystkie.
-  ([rozdział 4](04-pierwsze-polecenie.md), [rozdział 5](05-polecenie-smaki.md))
-- **Limit czasu polecenia** (`commandTimeout`): ile czasu może upłynąć zanim polecenie zostanie wykonane przez osobę je wywołującą
-  `CommandHandlingError`, domyślnie 60 sekund. Wynik, który pojawia się później, nigdy nie jest zapisywany.
-  ([rozdział 5](05-command-flavors.md))
-- **Wydarzenie kompensujące**: nowe zdarzenie rejestrowane obok ponownego zapisu historii, np.
-  `CartNameRewritten`, aby projekcje dowiedziały się o zmianie. ([rozdział 15](15-rewriting-history.md))
-- **Całkowite przepisanie** (`HistoryRewriter`, `RewriteEverywhere`): usunięcie. Zastosowano `HistoryChange` do
-  każde zapisane i zarchiwizowane zdarzenie agregatu i wszystkich jego kopii, a następnie odbudowa
-  projekcje, które nazwiesz, z wierszem audytu, który nigdy nie przechowuje wartości. ([rozdział 15](15-rewriting-history.md))
-- **Polecenie współbieżne** (`ConcurrentCommand`): polecenie bez oczekiwanej wersji. Działa na
-  niezależnie od wersji agregatu, a po kolizji biblioteka uruchamia go ponownie, maksymalnie 10
-  prób w sumie. ([rozdział 5](05-command-flavors.md))
-- **Pula połączeń**: pula połączeń z bazą danych ScalikeJDBC. Twoja aplikacja ją konfiguruje.
-  przed uruchomieniem jakiegokolwiek kodu bibliotecznego. ([rozdział 2](02-setting-up.md))
-- **CQRS** (Command Query Responsibility Segregation): jeden z modeli podejmowania decyzji (zapis
-  (strona do czytania) i inne modele, ukształtowane do zadawania pytań, do czytania (strona do czytania).
+- **Co najmniej raz** (*at least once*): obietnica dostarczania. Każde zdarzenie dociera do każdego
+  subskrybenta co najmniej raz, czasem częściej; projekcje odrzucają powtórki po wersji, więc każde
+  zdarzenie zostaje zastosowane raz. ([rozdział 1](01-cqrs-without-the-headache.md),
+  [rozdział 9](09-projection-failures.md))
+- **Cofnięcie** (*undo*, `UndoEvent`): zdarzenie, które znosi skutki ostatnich N zdarzeń agregatu.
+  Te zostają w historii, oznaczone jako cofnięte. ([rozdział 6](06-events.md))
+- **CQRS** (*Command Query Responsibility Segregation*): jeden model do podejmowania decyzji (strona
+  zapisu) i inne modele, dopasowane do pytań, do odczytu (strona odczytu).
   ([rozdział 1](01-cqrs-without-the-headache.md))
 
 ## D
 
-- **Opóźnione zapytanie**: zapytanie projekcyjne, które czeka, aż upłynie określony termin, na poszukiwane dane;
-  Piszesz go za pomocą `delayIfNotAvailable`. Odpowiada `None`, gdy czas się skończy.
-  ([rozdział 8](08-projections.md))
-- **Dostarczanie**: magistrala zdarzeń przekazująca zdarzenia jednego agregatu jednemu subskrybentowi. Jest śledzona do momentu
-  abonent odbiera, abonent przestaje lub mija 10 minut. ([rozdział 8](08-projections.md),
-  [rozdział 9](09-projection-failures.md))
-- **Odłącz**: co robi zduplikowanie lub trwałe usunięcie duplikatu, który nadal odczytuje historię
-  zostanie usunięte. Pierwsze zdarzenie duplikatu staje się zdarzeniem squasha w swoim własnym stanie, więc nie
-  nie potrzebuje już swojej podstawy. ([rozdział 14](14-squash.md))
-- **Magazyn dokumentów** (`DocumentStore`, `PostgresDocumentStore`): prosty magazyn dokumentów JSON
-  id w tabeli `projection_<name>`, w której projekcje przechowują swoje odczytane modele.
-  ([rozdział 8](08-projections.md))
-- **Duplikacja** (`DuplicationEvent`): tworzenie nowego agregatu jako kopii innego agregatu w danym momencie
-  wersja. Kopia dzieli historię swojej bazy aż do tej wersji i podąża własną drogą po niej.
+- **Dispatcher blokujący** (*blocking dispatcher*, `reactivecqrs.blocking-dispatcher`): pula 32
+  wątków, na której działają właściciele agregatów i praca biblioteki z bazą danych. Swoje projekcje
+  twórz na nim przez `Props(...).withDispatcher(BlockingDispatcher.id)`.
+  ([rozdział 8](08-projections.md), [rozdział 18](18-production.md))
+- **Dispatcher handlerów** (*handler dispatcher*, `reactivecqrs.handler-dispatcher`): pula 32 wątków,
+  na której działają handlery poleceń, więc wolne handlery spowalniają tylko polecenia.
+  ([rozdział 5](05-command-flavors.md), [rozdział 18](18-production.md))
+- **Dociąganie** (*pull*): przy kontroli przepływu szyna zdarzeń prosi właścicieli, żeby ponownie
+  opublikowali wstrzymane zdarzenia dla subskrybenta, gdy połowa jego okna jest już wolna.
+  ([rozdział 9](09-projection-failures.md))
+- **Dostarczenie** (*delivery*): przekazanie zdarzeń jednego agregatu jednemu subskrybentowi przez
+  szynę zdarzeń. Szyna śledzi je, dopóki subskrybent nie odpowie, nie zatrzyma się albo nie minie
+  10 minut. ([rozdział 8](08-projections.md), [rozdział 9](09-projection-failures.md))
+- **Dublery w pamięci** (*in-memory doubles*, `MemoryEventStoreState`, `MemorySubscriptionsState`,
+  `MemoryDocumentStore` i inne): zamienniki magazynów PostgreSQL do szybkich testów. Trzymają obiekty
+  zamiast JSON-a i niczego nie wycofują, więc dowodzą mniej niż test na PostgreSQL.
+  ([rozdział 19](19-testing.md))
+- **Duplikowanie** (*duplication*, `DuplicationEvent`): tworzenie nowego agregatu jako kopii innego,
+  w danej wersji. Kopia dzieli historię swojej bazy do tej wersji, a potem idzie własną drogą.
   ([rozdział 6](06-events.md))
 
-I
+## E
 
-- **Wydarzenie** (`Event`): fakt dotyczący jednego agregatu, w czasie przeszłym, np. `ItemAdded("milk")`.
-  Wydarzenia są przechowywane na zawsze w formacie JSON zapisanym pod nazwą ich klasy.
-  ([rozdział 1](01-cqrs-without-the-headache.md), [rozdział 6](06-events.md))
-- **Szyna zdarzeń** (`EventsBusActor`): aktor, jeden na węzeł, który przekazuje opublikowane zdarzenia do każdego węzła
-  abonenta o danym typie zbiorczym i czeka na odpowiedź każdego z nich.
-  ([rozdział 1](01-cqrs-without-the-headache.md), [rozdział 4](04-first-command.md))
-- **Obsługa zdarzeń**: czysta funkcja, która stosuje jedno zdarzenie do stanu i zwraca nowe
-  stan. Działa na żywo, podczas przywracania i przebudowy, więc musi dawać ten sam wynik za każdym razem.
-  ([rozdział 3](03-first-aggregate.md), [rozdział 6](06-events.md))
-- **Informacje o zdarzeniu** (`EventInfo`): zdarzenie, jakie widzą słuchacze i zapytania: jego wersja, zdarzenie,
-  użytkownik, czas i otoczka metadanych. ([rozdział 8](08-projections.md))
-- **Klucze zdarzeń** (`event_keys`): tabela rejestrująca zbiorczy typ i przestrzeń każdego zdarzenia, więc
-  odbudowa kilku typów lub jednej organizacji, odczytuje tylko własne wydarzenia.
-  ([rozdział 16](16-organizacje.md), [rozdział 18](18-produkcja.md))
-- **Źródło zdarzeń**: przechowywanie historii zdarzeń jako źródła prawdy i uzyskiwanie aktualnych informacji
-  stan poprzez ich ponowne odtworzenie. ([rozdział 1](01-cqrs-without-the-headache.md))
-- **Magazyn zdarzeń** (`PostgresEventStoreState`): część biblioteki przechowująca zdarzenia i
-  agregaty w PostgreSQL, wraz ze skrzynką nadawczą. ([rozdział 2](02-setting-up.md))
-- **Ostatecznie spójne**: strona odczytująca nadrabia zaległości chwilę po pomyślnym wykonaniu polecenia, zwykle
-  w ciągu milisekund. ([rozdział 1](01-cqrs-without-the-headache.md))
-- **Agregat efemeryczny**: agregat efemerycznej magistrali poleceń (`AggregateCommandBusActor.ephemeral`),
-  żyjący w pamięci jednego węzła z negatywnym identyfikatorem, nigdzie nie zapisywany i nigdzie niepublikowany, dopóki nie zostanie
-  zmaterializował się. ([rozdział 20](20-efemeryczne-agregaty.md))
-- **Wersja oczekiwana** (`expectedVersion`): wersja, którą `Command` wskazuje na zmianę. Kiedy
-  agregat został przeniesiony, na komendę odpowiedziano `AggregateConcurrentModificationError`.
-  ([rozdział 5](05-command-flavors.md))
-
-## F
-
-- **Nieudana subskrypcja** (`SubscriptionFailure`): rekord projekcji informujący o jej rezygnacji z jednego
-  Łącznie, po około dwóch minutach prób. Dostawy tego łącznego zestawu są odbierane jako nieudane.
-  dopóki nie spróbujesz ponownie lub nie pominiesz. ([rozdział 9](09-projection-failures.md))
-- **Pierwsze polecenie** (`FirstCommand`): polecenie tworzące nowy agregat.
-  ([rozdział 3](03-first-aggregate.md), [rozdział 5](05-command-flavors.md))
-- **Pierwsze zdarzenie** (`FirstEvent`): zdarzenie rozpoczynające historię agregatu. Nazywa ono
-  przestrzeń agregatu (SpaceId(0) dla platformy). ([rozdział 3](03-first-aggregate.md),
-  [rozdział 6](06-events.md))
-- **Kontrola przepływu**: magistrala zdarzeń nigdy nie wysyła abonentowi więcej niż okno nieodpowiedzianych zdarzeń
-  (10 000 zdarzeń i 64 MB domyślnie). Reszta jest przechowywana w magazynie i pobierana dla subskrybenta.
-  w miarę jak nadrabia zaległości. ([rozdział 9](09-projection-failures.md))
+- **Event sourcing**: trzymanie historii zdarzeń jako źródła prawdy i uzyskiwanie bieżącego stanu
+  przez ich ponowne odtworzenie. ([rozdział 1](01-cqrs-without-the-headache.md))
 
 ## G
 
-- **Luka**: brakuje wersji projekcji dla agregatu (ma wersję 5 i otrzymuje
-  wersja 7). Prosi właściciela o ponowne opublikowanie ich i rejestruje błąd, jeśli nie zostaną opublikowane.
-  w ciągu 10 minut. ([rozdział 9](09-projection-failures.md))
+- **Generator identyfikatorów** (*uid generator*, `UidGeneratorActor`): aktor, który rozdaje pule
+  identyfikatorów dla agregatów, poleceń i sag, z sekwencji PostgreSQL. Tworzysz go przez
+  `UidGeneratorActor.postgres(system)`. ([rozdział 4](04-first-command.md),
+  [rozdział 18](18-production.md))
+- **Gotowość** (*readiness*, `Readiness`, `ReadinessCheck`): węzeł jest gotowy na ruch, gdy każda
+  działająca na nim szyna zdarzeń dostała odpowiedź od wszystkich swoich subskrybentów.
+  `ReadinessCheck` wpina to w Pekko Management. ([rozdział 17](17-cluster.md))
 
 ## H
 
-- **Dyspozytor obsługi** (`reactivecqrs.handler-dispatcher`): pula 32 wątków, w których wykonywane są polecenia
-  handlery są uruchamiane, więc powolne handlery spowalniają tylko polecenia. ([rozdział 5](05-command-flavors.md),
-  [rozdział 18](18-production.md))
-- **Przekazanie**: w klastrze właściciel podzielony przechodzi z jednego węzła do drugiego (węzeł opuszcza lub
-  (odłamki są ponownie równoważone). Właściciel kończy polecenia, które rozpoczął, zanim się ruszy.
-  ([rozdział 17](17-cluster.md))
-- **Odczyt historyczny**: żądanie od magistrali poleceń podania agregatu w poprzedniej wersji lub chwili albo
-  jego zdarzenia (`GetAggregateForVersion`, `GetAggregateAtInstant`, `GetEventsForAggregate`,
-  `GetEventsForAggregateForVersion`). Jest odczytywany z magazynu. ([rozdział 7](07-reading-the-past.md))
-- **Przepisywanie historii** (`RewriteHistoryCommand`, `RewriteHistoryConcurrentCommand`): polecenie, które
-  zmienia wartości wewnątrz przeszłych zdarzeń, przy czym każde z nich zachowuje swoją klasę, na przykład w celu usunięcia danych osobowych.
-  Jego program obsługi zwraca `RewriteCommandSuccess`. ([rozdział 15](15-rewriting-history.md))
-- **Zmiana historii** (`HistoryChange`): co powinno zostać zrobione po całkowitym przepisaniu, jako klasa przypadku
-  (`EraseCustomer(id)`); każdy kontekst określa, co robi ze zdarzeniami w `historyChanges`.
-  ([rozdział 15](15-przepisywanie-historii.md))
-- **Host**: Twoja aplikacja, która tworzy magazyny i aktorów biblioteki oraz je łączy
-  razem. ([rozdział 4](04-pierwsze-polecenie.md))
+- **Handler polecenia** (*command handler*): twoja funkcja, która dostaje bieżący stan i polecenie,
+  a zwraca `CommandSuccess` (ze zdarzeniami), `CommandFailure` (odmowę) albo `AsyncCommandResult`.
+  ([rozdział 3](03-first-aggregate.md))
+- **Handler zdarzenia** (*event handler*): twoja czysta funkcja, która stosuje jedno zdarzenie do
+  stanu i zwraca nowy stan. Działa na żywo, przy odtwarzaniu i podczas przebudów, więc za każdym
+  razem musi dawać ten sam wynik. ([rozdział 3](03-first-aggregate.md), [rozdział 6](06-events.md))
 
 ## I
 
-- **Klucz idempotencji** (`CommandIdempotencyId`): klucz, który niesie polecenie idempotentne; jego
-  `asDbKey` musi być unikalny we wszystkich typach agregatów. `SagaStep` jest jednym z nich i możesz napisać swój
-  własne. Zapisane odpowiedzi są domyślnie przechowywane przez 30 dni. ([rozdział 5](05-command-flavors.md))
-- **Polecenie idempotentne** (`IdempotentCommand`): polecenie, które działa raz na idempotentność
-  Klucz, niezależnie od częstotliwości jego wysyłania. Każda kopia otrzymuje odpowiedź kopii, która wygrała.
-  ([rozdział 5](05-command-flavors.md))
-- **`initSchema()`**: metoda tworząca tabele biblioteki lub dodająca nową wersję
-  potrzeby. Można bezpiecznie dzwonić przy każdym starcie. ([rozdział 2](02-setting-up.md))
-- **Podwójne wartości w pamięci** (`MemoryEventStoreState`, `MemorySubscriptionsState`, `MemoryDocumentStore`
-  i inne): zamienniki dla magazynów PostgreSQL, do szybkich testów. Przechowują obiekty zamiast
-  JSON i nie przywracają niczego, więc nie dowodzą niczego poza testem w PostgreSQL. ([rozdział 19](19-testing.md))
-- **Numer instalacji** (`reactivecqrs.installation-number`): przypisuje jednej instalacji własny numer
-  zakres zbiorczych identyfikatorów (liczba × 10^12 w górę), dzięki czemu identyfikatory pozostają unikalne, gdy dane
-  instalacje się spotykają. 0, wartość domyślna, to zakres każdego identyfikatora utworzonego przed wersją 1.0.
-  ([rozdział 2](02-setting-up.md), [rozdział 18](18-production.md))
+- **Identyfikator agregatu** (*aggregate id*, `AggregateId`): liczba (`Long`), która identyfikuje
+  jeden agregat. Szyna poleceń nadaje nowemu agregatowi identyfikator, chyba że polecenie wybrało go samo.
+  ([rozdział 4](04-first-command.md))
+- **Informacja o zdarzeniu** (*event info*, `EventInfo`): zdarzenie w postaci, w jakiej widzą je
+  listenery i zapytania: jego wersja, samo zdarzenie, użytkownik, czas i koperta metadanych.
+  ([rozdział 8](08-projections.md))
+- **`initSchema()`**: metoda, która tworzy tabele biblioteki albo dodaje to, czego potrzebuje nowa
+  wersja. Można ją bezpiecznie wywoływać przy każdym starcie. ([rozdział 2](02-setting-up.md))
+
+## K
+
+- **Klaster** (*cluster*): kilka węzłów (JVM), które razem prowadzą jedną instalację na jednej bazie
+  danych, dzięki Pekko Cluster. ([rozdział 17](17-cluster.md))
+- **Klucz idempotencji** (*idempotency key*, `CommandIdempotencyId`): klucz, który niesie polecenie
+  idempotentne; jego `asDbKey` musi być unikalny we wszystkich typach agregatów. Jednym z takich
+  kluczy jest `SagaStep`, możesz też napisać własny. Zapisane odpowiedzi są domyślnie przechowywane
+  przez 30 dni. ([rozdział 5](05-command-flavors.md))
+- **Klucze zdarzeń** (*event keys*, `event_keys`): tabela, która zapisuje typ agregatu i przestrzeń
+  każdego zdarzenia, żeby przebudowa kilku typów albo jednej organizacji czytała tylko własne
+  zdarzenia. ([rozdział 16](16-organizations.md), [rozdział 18](18-production.md))
+- **Kontekst agregatu** (*aggregate context*, `AggregateContext`): klasa, którą piszesz dla jednego
+  typu agregatu: jego stan początkowy (`initialAggregateRoot`), handlery poleceń, handlery zdarzeń,
+  jego `version` i funkcje opcjonalne (migawki, squash, tryb szeregowy, rozmieszczenie).
+  ([rozdział 3](03-first-aggregate.md))
+- **Kontrola przepływu** (*flow control*): szyna zdarzeń nigdy nie wysyła subskrybentowi więcej niż
+  okno zdarzeń bez odpowiedzi (domyślnie 10 000 zdarzeń i 64 MB). Reszta czeka w magazynie i jest
+  dociągana dla subskrybenta, w miarę jak ten nadrabia zaległości.
+  ([rozdział 9](09-projection-failures.md))
+- **Koperta metadanych** (*metadata envelope*, `EventMetadata`): kto działał i dlaczego: aktor,
+  identyfikatory korelacji i przyczyny, kontekst śledzenia, przestrzeń i twoje własne wpisy. Zapisuje
+  się ją z każdym zdarzeniem polecenia, które domieszkuje `WithMetadata`; listenery ją widzą, handlery
+  zdarzeń nie. ([rozdział 6](06-events.md))
+- **Korzeń agregatu** (*aggregate root*): niezmienna case class, która trzyma stan agregatu, na
+  przykład `ShoppingCart(name, items)`. Handler zdarzenia, który zwraca `null`, oznacza agregat jako
+  usunięty. ([rozdział 3](03-first-aggregate.md))
+- **Krok sagi** (*saga step*, `SagaStep`): identyfikator sagi i numer kroku. To klucz idempotencji
+  poleceń wysyłanych przez krok, więc saga wznowiona po awarii nigdy nie zastosuje polecenia dwa razy.
+  ([rozdział 12](12-sagas.md))
 
 ## L
 
-- **Nasłuchiwacz** (`Nasłuchiwacz zdarzeń`, `Nasłuchiwacz zagregowany`, `Nasłuchiwacz zagregowany z wydarzeniami`): a
-  wywołanie zwrotne projekcji dla jednego typu agregatu. Trzy typy otrzymują nowe zdarzenia, najnowsze
-  stan lub oba; każdy z nich ma wariant `noDBSession` przeznaczony do pracy poza bazą danych.
-  ([rozdział 8](08-projections.md))
-- **Aktor słuchacza** (`AggregateListenerActor`): projekcja bez zapytań, w przypadku efektów ubocznych
-  takie jak powiadomienia. Otrzymuje te same dostawy i gwarancje. ([rozdział 8](08-projections.md))
-- **Linia**: zapis biblioteczny agregatów, z których skopiowano oddzieloną kopię
-  (`aggregate_lineage`), dzięki czemu całkowite przepisanie oryginału nadal znajdzie kopię.
-  ([rozdział 15](15-przepisywanie-historii.md))
-- **Typ lokalny** (`Placement.Local`): domyślne umiejscowienie. Każdy węzeł ma swoich właścicieli,
-  a kontrola wersji bazy danych decyduje, czy dwa węzły zapisują ten sam agregat.
-  ([rozdział 17](17-cluster.md))
+- **Limit czasu polecenia** (*command timeout*, `commandTimeout`): ile może trwać polecenie, zanim
+  wywołujący dostanie `CommandHandlingError`; domyślnie 60 sekund. Wynik, który przyjdzie później,
+  nigdy nie zostanie zapisany. ([rozdział 5](05-command-flavors.md))
+- **Listener** (`EventsListener`, `AggregateListener`, `AggregateWithEventsListener`): funkcja zwrotna
+  projekcji dla jednego typu agregatu. Trzy rodzaje dostają nowe zdarzenia, najnowszy stan albo jedno
+  i drugie; każdy ma wariant `noDBSession` do pracy poza bazą danych. ([rozdział 8](08-projections.md))
+- **Luka** (*gap*): wersje, których projekcji brakuje dla agregatu (ma wersję 5, a dostaje wersję 7).
+  Projekcja prosi właściciela o ponowne ich opublikowanie i zapisuje awarię, jeśli nie nadejdą
+  w ciągu 10 minut. ([rozdział 9](09-projection-failures.md))
 
 ## M
 
-- **Projekcja zarządzana**: projekcja uruchomiona za pomocą `Projections.start`, którą uruchamia nadzorca
-  i można go odbudować z magazynu zdarzeń bez przestoju. Projekcje z efektami ubocznymi pozostają
-  niezarządzane. ([rozdział 10](10-rebuilding-projections.md))
-- **`MessageTooLargeException`**: w klastrze zamiast zbyt długiej odpowiedzi otrzymuje to, co pytający
-  duży, aby przemieszczać się między węzłami (około 248 KiB przy domyślnym rozmiarze ramki Pekko).
+- **Magazyn dokumentów** (*document store*, `DocumentStore`, `PostgresDocumentStore`): prosty magazyn
+  dokumentów JSON dostępnych po identyfikatorze, w tabeli `projection_<name>`, w którym projekcje trzymają
+  swoje modele odczytu. ([rozdział 8](08-projections.md))
+- **Magazyn zdarzeń** (*event store*, `PostgresEventStoreState`): część biblioteki, która trzyma
+  zdarzenia i agregaty w PostgreSQL, razem z outboxem. ([rozdział 2](02-setting-up.md))
+- **Materializacja** (*materialize*): zapisanie agregatu efemerycznego jako nowego, trwałego agregatu,
+  z jednego zdarzenia squasha jego stanu. ([rozdział 20](20-ephemeral-aggregates.md))
+- **`MessageTooLargeException`**: w klastrze to, co dostaje pytający zamiast odpowiedzi zbyt dużej, by
+  przejść między węzłami (około 248 KiB przy domyślnym rozmiarze ramki Pekko).
   ([rozdział 17](17-cluster.md))
-- **Materializowanie**: przechowywanie efemerycznego agregatu jako nowego, trwałego, z jednego zdarzenia squasha
-  jego stan. ([rozdział 20](20-ephemeral-aggregates.md))
-- **Koperta metadanych** (`EventMetadata`): kto działał i dlaczego: aktor, korelacja i związek przyczynowo-skutkowy
-  identyfikatory, kontekst śledzenia, przestrzeń i własne wpisy. Są one przechowywane z każdym zdarzeniem
-  polecenie, które łączy się z `WithMetadata`; słuchacze je widzą, ale procedury obsługi zdarzeń nie.
-  ([rozdział 6](06-events.md))
-- **Metryki** (`Metryki`, `Metryki Reaktywne`): miary biblioteki (czasy poleceń, przechowywane zdarzenia,
-  oczekujące dostawy i inne), wysyłane do Twojego systemu metrycznego po wykonaniu połączenia
+- **Metryki** (*metrics*, `Metrics`, `ReactiveMetrics`): pomiary biblioteki (czasy poleceń, zapisane
+  zdarzenia, czekające dostarczenia i więcej), wysyłane do twojego systemu metryk, gdy tylko wywołasz
   `ReactiveMetrics(system).use(...)`. ([rozdział 18](18-production.md))
-- **Zapytanie o wersję minimalną** (`GetAggregateMinVersion`): żąda agregatu zaraz po osiągnięciu
-  wersja, aby ekran mógł pokazać wprowadzoną zmianę. ([rozdział 7](07-reading-the-past.md))
-- **mpjsons**: biblioteka JSON przechowująca zdarzenia, stany i dokumenty oraz przesyłająca wiadomości
+- **Migawka** (*snapshot*, `SnapshotPolicy`): zapisana kopia stanu agregatu, domyślnie zapisywana co
+  200 zdarzeń i przy zatrzymaniu właściciela, dzięki czemu odtworzenie czyta migawkę i tylko
+  zdarzenia po niej. Trzeba ją włączyć; można ją bezpiecznie wyrzucić. ([rozdział 13](13-snapshots.md))
+- **Model odczytu** (*read model*): dane ułożone pod jeden rodzaj pytania, utrzymywane przez
+  projekcję: lista koszyków każdego klienta, liczba sztuk każdego produktu.
+  ([rozdział 1](01-cqrs-without-the-headache.md), [rozdział 8](08-projections.md))
+- **mpjsons**: biblioteka JSON, która zapisuje zdarzenia, stany i dokumenty oraz przenosi komunikaty
   między węzłami. ([rozdział 2](02-setting-up.md))
 
-Ten
+## N
 
-- **Optymistyczne blokowanie**: nikt niczego nie blokuje z góry; zapis, który oczekiwał starszej wersji, jest
-  odrzucono podczas przechowywania. ([rozdział 1](01-cqrs-without-the-headache.md),
-  [rozdział 5](05-command-flavors.md))
-- **Organizacja**: patrz *Kosmos*. ([rozdział 16](16-organizations.md))
-- **Skrzynka nadawcza** (`events_to_publish`): tabela zdarzeń, których jakiś subskrybent jeszcze nie potwierdził.
-  Jest on zapisywany w tej samej transakcji co zdarzenia, więc nic nie zostaje utracone, gdy maszyna się zatrzyma
-  w połowie drogi. ([rozdział 1](01-cqrs-without-the-headache.md), [rozdział 9](09-projection-failures.md))
-- **Poller skrzynki nadawczej** (`OutboxPollerActor`): jeden na system. Co 30 sekund sprawdza skrzynkę nadawczą.
-  i nakazuje właścicielom ponowne opublikowanie wydarzeń oczekujących: 3 i 6 minut po pierwszej próbie; o 10
-  minut zgłasza, że ​​nie dostarczono ich, a następnie próbuje co 30 minut. ([rozdział 4](04-first-command.md),
-  [rozdział 9](09-projection-failures.md))
-- **Autor skrzynki nadawczej** (`WithOutboxWriter`, `OutboxWriter`): pozwala kontekstowi agregatu zapisywać wiersze
-  własne (zadania, wiadomości do wysłania) w tej samej transakcji co zdarzenia.
-  ([rozdział 18](18-produkcja.md))
+- **Nadzorca** (*supervisor*, `ProjectionSupervisor`): aktor, którego `Projections.start` zwraca dla
+  projekcji zarządzanej. Używaj go wszędzie tam, gdzie normalnie użyłoby się projekcji: do zapytań
+  i w `RegisterSubscribers`. ([rozdział 10](10-rebuilding-projections.md))
+- **Niedostarczone zdarzenie** (*undelivered*): zdarzenie, na które subskrybent nie odpowiedział od
+  10 minut. Trafia do logu, zostaje w outboxie i później jest publikowane ponownie.
+  ([rozdział 9](09-projection-failures.md))
+- **Nieudana subskrypcja** (*failed subscription*, `SubscriptionFailure`): zapis projekcji, że poddała
+  się na jednym agregacie po mniej więcej dwóch minutach ponawiania. Na dostarczenia tego agregatu
+  projekcja odpowiada niepowodzeniem, dopóki tej subskrypcji nie ponowisz albo nie pominiesz.
+  ([rozdział 9](09-projection-failures.md))
+- **Numer instalacji** (*installation number*, `reactivecqrs.installation-number`): daje instalacji
+  własny zakres identyfikatorów agregatów (od numeru × 10^12 wzwyż), żeby identyfikatory pozostały
+  unikalne, gdy dane różnych instalacji się spotkają. 0, wartość domyślna, to zakres wszystkich
+  identyfikatorów nadanych przed 1.0. ([rozdział 2](02-setting-up.md), [rozdział 18](18-production.md))
+
+## O
+
+- **Oczekiwana wersja** (*expected version*, `expectedVersion`): wersja, o której `Command` mówi, że
+  właśnie ją zmienia. Jeśli agregat jest już dalej, polecenie dostaje odpowiedź
+  `AggregateConcurrentModificationError`. ([rozdział 5](05-command-flavors.md))
+- **Odczyt historyczny** (*historical read*): pytanie szyny poleceń o agregat w dawnej wersji lub
+  chwili albo o jego zdarzenia (`GetAggregateForVersion`, `GetAggregateAtInstant`,
+  `GetEventsForAggregate`, `GetEventsForAggregateForVersion`). Odpowiedź pochodzi z magazynu.
+  ([rozdział 7](07-reading-the-past.md))
+- **Odłączenie** (*detach*): to, co squash albo trwałe usunięcie robi z duplikatem, który wciąż czyta
+  usuwaną historię. Pierwsze zdarzenie duplikatu staje się zdarzeniem squasha jego własnego stanu,
+  więc duplikat nie potrzebuje już swojej bazy. ([rozdział 14](14-squash.md))
+- **Odpowiedź na polecenie** (*command response*): to, co wywołujący dostaje za polecenie:
+  `SuccessResponse`, `CustomSuccessResponse`, `FailureResponse`, `AggregateConcurrentModificationError`,
+  `CommandHandlingError`, `EventHandlingError` albo `CommandRejected`. Wszystkie wymienia dodatek B.
+  ([rozdział 4](04-first-command.md), [rozdział 5](05-command-flavors.md))
+- **Odtworzenie** (*restore*): sposób, w jaki właściciel uzyskuje stan swojego agregatu przy starcie:
+  przez odtworzenie zdarzeń albo z migawki i zdarzeń po niej. ([rozdział 6](06-events.md),
+  [rozdział 13](13-snapshots.md))
+- **Okno** (*window*): zob. *Kontrola przepływu*. ([rozdział 9](09-projection-failures.md))
+- **Opóźnione zapytanie** (*delayed query*): zapytanie do projekcji, które czeka na szukane dane, ale
+  najdłużej do wyznaczonego terminu; piszesz je przez `delayIfNotAvailable`. Gdy czas minie,
+  odpowiada `None`. ([rozdział 8](08-projections.md))
+- **Organizacja** (*organization*): zob. *Przestrzeń*. ([rozdział 16](16-organizations.md))
+- **Ostatecznie spójny** (*eventually consistent*): strona odczytu dogania zapis chwilę po udanym
+  poleceniu, zwykle w ciągu milisekund. ([rozdział 1](01-cqrs-without-the-headache.md))
+- **Outbox** (`events_to_publish`): tabela zdarzeń, których jakiś subskrybent jeszcze nie potwierdził.
+  Zapisuje się ją w tej samej transakcji co zdarzenia, więc nic nie ginie, gdy maszyna stanie
+  w połowie. ([rozdział 1](01-cqrs-without-the-headache.md), [rozdział 9](09-projection-failures.md))
 
 ## P
 
-- **Pasywacja**: zatrzymanie bezczynnego właściciela agregatu w celu zwolnienia pamięci; następna wiadomość rozpoczyna nową
-  właściciela, który przywraca stan. Możesz o to poprosić za pomocą `PassivateAggregate`.
-  ([rozdział 13](13-snapshots.md), [rozdział 18](18-production.md))
-- **Trwałe usunięcie** (`PermanentDeleteEvent`): zdarzenie, które po jego wystąpieniu u każdego subskrybenta,
-  usuwa zdarzenia i wiersze agregatu z bazy danych na stałe. ([rozdział 6](06-events.md))
-- **Placement** (`Placement`): gdzie właściciele typu agregatu uruchamiają: `Placement.Local` (
-  domyślne) lub `Placement.Sharded`. ([rozdział 17](17-cluster.md))
-- **Projekcja** (`ProjectionActor`): aktor nasłuchujący zdarzeń, przechowujący model odczytu do
-  datę i odpowiada na pytania na jej temat. ([rozdział 1](01-cqrs-without-the-headache.md),
+- **Pasywacja** (*passivation*): zatrzymanie bezczynnego właściciela agregatu, żeby zwolnić pamięć;
+  następny komunikat uruchamia nowego właściciela, który odtwarza stan. Możesz o nią poprosić przez
+  `PassivateAggregate`. ([rozdział 13](13-snapshots.md), [rozdział 18](18-production.md))
+- **Pełne przepisanie historii** (*complete rewrite*, `HistoryRewriter`, `RewriteEverywhere`):
+  wymazanie danych. `HistoryChange` zastosowana do każdego zapisanego i zarchiwizowanego zdarzenia
+  agregatu i wszystkich jego kopii, a po niej przebudowa wskazanych przez ciebie projekcji, z wierszem
+  audytu, który nigdy nie przechowuje samych wartości. ([rozdział 15](15-rewriting-history.md))
+- **Pierwsze polecenie** (*first command*, `FirstCommand`): polecenie, które tworzy nowy agregat.
+  ([rozdział 3](03-first-aggregate.md), [rozdział 5](05-command-flavors.md))
+- **Pierwsze zdarzenie** (*first event*, `FirstEvent`): zdarzenie, od którego zaczyna się historia
+  agregatu. Wskazuje przestrzeń agregatu (`SpaceId(0)` dla platformy).
+  ([rozdział 3](03-first-aggregate.md), [rozdział 6](06-events.md))
+- **Polecenie** (*command*): prośba o zmianę jednego agregatu, zapisana jako case class.
+  W odróżnieniu od zdarzenia polecenie można odrzucić. `Command` to też nazwa rodzaju polecenia, który
+  niesie oczekiwaną wersję. ([rozdział 1](01-cqrs-without-the-headache.md),
+  [rozdział 5](05-command-flavors.md))
+- **Polecenie idempotentne** (*idempotent command*, `IdempotentCommand`): polecenie, które działa raz
+  na klucz idempotencji, bez względu na to, ile razy zostanie wysłane. Każda kopia dostaje odpowiedź
+  tej kopii, która wygrała. ([rozdział 5](05-command-flavors.md))
+- **Polecenie współbieżne** (*concurrent command*, `ConcurrentCommand`): polecenie bez oczekiwanej
+  wersji. Działa na tej wersji, którą agregat akurat ma, a po kolizji biblioteka wykonuje je ponownie,
+  łącznie najwyżej 10 prób. ([rozdział 5](05-command-flavors.md))
+- **Poller outboxu** (*outbox poller*, `OutboxPollerActor`): jeden na system. Co 30 sekund przegląda
+  outbox i każe właścicielom ponownie opublikować czekające zdarzenia: 3 i 6 minut po pierwszej
+  próbie; po 10 minutach zgłasza je jako niedostarczone, a potem próbuje co 30 minut.
+  ([rozdział 4](04-first-command.md), [rozdział 9](09-projection-failures.md))
+- **Ponowna publikacja** (*re-publication*): ponowne wysłanie zdarzeń przez właściciela: tych jego
+  zdarzeń, które wciąż czekają w outboxie, albo zakresu, o który projekcja poprosiła, żeby wypełnić
+  lukę. ([rozdział 9](09-projection-failures.md))
+- **Potwierdzenie** (*ack*, `MessageAck`): „mam” od subskrybenta w odpowiedzi na dostarczenie zdarzeń.
+  Gdy każda subskrypcja potwierdzi zdarzenie albo zgłosi dla niego `MessageFailed`, zdarzenie opuszcza
+  outbox. ([rozdział 9](09-projection-failures.md))
+- **Projekcja** (*projection*, `ProjectionActor`): aktor, który słucha zdarzeń, utrzymuje aktualny
+  model odczytu i odpowiada na zapytania o niego. ([rozdział 1](01-cqrs-without-the-headache.md),
   [rozdział 8](08-projections.md))
-- **Pull**: w przypadku kontroli przepływu magistrala zdarzeń prosi właścicieli o ponowne opublikowanie wstrzymanych zdarzeń
-  abonent, gdy połowa jego okna będzie wolna. ([rozdział 9](09-projection-failures.md))
-- **Subskrypcja push**: subskrypcja klienta dotycząca aktualizacji projekcji podlegającej subskrypcji;
-  wygasa po 10 minutach bez opcji `RenewSubscription`. ([rozdział 11](11-subscribable-projections.md))
+- **Projekcja subskrybowalna** (*subscribable projection*, `SubscribableProjectionActor`): projekcja,
+  która dodatkowo wypycha zmiany do klientów, którzy ją zasubskrybowali, jako komunikaty
+  `SubscriptionUpdated`. ([rozdział 11](11-subscribable-projections.md))
+- **Projekcja zarządzana** (*managed projection*): projekcja uruchomiona przez `Projections.start`,
+  dzięki czemu prowadzi ją nadzorca, który potrafi przebudować ją z magazynu zdarzeń bez przestoju.
+  Projekcje z efektami ubocznymi pozostają niezarządzane. ([rozdział 10](10-rebuilding-projections.md))
+- **Przebudowa** (*rebuild*): ponowne wypełnienie projekcji z magazynu zdarzeń, w całości (nowa
+  budowa) albo w miejscu, dla wybranych agregatów (przebudowa celowana).
+  ([rozdział 10](10-rebuilding-projections.md))
+- **Przebudowa celowana** (*targeted rebuild*, `RebuildAggregates`): przebudowa, w miejscu, tego, co
+  projekcja zbudowała z jednego agregatu, jednego typu agregatu albo jednej organizacji
+  (`RebuildTarget.OneAggregate`, `OneType`, `OneSpace`). ([rozdział 10](10-rebuilding-projections.md))
+- **Przekazanie** (*hand-over*): w klastrze przeniesienie właściciela typu shardowanego z jednego węzła
+  na inny (bo węzeł odchodzi albo shardy są równoważone na nowo). Zanim właściciel się przeniesie,
+  kończy rozpoczęte polecenia. ([rozdział 17](17-cluster.md))
+- **Przepisanie historii** (*history rewrite*, `RewriteHistoryCommand`,
+  `RewriteHistoryConcurrentCommand`): polecenie, które zmienia wartości w dawnych zdarzeniach, a każde
+  z nich zachowuje swoją klasę, na przykład żeby usunąć dane osobowe. Jego handler zwraca
+  `RewriteCommandSuccess`. ([rozdział 15](15-rewriting-history.md))
+- **Przestrzeń** (*space*, `SpaceId`): organizacja (tenant), do której należy agregat, wskazana przez
+  jego pierwsze zdarzenie. Przestrzeń 0 to sama platforma. ([rozdział 16](16-organizations.md))
+- **Pula połączeń** (*connection pool*): pula połączeń z bazą danych ScalikeJDBC. Twoja aplikacja
+  przygotowuje ją, zanim ruszy jakikolwiek kod biblioteki. ([rozdział 2](02-setting-up.md))
+- **Punkt squasha** (*squash point*): wersja, do której agregat jest zwinięty. Niczego poniżej niej nie
+  da się już odczytać, poza zdarzeniami audytowymi zachowanymi w archiwum.
+  ([rozdział 14](14-squash.md))
 
 ## R
 
-- **Model odczytu**: dane ukształtowane dla jednego rodzaju pytania, przechowywane przez projekcję: lista koszyków na
-  klient, liczba pozycji na produkt. ([rozdział 1](01-cqrs-without-the-headache.md),
-  [rozdział 8](08-projections.md))
-- **Strona odczytu**: projekcje i ich modele odczytu. Zobacz *CQRS*.
-  ([rozdział 1](01-cqrs-without-the-headache.md))
-- **Gotowość** (`Gotowość`, `Sprawdzanie gotowości`): węzeł jest gotowy na ruch po każdym zdarzeniu na magistrali
-  Otrzymaliśmy odpowiedź od wszystkich subskrybentów. `ReadinessCheck` integruje to z Pekko Management.
-  ([rozdział 17](17-cluster.md))
-- **Odbudowa**: ponowne wypełnienie projekcji ze sklepu zdarzeń, w całości (nowa budowa) lub w częściach
-  miejsce na pewne agregaty (celowa przebudowa). ([rozdział 10](10-rebuilding-projections.md))
-- **`RecordingMetrics`**: implementacja `Metrics`, która przechowuje wszystkie pomiary w pamięci, dzięki czemu test może
-  sprawdź, co zmierzyła biblioteka. ([rozdział 19](19-testing.md))
-- **Rejestr** (`ProjectionRegistry`, `PostgresProjectionRegistry`): tabele, w których zarządzano
-  Projekcje rejestrują aktywną i trwającą kompilację.
+- **`RecordingMetrics`**: implementacja `Metrics`, która trzyma każdy pomiar w pamięci, żeby test mógł
+  sprawdzić, co zmierzyła biblioteka. ([rozdział 19](19-testing.md))
+- **Rejestr** (*registry*, `ProjectionRegistry`, `PostgresProjectionRegistry`): tabele, w których
+  projekcje zarządzane zapisują swoją aktywną budowę i budowę w toku.
   ([rozdział 10](10-rebuilding-projections.md))
-- **Ponowna publikacja**: właściciel ponownie wysyła zdarzenia: te, które wciąż czekają w jego skrzynce nadawczej lub zakres
-  projekcja, o którą poproszono w celu wypełnienia luki. ([rozdział 9](09-projection-failures.md))
-- **Przywróć**: w jaki sposób właściciel uzyskuje stan swojego agregatu podczas uruchamiania: poprzez odtworzenie zdarzeń lub
-  ze migawki i zdarzeń następujących po niej. ([rozdział 6](06-events.md), [rozdział 13](13-snapshots.md))
-- **Aktualizacja ciągła**: aktualizacja klastra po jednym węźle na raz, dzięki czemu stare i nowe wersje działają równolegle
-  stronie przez jakiś czas, bez przestoju. ([rozdział 17](17-cluster.md))
+- **Rodowód** (*lineage*): zapis biblioteki o agregatach, z których skopiowano odłączoną kopię
+  (`aggregate_lineage`), żeby pełne przepisanie historii oryginału wciąż tę kopię odnalazło.
+  ([rozdział 15](15-rewriting-history.md))
+- **Rozmieszczenie** (*placement*, `Placement`): gdzie działają właściciele danego typu agregatu:
+  `Placement.Local` (domyślnie) albo `Placement.Sharded`. ([rozdział 17](17-cluster.md))
 
 ## S
 
-- **Saga** (`SagaActor`): menedżer procesów obejmujący wiele agregatów. Uruchamia kroki,
-  zapisuje postęp każdego kroku i uruchamia funkcję cofania kroków, gdy krok się nie powiedzie.
+- **Saga** (`SagaDefinition`, uruchamiana przez `SagaRunner`): menedżer procesu dla pracy, która
+  obejmuje kilka agregatów. Wykonuje kroki, po każdym zapisuje postęp, a gdy krok się nie uda,
+  wykonuje kroki wycofania. `SagaActor`, sposób pisania sag sprzed 1.0, jest przestarzały.
   ([rozdział 12](12-sagas.md))
-- **Krok sagi** (`SagaStep`): identyfikator i numer kroku sagi. Jest to klucz idempotentności
-  polecenia wysyłane przez krok, więc saga wznowiona po awarii nigdy nie stosuje polecenia dwa razy.
-  ([rozdział 12](12-sagas.md))
-- **Blokada schematu** (`SchemaLock`): doradcza blokada PostgreSQL, która sprawia, że ​​procesy inicjują
-  schemat po jednym. Proces czeka na niego do pięciu minut. ([rozdział 2](02-setting-up.md))
-- **Tryb szeregowy** (`CommandProcessing.Serial`): uruchamia polecenia jednego agregatu po drugim, w
-  kolejność ich przybycia, aby każdy obsługujący widział najnowszy stan. Gdy 1000 poleceń już czeka,
-  następną odpowiedzią jest `CommandRejected`. ([rozdział 5](05-command-flavors.md))
-- **ServeLive / ServeStale**: co robi aktywna kompilacja zarządzanej projekcji podczas nowej kompilacji
-  jest zrobione: kontynuuj stosowanie wydarzeń na żywo (`ServeLive`, domyślnie) lub serwuj jego tabele bez zmian
+- **Scheduler squasha** (*squash scheduler*, `SquashScheduler`): jeden na system. Raz na godzinę zwija,
+  po jednym naraz, agregaty wybrane przez regułę `AutomaticSquash` ich kontekstów.
+  ([rozdział 14](14-squash.md))
+- **Serializator klastra** (*cluster serializer*, `ClusterSerializer`): jedyny serializator wszystkich
+  komunikatów między węzłami, zbudowany na mpjsons; serializacja Javy pozostaje wyłączona.
+  ([rozdział 17](17-cluster.md))
+- **ServeLive / ServeStale**: co robi aktywna budowa projekcji zarządzanej, gdy powstaje nowa: dalej
+  stosuje bieżące zdarzenia (`ServeLive`, domyślnie) albo udostępnia swoje tabele bez zmian
   (`ServeStale`). ([rozdział 10](10-rebuilding-projections.md))
-- **Typ sharded** (`Placement.Sharded`): jeden właściciel na agregat w całym klastrze, umieszczony przez
-  Pekko Cluster Sharding; polecenia z dowolnego węzła docierają do niego. ([rozdział 17](17-cluster.md))
-- **Singleton** (`Singletons.start`): aktor, który uruchamia się raz w całym klastrze, np.
-  nadzorca projekcji, sonda skrzynki nadawczej, harmonogram Squash lub runner Saga. Każdy węzeł
-  komunikuje się z nim za pośrednictwem serwera proxy. ([rozdział 17](17-cluster.md))
-- **Migawka** (`SnapshotPolicy`): zapisana kopia stanu agregatu, domyślnie zapisywana co
-  200 zdarzeń i gdy właściciel zatrzyma się, więc przywrócenie odczyta migawkę i tylko zdarzenia po niej
-  To. Opt-in i można bezpiecznie wyrzucić. ([rozdział 13](13-snapshots.md))
-- **Space** (`SpaceId`): organizacja (najemca), do której należy agregat, nazwana według jego pierwszej nazwy
-  wydarzenie. Przestrzeń 0 jest samą platformą. ([rozdział 16](16-organizations.md))
-- **Squash** (`SquashAggregate`): zastąpienie zdarzeń agregatu od 1 do N jednym zdarzeniem squasha w
-  wersja N; wersja i stan pozostają takie same. Opt-in dla kontekstu zbiorczego z
-  `SquashPolicy`. ([rozdział 14](14-squash.md))
-- **Zdarzenie squasha**: `Pierwsze zdarzenie`, które `SquashPolicy.toEvent` tworzy ze stanu. Twoje zdarzenie
-  osoby obsługujące muszą przywrócić go do dokładnie tego samego stanu, w przeciwnym razie dynia zostanie odrzucona, chyba że jej klasa
-  miesza w `SquashMayChangeState`. ([rozdział 14](14-squash.md))
-- **Punkt spłaszczenia**: wersja, do której agregat jest spłaszczony. Niczego poniżej nie można odczytać.
-  więcej, z wyjątkiem zdarzeń audytu przechowywanych w archiwum. ([rozdział 14](14-squash.md))
-- **Harmonogram Squash** (`SquashScheduler`): jeden na system. Raz na godzinę zgniata agregaty
-  że reguła „AutomaticSquash” ich kontekstów wybiera je po kolei. ([rozdział 14](14-squash.md))
-- **Stan**: to, co uzyskujesz, odtwarzając zdarzenia agregatu, przechowywane w jego korzeniu agregatu.
+- **Singleton** (`Singletons.start`): aktor, który działa w jednym egzemplarzu w całym klastrze, na
+  przykład nadzorca projekcji, poller outboxu, scheduler squasha albo runner sagi. Każdy węzeł
+  rozmawia z nim przez proxy. ([rozdział 17](17-cluster.md))
+- **Squash** (`SquashAggregate`): zwinięcie historii, czyli zastąpienie zdarzeń agregatu od 1 do N
+  jednym zdarzeniem squasha w wersji N; wersja i stan pozostają takie, jakie były. Włącza się go
+  osobno w każdym kontekście agregatu przez `SquashPolicy`. ([rozdział 14](14-squash.md))
+- **Stan** (*state*): to, co dostajesz, odtwarzając zdarzenia agregatu; przechowuje go korzeń
+  agregatu. ([rozdział 1](01-cqrs-without-the-headache.md))
+- **`StoredDataCheck`**: narzędzie tylko do odczytu, które czyta każdą zapisaną wartość JSON klasami,
+  jakie twoja aplikacja ma teraz, i zgłasza, czego nie da się już odczytać. Uruchamiaj je na kopii
+  produkcji przed aktualizacją. ([rozdział 6](06-events.md), [rozdział 18](18-production.md))
+- **Strona odczytu** (*read side*): projekcje i ich modele odczytu. Zob. *CQRS*.
   ([rozdział 1](01-cqrs-without-the-headache.md))
-- **`StoredDataCheck`**: narzędzie tylko do odczytu, które odczytuje każdą zapisaną wartość JSON z klasami, które posiadasz
-  Aplikacja ma teraz i raportuje, czego już nie odczytuje. Uruchom ją na kopii produkcyjnej przed
-  aktualizacja. ([rozdział 6](06-events.md), [rozdział 18](18-production.md))
-- **Projekcja subskrybowalna** (`SubscribableProjectionActor`): projekcja, która również wypycha
-  zmiany dla klientów, którzy zasubskrybowali, w postaci wiadomości `SubscriptionUpdated`.
-  ([rozdział 11](11-subskrybowalne-projekcje.md))
-- **Subskrybent**: aktor zarejestrowany w magistrali zdarzeń za pośrednictwem `RegisterSubscribers`, zwykle
-  projekcja lub aktor-słuchacz. ([rozdział 8](08-projections.md))
-- **Subskrypcja**: zainteresowanie jednego subskrybenta jednym typem zbiorczym, dla jednego typu słuchacza.
-  postęp, czyli ostatnia wersja zastosowana dla każdego agregatu, jest przechowywany w tabeli `subskrypcje`.
-  ([rozdział 8](08-projections.md))
-- **Supervisor** (`ProjectionSupervisor`): aktor `Projections.start` zwraca dla zarządzanego
-  projekcja. Używaj jej wszędzie tam, gdzie używasz projekcji: w zapytaniach i w
-  `RejestracjaSubskrybentów`. ([rozdział 10](10-rebuilding-projections.md))
+- **Strona zapisu** (*write side*): polecenia, agregaty i zdarzenia, czyli miejsce, w którym zapadają
+  decyzje. Zob. *CQRS*. ([rozdział 1](01-cqrs-without-the-headache.md))
+- **Subskrybent** (*subscriber*): aktor zarejestrowany w szynie zdarzeń przez `RegisterSubscribers`,
+  zwykle projekcja albo aktor-listener. ([rozdział 8](08-projections.md))
+- **Subskrypcja** (*subscription*): zainteresowanie jednego subskrybenta jednym typem agregatu, dla
+  jednego rodzaju listenera. Jej postęp, czyli ostatnia zastosowana wersja dla każdego agregatu, jest
+  zapisywany w tabeli `subscriptions`. ([rozdział 8](08-projections.md))
+- **Subskrypcja push** (*push subscription*): subskrypcja klienta na aktualizacje projekcji
+  subskrybowalnej; wygasa po 10 minutach bez `RenewSubscription`.
+  ([rozdział 11](11-subscribable-projections.md))
+- **Szyna poleceń** (*command bus*, `AggregateCommandBusActor`): drzwi wejściowe jednego typu
+  agregatu. Przyjmuje polecenia i zapytania, rozdaje identyfikatory, kieruje każdy komunikat do
+  właściciela agregatu, a na odczyty historyczne odpowiada sama.
+  ([rozdział 1](01-cqrs-without-the-headache.md), [rozdział 4](04-first-command.md))
+- **Szyna zdarzeń** (*event bus*, `EventsBusActor`): aktor, jeden na węzeł, który przekazuje
+  opublikowane zdarzenia każdemu subskrybentowi ich typu agregatu i czeka, aż każdy odpowie.
+  ([rozdział 1](01-cqrs-without-the-headache.md), [rozdział 4](04-first-command.md))
 
 ## T
 
-- **Przebudowa ukierunkowana** (`RebuildAggregates`): odbudowa na miejscu tego, co zostało wytworzone na podstawie projekcji
-  agregat, jeden typ agregatu lub jedna organizacja (`RebuildTarget.OneAggregate`, `OneType`,
-  `OneSpace`). ([rozdział 10](10-rebuilding-projections.md))
-- **Tell**: wysłanie wiadomości za pomocą `!` i odejście bez czekania na odpowiedź. Zobacz także
-  *Zapytaj*. ([rozdział 1](01-cqrs-without-the-headache.md))
-
-## W
-
-- **Generator Uid** (`UidGeneratorActor`): aktor, który rozdaje pule identyfikatorów dla agregatów,
-  Polecenia i sagi z sekwencji PostgreSQL. Utwórz je za pomocą `UidGeneratorActor.postgres(system)`.
-  ([rozdział 4](04-pierwsze-polecenie.md), [rozdział 18](18-produkcja.md))
-- **Niedostarczone**: zdarzenie, w którym abonent nie odpowiedział przez 10 minut. Jest ono rejestrowane i pozostaje
-  w skrzynce nadawczej i zostanie ponownie opublikowana później. ([rozdział 9](09-projection-failures.md))
-- **Cofnij** (`UndoEvent`): zdarzenie, które anuluje efekt ostatnich N zdarzeń agregatu.
-  Zostają zapisane w historii i oznaczone jako niewykonane. ([rozdział 6](06-events.md))
-
-## W
-
-- **Wersja** (`AggregateVersion`): ile zdarzeń zawiera historia agregatu: 0 przed pierwszym
-  wydarzenie, po jednym więcej z każdym. Nigdy nie pada, nawet po rozbiciu.
+- **Tell**: wysłanie komunikatu przez `!` i pójście dalej, bez czekania na odpowiedź. Zob. też *Ask*.
   ([rozdział 1](01-cqrs-without-the-headache.md))
+- **Trwałe usunięcie** (*permanent delete*, `PermanentDeleteEvent`): zdarzenie, które, gdy dostanie je
+  już każdy subskrybent, usuwa zdarzenia i wiersze agregatu z bazy danych na dobre.
+  ([rozdział 6](06-events.md))
+- **Tryb szeregowy** (*serial mode*, `CommandProcessing.Serial`): wykonuje polecenia jednego agregatu
+  po kolei, w kolejności nadejścia, więc każdy handler widzi najnowszy stan. Gdy czeka już 1 000
+  poleceń, następne dostaje odpowiedź `CommandRejected`. ([rozdział 5](05-command-flavors.md))
+- **Typ agregatu** (*aggregate type*, `AggregateType`): pełna nazwa klasy korzenia agregatu. Służy za
+  klucz routingu, subskrypcji i zapisanych wierszy, więc zmiana nazwy albo przeniesienie klasy korzenia
+  tworzy nowy typ. ([rozdział 3](03-first-aggregate.md))
+- **Typ lokalny** (*local type*, `Placement.Local`): rozmieszczenie domyślne. Każdy węzeł ma własnych
+  właścicieli, a gdy dwa węzły zapisują ten sam agregat, rozstrzyga kontrola wersji w bazie danych.
+  ([rozdział 17](17-cluster.md))
+- **Typ shardowany** (*sharded type*, `Placement.Sharded`): jeden właściciel na agregat w całym
+  klastrze, rozmieszczany przez Pekko Cluster Sharding; trafiają do niego polecenia z każdego węzła.
+  ([rozdział 17](17-cluster.md))
+
+## U
+
+- **Uzupełnianie wsteczne** (*backfill*): zadanie wykonywane na działającym systemie, które uzupełnia
+  dane w wierszach zapisanych, zanim pojawiła się dana funkcja. `backfillSpaces` daje starym agregatom
+  ich przestrzeń, a `backfillEventKeys` starym zdarzeniom ich klucze.
+  ([rozdział 16](16-organizations.md), [rozdział 18](18-production.md))
 
 ## W
 
-- **Okno**: zobacz *Kontrola przepływu*. ([rozdział 9](09-projection-failures.md))
-- **Strona zapisu**: polecenia, agregaty i zdarzenia, w których podejmowane są decyzje. Zobacz *CQRS*.
+- **Wersja** (*version*, `AggregateVersion`): liczba zdarzeń w historii agregatu: 0 przed pierwszym
+  zdarzeniem, o jeden więcej z każdym kolejnym. Nigdy nie maleje, nawet po squashu.
   ([rozdział 1](01-cqrs-without-the-headache.md))
-- **`writtenFrom`**: mapa w kontekście agregatu z nowej klasy zdarzeń do wersji aplikacji z
-  który każdy węzeł może odczytać. Dopóki każdy węzeł nie uruchomi tej wersji, polecenie, które zapisze
-  klasa ma odpowiedź `CommandRejected`. ([rozdział 17](17-cluster.md))
+- **Wersja aplikacji** (*app-version*): numer wydania, który każdy węzeł klastra ogłasza
+  w `pekko.cluster.app-version`. Podczas aktualizacji kroczącej decyduje, gdzie trafiają nowe shardy
+  i kiedy wolno zapisywać nowe klasy zdarzeń. ([rozdział 17](17-cluster.md))
+- **Właściciel agregatu** (*aggregate owner*, `AggregateOwner`): aktor, który opiekuje się jednym
+  agregatem. Odtwarza stan, przepuszcza polecenia przez twoje handlery, zapisuje zdarzenia i je
+  publikuje; startuje wraz z pierwszym komunikatem i jest zatrzymywany, gdy nic nie robi.
+  ([rozdział 1](01-cqrs-without-the-headache.md), [rozdział 4](04-first-command.md))
+- **Writer outboxu** (*outbox writer*, `WithOutboxWriter`, `OutboxWriter`): pozwala kontekstowi
+  agregatu zapisywać własne wiersze (zadania, wiadomości do wysłania) w tej samej transakcji co jego
+  zdarzenia. ([rozdział 18](18-production.md))
+- **`writtenFrom`**: mapa w kontekście agregatu: od nowej klasy zdarzenia do wersji aplikacji, od
+  której każdy węzeł potrafi ją odczytać. Dopóki nie każdy węzeł działa w tej wersji, polecenie, które
+  zapisałoby tę klasę, dostaje odpowiedź `CommandRejected`. ([rozdział 17](17-cluster.md))
+- **Wybrany identyfikator agregatu** (*chosen aggregate id*, `chosenAggregateId`): identyfikator,
+  który najpierw rezerwujesz przez `ReserveAggregateId`, a potem wkładasz do `FirstCommand`, dzięki
+  czemu dwukrotne wysłanie polecenia tworzącego nigdy nie stworzy dwóch agregatów.
+  ([rozdział 5](05-command-flavors.md))
+
+## Z
+
+- **Zapytanie o minimalną wersję** (*min-version query*, `GetAggregateMinVersion`): prosi o agregat,
+  gdy tylko osiągnie on daną wersję, żeby ekran mógł pokazać zmianę, którą przed chwilą wprowadził.
+  ([rozdział 7](07-reading-the-past.md))
+- **Zdarzenie** (*event*, `Event`): fakt o jednym agregacie, w czasie przeszłym, na przykład
+  `ItemAdded("milk")`. Zdarzenia przechowuje się na zawsze, jako JSON zapisany pod nazwą ich klasy.
+  ([rozdział 1](01-cqrs-without-the-headache.md), [rozdział 6](06-events.md))
+- **Zdarzenie kompensujące** (*compensating event*): nowe zdarzenie, które zapisujesz obok przepisania
+  historii, na przykład `CartNameRewritten`, żeby projekcje dowiedziały się o zmianie.
+  ([rozdział 15](15-rewriting-history.md))
+- **Zdarzenie squasha** (*squash event*): `FirstEvent`, które `SquashPolicy.toEvent` tworzy ze stanu.
+  Twoje handlery zdarzeń muszą zamienić je z powrotem dokładnie w ten sam stan, inaczej squash
+  zostanie odrzucony, chyba że klasa tego zdarzenia domieszkuje `SquashMayChangeState`.
+  ([rozdział 14](14-squash.md))
+- **Zmiana historii** (*history change*, `HistoryChange`): to, co ma zrobić pełne przepisanie
+  historii, zapisane jako case class (`EraseCustomer(id)`); każdy kontekst mówi w `historyChanges`,
+  co robi ze swoimi zdarzeniami. ([rozdział 15](15-rewriting-history.md))
 
 ---
 
-Dalej: [Dodatek B](appendix-b-cheat-sheet.md) zawiera listę wszystkich wiadomości, które możesz wysłać, i informacje zwrotne.
+Dalej: [dodatek B](appendix-b-cheat-sheet.md) wymienia każdy komunikat, który możesz wysłać, i to, co
+dostaniesz w odpowiedzi.

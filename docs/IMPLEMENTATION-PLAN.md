@@ -2536,3 +2536,22 @@ Open test-infrastructure items:
 - Simplified on the way: `ProjectionActor.ReplayQueries`, a message the projection sends itself, is
   private; `SubscriptionCacheKey` is the projection package's own; `RandomUtil` draws from
   `ThreadLocalRandom` instead of a new generator seeded with the clock at every call.
+
+**18/10/2026: the full suites on JDK 25; the Polish book translated again; the link check**
+- `sbt test` on JDK 25.0.4.1 (measured, this machine): core 325, examples 107 and testdomain 194
+  scenarios pass in 4 min 31 s; as a cluster of one (`-Dreactivecqrs.test.clusterOfOne=true`) the same
+  in 4 min 48 s.
+- The Polish book (`docs/book_pl`, the owner's machine translation of 17/10/2026) was checked: it
+  predated about 1 950 changed lines of the English book, lacked appendices D and E, had 32 broken
+  links and read as raw machine output ("autobus" for the bus, "zbiory" for aggregates, sentences split
+  across lines; a scan finds 256 such slips). It is translated again from the current English, chapter by
+  chapter, under a style guide with a fixed terminology (`docs/book_pl/STYLE.md`); appendices D (its
+  Mermaid labels translated; the ten diagrams render with Mermaid 10.9.1) and E are new. Its code blocks
+  are the English book's: `BookSnippetsSpec` now checks both books' marked blocks, and that the Polish
+  book has every English chapter with the same code blocks in order. The READMEs link the two books.
+- The translation found three slips in the English book, fixed in both: chapter 6's summary said undo
+  and duplication cases return the state unchanged (an undo needs no case, F148); chapter 11 named a
+  `CartPage` class (it is `CartPageSession`); chapter 17 said the serializer needs no configuration
+  (the host binds it, F178).
+- The plan's link check: `DocLinksSpec` checks every relative link of the repository's Markdown, and
+  every anchor against the headings GitHub makes; 1 203 links, none broken.

@@ -35,7 +35,7 @@ test surface.
 | `core` | `core/` | All the machinery: actors, event store, event bus, projections, sagas, document store, uid generator. Depends on `api`. |
 | `testdomain` | `testdomain/` | Example shopping-cart domain + integration specs; its cart's regions (`// #name`) are code of the book's chapters 5–7 and 13–15. Depends on `api`, `core`. |
 | `testkit` | `testkit/` | The published test kit (M7, E11): `TestDatabase` (a new schema per test run), `SchemaReference`, `TestSystems` (cluster of one), `TestCluster` (nodes in one JVM), `TestClock`, `TestIds`, `askFor` (typed asks, F177); the library's ScalaTest base `CommonSpec` in its test sources. |
-| `examples` | `examples/` | The book's examples E1–E11 (M7), each with a runnable `main` and a spec (E11, testing, is specs only); E2's Docker and Kubernetes files in `examples/deploy/e2`; the specs of the cart chapters (`cart/`, chapters 5–7 and 13–15) run their blocks against the test domain's cart, which it depends on; `BookSnippetsSpec` checks that the book's marked code blocks are their regions. Not published. |
+| `examples` | `examples/` | The book's examples E1–E11 (M7), each with a runnable `main` and a spec (E11, testing, is specs only); E2's Docker and Kubernetes files in `examples/deploy/e2`; the specs of the cart chapters (`cart/`, chapters 5–7 and 13–15) run their blocks against the test domain's cart, which it depends on; `BookSnippetsSpec` checks that the book's marked code blocks are their regions, and that the Polish book's code blocks are the English book's; `DocLinksSpec` checks every relative link and anchor of the docs. Not published. |
 | `bench` | `bench/` | Performance bench and load driver (`sbt "bench/run <name>"`, reports in `docs/perf/`). Not published. |
 | `utils` | `utils/` | Present in tree; commented out / mostly unused in `build.sbt`. |
 
@@ -319,7 +319,8 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
 - **`asInstanceOf`** is used liberally to recover generic event types after
   deserialization; type mismatches fail at runtime, not compile time.
 - **User docs**: the book in `docs/book/` teaches the library to its users. A change to what a user writes or
-  runs (an option, a message, a default, a host step) updates its chapter in the same commit (`docs/book/STYLE.md`).
+  runs (an option, a message, a default, a host step) updates its chapter in the same commit (`docs/book/STYLE.md`),
+  and its Polish translation in `docs/book_pl/` (same file names and code blocks; terms in `docs/book_pl/STYLE.md`).
 
 ---
 

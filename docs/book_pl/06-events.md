@@ -1,468 +1,518 @@
-# Rozdział 6. Wydarzenia: Twoje jedyne źródło prawdy
+# Rozdział 6. Zdarzenia: jedyne źródło prawdy
 
-Polecenia przychodzą i odchodzą, zdarzenia pozostają. Każdy wózek, który kiedykolwiek pokażesz, każdy raport i każda projekcja
-jest tworzony na podstawie zdarzeń przechowywanych w PostgreSQL, dlatego warto je dobrze poznać. Do końca tego
-w tym rozdziale dowiesz się, co otrzymują Twoi obsługujący zdarzenia i jakich zasad muszą przestrzegać,
-rodzaje zdarzeń, które biblioteka rozumie (pierwsze, cofnięcie, duplikacja i trwałe usunięcie), jak
-jak usunąć agregację delikatnie lub na stałe, jak zarejestrować, kto i dlaczego działał, jak zmienić zdarzenie
-klasa po jej zapisaniu bez uszkodzenia czegokolwiek oraz ograniczenia, które utrzymują agregaty w zdrowiu.
+Polecenia przychodzą i odchodzą, zdarzenia zostają. Każdy koszyk, jaki kiedykolwiek pokażesz, każdy raport
+i każda projekcja powstają ze zdarzeń zapisanych w PostgreSQL, więc warto je dobrze poznać. Pod koniec tego
+rozdziału będziesz wiedzieć, co dostają twoje handlery zdarzeń i jakich zasad muszą się trzymać, jakie
+szczególne rodzaje zdarzeń rozumie biblioteka (pierwsze, cofnięcia, duplikacji i trwałego usunięcia), jak
+usunąć agregat delikatnie albo na dobre, jak zapisać, kto działał i dlaczego, jak zmienić zapisaną już klasę
+zdarzenia, niczego nie psując, i jakie limity dbają o zdrowie agregatów.
 
-Przykłady są kontynuowane w oparciu o konfigurację z rozdziału 5: `commandBus` to magistrala poleceń wózków, a
-`alicja` i `bob` to `UserId(1)` i `UserId(2)`.
+Przykłady korzystają dalej z przygotowania z rozdziału 5: `commandBus` to szyna poleceń koszyków, a `alice`
+i `bob` to `UserId(1)` i `UserId(2)`. Bloki, które coś wysyłają, działają w `EventsSpec` (obok
+`CommandKindsSpec` z rozdziału 5), a ten spec sprawdza, co każdy z nich dostaje w odpowiedzi.
 
 ---
 
-## Obsługujące zdarzenia z bliska
+## Handlery zdarzeń z bliska
 
-W rozdziale 3 napisałeś procedury obsługi zdarzeń dla trzech zdarzeń. Koszyk domeny testowej, większy brat domeny
-Twój, obsługuje kilka kolejnych. Oto pełna lista z `ShoppingCartAggregateContext`:
+Twój koszyk z rozdziału 3 ma handlery dla trzech zdarzeń. Koszyk z domeny testowej, jego większy brat,
+obsługuje ich kilka więcej. Oto pełna lista z `ShoppingCartAggregateContext`:
 
+<!-- snippet: shoppingcart/ShoppingCartAggregateContext.scala#eventHandlers -->
 ```scala
-nadpisz def eventHandlers = (userId, timestamp, shoppingCart) => {
-  przypadek e: Duplikat koszyka => koszyk
-  przypadek e: Utworzono koszyk => utworzono koszyk(e)
-  przypadek e: Dodano przedmiot => dodano przedmiot (koszyk, e)
-  przypadek e: PrzedmiotUsunięty => przedmiotUsunięty(Koszyk, e)
-  przypadek e: Koszyk usunięty => null
-  przypadek e: ShoppingCartChangesUndone => shoppingCart
-  przypadek e: CartNameRewritten => cartNameRewritten(shoppingCart, e)
-  przypadek e: CartSquashed => ShoppingCart(e.name, e.items)
+override def eventHandlers = (userId, timestamp, shoppingCart) => {
+  case e: ShoppingCartDuplicated => shoppingCart // the state that arrives is already the copy
+  case e: ShoppingCartCreated => shoppingCartCreated(e)
+  case e: ItemAdded => itemAdded(shoppingCart, e)
+  case e: ItemRemoved => itemRemoved(shoppingCart, e)
+  case e: ShoppingCartDeleted => null
+  case e: CartNameRewritten => cartNameRewritten(shoppingCart, e) // shoppingCart.copy(name = e.name)
+  case e: CartSquashed => ShoppingCart(e.name, e.items)
 }
 ```
 
-W tym rozdziale wyjaśniono usuwanie, cofanie i kopiowanie; przepisywanie jest rozdziałem 15, a
-Rozdział 14 wydarzenia squasha. Po pierwsze, sam obsługujący. Otrzymuje trzy rzeczy i zwraca jedną:
+Ten rozdział wyjaśnia usuwanie, cofanie i kopiowanie; przepisywanie należy do rozdziału 15, a zdarzenie
+squasha do rozdziału 14. Najpierw sam handler. Dostaje trzy rzeczy i oddaje jedną:
 
-- `userId`: kto wysłał polecenie, które zapisało zdarzenie (`userId` polecenia);
-- `timestamp`: kiedy zdarzenie zostało zapisane. Wszystkie zdarzenia jednego polecenia współdzielą jeden moment, skrócony do
-  mikrosekundach i odczytuje dokładnie tę samą wartość za każdym razem, gdy zdarzenie jest odtwarzane;
+- `userId`: kto wysłał polecenie, które zapisało zdarzenie (`userId` tego polecenia);
+- `timestamp`: kiedy zdarzenie zostało zapisane. Wszystkie zdarzenia jednego polecenia mają tę samą chwilę,
+  przyciętą do mikrosekund, i przy każdym odtworzeniu zdarzenia odczytuje się ona dokładnie tak samo;
 - stan *przed* zdarzeniem;
-- i zwraca stan *po* zdarzeniu: nową wartość, utworzoną za pomocą `copy`, nigdy niezmienioną.
+- a zwraca stan *po* zdarzeniu: nową wartość zbudowaną za pomocą `copy`, nigdy zmienioną starą.
 
-Wózek nie potrzebuje pierwszych dwóch, ale wiele agregatów tak. Wyobraź sobie wypożyczenie biblioteczne, gdzie
-książkę należy zwrócić po dwóch tygodniach od momentu wypożyczenia, a wypożyczającym jest osoba, która ją wypożyczyła:
+Koszyk nie potrzebuje dwóch pierwszych, ale wiele agregatów tak. Wyobraź sobie wypożyczenie z biblioteki:
+książkę trzeba oddać dwa tygodnie po wypożyczeniu, a wypożyczającym jest ten, kto ją wypożyczył:
 
+<!-- snippet: cart/Loans.scala#loan -->
 ```scala
-importuj java.time.Instant
+import java.time.Instant
 import java.time.temporal.ChronoUnit
-importuj io.reactivecqrs.api._
+import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{SpaceId, UserId}
 
-klasa przypadku Pożyczka(tytuł: String, pożyczkobiorca: UserId, należność: Natychmiast, zwrócona: Wartość logiczna)
+case class Loan(title: String, borrower: UserId, due: Instant, returned: Boolean)
 
-klasa przypadku LoanStarted(tytuł: String) rozszerza FirstEvent[Pożyczka] {
+case class LoanStarted(title: String) extends FirstEvent[Loan] {
   def spaceId: SpaceId = SpaceId(0)
 }
-klasa przypadku LoanExtended(dni: Int) rozszerza Event[Pożyczka]
-klasa przypadku BookReturned() rozszerza Event[Pożyczka]
+case class LoanExtended(days: Int) extends Event[Loan]
+case class BookReturned() extends Event[Loan]
+```
 
-// w AggregateContext pożyczki
-nadpisz def eventHandlers = (userId, timestamp, loan) => {
-  przypadek e: LoanStarted => Loan(e.title, loaner = userId, due = timestamp.plus(14, ChronoUnit.DAYS), returned = false)
-  przypadek e: LoanExtended => loan.copy(due = loan.due.plus(e.days.toLong, ChronoUnit.DAYS))
-  przypadek _: BookReturned => pożyczka.kopia(zwrócona = prawda)
+a w kontekście wypożyczenia handlery zdarzeń:
+
+<!-- snippet: cart/Loans.scala#loanHandlers -->
+```scala
+override def eventHandlers = (userId, timestamp, loan) => {
+  case e: LoanStarted  => Loan(e.title, borrower = userId, due = timestamp.plus(14, ChronoUnit.DAYS), returned = false)
+  case e: LoanExtended => loan.copy(due = loan.due.plus(e.days.toLong, ChronoUnit.DAYS))
+  case _: BookReturned => loan.copy(returned = true)
 }
 ```
 
-Zauważ, czego *nie* tam jest: `Instant.now()`. Gdyby obsługujący zapytał zegar, nadszedłby termin
-za każdym razem, gdy pożyczka jest odczytywana z magazynu, wartość jest inna. Parametr `timestamp` to
-moment, w którym pożyczka naprawdę się rozpoczęła, dziś i za pięć lat.
+Zwróć uwagę, czego tu *nie ma*: `Instant.now()`. Gdyby handler pytał zegar, termin zwrotu wychodziłby inny
+za każdym razem, gdy wypożyczenie jest czytane z magazynu. Parametr `timestamp` to chwila, w której
+wypożyczenie naprawdę się zaczęło, i dziś, i za pięć lat.
 
-### Gdzie biegną Twoi opiekunowie i dlaczego nigdy nie mogą zawieść
+### Gdzie działają twoje handlery i dlaczego nigdy nie mogą zawieść
 
-Ten sam kod obsługi działa w większej liczbie miejsc, niż można by się spodziewać:
+Ten sam kod handlera działa w większej liczbie miejsc, niż można by się spodziewać:
 
-1. **Przed zapisaniem zdarzeń**, raz dla każdego nowego zdarzenia, na kopii stanu. Jeśli program obsługi zgłosi wyjątek,
-   polecenie otrzymuje `EventHandlingError` i nic nie zostaje zapisane.
-2. **Za każdym razem, gdy agregat jest odczytywany ze sklepu**: gdy jego właściciel rozpoczyna działanie (przy pierwszym użyciu, po
-   ponownego uruchomienia, po uśpieniu z powodu bezczynności) i za każdym spojrzeniem w przeszłość (rozdział 7).
-3. **Gdy projekcja jest budowana na nowo** z zapisanych zdarzeń (rozdział 10).
+1. **Zanim zdarzenia zostaną zapisane**: raz na każde nowe zdarzenie, na kopii stanu. Jeśli handler rzuci
+   wyjątek, polecenie dostaje `EventHandlingError` i nic nie zostaje zapisane.
+2. **Za każdym razem, gdy agregat jest czytany z magazynu**: gdy startuje jego właściciel (przy pierwszym
+   użyciu, po restarcie, po uśpieniu z powodu bezczynności) i przy każdym spojrzeniu w przeszłość
+   (rozdział 7).
+3. **Gdy projekcja jest przebudowywana** z zapisanych zdarzeń (rozdział 10).
 
-Dlatego Twoje procedury obsługi zdarzeń muszą:
+Dlatego twoje handlery zdarzeń muszą:
 
-- **obsługuje każde zdarzenie, które kiedykolwiek zostało zapisane**, wliczając stare klasy, tak długo, jak takie zdarzenia będą przechowywane
-  istnieć;
-- **nigdy nie rzucaj.** Wydarzenie jest faktem; już się wydarzyło. Sprawdzenia i odmowy należą do
-  program obsługi poleceń, który nadal może powiedzieć „nie”;
-- **bądź czysty**: to samo zdarzenie w tym samym stanie zawsze daje ten sam wynik. Bez zegara, bez losowości.
-  numery, brak baz danych i połączeń serwisowych;
-- **zwraca niezmienne wartości** (klasy przypadków, `Wektor`, `Mapa`). Stan jest przekazywany do polecenia
-  osoby obsługujące wątki i subskrybenci w innych wątkach.
+- **obsługiwać każde zdarzenie, jakie agregat kiedykolwiek zapisał**, także zdarzenia starych klas, dopóki
+  takie zdarzenia istnieją;
+- **nigdy nie rzucać wyjątków.** Zdarzenie to fakt: już się wydarzyło. Sprawdzenia i odmowy należą do
+  handlera polecenia, który wciąż może powiedzieć „nie”;
+- **być czyste**: to samo zdarzenie na tym samym stanie zawsze daje ten sam wynik. Żadnego zegara, żadnych
+  liczb losowych, żadnych wywołań bazy danych ani usług;
+- **zwracać wartości niezmienne** (case class, `Vector`, `Map`). Stan jest przekazywany handlerom poleceń
+  i subskrybentom na innych wątkach.
 
 Oto najbardziej kuszący błąd:
 
 ```scala
-przypadek e: Dodano element =>
-  // Nie! Kontrole powinny być przeprowadzane w programie obsługi poleceń. Jeśli limit zmieni się pewnego dnia, przechowywane koszyki
-  // przed zmianą trzeba będzie jeszcze odtworzyć.
-  jeśli (shoppingCart.items.size > 5) rzuć nowy IllegalStateException("Koszyk pełny")
-  itemAdded(koszyk, e)
+case e: ItemAdded =>
+  // Don't! Checks belong in the command handler. If the limit changes one day, the carts stored
+  // before the change still have to replay.
+  if (shoppingCart.items.size > 5) throw new IllegalStateException("Cart full")
+  itemAdded(shoppingCart, e)
 ```
 
-> **Ostrzeżenie:** obiekt obsługujący zdarzenie, który je zgłasza lub nie ma dla niego przypadku, powoduje, że zbiorcze zdarzenie jest
-> nieczytelny. Jego właściciel odpowiada na polecenia kodem `CommandHandlingError`, a na zapytania kodem
-> `Failure(AggregateRestoreFailedException)` do momentu naprawienia kodu; następnie spróbuje ponownie z późniejszym
-> prośba. Jeden zapomniany `przypadek` może zablokować każdy wózek, który zawiera to zdarzenie.
+> **Ostrzeżenie:** handler, który na zapisanym zdarzeniu rzuca wyjątek albo nie ma dla niego przypadku,
+> sprawia, że tego agregatu nie da się odczytać. Jego właściciel odpowiada na polecenia
+> `CommandHandlingError`, a na zapytania `Failure(AggregateRestoreFailedException)`, dopóki kod nie zostanie
+> poprawiony; przy kolejnym żądaniu próbuje od nowa. Jeden zapomniany `case` może zablokować każdy koszyk,
+> w którym jest to zdarzenie.
 
 ## FirstEvent: każdy pamiętnik ma pierwszą stronę
 
-Pierwszym zdarzeniem nowego agregatu musi być „FirstEvent”. Poza tym, że jest to pierwsza strona dziennika,
-mówi, do której *przestrzeni* należy agregat: organizacji (najemcy, firmy klienta)
-mieszka w. Wózek mieszka w samej platformie, przestrzeń 0:
+Pierwszym zdarzeniem nowego agregatu musi być `FirstEvent`. Poza tym, że jest pierwszą stroną pamiętnika,
+mówi, do której *przestrzeni* należy agregat, czyli w jakiej organizacji (najemcy, firmie klienta) żyje.
+Koszyk żyje w samej platformie, w przestrzeni 0:
 
+<!-- snippet: shoppingcart/Events.scala#created -->
 ```scala
-klasa przypadku ShoppingCartCreated(nazwa: String) rozszerza FirstEvent[ShoppingCart] {
+case class ShoppingCartCreated(name: String) extends FirstEvent[ShoppingCart] {
   def spaceId: SpaceId = SpaceId(0)
 }
 ```
 
-W aplikacji z wieloma organizacjami spacja zwykle pochodzi z polecenia i przypadku
-pole klasy może zapewnić to bezpośrednio (przykład, nie w domenie testowej):
+W aplikacji z wieloma organizacjami przestrzeń zwykle przychodzi z polecenia, a podać ją może wprost pole
+case class (to przykład, w domenie testowej go nie ma):
 
+<!-- snippet: cart/EventsSpec.scala#cartOpened -->
 ```scala
-klasa przypadku CartOpened(spaceId: SpaceId, nazwa: String) rozszerza FirstEvent[ShoppingCart]
+case class CartOpened(spaceId: SpaceId, name: String) extends FirstEvent[ShoppingCart]
 ```
 
-Jeśli to pominiesz, możesz popełnić dwa błędy:
+Jeśli to pominiesz, możliwe są dwa kłopoty:
 
-- Pierwsze zdarzenie z ujemną spacją (takie jak `SpaceId.unknown`, które ma wartość -1) jest odrzucane:
-  polecenie otrzymuje `FailureResponse` informujący, że nowy agregat wymaga spacji i nic nie jest przechowywane.
-  Użyj `SpaceId(0)`, jeśli agregat należy do platformy, a nie do organizacji.
-- Zwykłe `Wydarzenie` jako pierwsze zdarzenie nowego agregatu kończy się niepowodzeniem podczas przechowywania,
-  `EventHandlingError`: sklep nie wie, gdzie należy umieścić agregat.
+- Pierwsze zdarzenie z ujemną przestrzenią (taką jak `SpaceId.unknown`, czyli -1) zostaje odrzucone:
+  polecenie dostaje `FailureResponse` z informacją, że nowy agregat potrzebuje przestrzeni, i nic nie zostaje
+  zapisane. Gdy agregat należy do platformy, a nie do organizacji, użyj `SpaceId(0)`.
+- Zwykłe `Event` jako pierwsze zdarzenie nowego agregatu kończy się przy zapisie błędem
+  `EventHandlingError`: magazyn nie wie, do której przestrzeni należy agregat.
 
-Przestrzenie mają swój własny rozdział: [rozdział 16](16-organizations.md).
+Przestrzenie mają cały własny rozdział: [rozdział 16](16-organizations.md).
 
-## Usuwanie, delikatny sposób
+## Delikatne usuwanie
 
-Koszyk można usunąć. Jego program obsługi poleceń przechowuje `ShoppingCartDeleted()`, a program obsługi zdarzeń
-zwraca `null`:
+Koszyk można usunąć. Jego handler polecenia zapisuje `ShoppingCartDeleted()`, a handler zdarzenia zwraca
+`null`:
 
+<!-- snippet: shoppingcart/ShoppingCartAggregateContext.scala#deletedHandler -->
 ```scala
-przypadek e: Koszyk usunięty => null
+case e: ShoppingCartDeleted => null
 ```
 
-Stan „null” oznacza „usunięty”. Od tego momentu:
+Stan `null` oznacza „usunięty”. Od tej chwili:
 
-- `GetAggregate(cartId)` odpowiada wartością `Aggregate`, której `aggregateRoot` ma wartość `None`;
-- dalsze polecenia dla wózka są odrzucane z błędem `CommandHandlingError` (w dzienniku jest napisane, że agregat
-  "jest już usunięty");
-- nic nie jest usuwane. Cały dziennik nadal tam jest, projekcje widzą „ShoppingCartDeleted” i usuwają
-  wózek z ich list, a odczyty rozdziału 7 nadal pokazują wózek w takim stanie, w jakim był wcześniej.
+- `GetAggregate(cartId)` odpowiada `Aggregate`, którego `aggregateRoot` to `None`;
+- kolejne polecenia dla koszyka są odrzucane z błędem `CommandHandlingError` (w logu pojawia się
+  informacja, że agregat „is already deleted”);
+- nic nie zostaje wymazane. Cały pamiętnik nadal istnieje, projekcje widzą `ShoppingCartDeleted` i usuwają
+  koszyk ze swoich list, a odczyty z rozdziału 7 nadal pokazują koszyk takim, jaki był wcześniej.
 
-To jest *miękkie* usunięcie i w większości przypadków jest to właściwy wybór: zachowujesz historię i
-nikt już nie może zmienić koszyka.
+To *miękkie* usunięcie i zwykle właśnie ono jest dobrym wyborem: historia zostaje, a nikt nie może już
+zmienić koszyka.
 
-## Cofnij: Ctrl+Z, aby wykonać agregację
+## Cofnięcie: Ctrl+Z dla agregatu
 
-Oto mały dramat z zestawu testowego. Alicja tworzy wózek z zakupami i dodaje jabłka; Bob
-dodaje pomarańcze, a następnie usuwa element 1, którym niestety są jabłka:
+Oto mały dramat z zestawu testów. Alicja tworzy koszyk „Zakupy” i dodaje jabłka; Bob dodaje pomarańcze,
+a potem usuwa pozycję 1, którą niestety są jabłka:
 
 ```
-wersja 1 ShoppingCartCreated(Groceries) Alice
-wersja 2 Dodano element (jabłka) Alicja
-wersja 3 Dodano element (pomarańcze) Bob
-wersja 4 Element usunięty(1) Bob, przez pomyłkę
+version 1  ShoppingCartCreated(Groceries)   Alice
+version 2  ItemAdded(apples)                Alice
+version 3  ItemAdded(oranges)               Bob
+version 4  ItemRemoved(1)                   Bob, by mistake
 ```
 
-Alicja naciska przycisk cofania na wózku. Wózek ma polecenie i zdarzenie dla niego:
+Alicja naciska w koszyku przycisk cofania. Koszyk ma do tego polecenie,
 
+<!-- snippet: shoppingcart/Commands.scala#undo -->
 ```scala
-klasa przypadku UndoShoppingCartChange(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
-                                  stepsToUndo: Int) rozszerza Command[ShoppingCart, CustomCommandResponse[_]]
-
-klasa przypadku ShoppingCartChangesUndone(eventsCount: Int) rozszerza UndoEvent[ShoppingCart]
-
-// w commandHandlers
-przypadek c: UndoShoppingCartChange => CommandSuccess(ShoppingCartChangesUndone(c.stepsToUndo))
+case class UndoShoppingCartChange(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
+                                  stepsToUndo: Int) extends Command[ShoppingCart, CustomCommandResponse[_]]
 ```
 
-Zdarzenie `UndoEvent` ma parametr `eventsCount`, który informuje, ile najnowszych zdarzeń zostało anulowanych.
+zdarzenie cofnięcia,
 
+<!-- snippet: shoppingcart/Events.scala#undone -->
 ```scala
-commandBus ? UndoShoppingCartChange(alice, cartId, AggregateVersion(4), stepsToUndo = 1)
-// SuccessResponse(cartId, AggregateVersion(5)); w koszyku znów są jabłka i pomarańcze
+case class ShoppingCartChangesUndone(eventsCount: Int) extends UndoEvent[ShoppingCart]
 ```
 
-Co warto wiedzieć o funkcji cofania:
+i przypadek w handlerach poleceń, który zamienia jedno w drugie:
 
-- **Cofnięcie to też zdarzenie.** Wersja przesuwa się do przodu o 5, nigdy do tyłu. Usunięcie pozostaje w
-  dziennik, oznaczony jako anulowany od wersji 5, więc czytanie wersji 4 (rozdział 7) nadal pokazuje
-  wózek bez jabłek, bo tak to wtedy było.
-- **Anuluje najnowsze wydarzenia, które nadal obowiązują.** Cofnij jeszcze raz, a przejdziesz dalej
-  Powrót: anuluje wersję 3, pomarańcze. Cofnięcia nigdy się nie anulują i nie ma możliwości powtórzenia.
-- **Twój moduł obsługi zdarzeń nadal potrzebuje przypadku dla zdarzenia cofania**, zwracając stan bez zmian:
+<!-- snippet: shoppingcart/ShoppingCartAggregateContext.scala#undoHandler -->
+```scala
+case c: UndoShoppingCartChange => CommandSuccess(ShoppingCartChangesUndone(c.stepsToUndo))
+```
 
-  ```scala
-  przypadek e: ShoppingCartChangesUndone => shoppingCart // biblioteka wykonuje cofanie zmian
-  ```
+`UndoEvent` ma pole `eventsCount`: liczbę najnowszych zdarzeń, które anuluje.
 
-  Biblioteka przepuszcza każde nowe zdarzenie przez Twoje moduły obsługi przed jego zapisaniem, w tym zdarzenia cofania,
-  a brakujący przypadek spowoduje błąd polecenia z błędem `EventHandlingError`. Po zatwierdzeniu działa
-  sam stan rzeczywisty, poprzez odczytanie agregatu z magazynu i pominięcie anulowanych
-  wydarzenia.
-- **Cofnięcie nie może osiągnąć wartości poniżej punktu zgniecenia** (rozdział 14); takie polecenie otrzymuje
+<!-- snippet: cart/EventsSpec.scala#undo -->
+```scala
+val undone = commandBus ? UndoShoppingCartChange(alice, cartId, AggregateVersion(4), stepsToUndo = 1)
+// SuccessResponse(cartId, AggregateVersion(5)); the cart holds apples and oranges again
+```
+
+Co warto wiedzieć o cofaniu:
+
+- **Cofnięcie też jest zdarzeniem.** Wersja idzie naprzód, do 5, nigdy wstecz. Usunięcie zostaje
+  w pamiętniku, oznaczone jako anulowane od wersji 5, więc odczyt wersji 4 (rozdział 7) nadal pokazuje
+  koszyk bez jabłek, bo taki wtedy był.
+- **Anuluje najnowsze zdarzenia, które wciąż obowiązują.** Kolejne cofnięcie sięgnęłoby dalej wstecz
+  i anulowałoby wersję 3, czyli pomarańcze. Cofnięcie nigdy nie anuluje innego cofnięcia i nie ma ponawiania
+  (redo).
+- **Twoje handlery zdarzeń nie potrzebują przypadku dla zdarzenia cofnięcia.** Cofaniem zajmuje się
+  biblioteka: nigdy nie przekazuje zdarzenia cofnięcia twoim handlerom, a po zatwierdzeniu sama ustala
+  prawdziwy stan, czytając agregat z powrotem z magazynu i pomijając anulowane zdarzenia. (Przed wersją 1.0
+  brak takiego przypadku kończył polecenie błędem `EventHandlingError`, problem F148; przypadek, który
+  został z tamtych czasów, nie szkodzi, po prostu nigdy nie jest wywoływany.)
+- **Cofnięcie nie może sięgnąć poniżej punktu squasha** (rozdział 14); takie polecenie dostaje
   `EventHandlingError`.
-- **Projekcje widzą zdarzenie cofania jak każde inne.** Słuchacze, którzy tworzą zdarzenia na podstawie zdarzeń, muszą cofnąć zdarzenie
-  ich własna praca; słuchacze, którzy odbierają stan agregatu, otrzymują wraz z nim poprawiony stan
+- **Projekcje widzą zdarzenie cofnięcia jak każde inne.** Listenery, które budują swoje dane ze zdarzeń,
+  muszą same cofnąć swoją pracę; listenery, które dostają stan agregatu, dostają razem z nim poprawiony stan
   (rozdział 8).
 
-> **Pod maską:** anulowane zdarzenia są rejestrowane w tabeli `noop_events` i obowiązują od
-> wersja cofania, a migawka agregatu zostaje odrzucona. Zobacz
-> [ARCHITECTURE.md, sekcje 2.6 i 4.2](../ARCHITECTURE.md).
+> **Pod maską:** anulowane zdarzenia są zapisywane w tabeli `noop_events`, ze skutkiem od wersji cofnięcia,
+> a migawka agregatu jest wyrzucana. Zobacz [ARCHITECTURE.md, sekcje 2.6 i 4.2](../ARCHITECTURE.md).
 
-## Duplikacja: nowy agregat, który zaczyna się jako kopia
+## Duplikacja: nowy agregat, który zaczyna życie jako kopia
 
-„Zapisz jako...” w edytorze tekstu: lista zakupów z poprzedniego tygodnia staje się początkiem listy zakupów z bieżącego tygodnia.
-Wózek może to zrobić:
+„Zapisz jako...” w edytorze tekstu: lista zakupów z zeszłego tygodnia staje się początkiem listy na ten
+tydzień. Koszyk też to potrafi, dzięki poleceniu
 
+<!-- snippet: shoppingcart/Commands.scala#duplicate -->
 ```scala
-klasa przypadku DuplicateShoppingCart(userId: UserId, baseAggregateId: AggregateId, baseAggregateVersion: AggregateVersion)
-  rozszerza FirstCommand[ShoppingCart, CustomCommandResponse[_]]
+case class DuplicateShoppingCart(userId: UserId, baseAggregateId: AggregateId, baseAggregateVersion: AggregateVersion)
+  extends FirstCommand[ShoppingCart, CustomCommandResponse[_]]
+```
 
-klasa przypadku ShoppingCartDuplicated(spaceId: SpaceId, baseAggregateId: AggregateId, baseAggregateVersion: AggregateVersion)
-  rozszerza DuplicationEvent[ShoppingCart]
+i zdarzeniu duplikacji:
 
-// w commandHandlers
-przypadek c: DuplikatKoszyka Zakupowego =>
+<!-- snippet: shoppingcart/Events.scala#duplicated -->
+```scala
+case class ShoppingCartDuplicated(spaceId: SpaceId, baseAggregateId: AggregateId, baseAggregateVersion: AggregateVersion)
+  extends DuplicationEvent[ShoppingCart]
+```
+
+Handler polecenia koszyka zapisuje to zdarzenie,
+
+<!-- snippet: shoppingcart/ShoppingCartAggregateContext.scala#duplicateHandler -->
+```scala
+case c: DuplicateShoppingCart =>
   CommandSuccess(ShoppingCartDuplicated(SpaceId(0), c.baseAggregateId, c.baseAggregateVersion))
-
-// w eventHandlers: stan, który przychodzi, jest już kopią, więc oddaj go bez zmian
-przypadek e: Duplikat koszyka => koszyk
 ```
 
-Kontynuując opowieść, Alicja kopiuje wózek z zakupami, taki jaki był w wersji 3:
+a handler zdarzenia oddaje bez zmian stan, który dostaje:
 
+<!-- snippet: shoppingcart/ShoppingCartAggregateContext.scala#duplicatedHandler -->
 ```scala
-commandBus ? DuplicateShoppingCart(alicja, identyfikator koszyka, łączna wersja(3))
-// SuccessResponse(copyId, AggregateVersion(1)): nowy koszyk z jabłkami i pomarańczami
+case e: ShoppingCartDuplicated => shoppingCart // the state that arrives is already the copy
 ```
 
-Kopia jest osobnym koszykiem w wersji 1 i żyje własnym życiem: dodaj do niej pomidory, a one...
-stają się przedmiotem nr 3, podczas gdy wózek z zakupami nigdy ich nie widzi.
+Wracając do naszej historii: Alicja kopiuje koszyk „Zakupy” taki, jaki był w wersji 3:
+
+<!-- snippet: cart/EventsSpec.scala#duplicate -->
+```scala
+val copied = commandBus ? DuplicateShoppingCart(alice, cartId, AggregateVersion(3))
+// SuccessResponse(copyId, AggregateVersion(1)): a new cart with apples and oranges
+```
+
+Kopia jest osobnym koszykiem, w wersji 1, i żyje własnym życiem: dodaj do niej pomidory, a staną się jej
+pozycją 3, podczas gdy koszyk „Zakupy” nigdy ich nie zobaczy.
 
 Co warto wiedzieć o duplikacji:
 
-- **Zdarzenie „DuplicationEvent” jest zdarzeniem „FirstEvent”**, dlatego nadaje nazwę przestrzeni kopii, która może się różnić od
-  bazy.
-- **Obsługa zdarzeń zwraca stan bez zmian.** Gdy biblioteka odczytuje kopię, najpierw stosuje
-  zdarzenia bazy aż do skopiowanej wersji, więc stan, który otrzymuje Twój program obsługi, jest już kopią.
-- **Kopia udostępnia historię bazy aż do danej wersji, nie kopiuje jej.** Cokolwiek się stanie
-  do bazy później (nowe zdarzenia, cofnięcia) nie zmienia kopii. Przepisanie historii bazy
-  poniżej znajduje się ta wersja, ponieważ ją udostępniają (rozdział 15); i trwałe usunięcie bazy w pierwszej kolejności
-  nadaje kopii pierwsze własne wydarzenie (następna sekcja).
-- **Kopia nie może zaczynać się poniżej punktu zgniecenia podstawy** (rozdział 14), **ani powyżej wersji podstawy**:
-  Kopia „w wersji 10” koszyka w wersji 5 jest odrzucana z błędem `EventHandlingError`. Weź wersję
-  z odpowiedzi `GetAggregate`.
+- **`DuplicationEvent` jest `FirstEvent`**, więc podaje przestrzeń kopii, która może być inna niż przestrzeń
+  agregatu bazowego.
+- **Handler zdarzenia zwraca stan bez zmian.** Gdy biblioteka czyta kopię, najpierw stosuje zdarzenia
+  agregatu bazowego aż do skopiowanej wersji, więc stan, który dostaje twój handler, już jest kopią.
+- **Kopia dzieli z agregatem bazowym historię do tej wersji, a nie kopiuje jej.** Cokolwiek stanie się
+  potem z agregatem bazowym (nowe zdarzenia, cofnięcia), kopii nie dotyczy. Dotyczy jej za to przepisanie
+  historii agregatu bazowego poniżej tej wersji, bo tę historię mają wspólną (rozdział 15); a trwałe
+  usunięcie agregatu bazowego najpierw daje kopii jej własne pierwsze zdarzenie (następna sekcja).
+- **Kopia nie może zacząć się poniżej punktu squasha agregatu bazowego** (rozdział 14) **ani powyżej jego
+  wersji**: kopia „w wersji 10” koszyka, który jest w wersji 5, zostaje odrzucona z błędem
+  `EventHandlingError`. Wersję bierz z odpowiedzi na `GetAggregate`.
 
-## Trwałe usunięcie: kiedy dane naprawdę muszą zniknąć
+## Trwałe usunięcie: gdy dane naprawdę muszą zniknąć
 
-Miękkie usunięcie zachowuje wszystko, co zazwyczaj jest pożądane. Czasami jednak dane muszą zostać usunięte.
-naprawdę zniknąć. `PermanentDeleteEvent` robi to w dwóch krokach:
+Miękkie usunięcie zachowuje wszystko i zwykle właśnie tego chcesz. Czasem jednak dane muszą naprawdę
+zniknąć. Zajmuje się tym `PermanentDeleteEvent`, w dwóch krokach:
 
-1. Zdarzenie jest przechowywane i dostarczane jak każde inne, a na polecenie odpowiadamy `SuccessResponse`
-   od razu.
-2. Gdy każdy subskrybent potwierdził to zdarzenie, każda projekcja miała szansę na usunięcie swojego
-   własną kopię danych, biblioteka usuwa agregat na dobre: ​​jego zdarzenia i wiersz,
-   wiersze oczekującej skrzynki nadawczej, jej migawka, zarchiwizowane zdarzenia (rozdział 14) i postęp projekcji
-   rekordy dla niego.
+1. Zdarzenie zostaje zapisane i dostarczone jak każde inne, a polecenie od razu dostaje odpowiedź
+   `SuccessResponse`.
+2. Gdy każdy subskrybent potwierdzi to zdarzenie (a więc każda projekcja będzie już mieć okazję usunąć
+   własną kopię danych), biblioteka usuwa agregat na dobre: jego zdarzenia i jego wiersz, czekające wiersze
+   outboxu, migawkę, zarchiwizowane zdarzenia (rozdział 14) i zapisy postępu projekcji dotyczące tego
+   agregatu.
 
-Koszyk w domenie testowej nie ma możliwości trwałego usunięcia; dodanie go zajmuje kilka linijek (domena testowa)
-`PermanentDeleteSpec` robi to samo dla małego agregatu „memo”):
+Koszyk w domenie testowej nie ma trwałego usunięcia. Własny kontekst doda je w kilku linijkach; spec tego
+rozdziału uruchamia taki:
 
+<!-- snippet: cart/EventsSpec.scala#erase -->
 ```scala
-klasa przypadku ShoppingCartErased() rozszerza PermanentDeleteEvent[ShoppingCart]
+case class ShoppingCartErased() extends PermanentDeleteEvent[ShoppingCart]
 
-klasa przypadku EraseShoppingCart(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion)
-  rozszerza polecenie [Koszyk, OdpowiedźNiestandardowegoPolecenia[_]]
+case class EraseShoppingCart(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion)
+  extends Command[ShoppingCart, CustomCommandResponse[_]]
 
-// w commandHandlers
-przypadek _: EraseShoppingCart => CommandSuccess(ShoppingCartErased())
-// w EventHandlerach
-przypadek _: KoszykWymazany => Koszyk
+class ErasableCarts extends ShoppingCartAggregateContext {
+  override def commandHandlers = cart => {
+    case _: EraseShoppingCart => CommandSuccess(ShoppingCartErased())
+    case other => super.commandHandlers(cart)(other)
+  }
+
+  override def eventHandlers = (userId, timestamp, cart) => {
+    case _: ShoppingCartErased => cart
+    case other => super.eventHandlers(userId, timestamp, cart)(other)
+  }
+}
 ```
 
-Potem koszyk wygląda tak, jakby nigdy nie istniał: „GetAggregate” odpowiada wersją 0 i nie
-stan i `GetEventsForAggregate` (rozdział 7) z pustą listą.
+Potem koszyk wygląda przy odczycie tak, jakby nigdy nie istniał: `GetAggregate` odpowiada wersją 0 bez
+stanu, a `GetEventsForAggregate` (rozdział 7) pustą listą.
 
 Co warto wiedzieć o trwałym usunięciu:
 
-- **Czeka, aż projekcja zarejestruje błąd dla agregatu** (rozdział 9). Gdy
-  Po usunięciu awarii kolejne dostarczenie zdarzenia spowoduje wykonanie operacji usunięcia.
-- **Kopie są pod opieką.** Jeśli z niego zduplikowano inne agregaty, każdy z nich otrzymuje najpierw
-  pierwsze własne zdarzenie, utworzone za pomocą zdarzenia squasha danego typu (rozdział 14), dzięki czemu kopie zachowują swoje
-  stan. Typ bez polityki squash nie może tego zrobić: usunięcie czeka, a dziennik podaje przyczynę.
-  Wózek ma politykę squasha.
-- **Twoje tabele projekcji są Twoje.** Biblioteka ich nie dotyka: usuń ich wiersze, gdy
-  Twoje projekcje widzą zdarzenie. Zapisane odpowiedzi na idempotentne polecenia agregatu są zgodne z
-  odpowiedzi przechowywane w starszych wersjach biblioteki, które nie nadają nazwy swojemu agregatowi, wygasają wraz z
-  okres ich przechowywania (domyślnie 30 dni).
+- **Czeka, dopóki któraś projekcja ma dla tego agregatu zapisaną awarię** (rozdział 9). Gdy awaria zostanie
+  usunięta, następne dostarczenie zdarzenia przeprowadzi usunięcie.
+- **Kopie są pod opieką.** Jeśli z tego agregatu powstały duplikaty, każdy z nich najpierw dostaje własne
+  pierwsze zdarzenie, utworzone ze zdarzenia squasha danego typu (rozdział 14), więc kopie zachowują swój
+  stan. Typ bez polityki squasha tego nie potrafi: usunięcie wtedy czeka, a log mówi dlaczego. Koszyk ma
+  politykę squasha.
+- **Tabele twoich projekcji są twoje.** Biblioteka ich nie dotyka: usuń ich wiersze, gdy twoje projekcje
+  zobaczą to zdarzenie. Zapisane odpowiedzi idempotentnych poleceń agregatu znikają razem z nim; odpowiedzi
+  zapisane przez starsze wersje biblioteki, które nie wskazują swojego agregatu, wygasają wraz z końcem
+  okresu przechowywania (domyślnie 30 dni).
 
-> **Wskazówka:** zaplanuj z wyprzedzeniem, jeśli potrzebujesz obu rodzajów usuwania. Polecenie nie może zostać uruchomione na agregacie, którego
-> stan jest `null`, więc wózek, który został usunięty w sposób miękki, nie może już zostać usunięty poleceniem. Jeśli
-> może być konieczne późniejsze usunięcie agregatów usuniętych miękko, należy zachować opcję usunięcia miękko jako flagę w stanie
-> (`deleted = true`) i samodzielnie odrzucaj inne polecenia w swoich procedurach obsługi poleceń.
+> **Wskazówka:** jeśli potrzebujesz obu rodzajów usuwania, zaplanuj to z góry. Polecenie nie może działać na
+> agregacie, którego stan to `null`, więc koszyka usuniętego miękko tak, jak robi to nasz koszyk, nie da się
+> już wymazać poleceniem. Jeśli kiedyś może zajść potrzeba wymazania miękko usuniętych agregatów, trzymaj
+> miękkie usunięcie jako flagę w stanie (`deleted = true`), a inne polecenia odrzucaj samodzielnie w swoich
+> handlerach poleceń.
 
 ## Kto to zrobił i dlaczego: koperta metadanych
 
-Przesyłka i jej etykieta wysyłkowa: przesyłka to to, co zostało wysłane, etykieta podaje, kto ją wysłał i dla kogo
-i pod jakim numerem zamówienia. Wydarzenia również mają etykietę.
+Paczka i jej etykieta: paczka to to, co wysłano, a etykieta mówi, kto ją nadał, dla kogo i pod jakim numerem
+zamówienia. Zdarzenia też mają etykietę.
 
-Każde zdarzenie jest przechowywane z identyfikatorem użytkownika polecenia. Często potrzeba czegoś więcej: asystenta (osoby,
-Agent AI, integracja) działał w imieniu Boba; żądanie wpłynęło przez publiczne API; należy do
-sprawa pomocy technicznej nr 12. Polecenie, które łączy `WithMetadata`, nadaje każdemu zdarzeniu, które przechowuje,
-Koperta `EventMetadata`:
+Każde zdarzenie jest zapisywane z `userId` polecenia. Często potrzeba więcej: asystent (człowiek, agent AI,
+integracja) działał w imieniu Boba; żądanie przyszło przez publiczne API; całość dotyczy zgłoszenia nr 12
+w pomocy technicznej. Polecenie z domieszką `WithMetadata` daje każdemu zapisanemu przez siebie zdarzeniu
+kopertę `EventMetadata`:
 
+<!-- snippet: shoppingcart/Commands.scala#onBehalf -->
 ```scala
-/** Dodaje element dla kogoś innego: jego zdarzenie niesie kopertę metadanych. */
-klasa przypadku AddItemOnBehalf(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, nazwa: String,
-                           metadane: EventMetadata)
-  rozszerza Command[ShoppingCart, CustomCommandResponse[_]] o WithMetadata
+/** Adds an item for someone else: its event carries a metadata envelope. */
+case class AddItemOnBehalf(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, name: String,
+                           metadata: EventMetadata)
+  extends Command[ShoppingCart, CustomCommandResponse[_]] with WithMetadata
 ```
 
 | Pole `EventMetadata` | Co zawiera |
 |---|---|
-| `actor` | kto działał, napisane tak, jak chce tego Twoja aplikacja: `"user:5"`, `"agent:planner"` |
-| `correlationId` | łączy wszystko, co zostało zrobione dla jednego żądania lub przypadku |
-| `causationId` | co to spowodowało: wiadomość, inne zdarzenie |
-| `traceContext` | kontekst śledzenia W3C do śledzenia rozproszonego |
+| `actor` | kto działał, w formacie, jaki lubi twoja aplikacja: `"user:5"`, `"agent:planner"` |
+| `correlationId` | łączy wszystko, co zrobiono w ramach jednego żądania albo zgłoszenia |
+| `causationId` | co to spowodowało: komunikat, inne zdarzenie |
+| `traceContext` | kontekst śledzenia W3C, do śledzenia rozproszonego |
 | `spaceId` | organizacja |
-| `custom` | własna `Map[String, String]` |
+| `custom` | twoja własna `Map[String, String]` |
 
-Wymagany jest tylko `aktor`:
+Wymagany jest tylko `actor`:
 
+<!-- snippet: cart/EventsSpec.scala#onBehalf -->
 ```scala
 val onBehalf = EventMetadata("agent:planner", correlationId = Some("case 12"), custom = Map("channel" -> "api"))
 
-commandBus ? AddItemOnBehalf(bob, cartId, AggregateVersion(1), "apple", onBehalf)
-// SuccessResponse(cartId, AggregateVersion(2)); zdarzenie ItemAdded niesie kopertę
+val added = commandBus ? AddItemOnBehalf(bob, cartId, AggregateVersion(1), "apple", onBehalf)
+// SuccessResponse(cartId, AggregateVersion(2)); the ItemAdded event carries the envelope
 ```
 
-Gdzie wyświetla się etykieta?
+Gdzie pojawia się ta etykieta?
 
-- **Nie w obsłudze zdarzeń.** Zachowują one swoje `(userId, timestamp, state)`, więc stan nigdy nie zależy
-  na etykiecie.
-- **W projekcjach**, przy każdym zdarzeniu, jako `EventInfo.metadata`, niezależnie od tego, czy zdarzenie jest dostępne na żywo, czy też nie.
-  dostarczone ponownie później (rozdział 8).
-- **W historii czytamy** rozdział 7.
+- **Nie w handlerach zdarzeń.** Te dalej dostają swoje `(userId, timestamp, state)`, więc stan nigdy nie
+  zależy od etykiety.
+- **W projekcjach**, przy każdym zdarzeniu, jako `EventInfo.metadata`, niezależnie od tego, czy zdarzenie
+  przychodzi na bieżąco, czy jest dostarczane ponownie później (rozdział 8).
+- **W odczytach historii** z rozdziału 7.
 
-Zdarzenie zapisane bez koperty (za pomocą polecenia bez `WithMetadata`) odczytuje się jako
-`EventMetadata.ofUser(userId)`, koperta, której aktorem jest `"user:"` po którym następuje identyfikator użytkownika.
+Zdarzenie zapisane bez koperty (przez polecenie bez `WithMetadata`) odczytuje się jako
+`EventMetadata.ofUser(userId)`, czyli kopertę, której aktorem jest `"user:"`, a po nim identyfikator
+użytkownika.
 
-## Zmiana zdarzenia po jego zapisaniu
+## Zmiana zdarzenia, które jest już zapisane
 
-Dziennik w oprawie: nie można przedrukować strony 12, ale można napisać na nowej stronie, że od tej pory wszystko będzie się działo.
-są napisane inaczej.
+Oprawiony pamiętnik: strony 12 nie wydrukujesz na nowo, ale możesz na nowej stronie zapisać, że od teraz
+pewne rzeczy notuje się inaczej.
 
-Zdarzenia są przechowywane w formacie JSON pod pełną nazwą klasy. Zmień klasę (zmień nazwę pola, dodaj
-lub usunąć jeden, zmienić typ, zmienić nazwę klasy lub przenieść ją do innego pakietu) i zapisanego JSON-a nie
-już nie pasuje. W zależności od zmiany, stare wydarzenia nie są odczytywane, a wraz z nimi każdy agregat
-który zawiera jeden; lub nowe pole po cichu wraca puste (zero, `null` lub `None`, nigdy wartość domyślna
-wartość zapisana w klasie).
+Zdarzenia są zapisywane jako JSON pod pełną nazwą swojej klasy. Zmień klasę (zmień nazwę pola, dodaj albo
+usuń pole, zmień typ, zmień nazwę klasy albo przenieś ją do innego pakietu), a zapisany JSON przestanie do
+niej pasować. Zależnie od zmiany starych zdarzeń nie da się odczytać, a razem z nimi każdego agregatu, który
+ma choć jedno z nich; albo nowe pole po cichu wróci puste (zero, `null` albo `None`, nigdy wartość domyślna
+wpisana w klasie).
 
-Zasada jest więc krótka: **nigdy nie zmieniaj kształtu klasy zdarzeń przechowywanych**. Dodaj nową klasę i zachowaj
-stary. Powiedzmy, że pewnego dnia elementy koszyka otrzymają określoną ilość:
+Zasada jest więc krótka: **nigdy nie zmieniaj kształtu zapisanej klasy zdarzenia.** Dodaj nową klasę,
+a starą zostaw. Powiedzmy, że pewnego dnia pozycje koszyka dostają ilość:
 
 ```scala
-@deprecated("Napisano zanim elementy miały ilości; użyj ItemAddedV2", "2.0")
-klasa przypadku ItemAdded(nazwa: String) rozszerza Event[ShoppingCart]
+@deprecated("Written before items had quantities; use ItemAddedV2", "2.0")
+case class ItemAdded(name: String) extends Event[ShoppingCart]
 
-klasa przypadku ItemAddedV2 (nazwa: String, ilość: Int) rozszerza Event[ShoppingCart]
+case class ItemAddedV2(name: String, quantity: Int) extends Event[ShoppingCart]
 ```
 
-(Koszyk domeny testowej nie zawiera żadnych ilości; w ten sposób można je uzyskać.) Następnie:
+(Koszyk z domeny testowej nie ma ilości; tak by je dostał.) Potem:
 
-1. Od tej pory procedury obsługi poleceń będą zapisywać tylko `ItemAddedV2`.
-2. Obsługujące zdarzenia obsługują obydwa, dopóki istnieją zapisane zdarzenia `ItemAdded`:
+1. Handlery poleceń od teraz zapisują tylko `ItemAddedV2`.
+2. Handlery zdarzeń obsługują oba, dopóki istnieją zapisane zdarzenia `ItemAdded`:
 
    ```scala
-   przypadek e: Dodano przedmiot => dodaj przedmiot (koszyk, e.name, ilość = 1)
-   przypadek e: ItemAddedV2 => addItem(shoppingCart, e.name, e.quantity)
+   case e: ItemAdded   => addItem(shoppingCart, e.name, quantity = 1)
+   case e: ItemAddedV2 => addItem(shoppingCart, e.name, e.quantity)
    ```
 
-3. Projekcje również zajmują się obydwoma zagadnieniami (rozdział 8).
+3. Projekcje też obsługują oba (rozdział 8).
 
-> **Ostrzeżenie:** w klastrze, w którym aktualizowano jeden węzeł na raz, węzeł, który nadal korzysta ze starej wersji, nie może
-> przeczytaj nową klasę. Nie zapisuj jej, dopóki każdy węzeł nie będzie mógł: `writtenFrom` kontekstu jest tworzony dla
-> dokładnie to ([rozdział 17](17-cluster.md)).
+> **Ostrzeżenie:** gdy klaster jest aktualizowany po jednym węźle, węzeł, który wciąż działa na starej
+> wersji, nie odczyta nowej klasy. Nie zapisuj jej, dopóki nie potrafi tego każdy węzeł: właśnie do tego
+> służy `writtenFrom` kontekstu ([rozdział 17](17-cluster.md)).
 
 ### Sprawdź przed aktualizacją
 
-`StoredDataCheck` odczytuje każdą zapisaną wartość JSON z klasami wersji, którą chcesz odczytać
-Wdraża i raportuje, dla każdej tabeli i klasy, ile wierszy odczytał i których nie mógł odczytać. Uruchom go
-z Twojej aplikacji (która ma wszystkie Twoje klasy), połączonej z kopią produkcji:
+`StoredDataCheck` odczytuje każdą zapisaną wartość JSON za pomocą klas z wersji, którą zamierzasz wdrożyć,
+i dla każdej tabeli i klasy raportuje, ile wierszy odczytał i których nie dało się odczytać. Uruchom go ze
+swojej aplikacji (która ma wszystkie twoje klasy), podłączonej do kopii bazy produkcyjnej:
 
+<!-- snippet: cart/EventsSpec.scala#check -->
 ```scala
 import io.reactivecqrs.core.tools.StoredDataCheck
 
 val report = StoredDataCheck.run(mpjsons, typesNames)
-println(tekst raportu)
-if (report.unreadable > 0) println("Jeszcze nie: niektóre zapisane dane nie mogą zostać odczytane przez tę wersję")
+println(report.text)
+if (report.unreadable > 0) println("Not yet: some stored data cannot be read by this version")
 ```
 
-Odczytuje zdarzenia, zdarzenia zarchiwizowane, rozkazy sagi i zapisane odpowiedzi na polecenia, a także
-wszystkie tabele projekcji, które wymienisz (`StoredDataCheck.ProjectionTable[YourDocument]("name")`). To tylko
-czyta. Jego raport zlicza również agregaty bez spacji i zdarzenia według ich starej wersji typu (patrz
-[ARCHITEKTURA.md, sekcja 2.3](../ARCHITEKTURA.md)).
+Czyta zdarzenia, zarchiwizowane zdarzenia, zlecenia sag i zapisane odpowiedzi na polecenia, a do tego
+wszystkie tabele projekcji, które wymienisz (`StoredDataCheck.ProjectionTable[YourDocument]("name")`).
+Niczego nie zmienia, tylko czyta. Tabeli, której twoja baza nie ma, na przykład tabeli sag w aplikacji bez
+sag, nie czyta, a raport ją wymienia. Raport liczy też agregaty bez przestrzeni oraz zdarzenia według ich
+starej wersji typu (zobacz [ARCHITECTURE.md, sekcja 2.3](../ARCHITECTURE.md)).
 
-### Kiedy będzie można opuścić starą klasę?
+### Kiedy można pozbyć się starej klasy?
 
+<!-- snippet: cart/EventsSpec.scala#usersOf -->
 ```scala
 val users = StoredDataCheck.usersOf(classOf[ItemAdded].getName)
-println(s"${users.events} zapisanych i ${users.archived} zarchiwizowano zdarzeń ItemAdded")
-users.aggregates.foreach(u => println(s"aggregate ${u.aggregateId}: ${u.events} zapisane, ${u.archived} zarchiwizowane"))
+println(s"${users.events} stored and ${users.archived} archived ItemAdded events")
+users.aggregates.foreach(u => println(s"aggregate ${u.aggregateId}: ${u.events} stored, ${u.archived} archived"))
 ```
 
-Gdy oba liczniki wynoszą zero, klasa nie jest już używana i można opuścić kod. `usersOf`
-odczytuje obie tabele w całości, ponieważ nie ma indeksu według klasy, więc uruchamia się go na kopii lub gdy baza danych jest
-Cisza. Stare wydarzenia nie znikają same z siebie; zgniecenie (rozdział 14) to jeden ze sposobów, w jaki odchodzą.
+Gdy oba liczniki wynoszą zero, nic już tej klasy nie używa i może ona zniknąć z twojego kodu. `usersOf` czyta
+obie tabele w całości, bo nie ma indeksu po klasie, więc uruchamiaj go na kopii albo wtedy, gdy baza ma mało
+pracy. Stare zdarzenia nie znikają same; jednym ze sposobów, by odeszły, jest squash (rozdział 14).
 
-## Limity, które utrzymują agregaty w zdrowiu
+## Limity, które dbają o zdrowie agregatów
 
-Dwa limity chronią przed niekontrolowanymi agregatami. Oba są parametrami konstruktora
-`PostgresEventStoreState`, więc mają zastosowanie do każdego typu agregatu, który korzysta z tego magazynu:
+Dwa limity chronią przed agregatami, które wymknęły się spod kontroli. Oba są parametrami konstruktora
+`PostgresEventStoreState`, więc dotyczą każdego typu agregatu, który korzysta z tego magazynu:
 
-| Parametr | Domyślny | Poza nim |
+| Parametr | Domyślnie | Po przekroczeniu |
 |---|---|---|
-| `aggregateVersionLimit` | 10 000 zdarzeń na agregat | Polecenie zwraca `EventHandlingError`; w dzienniku występuje nazwa `TooManyEventsException`. |
-| `eventSizeLimit` | 100 000 znaków JSON na zdarzenie | Polecenie zwraca `EventHandlingError`; w dzienniku występuje nazwa `EventTooLargeException`. |
-| `eventSizeLimitPerClassName` | brak | Limit na klasę zdarzenia, w miejsce `eventSizeLimit`, wyższy lub niższy. |
+| `aggregateVersionLimit` | 10 000 zdarzeń na agregat | Polecenie dostaje `EventHandlingError`; w logu pojawia się `TooManyEventsException`. |
+| `eventSizeLimit` | 100 000 znaków JSON na zdarzenie | Polecenie dostaje `EventHandlingError`; w logu pojawia się `EventTooLargeException`. |
+| `eventSizeLimitPerClassName` | brak | Limit dla klasy zdarzenia zamiast `eventSizeLimit`, wyższy albo niższy. |
 
-Ponieważ zdarzenia jednego polecenia są przechowywane razem lub wcale, jedno zdarzenie jest za duże lub za duże
-powoduje niepowodzenie całego polecenia. Ustawienie ich wygląda następująco:
+Zdarzenia jednego polecenia są zapisywane razem albo wcale, więc przez jedno zdarzenie za dużo albo jedno
+zbyt duże nie udaje się całe polecenie. Limity ustawia się tak:
 
+<!-- snippet: cart/EventsSpec.scala#limits -->
 ```scala
-val eventStore = nowy PostgresEventStoreState(mpjsons, typesNames,
-  aggregateVersionLimit = 20000, // wózki o bardzo długiej żywotności
-  eventSizeLimitPerClassName = Map(classOf[ItemAdded].getName -> 1000) // nazwa przedmiotu nigdy nie potrzebuje więcej
+val eventStore = new PostgresEventStoreState(mpjsons, typesNames,
+  aggregateVersionLimit = 20000,                                       // carts with very long lives
+  eventSizeLimitPerClassName = Map(classOf[ItemAdded].getName -> 1000)  // an item name never needs more
 ).initSchema()
 ```
 
-Zanim je podniesiesz, zastanów się, dlaczego tam są. Każde zdarzenie w agregacie jest odczytywane, gdy jego
-właściciel rozpoczyna, chyba że ma migawkę: zmierzono 17.10.2026, odczyt 50 000 zdarzeń zajął 392 ms i
-odczyt z migawki 12 ms (pojedyncze uruchomienie na jednej maszynie programistycznej,
-[`docs/perf/load-M5.md`](../perf/load-M5.md)). Duże zdarzenia proporcjonalnie obciążają pamięć i dysk.
+Zanim je podniesiesz, zastanów się, po co w ogóle są. Gdy startuje właściciel agregatu, czytane jest każde
+zdarzenie tego agregatu, chyba że ma on migawkę: w pomiarze z 17/10/2026 odczyt 50 000 zdarzeń trwał 392 ms,
+a odczyt z migawki 12 ms (jedno uruchomienie na jednej maszynie deweloperskiej,
+[`docs/perf/load-M5.md`](../perf/load-M5.md)). Duże zdarzenia kosztują proporcjonalnie więcej pamięci
+i miejsca na dysku.
 
-> **Wskazówka:** gdy agregat zbliża się do limitu, zapytaj, czy należy go podzielić przez liczbę naturalną
-> granica (jedna na miesiąc, jedna na wersję dokumentu), włącz migawki ([rozdział 13](13-snapshots.md)),
-> lub złóż starą historię za pomocą squasha ([rozdział 14](14-squash.md)). W przypadku dużych dokumentów przechowuj
-> plik w innym miejscu i umieść tylko odniesienie w zdarzeniu ([`docs/SCALING.md`](../SCALING.md),
+> **Wskazówka:** gdy agregat zbliża się do limitu, zastanów się, czy podzielić go wzdłuż naturalnej granicy
+> (jeden na miesiąc, jeden na wersję dokumentu), włączyć migawki ([rozdział 13](13-snapshots.md)), czy
+> zwinąć starą historię squashem ([rozdział 14](14-squash.md)). Przy dużych dokumentach trzymaj plik gdzie
+> indziej, a w zdarzeniu umieszczaj tylko odwołanie do niego ([`docs/SCALING.md`](../SCALING.md),
 > sekcja 7).
 
-## Czego się nauczyłeś
+## Co już umiesz
 
-- Obsługujące zdarzenia odbierają użytkownika, czas zapisania zdarzenia i stan przed nim, a następnie zwracają
-  nowy stan; są czyste, obsługują każde zapisane zdarzenie i nigdy nie zgłaszają wyjątków.
-- Nowy agregat rozpoczyna się od `FirstEvent`, który nadaje nazwę swojej przestrzeni; `SpaceId(0)` to platforma.
-- Zwrócenie `null` powoduje delikatne usunięcie agregatu, zachowując jego historię; `PermanentDeleteEvent` usuwa
-  zostanie na zawsze, gdy każdy subskrybent ją zobaczy.
-- Zdarzenie `UndoEvent` anuluje najnowsze zdarzenia, które wciąż obowiązują, a zdarzenie `DuplicationEvent` rozpoczyna nowe
-  agreguj jako kopię innej wersji; twoje procedury obsługi zwracają stan niezmieniony dla obu.
-- Polecenie, które łączy `WithMetadata` z etykietami zdarzeń za pomocą koperty `EventMetadata`,
-  projekcje i historia odczytuje patrz.
-- Klasa zdarzeń przechowywanych nigdy nie zmienia kształtu: dodaj klasę `V2`, obsłuż obie i sprawdź przechowywane dane
-  z `StoredDataCheck` przed uaktualnieniem.
-- Agregat może zawierać maksymalnie 10 000 zdarzeń, każde o długości maksymalnie 100 000 znaków, chyba że ustawisz
-  w przeciwnym razie obowiązują ograniczenia sklepu z wydarzeniami.
+- Handlery zdarzeń dostają użytkownika, czas zapisania zdarzenia i stan sprzed niego, a zwracają nowy stan;
+  są czyste, obsługują każde zapisane zdarzenie i nigdy nie rzucają wyjątków.
+- Nowy agregat zaczyna się od `FirstEvent`, które podaje jego przestrzeń; `SpaceId(0)` to platforma.
+- Zwrócenie `null` delikatnie usuwa agregat i zachowuje jego historię; `PermanentDeleteEvent` usuwa go na
+  dobre, gdy każdy subskrybent zobaczy to zdarzenie.
+- `UndoEvent` anuluje najnowsze zdarzenia, które wciąż obowiązują, i nie potrzebuje przypadku w twoich
+  handlerach; `DuplicationEvent` zaczyna nowy agregat jako kopię innego w danej wersji, a jego przypadek
+  zwraca stan, który dostaje, bo to już jest kopia.
+- Polecenie z domieszką `WithMetadata` opatruje swoje zdarzenia kopertą `EventMetadata`, którą widzą
+  projekcje i odczyty historii.
+- Zapisana klasa zdarzenia nigdy nie zmienia kształtu: dodaj klasę `V2`, obsłuż obie i przed aktualizacją
+  sprawdź zapisane dane przez `StoredDataCheck`.
+- Agregat mieści najwyżej 10 000 zdarzeń, a każde z nich ma najwyżej 100 000 znaków, chyba że ustawisz inne
+  limity magazynu zdarzeń.
 
-Następnie: [rozdział 7](07-reading-the-past.md) otwiera pamiętnik i czyta przeszłość.
+Dalej: [rozdział 7](07-reading-the-past.md) otwiera pamiętnik i czyta przeszłość.

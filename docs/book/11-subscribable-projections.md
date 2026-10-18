@@ -326,7 +326,7 @@ that have nothing to load.
 
 > **Remember:** a subscription id names one subscription. Subscribing again with an id in use
 > replaces that subscription, and a listener that held the id is told
-> `ProjectionSubscriptionsCancelled`. A random id per page, as `CartPage` makes, never meets
+> `ProjectionSubscriptionsCancelled`. A random id per page, as `CartPageSession` makes, never meets
 > another.
 
 > **Remember:** in a cluster, a projection started through `Projections.start` runs on one node, and

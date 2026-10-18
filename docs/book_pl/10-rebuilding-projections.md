@@ -1,462 +1,532 @@
-# Rozdział 10. Odbudowa projekcji bez przestoju
+# Rozdział 10. Przebudowa projekcji bez przestojów
 
-Do końca tego rozdziału będziesz w stanie dostarczyć nową wersję projekcji, naprawić błąd w
-jeden lub dodać zupełnie nowy model odczytu na podstawie lat starych zdarzeń, podczas gdy stary model odczytu zachowuje
-Odpowiadając na pytania przez cały czas. Naprawisz również dokument pojedynczego koszyka bez
-dotykając reszty. Ta sztuczka nazywa się *zarządzaną projekcją* i kosztuje około dziesięciu linii
-okablowanie.
+Pod koniec tego rozdziału będziesz umieć wypuścić nową wersję projekcji, poprawić w niej błąd albo
+dodać zupełnie nowy model odczytu, zbudowany z wieloletniej historii zdarzeń, a stary model odczytu
+przez cały ten czas będzie odpowiadał na zapytania. Naprawisz też dokument jednego koszyka, nie
+ruszając reszty. Ta sztuczka to *projekcja zarządzana*, a kosztuje cię mniej więcej dziesięć linijek
+kodu, który wszystko ze sobą spina.
 
 ---
 
-## Po co w ogóle odbudowywać?
+## Po co w ogóle przebudowywać?
 
-Pamiętasz bank z rozdziału 1: księga rejestruje każdą transakcję, a podsumowanie w Twoim
-Aplikacja bankowa jest jego projekcją. Pewnego dnia bank decyduje, że podsumowanie powinno pokazywać miesięczne sumy
-też. Nikt nie prosi klientów o ponowne wpisywanie transakcji. Bank odczytuje księgę rachunkową z
-pierwszy wiersz i pisze nowe podsumowanie.
+Pamiętasz bank z rozdziału 1? Księga zapisuje każdą transakcję, a podsumowanie w twojej aplikacji
+bankowej jest jej projekcją. Pewnego dnia bank postanawia, że podsumowanie ma pokazywać także sumy
+miesięczne. Nikt nie prosi klientów, żeby jeszcze raz wpisali swoje transakcje. Bank czyta księgę od
+pierwszej linijki i pisze nowe podsumowanie.
 
-To samo należy stosować w przypadku modeli do czytania, z powodów codziennych:
+Tego samego zechcesz dla swoich modeli odczytu, i to z całkiem codziennych powodów:
 
-- **Nowa wersja.** Lista w koszyku powinna zawierać nazwy pisane wielkimi literami lub liczbę pozycji obok każdej pozycji.
-  nazwa.
-- **Poprawka błędu.** Słuchacz przez miesiące zapisywał błędne dane. Poprawiasz kod, a błędne wiersze muszą zostać usunięte.
-  zostanie napisane ponownie.
-- **Nowy model odczytu.** Projekcja, którą dodajesz dzisiaj, musi uwzględniać koszyki utworzone w zeszłym roku. Zwykły
-  projekcja (rozdział 8) słyszy o starym wozie dopiero, gdy ten wóz znów się zmienia.
-- **Zmieniony agregat.** Zmieniłeś sposób, w jaki zdarzenia koszyka budują jego stan i podniosłeś kontekst
-  `wersja`. Modele odczytu utworzone na podstawie stanów muszą zostać utworzone ponownie.
-- **Naprawa.** Jeden dokument uległ uszkodzeniu (np. błędnie napisano poprawkę SQL) i chcesz go po prostu
-  ten napisany jeszcze raz na podstawie wydarzeń.
+- **Nowa wersja.** Lista koszyków ma pokazywać nazwy wielkimi literami albo liczbę pozycji obok
+  każdej nazwy.
+- **Poprawka błędu.** Listener przez miesiące zapisywał błędne dane. Poprawiasz kod, a błędne wiersze
+  trzeba zapisać od nowa.
+- **Nowy model odczytu.** Projekcja dodana dzisiaj musi wiedzieć o koszykach utworzonych w zeszłym
+  roku. Zwykła projekcja (rozdział 8) usłyszy o starym koszyku dopiero wtedy, gdy ten znów się
+  zmieni.
+- **Zmieniony agregat.** Zmieniasz sposób, w jaki zdarzenia koszyka budują jego stan, i podnosisz
+  `version` kontekstu. Modele odczytu zrobione ze stanów trzeba zrobić od nowa.
+- **Naprawa.** Jeden dokument się zepsuł (powiedzmy, że ręczna poprawka w SQL-u poszła nie tak) i
+  chcesz zapisać od nowa tylko jego, z jego zdarzeń.
 
 ## Sklep obok
 
-Ponowne budowanie modelu odczytu w miejscu ma swoją brzydką stronę: podczas opróżniania jego tabel i ponownego ich wypełniania,
-Każdy, kto pyta, otrzymuje pół odpowiedzi. Dlatego ReactiveCQRS nie odbudowuje się w miejscu.
+Przebudowa modelu odczytu w miejscu ma brzydką stronę: gdy opróżniasz jego tabele i wypełniasz je od
+nowa, każdy, kto akurat zapyta, dostaje pół odpowiedzi. Dlatego ReactiveCQRS nie przebudowuje w
+miejscu.
 
-Wyobraź sobie sklep, który potrzebuje nowych półek. Zamiast zamykać go na tydzień, wyposażasz pusty sklep.
-obok i uzupełniać zapasy z ewidencji magazynowej, podczas gdy stary sklep nadal sprzedaje. Kiedy nowy
-Gdy już wszystko jest gotowe, wieszasz znak nad drzwiami. Klienci nigdy nie zastają drzwi zamkniętych.
+Wyobraź sobie sklep, który potrzebuje nowych półek. Zamiast zamykać go na tydzień, urządzasz pusty
+lokal obok i zaopatrujesz go według ewidencji magazynowej, a stary sklep w tym czasie dalej sprzedaje.
+Gdy nowy jest gotowy, przewieszasz szyld nad jego drzwi. Klienci nigdy nie trafiają na zamknięte
+drzwi.
 
-Oto jak działa **zarządzana projekcja**:
+Tak właśnie działa **projekcja zarządzana**:
 
 ```
-                                ┌── kompilacja 1 (wersja 1), tabele *_v1 ── odpowiada na zapytania, obsługuje zdarzenia na żywo
-ty ── zapytania ──▶ kierownik ──┤
-                                └── kompilacja 2 (wersja 2), tabele *_v2 ── wypełnione z magazynu zdarzeń
+                                ┌── build 1 (version 1), tables *_v1 ── answers queries, takes live events
+you ── queries ──▶ supervisor ──┤
+                                └── build 2 (version 2), tables *_v2 ── filled from the event store
 ```
 
-- **Build** to jedna kopia projekcji z własnymi tabelami. Kompilacje są numerowane 1, 2, 3...
-- **Aktywna kompilacja** odpowiada na zapytania. **Kompilacja w toku** jest wypełniana na podstawie zdarzenia.
-  sklep.
-- **Supervisor** to aktor, z którym rozmawiasz. Uruchamia kompilacje, przekazuje zapytania do aktywnego
-  jeden i przełącza się na nowy, gdy już nadrobi zaległości: jedna aktualizacja w bazie danych, znak
-  wzruszony.
-- **Rejestr** to kilka tabel, w których biblioteka zapamiętuje, na podstawie projekcji, aktywną kompilację i
-  budowa w toku.
+- **Budowa** (*build*) to jedna kopia projekcji, z własnymi tabelami. Budowy są numerowane: 1, 2,
+  3...
+- **Aktywna budowa** odpowiada na zapytania. **Budowa w toku** jest właśnie wypełniana z magazynu
+  zdarzeń.
+- **Nadzorca** (*supervisor*) to aktor, z którym rozmawiasz. Prowadzi budowy, przekazuje twoje
+  zapytania aktywnej i przełącza na nową, gdy ta nadrobi zaległości: jedna aktualizacja w bazie
+  danych i szyld przewieszony.
+- **Rejestr** to kilka tabel, w których biblioteka pamięta dla każdej projekcji jej aktywną budowę i
+  budowę w toku.
 
-Po przełączeniu tabele starej kompilacji zostaną usunięte. Nigdy nie zapiszesz żadnej z tych księgowości.
+Po przełączeniu tabele starej budowy zostają usunięte. Nie piszesz ani linijki tej księgowości.
 
-## Konfigurowanie zarządzanych projekcji
+## Przygotowanie projekcji zarządzanych
 
-Będziemy zarządzać małą projekcją nazw koszyków, wzorowaną na `ShoppingCartsListProjectionAggregatesBased`
-w domenie testowej. Przechowuje jeden dokument na koszyk, zawierający jego nazwę:
+Pod zarząd weźmiemy projekcję nazw koszyków z przykładu E10, opartą na koszykach przykładu E1 z
+rozdziału 2. Trzyma ona jeden dokument na koszyk, a w nim nazwę koszyka. Umie też zapisywać nazwy
+wielkimi literami, czym zajmie się jej wersja 2, a `clearForRebuild` na samym dole przyda się przy
+przebudowach celowanych pod koniec rozdziału:
 
+<!-- snippet: e10/CartNames.scala#projection -->
 ```scala
-importuj io.reactivecqrs.api.id.AggregateId
-import io.reactivecqrs.core.documentstore.DocumentStore
-import io.reactivecqrs.core.projection.{ProjectionActor, SubscriptionsState}
-import io.reactivecqrs.testdomain.shoppingcart.ShoppingCart
+case class GetCartName(id: AggregateId) // answered with Option[String], once the cart's document is there
 
-klasa przypadku GetCartName(id: AggregateId)
+class CartNames(val subscriptionsState: SubscriptionsState, store: DocumentStore[String], capitals: Boolean) extends ProjectionActor {
 
-klasa CartNames(val subscriptionsState: SubscriptionsState, store: DocumentStore[String]) rozszerza ProjectionActor {
+  override protected val projectionName: String = "CartNames"
 
-  chronione val listeners = List(AggregateListener[ShoppingCart] { (id, _, created, cart) => niejawna sesja =>
-    dopasowanie koszyka {
-      przypadek Some(c) jeśli utworzony => store.insertDocument(0, id.asLong, c.name)
-      przypadek Some(c) => store.overwriteDocument(id.asLong, c.name)
-      case None => store.removeDocument(id.asLong) // koszyk został usunięty
+  protected val listeners = List(AggregateListener[ShoppingCart] { (id, _, created, cart) => implicit session =>
+    cart match {
+      case Some(c) if created => store.insertDocument(0, id.asLong, written(c.name))
+      case Some(c)            => store.overwriteDocument(id.asLong, written(c.name))
+      case None               => store.removeDocument(id.asLong) // the cart was deleted
     }
   })
 
-  nadpisz chronione def receiveQuery: Receive = {
-    przypadek GetCartName(id) => sender() ! store.getDocument(id.asLong).map(_.document)
+  private def written(name: String): String = if (capitals) name.toUpperCase else name
+
+  override protected def receiveQuery: Receive = {
+    case GetCartName(id) => delayIfNotAvailable(sender(), () => store.getDocument(id.asLong).map(_.document), 2000)
   }
 
-  nadpisz chronioną wartość projectionName: String = "CartNames"
+  override protected def clearForRebuild(target: RebuildTarget)(implicit session: DBSession): Unit = target match {
+    case RebuildTarget.OneAggregate(id) => store.removeDocument(id.asLong)
+    case RebuildTarget.OneSpace(space)  => store.clearSpace(space.asLong)
+    case RebuildTarget.OneType(_)       => store.clearAllData() // CartNames receives carts only
+  }
 }
 ```
 
-Nic nowego od rozdziału 8. Zmienia się tylko sposób rozpoczęcia. Cztery kroki:
+W listenerze nie ma nic, czego nie znasz z rozdziału 8. Zmienia się sposób uruchomienia. Cztery
+kroki, wszystkie tutaj:
 
-1. **Utwórz rejestr** raz, podczas uruchamiania aplikacji:
+<!-- snippet: e10/RebuildSetup.scala#start -->
+```scala
+val registry = new PostgresProjectionRegistry().initSchema()
+val projections = new Projections(system, ProjectionsSettings(eventStore, subscriptions, registry,
+  contexts = Seq(new ShoppingCartContext)))
 
-   ```scala
-   import io.reactivecqrs.core.rebuild.PostgresProjectionRegistry
+val cartNames = projections.start[CartNames]("e10-cart-names", version, "cartNames") { build =>
+  new CartNames(subscriptions,
+    new PostgresDocumentStore[String](build.documentStore("e10_cart_names"), mpjsons, new NoopDocumentStoreCache),
+    capitals = build.version >= 2)
+}
+eventBus ! EventsBusActor.RegisterSubscribers(List(cartNames)) // the supervisor, where the projection would be
+```
 
-   val registry = new PostgresProjectionRegistry().initSchema()
-   ```
-
-2. **Utwórz jedną `Projekcję`** dla systemu aktorów. Uruchamia ona każdą zarządzaną projekcję:
-
-   ```scala
-   import io.reactivecqrs.core.rebuild.{Projekcje, Ustawienia projekcji}
-
-   projekcje val = nowe projekcje (system, ustawienia projekcji (magazyn zdarzeń, stan subskrypcji, rejestr,
-     konteksty = Seq(nowy ShoppingCartAggregateContext)))
-   ```
-
-   `eventStore` to miejsce, z którego kompilacje odczytują zdarzenia, a `subscriptionsState` to miejsce, w którym
-   projekcje już korzystają (rozdział 8). `konteksty` wymieniają zbiorcze konteksty, których *stany* są twoimi
-   zarządzane projekcje otrzymują: `CartNames` nasłuchuje stanów koszyka, więc kontekst koszyka jest wprowadzany. Trzy
-   więcej parametrów ma wartości domyślne: `builder` (jak odczytuje się kompilację, `BuilderSettings()`),
-   `buildsAtOnce = 2` i `restartAfter = 10.sekund` (jak długo nadzorca czeka przed próbą
-   ponownie po tym, jak coś zawiedzie).
-
-3. **Rozpocznij projekcję** za jej pomocą:
-
-   ```scala
-   import io.reactivecqrs.core.documentstore.{NoopDocumentStoreCache, PostgresDocumentStore}
-
-   val cartNames: ActorRef = projections.start[CartNames]("cart-names", 1, "cartNames") { build =>
-     nowe nazwy koszyków (stan subskrypcji,
-       nowy PostgresDocumentStore[String](build.documentStore("cart_names"), mpjsons, nowy NoopDocumentStoreCache))
-   }
-   ```
-
-   Przeczytaj od lewej do prawej: klasa projekcji, jej **nazwa** (`"cart-names"`), jej
-   **wersja** (`1`), nazwa aktora jego nadzorcy (`"cartNames"`) i funkcja, która tworzy jedną
-   wystąpienie projekcji dla danej kompilacji. Funkcja pyta kompilację o nazwę tabeli:
-   `build.documentStore("cart_names")` zwraca `cart_names_v1` dla pierwszej kompilacji wersji 1, a
-   magazyn dokumentów tworzy z niego tabelę `projection_cart_names_v1`.
-
-4. **Użyj funkcji Supervisor wszędzie tam, gdzie użyłbyś projekcji**: zarejestruj ją w wydarzeniu
-   autobus i wyślij do niego swoje zapytania.
+1. **Rejestr**, tworzony raz, przy starcie aplikacji: kilka tabel, w których biblioteka pamięta
+   budowy każdej projekcji.
+2. **Jeden obiekt `Projections`** na system aktorów. To on prowadzi wszystkie projekcje zarządzane.
+   `eventStore` to miejsce, z którego budowy czytają zdarzenia, a `subscriptions` to stan
+   subskrypcji, którego twoje projekcje już używają (rozdział 8). `contexts` wymienia konteksty
+   agregatów, których *stany* dostają twoje projekcje zarządzane: `CartNames` słucha stanów koszyków,
+   więc trafia tu kontekst koszyka. Trzy kolejne parametry mają wartości domyślne: `builder` (jak
+   budowa czyta, `BuilderSettings()`), `buildsAtOnce = 2` oraz `restartAfter = 10.seconds` (ile
+   nadzorca czeka, zanim spróbuje ponownie, gdy coś zawiodło).
+3. **Projekcja, uruchamiana przez niego.** Czytaj od lewej do prawej: klasa projekcji, jej **nazwa**
+   (`"e10-cart-names"`), jej **wersja** (`version`: 1 w pierwszym wydaniu), nazwa aktora jej
+   nadzorcy (`"cartNames"`) i funkcja, która tworzy jedną instancję projekcji dla danej budowy.
+   Funkcja pyta budowę o nazwę tabeli: `build.documentStore("e10_cart_names")` daje
+   `e10_cart_names_v1` dla pierwszej budowy wersji 1, a magazyn dokumentów robi z tego tabelę
+   `projection_e10_cart_names_v1`. Funkcja mówi też instancji, na podstawie wersji budowy, czy ma
+   pisać wielkimi literami.
+4. **Nadzorca wszędzie tam, gdzie byłaby projekcja**: rejestrujesz go w szynie zdarzeń (razem z
+   pozostałymi subskrybentami, w jednym komunikacie) i to do niego wysyłasz zapytania:
 
    ```scala
-   import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
-   zaimportuj org.apache.pekko.pattern.ask
-
-   eventBus ! RegisterSubscribers(Seq(cartNames)) // razem z innymi subskrybentami, w jednej wiadomości
-
-   val name: Future[Opcja[Ciąg]] = (cartNames ? GetCartName(cartId)).mapTo[Opcja[Ciąg]]
+   val name: Future[Option[String]] = (cartNames ? GetCartName(cartId)).mapTo[Option[String]]
    ```
 
-Podczas pierwszego uruchomienia rejestr nigdy nie słyszał o `cart-names`, więc nadzorca uruchamia
-Kompilacja 1 i wypełnia ją wszystkimi koszykami, które już są w sklepie. Kompilacja 1 to wszystko, co jest dostępne, więc odpowiada
-zapytania od samego początku, z tym, co do tej pory. Kiedy już nadrobi zaległości, po prostu kontynuuje
-z wydarzeniami na żywo. Od teraz w rejestrze widnieje: `cart-names`, active build 1, version 1.
+Przy pierwszym uruchomieniu rejestr nie zna jeszcze `e10-cart-names`, więc nadzorca zaczyna budowę 1
+i wypełnia ją wszystkimi koszykami, które już są w magazynie. Innej budowy nie ma, więc budowa 1 od
+początku odpowiada na zapytania tym, co już ma. Gdy nadrobi zaległości, po prostu pracuje dalej na
+zdarzeniach na żywo. Od tej chwili rejestr mówi: `e10-cart-names`, aktywna budowa 1, wersja 1.
 
-> **Pamiętaj:** nazwa to identyfikator projekcji w bazie danych. Aby zmienić projekcję,
-> zmienić jego wersję i zachować nazwę.
+> **Pamiętaj:** nazwa to tożsamość projekcji w bazie danych. Żeby zmienić projekcję, zmień jej
+> wersję, a nazwę zostaw.
 
-> **Ostrzeżenie:** utwórz każdy sklep wewnątrz funkcji i nazwij każdą tabelę poprzez kompilację:
+> **Ostrzeżenie:** każdy magazyn twórz wewnątrz funkcji, a każdą tabelę nazywaj przez budowę:
 > `build.documentStore(table)` dla magazynu dokumentów, `build.table(name)` i `build.sequence(name)`
-> dla własnych tabel i sekwencji. Wtedy dwie kompilacje nigdy nie będą współdzielić tabeli, a porzucona kompilacja
-> zabiera ze sobą wszystkie swoje tabele. Magazyn (lub pamięć podręczna) utworzony raz, poza funkcją, byłby
-> współdzielone przez dwie kompilacje i mieszałyby ich dokumenty.
+> dla własnych tabel i sekwencji. Wtedy dwie budowy nigdy nie dzielą tabeli, a usuwana budowa zabiera
+> ze sobą wszystkie swoje tabele. Magazyn czy pamięć podręczna, utworzone raz, poza funkcją, byłyby
+> wspólne dla dwóch budów i pomieszałyby ich dokumenty.
 
-> **Wskazówka:** nazwy tabel powinny być krótkie. Mogą zawierać tylko litery, cyfry i znaki podkreślenia.
-> dodaje sufiks taki jak `_v3_b4`, magazyn dokumentów dodaje `projection_` na początku, a PostgreSQL
-> pozwala na 63 znaki: sklep, którego pełna nazwa byłaby dłuższa, zostanie niepoprawny podczas tworzenia.
+> **Wskazówka:** nazwy tabel trzymaj krótkie. Mogą zawierać tylko litery, cyfry i podkreślenia;
+> budowa dokleja przyrostek w rodzaju `_v3_b4`, magazyn dokumentów dodaje z przodu `projection_`, a
+> PostgreSQL pozwala na 63 znaki. Jeśli pełna nazwa magazynu byłaby dłuższa, jego tworzenie kończy się
+> błędem.
 
-Nawiasem mówiąc, nie potrzebujesz `.withDispatcher(BlockingDispatcher.id)` w przypadku zarządzanych projekcji:
-nadzorca tworzy dla Ciebie każdą instancję w blokującym dyspozytorze.
+Przy okazji: projekcje zarządzane nie potrzebują `.withDispatcher(BlockingDispatcher.id)`. Nadzorca
+sam tworzy za ciebie każdą instancję na dispatcherze blokującym.
 
-## Wysyłka nowej wersji
+## Wypuszczamy nową wersję
 
-Załóżmy, że sklep chce, aby nazwy koszyków były pisane wielkimi literami. Oto całe wydanie:
+Powiedzmy, że sklep chce mieć nazwy koszyków wielkimi literami. E10 jest na to gotowy: `CartNames`
+pisze wielkimi literami, gdy `capitals` jest prawdą, a funkcja tworząca instancję ustawia tę flagę na
+podstawie wersji budowy (`capitals = build.version >= 2`). Całe wydanie wygląda więc tak:
 
-1. Zmień obiekt nasłuchujący, aby zapisał `c.name.toUpperCase` zarówno w `insertDocument`, jak i
-   `nadpiszDokument`.
-2. Podnieś wersję w `start`: `projections.start[CartNames]("cart-names", 2, "cartNames") { ... }`.
-3. Wdróż i uruchom aplikację.
+1. Podnieś wersję w `start` z 1 na 2. (Bez flagi z E10 trzeba by zmienić listener tak, żeby
+   zapisywał `c.name.toUpperCase`, i podnieść wersję.)
+2. Wdróż i uruchom aplikację.
 
-To wszystko, co musisz zrobić. Co dzieje się dalej:
+To wszystko, co robisz. A oto, co dzieje się dalej:
 
-- Nadzorca odczytuje rejestr: aktywna kompilacja jest w wersji 1, kod w wersji 2.
-  rozpoczyna kompilację 2 z własnymi tabelami (`projection_cart_names_v2`).
-- Wersja 1 nadal odpowiada na zapytania.
-- Budowniczy odczytuje wózki ze sklepu z wydarzeniami i przekazuje je do zbudowania 2, wielu na raz, jednego
-  transakcji na blok.
-- Gdy kompilacja 2 zawiera wszystkie zdarzenia, rejestr przełącza się w jednej aktualizacji. Od tego momentu kompilacja 2 odpowiada.
-- Kompilacja 1 opuszcza magistralę zdarzeń i zatrzymuje się; jej tabele, wersje subskrypcji i rekordy błędów są
-  upuszczony.
+- Nadzorca czyta rejestr: aktywna budowa jest w wersji 1, a kod w wersji 2. Zaczyna więc budowę 2, z
+  własnymi tabelami (`projection_e10_cart_names_v2`).
+- Budowa 1 dalej odpowiada na zapytania.
+- Budowniczy (*builder*) czyta koszyki z magazynu zdarzeń i podaje je budowie 2, po wiele naraz,
+  jedna transakcja na porcję.
+- Gdy budowa 2 ma już każde zdarzenie, rejestr przełącza się w jednej aktualizacji. Od tej chwili
+  odpowiada budowa 2.
+- Budowa 1 odłącza się od szyny zdarzeń i zatrzymuje; jej tabele, wersje subskrypcji i zapisy o
+  błędach zostają usunięte.
 
-Dziennik opowiada historię. Z naszą projekcją wygląda to tak (pominięto inne wiersze):
+E10 uruchamia oba wydania, każde we własnym systemie aktorów, bo ponowne wdrożenie też uruchamia
+aplikację od nowa; `RebuildSpec` sprawdza, że wersja 1 podawała nazwy tak, jak je wpisano, a wersja 2
+podaje je wielkimi literami.
+
+Wszystko widać w logu. Dla naszej projekcji wygląda to tak (pozostałe linie pominięte):
 
 ```
-Nazwy koszyków projekcji obsługują kompilację 1 (wersja 1), kompilacje 2 (wersja 2)
-Projekcja projection:cart-names_v2 jest już dostępna; uzgadnianie jej ze sklepem
-Nazwy koszyków projekcji przełączono na kompilację 2 (wersja 2)
-Nazwy koszyków projekcji: kompilacja 1 została porzucona
+Projection e10-cart-names serves build 1 (version 1), builds 2 (version 2)
+Projection projection:e10-cart-names_v2 is live; reconciling it with the store
+Projection e10-cart-names switched to build 2 (version 2)
+Projection e10-cart-names: build 1 is dropped
 ```
 
-Możesz również zapytać kierownika. Odpowiedź na `GetBuilds` brzmi `Builds(nazwa, aktywny, budynek,
-złapany)`:
+Możesz też zapytać nadzorcę. Na `GetBuilds` odpowiada on `Builds(name, active, building, caughtUp)`:
 
+<!-- snippet: e10/RebuildSpec.scala#getBuilds -->
 ```scala
 import io.reactivecqrs.core.rebuild.ProjectionSupervisor._
 
-(cartNames ? GetBuilds).mapTo[Builds]
-// podczas kompilacji: aktywny = kompilacja 1, kompilacja = kompilacja 2
-// po przełączeniu: aktywny = kompilacja 2, kompilacja = Brak
+val builds = (cartNames ? GetBuilds).mapTo[Builds]
+// while it builds:  active = build 1, building = build 2
+// after the switch: active = build 2, building = None
 ```
 
-`aktywny` i `budynek` to `BuildRecord`: numer` kompilacji, jej `wersja`, jej `sufiks` tabeli
-(`"_v2"`) i nazwa `subskrybenta`, pod którą przechowywane są jego wersje subskrypcji
-(`"projekcja:cart-names_v2"`). `caughtUp` jest prawdą, gdy kompilacja w toku zawiera wszystkie zdarzenia;
-zastępuje aktywną kompilację, gdy tylko nie wystąpią żadne nieudane subskrypcje (więcej informacji poniżej).
+`active` i `building` to rekordy `BuildRecord`: `number` budowy, jej `version`, przyrostek jej tabel
+`suffix` (`"_v2"`) oraz nazwa `subscriber`, pod którą zapisywane są wersje jej subskrypcji
+(`"projection:e10-cart-names_v2"`). `caughtUp` jest prawdą, gdy budowa w toku ma już każde zdarzenie;
+zastępuje ona aktywną budowę, gdy tylko nie ma żadnej nieudanej subskrypcji (więcej o tym niżej).
+`position` w rekordzie budowy w toku to miejsce, w którym budowa ostatnio zapisała swoje postępy. E10
+czeka na przełączenie, pytając o budowy, aż odpowiada już tylko nowa wersja:
 
-> **Pamiętaj:** kompilacja, która zostanie przerwana (zatrzymasz aplikację lub ulegnie ona awarii), będzie kontynuowana
-> z miejsca, w którym znajdowała się przy następnym uruchomieniu; nie zaczyna się od nowa. Ale wdrażaj wersję 3, podczas gdy wersja 2
-> jest nadal budowana, a częściowo ukończona wersja 2 zostaje odrzucona: zamiast niej powstaje wersja 3.
-
-## Co stara wersja robi w międzyczasie
-
-Podczas kompilacji wersji 2 tabele wersji 1 odpowiadają na zapytania. Ale *kod* wersji 1 zniknął:
-wdrożona wersja 2. A co z wydarzeniami, które nadejdą w międzyczasie? Wybierasz, korzystając z
-Parametr `whileBuilding` metody `start`:
-
-- **`ServeLive`** (domyślnie): aktywna kompilacja ciągle stosuje zdarzenia na żywo do swoich starych tabel,
-  nowy kod. Zapytania widzą nowe dane, a zapytania są parkowane do momentu pojawienia się dokumentu (rozdział 8)
-  są odpowiedzi. Wybierz tę opcję, jeśli nowy kod może działać na starych dokumentach, ponieważ wielkie litery
-  wersja może: obie wersje przechowują `String`.
-- **`ServeStale`**: aktywna kompilacja odpowiada na podstawie swoich tabel w takiej formie, w jakiej są, i nie przyjmuje żadnych zdarzeń do momentu
-  Przełącznik. Wybierz go, gdy nowy kod nie może działać na starych dokumentach. Załóżmy, że wersja 3 przechowuje
-  `CartSummary(name, itemsCount)` zamiast `String`: kod wersji 3 nie może odczytać kodu wersji 2
-  wydziwianie.
-
+<!-- snippet: e10/RebuildSetup.scala#builds -->
 ```scala
-projekcje.start[NazwyKoszyków]("nazwy-koszyków", 3, "NazwyKoszyków", whileBuilding = ServeStale) { build => ... }
-```
-
-Oba znajdują się w `io.reactivecqrs.core.rebuild.ProjectionSupervisor`.
-
-> **Wskazówka:** funkcja otrzymuje kompilację, a kompilacja zna swoją własną wersję (`build.version`).
-> Instancja utworzona dla aktywnej kompilacji wersji 1 może zachować zachowanie wersji 1, podczas gdy wersja 2
-> kompilacje. Gdyby `CartNames` przyjął flagę `wielkimi literami`, napisałbyś
-> `nowe CartNames(subscriptionsState, store, capitals = build.version >= 2)`. `ProjectionsSpec` działa
-> dokładnie to.
-
-## Co widzi Twoja projekcja podczas jej tworzenia
-
-Kompilacja przekazuje projekcji te same wydarzenia, w tej samej kolejności, w jakiej odbywa się transmisja na żywo.
-Zmieniono, wliczając w to zdarzenia cofania. Dzięki temu odbudowane tabele będą takie same jak tabele utrzymywane na żywo;
-`RebuildEquivalenceSpec` sprawdza to w przypadku losowych historii. Trzy rzeczy się różnią i
-projekcja może powiedzieć:
-
-- **`rebuilding`** ma wartość `true`, gdy instancja jest budowana i jeszcze nie obsługuje, a także gdy
-  Celowana przebudowa (poniżej) przywraca stare zdarzenia. Wszystko, co ma efekt uboczny, np. komunikat
-  do innego aktora lub aktualizacji push na ekranie (rozdział 11), najpierw ją sprawdza. `ManagedNotes` w
-  `ProjectionsSpec` wysyła swoje aktualizacje w następujący sposób:
-
-  ```scala
-  jeśli (!rebuilding) sendUpdate[NoteLines](linie)
-  ```
-
-- **`onActivated()`** jest wywoływane jednorazowo, gdy zbudowana instancja zaczyna działać. Zastąp to, jeśli
-  projekcja musi coś dokończyć.
-- **Kawałki.** Kompilacja zatwierdza wiele agregatów na transakcję i wznawia się po zatrzymaniu od ostatniej
-  zapisany fragment. Słuchacz, który przechowuje stan w pamięci pomiędzy wywołaniami, poza swoimi tabelami, nie może polegać
-  w tym stanie, podczas gdy jest budowany.
-
-## Kiedy rozpoczyna się kompilacja?
-
-Cztery rzeczy zaczynają się od jednego:
-
-1. **Nowa projekcja.** Pierwsze wystąpienie nazwy, której rejestr nie zna, powoduje jej utworzenie.
-2. **Nowa wersja.** Wersja kodu różni się od wersji aktywnej kompilacji.
-3. **Zmieniony kontekst.** `Wersja` kontekstu zbiorczego, którego stany określają projekcję
-   różni się od tego, z którego wykonano aktywną kompilację. Podnieś
-   `ShoppingCartAggregateContext.version` i `CartNames` kompilują się ponownie w swojej własnej wersji.
-   projekcja, która nasłuchuje tylko zdarzeń koszyka (`EventsListener`), zachowuje swoją kompilację.
-4. **Prosisz o to**, za pomocą `RebuildProjection` (następna sekcja).
-
-Maksymalnie dwie kompilacje są uruchamiane jednocześnie (`buildsAtOnce`); pozostałe czekają na swoją kolej.
-
-## Prośba o odbudowę
-
-Naprawiłeś błąd w programie nasłuchującym bez wprowadzania zmian? Poproś o nową wersję tego samego
-wersja:
-
-```scala
-cartNames ? RebuildProjection
-// odpowiedzi RebuildStarted(2): kompilacja 2 wersji 1, w tabelach z sufiksem „_v1_b2”
-```
-
-Następuje ten sam taniec: zbuduj 2 wypełnienia ze sklepu, podczas gdy kompilacja 1 serwuje, następnie przełącz i
-upuścić. Podczas gdy kompilacja lub docelowa kompilacja jest już uruchomiona, nadzorca odpowiada
-Zamiast tego `RebuildRefused(reason)`.
-
-> **Wskazówka:** przebudowa może być również najszybszym lekarstwem na prognozę, która znacznie odbiegała od rzeczywistości, np. po
-> długa przerwa: kompilacja odczytuje ze sklepu tysiąc zdarzeń na raz, jednocześnie nadrabiając zaległości
-> magistrala zdarzeń i skrzynka nadawcza są przesyłane zbiorczo (`docs/SCALING.md`, sekcje 4 i 5).
-
-## Kompilacja, która nie będzie się przełączać
-
-Kompilacja zastępuje aktywną tylko wtedy, gdy nie ma nieudanej subskrypcji. Jeśli nasłuchiwacz ulegnie awarii,
-jakiś wózek podczas kompilacji (rozdział 9 wyjaśnia błędy), kompilacja czeka: nadzorca rejestruje
-ostrzeżenie i sprawdza ponownie co 30 sekund. Tymczasem aktywna kompilacja działa normalnie.
-
-Aby dotrzeć do trwającej kompilacji, opakowuj wiadomość w tag „ToBuildInProgress”. Nadzorca przekaże ją dalej.
-do kompilacji zamiast do aktywnej:
-
-```scala
-import io.reactivecqrs.core.projection.{GetProjectionStatus, RetryAllFailedSubscriptions, SkipFailedVersion}
-
-cartNames ? ToBuildInProgress(GetProjectionStatus) // ProjectionStatus kompilacji
-cartNames ? ToBuildInProgress(RetryAllFailedSubscriptions) // FailedSubscriptionsRetried(count)
-cartNames ? ToBuildInProgress(SkipFailedVersion(cartId)) // FailedSubscriptionsHandled(cartId, count)
-```
-
-Po ponownym próbie lub pominięciu błędów kompilacja przełącza się przy następnym podejściu. Bez kompilacji
-uruchomiono, odpowiedź brzmi `RebuildRefused("żadna kompilacja nie jest uruchomiona")`.
-
-## Naprawa kilku agregatów: ukierunkowane przebudowy
-
-Czasami na jednej stronie katalogu jest literówka. Przedrukowujesz tę stronę, a nie cały katalog.
-**celowana odbudowa** robi to samo w przypadku modelu odczytu: odbudowuje na miejscu to, co zostało aktywnie zbudowane
-utworzony z jednego agregatu, jednego typu agregatu lub jednej organizacji i pozostawia wszystko inne bez zmian.
-
-Po pierwsze, projekcja musi wiedzieć, jak wyczyścić to, co utworzyła z celu. Nadpisz
-`clearForRebuild` w `CartNames`:
-
-```scala
-import io.reactivecqrs.core.projection.RebuildTarget
-import scalikejdbc.DBSession
-
-nadpisz chronione def clearForRebuild(target: RebuildTarget)(implicit session: DBSession): Unit = target match {
-  przypadek RebuildTarget.OneAggregate(id) => store.removeDocument(id.asLong)
-  przypadek RebuildTarget.OneSpace(space) => store.clearSpace(space.asLong)
-  case RebuildTarget.OneType(_) => store.clearAllData() // CartNames otrzymuje tylko koszyki
+/** The builds once the projection's `version` serves alone, the switch to it done; asked every 200 ms. */
+@tailrec
+def switchedTo(shop: Shop, version: Int, deadline: Deadline)(implicit timeout: Timeout): Builds = {
+  val builds = Await.result((shop.cartNames ? GetBuilds).mapTo[Builds], timeout.duration)
+  if (builds.active.exists(_.version == version) && builds.building.isEmpty) builds
+  else if (deadline.isOverdue()) throw new IllegalStateException(s"Version $version does not serve yet: $builds")
+  else {
+    Thread.sleep(200)
+    switchedTo(shop, version, deadline)
+  }
 }
 ```
 
-To jest wzór „ManagedNotes” w „ProjectionsSpec”. Następnie zapytaj przełożonego:
+Żeby podejrzeć budowę przy pracy, wyślij temu samemu nadzorcy `GetBuildStatus`:
+
+<!-- snippet: e10/RebuildSpec.scala#buildStatus -->
+```scala
+import io.reactivecqrs.core.rebuild.ProjectionBuilder.{BuildStatus, GetBuildStatus}
+
+val buildStatus = (cartNames ? GetBuildStatus).mapTo[BuildStatus]
+// BuildStatus("Bulk", 182044, 91000, 0, 0, 0): reading the store, 91 000 events sent so far
+```
+
+Faza (`phase`) przechodzi przez `Bulk` (czytanie magazynu), `GoingLive` i `Reconciling` (dołączanie
+do zdarzeń na żywo), a na końcu `CaughtUp`. Gdy żaden budowniczy nie pracuje, nadzorca odpowiada
+`Waiting` (budowa czeka na swoją kolej albo na restart po błędzie) lub `NoBuild`. Pozostałe liczby
+to: wysłane zdarzenia, wypełnione luki, agregaty przekazane do dostarczania na żywo i zdarzenia,
+których nie udało się odczytać.
+
+> **Pamiętaj:** przerwana budowa (gdy zatrzymujesz aplikację albo ta pada) przy następnym starcie
+> rusza dalej od miejsca, w którym była; nie zaczyna od nowa. Ale jeśli wdrożysz wersję 3, gdy wersja
+> 2 wciąż się buduje, w połowie zbudowana wersja 2 trafia do kosza: zamiast niej buduje się wersja 3.
+
+## Co w tym czasie robi stara budowa
+
+Gdy buduje się wersja 2, na zapytania odpowiadają tabele wersji 1. Ale *kodu* wersji 1 już nie ma:
+wdrożona jest wersja 2. Co więc ze zdarzeniami, które przychodzą w międzyczasie? Wybór należy do
+ciebie, a decyduje o nim parametr `whileBuilding` metody `start`:
+
+- **`ServeLive`** (domyślnie): aktywna budowa dalej nanosi zdarzenia na żywo na swoje stare tabele,
+  już nowym kodem. Zapytania widzą świeże dane, a zapytania czekające, aż pojawi się dokument
+  (rozdział 8), dostają odpowiedź. Wybierz tę opcję, gdy nowy kod potrafi pracować na starych
+  dokumentach, tak jak wersja z wielkimi literami: obie wersje przechowują `String`.
+- **`ServeStale`**: aktywna budowa odpowiada ze swoich tabel w takim stanie, w jakim są, i aż do
+  przełączenia nie przyjmuje żadnych zdarzeń. Wybierz tę opcję, gdy nowy kod nie umie pracować na
+  starych dokumentach. Powiedzmy, że wersja 3 przechowuje `CartSummary(name, itemsCount)` zamiast
+  `String`: kod wersji 3 nie przeczyta wierszy wersji 2. Obowiązuje to przy każdej budowie: tej,
+  którą zaczyna nowa wersja, i tej, o którą prosisz przez `RebuildProjection`, gdy aplikacja działa.
 
 ```scala
-importuj io.reactivecqrs.api.AggregateType
-importuj io.reactivecqrs.api.id.SpaceId
+projections.start[CartNames]("e10-cart-names", 3, "cartNames", whileBuilding = ServeStale) { build => ... }
+```
 
-cartNames ? RebuildAggregates(RebuildTarget.OneAggregate(cartId))
-// odpowiedzi AggregatesRebuilt(RebuildTarget.OneAggregate(cartId), 1)
+Obie wartości znajdziesz w `io.reactivecqrs.core.rebuild.ProjectionSupervisor`.
 
-cartNames ? RebuildAggregates(RebuildTarget.OneType(AggregateType.of[ShoppingCart])) // każdy koszyk
-cartNames ? RebuildAggregates(RebuildTarget.OneSpace(SpaceId(7))) // organizacja 7
+> **Wskazówka:** funkcja dostaje budowę, a budowa zna własną wersję (`build.version`). Instancja
+> zrobiona dla aktywnej budowy wersji 1 zachowuje się jak wersja 1, dopóki buduje się wersja 2.
+> Właśnie to robi `capitals = build.version >= 2` z E10: przy `ServeLive` aktywna budowa wersji 1
+> dalej zapisuje nazwy tak, jak je wpisano, w tabelach wersji 1.
+
+## Co widzi projekcja w trakcie budowy
+
+Budowa podaje twojej projekcji te same zdarzenia, w tej samej kolejności w obrębie agregatu, co
+dostarczanie na żywo, razem ze zdarzeniami cofnięcia. Dlatego przebudowane tabele wychodzą takie same
+jak tabele utrzymywane na żywo; `RebuildEquivalenceSpec` sprawdza to na losowych historiach. Trzy
+rzeczy się jednak różnią, a projekcja potrafi je rozpoznać:
+
+- **`rebuilding`** ma wartość `true`, gdy instancja jest budowana i jeszcze nie obsługuje zapytań, a
+  także wtedy, gdy przebudowa celowana (niżej) podaje jej ponownie stare zdarzenia. Wszystko, co ma
+  efekt uboczny, na przykład komunikat do innego aktora albo aktualizacja wypychana na ekran
+  (rozdział 11), najpierw to sprawdza. `ManagedNotes` w `ProjectionsSpec` wypycha swoje aktualizacje
+  tak:
+
+  ```scala
+  if (!rebuilding) sendUpdate[NoteLines](lines)
+  ```
+
+- **`onActivated()`** jest wywoływana raz, gdy zbudowana instancja zaczyna obsługiwać zapytania.
+  Nadpisz ją, jeśli twoja projekcja ma wtedy coś do dokończenia.
+- **Porcje.** Budowa zatwierdza wiele agregatów w jednej transakcji, a po zatrzymaniu wznawia pracę
+  od ostatniej zapisanej porcji. Listener, który między wywołaniami trzyma stan w pamięci, poza
+  swoimi tabelami, nie może na tym stanie polegać w trakcie budowy.
+
+## Kiedy zaczyna się budowa?
+
+Budowę uruchamiają cztery rzeczy:
+
+1. **Nowa projekcja.** Pierwsze uruchomienie projekcji o nazwie, której rejestr nie zna, zaczyna jej
+   budowę.
+2. **Nowa wersja.** Wersja w kodzie różni się od wersji aktywnej budowy.
+3. **Zmieniony kontekst.** Wersja (`version`) kontekstu agregatu, którego stany dostaje projekcja,
+   różni się od tej, z którą zrobiono aktywną budowę. Podnieś `ShoppingCartContext.version`, a
+   `CartNames` zbuduje się od nowa, w swojej własnej wersji. Projekcja, która słucha tylko zdarzeń
+   koszyka (`EventsListener`), zachowuje swoją budowę.
+4. **Prosisz o nią** przez `RebuildProjection` (następna sekcja).
+
+Naraz działają najwyżej dwie budowy (`buildsAtOnce`); pozostałe czekają na swoją kolej.
+
+## Prośba o przebudowę
+
+Poprawka błędu w listenerze, bez żadnych innych zmian? Poproś o świeżą budowę tej samej wersji:
+
+<!-- snippet: e10/RebuildSpec.scala#rebuild -->
+```scala
+val started = cartNames ? RebuildProjection
+// answers RebuildStarted(2): build 2 of version 1, in tables with the suffix "_v1_b2"
+```
+
+Dalej ten sam taniec: budowa 2 wypełnia się z magazynu, a budowa 1 w tym czasie obsługuje zapytania;
+potem przełączenie i usunięcie. Jeśli jakaś budowa albo przebudowa celowana już trwa, nadzorca
+odpowiada zamiast tego `RebuildRefused(reason)`.
+
+> **Wskazówka:** przebudowa bywa też najszybszym lekarstwem na projekcję, która mocno została w tyle,
+> na przykład po długiej awarii: budowa czyta magazyn po tysiąc zdarzeń naraz, a nadrabianie przez
+> szynę zdarzeń i outbox idzie agregat po agregacie (`docs/SCALING.md`, sekcje 4 i 5).
+
+## Budowa, która nie chce się przełączyć
+
+Budowa zastępuje aktywną tylko wtedy, gdy nie ma żadnej nieudanej subskrypcji. Jeśli podczas budowy
+listener zawiedzie na jakimś koszyku (o błędach mówi rozdział 9), budowa czeka: nadzorca zapisuje w
+logu ostrzeżenie i sprawdza ponownie co 30 sekund. Aktywna budowa w tym czasie normalnie obsługuje
+zapytania.
+
+Żeby dotrzeć do budowy w toku, opakuj swój komunikat w `ToBuildInProgress`. Nadzorca przekaże go
+wtedy budowie w toku zamiast aktywnej:
+
+<!-- snippet: e10/RebuildSpec.scala#toBuild -->
+```scala
+import io.reactivecqrs.core.projection.{GetProjectionStatus, RetryAllFailedSubscriptions, SkipFailedVersion}
+
+cartNames ? ToBuildInProgress(GetProjectionStatus)          // the build's ProjectionStatus
+cartNames ? ToBuildInProgress(RetryAllFailedSubscriptions)  // FailedSubscriptionsRetried(count)
+cartNames ? ToBuildInProgress(SkipFailedVersion(cartId))    // FailedSubscriptionsHandled(cartId, count)
+```
+
+Gdy ponowisz albo pominiesz to, co się nie udało, budowa przełączy się przy najbliższym sprawdzeniu.
+Gdy żadna budowa nie trwa, odpowiedzią jest `RebuildRefused("no build is running")`.
+
+## Naprawa kilku agregatów: przebudowy celowane
+
+Czasem na jednej stronie katalogu jest literówka. Drukujesz od nowa tę jedną stronę, a nie cały
+katalog. **Przebudowa celowana** robi to samo z modelem odczytu: przebudowuje w miejscu to, co
+aktywna budowa zrobiła z jednego agregatu, jednego typu agregatu albo jednej organizacji, a wszystko
+inne zostawia w spokoju.
+
+Najpierw projekcja musi wiedzieć, jak wyczyścić to, co zrobiła z danego celu. `CartNames` nadpisuje
+`clearForRebuild`:
+
+<!-- snippet: e10/CartNames.scala#clear -->
+```scala
+override protected def clearForRebuild(target: RebuildTarget)(implicit session: DBSession): Unit = target match {
+  case RebuildTarget.OneAggregate(id) => store.removeDocument(id.asLong)
+  case RebuildTarget.OneSpace(space)  => store.clearSpace(space.asLong)
+  case RebuildTarget.OneType(_)       => store.clearAllData() // CartNames receives carts only
+}
+```
+
+Potem poproś nadzorcę o przebudowę jednego koszyka,
+
+<!-- snippet: e10/RebuildSpec.scala#oneCart -->
+```scala
+val one = cartNames ? RebuildAggregates(RebuildTarget.OneAggregate(cartId))
+// answers AggregatesRebuilt(RebuildTarget.OneAggregate(cartId), 1)
+```
+
+wszystkich koszyków,
+
+<!-- snippet: e10/RebuildSpec.scala#everyCart -->
+```scala
+import io.reactivecqrs.api.AggregateType
+
+val everyCart = cartNames ? RebuildAggregates(RebuildTarget.OneType(AggregateType.of[ShoppingCart]))
+```
+
+albo wszystkich koszyków jednej organizacji (rozdział 16); naraz trwa zawsze tylko jedna przebudowa:
+
+<!-- snippet: e10/RebuildSpec.scala#organization -->
+```scala
+import io.reactivecqrs.api.id.SpaceId
+
+val organization = cartNames ? RebuildAggregates(RebuildTarget.OneSpace(SpaceId(7)))
 ```
 
 Co się dzieje:
 
-1. Nadzorca zapisuje cel w rejestrze, więc odbudowa przerwana przez zatrzymanie jest wykonywana
-   ponownie przy następnym starcie.
-2. Aktywna kompilacja stosuje dostawy, które już przyjęła, tworzy listę agregatów docelowych i w
-   jedna transakcja, wywołuje `clearForRebuild` i zapomina, jak daleko zaszła z tymi agregatami.
-3. Twórca odczytuje swoje wydarzenia ze sklepu w kolejności, w jakiej zostały zatwierdzone, i przekazuje je
-   projekcja ponownie. Projekcja nadal działa i w międzyczasie nadal transmituje wydarzenia na żywo.
-4. Odpowiedź brzmi `AggregatesRebuilt(target, count)` wraz z liczbą odbudowanych agregatów.
+1. Nadzorca zapisuje cel w rejestrze, więc przebudowa przerwana zatrzymaniem rusza ponownie przy
+   następnym starcie.
+2. Aktywna budowa nanosi dostarczenia, które już przyjęła, wypisuje agregaty celu i w jednej
+   transakcji wywołuje twoje `clearForRebuild` oraz zapomina, jak daleko doszła z tymi agregatami.
+3. Budowniczy czyta ich zdarzenia z magazynu, w kolejności, w jakiej zostały zatwierdzone, i podaje
+   je projekcji jeszcze raz. Projekcja w tym czasie dalej obsługuje zapytania i dalej przyjmuje
+   zdarzenia na żywo.
+4. Odpowiedzią jest `AggregatesRebuilt(target, count)`, z liczbą przebudowanych agregatów.
 
-Pomiędzy krokami 2 i 4 zapytania dotyczące obiektu docelowego wykazują, że jego dokumenty zaginęły lub zostały w połowie odtworzone.
+Między krokami 2 i 4 zapytania o cel nie znajdują jego dokumentów albo znajdują je przebudowane w
+połowie.
 
-Zamiast tego nadzorca odpowiada `RebuildRefused(reason)`, gdy:
+E10 naprawia w ten sposób jeden koszyk, którego nazwę w tabeli aktywnej budowy nadpisała nieudana
+ręczna poprawka w SQL-u:
 
-- projekcja nie implementuje `clearForRebuild` (powód tak mówi);
-- trwa budowa (i tak zastępuje aktywną budowę w całości) lub inna docelowa budowa
-  Jest;
-- cel nie jest typem agregatu, jaki otrzymuje projekcja;
-- celem jest organizacja, a niektóre agregaty typów projekcji nie znają swoich
-  organizacja jeszcze. Agregaty przechowywane w starszych wersjach biblioteki mogą jej nie zawierać;
-  `backfillSpaces` rozwiązuje ten problem (rozdział 16).
-
-> **Ostrzeżenie:** wyczyść dokładnie to, co wygenerowały agregaty docelowe. Wyczyść mniej, a nieaktualne dane pozostaną
-> z tyłu. Wyczyść więcej, a zniknie na zawsze: odbudowa zwraca tylko wydarzenia celu.
-> `clearAllData()` dla `OneType` jest poprawne w `CartNames` tylko dlatego, że otrzymuje pojedynczy typ.
-
-> **Wskazówka:** zapytanie ma limit czasu, a odbudowa każdego koszyka zajmuje znacznie więcej czasu niż odbudowa jednego. Daj
-> poproś o dopasowanie limitu czasu lub wyślij wiadomość od aktora, który czeka na odpowiedź.
-> przekroczenie limitu czasu zapytania nie zatrzymuje odbudowy.
-
-## Co pozostaje niezarządzane: skutki uboczne
-
-Niektórzy subskrybenci w ogóle nie czytają modeli: takiego, który wysyła powitalny e-mail po utworzeniu koszyka,
-taki, który wysyła polecenie do innego agregatu. Odbudowa tych agregatów byłaby małą katastrofą: każdy
-Wszystkie wysłane wiadomości e-mail zostaną ponownie wysłane.
-
-Zachowaj je jako proste projekcje, stworzone i zarejestrowane w sposób pokazany w rozdziale 8, a nie poprzez
-`Projekcje`. Biblioteka nigdy ich nie przebudowuje: kompilacja dostarcza zdarzenia tylko do kompilacji.
-wypełnienia. Gdzie postawić granicę:
-
-- efektem ubocznym **jest** zadanie abonenta: pozostawienie go bez zarządzania;
-- efektem ubocznym jest niewielki dodatek do modelu odczytu (aktualizacja push na ekranie): zarządzanie odczytem
-  model i zabezpiecz dodatkowy za pomocą `if (!rebuilding)`.
-
-## Wycofywanie projekcji
-
-Usunąłeś projekcję z kodu? Tabele kompilacji i księgowość pozostają w bazie danych do momentu
-wycofujesz go, w tym rekordy błędów, które w przeciwnym razie uniemożliwiałyby trwałe usunięcie
-agregaty, które nazywają. Wywołaj to podczas uruchamiania aplikacji:
-
+<!-- snippet: e10/RebuildSetup.scala#repair -->
 ```scala
-projekcje.wycofanie("nazwy-koszyków")
+def repair(shop: Shop, cartId: AggregateId)(implicit timeout: Timeout): AggregatesRebuilt =
+  Await.result(shop.cartNames ? RebuildAggregates(RebuildTarget.OneAggregate(cartId)), timeout.duration) match {
+    case rebuilt: AggregatesRebuilt => rebuilt // AggregatesRebuilt(OneAggregate(cartId), 1)
+    case refused => throw new IllegalStateException("Not rebuilt: " + refused)
+  }
 ```
 
-Porzuca każdą kompilację projekcji i zapomina nazwy. W skupisku pośrodku toczącego się
-aktualizacja, czeka, aż każdy węzeł uruchomi nową wersję (rozdział 17).
+Nadzorca odpowiada zamiast tego `RebuildRefused(reason)`, gdy:
+
+- projekcja nie implementuje `clearForRebuild` (mówi o tym powód);
+- trwa budowa (i tak zastąpi aktywną budowę w całości) albo inna przebudowa celowana;
+- cel nie dotyczy typu agregatu, który dostaje projekcja;
+- cel to organizacja, a niektóre agregaty typów tej projekcji nie znają jeszcze swojej organizacji.
+  Agregatom zapisanym przez starsze wersje biblioteki może jej brakować; `backfillSpaces` naprawia
+  to, jednorazowo (rozdział 16).
+
+> **Ostrzeżenie:** czyść dokładnie to, co wytworzyły agregaty celu. Wyczyścisz mniej, a zostaną
+> nieaktualne dane. Wyczyścisz więcej, a stracisz to na dobre: przebudowa oddaje tylko zdarzenia
+> celu. `clearAllData()` dla `OneType` jest w `CartNames` w porządku tylko dlatego, że ta projekcja
+> dostaje jeden typ.
+
+> **Wskazówka:** ask ma swój limit czasu, a przebudowa wszystkich koszyków trwa o wiele dłużej niż
+> jednego. Daj askowi pasujący limit albo wyślij komunikat z aktora, który poczeka na odpowiedź. Ask,
+> któremu minął czas, nie zatrzymuje przebudowy.
+
+## Co zostaje niezarządzane: efekty uboczne
+
+Niektórzy subskrybenci w ogóle nie są modelami odczytu: choćby ten, który wysyła powitalnego e-maila,
+gdy powstaje koszyk, albo ten, który wysyła polecenie do innego agregatu. Przebudowa takich
+subskrybentów byłaby małą katastrofą: każdy kiedykolwiek wysłany e-mail poszedłby jeszcze raz.
+
+Niech zostaną zwykłymi projekcjami, tworzonymi i rejestrowanymi tak, jak pokazuje rozdział 8, a nie
+przez `Projections`. Biblioteka nigdy ich nie przebudowuje: budowa dostarcza zdarzenia tylko tej instancji
+projekcji, którą wypełnia. Gdzie postawić granicę:
+
+- efekt uboczny **jest** zadaniem subskrybenta: zostaw go niezarządzanym;
+- efekt uboczny to mały dodatek do modelu odczytu (aktualizacja wypychana na ekran): niech model
+  odczytu będzie zarządzany, a dodatek osłoń warunkiem `if (!rebuilding)`.
+
+## Wycofanie projekcji z użytku
+
+Projekcja zniknęła z kodu? Tabele jej budów i cała księgowość zostają w bazie danych, dopóki nie
+wycofasz jej z użytku, łącznie z zapisami o błędach, które inaczej wstrzymywałyby trwałe usuwanie
+agregatów, o których mówią. Wywołaj to przy starcie aplikacji:
+
+<!-- snippet: e10/RebuildSpec.scala#retire -->
+```scala
+projections.retire("e10-cart-names")
+```
+
+To usuwa każdą budowę projekcji i zapomina jej nazwę. W klastrze w trakcie aktualizacji kroczącej
+czeka, aż na każdym węźle będzie działać nowa wersja (rozdział 17).
 
 ## Ile to trwa
 
-Kompilacja odczytuje każde zdarzenie typu, którego nasłuchuje projekcja. Pomiary przeprowadzane są na jednej maszynie (
-test `baseline-M4` z 17.10.2026 r.: Windows 10, 12 wątków procesora, OpenJDK 17 z pamięcią masową 2 GB,
-PostgreSQL 17.4 na tej samej maszynie): dwie nowe zarządzane projekcje obejmujące 112 211 zdarzeń zostały
-zbudowany i przełączony około 16,6 sekundy po uruchomieniu systemu. Przełączenie oparte na zdarzeniach zajęło 6769 sekund.
-zdarzeń na sekundę, a sterta osiągnęła szczyt 150 MB. To jest jedno uruchomienie na jednej maszynie: dobre dla
-orientacja, a nie obietnica dla ciebie.
+Budowa czyta każde zdarzenie typów, których słucha projekcja. Pomiar na jednej maszynie (przebieg
+`baseline-M4` z benchmarku, 17/10/2026: Windows 10, 12 wątków procesora, OpenJDK 17 ze stertą 2 GB,
+PostgreSQL 17.4 na tej samej maszynie): dwie nowe projekcje zarządzane, obejmujące 112 211 zdarzeń,
+były obie zbudowane i przełączone około 16,6 sekundy po starcie systemu. Ta oparta na zdarzeniach
+przetwarzała 6 769 zdarzeń na sekundę, a szczytowe zużycie sterty wyniosło 150 MB. To jeden przebieg
+na jednej maszynie: dobry do orientacji, ale nie obietnica dla twojej.
 
-Na podstawie tego tempa, jak szacuje `docs/SCALING.md`, odbudowanie projekcji opartej na zdarzeniach zajmie około 4,1 godziny
-ponad 100 milionów zdarzeń (szacunkowo, nie mierzono). Odbudowa kosztuje czas i obciążenie bazy danych, a nie
-przestój: aktywna kompilacja działa przez cały czas.
+Na podstawie tego tempa `docs/SCALING.md` szacuje, że przebudowa projekcji opartej na zdarzeniach,
+obejmującej 100 milionów zdarzeń, zajmie około 4,1 godziny (oszacowanie, nie pomiar). Przebudowa
+kosztuje czas i obciążenie bazy danych, ale nie przestój: aktywna budowa przez cały czas obsługuje
+zapytania.
 
-Rzeczy, które pomagają:
+Co pomaga:
 
-- **Projekcje obejmujące wyłącznie stan wykonują mniej pracy.** Gdy każdy słuchacz projekcji jest
-  `AggregateListener`, podobnie jak w `CartNames`, kompilacja pomija historię: przekazuje każdą
-  stan końcowy agregatu, raz.
-- **Migawki pomagają również w kompilacjach.** Kompilacja, która odtwarza zdarzenia w kolejności zatwierdzania, przechowuje maksymalnie 10 000
-  stany agregatu są otwarte; stan, który został przez niego usunięty, jest odczytywany ponownie z jego migawki (rozdział 13) i
-  wydarzenia po nim.
-- **Dwie kompilacje na raz** (`buildsAtOnce = 2`) to ustawienie domyślne, a zalecenie: każda kompilacja
-  odczytuje dane ze sklepu i zapisuje własne tabele.
-- **Duże wydarzenia?** `ProjectionsSettings(..., builder = BuilderSettings(pageSize = ..., chunkEvents
-  = ...))` ustawia liczbę zdarzeń, które kompilacja odczytuje i stosuje jednocześnie: domyślnie 1000 zdarzeń, a przy
-  maksymalnie 64 MB na stronę i 16 MB na fragment. `BuilderSettings` znajduje się w
-  `io.reactivecqrs.core.rebuild.ProjectionBuilder`.
-- **Ulepszone instalacje:** kompilacja jednego typu lub jednej organizacji odczytuje tylko własne zdarzenia
-  kiedyś każde zapisane zdarzenie miało klucz. Instalacja, która miała już zdarzenia, gdy klucze były
-  wprowadzono uruchomienie `backfillEventKeys()` raz (rozdział 18); do tego czasu takie kompilacje przechodzą całą
-  sklep.
+- **Projekcje tylko na stanach mają mniej pracy.** Gdy każdy listener projekcji jest
+  `AggregateListener`, jak w `CartNames`, budowa pomija historię: przekazuje końcowy stan każdego
+  agregatu, jeden raz.
+- **Migawki pomagają też budowom.** Budowa, która odtwarza zdarzenia w kolejności zatwierdzeń, trzyma
+  otwartych najwyżej 10 000 stanów agregatów; stan, który porzuciła, odczytuje ponownie z jego
+  migawki (rozdział 13) i zdarzeń po niej.
+- **Dwie budowy naraz** (`buildsAtOnce = 2`) to wartość domyślna i zalecana: każda budowa czyta
+  magazyn i zapisuje własne tabele.
+- **Duże zdarzenia?**
+  `ProjectionsSettings(..., builder = BuilderSettings(pageSize = ..., chunkEvents = ...))` ustala,
+  ile zdarzeń budowa czyta i nanosi naraz: domyślnie po 1 000, przy czym najwyżej 64 MB na stronę i
+  16 MB na porcję. `BuilderSettings` znajdziesz w `io.reactivecqrs.core.rebuild.ProjectionBuilder`.
+- **Instalacje po aktualizacji:** budowa jednego typu albo jednej organizacji czyta tylko swoje
+  zdarzenia, gdy każde zapisane zdarzenie ma klucz. Instalacja, która miała już zdarzenia, gdy
+  wprowadzono klucze, uruchamia raz `backfillEventKeys()` (rozdział 18); do tego czasu takie budowy
+  przechodzą przez cały magazyn.
 
-> **Pod maską:** kompilacja składa się z trzech faz. Przebieg zbiorczy odczytuje zdarzenia projekcji w
-> kolejność zatwierdzania (projekcja obejmująca tylko stan otrzymuje stany końcowe) i stosuje je w częściach
-> do 1000 zdarzeń, po jednej transakcji na każde, dwa fragmenty w trakcie realizacji; tymczasem nowa kompilacja potwierdza
-> dostawy autobusu bez ich stosowania, ponieważ ich wydarzenia są w sklepie. Następnie zostaje uruchomione
-> i stosuje dostawy autobusu. Na koniec, uzgadnianie porównuje wersję każdego agregatu z
-> kompilacja i dostarcza to, czego brakuje: zdarzenia zapisane podczas wykonywania przebiegu i wiersze, które
-> zatwierdzono późno. Pozycja jest zapisywana po każdym fragmencie, więc wznowiona kompilacja powtarza się co najwyżej
-> fragmenty w locie, które wersje subskrypcyjne unieszkodliwiają (D57–D63, D70). Pełna historia jest
-> w [ARCHITECTURE.md, sekcja 8](../ARCHITECTURE.md) i [projekt M4](../design/M4-rebuild.md).
+> **Pod maską:** budowa ma trzy fazy. Przebieg masowy czyta zdarzenia projekcji w kolejności
+> zatwierdzeń (projekcja tylko na stanach dostaje zamiast nich stany końcowe) i nanosi je porcjami do
+> 1 000 zdarzeń, każdą w osobnej transakcji, po dwie porcje w locie; w tym czasie nowa budowa
+> potwierdza dostarczenia z szyny, nie nanosząc ich, bo ich zdarzenia są w magazynie. Potem przechodzi
+> na żywo i nanosi dostarczenia z szyny. Na koniec uzgadnianie porównuje wersję każdego agregatu z
+> wersją w budowie i dostarcza to, czego brakuje: zdarzenia zapisane w trakcie przebiegu i wiersze
+> zatwierdzone z opóźnieniem. Pozycja jest zapisywana po każdej porcji, więc wznowiona budowa powtarza
+> najwyżej porcje, które były w locie, a wersje subskrypcji sprawiają, że to nieszkodliwe (D57–D63,
+> D70). Pełną historię znajdziesz w [ARCHITECTURE.md, sekcja 8](../ARCHITECTURE.md) i w
+> [dokumencie projektowym M4](../design/M4-rebuild.md).
 
-## Czego się nauczyłeś
+## Co już umiesz
 
-- Rozpocznij odczyt modelu za pomocą `projections.start[P](name, version, actorName) { build => ... }`, i
-  użyj zwróconego nadzorcy do zapytań i w `RegisterSubscribers`.
-- Każda kompilacja ma własne tabele, nazwane w trakcie kompilacji (`build.documentStore(table)`).
-- Podniesienie wersji powoduje utworzenie nowej wersji ze sklepu zdarzeń, podczas gdy stara wersja jest obsługiwana, a następnie
-  przełącza się w jednej aktualizacji i usuwa stare tabele; `whileBuilding` mówi, co robi stara kompilacja
-  Tymczasem.
-- `RebuildProjection`, `GetBuilds` i `ToBuildInProgress` uruchamiają, monitorują i odblokowują kompilacje.
-- `RebuildAggregates` naprawia jeden agregat, typ lub organizację na miejscu, za pośrednictwem Twojego
+- Model odczytu uruchamiasz przez `projections.start[P](name, version, actorName) { build => ... }`,
+  a zwróconego nadzorcy używasz do zapytań i w `RegisterSubscribers`.
+- Każda budowa ma własne tabele, nazwane przez budowę (`build.documentStore(table)`).
+- Podniesienie wersji buduje nową wersję z magazynu zdarzeń, gdy stara obsługuje zapytania, potem
+  przełącza w jednej aktualizacji i usuwa stare tabele; `whileBuilding` mówi, co w tym czasie robi
+  stara budowa.
+- `RebuildProjection`, `GetBuilds`, `GetBuildStatus` i `ToBuildInProgress` służą do zaczynania,
+  obserwowania i odblokowywania budów.
+- `RebuildAggregates` naprawia w miejscu jeden agregat, typ albo organizację, przez twoje
   `clearForRebuild`.
-- Subskrybenci, których praca jest efektem ubocznym, pozostają bez zarządzania i nigdy nie zostaną odbudowani.
+- Subskrybenci, których zadaniem jest efekt uboczny, zostają niezarządzani i nigdy nie są
+  przebudowywani.
 
-Dalej: [rozdział 11](11-subscribable-projections.md) przesyła bieżące aktualizacje z Twoich projekcji do
-ekrany, na których je oglądamy.
+W [rozdziale 11](11-subscribable-projections.md) twoje projekcje zaczną wypychać aktualizacje na żywo
+na ekrany, które je obserwują.

@@ -1,500 +1,508 @@
-# Rozdział 4. Podłączanie i wysyłanie pierwszego polecenia
+# Rozdział 4. Łączymy wszystko i wysyłamy pierwsze polecenie
 
-Twój koszyk z [rozdziału 3](03-first-aggregate.md) to zbiór prostych funkcji, czekających na kogoś, kto go użyje.
-Nazwij ich. W tym rozdziale zbudujemy tę osobę. Na koniec będziesz mieć mały program, który
-uruchamia bibliotekę, tworzy koszyk o nazwie „Zakupy”, wkłada do niego jabłka i pomarańcze, odczytuje koszyk
-z powrotem i wydrukuje. Po drodze spotkasz aktorów, którzy wykonują pracę i dowiesz się, co każdy z nich
-odpowiedź biblioteki oznacza.
+Twój koszyk z [rozdziału 3](03-first-aggregate.md) to zestaw zwykłych funkcji, które czekają, aż ktoś
+je wywoła. W tym rozdziale zbudujemy tego „kogoś”. Na końcu będziesz mieć mały program, który
+uruchamia bibliotekę, tworzy koszyk o nazwie „Zakupy”, wkłada do niego jabłka i pomarańcze, odczytuje
+koszyk z powrotem i go wypisuje. Po drodze poznasz aktorów, którzy wykonują całą pracę, i dowiesz się,
+co znaczy każda odpowiedź biblioteki.
 
 ---
 
 ## Kto jest kim
 
-Wyobraź sobie mały ratusz. **Automat biletowy** wydaje numery. Każdy wydział ma **przedni
-Biurko**, które przyjmuje prośby o rozpatrzenie swojej sprawy. Za biurkiem każda teczka ma swojego **urzędnika**
-kto zna ten plik na pamięć i wpisuje do niego. **Tablica ogłoszeń** ogłasza, co zostało ustalone
-Kogo to obchodzi. A **nocny portier** chodzi i sprawdza, czy wszystkie ogłoszenia zostały przeczytane.
+Wyobraź sobie urząd w małym miasteczku. **Automat z numerkami** wydaje kolejne numery. Każdy wydział
+ma swoje **okienko**, które przyjmuje sprawy jednego rodzaju. Za okienkiem każda teczka ze sprawą ma
+swojego **urzędnika**, który zna ją na pamięć i robi w niej wpisy. **Tablica ogłoszeń** informuje
+wszystkich zainteresowanych o tym, co postanowiono. A **nocny stróż** obchodzi budynek i sprawdza,
+czy każde ogłoszenie zostało przeczytane.
 
-ReactiveCQRS ma dokładnie takie osoby jako aktorów:
+ReactiveCQRS ma dokładnie te same postacie, tyle że jako aktorów:
 
-| Aktor | W ratuszu | Jego praca | Ile |
+| Aktor | W urzędzie | Jego zadanie | Ile ich jest |
 |---|---|---|---|
-| `UidGeneratorActor` | automat biletowy | rozdaje identyfikatory dla nowych agregatów, poleceń i sag | jeden na system |
-| `AggregateCommandBusActor` | recepcja | przyjmuje polecenia i pytania dla jednego typu agregatu i przekazuje każde z nich właścicielowi agregatu | po jednym na typ agregatu |
-| `AggregateOwner` | urzędnik | opiekuje się jednym agregatem: utrzymuje jego stan, uruchamia procedury obsługi, przechowuje zdarzenia | po jednym na używany agregat; magistrala poleceń tworzy je za Ciebie |
-| `EventsBusActor` | tablica ogłoszeń | ogłasza zapisane zdarzenia każdemu subskrybentowi i czeka, aż każdy z nich powie „mam” | jedno na system |
-| `OutboxPollerActor` | portier nocny | zdarzenia są ponownie publikowane, gdy subskrybent ich nie potwierdził | jedno na system |
+| `UidGeneratorActor` | automat z numerkami | wydaje identyfikatory nowym agregatom, poleceniom i sagom | jeden na system |
+| `AggregateCommandBusActor` | okienko | przyjmuje polecenia i pytania dotyczące jednego typu agregatu i przekazuje każde z nich właścicielowi agregatu | jeden na typ agregatu |
+| `AggregateOwner` | urzędnik | opiekuje się jednym agregatem: trzyma jego stan, uruchamia twoje handlery, zapisuje zdarzenia | jeden na każdy używany agregat; tworzy ich za ciebie szyna poleceń |
+| `EventsBusActor` | tablica ogłoszeń | ogłasza zapisane zdarzenia wszystkim subskrybentom i czeka, aż każdy z nich powie „mam” | jeden na system |
+| `OutboxPollerActor` | nocny stróż | zleca ponowne opublikowanie zdarzeń, których subskrybent nie potwierdził | jeden na system |
 
-Tworzysz je wszystkie oprócz właścicieli, każdy po potrzebnych elementach. Chodźmy, krok po kroku.
-raz. („Jeden na system” staje się „jednym na maszynę” lub „jednym w całym klastrze” w
-[rozdział 17](17-cluster.md); na razie mamy jedną maszynę i jeden system aktora.)
+Tworzysz ich wszystkich poza właścicielami, a każdego dopiero wtedy, gdy istnieje już to, czego on
+potrzebuje. Ruszajmy, krok po kroku. („Jeden na system” zmieni się w „jeden na maszynę” albo „jeden w
+całym klastrze” w [rozdziale 17](17-cluster.md); na razie mamy jedną maszynę i jeden system aktorów.)
+
+Kod każdego kroku to fragment `FirstProgram` z przykładu E1
+(`examples/src/main/scala/io/reactivecqrs/examples/e1/FirstProgram.scala`), który zobaczysz w
+całości, razem z importami, na końcu rozdziału.
 
 ## Krok 1: baza danych
 
-Dokładnie tak jak w [rozdziale 2](02-setting-up.md): najpierw pula połączeń, potem tabele.
+Dokładnie tak jak w [rozdziale 2](02-setting-up.md): najpierw pula połączeń,
 
+<!-- snippet: e1/FirstProgram.scala#pool -->
 ```scala
-importuj io.mpjsons.MPJsons
-import io.reactivecqrs.core.commandhandler.PostgresCommandResponseState
-import io.reactivecqrs.core.eventstore.PostgresEventStoreState
-import io.reactivecqrs.core.types.PostgresTypesNamesState
-import scalikejdbc.{PołączeniowyPula, UstawieniaPołączeniowegoPula}
-
-Klasa.forName("org.postgresql.Driver")
+Class.forName("org.postgresql.Driver")
 ConnectionPool.singleton("jdbc:postgresql://localhost:5432/reactivecqrs", "reactivecqrs", "reactivecqrs",
-  Ustawienia puli połączeń (rozmiar początkowy = 5, rozmiar maksymalny = 32, limit czasu połączenia w milionach (connectionTimeoutMillis) = 3000L))
+  ConnectionPoolSettings(initialSize = 5, maxSize = 32, connectionTimeoutMillis = 3000L))
+```
 
-val mpjsons = nowy MPJsons
+potem tabele:
+
+<!-- snippet: e1/FirstProgram.scala#tables -->
+```scala
+val mpjsons = new MPJsons
 val typesNames = new PostgresTypesNamesState().initSchema()
-val eventStore = nowy PostgresEventStoreState(mpjsons, typesNames).initSchema()
+val eventStore = new PostgresEventStoreState(mpjsons, typesNames).initSchema()
 val responses = new PostgresCommandResponseState(mpjsons, typesNames).initSchema()
 ```
 
-Wózek bez projekcji i sag potrzebuje tylko tych trzech. Po dodaniu projekcji i sag,
-dodaj dwa pozostałe wywołania `initSchema()` z rozdziału 2.
+Koszyk bez projekcji i bez sag potrzebuje tylko tych trzech. Gdy dodasz projekcje i sagi, dopisz dwa
+pozostałe wywołania `initSchema()` z rozdziału 2.
 
 ## Krok 2: system aktorów
 
+<!-- snippet: e1/FirstProgram.scala#system -->
 ```scala
-zaimportuj org.apache.pekko.actor.ActorSystem
-
-val system = ActorSystem("sklep")
+val system = ActorSystem("shop")
 ```
 
-Każdy aktor biblioteki znajduje się w tym systemie i odczytuje on Twój plik `application.conf` (rozdział 2)
-kiedy się zacznie.
+W tym systemie żyją wszyscy aktorzy biblioteki, a sam system przy starcie wczytuje twój plik
+`application.conf` (rozdział 2).
 
-## Krok 3: generator uid
+## Krok 3: generator identyfikatorów
 
-Nowe wózki potrzebują identyfikatorów, a każde polecenie również je otrzymuje (pojawiają się one w odpowiedziach na błędy, które napotkasz)
-poniżej). Generator uid je rozdaje:
+Nowe koszyki potrzebują identyfikatorów, a swój identyfikator dostaje też każde polecenie (wraca on
+w odpowiedziach o błędach, które poznasz niżej). Rozdaje je generator identyfikatorów:
 
+<!-- snippet: e1/FirstProgram.scala#uids -->
 ```scala
-importuj io.reactivecqrs.core.uid.UidGeneratorActor
-
 val uidGenerator = system.actorOf(UidGeneratorActor.postgres(system), "uidGenerator")
 ```
 
-`UidGeneratorActor.postgres(system)` podaje `Rekwizyty` generatora, który pobiera swoje liczby
-z trzech sekwencji PostgreSQL: `aggregates_uids_seq`, `commands_uids_seq` i `sagas_uids_seq`.
-Tworzy je, jeśli ich brakuje, dlatego w rozdziale 2 nie było dla nich funkcji `initSchema()`.
-odczytuje `reactivecqrs.installation-number` i przechowuje zbiorcze identyfikatory w zakresie Twojej instalacji.
-I od razu wszystko to konfiguruje, więc błędny numer instalacji zatrzymuje program na starcie,
-a to jest dokładnie ten moment, kiedy chcesz o tym usłyszeć.
+`UidGeneratorActor.postgres(system)` daje ci `Props` generatora, który bierze numery z trzech
+sekwencji PostgreSQL: `aggregates_uids_seq`, `commands_uids_seq` i `sagas_uids_seq`. Jeśli ich
+brakuje, sam je tworzy, i dlatego w rozdziale 2 nie było dla nich żadnego `initSchema()`. Odczytuje
+też `reactivecqrs.installation-number` i pilnuje, żeby identyfikatory agregatów mieściły się w
+zakresie twojej instalacji. Wszystko to przygotowuje od razu, więc błędny numer instalacji zatrzyma
+program już przy starcie, czyli dokładnie wtedy, kiedy chcesz się o tym dowiedzieć.
 
-W zapisie ten sam generator wygląda tak. Zobaczysz tę dłuższą formę w bibliotece.
-okular:
+Rozpisany w całości, ten sam generator wygląda tak. Tę dłuższą postać zobaczysz w specach biblioteki:
 
 ```scala
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
-importuj org.apache.pekko.actor.Props
+import org.apache.pekko.actor.Props
 
-val uidGenerator = system.actorOf(Props(nowy UidGeneratorActor(
-  nowy PostgresUidGenerator("aggregates_uids_seq"),
-  nowy PostgresUidGenerator("commands_uids_seq"),
-  nowy PostgresUidGenerator("sagas_uids_seq"))), "uidGenerator")
+val uidGenerator = system.actorOf(Props(new UidGeneratorActor(
+  new PostgresUidGenerator("aggregates_uids_seq"),
+  new PostgresUidGenerator("commands_uids_seq"),
+  new PostgresUidGenerator("sagas_uids_seq"))), "uidGenerator")
 ```
 
-Jedyna różnica: formularz z literami ignoruje numer instalacji. W aplikacji,
-preferuj `UidGeneratorActor.postgres(system)`.
+Jedyna różnica: rozpisana postać pomija numer instalacji. W aplikacji lepiej używaj
+`UidGeneratorActor.postgres(system)`.
 
-Identyfikatory występują w **pulach po 10 000**. Magistrala poleceń prosi o pulę podczas uruchamiania i przy następnym
-gdy pozostała tylko jedna piąta bieżącego puli, polecenie prawie nigdy nie czeka na identyfikator.
+Identyfikatory przychodzą w **pulach po 10 000**. Szyna poleceń prosi o pulę przy starcie, a o
+następną wtedy, gdy z bieżącej zostaje już tylko jedna piąta, więc polecenie prawie nigdy nie czeka
+na identyfikator.
 
-## Krok 4: magistrala zdarzeń
+## Krok 4: szyna zdarzeń
 
+<!-- snippet: e1/FirstProgram.scala#eventBus -->
 ```scala
-import io.reactivecqrs.core.eventbus.EventsBusActor
-importuj org.apache.pekko.actor.Props
-
-val eventBus = system.actorOf(Props(nowy EventBusActor()), "eventBus")
-
+val eventBus = system.actorOf(Props(new EventsBusActor()), "eventBus")
 eventBus ! EventsBusActor.RegisterSubscribers(Nil)
 ```
 
-Druga linijka ma większe znaczenie, niż wygląda. Szyna zdarzeń **nie publikuje niczego, dopóki nie powiesz jej, kto
-Jego subskrybenci są**, nawet gdy odpowiedź brzmi „nikt”. Subskrybenci to twoje projekcje, sagi
-i słuchaczy, a nie mamy jeszcze żadnego, więc lista jest pusta: „Nil”. Z [rozdziału 8](08-projections.md)
-dalej, tutaj trafiają twoje projekcje.
+Druga linijka znaczy więcej, niż się wydaje. Szyna zdarzeń **niczego nie publikuje, dopóki nie
+powiesz jej, kim są jej subskrybenci**, nawet jeśli odpowiedź brzmi „nikt”. Subskrybenci to twoje
+projekcje, sagi i listenery, a na razie nie mamy żadnych, więc lista jest pusta: `Nil`. Od
+[rozdziału 8](08-projections.md) właśnie tutaj będą trafiać twoje projekcje.
 
-Dlaczego tak restrykcyjnie? Wydarzenie, na które nikt się nie zapisał, jest od razu potwierdzane i opuszcza skrzynkę nadawczą.
-Jeśli autobus zaczął publikować przed zapisaniem się Twoich prognoz, pierwsze wydarzenia po każdym
-Start nigdy do nich nie dotrze. Dlatego autobus czeka i zatrzymuje to, co w międzyczasie otrzyma.
+Skąd taka surowość? Zdarzenie, którego nikt nie subskrybuje, zostaje od razu potwierdzone i znika z
+outboxu. Gdyby szyna zaczęła publikować, zanim twoje projekcje złożą subskrypcje, pierwsze zdarzenia
+po każdym starcie nigdy by do nich nie dotarły. Dlatego szyna czeka, a to, co w tym czasie dostanie,
+wstrzymuje u siebie.
 
-> **Ostrzeżenie:** zapomnij o `RegisterSubscribers` i nic nie zawiedzie głośno. Twoje polecenia i tak się powiodą,
-> a ich zdarzenia są bezpieczne w bazie danych, ale magistrala przechowuje każde z nich i rejestruje ostrzeżenie
-> co pięć sekund: `Magistrala zdarzeń czeka na RegisterSubscribers z hosta; nic nie jest publikowane
-> do tego czasu. Ani jedna projekcja nie słyszy o niczym. Wyślij ją raz, po utworzeniu
-> każdy subskrybent.
+> **Ostrzeżenie:** zapomnij o `RegisterSubscribers`, a nic nie wybuchnie z hukiem. Polecenia dalej
+> kończą się sukcesem, a ich zdarzenia są bezpieczne w bazie danych, ale szyna wstrzymuje każde z
+> nich i co pięć sekund zapisuje w logu ostrzeżenie:
+> `Event bus waits for RegisterSubscribers from the host; nothing is published until then`. Żadna
+> projekcja nie dowie się o niczym. Wyślij ten komunikat raz, gdy utworzysz już wszystkich
+> subskrybentów.
 
-## Krok 5: magistrala poleceń
+## Krok 5: szyna poleceń
 
-Teraz recepcja dla wózków. Podajesz kontekst z rozdziału 3 i fragmenty kroków od 1 do 4:
+Teraz okienko dla koszyków. Dajesz mu swój kontekst z rozdziału 3 i elementy z kroków od 1 do 4:
 
+<!-- snippet: e1/FirstProgram.scala#carts -->
 ```scala
-import com.example.shop.cart.ShoppingCartAggregateContext
-import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
-
 val carts = system.actorOf(
-  AggregateCommandBusActor(nowy ShoppingCartAggregateContext, uidGenerator, eventStore, odpowiedzi, eventBus),
-  „wózki”)
+  AggregateCommandBusActor(new ShoppingCartContext, uidGenerator, eventStore, responses, eventBus), "carts")
 ```
 
-`AggregateCommandBusActor(...)` zwraca `Props` magistrali poleceń dla agregatu kontekstu
-type; `system.actorOf` uruchamia go. Ma trzy dodatkowe parametry z wartościami domyślnymi, które pasują do prawie wszystkich
-wszyscy:
+`AggregateCommandBusActor(...)` zwraca `Props` szyny poleceń dla typu agregatu z kontekstu, a
+`system.actorOf` ją uruchamia. Szyna ma jeszcze trzy parametry z wartościami domyślnymi, które
+pasują prawie każdemu:
 
-| Parametr | Domyślny | Co robi |
+| Parametr | Domyślnie | Co robi |
 |---|---|---|
-| `maxInactivityMillis` | 43 200 000 (12 godzin) | Właściciel, który przez tak długi czas nic nie robił, został zatrzymany. |
-| `keepAliveLimit` | 200 | W przypadku większej liczby właścicieli w pamięci, te używane najrzadziej i pozostające bezczynne przez ponad 2 minuty zostają zatrzymane. |
-| `failedRestoreRetryAfter` | 5 sekund | Gdy agregatu nie można odczytać ze sklepu, jak długo jego właściciel odpowiada informacją o błędzie, zanim nastąpi kolejna próba żądania. |
+| `maxInactivityMillis` | 43 200 000 (12 godzin) | Właściciel, który przez tyle czasu nie miał nic do roboty, zostaje zatrzymany. |
+| `keepAliveLimit` | 200 | Gdy właścicieli w pamięci jest więcej niż ten limit, zatrzymywani są najdawniej używani spośród tych, którzy od ponad 2 minut nic nie robią. |
+| `failedRestoreRetryAfter` | 5 sekund | Gdy agregatu nie da się odczytać z magazynu zdarzeń: jak długo jego właściciel odpowiada tym błędem, zanim kolejne żądanie spróbuje jeszcze raz. |
 
-Autobus co najwyżej co 5 minut sprawdza, czy właściciele się zatrzymują, w miarę jak napływają wiadomości. Właściciel, który się zatrzymał, nie jest
-strata: następne polecenie lub pytanie dla danego wózka rozpoczyna nowe, które odtwarza zdarzenia wózka
-(naprawdę, zagięcie rozdziału 3).
+Szyna szuka właścicieli do zatrzymania najwyżej co 5 minut, przy okazji napływających komunikatów.
+Zatrzymany właściciel to żadna strata: następne polecenie albo pytanie o ten koszyk uruchomi nowego,
+który odtworzy zdarzenia koszyka (fold z rozdziału 3, tym razem naprawdę).
 
-Drugim typem agregatu jest jeszcze jeden wiersz, dzielący wszystko inne:
-
-```scala
-faktury val = system.actorOf(
-  AggregateCommandBusActor(nowy InvoiceAggregateContext, uidGenerator, eventStore, odpowiedzi, eventBus),
-  „faktury”)
-```
-
-(`InvoiceAggregateContext` to kontekst, który możesz utworzyć samodzielnie, podobnie jak w przypadku koszyka.)
-
-> **Pamiętaj:** jedna magistrala poleceń na typ agregatu. Wszystkie współdzielą jeden generator UID i jeden rejestr zdarzeń.
-> sklep, jeden sklep odpowiedzi i jedna magistrala zdarzeń.
-
-## Krok 6: sonda skrzynki nadawczej
+Drugi typ agregatu to jedna linijka więcej, a cała reszta pozostaje wspólna:
 
 ```scala
-import io.reactivecqrs.core.delivery.OutboxPollerActor
-
-val outboxPoller = system.actorOf(Props(nowy OutboxPollerActor(eventStore, eventBus)), "outboxPoller")
+val invoices = system.actorOf(
+  AggregateCommandBusActor(new InvoiceContext, uidGenerator, eventStore, responses, eventBus),
+  "invoices")
 ```
 
-Każde zdarzenie jest zapisywane w **skrzynce nadawczej** (tabela `events_to_publish`) w tej samej transakcji co
-samo zdarzenie i opuszcza je, gdy wszyscy subskrybenci odpowiedzą na nie. Ankieta skrzynki nadawczej to
-który zauważa, kiedy tak się nie dzieje. Co 30 sekund odczytuje skrzynkę nadawczą; w przypadku zdarzenia, które
-nadal czeka, właściciel agregatu musi opublikować go ponownie po 3 minutach i po 6; po
-Po 10 minutach zdarzenie jest zgłaszane w dzienniku jako niedostarczone i od tego momentu próbuje ponownie co 30 minut
-protokół.
+(`InvoiceContext` to kontekst, który trzeba by napisać samodzielnie, tak jak kontekst koszyka.)
 
-Uruchom dokładnie jeden na system i uruchom go po poleceniu bus: pierwsze spojrzenie na skrzynkę nadawczą
-pojawia się 10 sekund po uruchomieniu i do tego czasu potrzebuje autobusów, do których może przekazać swoje żądania. (Na
-klaster istnieje jeden dla całego klastra; [rozdział 17](17-cluster.md) pokazuje jak.) Co on robi
-Kiedy sprawy idą źle, to jest historia [rozdziału 9](09-projection-failures.md).
+> **Pamiętaj:** jedna szyna poleceń na typ agregatu. Wszystkie korzystają z jednego generatora
+> identyfikatorów, jednego magazynu zdarzeń, jednego magazynu odpowiedzi i jednej szyny zdarzeń.
+
+## Krok 6: poller outboxu
+
+<!-- snippet: e1/FirstProgram.scala#poller -->
+```scala
+system.actorOf(Props(new OutboxPollerActor(eventStore, eventBus)), "outboxPoller")
+```
+
+Każde zdarzenie trafia do **outboxu** (tabeli `events_to_publish`) w tej samej transakcji co samo
+zdarzenie i znika z niego, gdy odpowie na nie każdy subskrybent. Poller outboxu to ten, który
+zauważa, kiedy tak się nie stanie. Co 30 sekund przegląda outbox; dla zdarzenia, które wciąż czeka,
+zleca właścicielowi agregatu ponowną publikację po 3 minutach i po 6; po 10 minutach zgłasza w logu,
+że zdarzenie nie zostało dostarczone, i odtąd ponawia próby co 30 minut.
+
+Uruchom dokładnie jeden na system i zrób to po szynach poleceń: pierwszy raz zagląda do outboxu
+10 sekund po starcie i wtedy potrzebuje już szyn, którym przekaże swoje prośby. (W klastrze jest
+jeden na cały klaster; [rozdział 17](17-cluster.md) pokazuje, jak to zrobić.) O tym, co robi, gdy coś
+pójdzie nie tak, opowiada [rozdział 9](09-projection-failures.md).
 
 ## Wysyłanie polecenia
 
-Wszystko jest na swoim miejscu. Aby wysłać polecenie, użyj `ask` (rozdział 1): polecenie zostanie umieszczone w poleceniu.
-skrzynkę pocztową autobusu i wręcza Ci „Przyszłość” odpowiedzi.
+Wszystko jest na swoim miejscu. Polecenie wysyłasz przez `ask` (rozdział 1), który wkłada je do
+skrzynki pocztowej szyny poleceń i daje ci `Future`, w którym pojawi się odpowiedź.
 
 ```scala
 import com.example.shop.cart._
-importuj io.reactivecqrs.api._
-importuj io.reactivecqrs.api.id.UserId
-zaimportuj org.apache.pekko.pattern.ask
+import io.reactivecqrs.api._
+import io.reactivecqrs.api.id.UserId
+import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
 import scala.concurrent.Await
 import scala.concurrent.duration._
 
-niejawny limit czasu wartości: Limit czasu = Limit czasu (70 sekund)
+implicit val timeout: Timeout = Timeout(70.seconds)
 
 val alice = UserId(1)
 
-val answer = (koszyki ? CreateShoppingCart(alicja, "Spożywcze")).mapTo[CustomCommandResponse[_]]
-val response = Await.result(odpowiedź, limit czasu.czas trwania)
-// odpowiedź: SuccessResponse(Id(1001),Version(1))
+val answer = (carts ? CreateShoppingCart(alice, "Groceries")).mapTo[CustomCommandResponse[_]]
+val response = Await.result(answer, timeout.duration)
+// response: SuccessResponse(Id(1001),Version(1))
 ```
 
-`mapTo` informuje `Future`, jakiej odpowiedzi można się spodziewać: na każde polecenie odpowiada się
-`CustomCommandResponse`. `Await.result` blokuje się do momentu otrzymania odpowiedzi. To jest w porządku w
-„main” małego programu i nigdzie indziej: nigdy wewnątrz aktora, nigdy w żądaniu internetowym. Prawdziwy kod
-zachowuje `Przyszłość` (więcej na ten temat poniżej).
+`mapTo` określa, jakiej odpowiedzi ma się spodziewać `Future`: na każde polecenie przychodzi
+odpowiedź typu `CustomCommandResponse`. Potem `Await.result` blokuje wątek, dopóki odpowiedź nie
+nadejdzie. W `main` małego programu to w porządku, ale nigdzie indziej: nigdy wewnątrz aktora, nigdy
+w obsłudze żądania HTTP. Prawdziwy kod zostaje przy `Future` (więcej o tym niżej).
 
-Dlaczego 70 sekund? Polecenie może zająć tyle, ile wynosi „commandTimeout” kontekstu, czyli domyślnie 60 sekund.
-zanim sama biblioteka odpowie błędem. Poczekaj trochę dłużej, a zawsze otrzymasz
-odpowiedź biblioteki zamiast własnego limitu czasu. [docs/SCALING.md](../SCALING.md), sekcja 2,
-udziela tej samej rady.
+Dlaczego 70 sekund? Polecenie może trwać aż do upływu `commandTimeout` swojego kontekstu (domyślnie
+60 sekund), zanim biblioteka sama odpowie błędem. Czekaj trochę dłużej, a zawsze dostaniesz
+odpowiedź biblioteki, a nie przekroczenie własnego limitu czasu. Tę samą radę daje
+[docs/SCALING.md](../SCALING.md) w sekcji 2.
 
-Odpowiedź na `CreateShoppingCart` to `SuccessResponse(aggregateId, aggregateVersion)`: identyfikator
-nowy wózek dostał i jego wersję, 1. Odpowiedź jest jedynym miejscem, w którym można poznać identyfikator nowego wózka, więc trzymaj się
-To jest wersja, której oczekuje Twój kolejny `AddItem`:
+Odpowiedź na `CreateShoppingCart` to `SuccessResponse(aggregateId, aggregateVersion)`: identyfikator,
+który dostał nowy koszyk, i jego wersja, czyli 1. Identyfikator nowego koszyka poznasz tylko z tej
+odpowiedzi, więc go zachowaj. A wersja to właśnie to, czego oczekuje twoje następne `AddItem`:
 
 ```scala
-dopasowanie odpowiedzi {
-  przypadek SuccessResponse(cartId, wersja) =>
-    val next = Await.result((wózki ? AddItem(alicja, identyfikator wózka, wersja, "jabłka")).mapTo[CustomCommandResponse[_]],
-      (czas trwania przekroczenia limitu czasu)
-    // dalej: SuccessResponse(Id(1001),Version(2))
-  przypadek inny =>
-    println("Brak koszyka: " + inne)
+response match {
+  case SuccessResponse(cartId, version) =>
+    val next = Await.result((carts ? AddItem(alice, cartId, version, "apples")).mapTo[CustomCommandResponse[_]],
+      timeout.duration)
+    // next: SuccessResponse(Id(1001),Version(2))
+  case other =>
+    println("No cart: " + other)
 }
 ```
 
-## Na co odpowiada biblioteka
+## Co odpowiada biblioteka
 
-Każde polecenie otrzymuje dokładnie jedną odpowiedź, zawsze jedną z poniższych (wszystkie w `io.reactivecqrs.api`):
+Każde polecenie dostaje dokładnie jedną odpowiedź, zawsze jedną z tych (wszystkie są w
+`io.reactivecqrs.api`):
 
-| Odpowiedź | To znaczy |
+| Odpowiedź | Co znaczy |
 |---|---|
-| `SuccessResponse(aggregateId, aggregateVersion)` | Zdarzenia zostały zapisane; agregat znajduje się teraz w `aggregateVersion`. |
-| `CustomSuccessResponse(aggregateId, aggregateVersion, info)` | To samo, plus `info` zwrócone przez Twój program obsługi za pomocą `CommandSuccess(event, info)`. |
-| `FailureResponse(exceptions)` | Twój program obsługi odpowiedział „nie” (`CommandFailure`), podając ku temu powody; albo biblioteka odrzuciła polecenie, jak to się dzieje w przypadku nowego agregatu, którego pierwsza nazwa zdarzenia nie zawiera spacji. |
-| `AggregateConcurrentModificationError(aggregateId, aggregateType, expected, was)` | Zmienna `expectedVersion` nie była wersją agregatu: ktoś zmienił ją pierwszy lub nie istnieje (zmienna `was` jest zatem wersją 0). |
-| `CommandRejected(aggregateId, reason)` | Polecenie w ogóle nie zostało uruchomione, ale ponowne wysłanie go później może pomóc. |
-| `CommandHandlingError(commandName, errorId, commandId)` | Wystąpił błąd podczas uruchamiania procedury obsługi błędów: wystąpił błąd, nie było `case` dla polecenia lub trwało to dłużej niż limit czasu polecenia; lub nie można było odczytać agregatu. |
-| `EventHandlingError(eventName, errorId, commandId)` | Zapisywanie nie powiodło się: obsługa zdarzeń spowodowała błąd, zdarzenie przekroczyło limit lub baza danych uległa awarii. |
+| `SuccessResponse(aggregateId, aggregateVersion)` | Zdarzenia są zapisane; agregat ma teraz wersję `aggregateVersion`. |
+| `CustomSuccessResponse(aggregateId, aggregateVersion, info)` | To samo, a do tego `info`, które twój handler zwrócił w `CommandSuccess(event, info)`. |
+| `FailureResponse(exceptions)` | Twój handler powiedział „nie” (`CommandFailure`) i podał powody; albo biblioteka odrzuciła polecenie, tak jak robi to z nowym agregatem, którego pierwsze zdarzenie nie wskazuje przestrzeni (space). |
+| `AggregateConcurrentModificationError(aggregateId, aggregateType, expected, was)` | Twoje `expectedVersion` nie było wersją agregatu: ktoś zmienił go przed tobą albo agregat nie istnieje (wtedy `was` to wersja 0). |
+| `CommandRejected(aggregateId, reason)` | Polecenie w ogóle się nie wykonało, ale wysłane ponownie później może się udać. |
+| `CommandHandlingError(commandName, errorId, commandId)` | Coś się zepsuło podczas działania twojego handlera: rzucił wyjątek, nie miał `case` dla tego polecenia albo działał dłużej niż limit czasu polecenia; albo nie dało się odczytać agregatu. |
+| `EventHandlingError(eventName, errorId, commandId)` | Zapis się nie udał: handler zdarzenia rzucił wyjątek, zdarzenie przekroczyło jakiś limit albo zawiodła baza danych. |
 
-Tylko dwa sukcesy cokolwiek zapisały. Dla dwóch błędów w dzienniku znajduje się wiersz z tym samym
-`errorId` i cała historia. [Rozdział 5](05-command-flavors.md) omawia każdą odpowiedź i to, co
-co z tym zrobić, a [Dodatek B](appendix-b-cheat-sheet.md) zawiera ich wszystkie listę.
+Tylko przy dwóch sukcesach coś zostało zapisane. Przy dwóch ostatnich, czyli błędach, w logu
+znajdziesz linię z tym samym `errorId` i pełnym opisem tego, co się stało.
+[Rozdział 5](05-command-flavors.md) omawia każdą odpowiedź i to, co z nią zrobić, a
+[dodatek B](appendix-b-cheat-sheet.md) zbiera je wszystkie.
 
-Sama `Future` może również zawieść, bez żadnej odpowiedzi: z wyjątkiem `AskTimeoutException`, gdy nie ma odpowiedzi
-dotarłeś w czasie twojego limitu czasu lub wystąpił błąd podczas wysyłania autobusu, którego on nie rozumie
-wcale, co nie jest rozkazem.
+Sam `Future` też może zakończyć się niepowodzeniem, i to bez żadnej odpowiedzi: z
+`AskTimeoutException`, gdy w twoim limicie czasu nie przyszła odpowiedź, albo z błędem, gdy wyślesz
+szynie coś, czego w ogóle nie rozumie, czyli coś, co nie jest poleceniem.
 
-## Odczyt zawartości koszyka
+## Odczytanie koszyka
 
-Aby zobaczyć wózek takim, jaki jest teraz, należy wysłać do jego magistrali poleceń polecenie `GetAggregate`:
+Żeby zobaczyć koszyk w obecnym stanie, zapytaj jego szynę poleceń komunikatem `GetAggregate`:
 
 ```scala
 import scala.util.Try
 
-// cartId: identyfikator z odpowiedzi na CreateShoppingCart
+// cartId: the id from the answer to CreateShoppingCart
 val cart = Await.result((carts ? GetAggregate(cartId)).mapTo[Try[Aggregate[ShoppingCart]]], timeout.duration)
-// koszyk: Sukces(Agregat(Identyfikator(1001), Wersja(2), Niektóre(Koszyk(Artykuły spożywcze, Wektor(Przedmiot(1, jabłka))))))
+// cart: Success(Aggregate(Id(1001),Version(2),Some(ShoppingCart(Groceries,Vector(Item(1,apples))))))
 ```
 
-Odpowiedzią jest „Próba” wewnątrz „Przyszłości”, która się powiedzie: „Sukces” w całości lub „Porażka”
-gdy nie można odczytać zdarzeń z koszyka (wyjątek `AggregateRestoreFailedException`). Wyjątek `Aggregate` ma
-trzy pola:
+Odpowiedź to `Try` w `Future`, który kończy się sukcesem: `Success` z agregatem albo `Failure`, gdy
+nie da się odczytać zdarzeń koszyka (z `AggregateRestoreFailedException`). `Aggregate` ma trzy pola:
 
 | Pole | Typ | Co zawiera |
 |---|---|---|
-| `id` | `AggregateId` | który agregat |
-| `wersja` | `AggregateVersion` | ile zdarzeń zawiera jej historia |
-| `aggregateRoot` | `Option[ShoppingCart]` | stan; `None`, gdy agregat nie istnieje (wersja 0) lub został usunięty |
+| `id` | `AggregateId` | który to agregat |
+| `version` | `AggregateVersion` | ile zdarzeń liczy jego historia |
+| `aggregateRoot` | `Option[ShoppingCart]` | stan; `None`, gdy agregat nie istnieje (wersja 0) albo został usunięty |
 
-Właściciel wózka odpowiada z pamięci i jest to ten sam właściciel, który przechowuje zdarzenia wózka, więc
-Odpowiedź zawiera już Twoje ostatnie polecenie: bez czekania, bez „ostatecznie”. Użyj `GetAggregate`
-gdy strona pisząca potrzebuje koszyka, na przykład, aby go pokazać przed zmianą. Do list i wyszukiwań
-w wielu wózkach, użyj projekcji ([rozdział 8](08-projections.md)). A w przypadku pytań dotyczących
-przeszłość (starsza wersja, stan w chwili obecnej, lista wydarzeń), patrz
+Właściciel koszyka odpowiada z pamięci, a to ten sam właściciel, który zapisuje zdarzenia koszyka,
+więc odpowiedź uwzględnia już twoje ostatnie polecenie: bez czekania i bez „za chwilę będzie”.
+Używaj `GetAggregate`, gdy koszyka potrzebuje strona zapisu, na przykład żeby pokazać go przed
+zmianą. Do list i wyszukiwania w wielu koszykach używaj projekcji ([rozdział 8](08-projections.md)).
+A pytania o przeszłość (starszą wersję, stan w danej chwili, listę zdarzeń) opisuje
 [rozdział 7](07-reading-the-past.md).
 
 ## Cały program
 
-Oto wszystkie kroki w jednym miejscu. Tworzy koszyk, dodaje dwa produkty i drukuje koszyk:
+Oto wszystkie kroki w jednym miejscu: `FirstProgram` z przykładu E1. Tworzy koszyk, dodaje dwa
+produkty i wypisuje koszyk. `main` otwiera zasoby programu, czyli pulę połączeń i system aktorów, i na
+końcu je zamyka; resztą zajmuje się `run`, a test przykładu E1 uruchamia go na własnej testowej bazie
+danych. W twoim projekcie, gdzie koszyk leży we własnym pakiecie, dodaj jego import
+(`import com.example.shop.cart._`).
 
+<!-- snippet: e1/FirstProgram.scala#program -->
 ```scala
-pakiet com.example.shop
-
-import com.example.shop.cart._
-importuj io.mpjsons.MPJsons
-importuj io.reactivecqrs.api._
-importuj io.reactivecqrs.api.id.UserId
+import io.mpjsons.MPJsons
+import io.reactivecqrs.api._
+import io.reactivecqrs.api.id.UserId
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
 import io.reactivecqrs.core.delivery.OutboxPollerActor
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.types.PostgresTypesNamesState
-importuj io.reactivecqrs.core.uid.UidGeneratorActor
+import io.reactivecqrs.core.uid.UidGeneratorActor
 import org.apache.pekko.actor.{ActorSystem, Props}
-zaimportuj org.apache.pekko.pattern.ask
+import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
-import scalikejdbc.{PołączeniowyPula, UstawieniaPołączeniowegoPula}
+import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
 
 import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.util.Try
 
-obiekt Główny {
+object FirstProgram {
 
   def main(args: Array[String]): Unit = {
-    // 1. Baza danych: najpierw pula, potem tabele.
-    Klasa.forName("org.postgresql.Driver")
+    Class.forName("org.postgresql.Driver")
     ConnectionPool.singleton("jdbc:postgresql://localhost:5432/reactivecqrs", "reactivecqrs", "reactivecqrs",
-      Ustawienia puli połączeń (rozmiar początkowy = 5, rozmiar maksymalny = 32, limit czasu połączenia w milionach (connectionTimeoutMillis) = 3000L))
-
-    val mpjsons = nowy MPJsons
-    val typesNames = new PostgresTypesNamesState().initSchema()
-    val eventStore = nowy PostgresEventStoreState(mpjsons, typesNames).initSchema()
-    val responses = new PostgresCommandResponseState(mpjsons, typesNames).initSchema()
-
-    // 2. Aktorzy.
-    val system = ActorSystem("sklep")
-    val uidGenerator = system.actorOf(UidGeneratorActor.postgres(system), "uidGenerator")
-    val eventBus = system.actorOf(Props(nowy EventBusActor()), "eventBus")
-    val carts = system.actorOf(
-      AggregateCommandBusActor(nowy ShoppingCartAggregateContext, uidGenerator, eventStore, odpowiedzi, eventBus), "koszyki")
-    eventBus ! EventsBusActor.RegisterSubscribers(Nil)
-    system.actorOf(Props(nowy OutboxPollerActor(eventStore, eventBus)), "outboxPoller")
-
-    // 3. Rozmowa z wózkami.
-    niejawny limit czasu wartości: Limit czasu = Limit czasu (70 sekund)
-    val alice = UserId(1)
-
-    def send(polecenie: AnyRef): SuccessResponse =
-      Await.result((carts ? command).mapTo[CustomCommandResponse[_]], timeout.duration) match {
-        sukces przypadku: SuccessResponse => sukces
-        przypadek inny => wyrzuć nowy IllegalStateException(command.getClass.getSimpleName + " failed: " + inny)
-      }
-
-    próbować {
-      val created = send(CreateShoppingCart(alicja, "Artykuły spożywcze"))
-      println("Utworzono: " + utworzono)
-
-      val withApples = send(AddItem(alicja, created.aggregateId, created.aggregateVersion, "jabłka"))
-      val withOranges = send(AddItem(alicja, created.aggregateId, withApples.aggregateVersion, "pomarańcze"))
-      println("Teraz w: " + withOranges.aggregateVersion)
-
-      val cart = Await.result((carts ? GetAggregate(created.aggregateId)).mapTo[Try[Aggregate[ShoppingCart]]],
-        timeout.duration).get
-      println("Koszyk: " + koszyk)
-    } Wreszcie {
-      Await.result(system.terminate(), 30 sekund)
+      ConnectionPoolSettings(initialSize = 5, maxSize = 32, connectionTimeoutMillis = 3000L))
+    val system = ActorSystem("shop")
+    try run(system)
+    finally {
+      Await.result(system.terminate(), 30.seconds)
       ConnectionPool.closeAll()
     }
+  }
+
+  def run(system: ActorSystem): Unit = {
+    // 1. The tables.
+    val mpjsons = new MPJsons
+    val typesNames = new PostgresTypesNamesState().initSchema()
+    val eventStore = new PostgresEventStoreState(mpjsons, typesNames).initSchema()
+    val responses = new PostgresCommandResponseState(mpjsons, typesNames).initSchema()
+
+    // 2. The actors.
+    val uidGenerator = system.actorOf(UidGeneratorActor.postgres(system), "uidGenerator")
+    val eventBus = system.actorOf(Props(new EventsBusActor()), "eventBus")
+    eventBus ! EventsBusActor.RegisterSubscribers(Nil)
+    val carts = system.actorOf(
+      AggregateCommandBusActor(new ShoppingCartContext, uidGenerator, eventStore, responses, eventBus), "carts")
+    system.actorOf(Props(new OutboxPollerActor(eventStore, eventBus)), "outboxPoller")
+
+    // 3. Talking to the carts.
+    implicit val timeout: Timeout = Timeout(70.seconds)
+    val alice = UserId(1)
+
+    def send(command: AnyRef): SuccessResponse =
+      Await.result((carts ? command).mapTo[CustomCommandResponse[_]], timeout.duration) match {
+        case success: SuccessResponse => success
+        case other => throw new IllegalStateException(command.getClass.getSimpleName + " failed: " + other)
+      }
+
+    val created = send(CreateShoppingCart(alice, "Groceries"))
+    println("Created: " + created)
+
+    val withApples = send(AddItem(alice, created.aggregateId, created.aggregateVersion, "apples"))
+    val withOranges = send(AddItem(alice, created.aggregateId, withApples.aggregateVersion, "oranges"))
+    println("Now at: " + withOranges.aggregateVersion)
+
+    val cart = Await.result((carts ? GetAggregate(created.aggregateId)).mapTo[Try[Aggregate[ShoppingCart]]],
+      timeout.duration).get
+    println("The cart: " + cart)
   }
 }
 ```
 
-Zwróć uwagę, że każdy element `AddItem` zawiera wersję z poprzedniej odpowiedzi. To optymistyczna wersja.
-blokada w pracy: każde polecenie mówi „Zmieniam wózek na taki, jaki był po ostatniej zmianie”.
+Zwróć uwagę, że każde `AddItem` niesie wersję z poprzedniej odpowiedzi. Tak działa blokada
+optymistyczna: każde polecenie mówi „zmieniam koszyk taki, jaki był po mojej ostatniej zmianie”.
 
 ## Uruchomienie
 
-Rozpocznij od `sbt "runMain com.example.shop.Main"`. Wśród linii startowych Pekko zobaczysz
-raport magistrali zdarzeń „Magistrala zdarzeń została uruchomiona z 0 subskrypcjami”, a następnie w nowej bazie danych:
+Program uruchomisz poleceniem `sbt "examples/runMain io.reactivecqrs.examples.e1.FirstProgram"` (we
+własnym projekcie: `sbt "runMain ..."` z pełną nazwą swojego obiektu). Wśród linii startowych Pekko
+zobaczysz meldunek szyny zdarzeń `Event bus started with 0 subscriptions`, a potem, na świeżej bazie
+danych:
 
 ```
-Utworzono: SuccessResponse(Id(1001),Version(1))
-Teraz w: Wersja(3)
-Koszyk: Aggregate(Id(1001),Version(3),Some(ShoppingCart(Groceries,Vector(Item(1,apples), Item(2,oranges)))))
+Created: SuccessResponse(Id(1001),Version(1))
+Now at: Version(3)
+The cart: Aggregate(Id(1001),Version(3),Some(ShoppingCart(Groceries,Vector(Item(1,apples), Item(2,oranges)))))
 ```
 
-Dlaczego 1001? Pierwsze 1000 identyfikatorów zbiorczych jest przechowywanych jako identyfikatory systemowe, więc sekwencja zaczyna się od 1001.
-Uruchom program ponownie, a nowy wózek otrzyma 11001: każde uruchomienie magistrali poleceń powoduje utworzenie nowego puli
-z 10 000 identyfikatorów, a to, co pozostało z poprzedniej puli, jest pomijane. Identyfikatory są unikalne, a nie następują po sobie;
-Nigdy nie doszukuj się w nich sensu.
+Skąd 1001? Pierwsze 1 000 identyfikatorów agregatów zostawiono na identyfikatory systemowe, więc
+sekwencja zaczyna się od 1001. Uruchom program ponownie, a nowy koszyk dostanie 11001: każdy start
+szyny poleceń pobiera świeżą pulę 10 000 identyfikatorów, a resztka poprzedniej puli przepada.
+Identyfikatory są unikalne, ale nie kolejne; nigdy nie doszukuj się w nich znaczenia.
 
-Teraz spójrz na sam dziennik. W `psql`:
+A teraz zajrzyj do samego pamiętnika. W `psql`:
 
 ```sql
-WYBIERZ e.aggregate_id, e.version, t.name JAK event_class, e.event
-  Z wydarzeń e DOŁĄCZ do types_names t NA t.id = e.event_type_id
- ZAMÓW PRZEZ e.id;
+SELECT e.aggregate_id, e.version, t.name AS event_class, e.event
+  FROM events e JOIN types_names t ON t.id = e.event_type_id
+ ORDER BY e.id;
 ```
 
 ```
- aggregate_id | wersja | event_class | zdarzenie
--------------------------------- ...
-         1001 | 1 | com.example.shop.cart.ShoppingCartCreated | {"name":"Artykuły spożywcze"}
-         1001 | 2 | com.example.shop.cart.ItemAdded | {"name":"apples"}
-         1001 | 3 | com.example.shop.cart.ItemAdded | {"name":"pomarańcze"}
+ aggregate_id | version |                   event_class                   |        event
+--------------+---------+-------------------------------------------------+----------------------
+         1001 |       1 | io.reactivecqrs.examples.e1.ShoppingCartCreated | {"name":"Groceries"}
+         1001 |       2 | io.reactivecqrs.examples.e1.ItemAdded           | {"name":"apples"}
+         1001 |       3 | io.reactivecqrs.examples.e1.ItemAdded           | {"name":"oranges"}
 ```
 
-Trzy linijki, trzy fakty. Sam koszyk, wartość „ShoppingCart”, którą wydrukowałeś, nie jest nigdzie przechowywana:
-za każdym razem, gdy właściciel tego potrzebuje, odtwarza te wiersze za pomocą procedur obsługi zdarzeń.
+Trzy wiersze, trzy fakty. Sam koszyk, czyli wartość `ShoppingCart` wypisana przez program, nie jest
+nigdzie przechowywany: ilekroć właściciel go potrzebuje, odtwarza go, przepuszczając te wiersze przez
+twoje handlery zdarzeń.
 
-> **Pod maską:** Oto ścieżka do `AddItem`. Magistrala poleceń nadaje mu identyfikator polecenia z
-> swoją pulę i przekazuje ją właścicielowi wózka (właścicielowi rozpoczynającemu, który odtwarza wózek, jeśli żaden nie jest w
-> pamięć). Właściciel sprawdza `expectedVersion`, uruchamia obsługę poleceń w dyspozytorze obsługi,
-> stosuje nowe zdarzenie do kopii stanu i zapisuje je w jednej transakcji: zapisanej transakcji
-> Procedura sprawdza wersję jeszcze raz i zapisuje wiersz `wydarzeń`, wiersz `agregatów` i
-> wiersz skrzynki nadawczej. Następnie właściciel publikuje zdarzenie na magistrali zdarzeń i odpowiada Ci. Bez
-> subskrybentów koszyków, magistrala potwierdza to natychmiast, a wiersz skrzynki nadawczej zostaje usunięty chwilę później.
-> Jeśli program zatrzyma się wcześniej, wiersz czeka i jest ponownie publikowany przy następnym uruchomieniu, co
-> subskrybenci po prostu ignorują jako powtórzenie. [ARCHITECTURE.md, sekcje 3 i 5](../ARCHITECTURE.md)
-> opowiedz całą historię.
+> **Pod maską:** oto droga, którą przechodzi `AddItem`. Szyna poleceń nadaje mu identyfikator
+> polecenia ze swojej puli i przekazuje je właścicielowi koszyka (a jeśli żadnego nie ma w pamięci,
+> uruchamia nowego, który odtwarza koszyk). Właściciel sprawdza `expectedVersion`, uruchamia twój
+> handler polecenia na dispatcherze handlerów, stosuje nowe zdarzenie do kopii stanu i zapisuje je w
+> jednej transakcji: procedura składowana jeszcze raz sprawdza wersję i zapisuje razem wiersz w
+> `events`, wiersz w `aggregates` i wiersz w outboxie. Potem właściciel publikuje zdarzenie na
+> szynie zdarzeń i odpowiada ci. Koszyki nie mają subskrybentów, więc szyna od razu potwierdza
+> zdarzenie, a wiersz w outboxie znika chwilę później. Jeśli program zatrzyma się wcześniej, wiersz
+> poczeka i zostanie opublikowany ponownie przy następnym starcie, a subskrybenci po prostu zignorują
+> go jako powtórkę. Całą historię opowiadają [ARCHITECTURE.md, sekcje 3 i 5](../ARCHITECTURE.md).
 
-## Wypróbuj: dwa sposoby na usłyszenie „nie”
+## Spróbuj: dwa sposoby, by usłyszeć „nie”
 
-Wprowadź dwie małe zmiany do programu i obserwuj odpowiedzi.
+Wprowadź do programu dwie drobne zmiany i obserwuj odpowiedzi.
 
-1. **Wyślij starą wersję.** Podaj drugiemu elementowi `AddItem` wersję pierwszej odpowiedzi,
-   `created.aggregateVersion` zamiast `withApples.aggregateVersion`. Koszyk jest w wersji 2 od
-   następnie program zatrzymuje się na:
+1. **Wyślij starą wersję.** Daj drugiemu `AddItem` wersję z pierwszej odpowiedzi,
+   `created.aggregateVersion`, zamiast `withApples.aggregateVersion`. Koszyk ma wtedy już wersję 2,
+   więc program zatrzyma się z komunikatem:
 
    ```
-   Nie można dodać elementu: AggregateConcurrentModificationError(Id(...),AggregateType(com.example.shop.cart.ShoppingCart),Version(1),Version(2))
+   AddItem failed: AggregateConcurrentModificationError(Id(...),AggregateType(io.reactivecqrs.examples.e1.ShoppingCart),Version(1),Version(2))
    ```
 
-   Nic nie zostało zapisane, a twój opiekun nawet nie pobiegł.
+   Nic nie zostało zapisane, a twój handler nawet się nie uruchomił.
 
-2. **Złam zasadę domową.** Dodaj sześć elementów w rzędzie, poprzedzając każdy z nich wersją odpowiedzi.
-   Szósty powraca jako `FailureResponse(List(Cannot have more than 5 items in your cart))`: Twój
-   osoba obsługująca polecenia powiedziała nie.
+2. **Złam zasadę domową.** Dodaj sześć produktów pod rząd, każdy z wersją z poprzedniej odpowiedzi.
+   Przy szóstym dostaniesz `FailureResponse(List(Cannot have more than 5 items in your cart))`: twój
+   handler polecenia powiedział „nie”.
 
-## Prawdziwy kod tworzy przyszłość
+## Prawdziwy kod składa Future
 
-„Await” było skrótem dla małego programu. W prawdziwej aplikacji polecenie pojawia się w sieci.
-żądanie lub obsługę wiadomości, a blokowanie wątku za pomocą polecenia marnowałoby potrzebne wątki. Zachowaj
-`Przyszłości` i zamiast tego połącz je łańcuchem:
+`Await` był tylko skrótem na potrzeby małego programu. W prawdziwej aplikacji polecenie przychodzi w
+żądaniu HTTP albo w obsłudze komunikatu, a blokowanie wątku na każde polecenie marnowałoby wątki,
+których potrzebujesz. Zamiast tego zostań przy `Future` (`scala.concurrent.Future`) i łącz je w
+łańcuch, tak jak robi to `ComposedCommands` z przykładu E1:
 
+<!-- snippet: e1/ComposedCommands.scala#compose -->
 ```scala
-import scala.concurrent.Future
-import system.dispatcher // ExecutionContext dla flatMap
+import system.dispatcher   // an ExecutionContext for flatMap
 
-def sendAsync(polecenie: AnyRef): Future[SuccessResponse] =
-  (wózki ? polecenie).mapTo[CustomCommandResponse[_]].flatMap {
-    sukces przypadku: SuccessResponse => Future.successful(sukces)
-    przypadek inny => Future.failed(nowy IllegalStateException(command.getClass.getSimpleName + " failed: " + inny))
+def sendAsync(command: AnyRef): Future[SuccessResponse] =
+  (carts ? command).mapTo[CustomCommandResponse[_]].flatMap {
+    case success: SuccessResponse => Future.successful(success)
+    case other => Future.failed(new IllegalStateException(command.getClass.getSimpleName + " failed: " + other))
   }
 
-artykuły spożywcze val: Future[Aggregate[ShoppingCart]] = dla {
-  utworzono <- sendAsync(CreateShoppingCart(alicja, "Spożywcze"))
-  jabłka <- sendAsync(AddItem(alicja, created.aggregateId, created.aggregateVersion, "jabłka"))
-  _ <- sendAsync(AddItem(alicja, created.aggregateId, jabłka.aggregateVersion, "pomarańcze"))
-  koszyk <- (koszyki ? GetAggregate(created.aggregateId)).mapTo[Try[Aggregate[ShoppingCart]]].flatMap(Future.fromTry)
-} oddaj koszyk
+val groceries: Future[Aggregate[ShoppingCart]] = for {
+  created <- sendAsync(CreateShoppingCart(alice, "Groceries"))
+  apples  <- sendAsync(AddItem(alice, created.aggregateId, created.aggregateVersion, "apples"))
+  _       <- sendAsync(AddItem(alice, created.aggregateId, apples.aggregateVersion, "oranges"))
+  cart    <- (carts ? GetAggregate(created.aggregateId)).mapTo[Try[Aggregate[ShoppingCart]]].flatMap(Future.fromTry)
+} yield cart
 ```
 
-Tutaj nic nie czeka: każdy krok zaczyna się, gdy poprzedni uzyska odpowiedź, a Twoja struktura sieciowa
-zamienia ostateczną „Przyszłość” w odpowiedź. Prawdziwa aplikacja również zamieniłaby każdy rodzaj odpowiedzi
-w coś lepszego niż wyjątek: „proszę odświeżyć” w przypadku jednoczesnej modyfikacji,
-Przyczyny wystąpienia błędu `FailureResponse` dla użytkownika. [Rozdział 5](05-command-flavors.md) pokazuje jak to zrobić.
+Tutaj nic nie czeka: każdy krok rusza, gdy poprzedni dostanie odpowiedź, a twój framework webowy
+zamienia końcowy `Future` w odpowiedź na żądanie. Prawdziwa aplikacja zamieniłaby też każdy rodzaj
+odpowiedzi w coś lepszego niż wyjątek: przy współbieżnej modyfikacji w prośbę „odśwież, proszę”, przy
+`FailureResponse` w powody pokazane użytkownikowi. Jak to zrobić, pokazuje
+[rozdział 5](05-command-flavors.md).
 
-## Kiedy coś jest nie tak
+## Gdy coś jest nie tak
 
-| Widzisz | To znaczy |
+| Widzisz | Co to znaczy |
 |---|---|
-| `IllegalStateException: Pula połączeń nie została jeszcze zainicjowana.(name:default)` | Kod biblioteki został uruchomiony przed `ConnectionPool.singleton(...)`. Najpierw utwórz pulę. |
-| `Magistrala zdarzeń oczekuje na RegisterSubscribers od hosta; do tego czasu nic nie jest publikowane`, co pięć sekund | Nigdy nie wysłałeś `RegisterSubscribers` do magistrali zdarzeń. |
-| `AggregateConcurrentModificationError(...)` | Twoje polecenie zawierało starą wartość `expectedVersion`. Przeczytaj agregat jeszcze raz i podejmij decyzję ponownie. |
-| `CommandHandlingError(...)` i `Polecenie obsługi błędów ..., errorId: [...]` w logu | Twój program obsługi poleceń zgłosił błąd lub nie ma `case` dla tego polecenia. Wiersz logu z tym samym `errorId` zawiera ślad stosu. |
+| `IllegalStateException: Connection pool is not yet initialized.(name:default)` | Kod biblioteki ruszył przed `ConnectionPool.singleton(...)`. Najpierw utwórz pulę. |
+| `Event bus waits for RegisterSubscribers from the host; nothing is published until then`, co pięć sekund | Szyna zdarzeń nigdy nie dostała `RegisterSubscribers`. |
+| `AggregateConcurrentModificationError(...)` | Twoje polecenie niosło nieaktualne `expectedVersion`. Odczytaj agregat jeszcze raz i zdecyduj od nowa. |
+| `CommandHandlingError(...)`, a w logu `Error handling command ..., errorId: [...]` | Twój handler polecenia rzucił wyjątek albo nie ma `case` dla tego polecenia. Linia logu z tym samym `errorId` zawiera ślad stosu. |
 
-Więcej objawów i sposobów leczenia znajdziesz w [Dodatku C](appendix-c-troubleshooting.md).
+Więcej objawów i sposobów na nie znajdziesz w [dodatku C](appendix-c-troubleshooting.md).
 
-> **Pamiętaj:** w tym rozdziale wykorzystano prosty, lokalny system aktorów, a wszystko w części I działa z
-> jeden. W środowisku produkcyjnym projekt biblioteki uruchamia każde wdrożenie jako klaster Pekko, czyli klaster
-> pojedynczy węzeł, gdy istnieje tylko jedna maszyna, który zachowuje się dokładnie tak, jak to, co tutaj zbudowałeś.
-> [Rozdział 17](17-cluster.md) pokazuje jak to zrobić.
+> **Pamiętaj:** w tym rozdziale używamy zwykłego, lokalnego systemu aktorów i z takim działa
+> wszystko w części I. Na produkcji biblioteka z założenia uruchamia każde wdrożenie jako klaster
+> Pekko, a gdy maszyna jest tylko jedna, jako klaster z jednym węzłem, który zachowuje się dokładnie
+> tak jak to, co tu zbudowaliśmy. Jak to zrobić, pokazuje [rozdział 17](17-cluster.md).
 
-## Od tego miejsca: koszyk domeny testowej
+## Od teraz: koszyk z domeny testowej
 
-Koszyk, który zbudowałeś w rozdziale 3, jest odchudzoną kopią koszyka domeny testowej
-(`io.reactivecqrs.testdomain.shoppingcart`). Od [rozdziału 5](05-command-flavors.md)
-Przykłady wykorzystują sam koszyk domeny testowej, z dodatkowymi poleceniami i zdarzeniami.
-`CreateShoppingCart` ma jeszcze jedno pole z przodu, `idempotencyId`, więc zobaczysz je wysłane jako
-`CreateShoppingCart(None, alice, "Groceries"); rozdział 5 wyjaśnia do czego służy to pole.
+Koszyk zbudowany w rozdziale 3 to odchudzona kopia koszyka z domeny testowej
+(`io.reactivecqrs.testdomain.shoppingcart`). Od [rozdziału 5](05-command-flavors.md) przykłady
+używają już samego koszyka z domeny testowej, z jego dodatkowymi poleceniami i zdarzeniami. Jego
+`CreateShoppingCart` ma z przodu jeszcze jedno pole, `idempotencyId`, więc zobaczysz je wysyłane jako
+`CreateShoppingCart(None, alice, "Groceries")`; do czego służy to pole, wyjaśnia rozdział 5.
 
-## Czego się nauczyłeś
+## Co już umiesz
 
-- Do działania systemu potrzebne są w tej kolejności: pula połączeń i tabele, `ActorSystem`,
-  generator uid (`UidGeneratorActor.postgres(system)`), `EventsBusActor`, jeden
-  `AggregateCommandBusActor` na każdy typ agregatu i jeden `OutboxPollerActor`.
-- Szyna zdarzeń nie publikuje niczego, dopóki nie otrzyma `RegisterSubscribers`, nawet jeśli lista jest pusta.
-- Wysyłasz polecenie za pomocą `ask` i otrzymujesz dokładnie jedną odpowiedź, `CustomCommandResponse`:
-  `SuccessResponse(aggregateId, aggregateVersion)` gdy zdarzenia zostały zapisane lub jedno z
-  awarie i błędy.
-- Każde `Polecenie` zawiera wersję z poprzedniej odpowiedzi; jest to blokada optymistyczna.
-- `GetAggregate(id)` odpowiada za pomocą `Try[Aggregate[R]]`: id, wersja i stan, już
-  wliczając Twoje ostatnie polecenie.
-- W prawdziwym kodzie zachowaj `Future` i skomponuj je; `Await` należy stosować tylko w małych programach.
+- Działający system potrzebuje, w tej kolejności: puli połączeń i tabel, `ActorSystem`, generatora
+  identyfikatorów (`UidGeneratorActor.postgres(system)`), `EventsBusActor`, jednego
+  `AggregateCommandBusActor` na każdy typ agregatu i jednego `OutboxPollerActor`.
+- Szyna zdarzeń nic nie publikuje, dopóki nie dostanie `RegisterSubscribers`, nawet z pustą listą.
+- Polecenie wysyłasz przez `ask` i dostajesz dokładnie jedną odpowiedź, `CustomCommandResponse`:
+  `SuccessResponse(aggregateId, aggregateVersion)`, gdy zdarzenia zostały zapisane, albo którąś z
+  odmów i błędów.
+- Każde `Command` niesie wersję z poprzedniej odpowiedzi; to właśnie jest blokada optymistyczna.
+- `GetAggregate(id)` odpowiada, zwracając `Try[Aggregate[R]]`: identyfikator, wersję i stan, który
+  uwzględnia już twoje ostatnie polecenie.
+- W prawdziwym kodzie zostań przy `Future` i składaj je ze sobą; `Await` pasuje tylko do małych
+  programów.
 
-Następnie: [rozdział 5](05-command-flavors.md) obsługuje całe menu rodzajów poleceń.
+Dalej: [rozdział 5](05-command-flavors.md) podaje całe menu rodzajów poleceń.

@@ -1,426 +1,481 @@
-# Rozdział 17. Przejście na rozproszoną dystrybucję: uruchamianie w klastrze
+# Rozdział 17. Na wielu węzłach: praca w klastrze
 
-Do tej pory Twoja aplikacja działała na jednej maszynie. W tym rozdziale przenosi się do współdzielonego domu:
-kilka maszyn, zwanych **węzłami**, które działają jak jedna. Na koniec będziesz wiedział, co się zmienia, gdy
-uruchamiasz na kilku węzłach, które części uruchamiasz na każdym węźle, a które uruchamiasz dokładnie raz, jak zdecydować
-gdzie mieszkają właściciele każdego typu agregatu, co może podróżować między węzłami (i jak duże to może być)
-być) i jak uaktualniać węzły pojedynczo, nie przerywając działania aplikacji.
+Do tej pory twoja aplikacja mieszkała na jednej maszynie. W tym rozdziale przeprowadza się do wspólnego
+mieszkania, czyli na kilka maszyn, zwanych **węzłami**, które pracują jak jedna. Pod koniec będziesz
+wiedzieć, co się zmienia, gdy aplikacja działa na kilku węzłach, które jej części działają na każdym
+węźle, a które dokładnie raz, jak zdecydować, gdzie mieszkają właściciele agregatów każdego typu, co może
+podróżować między węzłami (i jak duże może być) oraz jak aktualizować węzły po jednym, nie przerywając
+pracy aplikacji.
 
 ---
 
-## Dlaczego więcej niż jeden węzeł?
+## Po co więcej niż jeden węzeł?
 
-Wyobraź sobie ruchliwą restaurację z jednym kucharzem. Kiedy kucharz robi sobie przerwę, kuchnia się zatrzymuje. Zatrudnij
-drugi kucharz i kuchnia kontynuują pracę w przerwach i obsługują więcej stolików w porze kolacji.
-dwóch kucharzy dzieli się jedną książką zamówień i obowiązuje jedna zasada: karta zamówienia jest w rękach jednego
-gotować na raz.
+Wyobraź sobie ruchliwą restaurację z jednym kucharzem. Gdy kucharz robi przerwę, kuchnia staje. Zatrudnij
+drugiego kucharza, a kuchnia będzie działać także w czasie przerw i w porze kolacji obsłuży więcej
+stolików. Obaj kucharze korzystają z jednego zeszytu zamówień i obowiązuje ich jedna zasada: kartka
+z zamówieniem jest w danej chwili w rękach tylko jednego kucharza.
 
-Uruchomienie ReactiveCQRS na kilku węzłach daje te same trzy efekty:
+Uruchomienie ReactiveCQRS na kilku węzłach daje ci te same trzy rzeczy:
 
-- **Podtrzymywanie aktywności.** Gdy jeden węzeł uruchamia się ponownie lub maszyna przestaje działać, pozostałe nadal świadczą usługi.
-- **Więcej rąk.** Obsługujący polecenia, właściciele agregatów i projekcje współdzielą procesory kilku
-  maszyny.
-- **Uaktualnienia bez znaku „zamknięte”.** Wymieniasz węzły po jednym na raz (*aktualizacja ciągła*, w
+- **Ciągłość działania.** Gdy jeden węzeł się restartuje albo maszyna pada, pozostałe obsługują dalej.
+- **Więcej rąk do pracy.** Handlery poleceń, właściciele agregatów i projekcje dzielą się procesorami
+  kilku maszyn.
+- **Aktualizacje bez wywieszki „nieczynne”.** Węzły wymieniasz po jednym (to *aktualizacja krocząca*, pod
   koniec tego rozdziału).
 
-I wiele pozostaje dokładnie takie samo:
+A wiele zostaje dokładnie tak, jak było:
 
-- **Jedna baza danych PostgreSQL** dla wszystkich węzłów, z tymi samymi tabelami co poprzednio.
-- **Twój kod**: agregaty, polecenia, zdarzenia, projekcje i sagi z poprzednich rozdziałów.
-- **Sprawdzanie wersji** (optymistyczna blokada [rozdziału 1](01-cqrs-without-the-headache.md)).
-  baza danych nadal pozwala tylko jednemu autorowi przechowywać każdą wersję agregatu, niezależnie od tego, co się dzieje pomiędzy
-  węzły.
+- **Jedna baza PostgreSQL** dla wszystkich węzłów, z tymi samymi tabelami co wcześniej.
+- **Twój kod**: agregaty, polecenia, zdarzenia, projekcje i sagi z wcześniejszych rozdziałów.
+- **Sprawdzanie wersji** (blokowanie optymistyczne z [rozdziału 1](01-cqrs-without-the-headache.md)).
+  Baza danych nadal pozwala zapisać każdą wersję agregatu tylko jednemu piszącemu, cokolwiek dzieje się
+  między węzłami.
 
-> **Pamiętaj:** wszystkie węzły klastra współdzielą jedną bazę danych. Klaster rozdziela *pracę*;
-> baza danych przechowuje *prawdę*.
+> **Pamiętaj:** wszystkie węzły klastra dzielą jedną bazę danych. Klaster rozkłada *pracę*, a baza danych
+> przechowuje *prawdę*.
 
-## Każda instalacja jest klastrem, nawet klastrem jednej instalacji
+## Każda instalacja jest klastrem, nawet jednowęzłowym
 
-ReactiveCQRS działa na **klastrze Apache Pekko**. Włącza się go za pomocą konfiguracji, a nie kodu. Oto
-plik `application.conf` dla węzła instalacji trzywęzłowej, którego system aktorów nazywa się `shop`
-(`ActorSystem("sklep", konfiguracja)`):
+ReactiveCQRS działa na **Apache Pekko Cluster**. Klaster włączasz konfiguracją, a nie kodem. Oto
+`application.conf` węzła instalacji złożonej z trzech węzłów, której system aktorów nazywa się `shop`
+(`ActorSystem("shop", config)`):
 
 ```hocon
-punk {
-  aktor.dostawca = klaster
-  zdalna.tętnica.kanoniczna {
-    hostname = "10.0.0.11" # adres tego węzła
-    port = 17355 # Wartość domyślna Pekko
+pekko {
+  actor.provider = cluster
+  actor.serialization-bindings { "java.io.Serializable" = reactivecqrs }
+  remote.artery.canonical {
+    hostname = "10.0.0.11"     # this node's address
+    port = 17355               # Pekko's default
   }
-  klaster {
-    węzły-siewne = ["pekko://shop@10.0.0.11:17355", "pekko://shop@10.0.0.12:17355"]
+  cluster {
+    seed-nodes = ["pekko://shop@10.0.0.11:17355", "pekko://shop@10.0.0.12:17355"]
     downing-provider-class = "org.apache.pekko.cluster.sbr.SplitBrainResolverProvider"
     split-brain-resolver.active-strategy = keep-majority
-    app-version = "1.4.0" # wersja Twojego wydania; zobacz poniżej „Aktualizacje ciągłe”
+    app-version = "1.4.0"      # your release's version; see "Rolling upgrades" below
   }
 }
 ```
 
-Trzy z tych wersów zasługują na osobne słowo:
+Cztery z tych linii zasługują na słowo wyjaśnienia:
 
-- **`węzły-seed`** to adresy, do których węzeł początkowy ma się dołączyć. (Pekko Management's Cluster
-  Bootstrap może je znaleźć na Kubernetesie; własna dokumentacja Pekko opisuje oba sposoby.)
-- **Rozwiązywacz podzielonego mózgu** decyduje, co się stanie, gdy sieć podzieli klaster na dwa
-  grupy, które nie mogą się widzieć: jedna strona zostaje, druga się zamyka. „zachowaj większość” utrzymuje
-  większa strona. Przy dwóch węzłach nie ma większości, więc zastosuj strategię „większości dzierżawy” Pekko z
-  dzierżawa (w Kubernetes, dzierżawa Kubernetes od Pekko Management): strona, która posiada dzierżawę
-  gorset.
-- **`app-version`** nadaje nazwę Twojemu wydaniu. Ma to znaczenie podczas aktualizacji kroczących.
+- **`serialization-bindings`** kieruje każdy komunikat między węzłami przez serializator biblioteki (zob.
+  „Komunikaty między węzłami” niżej). `reference.conf` biblioteki też ustawia to wiązanie, ale
+  `reference.conf` Pekko wiąże `java.io.Serializable` z serializacją Javy, która jest wyłączona, a z dwóch
+  plików `reference.conf` wygrywa ten, który jest wcześniej na ścieżce klas (classpath). Ścieżka klas
+  spakowanej aplikacji może mieć dowolną kolejność, dlatego to wiązanie ustawia twoja konfiguracja. Węzeł,
+  który może rozmawiać z innymi, ale serializowałby komunikaty inaczej, zapisuje w logu błąd, który o tym
+  mówi, i pozostaje niegotowy.
 
-Na pojedynczej maszynie używasz dokładnie tych samych ustawień, a sam węzeł jest jego jedynym zalążkiem. To jest
-**grupa jednego** i zachowuje się jak pojedynczy węzeł, który miałeś wcześniej. Własny test biblioteki
-zestawy zaliczą test, gdy każdy test zostanie wykonany w klastrze składającym się z jednej osoby.
+- **`seed-nodes`** to adresy, z którymi kontaktuje się startujący węzeł, żeby dołączyć do klastra.
+  Pasują do maszyn, których adresy się nie zmieniają. Na Kubernetesie dołączaj zamiast tego przez
+  **Cluster Bootstrap** z Pekko Management, tak jak robi to E2 pod koniec tego rozdziału: pod po restarcie ma
+  starą nazwę, ale nowy adres IP, a pierwszy węzeł seed, który tworzy nowy klaster, gdy żaden inny
+  seed nie odpowie w ciągu pięciu sekund, może wtedy podzielić klaster podczas restartu kroczącego.
+- **Split brain resolver** decyduje, co się dzieje, gdy sieć podzieli klaster na dwie grupy, które się
+  nawzajem nie widzą: jedna strona zostaje, druga się wyłącza. `keep-majority` zostawia większą stronę.
+  Przy dwóch węzłach nie ma większości, więc użyj strategii `lease-majority` z Pekko razem z dzierżawą,
+  czyli lease (na Kubernetesie: dzierżawą Kubernetesa z Pekko Management): zostaje ta strona, która trzyma
+  dzierżawę.
+- **`app-version`** nazywa twoje wydanie. Ma znaczenie podczas aktualizacji kroczących.
 
-> **Wskazówka:** korzystaj z ustawień klastra od pierwszego dnia, nawet na jednej maszynie. Przejście z jednego węzła do trzech
-> później następuje zmiana konfiguracji, a nie kodu.
+Na jednej maszynie używasz dokładnie tych samych ustawień, a jedynym węzłem seed jest sam ten węzeł. To
+**klaster jednowęzłowy**, który zachowuje się jak pojedynczy węzeł z wcześniejszych rozdziałów. Testy
+samej biblioteki przechodzą, gdy każdy z nich działa na klastrze jednowęzłowym.
 
-> **Pod maską:** „każde wdrożenie jest klastrem: jeden węzeł lokalny, kilka w chmurze” to
-> decyzja D42; rozdzielony moduł rozdzielający mózg i dzierżawa to D46, sprawdzane przez `ClusterBehaviourSpec`.
-> Pełną historię można znaleźć w [ARCHITECTURE.md, sekcja 13](../ARCHITECTURE.md).
+> **Wskazówka:** używaj ustawień klastra od pierwszego dnia, nawet na jednej maszynie. Późniejsze
+> przejście z jednego węzła na trzy będzie wtedy zmianą konfiguracji, a nie kodu.
 
-## Co działa na każdym węźle i co działa raz
+> **Pod maską:** „każde wdrożenie jest klastrem: jeden węzeł on-premise, kilka w chmurze” to decyzja D42;
+> split brain resolver i dzierżawa to decyzja D46, którą sprawdza `ClusterBehaviourSpec`. Całą historię
+> opisuje [ARCHITECTURE.md, sekcja 13](../ARCHITECTURE.md).
 
-W domu wieloosobowym każdy ma własną szczoteczkę do zębów, ale tylko jedna osoba robi to co tydzień
-zakupy, albo lodówka zapełnia się pięcioma workami ziemniaków. Grono to to samo:
+## Co działa na każdym węźle, a co tylko raz
+
+We wspólnym mieszkaniu każdy ma własną szczoteczkę do zębów, ale cotygodniowe zakupy robi jedna osoba,
+bo inaczej lodówka zapełni się pięcioma workami ziemniaków. W klastrze jest tak samo:
 
 | Na każdym węźle | Raz w całym klastrze |
 |---|---|
-| generator uid (`UidGeneratorActor.postgres(system)`) | każda zarządzana projekcja (`Projections.start`, [rozdział 10](10-rebuilding-projections.md)) |
-| szyna zdarzeń (`EventsBusActor`) | sonda skrzynki nadawczej (`OutboxPollerActor`) |
-| magistrala poleceń według typu agregatu (`AggregateCommandBusActor`) | harmonogram zadań squash (`SquashScheduler`, [rozdział 14](14-squash.md)) |
-| | każdy biegacz sagi ([rozdział 12](12-sagas.md)) |
+| generator identyfikatorów (`UidGeneratorActor.postgres(system)`) | każda projekcja zarządzana (`Projections.start`, [rozdział 10](10-rebuilding-projections.md)) |
+| szyna zdarzeń (`EventsBusActor`) | poller outboxu (`OutboxPollerActor`) |
+| szyna poleceń dla każdego typu agregatu (`AggregateCommandBusActor`) | scheduler squasha (`SquashScheduler`, [rozdział 14](14-squash.md)) |
+| | każdy runner sagi ([rozdział 12](12-sagas.md)) |
 
-Należy pamiętać o jednym fakcie: **na każdy węzeł istnieje magistrala zdarzeń.** Właściciel zbiorczy publikuje swoje
-zdarzenia do magistrali węzła, na którym działa. Abonent zarejestrowany na magistrali jednego węzła widzi zatem
-tylko wydarzenia właścicieli tego węzła. Więc cokolwiek musi zobaczyć *każde* wydarzenie (projekcję, sagę, która
-listens) uruchamia się raz w klastrze i jest rejestrowany na magistrali *każdego* węzła.
+Jedyny fakt, który trzeba zapamiętać: **każdy węzeł ma własną szynę zdarzeń.** Właściciel agregatu
+publikuje zdarzenia na szynie węzła, na którym działa. Subskrybent zarejestrowany na szynie jednego węzła
+widzi więc tylko zdarzenia właścicieli z tego węzła. Dlatego wszystko, co musi widzieć *każde* zdarzenie
+(projekcja, saga, która nasłuchuje), działa w klastrze raz i jest zarejestrowane na szynie *każdego*
+węzła.
 
-### Uruchamianie tego, co działa raz: `Singletons.start`
+### Jak uruchomić to, co działa raz: `Singletons.start`
 
-`Singletons.start(system, nazwa, właściwości)` to sposób uruchomienia czegoś, co musi zostać uruchomione raz. Każdy węzeł
-nazywa się tak samo. Następnie Pekko uruchamia aktora na **najstarszym** węźle klastra i
-`start` przydziela każdemu węzłowi **proxy**: `ActorRef`, który przekazuje wszystko, co do niego wysyłasz, gdziekolwiek
-Aktor działa, zachowując nadawcę, więc odpowiedzi wracają do Ciebie. Kiedy najstarszy węzeł odchodzi, aktor
-przechodzi do następnego najstarszego, raz; podczas przenoszenia serwer proxy przechowuje wiadomości do niego wysłane (do
-Bufor Pekko wynoszący 1000).
+`Singletons.start(system, name, props)` służy do uruchamiania czegoś, co musi działać raz. Wywołuje go
+każdy węzeł, z tą samą nazwą. Pekko uruchamia wtedy aktora na **najstarszym** węźle klastra, a `start`
+daje każdemu węzłowi **proxy**: `ActorRef`, który przekazuje wszystko, co do niego wyślesz, tam, gdzie
+akurat działa aktor, i zachowuje nadawcę, więc odpowiedzi wracają do ciebie. Gdy najstarszy węzeł
+odchodzi, aktor przenosi się na kolejny najstarszy, jeden raz; w czasie przeprowadzki proxy przetrzymuje
+wysłane do niego komunikaty (do 1 000, tyle mieści bufor Pekko).
 
-W systemie aktorów, który nie jest klastrem, `Singletons.start` po prostu uruchamia samego aktora, więc
-ten sam kod działa w obu przypadkach.
+W systemie aktorów, który nie jest klastrem, `Singletons.start` po prostu sam uruchamia aktora, więc ten
+sam kod działa w obu przypadkach.
 
-`Projections.start` ([rozdział 10](10-rebuilding-projections.md)) wykonuje to za Ciebie: w klastrze,
-Zwracany `ActorRef` jest proxy węzła dla nadzorcy projekcji.
+`Projections.start` ([rozdział 10](10-rebuilding-projections.md)) robi to za ciebie: w klastrze
+`ActorRef`, który zwraca, jest proxy tego węzła do nadzorcy projekcji.
 
-Oto, co każdy węzeł aplikacji koszyka zakupowego uruchamia na początku. Używa
-`ClusterCartsProjection`, mała projekcja `ClusterDeliverySpec`, która przechowuje elementy każdego koszyka
-nazwy i `ShardedCartContext` z następnej sekcji:
+Oto co na starcie uruchamia każdy węzeł E2, czyli przykładu z klastrem: koszyki z E1 (w shardach, zob.
+następną sekcję), listę tych koszyków jako projekcję zarządzaną i poller outboxu:
 
+<!-- snippet: e2/ClusterSetup.scala#node -->
 ```scala
-importuj io.mpjsons.MPJsons
-import io.reactivecqrs.core.cluster.Singletons
-import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
-import io.reactivecqrs.core.delivery.OutboxPollerActor
-import io.reactivecqrs.core.documentstore.{NoopDocumentStoreCache, PostgresDocumentStore}
-import io.reactivecqrs.core.eventbus.EventsBusActor
-import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
-import io.reactivecqrs.core.eventstore.PostgresEventStoreState
-import io.reactivecqrs.core.projection.PostgresSubscriptionsState
-import io.reactivecqrs.core.rebuild.{PostgresProjectionRegistry, Projekcje, Ustawienia projekcji}
-import io.reactivecqrs.core.saga.PostgresSagaState
-import io.reactivecqrs.core.types.PostgresTypesNamesState
-importuj io.reactivecqrs.core.uid.UidGeneratorActor
-import org.apache.pekko.actor.{ActorRef, Rekwizyty}
-
-// Ten sam kod na każdym węźle (system: ActorSystem tego węzła)
-val mpjsons = nowy MPJsons
+// The same code on every node (system: this node's ActorSystem; cartContext: E1's carts, sharded, see below)
+val mpjsons = new MPJsons
 val typesNames = new PostgresTypesNamesState().initSchema()
-val eventStore = nowy PostgresEventStoreState(mpjsons, typesNames).initSchema()
+val eventStore = new PostgresEventStoreState(mpjsons, typesNames).initSchema()
 val responses = new PostgresCommandResponseState(mpjsons, typesNames).initSchema()
 val subscriptions = new PostgresSubscriptionsState(typesNames).initSchema()
 
-// Po jednym z każdego na każdym węźle
+// One of each on every node
 val uidGenerator = system.actorOf(UidGeneratorActor.postgres(system), "uidGenerator")
-val eventBus = system.actorOf(Props(nowy EventBusActor()), "eventBus")
-val carts = system.actorOf(AggregateCommandBusActor(new ShardedCartContext, uidGenerator, eventStore, responses, eventBus), "carts")
+val eventBus = system.actorOf(Props(new EventsBusActor()), "eventBus")
+val carts = system.actorOf(
+  AggregateCommandBusActor(cartContext, uidGenerator, eventStore, responses, eventBus), "carts")
 
-// Po dostaniu się do klastra: każdy węzeł je uruchamia, jeden węzeł je uruchamia
-projekcje val = nowe projekcje(system,
-  Ustawienia projekcji (eventStore, subskrypcje, nowy PostgresProjectionRegistry().initSchema(), Seq (nowy ShardedCartContext)))
-val cartItems: ActorRef = projections.start[ClusterCartsProjection]("cluster-carts", 1, "clusterCarts") { build =>
-  nowy ClusterCartsProjection(subskrypcje,
-    nowy PostgresDocumentStore[ClusterCartItems](build.documentStore("cluster_carts"), mpjsons, nowy NoopDocumentStoreCache))
+// Once in the cluster: every node starts them, one node runs them
+val projections = new Projections(system, ProjectionsSettings(eventStore, subscriptions,
+  new PostgresProjectionRegistry().initSchema(), contexts = Seq(cartContext)))
+val cartsList: ActorRef = projections.start[CartsListProjection]("e2-carts-list", 1, "cartsList") { build =>
+  new CartsListProjection(subscriptions,
+    new PostgresDocumentStore[CartSummary](build.documentStore("e2_carts_list"), mpjsons, new NoopDocumentStoreCache))
 }
-Singletons.start(system, "outboxPoller", Props(nowy OutboxPollerActor(eventStore, eventBus)))
-val sagaState = new PostgresSagaState(mpjsons, typesNames)
-sagaState.initSchema()
-val cartsSaga: ActorRef = Singletons.start(system, "cartsSaga", Props(new MultipleCartCreatorSaga(sagaState, uidGenerator, carts)))
+Singletons.start(system, "outboxPoller", Props(new OutboxPollerActor(eventStore, eventBus)))
 
-// Każdy węzeł rejestruje serwer proxy projekcji na własnej magistrali
-eventBus! Zarejestruj subskrybentów (Seq (elementy koszyka))
+// Every node registers the projection's proxy on its own bus
+eventBus ! RegisterSubscribers(Seq(cartsList))
 ```
 
-Co się stanie, gdy to zostanie uruchomione na trzech węzłach:
+Importy są na początku `ClusterSetup.scala`, w `examples/src/main/scala/io/reactivecqrs/examples/e2/`.
 
-- Każdy węzeł ma własny generator UID, magistralę zdarzeń i magistralę poleceń wózka. Polecenie wysyłane do wózka
-  magistrala poleceń *dowolnego* węzła działa.
-- Jeden nadzorca projekcji „cluster-carts” działa na najstarszym węźle. Szyna każdego węzła zna to
-  poprzez serwer proxy tego węzła, więc projekcja otrzymuje zdarzenia właścicieli każdego węzła.
-- Działa jeden moduł sondujący skrzynkę nadawczą i jeden moduł uruchamiający Sagę, również na najstarszym węźle. Wysyłasz polecenia Sagi do
-  `cartsSaga`, serwer proxy, niezależnie od węzła, na którym się znajdujesz.
+Co się dzieje, gdy to działa na trzech węzłach:
 
-`ClusterDeliverySpec` uruchamia dokładnie to na trzech węzłach: projekcji dostarczanej przez właścicieli każdego węzła
-odpowiada na zapytania na dowolnym węźle, z jedną instancją w całym klastrze; a gdy najstarszy węzeł opuszcza klaster,
-projekcja, sondaż i biegacz sagi poruszają się, a to, co zostało opublikowane w międzyczasie, wciąż dociera
-projekcja.
+- Każdy węzeł ma własny generator identyfikatorów, szynę zdarzeń i szynę poleceń koszyków. Polecenie
+  wysłane do szyny poleceń koszyków *dowolnego* węzła działa.
+- Działa jeden nadzorca projekcji `e2-carts-list`, na najstarszym węźle. Szyna każdego węzła zna go przez
+  proxy swojego węzła, więc projekcja dostaje zdarzenia właścicieli ze wszystkich węzłów.
+- Działa jeden poller outboxu, także na najstarszym węźle.
+- Runner sagi też działa raz: każdy węzeł wywołuje `SagaRunner.start(system, ...)`
+  ([rozdział 12](12-sagas.md)) i wysyła zlecenia sagi do zwróconego proxy, z dowolnego węzła.
 
-> **Ostrzeżenie:** nigdy nie uruchamiaj programu do pobierania skrzynek nadawczych ani harmonogramu squasha za pomocą zwykłego `system.actorOf` na
-> każdy węzeł. Przy trzech węzłach każde zdarzenie oczekujące w skrzynce nadawczej byłoby ponownie publikowane trzy razy,
-> i każdy squash byłby testowany trzy razy. Uruchom je poleceniem `Singletons.start`.
+`ClusterSpec` z E2 uruchamia to na trzech węzłach w jednej JVM: koszyk zapełniany przez wszystkie węzły
+ma jednego właściciela, a lista koszyków odpowiada na każdym węźle; gdy najstarszy węzeł odchodzi, lista
+koszyków przenosi się i nadal dostaje zdarzenia opublikowane w międzyczasie. `ClusterDeliverySpec`
+biblioteki sprawdza to samo, także z runnerem sagi.
 
-> **Pamiętaj:** zarejestruj proxy projekcji na magistrali *każdego* węzła. Projekcja zarejestrowana na jednym
-> węzeł widziałby zdarzenia tylko jednego węzła i po prostu pomijałby resztę.
+> **Ostrzeżenie:** nigdy nie uruchamiaj pollera outboxu ani schedulera squasha zwykłym
+> `system.actorOf` na każdym węźle. Przy trzech węzłach każde zdarzenie czekające w outboxie byłoby
+> publikowane ponownie trzy razy, a każdy squash byłby próbowany trzy razy. Uruchamiaj je przez
+> `Singletons.start`.
 
-Kilka rzeczy działa nieco inaczej, gdy coś zostanie przeniesione do innego węzła:
+> **Pamiętaj:** rejestruj proxy projekcji na szynie *każdego* węzła. Projekcja zarejestrowana tylko na
+> jednym węźle widziałaby zdarzenia jednego węzła i po cichu gubiłaby resztę.
 
-- **Odpowiedzi na sagę pojawiają się co najmniej raz.** Twórca sagi przechowuje informacje o pytającym wraz z węzłem pytającego
-  adres, aby odpowiedź dotarła do osoby dzwoniącej na dowolnym węźle. Jeśli biegacz przemieszcza się między wysłaniem odpowiedzi
-  i nagrywając ją, następny uczestnik może odpowiedzieć ponownie: osoba dzwoniąca z długim stażem powinna traktować drugą odpowiedź
-  dla tej samej sagi jako powtórzenia.
-- **Subskrypcje push** projekcji podlegających subskrypcji
-  ([rozdział 11](11-subscribable-projections.md)) są tracone, gdy pojedynczy obiekt projekcji ulega przesunięciu.
-  W odpowiedzi na prośbę o odnowienie pojawia się `ProjectionSubscriptionsCancelled`: subskrybuj ponownie.
+Kilka rzeczy działa trochę inaczej, gdy coś przeniesie się na inny węzeł:
 
-> **Pod maską:** autobus pyta każdego zarejestrowanego abonenta o swoje subskrypcje
-> `GetSubscriptionRequests(registered)`, a nadzorca stojący za proxy odpowiada za to. Kiedy
-> singleton się porusza, jego instancje zatrzymują się; magistrala ponownie pyta serwer proxy, a to, co zostało opublikowane w międzyczasie
-> pozostaje w skrzynce nadawczej, dopóki moduł pobierający nie opublikuje jej ponownie. Zobacz
-> [ARCHITEKTURA.md, sekcja 13.4](../ARCHITEKTURA.md) (D44, D46, D53, D55, F110, F129).
+- **Odpowiedzi sag przychodzą co najmniej raz.** Runner sagi zapisuje, kto pytał, razem z adresem
+  węzła pytającego, więc odpowiedź dociera do wywołującego na dowolnym węźle. Jeśli runner przeniesie
+  się między wysłaniem odpowiedzi a jej odnotowaniem, następny runner może odpowiedzieć jeszcze raz:
+  długo żyjący wywołujący powinien traktować drugą odpowiedź dla tej samej sagi jako powtórkę.
+- **Subskrypcje push** projekcji subskrybowalnych ([rozdział 11](11-subscribable-projections.md))
+  przepadają, gdy singleton projekcji się przenosi. Na odnowienie przychodzi wtedy odpowiedź
+  `ProjectionSubscriptionsCancelled`: zasubskrybuj ponownie.
 
-## Miejsce zamieszkania właścicieli: Lokalnie lub w Shard
+> **Pod maską:** szyna pyta każdego zarejestrowanego subskrybenta o jego subskrypcje komunikatem
+> `GetSubscriptionRequests(registered)`, a w imieniu proxy odpowiada stojący za nim nadzorca. Gdy
+> singleton się przenosi, jego instancje się zatrzymują; szyna znów pyta proxy, a to, co opublikowano
+> w międzyczasie, zostaje w outboxie, aż poller outboxu opublikuje to ponownie. Zob.
+> [ARCHITECTURE.md, sekcja 13.4](../ARCHITECTURE.md) (D44, D46, D53, D55, F110, F129).
 
-Każdy agregat ma **właściciela**, aktora, który przechowuje jego stan i uruchamia jego polecenia
-([rozdział 1](01-cqrs-without-the-headache.md)). W klastrze wybierasz, według typu agregatu, gdzie
-Ci właściciele żyją. Pomyśl jeszcze raz o biletach na zamówienie:
+## Gdzie mieszkają właściciele: Local czy Sharded
 
-- **Lokalnie:** każdy kucharz, którego zapytano o stolik nr 7, zabiera kopię jego paragonu. Gdy dwóch kucharzy pisze
-  od razu, księga zamówień (baza danych) decyduje, kto był pierwszy.
-- **Sharded:** każdy bilet ma jedno biurko w kuchni. Ten, kto przyjmuje zamówienie na stolik nr 7, odchodzi.
-  do tego biurka.
+Każdy agregat ma **właściciela**, czyli aktora, który przechowuje jego stan i wykonuje jego polecenia
+([rozdział 1](01-cqrs-without-the-headache.md)). W klastrze dla każdego typu agregatu wybierasz, gdzie ci
+właściciele mieszkają. Wróćmy do kartek z zamówieniami:
 
-### Lokalny, domyślny
+- **Local:** każdy kucharz, którego ktoś zapyta o stolik 7, bierze kopię jego kartki. Gdy dwóch kucharzy
+  pisze na niej naraz, zeszyt zamówień (baza danych) rozstrzyga, kto był pierwszy.
+- **Sharded:** każda kartka ma w kuchni jedno stanowisko. Kto przyjmie zamówienie dla stolika 7, zanosi
+  je na to stanowisko.
 
-Dzięki `Placement.Local` każdy węzeł zachowuje własnych właścicieli agregatów, o które jest pytany.
-Wózek 42 może mieć właściciela na węźle A *i* na węźle B. To jest bezpieczne: sprawdzanie wersji bazy danych
-pozwala, aby tylko jeden z nich przechowywał każdą wersję.
+### Local, czyli ustawienie domyślne
 
-Kosztuje to jednak trochę. Na węźle, który nie jest jedyny w swoim klastrze, właściciel nie wie, co
-pozostałe węzły napisały, więc zanim odpowie na stan lub uruchomi polecenie, porównuje swoją wersję
-z zapisanym jednym (jedno wyszukiwanie klucza) i odczytuje agregat ponownie, gdy inny węzeł go zmieni.
+Przy `Placement.Local` każdy węzeł trzyma własnych właścicieli, dla agregatów, o które go pytano.
+Koszyk 42 może mieć właściciela na węźle A *i* drugiego na węźle B. To bezpieczne: sprawdzanie wersji
+w bazie danych pozwala zapisać każdą wersję tylko jednemu z nich.
 
-Właściciele bezczynnych węzłów lokalnych są usypiani przez magistralę poleceń swojego węzła. Nie częściej niż co 5 minut wykonuje ona następujące operacje:
-powyżej 200 właścicieli, te używane najrzadziej, które nie były używane przez 2 minuty, są zatrzymywane, a wszystkie używane przez właściciela, które nie były używane przez
-12 godzin jest zatrzymane. Obie liczby są parametrami `AggregateCommandBusActor(...)`:
-`keepAliveLimit` (200) i `maxInactivityMillis` (12 godzin).
+Ma to jednak niewielki koszt. Na węźle, który nie jest w klastrze sam, właściciel nie wie, co zapisały
+inne węzły, więc zanim poda stan albo wykona polecenie, porównuje swoją wersję z zapisaną (jedno
+wyszukanie po kluczu) i czyta agregat od nowa, jeśli zmienił go inny węzeł.
 
-### Sharded: jeden właściciel na agregat w całym klastrze
+Bezczynnych właścicieli Local usypia szyna poleceń ich węzła. Nie częściej niż co 5 minut robi porządki:
+gdy właścicieli jest ponad 200, zatrzymuje najdawniej używanych spośród bezczynnych od 2 minut, a każdy
+właściciel bezczynny od 12 godzin zostaje zatrzymany. Obie liczby to parametry
+`AggregateCommandBusActor(...)`: `keepAliveLimit` (200) i `maxInactivityMillis` (12 godzin).
 
-Kontekst jest włączany poprzez nadpisanie parametru `placement`. To jest `ShardedCartContext` ze specyfikacji klastra:
+### Sharded: jeden właściciel agregatu w całym klastrze
 
+Kontekst wybiera tę opcję, nadpisując `placement`. E2 umieszcza koszyki z E1 w shardach:
+
+<!-- snippet: e2/ShardedCarts.scala#sharded -->
 ```scala
-importuj io.reactivecqrs.api._
-import io.reactivecqrs.testdomain.shoppingcart.ShoppingCartAggregateContext
-
-klasa ShardedCartContext rozszerza ShoppingCartAggregateContext {
-  nadpisanie val placement: Placement = Placement.Sharded(numberOfShards = 10)
+class ShardedCartContext extends ShoppingCartContext {
+  override val placement: Placement = Placement.Sharded(numberOfShards = 30) // about ten per node of three
 }
 ```
 
-To cała zmiana w kodzie. Teraz:
+To cała zmiana w twoim kodzie. Teraz:
 
-- **W całym klastrze na jeden wózek przypada jeden właściciel**, umieszczony przez Pekko Cluster Sharding. Każdy
-  Szyna poleceń węzła uruchamia region fragmentu typu i wysyła przez niego wszystko do właścicieli.
-  Polecenie lub zapytanie wysłane do magistrali poleceń wózka dowolnego węzła dociera do jednego właściciela, gdziekolwiek się znajduje.
-  biegnie.
-- **Odłamek agregatu** pochodzi z jego identyfikatora (identyfikator modulo `liczbaOdłamków`). Pekko rozprzestrzenia
-  odłamki nad węzłami i przesuwa je, gdy węzły pojawiają się i znikają. Domyślnie jest to 100 odłamków; dąż do
-  około dziesięciu fragmentów na węzeł największego klastra, jaki planujesz.
-- **Bezczynni właściciele są pasywowani przez swój odłamek** po 120 sekundach bez wiadomości (Pekko's
+- **Każdy koszyk ma w całym klastrze jednego właściciela**, rozmieszczanego przez Pekko Cluster
+  Sharding. Szyna poleceń każdego węzła uruchamia region shardów tego typu i przez niego wysyła
+  właścicielom wszystko. Polecenie albo zapytanie wysłane do szyny poleceń koszyków dowolnego węzła trafia
+  do tego jednego właściciela, gdziekolwiek on działa.
+- **Shard agregatu** wynika z jego identyfikatora (identyfikator modulo `numberOfShards`). Pekko rozkłada
+  shardy na węzły i przenosi je, gdy węzły dochodzą i odchodzą. Domyślnie jest 100 shardów; celuj
+  w mniej więcej dziesięć shardów na węzeł największego klastra, jaki planujesz.
+- **Bezczynnych właścicieli pasywuje ich shard** po 120 sekundach bez komunikatu (ustawienie Pekko
   `pekko.cluster.sharding.passivation.default-idle-strategy.idle-entity.timeout`).
-- **System aktorów musi być klastrem** (`pekko.actor.provider = cluster`) składającym się z jednego lub większej liczby węzłów.
-- **Polecenia są przesyłane** do węzła właściciela, więc muszą zawierać wiadomość między węzłami (patrz „Wiadomości
-  między węzłami" poniżej).
+- **System aktorów musi być klastrem** (`pekko.actor.provider = cluster`), jedno- lub wielowęzłowym.
+- **Polecenia podróżują** do węzła właściciela, więc muszą zmieścić się w komunikacie między węzłami
+  (zob. „Komunikaty między węzłami” niżej).
 
-`PassivateAggregate(id)`, wysłane do magistrali poleceń dowolnego węzła, powoduje uśpienie właściciela agregatu
-oba umiejscowienia.
+`PassivateAggregate(id)`, wysłany do szyny poleceń dowolnego węzła, usypia właściciela agregatu przy
+obu rozmieszczeniach.
 
-Oto co kupuje od „jednego właściciela” w ramach „ShardedOwnersSpec”: trzy węzły wysyłają 15 współbieżnych
-Polecenia `AddItemConcurrently` odnoszą się do każdego z koszyków. Wszystkie 45 kończą się sukcesem, koszyk kończy się na wersji 46, a
-dokładnie jeden węzeł jest zarządzany przez jego właściciela.
+Oto co daje „jeden właściciel”, na przykładzie `ShardedOwnersSpec`: trzy węzły wysyłają do jednego
+koszyka po 15 współbieżnych poleceń `AddItemConcurrently`. Wszystkie 45 kończą się sukcesem, koszyk
+kończy na wersji 46, a jego właściciel działa na dokładnie jednym węźle.
 
 ### Jak wybrać
 
-| | Lokalny | Podzielony |
+| | Local | Sharded |
 |---|---|---|
-| Właściciele jednego agregatu | jeden na każdym węźle o to pytał | jeden w całym klastrze |
-| Dwóch pisarzy jednocześnie | możliwe; decyduje sprawdzenie wersji | nie w normalnym trybie |
-| Dodatkowy koszt odczytu lub polecenia | jedno wyszukiwanie klucza w węźle, który nie jest sam | konieczność przejścia do węzła właściciela, gdy działa gdzie indziej |
-| Bezczynni właściciele | przeszukani przez magistralę poleceń | pasywowani przez odłamek po 120 s |
-| Polecenia muszą mieścić wiadomość między węzłami | nie | tak |
+| Właściciele jednego agregatu | po jednym na każdym węźle, którego o niego pytano | jeden w całym klastrze |
+| Dwóch piszących naraz | możliwe; rozstrzyga sprawdzanie wersji | nie przy normalnej pracy |
+| Dodatkowy koszt odczytu lub polecenia | jedno wyszukanie po kluczu, na węźle, który nie jest sam | droga do węzła właściciela, gdy ten działa gdzie indziej |
+| Bezczynni właściciele | usuwani przy porządkach szyny poleceń | pasywowani przez shard po 120 s |
+| Polecenia muszą zmieścić się w komunikacie między węzłami | nie | tak |
 
-Prosta zasada:
+Prosta reguła:
 
-- **Jeden węzeł:** pozostaje przy `Lokalnym`. Właściciel, będąc sam w swoim klastrze, nie potrzebuje żadnych wyszukiwań.
-- **Kilka węzłów, typ, który jest często odczytywany lub zapisywany:** ustaw go jako `Sharded`.
-- **Kilka węzłów, typ, który jest rzadko zmieniany:** `Lokalny` jest w porządku.
+- **Jeden węzeł:** zostań przy `Local`. Właściciel na węźle, który jest w klastrze sam, nie potrzebuje
+  wyszukań.
+- **Kilka węzłów, typ często czytany lub zapisywany:** ustaw `Sharded`.
+- **Kilka węzłów, typ rzadko używany:** `Local` wystarczy.
 
-> **Ostrzeżenie:** zmiana położenia typu lub jego `numberOfShards` wymaga kropki w całym tekście
-> klaster, nigdy nie jest to aktualizacja ciągła. Podczas gdy stare i nowe węzły działają obok siebie, agregat miałby
-> właściciel lokalny *i* właściciel podzielony, a właściciele podzieleni nie sprawdzają sklepu przed udzieleniem odpowiedzi.
-> Typy można przenosić do kategorii „Sharded” pojedynczo, stawiając za każdym razem kropkę.
+> **Ostrzeżenie:** zmiana rozmieszczenia typu albo jego `numberOfShards` wymaga zatrzymania całego
+> klastra, nigdy aktualizacji kroczącej. Gdy stare i nowe węzły działają obok siebie, agregat miałby
+> właściciela Local *i* właściciela w shardzie, a właściciele w shardach nie sprawdzają magazynu zdarzeń,
+> zanim odpowiedzą. Typy możesz przenosić do `Sharded` po jednym, za każdym razem z pełnym zatrzymaniem.
 
-> **Pod maską:** strona właścicieli miejsca umieszczenia to `Owners.scala` (`LocalOwners`,
-> `ShardedOwners`); wiadomości do właścicieli sharded są przesyłane jako `ToOwner(aggregateId, message)`. Zobacz
-> [ARCHITEKTURA.md, sekcja 13.3](../ARCHITEKTURA.md) (D43, D72, F131, F145).
+> **Pod maską:** rozmieszczenie od strony właścicieli to `Owners.scala` (`LocalOwners`,
+> `ShardedOwners`); komunikaty do właścicieli w shardach podróżują jako `ToOwner(aggregateId, message)`.
+> Zob. [ARCHITECTURE.md, sekcja 13.3](../ARCHITECTURE.md) (D43, D72, F131, F145).
 
-## Kiedy węzeł opuszcza
+## Gdy węzeł odchodzi
 
-Kucharz, który wraca do domu, najpierw kończy danie na patelni, a potem wręcza kupony. Właściciel, który został pocięty na kawałki
-robi to samo, gdy jego węzeł opuszcza klaster (lub gdy Pekko przenosi swój fragment, aby zrównoważyć obciążenie):
+Kucharz, który idzie do domu, najpierw kończy danie na patelni, a dopiero potem przekazuje kartki.
+Właściciel w shardzie robi to samo, gdy jego węzeł opuszcza klaster (albo gdy Pekko przenosi jego shard,
+żeby wyrównać obciążenie):
 
-1. Kończy wykonywane polecenia (w przypadku przetwarzania szeregowego kolejka zostaje opróżniona).
-2. Odpowiada na zapytania, które na niego czekają, i zapisuje migawkę, jeśli typ wykonuje migawki.
-   pasywacja ([rozdział 13](13-snapshots.md)).
-3. Zatrzymuje się. Wiadomości dla jego fragmentu czekają w regionie fragmentu węzła wysyłającego (Pekko buforuje do
-   100 000 wiadomości na region) i dotrzeć do nowego właściciela na innym węźle.
+1. Kończy polecenia, które właśnie wykonuje (przy przetwarzaniu szeregowym kolejka się opróżnia).
+2. Odpowiada na zapytania, które na niego czekają, i zapisuje migawkę, jeśli typ robi migawki przy
+   pasywacji ([rozdział 13](13-snapshots.md)).
+3. Zatrzymuje się. Komunikaty dla jego sharda czekają w regionie shardów węzła, który je wysyła (Pekko
+   buforuje do 100 000 komunikatów na region), i trafiają do nowego właściciela na innym węźle.
 
-Zakończenie procesu zajmuje trochę czasu, więc plik `reference.conf` biblioteki przydziela mu czas:
+Kończenie trwa, więc `reference.conf` biblioteki daje na nie czas:
 
 ```hocon
 pekko.cluster.sharding.handoff-timeout = 90 s
 pekko.coordinated-shutdown.phases.cluster-sharding-shutdown-region.timeout = 90 s
 ```
 
-Oba przekraczają domyślny limit czasu polecenia wynoszący 60 sekund (`AggregateContext.commandTimeout`). Pekko
-zatrzymuje właściciela na 5 sekund przed upływem limitu czasu przełączenia.
+Oba ustawienia są wyższe niż domyślny limit czasu polecenia, 60 sekund
+(`AggregateContext.commandTimeout`). Pekko zatrzymuje właściciela siłą 5 sekund przed upływem
+`handoff-timeout`.
 
-> **Ostrzeżenie:** Twój menedżer procesów musi odczekać *dłużej* niż te 90 sekund, zanim zamknie węzeł
-> to jest wyjście (na Kubernetes: `terminationGracePeriodSeconds`). Jeśli wywołasz kontekst
-> `commandTimeout`, ustaw oba ustawienia wyżej, a także okres karencji wyżej od nich.
+> **Ostrzeżenie:** twój menedżer procesów musi czekać *dłużej* niż te 90 sekund, zanim zabije
+> odchodzący węzeł (na Kubernetesie: `terminationGracePeriodSeconds`). Jeśli podniesiesz `commandTimeout`
+> kontekstu, podnieś oba ustawienia powyżej niego, a okres karencji (grace period) powyżej nich.
 
-Polecenie, które czekało w buforze podczas przekazania, jest wykonywane później niż zostało wysłane, a jego 60 sekund
-rozpocząć, gdy dotrze do nowego właściciela. Osoba dzwoniąca z krótkim czasem oczekiwania może zatem zrezygnować z polecenia.
-który nadal jest stosowany. Lekarstwo pochodzi z [rozdziału 5](05-command-flavors.md): **spróbuj ponownie z
-klucz idempotentności**, a polecenie zostanie wykonane jednorazowo, bez względu na to, ile razy zostało wysłane.
+Polecenie, które podczas przekazania czekało w buforze, wykonuje się później, niż je wysłano, a jego
+60 sekund zaczyna biec, gdy dotrze do nowego właściciela. Wywołujący z krótkim limitem czasu może więc
+zrezygnować z polecenia, które mimo to zostanie zastosowane. Lekarstwo znamy z
+[rozdziału 5](05-command-flavors.md): **ponawiaj z kluczem idempotencji**, a polecenie zadziała raz,
+niezależnie od tego, ile razy je wysłano.
 
-`ShardedOwnersSpec` sprawdza to w trudny sposób: węzeł odchodzi, gdy jeden z jego właścicieli uruchamia polecenie
-trwa to dwanaście sekund, a dziesięć wózków, których właściciele tam jeżdżą, otrzymuje po pięć przedmiotów, po jednym na każde 150 sekund
-milisekundy, przez inne węzły. Każde polecenie kończy się sukcesem, łącznie z tym wolniejszym, i każdy element
-jest w koszyku raz.
+`ShardedOwnersSpec` sprawdza to w trudnych warunkach: węzeł odchodzi, gdy jeden z jego właścicieli
+wykonuje polecenie trwające dwanaście sekund, a dziesięć koszyków, których właściciele tam działają,
+dostaje przez pozostałe węzły po pięć produktów, jeden co 150 milisekund. Każde polecenie się udaje, także
+to wolne, a każdy produkt jest w swoim koszyku raz.
 
-A co, jeśli węzeł nie odejdzie grzecznie, lecz zniknie? Rozdzielony mózg to zauważy i usunie.
-z klastra, a jego fragmenty zaczynają się od nowa na pozostałych węzłach. Przez krótką chwilę dwóch właścicieli
-może istnieć jeden agregat; kontrola wersji bazy danych nadal pozwala tylko jednemu z nich na zapisanie każdego
-wersja.
+A co, jeśli węzeł nie odejdzie grzecznie, tylko zniknie? Split brain resolver to zauważy i usunie go
+z klastra, a jego shardy wystartują od nowa na pozostałych węzłach. Przez krótką chwilę mogą istnieć
+dwaj właściciele jednego agregatu; sprawdzanie wersji w bazie danych nadal pozwala zapisać każdą wersję
+tylko jednemu z nich.
 
-> **Pamiętaj:** własne testy wielowęzłowe biblioteki uruchamiają kilka węzłów w jednej wirtualnej maszynie Java i obejmują węzły
-> które odchodzą z gracją. Testy, które wyłączają węzeł lub przerywają sieć, są planowane przed wersją 1.0
-> wydanie. Do tego czasu testuj takie awarie we własnym środowisku.
+### Co pokazują testy awarii E2
 
-## Wiadomości między węzłami
+Do E2 dołączone są testy awarii, które robią to wszystko prawdziwym procesom; leżą
+w `examples/deploy/e2/faults`. Trzy węzły działają w Dockerze, każdy z klientem, który tworzy koszyki
+i dodaje produkty do koszyków wspólnych dla wszystkich węzłów. Każde polecenie niesie klucz idempotencji;
+klient prowadzi rejestr tego, co wysłał i jaką dostał odpowiedź, a gdy odpowiedź zaginie, wysyła
+polecenie jeszcze raz, z tym samym kluczem. Pod takim obciążeniem skrypt:
 
-W jednym węźle wiadomość jest przekazywana jak notatka przez biurko. Między węzłami musi być
-Napisane, włożone do koperty i wysłane: **numer seryjny**. A koperta ma limit rozmiaru.
+1. zabija węzeł (`docker kill`) i minutę później uruchamia go ponownie;
+2. zatrzymuje węzeł w uporządkowany sposób i uruchamia go ponownie, więc shardy przenoszą się gdzie
+   indziej i wracają;
+3. odcina najstarszy węzeł, na którym działają lista koszyków i poller outboxu, od dwóch pozostałych,
+   choć nadal ma on dostęp do bazy danych;
+4. zabija najstarszy węzeł.
+
+Potem porównuje bazę danych z rejestrami. Z katalogu głównego repozytorium:
+
+```bash
+sbt examples/stageE2
+```
+
+```bash
+examples/deploy/e2/faults/run.sh
+```
+
+Dwa przebiegi na jednej maszynie (18/10/2026, Docker Desktop na Windowsie; pomiar, a nie benchmark)
+wysłały po około 100 000 poleceń w dziewięć minut i każde sprawdzenie wypadło pomyślnie. Każde
+polecenie, na które przyszła odpowiedź o sukcesie, jest zapisane raz, w swoim koszyku; żadne z 18 poleceń
+wysłanych ponownie po zagubionej odpowiedzi nie zadziałało dwa razy; żadna wersja agregatu nie została
+zapisana dwa razy; żaden koszyk nie dostał szóstego produktu; a lista koszyków nadążyła za każdym
+koszykiem. Czasy pokazują, czego się spodziewać:
+
+- **Agregaty węzła, który zniknął, czekają niecałe 50 sekund.** Pozostałe węzły zauważają to w ciągu
+  6–8 sekund, split brain resolver decyduje 20 sekund później (jego `stable-after`), a shardy
+  i singletony węzła startują gdzie indziej po kolejnych 20 sekundach. Do tego czasu polecenia dla jego
+  agregatów czekają albo przekraczają limit czasu u nadawców i są wysyłane ponownie.
+- **Odcięty węzeł sam się wyłącza.** Najstarszy węzeł, odcięty, w tej samej chwili co dwa pozostałe
+  uznał, że jest po mniejszej stronie, zatrzymał swoje singletony i zakończył proces; singletony
+  wystartowały na kolejnym najstarszym węźle 21 sekund później. Ani przez chwilę nie działały dwa naraz.
+- **Outbox pokrywa to, czego zniknięty węzeł nie dostarczył.** Węzeł zabity tuż po zatwierdzeniu swoich
+  transakcji zostawił dwa lub trzy zdarzenia zapisane, ale niedostarczone. Poller outboxu opublikował je
+  ponownie mniej więcej trzy i pół minuty później (czeka 3 minuty, a outbox sprawdza co 30 sekund). Gdy
+  zabity węzeł był najstarszy, poller przeniósł się razem z innymi singletonami, a nowy poller przy
+  pierwszym sprawdzeniu publikuje ponownie to, co zastanie w outboxie: mniej więcej minutę po zabiciu.
+
+> **Pamiętaj:** przy ustawieniach domyślnych klient, który przez minutę ponawia polecenie z jego kluczem,
+> przetrwa utratę węzła. Jeśli klient podda się wcześniej, dostaniesz błędy dla agregatów, które tylko się
+> przenoszą.
+
+## Komunikaty między węzłami
+
+Wewnątrz jednego węzła komunikat podaje się jak karteczkę przez biurko. Między węzłami trzeba go spisać,
+włożyć do koperty i wysłać pocztą, czyli **zserializować**. A koperta ma limit rozmiaru.
 
 ### Jeden serializator do wszystkiego
 
-Plik `reference.conf` biblioteki wiąże jeden serializator, `ClusterSerializer`, z `java.io.Serializable`,
-więc klasy przypadków i kolekcje Scala, które przechodzą przez nie przez węzły (Pekko zachowuje kilka swoich
-własne, takie jak „Some” i „None”). Serializacja w Javie pozostaje wyłączona (domyślne ustawienie w Pekko). Konfigurujesz
-Nic.
+Jeden serializator, `ClusterSerializer`, jest związany z `java.io.Serializable`, więc przechodzą przez
+niego case classy i kolekcje Scali, które wędrują między węzłami (kilka z nich Pekko obsługuje własnymi
+serializatorami, na przykład `Some` i `None`). Wiąże go `reference.conf` biblioteki, a także twoja
+konfiguracja (jej pierwszy punkt, powyżej): to, który `reference.conf` wygra, zależy od kolejności na
+ścieżce klas. Serializacja Javy pozostaje wyłączona (to domyślne ustawienie Pekko). Poza tą jedną linijką
+niczego nie konfigurujesz.
 
-- Wiadomości biblioteki są zapisywane pole po polu.
-- **Twoje wartości** (polecenia, zdarzenia, stany agregatów, komunikaty zapytań i ich odpowiedzi, kolejność sagi
-  i odpowiedzi) są zapisywane w formacie JSON ich klasy przez mpjsons, tak samo jak przechowywane są zdarzenia.
-- Wyjątki biblioteki, takie jak `AggregateInIncorrectVersionException`, zachowują swoją klasę.
-  inny wyjątek pojawia się jako `RemoteFailure` z oryginalną nazwą klasy i komunikatem.
+- Komunikaty samej biblioteki są zapisywane pole po polu; zdarzenia w dostarczeniach zajmują po około
+  33 bajty poza swoim JSON-em.
+- **Twoje wartości** (polecenia, zdarzenia, stany agregatów, komunikaty zapytań i odpowiedzi na nie,
+  zlecenia i odpowiedzi sag) są zapisywane przez mpjsons jako JSON swojej klasy, tak samo jak zapisuje się
+  zdarzenia.
+- Wyjątki biblioteki, takie jak `AggregateInIncorrectVersionException`, zachowują swoją klasę. Każdy inny
+  wyjątek dociera jako `RemoteFailure`, z oryginalną nazwą klasy i komunikatem.
 
-Daje to Twoim klasom cztery zasady:
+Z tego wynikają cztery reguły dla twoich klas:
 
-1. **pliki mpjson muszą być w stanie je zapisywać i odczytywać według swojej klasy:** brak pól typu `Dowolny`, cecha,
-   `ActorRef` lub `Throwable`.
-2. **Definiuj komunikaty na najwyższym poziomie lub w obiekcie, nigdy wewnątrz klasy aktora.** Klasa
-   zdefiniowany wewnątrz innego węzła niesie ze sobą otaczający go obiekt, który nie może zostać przeniesiony do innego węzła.
-3. **Pole dodane później musi być `Opcją`.** Podczas aktualizacji ciągłej węzeł starszej wersji
-   wersja wysyła wiadomość bez nowego pola, a czytelnik wypełnia brakujące pole
-   „Brak”, zero lub „null”, nigdy z domyślną wartością pola w Scali. Odczytaj „{"id":1}” jako
-   `Item(id: Int, name: String)` i otrzymasz `Item(1, null)`.
-4. **Pole, które zmienia swój typ, wymaga nowej klasy.**
+1. **mpjsons musi umieć je zapisać i odczytać na podstawie ich klasy:** żadnych pól, których typem jest
+   `Any`, trait, `ActorRef` albo `Throwable`.
+2. **Definiuj komunikaty na najwyższym poziomie albo w obiekcie, nigdy wewnątrz klasy aktora.** Klasa
+   zdefiniowana wewnątrz innej niesie ze sobą instancję klasy, która ją otacza, a tej nie da się przenieść
+   na inny węzeł.
+3. **Pole dodane później musi być typu `Option`.** Podczas aktualizacji kroczącej węzeł starszej wersji
+   wysyła komunikat bez nowego pola, a odbiorca wypełnia brakujące pole wartością `None`, zerem albo
+   `null`, nigdy domyślną wartością pola ze Scali. Odczytaj `{"id":1}` jako `Item(id: Int, name: String)`,
+   a dostaniesz `Item(1, null)`.
+4. **Pole, które zmienia typ, wymaga nowej klasy.**
 
-> **Wskazówka:** test przesyłania wiadomości przez serializator w obie strony zajmuje kilka linijek;
-> [rozdział 19](19-testing.md) pokazuje jeden. Jeśli zarejestrowałeś własne konwertery mpjsons, podaj
-> serializator klastra, instancja skonfigurowana w ten sam sposób, poprzez
-> `ClusterSerialization(system).mpjsons`, przed wymianą komunikatów między węzłami.
+> **Wskazówka:** test, który przepuszcza twoje komunikaty przez serializator tam i z powrotem, to kilka
+> linijek; [rozdział 19](19-testing.md) pokazuje taki test. Jeśli masz zarejestrowane własne konwertery
+> mpjsons, przekaż serializatorowi klastra instancję skonfigurowaną tak samo, przez
+> `ClusterSerialization(system).mpjsons`, zanim węzły zaczną wymieniać komunikaty.
 
-### Jak duża może być wiadomość
+### Jak duży może być komunikat
 
-Transport Pekko (Artery) wysyła wiadomość w jednej ramce o rozmiarze 256 KiB (ćwierć megabajta)
-Domyślnie, ustawione przez `pekko.remote.artery.advanced.maximum-frame-size`. Pekko upuszcza większą wiadomość i
-rejestruje tylko „Odrzucanie ponadgabarytowego ładunku”; nadawca nigdy nie zostaje o tym poinformowany.
+Transport Pekko (Artery) wysyła komunikat w jednej ramce, domyślnie o rozmiarze 256 KiB (ćwierć
+megabajta), ustawianym przez `pekko.remote.artery.advanced.maximum-frame-size`. Większy komunikat Pekko
+odrzuca i tylko zapisuje w logu „Discarding oversized payload”; nadawca nigdy się o tym nie dowiaduje.
 
-Limit biblioteki `MessageSize(system).limit` to 8 KiB (bez ramki) przeznaczone na nagłówek Pekko:
-Domyślnie 248 KiB. Oto, co dzieje się z każdym rodzajem wiadomości, która może być zbyt duża:
+Limit biblioteki, `MessageSize(system).limit`, to ta ramka minus 8 KiB na własny nagłówek Pekko:
+domyślnie 248 KiB. Oto co się dzieje z każdym rodzajem komunikatu, który mógłby być za duży:
 
-| Wiadomość | Gdy przekracza węzły | Za duża? |
+| Komunikat | Kiedy przechodzi między węzłami | Za duży? |
 |---|---|---|
-| polecenie typu `Sharded` | jego właściciel uruchamia je na innym węźle | odrzucane od razu za pomocą `FailureResponse` ("zbyt duże, aby wysłać je między węzłami"), niezależnie od tego, gdzie uruchamia je jego właściciel |
-| odpowiedź polecenia, odpowiedź `GetAggregate` (stan) | właściciel działa na innym węźle | pytający od razu zgłasza błąd `MessageTooLargeException` |
-| odpowiedź na zapytanie projekcji | projekcja działa na innym węźle | pytający od razu kończy zapytanie błędem `MessageTooLargeException` |
-| dostawa kilku zdarzeń | abonent działa na innym węźle | podzielony na części o maksymalnej długości połowy limitu |
-| pojedyncze zdarzenie lub stan w dostawie | subskrybent działa na innym węźle | awaria u subskrybenta |
-| `GetEventsForAggregate` (cała historia) | nigdy | odczytaj na węźle pytającym, ze sklepu |
+| polecenie typu `Sharded` | jego właściciel działa na innym węźle | od razu odrzucone z `FailureResponse` („too large to be sent between nodes”), gdziekolwiek działa jego właściciel |
+| odpowiedź na polecenie, odpowiedź na `GetAggregate` (stan) | właściciel działa na innym węźle | pytający od razu dostaje błąd `MessageTooLargeException` |
+| odpowiedź projekcji na zapytanie | projekcja działa na innym węźle | pytający od razu dostaje błąd `MessageTooLargeException` |
+| dostarczenie kilku zdarzeń | subskrybent działa na innym węźle | dzielone na części o rozmiarze najwyżej połowy limitu |
+| pojedyncze zdarzenie albo sam stan w dostarczeniu | subskrybent działa na innym węźle | błąd u subskrybenta |
+| `GetEventsForAggregate` (cała historia) | nigdy | czytane na pytającym węźle, z magazynu zdarzeń |
 
-Każda wiadomość, która jest zbyt duża, jest rejestrowana na węźle wysyłającym wraz z jej klasą i rozmiarem (maksymalnie raz)
-na klasę co 10 sekund) i liczone w metryce `reactivecqrs.message.too.large`
+Każdy za duży komunikat trafia do logu węzła, który go wysyła, z klasą i rozmiarem (najwyżej raz na
+10 sekund dla każdej klasy), i jest liczony w metryce `reactivecqrs.message.too.large`
 ([rozdział 18](18-production.md)).
 
-Aby uzyskać wyobrażenie o rozmiarach zmierzonych 17.10.2026 r. (raport `load-M5` w `docs/perf/`): jedno zdarzenie
-dostarczenie zajęło 561 bajtów; ponowna publikacja części 1000 wydarzeń z notatkami o długości 200 znaków zajęła
-470 KiB, dlatego takie części są dzielone.
+Żeby wyczuć rozmiary, oto pomiary z 17/10/2026 (raport `load-M5` w `docs/perf/`): dostarczenie jednego
+zdarzenia zajęło 561 bajtów; część ponownej publikacji z 1 000 zdarzeń z notatkami po 200 znaków zajęła
+470 KiB i właśnie dlatego takie części są dzielone.
 
 Co z tym zrobić:
 
-- **Utrzymuj polecenia, odpowiedzi, stany i odpowiedzi na zapytania znacznie poniżej 248 KiB.** Stan, który subskrybenci
-  zabieraj ze sobą każde wydarzenie podróżuje z każdym wydarzeniem.
-- **Odczytaj duży stan na węźle pytającym** za pomocą `GetAggregateAtInstant(id, Instant.now)`:
-  magistrala poleceń przywraca dane bezpośrednio ze sklepu, zamiast aby właściciel je wysyłał.
-- **Jeśli nie da się uniknąć większych wiadomości**, podnieś `pekko.remote.artery.advanced.maximum-frame-size`.
-  Pekko przechowuje w pamięci bezpośredniej do 128 buforów rozmiaru ramki, więc ramki o rozmiarze 1 MiB mogą zająć do
-  128 MiB (szacowane na podstawie tej arytmetyki). Albo skieruj adresy docelowe dużych wiadomości przez Pekko
-  `large-message-destinations` (ramki 2 MiB, domyślnie 32 bufory).
+- **Utrzymuj polecenia, odpowiedzi, stany i odpowiedzi na zapytania wyraźnie poniżej 248 KiB.** Stan,
+  który subskrybenci dostają z każdym zdarzeniem, podróżuje z każdym zdarzeniem.
+- **Duży stan czytaj na pytającym węźle**, przez `GetAggregateAtInstant(id, Instant.now)`: szyna
+  poleceń odtwarza go z magazynu zdarzeń na miejscu, zamiast żeby właściciel przesyłał go z innego węzła.
+- **Jeśli większych komunikatów nie da się uniknąć**, podnieś
+  `pekko.remote.artery.advanced.maximum-frame-size`. Pekko trzyma w pamięci bezpośredniej (direct memory)
+  do 128 buforów o rozmiarze ramki, więc ramki 1 MiB mogą zająć do 128 MiB (to szacunek z tego
+  rachunku). Możesz też poprowadzić ruch do adresatów dużych komunikatów przez
+  `large-message-destinations` z Pekko (domyślnie ramki 2 MiB, 32 bufory).
 
-[Rozdział 18](18-production.md) zawiera więcej informacji na temat dużych wydarzeń i dokumentów.
+Więcej o dużych zdarzeniach i dokumentach znajdziesz w [rozdziale 18](18-production.md).
 
-> **Pod maską:** serializator, jego tolerancyjny odczyt i ochrona rozmiaru są opisane w
+> **Pod maską:** serializator, jego tolerancyjny odczyt i strażnika rozmiaru opisuje
 > [ARCHITECTURE.md, sekcja 13.1](../ARCHITECTURE.md) (D45, D68, F121, F135); zmierzone rozmiary
-> a zalecenia znajdziesz w [SCALING.md, sekcja 6](../SCALING.md).
+> i zalecenia są w [SCALING.md, sekcja 6](../SCALING.md).
 
 ## Czy ten węzeł jest gotowy?
 
-Węzeł, który właśnie został uruchomiony, nie powinien przyjmować ruchu, dopóki jego magistrala zdarzeń nie pozna wszystkich jego danych.
-subskrybenci: dopóki każdy zarejestrowany subskrybent nie odpowie (projekcje za ich serwerami proxy)
-(wliczając w to), autobus nie publikuje niczego.
+Węzeł, który dopiero wystartował, nie powinien przyjmować ruchu, zanim jego szyna zdarzeń nie pozna
+wszystkich swoich subskrybentów: dopóki każdy zarejestrowany subskrybent nie odpowie (łącznie
+z projekcjami za ich proxy), szyna niczego nie publikuje.
 
-`Readiness(system)` śledzi to:
+Śledzi to `Readiness(system)`:
 
+<!-- snippet: cart/NodeVersionsSpec.scala#readiness -->
 ```scala
 import io.reactivecqrs.core.cluster.Readiness
 
-Readiness(system).ready // fałsz, podczas gdy magistrala zdarzeń nadal czeka na swoich subskrybentów
-Readiness(system).waitingFor // magistrale zdarzeń, które nadal czekają
+Readiness(system).ready        // false while an event bus still waits for its subscribers
+Readiness(system).waitingFor   // the event buses that still wait
 ```
 
-Jeśli korzystasz z kontroli stanu zdrowia Pekko Management (dodaj Pekko Management do swojej aplikacji; biblioteka
-nie przynosi), jeden wiersz sprawia, że ​​jest to sprawdzenie gotowości, więc moduły równoważenia obciążenia wysyłają ruch tylko do gotowych
-węzły:
+Jeśli używasz health checków z Pekko Management (dodaj Pekko Management do swojej aplikacji; biblioteka
+go nie dołącza), jedna linia zamienia tę informację w sprawdzenie gotowości (readiness check), więc load
+balancery kierują ruch tylko do gotowych węzłów:
 
 ```hocon
 pekko.management.health-checks.readiness-checks {
@@ -428,115 +483,218 @@ pekko.management.health-checks.readiness-checks {
 }
 ```
 
-`Members(system)` informuje, co dany węzeł wie o członkach klastra:
+`Members(system)` mówi, co ten węzeł wie o członkach klastra:
 
+<!-- snippet: cart/NodeVersionsSpec.scala#members -->
 ```scala
 import io.reactivecqrs.core.cluster.Members
 
-val members = Członkowie(system)
-members.oldestAppVersion // najniższa wersja aplikacji wśród członków, np. Some(Version("1.0.0"))
-members.olderVersionsRun // prawda, gdy członek uruchamia starszą wersję niż ten węzeł
-members.alone // prawda poza klastrem i w klastrze jednego
+val members = Members(system)
+members.oldestAppVersion   // the lowest app-version among the members, e.g. Some(Version("1.0.0"))
+members.olderVersionsRun   // true while a member runs an older version than this node
+members.alone              // true outside a cluster, and in a cluster of one
 ```
 
-## Ulepszenia ciągłe
+## Aktualizacje kroczące
 
-Zmiana kucharzy podczas serwowania obiadu jest dopuszczalna, pod warunkiem, że nikt nie przygotuje nowego dania
-na kwitach zamówień, zanim każdy kucharz zdąży je przeczytać. Na tym właśnie polega idea stopniowego uaktualniania.
+Wymiana kucharzy po jednym w trakcie kolacji to nic złego, pod warunkiem że nikt nie wpisze na kartkę
+z zamówieniem nowego dania, zanim każdy kucharz nie będzie umiał go przeczytać. Na tym polega cała idea
+aktualizacji kroczącej.
 
 Kroki:
 
-1. **Nadaj każdej wersji osobną wersję aplikacji** na każdym węźle tej wersji:
+1. **Nadaj każdemu wydaniu własną wersję aplikacji (app-version)**, na każdym węźle tego wydania:
    `pekko.cluster.app-version = "2.0.0"`.
-2. **Uruchom węzły nowej wersji.** Dołączają one do klastra. Nowe fragmenty trafiają tylko do węzłów
-   najnowsza wersja, więc praca przenosi się ze starych węzłów do nowych i nigdy z powrotem.
-3. **Zatrzymuj stare węzły jeden po drugim, najstarszy na końcu.** Elementy, które działały kiedyś, działają na najstarszym węźle.
-   węzła, więc poruszają się tylko raz.
-4. **Klienci muszą ponawiać próby.** Klient wysyła do działających węzłów polecenie, na które nie otrzymuje odpowiedzi
-   po pewnym czasie zostaje ponownie przesłany przez inny węzeł, z tym samym kluczem idempotencji.
+2. **Uruchom węzły nowej wersji.** Dołączają do klastra. Nowe shardy trafiają tylko do węzłów najnowszej
+   wersji, więc praca przechodzi ze starych węzłów na nowe, nigdy z powrotem.
+3. **Zatrzymuj stare węzły po jednym, najstarszy na końcu.** To, co działa raz, mieszka na najstarszym
+   węźle, więc przenosi się tylko raz.
+4. **Niech klienci ponawiają.** Klient wysyła do węzłów, które działają; polecenie, na które w porę nie
+   przyjdzie odpowiedź, wysyła ponownie przez inny węzeł, z tym samym kluczem idempotencji.
 
-### Nowa klasa zdarzeń: zapisuj ją tylko wtedy, gdy każdy węzeł może ją odczytać
+### Nowa klasa zdarzenia: zapisuj ją dopiero, gdy każdy węzeł umie ją przeczytać
 
-Załóżmy, że wersja 2.0.0 rejestruje, skąd pochodzi każdy element, z nową klasą zdarzeń. Węzły
-1.0.0 nigdy o tym nie słyszałem. Jeśli węzeł 2.0.0 zapisał jeden, podczas gdy węzeł 1.0.0 nadal działa, stary węzeł
-właściciele i prognozy nie mogły tego odczytać.
+Załóżmy, że wersja 2.0.0 koszyków zapisuje, skąd pochodzi każdy produkt, w nowej klasie zdarzenia.
+Węzły 1.0.0 nigdy o niej nie słyszały. Gdyby węzeł 2.0.0 zapisał takie zdarzenie, gdy węzeł 1.0.0
+jeszcze działa, właściciele i projekcje starego węzła nie umieliby go odczytać.
 
-Podajesz więc kontekst, z którego każdy węzeł może odczytać nową klasę, a program obsługi zapisuje
-Stare zdarzenie do tej pory. To jest `ShardedCartContextV2` ze specyfikacji klastra, lekko przycięte:
+Dlatego mówisz kontekstowi, od której wersji każdy węzeł umie przeczytać nową klasę, a do tego czasu
+handler zapisuje stare zdarzenie. Oto wersja 2.0.0 koszyków z domeny testowej (`CartsV2.scala`,
+w `examples/src/test/scala/io/reactivecqrs/examples/cart/`; `NodeVersionsSpec` uruchamia ją na węzłach
+obu wersji, a `ShardedCartContextV2` ze speców klastra robi to samo dla koszyków w shardach):
 
+<!-- snippet: cart/CartsV2.scala#contextV2 -->
 ```scala
-importuj io.reactivecqrs.api._
+import io.reactivecqrs.api._
 import io.reactivecqrs.testdomain.shoppingcart._
 
-klasa przypadku ItemAddedV2 (nazwa: String, źródło: String) rozszerza Event[ShoppingCart]
+case class ItemAddedV2(name: String, source: String) extends Event[ShoppingCart]
 
-klasa ShardedCartContextV2 rozszerza ShardedCartContext {
-  nadpisz val writtenFrom: Mapa[Klasa[_], String] = Mapa(klasa[DodanyElementV2] -> "2.0.0")
+class ShoppingCartContextV2 extends ShoppingCartAggregateContext {
+  override val writtenFrom: Map[Class[_], String] = Map(classOf[ItemAddedV2] -> "2.0.0")
 
-  nadpisz def commandHandlers = cart => {
-    przypadek c: AddItemConcurrently jeśli everyNodeRuns("2.0.0") => CommandSuccess(ItemAddedV2(c.name, "wersja 2"))
-    przypadek inny => super.commandHandlers(cart)(inne) // Dodano element, jak w 1.0.0
+  override def commandHandlers = cart => {
+    case c: AddItemConcurrently if everyNodeRuns("2.0.0") => CommandSuccess(ItemAddedV2(c.name, "version 2"))
+    case other => super.commandHandlers(cart)(other) // ItemAdded, as in 1.0.0
   }
 
-  nadpisz def eventHandlers = (userId, timestamp, cart) => {
-    przypadek ItemAddedV2(nazwa, _) => EventsHandlers.itemAdded(koszyk, ItemAdded(nazwa))
-    przypadek inny => super.eventHandlers(userId, timestamp, cart)(inne)
+  override def eventHandlers = (userId, timestamp, cart) => {
+    case ItemAddedV2(name, _) => EventsHandlers.itemAdded(cart, ItemAdded(name))
+    case other => super.eventHandlers(userId, timestamp, cart)(other)
   }
 }
 ```
 
 Co się dzieje podczas aktualizacji:
 
-- Podczas gdy węzeł 1.0.0 jest członkiem, `everyNodeRuns("2.0.0")` jest fałszem, a obiekt obsługi zapisuje
-  `ItemAdded`, jak poprzednio.
-- Jeśli coś mimo wszystko próbuje zapisać `ItemAddedV2`, właściciel odpowiada na polecenie za pomocą
-  `CommandRejected` (wyślij ponownie później); odpowiedź na squash, którego zdarzenie squash jest takiej klasy
-  z `SquashRefused`.
-- Po opuszczeniu ostatniego węzła 1.0.0 zapisywany jest `ItemAddedV2`.
+- Dopóki członkiem klastra jest węzeł 1.0.0, `everyNodeRuns("2.0.0")` zwraca false, a handler zapisuje
+  `ItemAdded`, jak wcześniej.
+- Jeśli coś mimo to spróbuje zapisać `ItemAddedV2`, właściciel odpowie na polecenie `CommandRejected`
+  (wyślij je ponownie później); na squash, którego zdarzenie squasha jest takiej klasy, przyjdzie
+  odpowiedź `SquashRefused`.
+- Gdy ostatni węzeł 1.0.0 odejdzie, zapisywane jest `ItemAddedV2`.
 
-Dostarcz obsługę zdarzeń *i* obsługę projekcji nowej klasy w tej samej wersji, w której
-umieszcza go w `writtenFrom`.
+Handlery zdarzeń *i* obsługę nowej klasy w projekcjach wypuszczaj w tym samym wydaniu, które wpisuje ją
+do `writtenFrom`.
 
-`RollingUpgradeSpec` wykonuje to wszystko pod obciążeniem: dwa węzły 1.0.0, dwa węzły 2.0.0 dołączają się później,
-polecenia z każdego węzła. Nie jest zapisywany `ItemAddedV2`, dopóki stary węzeł jest członkiem; jest zapisywany raz
-oba stare węzły zniknęły; żadne polecenie nie zostało utracone ani zastosowane dwa razy, a projekcja zawiera każdy element tylko raz.
+`RollingUpgradeSpec` robi to wszystko pod obciążeniem: dwa węzły 1.0.0, dwa węzły 2.0.0 dołączające
+później, polecenia z każdego węzła. Dopóki stary węzeł jest członkiem klastra, nie zostaje zapisane
+żadne `ItemAddedV2`; zapisuje się je, gdy oba stare węzły odejdą; żadne polecenie nie ginie ani nie
+zostaje zastosowane dwa razy, a projekcja ma każdy produkt raz.
 
-Jeszcze kilka zasad ruchu drogowego:
+Jeszcze kilka przepisów ruchu drogowego:
 
-- **Ustaw wersje aplikacji przed użyciem `writtenFrom`.** Gdy żaden członek nie ustawił żadnej (wszystko u Pekko)
-  `0.0.0`), każda klasa jest zapisywana od razu; członek bez niej jest uważany za najniższą wersję, więc
-  nic nowego nie zostało napisane, gdy film jest emitowany.
-- **Węzeł, który nie zna swojego klastra, nie zapisuje niczego nowego.**
-- **Nigdy nie cofaj się do wersji, w której napisano nowe klasy zdarzeń.** Starszej wersji nie można
-  przeczytaj je.
-- **Nowa klasa poleceń:** wysyłaj ją tylko wtedy, gdy każdy węzeł uruchomi swoją wersję, jako właściciel starego węzła
-  nie wiedziałbym o tym.
-- **Projekcja usunięta w nowej wersji:** `Projections.retire(name)` czeka, aż każdy członek
-  uruchamia tę wersję przed przerwaniem projekcji (sprawdza ją ponownie co 10 sekund).
-- **Zmiany umiejscowienia** nadal wymagają kropki (patrz powyżej).
+- **Ustaw wersje aplikacji, zanim zaczniesz polegać na `writtenFrom`.** Gdy żaden członek klastra nie
+  ma ustawionej wersji (wszyscy mają domyślne `0.0.0` z Pekko), każda klasa jest zapisywana od razu;
+  członek bez wersji liczy się jako najniższa wersja, więc dopóki działa, nic nowego nie jest zapisywane.
+- **Węzeł, który jeszcze nie zna swojego klastra, nie zapisuje niczego nowego.**
+- **Nigdy nie cofaj się poniżej wersji, której nowe klasy zdarzeń zostały zapisane.** Starsza wersja nie
+  umie ich przeczytać.
+- **Nowa klasa polecenia:** wysyłaj ją dopiero, gdy każdy węzeł działa w jej wersji, bo właściciel na
+  starym węźle by jej nie znał.
+- **Projekcja usunięta w nowej wersji:** `Projections.retire(name)` czeka, aż każdy członek klastra
+  będzie działał w tej wersji, zanim usunie projekcję (sprawdza ponownie co 10 sekund).
+- **Zmiany rozmieszczenia** nadal wymagają pełnego zatrzymania (zob. wyżej).
+- **Klaster, który działa na wersji milestone** (1.0.0-M5 lub -M6), przechodzi na 1.0.0 z pełnym
+  zatrzymaniem: 1.0 zapisuje zdarzenia dostarczenia w postaci, której tamte wersje nie umieją odczytać.
 
-> **Pod maską:** wersje aplikacji, przełącznik zapisu, gotowość i test aktualizacji ciągłej
-> opisano w [ARCHITECTURE.md, sekcja 13.6](../ARCHITECTURE.md) (D65–D73, F132, F138).
+> **Pod maską:** wersje aplikacji, przełącznik zapisu, gotowość i test aktualizacji kroczącej opisuje
+> [ARCHITECTURE.md, sekcja 13.6](../ARCHITECTURE.md) (D65–D73, F132, F138).
 
-> **Pamiętaj:** przykład kompletnego klastra (trzy węzły, manifesty Kubernetes z dzierżawą) to
-> w wersji 1.0. Do tego czasu `TestCluster`, `ShardedOwnersSpec`, `ClusterDeliverySpec` i
-> `RollingUpgradeSpec` w `testdomain/src/test/scala/io/reactivecqrs/testdomain/spec/` pokazuje okablowanie
-> każdego węzła.
+## Trzy węzły na serio: Docker Compose i Kubernetes
 
-## Czego się nauczyłeś
+E2 ma w `examples/deploy/e2/` wszystko, czego trzeba, żeby uruchomić jego węzły jako osobne procesy:
 
-- Każda instalacja działa jako klaster Pekko, składający się z jednego lub wielu węzłów, a wszystkie węzły współdzielą jeden węzeł.
-  Baza danych PostgreSQL, której kontrola wersji chroni każdy zapis.
-- Na każdy węzeł przypada magistrala zdarzeń. Każde zdarzenie musi zostać uruchomione raz (`Singletons.start`,
-  `Projections.start`), a jego serwer proxy jest zarejestrowany na magistrali każdego węzła.
-- Właścicielami typu mogą być „Lokalni” (jeden na węzeł, decyduje baza danych) lub „Sharded” (jeden w klastrze);
-  zrób zajęte typy `Sharded` w klastrze składającym się z kilku węzłów i zmieniaj ich rozmieszczenie tylko za pomocą kropki.
-- Węzeł opuszczający czeka do 90 sekund na polecenia w pracy; menedżer procesów musi czekać
-  dłużej, a klienci próbują ponownie, używając kluczy idempotentnych.
-- Wiadomości między węzłami przechodzą przez jeden serializator: zachowaj zgodność swoich klas z mpjsons, dodaj pola jako
-  `Opcja` i utrzymuj wiadomości w rozmiarze znacznie poniżej 248 KiB.
-- Uaktualnienia ciągłe: wersja aplikacji na wydanie, najstarszy węzeł na końcu i `writtenFrom` z
-  `everyNodeRuns` dla nowych klas zdarzeń.
+| Plik | Co to jest |
+|---|---|
+| `Dockerfile` | obraz ze środowiskiem uruchomieniowym Javy 21 i jarami przykładów, który uruchamia `ClusterSetup` z E2 |
+| `docker-compose.yml` | trzy węzły i PostgreSQL na jednej maszynie |
+| `kubernetes.yaml` | trzy węzły na Kubernetesie, z dzierżawą dla split brain resolvera |
 
-Dalej: [rozdział 18](18-production.md) przenosi to wszystko do produkcji: lista kontrolna uruchomienia,
-obserwując działanie systemu i co robić przy dużym obciążeniu.
+Każdy węzeł uruchamia ten sam `ClusterSetup.main`, a to, czym węzły się różnią, bierze ze swojego
+środowiska: `NODE_HOST` (swój adres), `CONTACT_POINTS` (węzły, które pyta najpierw, przy Docker
+Compose), `REQUIRED_CONTACT_POINTS` (ile z nich musi odpowiedzieć, zanim powstanie nowy klaster),
+`APP_VERSION`, bazę danych (`DB_URL`, `DB_USER`, `DB_PASSWORD`) i `SHOP_CONFIG`, czyli konfigurację
+wyjściową:
+
+<!-- snippet: e2/ClusterSetup.scala#config -->
+```scala
+/** A node's configuration: `e2.conf` (or `e2-kubernetes.conf`, as SHOP_CONFIG says), with this node's address, its
+  * contact points for Cluster Bootstrap, how many of them must answer before a new cluster forms, and the release's
+  * version, from the environment. Alone, a node is its own contact point: a cluster of one. */
+def nodeConfig(setting: String => Option[String]): Config = {
+  val host = setting("NODE_HOST").getOrElse("127.0.0.1")
+  val contactPoints = setting("CONTACT_POINTS").fold(Seq(host))(_.split(",").map(_.trim).toSeq)
+  val required = setting("REQUIRED_CONTACT_POINTS").getOrElse(contactPoints.size.toString)
+  ConfigFactory.parseString(
+    s"""pekko.remote.artery.canonical.hostname = "$host"
+       |pekko.management.http.hostname = "$host"
+       |pekko.discovery.config.services.shop.endpoints = [${contactPoints.map(p => s"""{host = "$p", port = 8558}""").mkString(", ")}]
+       |pekko.management.cluster.bootstrap.contact-point-discovery.required-contact-point-nr = $required
+       |pekko.cluster.app-version = "${setting("APP_VERSION").getOrElse("1.0.0")}"
+       |""".stripMargin)
+    .withFallback(ConfigFactory.load(setting("SHOP_CONFIG").getOrElse("e2")))
+}
+```
+
+Obie konfiguracje są w `examples/src/main/resources`:
+
+- **`e2.conf`**, dla Docker Compose: provider klastra na porcie 17355, split brain resolver
+  z `keep-majority` (trzy węzły zawsze mają większość), `coordinated-shutdown.exit-jvm = on` (węzeł,
+  który opuszcza klaster albo zostaje z niego usunięty, kończy swój proces, a kontener startuje
+  ponownie), Pekko Management na porcie 8558 z health checkami (wśród nich `ReadinessCheck` biblioteki)
+  i Cluster Bootstrap ze stałą listą punktów kontaktowych.
+- **`e2-kubernetes.conf`**, dla Kubernetesa: to samo, ale punkty kontaktowe są znajdowane przez API
+  Kubernetesa (pody z etykietą `app=shop`), a strategią jest `lease-majority`: przy podziale zostaje ta
+  strona, która trzyma Kubernetes Lease, także przy dwóch węzłach, gdzie nie ma większości. Dzierżawa to
+  natywny obiekt Kubernetesa `Lease`, nazwany od systemu aktorów (`shop-pekko-sbr`), pochodzący
+  z `pekko-lease-kubernetes` z Pekko Management.
+
+`main` uruchamia Pekko Management, a potem `ClusterBootstrap(system).start()`; węzłów seed nie ma
+w konfiguracji, bo gdy są, Bootstrap nie działa. Startujący węzeł pyta każdy znaleziony punkt
+kontaktowy, do jakiego klastra należy, i dołącza do tego, który mu wskażą. Dopiero gdy wszystkie wymagane
+punkty kontaktowe zgłoszą, że nie należą do żadnego, tworzą nowy klaster, zaczynając od tego
+z najniższym adresem.
+
+Manifest Kubernetesa ma cztery części, które warto znać:
+
+1. **Konto usługi (service account) z rolą**: `get`, `watch` i `list` na `pods`, żeby Bootstrap znalazł
+   punkty kontaktowe, oraz `get`, `create`, `update` i `list` na `leases` z `coordination.k8s.io`, żeby
+   split brain resolver mógł wziąć dzierżawę. Bez dzierżawy przy podziale nie zostaje żadna strona.
+2. **IP poda jako adres węzła** (`NODE_HOST` z `status.podIP`): pod po restarcie to nowy węzeł z nowym
+   adresem, a żaden inny węzeł nie trzyma starego adresu w pamięci podręcznej.
+3. **StatefulSet z trzema podami uruchamianymi równolegle**: utworzenie pierwszego klastra wymaga trzech
+   punktów kontaktowych. Aktualizacja krocząca i tak wymienia pody po jednym, od najnowszego, każdy
+   dopiero wtedy, gdy poprzedni jest gotowy.
+4. **Sondy (probes) na Pekko Management**: `/ready` trzyma ruch z dala, dopóki szyna zdarzeń węzła nie
+   pozna swoich subskrybentów; `terminationGracePeriodSeconds: 120` daje odchodzącemu węzłowi czas na
+   przekazanie właścicieli (90 sekund, jak wyżej).
+
+Na Kubernetesie z Docker Desktop trzy pody E2 utworzyły w ten sposób jeden klaster i utrzymały go przez
+restart kroczący, a gdy jeden węzeł przestał odpowiadać (jego proces zamrożono, a nie zatrzymano), split
+brain resolver wziął dzierżawę i usunął go z klastra; węzeł po odmrożeniu odkrył, że został usunięty,
+zakończył działanie i dołączył ponownie, gdy jego kontener wystartował od nowa.
+
+> **Ostrzeżenie:** lokalny klaster zachowuje obraz, który raz pobrał. Po zbudowaniu nowego obrazu nadaj
+> mu nowy tag, inaczej pody dalej będą uruchamiać stary.
+
+Żeby wypróbować to na jednej maszynie, uruchom w katalogu głównym repozytorium:
+
+```bash
+sbt examples/stageE2
+docker compose -f examples/deploy/e2/docker-compose.yml up --build
+```
+
+`stageE2` kopiuje jary przykładów, razem ze wszystkimi bibliotekami, których potrzebują, do
+`examples/target/e2/lib`, a obraz uruchamia je przez `java -cp "/app/lib/*"`: w obrazie nie ma sbt i nie
+trzeba sięgać do żadnego repozytorium. Każdy węzeł wypisuje koszyk, który utworzył, i to, co mówi o nim
+lista koszyków, gdziekolwiek ona działa. Zatrzymaj `node1`, najstarszy, a lista koszyków i poller
+outboxu przeniosą się na `node2`; zrestartuj `node3`, a znów utworzy koszyk, odczytany z `node2`. Plik
+Compose daje zatrzymywanemu węzłowi dwie minuty (`stop_grace_period: 2m`), więcej, niż może trwać
+przekazanie; domyślne 10 sekund Dockera zabiłoby go w połowie.
+
+> **Pamiętaj:** `java -cp "lib/*"` układa jary na ścieżce klas w przypadkowej kolejności i właśnie
+> dlatego `e2.conf` sam wiąże serializator (pierwszy punkt konfiguracji omówionej w tym rozdziale).
+
+## Co już umiesz
+
+- Każda instalacja działa jako klaster Pekko, z jednym węzłem albo wieloma, a wszystkie węzły dzielą
+  jedną bazę PostgreSQL, której sprawdzanie wersji pilnuje każdego zapisu.
+- Każdy węzeł ma własną szynę zdarzeń. To, co musi widzieć każde zdarzenie, działa raz
+  (`Singletons.start`, `Projections.start`), a jego proxy jest zarejestrowane na szynie każdego węzła.
+- Właściciele typu są `Local` (po jednym na węźle, rozstrzyga baza danych) albo `Sharded` (jeden
+  w klastrze); w klastrze z kilkoma węzłami ustawiaj zapracowane typy jako `Sharded`, a rozmieszczenie
+  zmieniaj tylko przy pełnym zatrzymaniu.
+- Odchodzący węzeł czeka do 90 sekund na polecenia w toku; twój menedżer procesów musi czekać dłużej,
+  a klienci ponawiają z kluczami idempotencji.
+- Węzeł, który zniknie albo zostanie odcięty, split brain resolver usuwa z klastra; jego agregaty
+  i singletony startują gdzie indziej w ciągu minuty, a outbox dostarcza to, czego węzeł nie zdążył.
+  Testy awarii E2 pokazują to pod obciążeniem: każde potwierdzone polecenie zapisane raz, nic nie
+  zginęło.
+- Komunikaty między węzłami przechodzą przez jeden serializator: dbaj, by twoje klasy były przyjazne dla
+  mpjsons, nowe pola dodawaj jako `Option`, a komunikaty utrzymuj wyraźnie poniżej 248 KiB.
+- Aktualizacje kroczące: osobna wersja aplikacji (app-version) dla każdego wydania, najstarszy węzeł na
+  końcu, a dla nowych klas zdarzeń `writtenFrom` z `everyNodeRuns`.
+
+Dalej: [rozdział 18](18-production.md) zabiera to wszystko na produkcję: lista kontrolna na start,
+obserwowanie działającego systemu i co robić pod dużym obciążeniem.

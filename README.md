@@ -13,7 +13,7 @@ It was built for, and runs, the Neula platform.
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Scala](https://img.shields.io/badge/scala-2.13-red.svg)
-![Java](https://img.shields.io/badge/java-17%2B-orange.svg)
+![Java](https://img.shields.io/badge/java-21%2B-orange.svg)
 
 ---
 
@@ -22,6 +22,7 @@ It was built for, and runs, the Neula platform.
 | | |
 |---|---|
 | **[The book: *ReactiveCQRS, Step by Step*](docs/book/README.md)** | Start here. A friendly guide from zero to production in 20 chapters, with examples you can run. |
+| [Książka po polsku: *ReactiveCQRS, krok po kroku*](docs/book_pl/README.md) | The book in Polish, chapter by chapter, with the same code. |
 | [Changelog](CHANGELOG.md) | What changed in each release, and what a host changes to upgrade. |
 | [Upgrading from 0.12](docs/UPGRADE-0.12-TO-1.0.md) | The runbook of the move from 0.12.47 to 1.0: the rehearsal, the stop, the checks. |
 | [Architecture](docs/ARCHITECTURE.md) | How the library works inside: actors, tables, delivery, rebuilds, the cluster. |
