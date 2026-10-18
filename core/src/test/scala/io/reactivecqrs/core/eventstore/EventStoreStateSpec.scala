@@ -730,4 +730,20 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     eventStoreState.copiesOf(detached) mustBe Seq(copyOfDetached)
   }
 
+  // F193: a squash detaches a copy from its bases (D50), and records what it read of them like any detach (D76), so an
+  // erasure of a base still finds the values the squash event holds.
+  Scenario("F193 a copy squashed on its own is still found among its base's copies") {
+    val base = new TestFixture(eventStoreState)
+    base.storeEvents(Seq(EventA("one"), EventB(2)))
+    val copy = new TestFixture(eventStoreState)
+    copy.storeEvents(Seq(Copy(SpaceId(1), base.aggregateId, AggregateVersion(2))))
+    copy.storeEvents(Seq(EventB(3)))
+    published(base.aggregateId, copy.aggregateId)
+
+    squash(copy, 2) mustBe Right(())
+
+    eventStoreState.basesOf(copy.aggregateId) mustBe empty
+    eventStoreState.copiesOf(base.aggregateId) mustBe Seq(copy.aggregateId)
+  }
+
 }

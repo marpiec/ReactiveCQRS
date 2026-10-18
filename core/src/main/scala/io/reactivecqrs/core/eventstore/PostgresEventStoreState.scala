@@ -747,13 +747,16 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
                        | WHERE aggregate_id = $id AND version = 1""".stripMargin.update()
     if (updated != 1) throw new IllegalStateException("Duplicate " + id + " has no event at version 1 to detach")
     if (firstEvent.isInstanceOf[SquashMayChangeState]) historyChangedFor(sqls"""$id""") // D85
-    // D76: the copy now holds what it read of its bases; a complete rewrite of one of them must find it.
-    sql"""INSERT INTO aggregate_lineage (aggregate_id, copied_from, at_version, detached)
-         | SELECT id, base_id, base_version, current_timestamp FROM aggregates WHERE id = $id AND base_id <> $id
-         | ON CONFLICT (aggregate_id, copied_from) DO NOTHING""".stripMargin.update()
+    recordLineage(id)
     sql"""DELETE FROM aggregates WHERE id = $id AND base_id <> $id""".update()
     sql"""UPDATE aggregates SET base_order = 1 WHERE id = $id AND base_id = $id""".update()
   }
+
+  // D76: a copy about to stop reading its bases holds what it read of them; a complete rewrite of one of them must find it.
+  private def recordLineage(id: Long)(implicit session: DBSession): Unit =
+    sql"""INSERT INTO aggregate_lineage (aggregate_id, copied_from, at_version, detached)
+         | SELECT id, base_id, base_version, current_timestamp FROM aggregates WHERE id = $id AND base_id <> $id
+         | ON CONFLICT (aggregate_id, copied_from) DO NOTHING""".stripMargin.update()
 
   override def squash[AGGREGATE_ROOT](aggregateId: AggregateId, upTo: AggregateVersion, squashEvent: FirstEvent[AGGREGATE_ROOT], userId: UserId,
                                       metadata: Option[EventMetadata], detach: Seq[(AggregateId, FirstEvent[_])], archive: Set[String]): Either[String, Unit] = localTx { implicit session =>
@@ -779,6 +782,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       // that still read it (D85); one that gives the state back, only those it replaces.
       if (squashEvent.isInstanceOf[SquashMayChangeState]) historyChangedFor(sqls"""SELECT id FROM aggregates WHERE base_id = $id""")
       else sql"""DELETE FROM snapshots WHERE aggregate_id = $id AND version <= $n""".update()
+      recordLineage(id) // F193: a squashed copy no longer reads its bases, but its squash event holds their values
       sql"""DELETE FROM aggregates WHERE id = $id AND base_id <> $id""".update()
       sql"""UPDATE aggregates SET base_order = 1, squashed_version = $n WHERE id = $id AND base_id = $id""".update()
     }

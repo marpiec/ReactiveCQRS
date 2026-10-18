@@ -233,6 +233,18 @@ class PurgeSpec extends CommonSpec {
       docOf(folder).map(_.name) mustBe Some("Gamma")
     }
 
+    Scenario("F200 refuses the platform's space (0) and the legacy one (-1) before it deletes anything") {
+      val platform = created(CreateFolder(userId, SpaceId(0), "Platform"))
+      outboxEmpty(platform)
+
+      val reports = Seq(SpaceId(0), SpaceId(-1)).map(purgeOf(_))
+
+      reports.map(r => (r.complete, r.passes, r.aggregates)) mustBe Seq((false, 0, 0), (false, 0, 0))
+      reports.foreach(_.refused.head must include("a purge removes one organization"))
+      rowsOf(platform)("events") mustBe 1L
+      docOf(platform).map(_.name) mustBe Some("Platform")
+    }
+
     Scenario("a delivery still on its way after the purge is acknowledged and writes nothing") {
       val space = newSpace()
       val folder = created(CreateFolder(userId, space, "Delta"))

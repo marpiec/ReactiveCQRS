@@ -53,11 +53,18 @@ class SpacePurge(eventStore: PostgresEventStoreState, commandBuses: Map[Aggregat
   private implicit val timeout: Timeout = Timeout(options.answerTimeout)
   private implicit val blocking: ExecutionContext = BlockingDispatcher(system)
 
-  /** Purges the organization `space`. */
+  /** Purges the organization `space`. The platform's space (0) and the legacy one (-1: what was stored before spaces,
+    * until `backfillSpaces`) are not organizations: their purge is refused before anything is deleted (F200). */
   def purge(space: SpaceId): Future[PurgeReport] = {
-    log.info("Purging space " + space.asLong)
     val start = PurgeReport(space, passes = 0, aggregates = 0, rows = Map.empty, detached = Nil, projections = Nil, failed = Map.empty,
       refused = Nil, remaining = 0)
+    if (space.asLong <= 0) {
+      val reason = "space " + space.asLong + " is " + (if (space.asLong == 0) "the platform's" else "not an organization's") +
+        ": a purge removes one organization only"
+      log.error("Purge refused: " + reason)
+      return Future.successful(start.copy(refused = Seq(reason)))
+    }
+    log.info("Purging space " + space.asLong)
     passes(space, start).flatMap { report =>
       if (report.refused.nonEmpty) Future.successful(report)
       else for {

@@ -392,7 +392,8 @@ Uruchom je z jednego węzła, raz. W odpowiedzi dostaniesz `PurgeReport`:
 
 1. **Najpierw sprawdza.** Każdy typ przestrzeni potrzebuje szyny poleceń w `commandBuses`, a każda
    projekcja musi umieć wyczyścić przestrzeń. Jeśli nie, raport podaje powód w `refused` i nic się
-   nie zmienia.
+   nie zmienia. Przestrzeń platformy (0) i przestrzeń -1 (to, co zapisano, zanim istniały
+   przestrzenie) nie są organizacjami, więc usuwanie którejkolwiek z nich też jest odrzucane.
 2. **Odłącza kopie w innych organizacjach.** Pamiętasz szablon koszyka skopiowany z platformy do
    sklepu 42? Tutaj liczy się kierunek odwrotny: kopia, którą sklep 7 zrobił z jednego z koszyków
    sklepu 42, wciąż czyta historię sklepu 42. Zanim ta historia zniknie, kopia dostaje własne

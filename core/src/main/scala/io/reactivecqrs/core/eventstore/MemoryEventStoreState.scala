@@ -248,6 +248,7 @@ class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState
       _ <- detachingAll(duplicatesReading(aggregateId, Some(upTo)), detach)
     } yield {
       detach.foreach(detachDuplicate(_, archive))
+      recordLineage(aggregateId) // F193: a squashed copy no longer reads its bases, but its squash event holds their values
       archived(aggregateId, AggregateVersion(1), upTo, archive)
       eventStore += aggregateId -> eventStore.getOrElse(aggregateId, Vector()).filterNot(_.version < upTo)
       eventsRows = eventsRows.filterNot(row => row.aggregateId == aggregateId && row.aggregateVersion < upTo)
@@ -264,10 +265,16 @@ class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState
   // The bases it read are recorded first (D76).
   private def detachDuplicate(duplicate: (AggregateId, FirstEvent[_]), archive: Set[String]): Unit = {
     val (duplicateId, firstEvent) = duplicate
-    lineage += duplicateId -> (lineage.getOrElse(duplicateId, Set.empty) ++ chainOf(duplicateId).toSet)
+    recordLineage(duplicateId)
     archived(duplicateId, AggregateVersion(1), AggregateVersion(1), archive)
     replaceEvent(duplicateId, AggregateVersion(1), firstEvent, None, None)
     if (firstEvent.isInstanceOf[SquashMayChangeState]) historyChangedFor(Set(duplicateId))
+  }
+
+  // D76: a copy about to stop reading its bases holds what it read of them; a complete rewrite of a base must find it.
+  private def recordLineage(aggregateId: AggregateId): Unit = {
+    val read = chainOf(aggregateId)
+    if (read.nonEmpty) lineage += aggregateId -> (lineage.getOrElse(aggregateId, Set.empty) ++ read)
   }
 
   // The bases a duplicate reads, nearest first, through the first events of its chain.

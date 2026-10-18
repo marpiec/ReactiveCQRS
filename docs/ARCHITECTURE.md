@@ -338,7 +338,7 @@ run works in a new schema (`TestDatabase`).
 | `noop_events` (`:75-81`) | `id` (= `events.id`) PK, `from_version` | events cancelled by an undo, effective from that version |
 | `snapshots` (since M3) | `aggregate_id` PK, `version`, `context_version`, `schema_version`, `state TEXT`, `created` | the latest performance snapshot of an aggregate (D30, §4.3); disposable |
 | `events_archive` (since M6) | `id` PK (the event's own), `aggregate_id`, `version`, `event_type_id`, `event_type_version`, `event TEXT`, `user_id`, `event_time`, `metadata JSONB`, `undone_from` (its undo mark), `archived`; index `(aggregate_id, version)` | the audit events squashes kept (R11, §4.6): read only by `GetArchivedEvents` and the stored-data checks, never by restores, re-publications or rebuilds |
-| `aggregate_lineage` (since M6) | PK `(aggregate_id, copied_from)`, `at_version`, `detached`; index `(copied_from)` | the bases a detached copy read when it was detached (every detach writes them, D76): a complete rewrite of a base follows them to the copies that hold its values (§4.9) |
+| `aggregate_lineage` (since M6) | PK `(aggregate_id, copied_from)`, `at_version`, `detached`; index `(copied_from)` | the bases a detached copy read when it was detached (every detach writes them, D76, and so does a squash of the copy itself, F193): a complete rewrite of a base follows them to the copies that hold its values (§4.9) |
 | `history_rewrites` (since M6) | `id` PK, `aggregate_id` (indexed), `user_id`, `at`, `change_class`, `classes`, `fields`, `events`, `archived` | one audit row per complete rewrite of an aggregate (D76): who, when, which change, the event classes and fields it altered, how many rows; never a value |
 | `events_to_publish` (`:83-101`) | `event_id` PK, `aggregate_id`, `version`, `user_id`, `event_time`; index `(aggregate_id, version)` | **outbox**: events not yet confirmed by every subscriber |
 | `event_keys` (since M6) | `id` PK (→ `events.id`, deleted with it), `type_id`, `space_id` of the event's aggregate; indexes `(type_id, id)`, `(space_id, type_id, id)` | the commit-order pass by type and organization (F124): written by the three procedures with each event; the rows from before by `backfillEventKeys()` |
@@ -578,7 +578,9 @@ cleared the space, what failed or refused, what remains (`complete` when nothing
 1. **Plan**, reading only: the space's types (`spaceTypes`) and the aggregates of other spaces
    that read the space's (`duplicatesInOtherSpaces`; a copy's chain rows carry the copy's own
    space). It refuses, before a row changes, when a type has no command bus given, or a projection
-   refuses `PurgeCheck` (it does not implement `clearForRebuild`; a managed one is building).
+   refuses `PurgeCheck` (it does not implement `clearForRebuild`; a managed one is building). It
+   refuses the platform's space (0) and the legacy one (-1, what was stored before spaces) at once
+   (F200).
 2. **Detach**: `DetachDuplicates(base, copies)` to the type's command bus, which builds the
    detach events as a permanent delete does and calls `EventStoreState.detachDuplicates`: only
    those copies, under the chain lock, with F143's checks for them. Each copy is detached once,

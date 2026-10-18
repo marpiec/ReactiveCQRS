@@ -380,7 +380,8 @@ Run it from one node, once. It answers a `PurgeReport`:
 
 1. **It checks first.** Every type of the space needs a command bus in `commandBuses`, and every
    projection must be able to clear a space. If not, the report says why in `refused`, and nothing
-   has changed.
+   has changed. The platform's space (0) and space -1 (what was stored before spaces existed) are
+   not organizations, so a purge of either is refused too.
 2. **It detaches copies in other organizations.** Remember the template cart copied from the
    platform into shop 42? The other way round matters here: a copy that shop 7 made of one of shop
    42's carts still reads shop 42's history. Before that history goes, the copy gets a first event
