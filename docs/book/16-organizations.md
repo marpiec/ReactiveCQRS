@@ -39,6 +39,7 @@ An aggregate gets its space once, from its first event, when it is created. That
 `FirstEvent` has a `spaceId` ([chapter 6](06-events.md)). In the test domain every cart belongs to
 the platform:
 
+<!-- snippet: shoppingcart/Events.scala#created -->
 ```scala
 case class ShoppingCartCreated(name: String) extends FirstEvent[ShoppingCart] {
   def spaceId: SpaceId = SpaceId(0)
@@ -262,6 +263,7 @@ other production steps; here is what they mean for organizations.
 1. **Count what needs fixing.** `StoredDataCheck` reads your stored data on a copy of production
    ([chapter 6](06-events.md)), and its report includes the aggregates without a space:
 
+   <!-- snippet: e9/OrganizationsSpec.scala#withoutSpace -->
    ```scala
    import io.reactivecqrs.core.tools.StoredDataCheck
 
@@ -271,6 +273,7 @@ other production steps; here is what they mean for organizations.
 
 2. **Build the indexes**, without blocking writes:
 
+   <!-- snippet: e9/OrganizationsSpec.scala#buildIndexes -->
    ```scala
    eventStore.buildIndexesConcurrently()
    ```
@@ -282,6 +285,7 @@ other production steps; here is what they mean for organizations.
 
 3. **Give old aggregates their space:**
 
+   <!-- snippet: e9/OrganizationsSpec.scala#backfillSpaces -->
    ```scala
    import io.reactivecqrs.core.eventstore.SpaceBackfill
 
@@ -293,6 +297,7 @@ other production steps; here is what they mean for organizations.
    Some old first events do not know their space: they say `SpaceId.unknown`. For those, pass a
    function that decides from the aggregate's type, its id and its first event:
 
+   <!-- snippet: e9/OrganizationsSpec.scala#backfillByEvent -->
    ```scala
    val spaces = eventStore.backfillSpaces((aggregateType, aggregateId, firstEvent) => firstEvent match {
      case e: LegacyCartCreated => Some(SpaceId(e.shopNumber))
@@ -301,11 +306,12 @@ other production steps; here is what they mean for organizations.
    ```
 
    (`LegacyCartCreated` stands for whatever old first event of yours keeps the organization in a
-   field of its own.) `filled` counts the aggregates that got a space; `left` lists those that
+   field of its own; E9's spec has one, to compile and run these steps.) `filled` counts the aggregates that got a space; `left` lists those that
    neither the event nor your function could place: look at them by hand.
 
 4. **Give old events their keys**, once *every* node runs the new version:
 
+   <!-- snippet: e9/OrganizationsSpec.scala#backfillKeys -->
    ```scala
    import io.reactivecqrs.core.eventstore.EventKeysBackfill
 
@@ -395,6 +401,7 @@ Run it from one node, once. It answers a `PurgeReport`:
 
 ### Your own tables: `PurgeHook`
 
+<!-- snippet: e9/OrganizationsSpec.scala#purgeHook -->
 ```scala
 import io.reactivecqrs.api.id.{AggregateId, SpaceId}
 import io.reactivecqrs.core.space.PurgeHook
@@ -412,10 +419,11 @@ inside each bite's transaction, so its rows go together with the library's, or n
 
 ### Checking that nothing is left
 
+<!-- snippet: e9/OrganizationsSpec.scala#spaceRows -->
 ```scala
 import io.reactivecqrs.core.tools.StoredDataCheck
 
-StoredDataCheck.spaceRows(42L) // Map(aggregates -> 0, event_keys -> 0, sagas -> 0, projection_shop_carts_v1 -> 0)
+val left = StoredDataCheck.spaceRows(42L) // Map(aggregates -> 0, event_keys -> 0, sagas -> 0, projection_shop_carts_v1 -> 0)
 ```
 
 It counts what the space still has in the library's tables and in every read-model table. After a
