@@ -407,6 +407,7 @@ included), the bus publishes nothing.
 
 `Readiness(system)` keeps track of that:
 
+<!-- snippet: cart/NodeVersionsSpec.scala#readiness -->
 ```scala
 import io.reactivecqrs.core.cluster.Readiness
 
@@ -426,6 +427,7 @@ pekko.management.health-checks.readiness-checks {
 
 `Members(system)` tells you what this node knows of the cluster's members:
 
+<!-- snippet: cart/NodeVersionsSpec.scala#members -->
 ```scala
 import io.reactivecqrs.core.cluster.Members
 
@@ -458,15 +460,18 @@ Say version 2.0.0 of the carts records where each item came from, with a new eve
 owners and projections could not read it.
 
 So you tell the context from which version every node can read the new class, and the handler writes
-the old event until then. This is `ShardedCartContextV2` from the cluster specs, slightly trimmed:
+the old event until then. Here is version 2.0.0 of the test domain's carts (`CartsV2.scala`, in
+`examples/src/test/scala/io/reactivecqrs/examples/cart/`; `NodeVersionsSpec` runs it on nodes of
+both versions, and the cluster specs' `ShardedCartContextV2` does the same for sharded carts):
 
+<!-- snippet: cart/CartsV2.scala#contextV2 -->
 ```scala
 import io.reactivecqrs.api._
 import io.reactivecqrs.testdomain.shoppingcart._
 
 case class ItemAddedV2(name: String, source: String) extends Event[ShoppingCart]
 
-class ShardedCartContextV2 extends ShardedCartContext {
+class ShoppingCartContextV2 extends ShoppingCartAggregateContext {
   override val writtenFrom: Map[Class[_], String] = Map(classOf[ItemAddedV2] -> "2.0.0")
 
   override def commandHandlers = cart => {
