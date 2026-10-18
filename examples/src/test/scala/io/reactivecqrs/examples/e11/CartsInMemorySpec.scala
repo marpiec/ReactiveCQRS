@@ -57,7 +57,7 @@ class CartsInMemorySpec extends ShopSpec {
       Then("the command is refused, and the cart keeps only the apples")
       late mustBe AggregateConcurrentModificationError(cartId, AggregateType.of[ShoppingCart], AggregateVersion(1), AggregateVersion(2))
       val cart = carts.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId))
-      cart.get.aggregateRoot.get.items mustBe Vector("apples")
+      cart.get.aggregateRoot.get.items.map(_.name) mustBe Vector("apples")
     }
   }
 }

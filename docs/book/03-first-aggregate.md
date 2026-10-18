@@ -25,9 +25,11 @@ Notice the grammar. Commands are orders in the imperative ("create", "add"); eve
 the past tense ("created", "added"). That little habit keeps your head straight for the rest of the
 book: a command can still be refused, an event already happened.
 
-We will put everything in one package, `com.example.shop.cart`, in the files suggested in
-[chapter 2](02-setting-up.md). The real thing to compare with is the test domain in this repository,
-`testdomain/src/main/scala/io/reactivecqrs/testdomain/shoppingcart/`. It can do more (undo, copies,
+The cart of this chapter is E1, the book's first example, in
+`examples/src/main/scala/io/reactivecqrs/examples/e1/Carts.scala`, compiled and tested with the
+library. In your project, give it a package of yours, such as `com.example.shop.cart`, in the files
+suggested in [chapter 2](02-setting-up.md). The test domain's cart, in
+`testdomain/src/main/scala/io/reactivecqrs/testdomain/shoppingcart/`, can do more (undo, copies,
 deletion), and you will meet those extras in [chapter 6](06-events.md).
 
 ## Step 1: the state
@@ -35,9 +37,8 @@ deletion), and you will meet those extras in [chapter 6](06-events.md).
 What does a cart need to remember? Its name and its items. That is the **state**, also called the
 **aggregate root**: an ordinary case class.
 
+<!-- snippet: e1/Carts.scala#state -->
 ```scala
-package com.example.shop.cart
-
 case class ShoppingCart(name: String, items: Vector[Item])
 
 case class Item(id: Int, name: String)
@@ -62,11 +63,10 @@ are the only ones that survive that without surprises.
 Each line in the cart's diary is an event: a small case class that extends `Event`, with the state
 class as its type parameter.
 
+<!-- snippet: e1/Carts.scala#events -->
 ```scala
-package com.example.shop.cart
-
 import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.SpaceId
+import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 
 case class ShoppingCartCreated(name: String) extends FirstEvent[ShoppingCart] {
   def spaceId: SpaceId = SpaceId(0)
@@ -112,12 +112,8 @@ A few rules make events pleasant to live with:
 Commands are case classes too. Each extends one of the library's command classes, which decides
 how it is handled:
 
+<!-- snippet: e1/Carts.scala#commands -->
 ```scala
-package com.example.shop.cart
-
-import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.{AggregateId, UserId}
-
 case class CreateShoppingCart(userId: UserId, name: String)
   extends FirstCommand[ShoppingCart, CustomCommandResponse[_]]
 
@@ -158,6 +154,7 @@ command handlers of an aggregate are one function: give it the current state, an
 back a partial function from commands to results. It lives in the context class of step 6; here it
 is on its own:
 
+<!-- snippet: e1/Carts.scala#rules -->
 ```scala
 override def commandHandlers = cart => {
   case c: CreateShoppingCart =>
@@ -222,6 +219,7 @@ the details. So: one `case` per command of the aggregate.
 The command handler decided; the event is the decision written down. Now somebody has to apply
 that event to the state. That is the job of the **event handlers**, again one function:
 
+<!-- snippet: e1/Carts.scala#handlers -->
 ```scala
 override def eventHandlers = (userId, timestamp, cart) => {
   case e: ShoppingCartCreated =>
@@ -270,12 +268,9 @@ back at all until you fix the handler.
 The last piece is the **aggregate context**: one class per aggregate type that hands the library
 everything from steps 1 to 5. Here is the whole cart:
 
+<!-- snippet: e1/Carts.scala#context -->
 ```scala
-package com.example.shop.cart
-
-import io.reactivecqrs.api._
-
-class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
+class ShoppingCartContext extends AggregateContext[ShoppingCart] {
 
   override val version: Int = 1
 
@@ -345,7 +340,7 @@ starting anything. Replaying a diary is a fold over the events:
 import java.time.Instant
 import io.reactivecqrs.api.id.UserId
 
-val context = new ShoppingCartAggregateContext
+val context = new ShoppingCartContext
 val alice = UserId(1)
 val now = Instant.now()
 

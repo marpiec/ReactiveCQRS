@@ -5,7 +5,7 @@ package io.reactivecqrs.examples.e11
 // #rules
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
-import io.reactivecqrs.examples.e1.{AddItem, ItemAdded, ShoppingCart, ShoppingCartContext}
+import io.reactivecqrs.examples.e1.{AddItem, Item, ItemAdded, ShoppingCart, ShoppingCartContext}
 import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.must.Matchers
 
@@ -25,7 +25,8 @@ class CartRulesSpec extends AnyFeatureSpec with Matchers {
       case answered => answered
     }
 
-  private def cartWith(items: String*): ShoppingCart = ShoppingCart("Groceries", items.toVector)
+  private def cartWith(items: String*): ShoppingCart =
+    ShoppingCart("Groceries", items.zipWithIndex.map { case (name, i) => Item(i + 1, name) }.toVector)
 
   Feature("Adding items") {
 

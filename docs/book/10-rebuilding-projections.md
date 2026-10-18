@@ -297,7 +297,7 @@ Four things start one:
 2. **A new version.** The code's version differs from the active build's.
 3. **A changed context.** The `version` of an aggregate context whose states the projection
    receives differs from the one the active build was made with. Raise
-   `ShoppingCartAggregateContext.version`, and `CartNames` builds again at its own version. A
+   `ShoppingCartContext.version`, and `CartNames` builds again at its own version. A
    projection that listens to cart events only (an `EventsListener`) keeps its build.
 4. **You ask for it**, with `RebuildProjection` (next section).
 

@@ -7,7 +7,7 @@ import java.time.Instant
 
 import io.reactivecqrs.api.id.UserId
 import io.reactivecqrs.api.{AggregateContext, Event}
-import io.reactivecqrs.examples.e1.{ItemAdded, ShoppingCart, ShoppingCartContext, ShoppingCartCreated}
+import io.reactivecqrs.examples.e1.{Item, ItemAdded, ItemRemoved, ShoppingCart, ShoppingCartContext, ShoppingCartCreated}
 import io.reactivecqrs.examples.e5.{ItemWritten, ListCreated, ShoppingListContext}
 import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.must.Matchers
@@ -23,8 +23,8 @@ class ReplaySpec extends AnyFeatureSpec with Matchers {
   Feature("Replaying a history") {
 
     Scenario("a cart's history replays to the cart") {
-      replay(new ShoppingCartContext, ShoppingCartCreated("Groceries"), ItemAdded("apples"), ItemAdded("pears")) mustBe
-        ShoppingCart("Groceries", Vector("apples", "pears"))
+      replay(new ShoppingCartContext, ShoppingCartCreated("Groceries"), ItemAdded("apples"), ItemAdded("oranges"), ItemRemoved(1)) mustBe
+        ShoppingCart("Groceries", Vector(Item(2, "oranges")))
     }
 
     Scenario("a shopping list's squash event gives the list back (E5)") {

@@ -303,7 +303,7 @@ src/main/scala/com/example/shop/
     Events.scala                        ShoppingCartCreated, ItemAdded, ItemRemoved
     CommandsHandlers.scala              the rules, as plain functions (optional)
     EventsHandlers.scala                how each event changes the state (optional)
-    ShoppingCartAggregateContext.scala  ties it all together (chapter 3)
+    ShoppingCartContext.scala           ties it all together (chapter 3)
     ShoppingCartsListProjection.scala   a read model (chapter 8)
   invoice/
     ...                                 the next aggregate, same shape
@@ -311,7 +311,7 @@ src/main/scala/com/example/shop/
 
 The two handler files are optional: small aggregates keep their handlers right inside the context,
 as chapter 3 does. Compare with `testdomain/src/main/scala/io/reactivecqrs/testdomain/shoppingcart/`,
-which has exactly this shape.
+which has this shape (its context is called `ShoppingCartAggregateContext`).
 
 > **Tip:** in a larger application, give the domain a module of its own. Aggregates, commands,
 > events and contexts only need `reactivecqrs-api`, so the domain module depends on that alone,

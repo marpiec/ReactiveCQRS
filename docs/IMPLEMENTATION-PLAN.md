@@ -2361,11 +2361,11 @@ Open test-infrastructure items:
 - Chapter 10 from E10 (the projection, the four steps in one, waiting for the switch, the repair),
   chapter 20 from E8 (its draft region split in two: the draft, and keeping it).
 - Chapter 16's running example, a cart that remembers its shop and each shop's cart list, was
-  uncompiled. E9 is now that example instead of memos: \`ShopCart\` and \`ShopCartsList\` (a managed
+  uncompiled. E9 is now that example instead of memos: `ShopCart` and `ShopCartsList` (a managed
   projection whose documents carry the shop's space, with an index on the shop); its flow exports a
   shop, imports it into an empty space under new ids, rebuilds that space's list
-  (\`RebuildAggregates(OneSpace)\`: 2 aggregates), purges the shop where it was (its documents cleared,
-  \`spaceRows\` all zero), and leaves the other shop's list as it was. Seven of the chapter's blocks are
+  (`RebuildAggregates(OneSpace)`: 2 aggregates), purges the shop where it was (its documents cleared,
+  `spaceRows` all zero), and leaves the other shop's list as it was. Seven of the chapter's blocks are
   E9's regions; E11's golden test follows E9's classes.
 
 **18/10/2026: E2 on Kubernetes, and F180**
@@ -2384,3 +2384,11 @@ Open test-infrastructure items:
   configurations, and a node alone forming its cluster through Bootstrap. Book: chapter 17.
 - Two things for the book's readers: a local cluster keeps an image it pulled once (a new build needs
   a new tag), and Docker Desktop makes its cluster kubectl's current context when it enables it.
+
+**18/10/2026: chapter 3 takes its code from E1**
+- E1's cart is now chapter 3's cart: items with ids (`Item(id, name)`, the next id worked out by the
+  event handler), and `RemoveItem`/`ItemRemoved`, refused for an item the cart does not have. Six of the
+  chapter's blocks are E1's regions: the state, the events, the commands, the rules, the event
+  handlers and the whole context. The book calls the context `ShoppingCartContext`, as the examples do
+  (chapters 2, 3 and 10; the test domain keeps `ShoppingCartAggregateContext`). E11 follows: the replay
+  of chapter 3's diary ends in `Item(2, "oranges")`, and `ItemRemoved` has its golden file.

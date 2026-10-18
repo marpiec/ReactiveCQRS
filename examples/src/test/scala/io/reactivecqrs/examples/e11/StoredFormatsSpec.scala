@@ -8,7 +8,7 @@ import java.nio.file.Paths
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.AggregateVersion
 import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
-import io.reactivecqrs.examples.e1.{ItemAdded, ShoppingCartCreated}
+import io.reactivecqrs.examples.e1.{ItemAdded, ItemRemoved, ShoppingCartCreated}
 import io.reactivecqrs.examples.e4.CheckoutSaga.{Charge, Checkout}
 import io.reactivecqrs.examples.e4.{ItemsReleased, ItemsReserved, PaymentCharged, PaymentOpened, StockOpened}
 import io.reactivecqrs.examples.e5.{ChangesUndone, ItemWritten, ListCopied, ListCreated, ListSquashed, ShoppingList}
@@ -26,7 +26,7 @@ class StoredFormatsSpec extends AnyFeatureSpec with Matchers {
 
   // A sample of every class the examples store: events, saga orders, and the states of snapshots.
   private val samples: Seq[AnyRef] = Seq(
-    ShoppingCartCreated("Groceries"), ItemAdded("apples"),                                            // E1
+    ShoppingCartCreated("Groceries"), ItemAdded("apples"), ItemRemoved(1),                            // E1
     StockOpened(10), ItemsReserved(2), ItemsReleased(2), PaymentOpened(10000), PaymentCharged(2500),  // E4
     Checkout(UserId(1), AggregateId(1), AggregateId(2), 2, 2500),
     Charge(UserId(1), AggregateId(1), AggregateId(2), 2, 2500),

@@ -35,7 +35,8 @@ class CrossNodeSpec extends AnyFeatureSpec with Matchers with BeforeAndAfterAll 
 
     Scenario("the carts' commands, events, states and questions cross nodes") {
       Seq(CreateShoppingCart(UserId(1), "Groceries"), AddItem(UserId(1), AggregateId(7), AggregateVersion(3), "pears"),
-        ItemAdded("pears"), ShoppingCart("Groceries", Vector("apples")), GetCartSummary(AggregateId(7)),
+        RemoveItem(UserId(1), AggregateId(7), AggregateVersion(4), 1), ItemAdded("pears"), ItemRemoved(1),
+        ShoppingCart("Groceries", Vector(Item(1, "apples"))), GetCartSummary(AggregateId(7)),
         CartSummary("Groceries", 1, 2)).foreach(message => roundTrip(message) mustBe message)
     }
   }

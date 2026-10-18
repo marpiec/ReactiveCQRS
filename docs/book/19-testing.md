@@ -80,7 +80,7 @@ gives a partial function from a command to a result. You can call it with no act
 ```scala
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
-import io.reactivecqrs.examples.e1.{AddItem, ItemAdded, ShoppingCart, ShoppingCartContext}
+import io.reactivecqrs.examples.e1.{AddItem, Item, ItemAdded, ShoppingCart, ShoppingCartContext}
 import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.must.Matchers
 
@@ -100,7 +100,8 @@ class CartRulesSpec extends AnyFeatureSpec with Matchers {
       case answered => answered
     }
 
-  private def cartWith(items: String*): ShoppingCart = ShoppingCart("Groceries", items.toVector)
+  private def cartWith(items: String*): ShoppingCart =
+    ShoppingCart("Groceries", items.zipWithIndex.map { case (name, i) => Item(i + 1, name) }.toVector)
 
   Feature("Adding items") {
 
@@ -148,7 +149,7 @@ import java.time.Instant
 
 import io.reactivecqrs.api.id.UserId
 import io.reactivecqrs.api.{AggregateContext, Event}
-import io.reactivecqrs.examples.e1.{ItemAdded, ShoppingCart, ShoppingCartContext, ShoppingCartCreated}
+import io.reactivecqrs.examples.e1.{Item, ItemAdded, ItemRemoved, ShoppingCart, ShoppingCartContext, ShoppingCartCreated}
 import io.reactivecqrs.examples.e5.{ItemWritten, ListCreated, ShoppingListContext}
 import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.must.Matchers
@@ -164,8 +165,8 @@ class ReplaySpec extends AnyFeatureSpec with Matchers {
   Feature("Replaying a history") {
 
     Scenario("a cart's history replays to the cart") {
-      replay(new ShoppingCartContext, ShoppingCartCreated("Groceries"), ItemAdded("apples"), ItemAdded("pears")) mustBe
-        ShoppingCart("Groceries", Vector("apples", "pears"))
+      replay(new ShoppingCartContext, ShoppingCartCreated("Groceries"), ItemAdded("apples"), ItemAdded("oranges"), ItemRemoved(1)) mustBe
+        ShoppingCart("Groceries", Vector(Item(2, "oranges")))
     }
 
     Scenario("a shopping list's squash event gives the list back (E5)") {
@@ -265,7 +266,7 @@ class CartsInMemorySpec extends ShopSpec {
       Then("the command is refused, and the cart keeps only the apples")
       late mustBe AggregateConcurrentModificationError(cartId, AggregateType.of[ShoppingCart], AggregateVersion(1), AggregateVersion(2))
       val cart = carts.askFor[Try[Aggregate[ShoppingCart]]](GetAggregate(cartId))
-      cart.get.aggregateRoot.get.items mustBe Vector("apples")
+      cart.get.aggregateRoot.get.items.map(_.name) mustBe Vector("apples")
     }
   }
 }
@@ -436,7 +437,7 @@ import java.nio.file.Paths
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.AggregateVersion
 import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
-import io.reactivecqrs.examples.e1.{ItemAdded, ShoppingCartCreated}
+import io.reactivecqrs.examples.e1.{ItemAdded, ItemRemoved, ShoppingCartCreated}
 import io.reactivecqrs.examples.e4.CheckoutSaga.{Charge, Checkout}
 import io.reactivecqrs.examples.e4.{ItemsReleased, ItemsReserved, PaymentCharged, PaymentOpened, StockOpened}
 import io.reactivecqrs.examples.e5.{ChangesUndone, ItemWritten, ListCopied, ListCreated, ListSquashed, ShoppingList}
@@ -454,7 +455,7 @@ class StoredFormatsSpec extends AnyFeatureSpec with Matchers {
 
   // A sample of every class the examples store: events, saga orders, and the states of snapshots.
   private val samples: Seq[AnyRef] = Seq(
-    ShoppingCartCreated("Groceries"), ItemAdded("apples"),                                            // E1
+    ShoppingCartCreated("Groceries"), ItemAdded("apples"), ItemRemoved(1),                            // E1
     StockOpened(10), ItemsReserved(2), ItemsReleased(2), PaymentOpened(10000), PaymentCharged(2500),  // E4
     Checkout(UserId(1), AggregateId(1), AggregateId(2), 2, 2500),
     Charge(UserId(1), AggregateId(1), AggregateId(2), 2, 2500),
@@ -536,7 +537,8 @@ class CrossNodeSpec extends AnyFeatureSpec with Matchers with BeforeAndAfterAll 
 
     Scenario("the carts' commands, events, states and questions cross nodes") {
       Seq(CreateShoppingCart(UserId(1), "Groceries"), AddItem(UserId(1), AggregateId(7), AggregateVersion(3), "pears"),
-        ItemAdded("pears"), ShoppingCart("Groceries", Vector("apples")), GetCartSummary(AggregateId(7)),
+        RemoveItem(UserId(1), AggregateId(7), AggregateVersion(4), 1), ItemAdded("pears"), ItemRemoved(1),
+        ShoppingCart("Groceries", Vector(Item(1, "apples"))), GetCartSummary(AggregateId(7)),
         CartSummary("Groceries", 1, 2)).foreach(message => roundTrip(message) mustBe message)
     }
   }
