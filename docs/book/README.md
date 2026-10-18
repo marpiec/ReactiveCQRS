@@ -93,6 +93,7 @@ your project needs today.
 - A. [Glossary](appendix-a-glossary.md)
 - B. [Cheat Sheet: Messages and Answers](appendix-b-cheat-sheet.md)
 - C. [Troubleshooting](appendix-c-troubleshooting.md)
+- D. [The Architecture in Pictures](appendix-d-architecture.md)
 
 ## Where the examples come from
 

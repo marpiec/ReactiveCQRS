@@ -22,6 +22,7 @@ It was built for, and runs, the Neula platform.
 | | |
 |---|---|
 | **[The book: *ReactiveCQRS, Step by Step*](docs/book/README.md)** | Start here. A friendly guide from zero to production in 20 chapters, with examples you can run. |
+| [Changelog](CHANGELOG.md) | What changed in each release, and what a host changes to upgrade. |
 | [Architecture](docs/ARCHITECTURE.md) | How the library works inside: actors, tables, delivery, rebuilds, the cluster. |
 | [Scaling and limits](docs/SCALING.md) | Behaviour under high volume and load, limits, and recommendations. |
 | [Performance reports](docs/perf/README.md) | Measured numbers from the benchmark module. |

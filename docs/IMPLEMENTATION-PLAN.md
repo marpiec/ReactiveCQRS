@@ -2324,3 +2324,13 @@ Open test-infrastructure items:
   classes; two saga scenarios of `ReactiveTestDomainSpec` assert their answers instead of sleeping
   10 s, and a scenario that only slept 20 s is gone. A clean compile of main, tests and bench now
   gives no warning.
+
+**18/10/2026: the CHANGELOG and the book's architecture appendix**
+- `CHANGELOG.md` (root, linked from the README): 1.0.0's requirements, what is new, what a host's code
+  or configuration changes, what was fixed (the 166 recorded fixes in KNOWN-ISSUES) and where the
+  measurements are. The upgrade steps stay in KNOWN-ISSUES §4 until the runbook and the migration
+  guide gather them.
+- Appendix D of the book, *The Architecture in Pictures*: ten Mermaid diagrams (the parts, the write
+  path, delivery, the sequence gate, the tables, copies and squash, a managed rebuild, a cluster of
+  three, a rolling upgrade, moving an organization), each pointing to its chapter. Every diagram
+  renders with Mermaid 10.9.1 (checked in a page that renders them, 18/10/2026).
