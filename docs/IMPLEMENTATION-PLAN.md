@@ -2262,3 +2262,9 @@ Open test-infrastructure items:
   under a negative id with nothing in `events`, materialized from the type's squash event into a stored
   list at version 1, after which the draft's id is `EphemeralAggregateUnknown`. A runnable main and
   `DraftsSpec`.
+
+**18/10/2026: E9, organizations**
+- E9 (`examples/.../e9`): memos of two organizations; one is exported (`SpaceExport`), imported into an
+  empty space of the same installation, where every id it brings is taken and moves (`SpaceImport`,
+  `remapped`), and purged (`SpacePurge`; `StoredDataCheck.spaceRows` counts nothing left), the other
+  organization as it was. A runnable main and `OrganizationsSpec`.
