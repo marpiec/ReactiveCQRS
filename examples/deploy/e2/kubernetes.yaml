@@ -1,14 +1,15 @@
-# E2 (chapter 17): three nodes of the shop on Kubernetes, with the split brain resolver's lease.
+# E2 (chapter 17): three nodes of the shop on Kubernetes, joining through Cluster Bootstrap, with the split brain
+# resolver's lease.
 #
 #   kubectl create secret generic shop-db --from-literal=url=jdbc:postgresql://<host>:5432/shop \
 #     --from-literal=user=<user> --from-literal=password=<password>
 #   kubectl apply -f examples/deploy/e2/kubernetes.yaml
 #
-# The image is the one examples/deploy/e2/Dockerfile builds, pushed where the cluster can pull it; the database is yours.
-# A StatefulSet gives the pods stable names (shop-0, shop-1, shop-2), so shop-0 and shop-1 can be the seed nodes; Pekko
-# Management's Cluster Bootstrap is the other way to find them. The split brain resolver keeps the side that holds a
-# Kubernetes Lease (lease-majority, e2-kubernetes.conf), so it decides with two nodes too, and the pods' service account
-# may read and write leases.
+# The image is the one examples/deploy/e2/Dockerfile builds, where the cluster can pull it; the database is yours.
+# The nodes find each other through the Kubernetes API (the pods labelled app=shop) and join the cluster those report;
+# the first time, all three together form one (F180: seed nodes would split it at a rolling restart). Each node's
+# address is its pod IP. The split brain resolver keeps the side that holds a Kubernetes Lease (lease-majority,
+# e2-kubernetes.conf), so it decides with two nodes too. The pods' service account may read pods and leases.
 
 apiVersion: v1
 kind: ServiceAccount
@@ -18,8 +19,13 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: shop-lease
+  name: shop
 rules:
+  # Cluster Bootstrap's discovery of the contact points.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "watch", "list"]
+  # The split brain resolver's lease.
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "create", "update", "list"]
@@ -27,23 +33,22 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: shop-lease
+  name: shop
 subjects:
   - kind: ServiceAccount
     name: shop
 roleRef:
   kind: Role
-  name: shop-lease
+  name: shop
   apiGroup: rbac.authorization.k8s.io
 ---
-# Headless: each pod's own address, shop-0.shop and so on, also before it is ready (the cluster forms before then).
+# The StatefulSet's governing service: the pods' DNS names, which nothing here relies on.
 apiVersion: v1
 kind: Service
 metadata:
   name: shop
 spec:
   clusterIP: None
-  publishNotReadyAddresses: true
   selector:
     app: shop
   ports:
@@ -59,8 +64,9 @@ metadata:
 spec:
   serviceName: shop
   replicas: 3
-  # One pod at a time, oldest first at start and newest first in a rolling update (chapter 17).
-  podManagementPolicy: OrderedReady
+  # All three start at once: the first formation needs the three contact points. A rolling update still replaces one
+  # pod at a time, the newest first, each once the one before is ready.
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
       app: shop
@@ -81,14 +87,14 @@ spec:
             - name: management
               containerPort: 8558
           env:
-            - name: POD_NAME
+            - name: POD_IP
               valueFrom:
                 fieldRef:
-                  fieldPath: metadata.name
+                  fieldPath: status.podIP
             - name: NODE_HOST
-              value: "$(POD_NAME).shop"
-            - name: SEED_NODES
-              value: "pekko://shop@shop-0.shop:17355,pekko://shop@shop-1.shop:17355"
+              value: "$(POD_IP)"
+            - name: REQUIRED_CONTACT_POINTS
+              value: "3"
             - name: APP_VERSION
               value: "1.0.0"
             - name: SHOP_CONFIG

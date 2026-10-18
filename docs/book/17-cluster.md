@@ -66,8 +66,11 @@ Four of these lines deserve a word:
   your configuration binds it. A node that can talk to others but would serialize otherwise logs an
   error saying so, and stays not ready.
 
-- **`seed-nodes`** are the addresses a starting node contacts to join. (Pekko Management's Cluster
-  Bootstrap can find them for you on Kubernetes; Pekko's own documentation covers both ways.)
+- **`seed-nodes`** are the addresses a starting node contacts to join. They suit machines whose
+  addresses stay put. On Kubernetes, join through Pekko Management's **Cluster Bootstrap** instead,
+  as E2 does at the end of this chapter: a restarted pod gets a new IP under its old name, and the
+  first seed node, which forms a new cluster when no other seed answers within five seconds, can
+  then split the cluster in a rolling restart.
 - **The split brain resolver** decides what happens when the network splits the cluster into two
   groups that cannot see each other: one side stays, the other shuts down. `keep-majority` keeps the
   bigger side. With two nodes there is no majority, so use Pekko's `lease-majority` strategy with a
@@ -524,19 +527,25 @@ E2 comes with what it takes to run its nodes as separate processes, in `examples
 | `kubernetes.yaml` | three nodes on Kubernetes, with the split brain resolver's lease |
 
 Every node runs the same `ClusterSetup.main`, and takes what differs from node to node from its
-environment: `NODE_HOST` (its address), `SEED_NODES`, `APP_VERSION`, the database (`DB_URL`,
-`DB_USER`, `DB_PASSWORD`) and `SHOP_CONFIG`, the configuration to start from:
+environment: `NODE_HOST` (its address), `CONTACT_POINTS` (the nodes it asks first, with Docker
+Compose), `REQUIRED_CONTACT_POINTS` (how many must answer before a new cluster forms), `APP_VERSION`,
+the database (`DB_URL`, `DB_USER`, `DB_PASSWORD`) and `SHOP_CONFIG`, the configuration to start
+from:
 
 <!-- snippet: e2/ClusterSetup.scala#config -->
 ```scala
-/** A node's configuration: `e2.conf` (or `e2-kubernetes.conf`, as SHOP_CONFIG says), with this node's address, the
-  * seed nodes and the release's version from the environment. */
+/** A node's configuration: `e2.conf` (or `e2-kubernetes.conf`, as SHOP_CONFIG says), with this node's address, its
+  * contact points for Cluster Bootstrap, how many of them must answer before a new cluster forms, and the release's
+  * version, from the environment. Alone, a node is its own contact point: a cluster of one. */
 def nodeConfig(setting: String => Option[String]): Config = {
   val host = setting("NODE_HOST").getOrElse("127.0.0.1")
-  val seeds = setting("SEED_NODES").getOrElse(s"pekko://shop@$host:17355").split(",").map(_.trim)
+  val contactPoints = setting("CONTACT_POINTS").fold(Seq(host))(_.split(",").map(_.trim).toSeq)
+  val required = setting("REQUIRED_CONTACT_POINTS").getOrElse(contactPoints.size.toString)
   ConfigFactory.parseString(
     s"""pekko.remote.artery.canonical.hostname = "$host"
-       |pekko.cluster.seed-nodes = [${seeds.map("\"" + _ + "\"").mkString(", ")}]
+       |pekko.management.http.hostname = "$host"
+       |pekko.discovery.config.services.shop.endpoints = [${contactPoints.map(p => s"""{host = "$p", port = 8558}""").mkString(", ")}]
+       |pekko.management.cluster.bootstrap.contact-point-discovery.required-contact-point-nr = $required
        |pekko.cluster.app-version = "${setting("APP_VERSION").getOrElse("1.0.0")}"
        |""".stripMargin)
     .withFallback(ConfigFactory.load(setting("SHOP_CONFIG").getOrElse("e2")))
@@ -548,27 +557,41 @@ The two configurations are in `examples/src/main/resources`:
 - **`e2.conf`**, for Docker Compose: the cluster provider on port 17355, the split brain resolver
   with `keep-majority` (three nodes always have a majority), `coordinated-shutdown.exit-jvm = on` (a
   node that leaves the cluster, or is downed, ends its process, and the container is started again),
-  and Pekko Management's health checks on port 8558, with the library's `ReadinessCheck` as a
-  readiness check.
-- **`e2-kubernetes.conf`**, for Kubernetes: the same, with `lease-majority`. The side of a split that
+  Pekko Management on port 8558 with its health checks (the library's `ReadinessCheck` among them),
+  and Cluster Bootstrap with a fixed list of contact points.
+- **`e2-kubernetes.conf`**, for Kubernetes: the same, with the contact points found through the
+  Kubernetes API (the pods labelled `app=shop`), and `lease-majority`: the side of a split that
   holds a Kubernetes Lease stays, also with two nodes, where there is no majority. The lease is a
   native Kubernetes `Lease` object named after the actor system (`shop-pekko-sbr`), from Pekko
   Management's `pekko-lease-kubernetes`.
 
+`main` starts Pekko Management, then `ClusterBootstrap(system).start()`, and no seed nodes are set:
+with seed nodes, Bootstrap does not run. A starting node asks every contact point it finds which
+cluster it belongs to, and joins the one they report. Only when the required contact points, all of
+them, report none do they form a new cluster, the one with the lowest address first.
+
 The Kubernetes manifest has four parts worth knowing:
 
-1. **A service account with a role on leases**: `get`, `create`, `update` and `list` on
-   `leases` of `coordination.k8s.io`. Without it the split brain resolver cannot take the lease,
-   and in a split, no side stays.
-2. **A headless service with `publishNotReadyAddresses: true`**, so each pod has a name
-   (`shop-0.shop`) before it is ready: the nodes find each other before they serve.
-3. **A StatefulSet of three pods**, whose stable names make `shop-0` and `shop-1` the seed nodes.
-   Pods start one at a time, oldest first, and a rolling update replaces the newest first, so the
-   singletons on the oldest pod move only once. (Pekko Management's Cluster Bootstrap is the other
-   way to find the seeds.)
+1. **A service account with a role**: `get`, `watch` and `list` on `pods`, so Bootstrap finds the
+   contact points, and `get`, `create`, `update` and `list` on `leases` of
+   `coordination.k8s.io`, so the split brain resolver can take the lease. Without the lease, in a
+   split, no side stays.
+2. **The pod's IP as the node's address** (`NODE_HOST` from `status.podIP`): a restarted pod is a new
+   node at a new address, and no other node holds an old one in a cache.
+3. **A StatefulSet of three pods, started in parallel**: forming the first cluster needs the three
+   contact points. A rolling update still replaces one pod at a time, the newest first, each once the
+   one before is ready.
 4. **Probes on Pekko Management**: `/ready` keeps traffic away until the node's event bus knows its
    subscribers; `terminationGracePeriodSeconds: 120` gives a leaving node time to hand its owners
    over (90 seconds, above).
+
+On Docker Desktop's Kubernetes, E2's three pods formed one cluster this way, kept it through a
+rolling restart, and when one node stopped answering (its process frozen, not stopped), the split
+brain resolver took the lease and downed it; the node, thawed, found itself downed, ended, and joined
+again when its container restarted.
+
+> **Warning:** a local cluster keeps an image it pulled once. After building a new image, give it a
+> new tag, or the pods go on running the old one.
 
 To try it on one machine, from the repository's root:
 

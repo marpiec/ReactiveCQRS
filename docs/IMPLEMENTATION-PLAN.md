@@ -2367,3 +2367,20 @@ Open test-infrastructure items:
   (\`RebuildAggregates(OneSpace)\`: 2 aggregates), purges the shop where it was (its documents cleared,
   \`spaceRows\` all zero), and leaves the other shop's list as it was. Seven of the chapter's blocks are
   E9's regions; E11's golden test follows E9's classes.
+
+**18/10/2026: E2 on Kubernetes, and F180**
+- Kubernetes came to this machine (Docker Desktop's): E2's manifest ran in a namespace of its own, with a
+  throwaway PostgreSQL. Its first form, three StatefulSet pods with `shop-0` and `shop-1` as static seed
+  nodes by their DNS names, formed one cluster, and split in a rolling restart: the new `shop-0`, the
+  first seed node, heard from no other seed within five seconds (their JVMs held its old IP in their DNS
+  caches) and formed a second cluster (F180).
+- E2 now joins through Pekko Management's Cluster Bootstrap (no seed nodes): on Kubernetes the contact
+  points come from the Kubernetes API (the pods labelled `app=shop`, the role reads pods), each node's
+  address is its pod IP, and the pods start in parallel; with Docker Compose the contact points are a
+  fixed list. On Docker Desktop's Kubernetes the three pods formed one cluster, kept it through a
+  rolling restart, and a node frozen with SIGSTOP was downed by the split brain resolver, which created
+  and took the lease `shop-pekko-sbr` (the role suffices); thawed, the node found itself downed, ended,
+  and joined again. With Docker Compose the first node, restarted, rejoined. `NodeSpec`: the
+  configurations, and a node alone forming its cluster through Bootstrap. Book: chapter 17.
+- Two things for the book's readers: a local cluster keeps an image it pulled once (a new build needs
+  a new tag), and Docker Desktop makes its cluster kubectl's current context when it enables it.

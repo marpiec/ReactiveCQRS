@@ -17,6 +17,7 @@ import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.UidGeneratorActor
 import io.reactivecqrs.examples.e1.{AddItem, BasicSetup, CartSummary, CartsListProjection, CreateShoppingCart, GetCartSummaryAtLeast}
 import org.apache.pekko.actor.{ActorRef, ActorSystem, Props}
+import org.apache.pekko.management.cluster.bootstrap.ClusterBootstrap
 import org.apache.pekko.management.scaladsl.PekkoManagement
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
@@ -28,8 +29,9 @@ import scala.concurrent.duration._
   * E2, a cluster (chapter 17): E1's carts on every node, sharded, and their carts list, a managed projection that runs
   * once in the cluster, with the outbox poller. `startNode` is what every node runs; `main` makes a node from the
   * environment (the deployments in `examples/deploy/e2`: three nodes with Docker Compose, or on Kubernetes with the
-  * split brain resolver's lease), and `ClusterSpec` runs `startNode` on three nodes in one JVM. Run one node with `sbt
-  * "examples/runMain io.reactivecqrs.examples.e2.ClusterSetup"`: a cluster of one, against the database of chapter 2.
+  * split brain resolver's lease), joining through Cluster Bootstrap; `ClusterSpec` runs `startNode` on three nodes in
+  * one JVM. Run one node with `sbt "examples/runMain io.reactivecqrs.examples.e2.ClusterSetup"`: a cluster of one,
+  * against the database of chapter 2.
   */
 object ClusterSetup {
 
@@ -81,14 +83,18 @@ object ClusterSetup {
     Await.result((node.cartsList ? GetCartSummaryAtLeast(cartId, version)).mapTo[Option[CartSummary]], timeout.duration)
 
   // #config
-  /** A node's configuration: `e2.conf` (or `e2-kubernetes.conf`, as SHOP_CONFIG says), with this node's address, the
-    * seed nodes and the release's version from the environment. */
+  /** A node's configuration: `e2.conf` (or `e2-kubernetes.conf`, as SHOP_CONFIG says), with this node's address, its
+    * contact points for Cluster Bootstrap, how many of them must answer before a new cluster forms, and the release's
+    * version, from the environment. Alone, a node is its own contact point: a cluster of one. */
   def nodeConfig(setting: String => Option[String]): Config = {
     val host = setting("NODE_HOST").getOrElse("127.0.0.1")
-    val seeds = setting("SEED_NODES").getOrElse(s"pekko://shop@$host:17355").split(",").map(_.trim)
+    val contactPoints = setting("CONTACT_POINTS").fold(Seq(host))(_.split(",").map(_.trim).toSeq)
+    val required = setting("REQUIRED_CONTACT_POINTS").getOrElse(contactPoints.size.toString)
     ConfigFactory.parseString(
       s"""pekko.remote.artery.canonical.hostname = "$host"
-         |pekko.cluster.seed-nodes = [${seeds.map("\"" + _ + "\"").mkString(", ")}]
+         |pekko.management.http.hostname = "$host"
+         |pekko.discovery.config.services.shop.endpoints = [${contactPoints.map(p => s"""{host = "$p", port = 8558}""").mkString(", ")}]
+         |pekko.management.cluster.bootstrap.contact-point-discovery.required-contact-point-nr = $required
          |pekko.cluster.app-version = "${setting("APP_VERSION").getOrElse("1.0.0")}"
          |""".stripMargin)
       .withFallback(ConfigFactory.load(setting("SHOP_CONFIG").getOrElse("e2")))
@@ -99,7 +105,8 @@ object ClusterSetup {
     BasicSetup.connect(sys.env.getOrElse("DB_URL", "jdbc:postgresql://localhost:5432/reactivecqrs"),
       sys.env.getOrElse("DB_USER", "reactivecqrs"), sys.env.getOrElse("DB_PASSWORD", "reactivecqrs"))
     val system = ActorSystem("shop", nodeConfig(sys.env.get))
-    PekkoManagement(system).start() // the health checks: /ready and /alive on port 8558
+    PekkoManagement(system).start() // the health checks, /ready and /alive, and Bootstrap's endpoint, on port 8558
+    ClusterBootstrap(system).start() // joins the cluster the contact points report, or forms one with them (F180)
     val node = startNode(system)
 
     // Once the node is ready (its bus knows the carts list), it makes a cart and reads it from the carts list.

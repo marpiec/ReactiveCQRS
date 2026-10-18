@@ -76,7 +76,8 @@ below with running code.
   `events_to_route` tables' uses.
 - **Configuration**: `pekko.actor.provider = cluster` with the split brain resolver, on every node, also a
   single one, and `pekko.actor.serialization-bindings { "java.io.Serializable" = reactivecqrs }`: a node
-  without the library's serializer for its messages stays not ready.
+  without the library's serializer for its messages stays not ready. On Kubernetes, nodes join through
+  Pekko Management's Cluster Bootstrap rather than static seed nodes (the book's chapter 17).
 - **Events**: no event versioning; `event_type_version` is always 0, and a changed event shape is a new
   class (`...V2`). A first event gives its organization's space. Undo events need no case in event
   handlers.
