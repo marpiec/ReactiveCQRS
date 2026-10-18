@@ -29,6 +29,7 @@ object StoredDataCheck {
     private[tools] def className: String = classTag[T].runtimeClass.getName // D75: by class, not by Scala 2 reflection
   }
 
+  /** One class of one table: rows read, rows that did not read, and the first of those. */
   case class ClassResult(table: String, className: String, rows: Long, unreadable: Long, examples: Seq[String])
 
   /** `missingTables`: the tables to read that the database does not have (F181), such as the saga table of an
@@ -48,6 +49,8 @@ object StoredDataCheck {
     }
   }
 
+  /** Reads every stored row of the library's tables (and of `projections`) with the classes of this code, and reports
+    * what does not read. Run it on a copy of production before an upgrade (the runbook). */
   def run(mpjsons: MPJsons, typesNamesState: TypesNamesState,
           projections: Seq[ProjectionTable[_]] = Seq.empty, examplesPerClass: Int = 5, fetchSize: Int = 1000): Report = {
 
@@ -131,6 +134,7 @@ object StoredDataCheck {
   /** The aggregates that still have events of a class: in `events`, in the archive, and the first `limit` of them with
     * their counts of each. */
   case class ClassUsers(className: String, events: Long, archived: Long, aggregates: Seq[ClassUser])
+  /** One aggregate's events of the class, and its archived ones. */
   case class ClassUser(aggregateId: Long, events: Long, archived: Long)
 
   /** R11: who still uses an event class, in `events` or in the archive. Both counts zero means the class can go from the code (D29:

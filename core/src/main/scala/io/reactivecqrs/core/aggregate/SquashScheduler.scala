@@ -11,10 +11,12 @@ import scala.concurrent.duration._
 import scala.reflect.ClassTag
 import scala.util.{Failure, Success, Try}
 
+/** The squash scheduler's messages (chapter 14). */
 object SquashScheduler {
   /** Looks for aggregates to squash now, unless the run before is still going; the scheduler's timer sends it, and
     * tests can too. */
   case object Run
+  /** Asks the scheduler for its `SquashStatus`. */
   case object GetSquashStatus
   /** Counts since the scheduler started; `waiting`: the squashes of the current run not answered yet. */
   case class SquashStatus(squashed: Long, refused: Long, waiting: Int)
@@ -23,6 +25,7 @@ object SquashScheduler {
   case class SquashTarget(aggregateType: AggregateType, commandBus: ActorRef, policy: AutomaticSquash)
 
   object SquashTarget {
+    /** The target of `context`'s type, which must have an automatic squash rule. */
     def of[AGGREGATE_ROOT: ClassTag](context: AggregateContext[AGGREGATE_ROOT], commandBus: ActorRef): SquashTarget = {
       val aggregateType = AggregateType.of[AGGREGATE_ROOT]
       SquashTarget(aggregateType, commandBus, context.squash.flatMap(_.automatic).getOrElse(throw new IllegalArgumentException(

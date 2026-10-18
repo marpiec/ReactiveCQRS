@@ -10,20 +10,29 @@ import scala.concurrent.duration.DurationDouble
 import scala.util.{Failure, Success, Try}
 import scala.reflect.runtime.universe._
 
+/** The messages of a projection that pushes its updates to subscribers (chapter 11). */
 object SubscribableProjectionActor {
 
-  val defaultSubscriptionTTL = 600000 // 10 minutes
+  /** How long a subscription lives without a renewal, in milliseconds: 10 minutes. */
+  val defaultSubscriptionTTL = 600000
 
+  /** To a subscriber: its subscription is registered under `subscriptionId`. */
   case class SubscribedForProjectionUpdates(subscriptionId: String)
 
+  /** Ends these subscriptions; answered `ProjectionSubscriptionsCancelled`. */
   case class CancelProjectionSubscriptions(subscriptions: List[String])
 
+  /** Keeps a subscription alive for another `subscriptionTTL`. */
   case class RenewSubscription(subscriptionId: String)
 
+  /** To a subscriber: these subscriptions ended (cancelled, or their id was taken by another subscriber). */
   case class ProjectionSubscriptionsCancelled(subscriptions: List[String])
 
+  /** To a subscriber: an update its filter let through, as the filter made it. */
   case class SubscriptionUpdated[UPDATE](subscriptionId: String, data: UPDATE)
 
+  /** The projection's own tick (every minute): ends the subscriptions idle for longer than `subscriptionTTL` and trims
+    * the updates cache. */
   case object ClearIdleSubscriptions
 
   /** From a retired build to its successor (D57): the push subscriptions it held, which the successor keeps serving.
@@ -33,14 +42,27 @@ object SubscribableProjectionActor {
   private case class SendUpdate(update: Any, typeName: String)
 }
 
+/** An update kept in the updates cache, with when it arrived. */
 case class UpdateCacheEntry(arrived: Instant, value: Any)
 
+/** A push subscription: who gets the updates of the type `typeName` that `acceptor` lets through, renewed last at
+  * `renewal`. */
 case class SubscriptionInfo(subscriptionId: String, listener: ActorRef, acceptor: _ => Option[_], typeName: String, renewal: Instant)
 
+/**
+  * A projection that pushes what its listeners send (`sendUpdate`) to the subscribers whose filters take it, after the
+  * listener's transaction commits (F161).
+  *
+  * @param updatesCacheTTL how long updates are kept, so that a new subscription gets those it missed
+  *                        (`missedUpdatesFilter`); `Duration.ZERO` keeps none
+  * @param subscriptionTTL how long a subscription lives without a `RenewSubscription`, in milliseconds
+  */
 abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.ZERO, subscriptionTTL: Int = SubscribableProjectionActor.defaultSubscriptionTTL, options: ProjectionActorOptions = ProjectionActorOptions.DEFAULT) extends ProjectionActor(options) {
 
+  /** The projection's own subscription messages: each calls `handleSubscribe` with its filter. */
   protected def receiveSubscriptionRequest: Receive
 
+  /** `receiveSubscriptionRequest` and the library's subscription messages. */
   protected def receiveSubscription: Receive = receiveSubscriptionRequest orElse {
     case CancelProjectionSubscriptions(subscriptionsToCancel) =>
       subscriptionsToCancel.foreach(handleUnsubscribe)
@@ -72,6 +94,9 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
     // do not call preStart
   }
 
+  /** Registers `listener` for the updates of type `DATA` that `filter` turns into an `UPDATE`, under `subscriptionId`
+    * (an id used again replaces its subscription), answers `SubscribedForProjectionUpdates`, and sends the cached
+    * updates that `missedUpdatesFilter` picks. */
   protected def handleSubscribe[DATA: TypeTag, UPDATE](subscriptionId: String, listener: ActorRef,
                                                                  filter: DATA => Option[UPDATE],
                                                                  missedUpdatesFilter: DATA => Boolean = (d: DATA) => false): Unit = {
@@ -109,6 +134,7 @@ abstract class SubscribableProjectionActor(updatesCacheTTL: Duration = Duration.
   // Listeners call this, and in parallel mode they run on pool threads: the update reaches the subscriptions through a
   // message, so the subscription maps are only touched on the actor's thread. F161: it is sent once the listener's
   // transaction has committed, so a batch that rolls back, or is tried again, pushes nothing it did not store.
+  /** Pushes `u` to the subscriptions of its type, once the listener's transaction commits. */
   protected def sendUpdate[DATA: TypeTag](u: DATA): Unit = {
     val update = SendUpdate(u, typeTag[DATA].toString())
     afterCommit(self ! update)

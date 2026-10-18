@@ -486,7 +486,7 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
   }
 
   /**
-   * Caches a document read or written through `session`. Inside an [[AfterCommit.localTx]] the entry is
+   * Caches a document read or written through `session`. Inside an `AfterCommit.localTx` the entry is
    * dropped now and stored only after the commit, so a rollback can never leave the cache ahead of the
    * database (F16). An older version never replaces a newer one stored meanwhile by another transaction.
    */

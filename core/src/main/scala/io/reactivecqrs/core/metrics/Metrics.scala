@@ -18,6 +18,7 @@ trait Metrics {
 }
 
 object Metrics {
+  /** Measures nothing: the default. */
   object NoOp extends Metrics {
     override def count(name: String, tags: Map[String, String], amount: Long): Unit = ()
     override def time(name: String, tags: Map[String, String], nanos: Long): Unit = ()
@@ -29,10 +30,13 @@ object Metrics {
   * measure goes to the one set when it is taken. */
 class ReactiveMetrics extends Extension {
   @volatile private var current: Metrics = Metrics.NoOp
+  /** From now on, measures go to `metrics`. */
   def use(metrics: Metrics): Unit = current = metrics
+  /** Where measures go now. */
   def metrics: Metrics = current
 }
 
+/** `ReactiveMetrics(system)`: the metrics of the actor system. */
 object ReactiveMetrics extends ExtensionId[ReactiveMetrics] with ExtensionIdProvider {
   override def createExtension(system: ExtendedActorSystem): ReactiveMetrics = new ReactiveMetrics
   override def lookup: ReactiveMetrics.type = ReactiveMetrics

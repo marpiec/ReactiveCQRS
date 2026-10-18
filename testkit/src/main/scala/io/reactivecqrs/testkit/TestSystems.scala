@@ -8,6 +8,7 @@ import org.apache.pekko.cluster.{Cluster, MemberStatus}
   * like a single node (M5, G7): the library runs its specs both ways, and an application can too. */
 object TestSystems {
 
+  /** Whether the systems are clusters of one node (`-Dreactivecqrs.test.clusterOfOne=true`). */
   val clusterOfOne: Boolean = sys.props.get("reactivecqrs.test.clusterOfOne").contains("true")
 
   private val quiet = ConfigFactory.parseString("""

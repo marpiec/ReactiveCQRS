@@ -9,6 +9,7 @@ import io.reactivecqrs.api.AggregateVersion
   */
 object SequenceGate {
 
+  /** What to do with a delivery. */
   sealed trait Decision
 
   /** Every delivered version was applied before (a duplicate or a re-delivery): acknowledge, apply nothing. */

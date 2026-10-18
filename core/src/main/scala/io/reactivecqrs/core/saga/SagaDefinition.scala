@@ -15,7 +15,9 @@ import scala.concurrent.duration._
   */
 trait SagaDefinition {
 
+  /** A step's handling of orders. */
   type ReceiveOrder = SagaDefinition.ReceiveOrder
+  /** A revert step's handling of orders. */
   type ReceiveRevert = SagaDefinition.ReceiveRevert
 
   /** The key its sagas are stored under: the runner resumes the stored sagas of its name, so it never changes. */
@@ -40,7 +42,9 @@ trait SagaDefinition {
 }
 
 object SagaDefinition {
+  /** Takes an order and gives, in a future, what the step decided. */
   type ReceiveOrder = PartialFunction[SagaInternalOrder, Future[SagaHandlingStatus]]
+  /** Takes an order and gives, in a future, what the revert step decided. */
   type ReceiveRevert = PartialFunction[SagaInternalOrder, Future[SagaRevertHandlingStatus]]
 
   /** From 100 ms, doubling, at most 30 s, 10 attempts. */

@@ -9,6 +9,7 @@ class TestClock(start: Instant = Instant.now()) extends Clock {
 
   @volatile private var now: Instant = start
 
+  /** Moves the clock on by `by`. */
   def advance(by: FiniteDuration): Unit = now = now.plusMillis(by.toMillis)
 
   override def instant(): Instant = now

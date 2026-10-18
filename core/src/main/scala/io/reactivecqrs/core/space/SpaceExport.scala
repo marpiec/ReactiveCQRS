@@ -15,6 +15,7 @@ import scalikejdbc._
   * a quiet organization); `refused`: why nothing was written. */
 case class ExportReport(space: SpaceId, aggregates: Int, events: Long, archived: Long, detached: Seq[AggregateId], waitingInOutbox: Long,
                         refused: Seq[String]) {
+  /** Whether the export wrote everything. */
   def complete: Boolean = refused.isEmpty
 }
 
@@ -30,6 +31,7 @@ class SpaceExport(eventStore: PostgresEventStoreState, contexts: Seq[AggregateCo
 
   private val jsons = eventStore.jsons
 
+  /** Writes the organization `space` to `out`. */
   def write(space: SpaceId, out: Writer): ExportReport = {
     val s = space.asLong
     val (chains, outside, inside) = chainsOf(s)

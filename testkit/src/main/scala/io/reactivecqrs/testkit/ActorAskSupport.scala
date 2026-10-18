@@ -10,9 +10,11 @@ import scala.reflect.ClassTag
 
 /** `actor.askFor[T](message)`: asks the actor and waits for its answer, as a `T`. */
 trait ActorAskSupport {
+  /** Gives every `ActorRef` `askFor`. */
   implicit def toActorAsk(actor: ActorRef): ActorAsk = new ActorAsk(actor)
 }
 
+/** An actor to ask, with `askFor`. */
 class ActorAsk(actor: ActorRef) {
 
   /** Asks and waits for the answer, up to `timeout`, as the type named. An answer of another class fails naming both, and

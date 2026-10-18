@@ -146,11 +146,13 @@ final class FlowControl[S](window: Int, windowBytes: Long, maxPulls: Int, pullTi
   private def forgetIfIdle(subscriber: S, s: Subscriber): Unit = if (s.idle) subscribers.remove(subscriber)
 }
 
+/** What the flow control keeps per message, aggregate and subscriber. */
 object FlowControl {
 
   /** A message sent: its aggregate, its first version and its kind (each kind is answered on its own). */
   case class SentKey(aggregateId: AggregateId, firstVersion: Int, kind: Any)
 
+  /** A message sent and not answered yet: its events, their stored bytes, and when it was sent (nanoseconds). */
   case class Sent(events: Int, bytes: Long, at: Long)
 
   /** Versions `from` to `upTo`, of about `bytes` stored, held for a subscriber; `heldAt`: the latest hold, a deadline
@@ -169,10 +171,12 @@ object FlowControl {
       if (last < from) this else copy(from = last + 1, bytes = bytes * (upTo - last) / (upTo - from + 1))
   }
 
+  /** A pull under way: what it re-publishes, how much of the window it takes, and when it was asked. */
   case class Pulling(behind: Behind, events: Int, bytes: Long, at: Long)
 
   /** Ask the aggregate's owner to re-publish it from `from` to the subscriber. */
   case class Pull(aggregateType: AggregateType, aggregateId: AggregateId, from: Int)
 
+  /** A subscriber's events and bytes sent and not answered, and how many of its aggregates are behind. */
   case class InFlight(events: Long, bytes: Long, aggregatesBehind: Int)
 }

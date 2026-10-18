@@ -8,7 +8,9 @@ import org.apache.pekko.actor.ActorRef
 // aggregate's owner. The owner re-publishes from the given version up to its current version, with its current
 // state, so a subscriber that receives state always gets a consistent range (docs/design/M2-delivery.md).
 
+/** A request to re-publish an aggregate's events. */
 sealed trait RepublishRequest {
+  /** The aggregate whose events are re-published. */
   def aggregateId: AggregateId
 }
 

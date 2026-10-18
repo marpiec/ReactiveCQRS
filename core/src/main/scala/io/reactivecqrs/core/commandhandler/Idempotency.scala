@@ -15,6 +15,7 @@ class Idempotency(responses: CommandResponseState) {
   /** The response stored for this command, if it is idempotent and one of its copies was already applied. */
   def storedResponse(command: Any): Option[CustomCommandResponse[_]] = keyOf(command).flatMap(responses.responseByKey)
 
+  /** Whether the command carries an idempotency key. */
   def isIdempotent(command: Any): Boolean = keyOf(command).isDefined
 
   /** Stores the response of an idempotent command on `aggregateId` inside the persist transaction. Throws

@@ -5,8 +5,10 @@ import io.reactivecqrs.core.util.SchemaLock
 import scalikejdbc._
 
 
+/** Creates the event store's tables, indexes and procedures, when missing (`PostgresEventStoreState.initSchema`). */
 class PostgresEventStoreSchemaInitializer  {
 
+  /** Creates what is missing, under the schema lock. */
   def initSchema(): Unit = SchemaLock {
     createEventsTable()
     dropColumnCommandId()

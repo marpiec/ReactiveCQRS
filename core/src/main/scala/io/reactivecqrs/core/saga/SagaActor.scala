@@ -11,7 +11,9 @@ import org.apache.pekko.actor.ActorRef
 @deprecated("write a SagaDefinition, run by SagaRunner, under the same name (AR5, the book's chapter 12)", "1.0.0")
 abstract class SagaActor extends SagaRunning with SagaDefinition {
 
+  /** Where saga ids come from. */
   val uidGenerator: ActorRef
+  /** Where the sagas' progress is stored. */
   val state: SagaState
 
   final override protected def definition: SagaDefinition = this

@@ -13,6 +13,7 @@ final class IdPool(askWhenLeft: Double = 0.2) {
   private var spare: Option[(Long, Long)] = None
   private var asking = false
 
+  /** Whether an id can be taken now. */
   def available: Boolean = left > 0 || spare.nonEmpty
 
   /** The next id; only when `available`. */
@@ -36,6 +37,7 @@ final class IdPool(askWhenLeft: Double = 0.2) {
     ask
   }
 
+  /** The pool asked for arrived. */
   def received(from: Long, size: Long): Unit = {
     asking = false
     poolSize = size

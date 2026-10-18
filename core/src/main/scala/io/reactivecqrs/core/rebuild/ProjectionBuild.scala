@@ -8,8 +8,11 @@ package io.reactivecqrs.core.rebuild
   */
 class ProjectionBuild private[rebuild](val record: BuildRecord, registry: ProjectionRegistry) {
 
+  /** The projection's name. */
   def name: String = record.name
+  /** The projection's version this build makes. */
   def version: Int = record.version
+  /** The build's number, one more for each build of the projection. */
   def number: Int = record.number
 
   /** The table name of a `PostgresDocumentStore` (or `…AutoId`) of this build. */

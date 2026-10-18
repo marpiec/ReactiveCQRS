@@ -25,6 +25,7 @@ import scala.reflect.{ClassTag, classTag}
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
+/** The messages of an aggregate's owner; the command bus sends them, hosts do not. */
 object AggregateOwner {
 
   /** A command for the owner's aggregate, with the id the command bus gave it and the caller to answer. `fresh`: the
@@ -89,26 +90,39 @@ class OwnerSettings[AGGREGATE_ROOT: ClassTag](context: AggregateContext[AGGREGAT
                                               val maxRepublishBytes: Long = 16L * 1024 * 1024,
                                               val concurrentRetries: Backoff = AggregateOwner.defaultConcurrentRetries,
                                               val materializeTo: Option[ActorRef] = None) {
+  /** The type's key. */
   val aggregateType: AggregateType = context.aggregateType
+  /** The context's command handlers. */
   val commandHandlers: AGGREGATE_ROOT => PartialFunction[Any, GenericCommandResult[Any]] = context.commandHandlers
+  /** The context's handlers of history-rewriting commands. */
   val rewriteHistoryCommandHandlers: (Iterable[EventWithVersion[AGGREGATE_ROOT]], AGGREGATE_ROOT) => PartialFunction[Any, GenericCommandResult[Any]] =
     context.rewriteHistoryCommandHandlers
+  /** The context's event handlers. */
   val eventHandlers: (UserId, Instant, AGGREGATE_ROOT) => PartialFunction[Any, AGGREGATE_ROOT] = context.eventHandlers
+  /** The state before the first event. */
   val initialState: () => AGGREGATE_ROOT = () => context.initialAggregateRoot
+  /** How long a command may take. */
   val commandTimeout: FiniteDuration = context.commandTimeout
+  /** The context's snapshot policy. */
   val snapshots: Option[SnapshotPolicy] = context.snapshots
+  /** How the owners run commands. */
   val commandProcessing: CommandProcessing = context.commandProcessing
+  /** The context's squash policy. */
   val squash: Option[SquashPolicy[AGGREGATE_ROOT]] = context.squash
   /** D76: what a history change does to the type's events and to their envelopes. */
   val historyChanges: HistoryChange => PartialFunction[Event[AGGREGATE_ROOT], Event[AGGREGATE_ROOT]] = context.historyChanges
+  /** D76: what a history change does to the envelopes of the type's events. */
   val metadataChanges: HistoryChange => PartialFunction[EventMetadata, EventMetadata] = context.metadataChanges
+  /** Whether the type's owners are sharded (D43). */
   val sharded: Boolean = context.placement.isInstanceOf[Placement.Sharded]
   /** Why one of these events may not be written yet: its class is newer than a node of the cluster (D67). */
   def notWrittenYet(events: Seq[Any]): Option[String] = events.view.flatMap(context.notWrittenYet).headOption
+  /** The context's writer of rows of its own (R12), if it mixes in `WithOutboxWriter`. */
   val outboxWriter: Option[OutboxWriter[AGGREGATE_ROOT]] = context match {
     case withWriter: WithOutboxWriter[AGGREGATE_ROOT @unchecked] => Some(withWriter.outboxWriter)
     case _ => None
   }
+  /** Restores the type's aggregates from the store. */
   val restorer = new AggregateRestorer[AGGREGATE_ROOT](eventStore, eventHandlers, initialState, snapshots, context.version,
     classTag[AGGREGATE_ROOT].runtimeClass.getName)
 }

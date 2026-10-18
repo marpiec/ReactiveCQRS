@@ -34,6 +34,7 @@ class ClusterSerialization extends Extension {
   @volatile var mpjsons: MPJsons = new MPJsons(true, true, NullPolicy.Omit)
 }
 
+/** `ClusterSerialization(system)`: the mpjsons instance of messages between nodes. */
 object ClusterSerialization extends ExtensionId[ClusterSerialization] with ExtensionIdProvider {
   override def createExtension(system: ExtendedActorSystem): ClusterSerialization = new ClusterSerialization
   override def lookup: ClusterSerialization.type = ClusterSerialization
@@ -116,6 +117,7 @@ class ClusterSerializer(system: ExtendedActorSystem) extends SerializerWithStrin
   }
 }
 
+/** The kinds of values the serializer writes, and how. */
 object ClusterSerializer {
 
   // The value's kind, written before it.

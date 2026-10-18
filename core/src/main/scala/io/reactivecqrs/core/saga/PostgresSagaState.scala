@@ -10,10 +10,12 @@ import scalikejdbc._
 
 import scala.util.{Failure, Success, Try}
 
+/** Sagas' progress in the table `sagas`. */
 class PostgresSagaState(mpjsons: MPJsons, typesNamesState: TypesNamesState) extends SagaState {
 
   private val log = LoggerFactory.getLogger(classOf[PostgresSagaState])
 
+  /** Creates the table and its index, when missing. */
   def initSchema(): Unit = SchemaLock {
     new PostgresSagaSchemaInitializer().initSchema()
   }

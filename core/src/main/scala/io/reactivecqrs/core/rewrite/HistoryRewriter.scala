@@ -21,6 +21,7 @@ import scala.concurrent.{ExecutionContext, Future}
   * finds nothing to change where it was applied. */
 case class RewriteReport(aggregateId: AggregateId, rewritten: Seq[HistoryRewritten], unchanged: Seq[AggregateId], refused: Seq[RewriteRefused],
                          bases: Seq[AggregateId], rebuilt: Seq[String], failed: Map[String, String]) {
+  /** Whether everything was rewritten and rebuilt. */
   def complete: Boolean = refused.isEmpty && failed.isEmpty
 }
 
@@ -38,6 +39,7 @@ class HistoryRewriter(commandBus: ActorRef, eventStore: EventStoreState, project
   private implicit val timeout: Timeout = Timeout(answerTimeout)
   private implicit val blocking: ExecutionContext = BlockingDispatcher(system)
 
+  /** Rewrites the aggregate and its copies with `change`, as `userId`, and rebuilds what changed in the projections given. */
   def rewrite(aggregateId: AggregateId, change: HistoryChange, userId: UserId): Future[RewriteReport] = {
     log.info("Rewriting aggregate " + aggregateId.asLong + " and its copies with " + change.getClass.getSimpleName)
     for {

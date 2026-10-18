@@ -7,12 +7,17 @@ import scalikejdbc._
 import scala.collection.concurrent.TrieMap
 import scala.collection.mutable
 
+/** The short ids under which the store keeps class names (event types, aggregate types, subscribers), one per name. */
 trait TypesNamesState {
+  /** The id of the class's name, given one the first time. */
   def typeIdByClass(clazz: Class[_]): Short = typeIdByClassName(clazz.getName)
+  /** The id of `className`, given one the first time. */
   def typeIdByClassName(className: String): Short
+  /** The name stored under `id`. */
   def classNameById(id: Short): String
 }
 
+/** Ids of names in memory, for tests. */
 class MemoryTypesNamesState extends TypesNamesState {
   private var idGenerator: Short = 0
   private val cache = mutable.HashMap[String, Short]()
@@ -41,6 +46,7 @@ class PostgresTypesNamesState extends TypesNamesState {
   private val names = TrieMap[Short, String]()
   @volatile private var loaded = false
 
+  /** Creates the table `types_names`, when missing; returns this state. */
   def initSchema(): PostgresTypesNamesState = SchemaLock {
     createTypesNamesTable()
     createTypesNamesSequence()

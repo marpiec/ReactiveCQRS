@@ -4,9 +4,12 @@ import io.reactivecqrs.core.util.SchemaLock
 import org.postgresql.util.PSQLException
 import scalikejdbc._
 
+/** The ids `from` to `from + size - 1`. */
 case class IdsPool(from: Long, size: Long)
 
+/** A source of pools of ids. */
 abstract class UidGenerator {
+  /** The next pool; no id is given twice. */
   def nextIdsPool: IdsPool
 }
 
@@ -20,12 +23,14 @@ class PostgresUidGenerator(sequenceName: String, range: Option[IdRange] = None) 
 
   new UidGeneratorSchemaInitializer().initSchema()
 
+  /** The size of every pool: the sequence's step. */
   val poolSize: Long = readSequenceStep
 
   range.foreach(moveInto)
 
   private val until = range.map(_.until).getOrElse(IdRange.Limit)
 
+  /** The next pool; throws when it would pass the range's end. */
   def nextIdsPool: IdsPool = {
     val poolFrom = DB.autoCommit { implicit session =>
       SQL(s"SELECT NEXTVAL('$sequenceName')").map(rs => rs.long(1)).single().getOrElse {
@@ -67,9 +72,12 @@ class PostgresUidGenerator(sequenceName: String, range: Option[IdRange] = None) 
 /** Pools in memory, for tests; like the sequences, from 1001: the ids below are system ids, and 0 is no id (D39). */
 class MemoryUidGenerator extends UidGenerator {
 
+  /** The size of every pool. */
   val poolSize = 100
+  /** The first id of the next pool. */
   var lastValue = 1001L
 
+  /** The next pool. */
   def nextIdsPool: IdsPool = synchronized {
     val pool = IdsPool(lastValue, poolSize)
     lastValue += poolSize

@@ -35,6 +35,7 @@ trait ImportRewriter {
   * it did not write, or where it stopped (then purge the target space and import again). */
 case class ImportReport(space: SpaceId, aggregates: Int, events: Long, archived: Long, remapped: Map[AggregateId, AggregateId],
                         unknownReferences: Long, someUnknown: Seq[AggregateId], refused: Seq[String]) {
+  /** Whether the import wrote everything. */
   def complete: Boolean = refused.isEmpty
 }
 
@@ -55,6 +56,7 @@ class SpaceImport(eventStore: PostgresEventStoreState, uidGenerator: ActorRef, r
   private val lines = new MPJsons
   private val maxReasons = 100
 
+  /** Imports the organization exported to `file` into the space `into`. */
   def read(file: Path, into: SpaceId): ImportReport = {
     val plan = check(file, into)
     if (plan.refused.nonEmpty) {

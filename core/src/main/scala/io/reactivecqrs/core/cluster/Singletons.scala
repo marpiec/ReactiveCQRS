@@ -13,6 +13,7 @@ import org.apache.pekko.cluster.singleton.{ClusterSingletonManager, ClusterSingl
   */
 object Singletons {
 
+  /** Starts the singleton `name` on this node (to run wherever the oldest node is), and returns this node's proxy to it. */
   def start(system: ActorSystem, name: String, props: Props, terminationMessage: Any = PoisonPill): ActorRef =
     if (isCluster(system)) {
       system.actorOf(ClusterSingletonManager.props(props, terminationMessage, ClusterSingletonManagerSettings(system)), name)
@@ -29,5 +30,6 @@ object Singletons {
     system.stop(started)
   }
 
+  /** Whether the actor system is a cluster (`pekko.actor.provider = cluster`). */
   def isCluster(system: ActorSystem): Boolean = system.settings.ProviderClass == "org.apache.pekko.cluster.ClusterActorRefProvider"
 }

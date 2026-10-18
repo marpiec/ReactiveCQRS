@@ -54,17 +54,28 @@ object RewriteCount {
 /** Which aggregates of the types a read covers: all, the ones given, or those of one organization (D38, D63). */
 sealed trait AggregateScope
 object AggregateScope {
+  /** Every aggregate. */
   case object All extends AggregateScope
+  /** These aggregates. */
   case class Only(aggregateIds: Set[AggregateId]) extends AggregateScope
+  /** The aggregates of one organization. */
   case class InSpace(spaceId: SpaceId) extends AggregateScope
 }
 
+/** Where events are stored (`PostgresEventStoreState`; `MemoryEventStoreState` for tests): what owners write and
+  * restore, the outbox, snapshots, squash and its archive, and the reads in commit order that rebuilds take. Hosts make
+  * one per installation and give it to the command buses, the outbox poller and `Projections`. */
 abstract class EventStoreState {
   /** Stores the events after `expectedVersion`: each with its version and stored size. */
   def persist[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[StoredEvent[AGGREGATE_ROOT]]]
+  /** `persist`, giving each event with its version. */
   final def persistEvents[AGGREGATE_ROOT](aggregateId: AggregateId, eventsEnvelope: NewEvents[AGGREGATE_ROOT])(implicit session: DBSession): Try[Seq[(Event[AGGREGATE_ROOT], AggregateVersion)]] =
     persist(aggregateId, eventsEnvelope).map(_.map(stored => (stored.event, stored.version)))
+  /** Writes these events over the stored ones of their versions (a history-rewriting command). */
   def overwriteEvents[AGGREGATE_ROOT](aggregateId: AggregateId, events: Iterable[EventWithVersion[AGGREGATE_ROOT]])(implicit session: DBSession): Unit
+  /** Calls `eventHandler` with each event of the aggregate, oldest first (a duplicate's base's first), up to a version
+    * or an instant when one is given: its user, time, event, the aggregate that stored it, its version, and whether an
+    * undo cancelled it. */
   def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, version: Option[Either[AggregateVersion, Instant]])(eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit
   /** Like `readAndProcessEvents`, with each event's metadata envelope (D32): for answers that return events. */
   def readAndProcessEventsWithMetadata[AGGREGATE_ROOT](aggregateId: AggregateId, version: Option[Either[AggregateVersion, Instant]])
@@ -198,5 +209,6 @@ abstract class EventStoreState {
   /** The oldest version of the aggregate still waiting in the outbox, if any. */
   def oldestVersionToPublish(aggregateId: AggregateId): Option[AggregateVersion]
 
+  /** Runs `block` in a transaction of the store; what was registered with `AfterCommit` in it runs once it commits. */
   def localTx[A](block: DBSession => A): A
 }

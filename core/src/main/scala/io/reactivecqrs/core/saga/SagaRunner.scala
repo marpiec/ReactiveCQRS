@@ -15,8 +15,10 @@ import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success, Try}
 import scala.concurrent.duration._
 
+/** Runs a `SagaDefinition` (chapter 12). */
 object SagaRunner {
 
+  /** The runner as an actor of this node alone; `start` runs it once in the cluster. */
   def props(definition: SagaDefinition, uidGenerator: ActorRef, state: SagaState): Props =
     Props(new SagaRunner(definition, uidGenerator, state))
 
@@ -30,6 +32,7 @@ object SagaRunner {
   /** A saga to run from its stored step; sent by the runner to itself for every saga loaded at start. */
   case class SagaPersisted(sagaId: SagaId, respondTo: String, order: SagaInternalOrder, phase: SagaPhase, step: Int)
 
+  /** Loads and resumes the sagas stored unfinished; the runner sends it to itself at start. */
   case object LoadPendingSagas
   private[saga] case class LoadPendingSagasAttempt(attempt: Int)
   private[saga] case class LoadFailed(attempt: Int)
@@ -67,6 +70,7 @@ final class SagaRunner(protected val definition: SagaDefinition, val uidGenerato
   */
 abstract class SagaRunning extends Actor with MyActorLogging {
 
+  /** How long the runner waits for an answer it asks for. */
   implicit val timeout: Timeout = Timeout(60.seconds)
 
   import context.dispatcher
@@ -75,7 +79,9 @@ abstract class SagaRunning extends Actor with MyActorLogging {
 
   // Read after construction only: the deprecated SagaActor's subclasses set them in their own constructors.
   protected def definition: SagaDefinition
+  /** Where saga ids come from. */
   def uidGenerator: ActorRef
+  /** Where the sagas' progress is stored. */
   def state: SagaState
 
   private def sagaName: String = definition.name

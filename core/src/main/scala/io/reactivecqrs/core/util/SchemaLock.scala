@@ -21,6 +21,7 @@ object SchemaLock {
 
   private val depth = ThreadLocal.withInitial[Int](() => 0)
 
+  /** Runs `work` holding the lock: one process at a time changes the schema. */
   def apply[T](work: => T): T = if (depth.get() > 0) nested(work) else {
     val connection = ConnectionPool.borrow()
     try {

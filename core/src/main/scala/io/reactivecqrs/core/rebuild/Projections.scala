@@ -85,8 +85,11 @@ object Projections {
   private val log = LoggerFactory.getLogger(classOf[Projections])
 }
 
+/** A managed projection as `Projections.start` describes it to its supervisor: its name and version, the subscriber name
+  * of its 0.12 form (adopted as build 0), and what its active build does while a new one is built. */
 case class ProjectionSpec(name: String, version: Int, legacySubscriber: String, whileBuilding: WhileBuilding)
 
+/** The messages of a managed projection's supervisor: the `ActorRef` that `Projections.start` returns (chapter 10). */
 object ProjectionSupervisor {
 
   /** What the active build does while a new version of the projection is built on this node (D57, D70). */
@@ -99,7 +102,9 @@ object ProjectionSupervisor {
 
   /** Starts a build of the projection's current version, which replaces the active build once caught up (D63). */
   case object RebuildProjection
+  /** The answer to `RebuildProjection`: the build that started. */
   case class RebuildStarted(build: Int)
+  /** The answer to a rebuild that cannot run now, for `reason`. */
   case class RebuildRefused(reason: String)
 
   /** Rebuilds, in place, what the active build derived from the target (D63, R14): the projection clears it
@@ -107,12 +112,14 @@ object ProjectionSupervisor {
     * again from the store, in commit order. Answered with `AggregatesRebuilt`, or `RebuildRefused`; one that a stop
     * interrupted runs again at the next start. An organization's aggregates need their space (F49's backfill). */
   case class RebuildAggregates(target: RebuildTarget)
+  /** The answer to `RebuildAggregates`: how many aggregates were rebuilt. */
   case class AggregatesRebuilt(target: RebuildTarget, aggregates: Int)
 
   /** Forwards `message` to the instance of the build in progress, such as `RetryAllFailedSubscriptions` for failures
     * that keep the build from replacing the active one. */
   case class ToBuildInProgress(message: Any)
 
+  /** Asks the supervisor for its `Builds`. */
   case object GetBuilds
   /** `caughtUp`: the build in progress has every event; it replaces the active build once it has no failed subscription. */
   case class Builds(name: String, active: Option[BuildRecord], building: Option[BuildRecord], caughtUp: Boolean)

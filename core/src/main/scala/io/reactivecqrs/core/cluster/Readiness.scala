@@ -16,12 +16,17 @@ import scala.concurrent.Future
 class Readiness extends Extension {
   private var waiting = Set[String]()
 
+  /** The node is not ready until `done(what)`. */
   def waitFor(what: String): Unit = synchronized(waiting += what)
+  /** `what` no longer keeps the node from being ready. */
   def done(what: String): Unit = synchronized(waiting -= what)
+  /** Whether nothing keeps the node from taking traffic. */
   def ready: Boolean = synchronized(waiting.isEmpty)
+  /** What the node still waits for. */
   def waitingFor: Set[String] = synchronized(waiting)
 }
 
+/** `Readiness(system)`: whether the node is ready. */
 object Readiness extends ExtensionId[Readiness] with ExtensionIdProvider {
   private val log = LoggerFactory.getLogger(classOf[Readiness])
 

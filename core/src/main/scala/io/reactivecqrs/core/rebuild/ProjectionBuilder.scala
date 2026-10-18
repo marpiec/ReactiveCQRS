@@ -13,6 +13,7 @@ import scala.collection.mutable
 import scala.concurrent.duration._
 import scala.util.control.NonFatal
 
+/** The builder's messages and settings: it builds a managed projection from the event store (D57, chapter 10). */
 object ProjectionBuilder {
 
   /** What a build delivers: the projection's subscriptions, one per aggregate type and listener kind (D58). */
@@ -27,11 +28,15 @@ object ProjectionBuilder {
     * last aggregate) of the bulk pass that the projection applied, or that the bulk pass is done. */
   case class BuildPosition(bulkDone: Boolean, position: Long)
   object BuildPosition {
+    /** Nothing applied yet. */
     val Start: BuildPosition = BuildPosition(bulkDone = false, 0L)
   }
 
+  /** Where a build's position is kept: the registry, per build. */
   trait BuildPositions {
+    /** The position saved last. */
     def read(): BuildPosition
+    /** Saves the position. */
     def save(position: BuildPosition): Unit
   }
 
@@ -53,7 +58,9 @@ object ProjectionBuilder {
     * `Waiting` (a build waits for its turn or a restart) or `NoBuild`. `position`: how far the bulk pass got. */
   case class BuildStatus(phase: String, position: Long, eventsSent: Long, gapsFilled: Long, handedOver: Long, unreadable: Long)
   object BuildStatus {
+    /** No build runs. */
     val NoBuild: BuildStatus = BuildStatus("NoBuild", 0, 0, 0, 0, 0)
+    /** A build waits, at `position`. */
     def waiting(position: Long): BuildStatus = BuildStatus("Waiting", position, 0, 0, 0, 0)
   }
 

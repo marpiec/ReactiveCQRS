@@ -2520,3 +2520,19 @@ Open test-infrastructure items:
   `EventIdentifier`, `EventsIdentifiers`, `EventWithIdentifier`, `AggregateVersion.upTo` and
   `isJustAfter`, and `LRUCache` (deprecated since F32); removed, `ApiSurfaceSpec` red first against
   the old sources. `SpaceId` loses its pool of instances, kept in a global `var` read without a lock.
+
+**18/10/2026: Scaladoc for the public parts of `core` and the test kit**
+- What a host uses has doc comments, checked against the code: the document store's queries,
+  conditions, sorts, indexes and methods (`DocumentStore`, with its cache and sessions); the projection
+  actor's messages and options (`groupUpdatesDelayMillis` and the other grouping options, listener
+  options), the subscribable projection's messages and parameters; the subscriptions state; the event
+  bus's messages; the event store's API and the Postgres store's parameters; sagas (phases, orders,
+  outcomes, the definition, the runner, the state); the outbox poller's options and the redelivery
+  policy; the command bus's `apply` and messages; the cluster helpers (`Singletons`, `Readiness`,
+  `Members`, `MessageSize`); metrics; managed projections' supervisor messages, registry and builds;
+  organizations' export, import and purge; the stored data check; type names, id ranges and the uid
+  generator; and the test kit. Implementations inherit their trait's comments.
+- `sbt api/doc core/doc testkit/doc` gives no warning (one link that did not resolve is plain code now).
+- Simplified on the way: `ProjectionActor.ReplayQueries`, a message the projection sends itself, is
+  private; `SubscriptionCacheKey` is the projection package's own; `RandomUtil` draws from
+  `ThreadLocalRandom` instead of a new generator seeded with the clock at every call.

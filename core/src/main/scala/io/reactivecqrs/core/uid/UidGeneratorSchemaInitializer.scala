@@ -13,6 +13,7 @@ class UidGeneratorSchemaInitializer {
 
   private val poolSize = 10000
 
+  /** Creates the sequences, when missing, and sets their step. */
   def initSchema(): Unit = SchemaLock {
     DB.autoCommit { implicit session =>
       // The first 1000 aggregate ids are reserved for system ids.

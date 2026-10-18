@@ -7,5 +7,6 @@ import java.util.concurrent.atomic.AtomicLong
 object TestIds {
   private val next = new AtomicLong(500000000000L)
 
+  /** An aggregate id no other test of the run took. */
   def aggregate(): Long = next.incrementAndGet()
 }

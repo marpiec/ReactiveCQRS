@@ -23,6 +23,7 @@ trait CommandResponseState {
     * purge of the aggregate's organization removes it (R17). Throws `IdempotencyKeyTakenException` when the key already
     * has a response. */
   def storeResponse(key: String, response: CustomCommandResponse[_], aggregateId: Option[AggregateId] = None)(implicit session: DBSession): Unit
+  /** The response stored under `key`, if any. */
   def responseByKey(key: String): Option[CustomCommandResponse[_]]
   /** Removes the responses older than the retention period and returns how many were removed. */
   def removeExpired(): Int
@@ -61,6 +62,7 @@ class PostgresCommandResponseState(mpjsons: MPJsons, typesNamesState: TypesNames
 
   private val customSuccessClassName = classOf[CustomSuccessResponse[_]].getName
 
+  /** Creates the table and indexes it needs, when missing; returns this state. */
   def initSchema(): PostgresCommandResponseState = SchemaLock {
     createCommandResponseTable()
     createCommandResponseSequence()

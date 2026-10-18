@@ -35,6 +35,7 @@ case class SpacePurgeOptions(aggregatesPerBatch: Int = 1000, eventsPerBatch: Int
   * deleted nothing; `remaining`: the space's aggregates still stored after the last pass. */
 case class PurgeReport(space: SpaceId, passes: Int, aggregates: Int, rows: Map[String, Long], detached: Seq[AggregateId],
                        projections: Seq[String], failed: Map[String, String], refused: Seq[String], remaining: Int) {
+  /** Whether the space is gone, everywhere. */
   def complete: Boolean = refused.isEmpty && failed.isEmpty && remaining == 0
 }
 
@@ -52,6 +53,7 @@ class SpacePurge(eventStore: PostgresEventStoreState, commandBuses: Map[Aggregat
   private implicit val timeout: Timeout = Timeout(options.answerTimeout)
   private implicit val blocking: ExecutionContext = BlockingDispatcher(system)
 
+  /** Purges the organization `space`. */
   def purge(space: SpaceId): Future[PurgeReport] = {
     log.info("Purging space " + space.asLong)
     val start = PurgeReport(space, passes = 0, aggregates = 0, rows = Map.empty, detached = Nil, projections = Nil, failed = Map.empty,

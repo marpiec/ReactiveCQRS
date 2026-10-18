@@ -5,7 +5,9 @@ import io.reactivecqrs.core.util.SchemaLock
 import org.postgresql.util.PSQLException
 import scalikejdbc._
 
+/** Creates the table `sagas` (`PostgresSagaState.initSchema`). */
 class PostgresSagaSchemaInitializer {
+  /** Creates what is missing, under the schema lock. */
   def initSchema(): Unit = SchemaLock {
     createSagasTable()
     addSpaceColumn()

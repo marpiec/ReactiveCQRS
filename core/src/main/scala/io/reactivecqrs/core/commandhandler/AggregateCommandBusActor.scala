@@ -25,6 +25,7 @@ import scala.concurrent.{ExecutionContext, Future}
 import scala.reflect.ClassTag
 import scala.util.{Failure, Random, Success, Try}
 
+/** The command bus's messages, and the `Props` of a command bus. */
 object AggregateCommandBusActor {
 
   private case object RemoveExpiredResponses
@@ -41,13 +42,16 @@ object AggregateCommandBusActor {
     * a squash event of its state at version 1, as a permanent delete does (D50, F76). Answered `DuplicatesDetached`, or
     * `DetachRefused` with the reason, having changed nothing. */
   case class DetachDuplicates(baseId: AggregateId, duplicates: Seq[AggregateId])
+  /** The answer to `DetachDuplicates`: they are detached. */
   case class DuplicatesDetached(baseId: AggregateId, duplicates: Seq[AggregateId])
+  /** The answer to `DetachDuplicates`: nothing changed, for `reason`. */
   case class DetachRefused(baseId: AggregateId, reason: String)
 
   /** R17, from a purge: the aggregates are gone from the store, so their owners stop without writing a snapshot (a
     * sharded one through its shard, which starts an owner only to stop it, without restoring). Answered
     * `AggregatesForgotten`. */
   case class ForgetAggregates(ids: Seq[AggregateId])
+  /** The answer to `ForgetAggregates`. */
   case class AggregatesForgotten(count: Int)
 
   /** D77: what makes a command bus ephemeral: where its aggregates are materialized, how many it holds, how long one may
@@ -79,6 +83,11 @@ object AggregateCommandBusActor {
       ActorRef.noSender, keepAliveLimit = 200, maxInactivityMillis = 43200000L, eventsLogger = None, failedRestoreRetryAfter = 5.seconds,
       ephemeral = Some(EphemeralMode(persistentBus, maxAggregates, idleTime, sweepEvery))))
 
+  /** The command bus of the aggregate type `aggregateContext` defines, on this node: commands and reads of the type go
+    * to it. `uidGenerator`: the node's `UidGeneratorActor`; `eventBus`: the node's `EventsBusActor`, to which it publishes
+    * and registers as the type's publisher. Owners of a `Local` type idle for `maxInactivityMillis` are stopped, and,
+    * beyond `keepAliveLimit` of them, the least recently used idle for 2 minutes; an owner whose restore failed is
+    * retried after `failedRestoreRetryAfter`. */
   def apply[AGGREGATE_ROOT: ClassTag](aggregateContext: AggregateContext[AGGREGATE_ROOT],
                                              uidGenerator: ActorRef, eventStoreState: EventStoreState,
                                              commandResponseState: CommandResponseState,
@@ -110,6 +119,7 @@ class AggregateCommandBusActor[AGGREGATE_ROOT](aggregateContext: AggregateContex
                                                         (implicit aggregateRootClassTag: ClassTag[AGGREGATE_ROOT]) extends Actor with MyActorLogging {
 
   private val aggregateType = AggregateType.of[AGGREGATE_ROOT]
+  /** The aggregate root class's simple name, for messages and logs. */
   val aggregateTypeSimpleName: String = aggregateRootClassTag.runtimeClass.getSimpleName
 
   // F23: ids come from pools fetched ahead. While a command (or an id reservation) waits for a pool, the ones that arrive

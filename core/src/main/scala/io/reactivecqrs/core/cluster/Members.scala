@@ -26,14 +26,17 @@ class Members(system: ExtendedActorSystem) extends Extension {
 
   if (inCluster) system.systemActorOf(Props(new Members.Listener(this)), "reactivecqrs-members")
 
+  /** The lowest app-version among the members; see the class's description. */
   def oldestAppVersion: Option[Version] = oldest
 
   /** Whether a member runs an older app-version than this node (a rolling upgrade is under way, D65), or the node knows
     * no member yet; false outside a cluster and when no member set an app-version. */
   def olderVersionsRun: Boolean = oldest.exists(_.compareTo(Cluster(system).selfMember.appVersion) < 0)
 
+  /** Whether this node is the cluster's only member (always, outside a cluster). */
   def alone: Boolean = count == 1
 
+  /** Keeps `context`'s view of the lowest app-version current (a command bus registers its context). */
   def track(context: AggregateContext[_]): Unit = synchronized {
     contexts :+= context
     context.oldestAppVersion = oldest
@@ -49,6 +52,7 @@ class Members(system: ExtendedActorSystem) extends Extension {
   }
 }
 
+/** `Members(system)`: the node's view of the members. */
 object Members extends ExtensionId[Members] with ExtensionIdProvider {
   override def createExtension(system: ExtendedActorSystem): Members = new Members(system)
   override def lookup: Members.type = Members

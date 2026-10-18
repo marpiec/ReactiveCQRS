@@ -20,6 +20,7 @@ import scala.util.Try
 import scala.util.control.NonFatal
 
 
+/** The messages of a node's event bus (chapters 8, 9 and 17). */
 object EventsBusActor {
 
   /** Events of one aggregate, committed or re-published; `onlyTo` limits a re-publication to one subscriber.
@@ -51,23 +52,30 @@ object EventsBusActor {
     def kind: DeliveryKind
   }
   // AR8: a subscription takes every event of its aggregate type; the sequence gate needs every version (no classifiers).
+  /** The events of the type, for an event listener. */
   case class SubscribeForEvents(aggregateType: AggregateType, subscriber: ActorRef) extends SubscribeRequest {
     def kind: DeliveryKind = EventsDelivery
   }
+  /** The states of the type's aggregates, for an aggregate listener. */
   case class SubscribeForAggregates(aggregateType: AggregateType, subscriber: ActorRef) extends SubscribeRequest {
     def kind: DeliveryKind = AggregatesDelivery
   }
+  /** The states with the events, for a listener of aggregates with events. */
   case class SubscribeForAggregatesWithEvents(aggregateType: AggregateType, subscriber: ActorRef) extends SubscribeRequest {
     def kind: DeliveryKind = AggregatesWithEventsDelivery
   }
 
   // Start-up (D15): the host registers its subscribers; the bus asks each for its subscriptions and publishes nothing
   // until all have answered. Command buses register as the publishers of their aggregate type.
+
+  /** From the host, once at start: every projection, saga and listener that subscribes on this node's bus. */
   case class RegisterSubscribers(subscribers: Seq[ActorRef])
   /** `registered`: the subscriber the bus asked, which the answer names: an answer may come from another actor, such as
     * a projection's supervisor behind a cluster singleton proxy (M5). */
   case class GetSubscriptionRequests(registered: ActorRef)
+  /** A subscriber's answer to `GetSubscriptionRequests`: what it takes. */
   case class SubscriptionRequests(requests: Seq[SubscribeRequest], registered: ActorRef)
+  /** From a command bus: it publishes the events of `aggregateType`, and re-publishes them when asked. */
   case class RegisterPublisher(aggregateType: AggregateType, publisher: ActorRef)
 
   // D57: a projection's supervisor adds the subscriptions of a build that starts later, and removes those of a build it
@@ -75,24 +83,34 @@ object EventsBusActor {
   // subscriber is an instance that stopped, replaced by one subscribed already: its deliveries end without acknowledging
   // their owners, so their rows stay in the outbox and are published again to the replacement (F110). `registered`: the
   // registered subscriber the added ones belong to, which the bus asks again when they stop (M5).
+
+  /** Adds subscriptions after the start. */
   case class AddSubscriptions(requests: Seq[SubscribeRequest], registered: Option[ActorRef] = None)
+  /** Removes a subscriber's subscriptions; answered `SubscriberRemoved`. */
   case class RemoveSubscriber(subscriber: ActorRef, keepOutbox: Boolean = false)
+  /** The answer to `RemoveSubscriber`. */
   case class SubscriberRemoved(subscriber: ActorRef)
 
   // From subscribers: a delivery of one kind applied (or applied before), a delivery the subscriber gave up on (D20a),
   // or a request to re-publish from a version, for a gap or a retry (D20c).
+
+  /** The subscriber applied these versions (or had applied them before). */
   case class MessageAck(subscriber: ActorRef, aggregateId: AggregateId, versions: Seq[AggregateVersion], kind: DeliveryKind)
+  /** The subscriber gave up on these versions, for `error`. */
   case class MessageFailed(subscriber: ActorRef, aggregateId: AggregateId, versions: Seq[AggregateVersion], error: String, kind: DeliveryKind)
+  /** The subscriber misses the aggregate's versions from `from` on: the owner re-publishes them to it. */
   case class RequestRepublish(subscriber: ActorRef, aggregateType: AggregateType, aggregateId: AggregateId, from: AggregateVersion)
 
   /** From the outbox poller (D8): ask the aggregate's owner to re-publish what waits in its outbox. */
   case class Republish(aggregateType: AggregateType, aggregateId: AggregateId)
 
+  /** Asks the bus for its `DeliveryStatus`. */
   case object GetDeliveryStatus
   /** `waiting`: deliveries in flight; `undelivered`: the latest ones that ended at the deadline; `stopped`: subscribers
     * that stopped, whose events stay in the outbox until the next start; `held`: deliveries held for a subscriber whose
     * window was full, and `behind`: per such subscriber, the aggregates held for it (F93). */
   case class DeliveryStatus(waiting: Int, undelivered: Seq[Undelivered], stopped: Seq[String], held: Int = 0, behind: Map[String, Int] = Map.empty)
+  /** A delivery that ended at its deadline without an answer: its row stays in the outbox for the poller. */
   case class Undelivered(aggregateType: AggregateType, aggregateId: AggregateId, version: AggregateVersion, subscriber: String, kind: DeliveryKind, at: Instant)
 
   private case object Tick

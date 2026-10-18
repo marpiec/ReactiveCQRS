@@ -13,8 +13,10 @@ import scalikejdbc.ParameterBinder
   */
 object SpaceFormat {
 
+  /** The format's version, in every export's header. */
   val Version = 1
 
+  /** The first line: the format's version, the exporting installation, the space, and when it was exported. */
   case class ExportHeader(format: Int, installation: Int, space: Long, exported: String)
 
   /** A copy's chain row within the space: the base it reads, its order in the chain, the version it reads it up to. */
@@ -33,6 +35,7 @@ object SpaceFormat {
   case class ExportedEvent(aggregate: Long, version: Int, eventClass: String, json: String, user: Long, time: String,
                            metadata: Option[String], undoneFrom: Option[Int])
 
+  /** An archived event, as `ExportedEvent`, with when a squash archived it. */
   case class ExportedArchived(aggregate: Long, version: Int, eventClass: String, json: String, user: Long, time: String,
                               metadata: Option[String], undoneFrom: Option[Int], archived: String)
 

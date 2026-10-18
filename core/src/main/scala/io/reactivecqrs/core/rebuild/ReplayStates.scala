@@ -14,12 +14,15 @@ class ReplaySource(val context: AggregateContext[Any], eventStore: EventStoreSta
   /** The aggregate's state at `version`, or at its newest version; null once it was deleted. */
   def stateAt(id: AggregateId, version: Option[AggregateVersion]): Any = restorer.restore(id, version.map(Left(_))).root
 
+  /** The state after `event`, through the context's event handlers. */
   def applied(state: Any, event: EventInfo[Any]): Any = context.eventHandlers(event.userId, event.timestamp, state)(event.event)
 
+  /** The state before the first event. */
   def initial: Any = context.initialAggregateRoot
 }
 
 object ReplaySource {
+  /** A source per aggregate type of `contexts`. */
   def of(contexts: Seq[AggregateContext[_]], eventStore: EventStoreState): Map[AggregateType, ReplaySource] =
     contexts.map(c => c.aggregateType -> new ReplaySource(c.asInstanceOf[AggregateContext[Any]], eventStore)).toMap
 }
@@ -61,5 +64,6 @@ class ReplayStates(sources: Map[AggregateType, ReplaySource], capacity: Int) {
   private def baseState(duplication: DuplicationEvent[_]): Option[Any] =
     Option(states.get(duplication.baseAggregateId)).collect { case (version, state) if version == duplication.baseAggregateVersion => state }
 
+  /** How many states are open. */
   def open: Int = states.size()
 }

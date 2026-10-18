@@ -21,12 +21,19 @@ case class SpaceBackfill(filled: Int, left: Seq[AggregateId])
 /** What the event keys backfill did (F124): keys written, and events still without one (an aggregate row missing). */
 case class EventKeysBackfill(written: Long, missing: Long)
 
-/** @param outboxDeleteDelay how long delivered outbox rows wait, at most, to be deleted together with others (F26) */
+/** The event store in PostgreSQL (chapter 2): the events, aggregates, outbox, snapshots and archive tables.
+  *
+  * @param fetchSize how many rows a read fetches at a time
+  * @param eventSizeLimit the longest event, in characters of JSON
+  * @param aggregateVersionLimit the highest version an aggregate may reach
+  * @param eventSizeLimitPerClassName limits of their own for some event classes, by class name
+  * @param outboxDeleteDelay how long delivered outbox rows wait, at most, to be deleted together with others (F26) */
 class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState, fetchSize: Int = 1000,
                               eventSizeLimit: Int = 100000, aggregateVersionLimit: Int = 10000,
                               eventSizeLimitPerClassName: Map[String, Int] = Map.empty,
                               outboxDeleteDelay: FiniteDuration = 20.millis) extends EventStoreState {
 
+  /** Creates the tables, indexes and procedures it needs, when missing; returns this store. */
   def initSchema(): PostgresEventStoreState = {
     (new PostgresEventStoreSchemaInitializer).initSchema()
     this
@@ -853,6 +860,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 
 }
 
+/** The store's helpers. */
 object PostgresEventStoreState {
 
   /** The bytes of `s` in UTF-8, as PostgreSQL keeps it (`octet_length`), counted without encoding it: a size the store

@@ -6,13 +6,20 @@ import io.reactivecqrs.core.util.{BlockingDispatcher, MyActorLogging}
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.{Failure, Success}
 
+/** The answer to `GetNewAggregatesIdsPool`. */
 case class NewAggregatesIdsPool(from: Long, size: Long)
+/** The answer to `GetNewCommandsIdsPool`. */
 case class NewCommandsIdsPool(from: Long, size: Long)
+/** The answer to `GetNewSagasIdsPool`. */
 case class NewSagasIdsPool(from: Long, size: Long)
 
+/** The uid generator's messages, and its `Props` on PostgreSQL. */
 object UidGeneratorActor {
+  /** Asks for the next pool of aggregate ids. */
   case object GetNewAggregatesIdsPool
+  /** Asks for the next pool of command ids. */
   case object GetNewCommandsIdsPool
+  /** Asks for the next pool of saga ids. */
   case object GetNewSagasIdsPool
 
   /** A host's uid generator on PostgreSQL: aggregate ids in the installation's range (D39), read from the same setting the
@@ -28,6 +35,7 @@ object UidGeneratorActor {
 
 
 
+/** Hands out pools of ids, one generator per kind; one per node (`UidGeneratorActor.postgres`). */
 class UidGeneratorActor(aggregatesUidGenerator: UidGenerator,
                         commandsUidGenerator: UidGenerator,
                         sagasUidGenerator: UidGenerator) extends Actor with MyActorLogging {

@@ -21,6 +21,7 @@ import scala.concurrent.duration._
   */
 object RedeliveryPolicy {
 
+  /** The policy's settings; see the object's description. */
   case class Options(attemptsAfter: Seq[FiniteDuration] = Seq(3.minutes, 6.minutes), giveUpAfter: FiniteDuration = 10.minutes,
                      maxRepublishPerPoll: Int = 1000, retryGivenUpEvery: FiniteDuration = 30.minutes)
 
@@ -28,11 +29,14 @@ object RedeliveryPolicy {
     * re-publication for rows from before the start. */
   case class Tracked(waiting: WaitingInOutbox, firstAttempt: Instant, attemptsMade: Int, gaveUp: Boolean, lastTry: Option[Instant] = None)
 
+  /** A poll's decision: what to re-publish now, what to report as undelivered, and what to remember for the next poll. */
   case class Decision(republish: Seq[WaitingInOutbox], gaveUp: Seq[WaitingInOutbox], memory: Map[AggregateId, Tracked])
 
   /** One aggregate's outcome of a poll: its state before (None if new) and after, and whether it is re-published. */
   private case class Step(waiting: WaitingInOutbox, before: Option[Tracked], after: Tracked, republish: Boolean, gaveUp: Boolean)
 
+  /** Decides a poll: the aggregates waiting now, what was remembered from the poll before, when the poller started, and
+    * the time now. */
   def decide(waiting: Seq[WaitingInOutbox], memory: Map[AggregateId, Tracked], startedAt: Instant, now: Instant, options: Options): Decision = {
     val steps = waiting.map(w => step(w, memory.get(w.aggregateId).filter(_.waiting.oldestVersion == w.oldestVersion), startedAt, now, options))
     // F141: retries of given-up aggregates take at most half the budget while others are due, so a large given-up backlog

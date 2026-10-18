@@ -13,9 +13,11 @@ import scala.concurrent.Future
 import scala.concurrent.duration._
 import scala.util.{Failure, Success, Try}
 
+/** The outbox poller's messages. */
 object OutboxPollerActor {
   /** Reads the outbox now; the poller's timer sends it, and tests can too. */
   case object Poll
+  /** Asks the poller for its `OutboxStatus`. */
   case object GetOutboxStatus
   /** `waiting`: aggregates with rows in the outbox at the last poll (at most `maxTracked`); `gaveUp`: those reported as
     * undelivered. */
@@ -23,7 +25,13 @@ object OutboxPollerActor {
   private case class Read(result: Try[Seq[WaitingInOutbox]])
 }
 
-/** @param firstPollAfter gives the host time to start its command buses, which the bus routes re-publications to */
+/** When the outbox poller reads the outbox, and what it does with what waits there.
+  *
+  * @param firstPollAfter gives the host time to start its command buses, which the bus routes re-publications to
+  * @param pollInterval how often it reads the outbox
+  * @param redelivery when it has an aggregate's events re-published, and when it gives up
+  * @param maxTracked how many waiting aggregates a poll reads and keeps track of at most, the oldest first
+  */
 case class OutboxPollerOptions(firstPollAfter: FiniteDuration = 10.seconds,
                                pollInterval: FiniteDuration = 30.seconds,
                                redelivery: RedeliveryPolicy.Options = RedeliveryPolicy.Options(),

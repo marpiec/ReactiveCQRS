@@ -12,6 +12,7 @@ import org.apache.pekko.serialization.SerializationExtension
   */
 class MessageSize(system: ExtendedActorSystem) extends Extension {
 
+  /** The largest message, in bytes, that may be sent between nodes. */
   val limit: Int = {
     val artery = system.settings.config.getConfig("pekko.remote.artery")
     val frame = artery.getBytes("advanced.maximum-frame-size").longValue
@@ -32,6 +33,7 @@ class MessageSize(system: ExtendedActorSystem) extends Extension {
   def onAnotherNode(ref: ActorRef): Boolean = ref.path.address.hasGlobalScope
 }
 
+/** `MessageSize(system)`: the limit of messages between nodes. */
 object MessageSize extends ExtensionId[MessageSize] with ExtensionIdProvider {
   override def createExtension(system: ExtendedActorSystem): MessageSize = new MessageSize(system)
   override def lookup: MessageSize.type = MessageSize

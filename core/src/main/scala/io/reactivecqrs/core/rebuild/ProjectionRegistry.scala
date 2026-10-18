@@ -28,6 +28,7 @@ case class LegacyVersions(projections: Map[String, Int], aggregates: Map[String,
   */
 trait ProjectionRegistry {
 
+  /** The projection `name`, if the registry has it. */
   def projection(name: String): Option[RegisteredProjection]
 
   /** Every build of `name` the registry has: the active one, the one in progress, and any retired or abandoned one not
@@ -47,6 +48,7 @@ trait ProjectionRegistry {
   /** Forgets the build in progress (a newer version of the code supersedes it); its tables go with `drop`. */
   def abandon(name: String, build: Int): Unit
 
+  /** Keeps how far the build got (D61). */
   def savePosition(name: String, build: Int, position: BuildPosition): Unit
 
   /** A targeted rebuild of the active build begins (`Some`) or ends (`None`); one begun and not ended runs again at start. */
@@ -61,13 +63,16 @@ trait ProjectionRegistry {
   /** Forgets the projection; its builds must be dropped first. */
   def remove(name: String): Unit
 
+  /** What 0.12's rebuild recorded, empty when it recorded nothing. */
   def legacyVersions(): LegacyVersions
 }
 
+/** How builds name their tables and subscriptions. */
 object ProjectionRegistry {
   /** The suffix of a build's tables: `_v<version>` for the first build of a version, then `_v<version>_b<build>`. */
   def suffix(version: Int, build: Int, versionBuilt: Boolean): String = if (versionBuilt) "_v" + version + "_b" + build else "_v" + version
 
+  /** The name a build's subscriptions are stored under. */
   def subscriber(name: String, suffix: String): String = "projection:" + name + suffix
 
   private[rebuild] def contextsText(contexts: Map[String, Int]): String = contexts.toSeq.sorted.map { case (t, v) => t + "=" + v }.mkString(";")
@@ -75,10 +80,12 @@ object ProjectionRegistry {
     text.split(';').filter(_.nonEmpty).map(entry => entry.takeWhile(_ != '=') -> entry.dropWhile(_ != '=').drop(1).toInt).toMap
 }
 
+/** The registry in PostgreSQL: the tables `projections`, `projection_builds` and `projection_build_objects`. */
 class PostgresProjectionRegistry extends ProjectionRegistry {
 
   import ProjectionRegistry._
 
+  /** Creates the tables it needs, when missing; returns this registry. */
   def initSchema(): PostgresProjectionRegistry = SchemaLock {
     DB.autoCommit { implicit session =>
       sql"""CREATE TABLE IF NOT EXISTS projections (
@@ -202,6 +209,7 @@ class PostgresProjectionRegistry extends ProjectionRegistry {
 }
 
 /** The registry in memory, for tests; dropping only forgets. */
+/** The registry in memory, for tests; `legacy` stands for what 0.12 recorded. */
 class MemoryProjectionRegistry extends ProjectionRegistry {
 
   private case class Row(active: Option[Int], building: Option[Int], last: Int, pendingTarget: Option[String] = None)
@@ -210,6 +218,7 @@ class MemoryProjectionRegistry extends ProjectionRegistry {
   private val objects = mutable.Map[(String, Int), Set[(String, Boolean)]]()
   @volatile var legacy: LegacyVersions = LegacyVersions(Map.empty, Map.empty)
 
+  /** The tables and sequences the build recorded (`true`: a sequence). */
   def objectsOf(name: String, build: Int): Set[(String, Boolean)] = synchronized(objects.getOrElse((name, build), Set.empty))
 
   override def projection(name: String): Option[RegisteredProjection] = synchronized {

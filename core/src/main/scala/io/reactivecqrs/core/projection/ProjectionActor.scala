@@ -21,8 +21,11 @@ import scala.reflect.ClassTag
 import scala.util.control.NonFatal
 import scala.util.{Failure, Success, Try}
 
+/** A query parked until the read model can answer it (`delayIfNotAvailable`), or until `until`. */
 sealed trait DelayedQuery {
+  /** When it is answered with what there is. */
   val until: Instant
+  /** Who gets the answer. */
   val respondTo: ActorRef
 }
 private case class SyncDelayedQuery(until: Instant, respondTo: ActorRef, search: () => Option[Any]) extends DelayedQuery
@@ -32,9 +35,12 @@ private case class AsyncDelayedQueryCustom[T](until: Instant, respondTo: ActorRe
 
 /** The aggregate types and listener kinds of a projection, one per listener: what a build delivers (D58). */
 case object GetListeners
+/** The answer to `GetListeners`. */
 case class Listeners(subscriptions: Seq[(AggregateType, SubscriptionType)])
 
 // D20a: a projection's failed subscriptions, and what an operator can do about them.
+
+/** Asks a projection for its `ProjectionStatus`. */
 case object GetProjectionStatus
 /** `retrying`: aggregates whose listener failed and is retried now; `waitingForGap`: aggregates waiting for missing
   * versions to be re-published. */
@@ -59,8 +65,11 @@ case object ServeUnchanged
 /** What a targeted rebuild covers (D63, R14): one aggregate, one aggregate type, or one organization's aggregates. */
 sealed trait RebuildTarget
 object RebuildTarget {
+  /** One aggregate. */
   case class OneAggregate(aggregateId: AggregateId) extends RebuildTarget
+  /** Every aggregate of a type. */
   case class OneType(aggregateType: AggregateType) extends RebuildTarget
+  /** Every aggregate of an organization. */
   case class OneSpace(spaceId: SpaceId) extends RebuildTarget
 }
 /** From the supervisor, before a targeted rebuild: the projection lists the target's aggregates (`aggregatesOf`) once it
@@ -70,6 +79,7 @@ object RebuildTarget {
   * `ResetForRebuildDone` and how many aggregates it reset, or `Status.Failure` when the projection does not implement
   * `clearForRebuild`. */
 case class ResetForRebuild(target: RebuildTarget, aggregatesOf: () => Seq[AggregateId])
+/** The answer to `ResetForRebuild`: how many aggregates were reset. */
 case class ResetForRebuildDone(aggregates: Int)
 
 // R17: the purge of an organization.
@@ -77,15 +87,18 @@ case class ResetForRebuildDone(aggregates: Int)
 /** From a purge, before it deletes anything: answered `PurgeCheckAnswer`, with the reason when the projection cannot take
   * part: it does not implement `clearForRebuild`, or (a managed one) a build or a targeted rebuild runs. */
 case class PurgeCheck(space: SpaceId)
+/** The answer to `PurgeCheck`: `None` when the projection can take part in the purge. */
 case class PurgeCheckAnswer(projectionName: String, refusal: Option[String])
 /** From a purge, after it deleted these aggregates of the space: the projection forgets them (versions, queues, failures)
   * and, for `ProjectionActorOptions.purgedDropWindow`, acknowledges deliveries of them without applying them, as one may
   * still be on its way. Answered `PurgedAggregatesForgotten`. */
 case class PurgedAggregates(space: SpaceId, aggregateIds: Seq[AggregateId])
+/** The answer to `PurgedAggregates`: how many aggregates the projection forgot. */
 case class PurgedAggregatesForgotten(projectionName: String, count: Int)
 /** From a purge, last: the projection clears what it derived from the space (`clearForRebuild(OneSpace(space))`) in one
   * transaction. Answered `SpacePurged`, or `Status.Failure`. */
 case class PurgeSpace(space: SpaceId)
+/** The answer to `PurgeSpace`. */
 case class SpacePurged(projectionName: String, space: SpaceId)
 
 // D57, D58, D61: a projection being built is fed by a builder that reads the event store.
@@ -97,6 +110,7 @@ case class BuildFromStore(builder: ActorRef)
 /** Deliveries from the bus are applied again; the failures recorded meanwhile are retried. Answered with
   * `ProjectionLive`. */
 case object GoLive
+/** The answer to `GoLive`. */
 case object ProjectionLive
 
 /** From a builder (D58, D61): versions of many aggregates, in commit order, applied in one transaction. Answered with
@@ -116,12 +130,14 @@ case class ChunkItem(subscriptionType: SubscriptionType, aggregateType: Aggregat
   * subscription had deliveries at work); each is answered to the builder with `MessageAck` or `MessageFailed`. Items
   * of an aggregate whose subscription is failed are left out (D20a): a retry repairs it. */
 case class ChunkApplied(id: Long, gaps: Seq[ChunkGap], handedOver: Int)
+/** A subscription whose chunk items wait for versions from `from` on. */
 case class ChunkGap(subscriptionType: SubscriptionType, aggregateType: AggregateType, aggregateId: AggregateId, from: AggregateVersion)
 
 /** Has the aggregate's failed versions delivered again; each failure is cleared once its version is applied. */
 case class RetryFailedSubscription(aggregateId: AggregateId)
 /** Retries every failed subscription, a few per second; answered with `FailedSubscriptionsRetried`. */
 case object RetryAllFailedSubscriptions
+/** The answer to `RetryAllFailedSubscriptions`: how many failed subscriptions are retried. */
 case class FailedSubscriptionsRetried(count: Int)
 /** Marks each failed version of the aggregate as applied without applying it, and continues from the version after. */
 case class SkipFailedVersion(aggregateId: AggregateId)
@@ -132,10 +148,22 @@ case class FailedSubscriptionsHandled(aggregateId: AggregateId, count: Int)
 object ProjectionActorOptions {
   /** About two minutes of retries (D20a): 1, 2, 4, 8, 16, 30, 30 and 30 seconds between nine attempts. */
   val defaultRetries: Backoff = Backoff(1.second, 30.seconds, maxAttempts = 9)
+  /** No grouping, no parallel processing, no events logger, and the defaults below. */
   val DEFAULT = ProjectionActorOptions(0, 1, Set.empty, 0, None)
 }
 
 /**
+  * How a projection applies its deliveries.
+  *
+  * @param groupUpdatesDelayMillis how long a live delivery may wait for the next ones of its aggregate, to be applied
+  *                                with them; 0 applies each at once
+  * @param minimumDelayVersion the first version of an aggregate that may wait (`groupUpdatesDelayMillis`); earlier ones,
+  *                            such as a new aggregate's first event, are applied at once
+  * @param eventsToProcessImmediately event classes whose deliveries never wait (`groupUpdatesDelayMillis`); for event
+  *                                   listeners and listeners of aggregates with events
+  * @param parallelUpdateProcessing how many threads apply deliveries (above 1), on the same projection object: its
+  *                                 listeners must then be thread-safe; 0 or 1 applies them on one thread
+  * @param eventsLogger a logger that, at debug level, logs every delivery received and every batch applied
   * @param retries how a listener that fails on an aggregate is retried before the failure is recorded (D20a)
   * @param retryFailuresOnStart retry the failures recorded before the start (D20a)
   * @param gapRequestRepeat how long a request for missing versions waits before it is sent again, doubling up to five
@@ -145,6 +173,8 @@ object ProjectionActorOptions {
   * @param maxBatchesPerTransaction how many aggregates' batches one transaction applies at most when deliveries arrive
   *                                 faster than they are applied (D61, F93); 1 applies each alone. Not with
   *                                 `parallelUpdateProcessing`.
+  * @param purgedDropWindow how long deliveries of the aggregates an organization's purge deleted are acknowledged
+  *                         without being applied (R17)
   */
 case class ProjectionActorOptions (groupUpdatesDelayMillis: Long,
                                    minimumDelayVersion: Int,
@@ -159,40 +189,46 @@ case class ProjectionActorOptions (groupUpdatesDelayMillis: Long,
                                    maxBatchesPerTransaction: Int = 100,
                                    purgedDropWindow: FiniteDuration = 30.minutes) {
 
+  /** These options with `groupUpdatesDelayMillis`. */
   def withGroupUpdatesDelayMillis(millis: Long): ProjectionActorOptions = {
     copy(groupUpdatesDelayMillis = millis)
   }
 
+  /** These options with `minimumDelayVersion`. */
   def withMinimumDelayVersion(version: Int): ProjectionActorOptions = {
     copy(minimumDelayVersion = version)
   }
 
+  /** These options with `eventsLogger`. */
   def withEventsLogger(logger: Logger): ProjectionActorOptions = {
     copy(eventsLogger = Some(logger))
   }
 
-  /**
-   * eventsToProcessImmediately - only works for listeners receiving events, will not work for aggregate only listeners, due to lack of information
-   **/
+  /** These options with `eventsToProcessImmediately`: it works for listeners that receive events, not for listeners of
+    * aggregates alone, which do not know the events. */
   def withEventsToProcessImmediately(classes: Class[_]*): ProjectionActorOptions = {
     copy(eventsToProcessImmediately = classes.toSet)
   }
 
-  /**
-   * Zero means no paralleism. Handling will be done in different threads, but on the same objects, so thread safety must be considered.
-   */
+  /** These options with `parallelUpdateProcessing`: zero means no parallelism. Deliveries are applied on several
+    * threads, on the same objects, so the listeners must be thread-safe. */
   def withParallelUpdateProcessing(parallel: Int): ProjectionActorOptions = {
     copy(parallelUpdateProcessing = parallel)
   }
 
+  /** These options with `retries`. */
   def withRetries(retries: Backoff): ProjectionActorOptions = copy(retries = retries)
 
 }
 
 object ListenerOptions {
+  /** The listener runs in the transaction that records the subscription's new version. */
   val DEFAULT = ListenerOptions(false)
+  /** The listener writes nothing to the database: it runs without a transaction (`noDBSession`). */
   val DISABLED_TRANSACTION = ListenerOptions(true)
 }
+/** How a listener runs. `noTransaction`: it gets no session, runs before its subscription's new version is written,
+  * and may so see a batch again if that write fails (at least once). */
 case class ListenerOptions(noTransaction: Boolean = false)
 
 /**
@@ -307,7 +343,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         ListenerOptions.DISABLED_TRANSACTION)
   }
 
-  object ReplayQueries
+  private object ReplayQueries
 
 
 

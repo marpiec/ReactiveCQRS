@@ -9,17 +9,21 @@ import scalikejdbc.{DBSession, NoSession}
 
 import scala.util.Try
 
+/** The memory store's row of an event. */
 object MemoryEventStoreState {
+  /** An event as the memory store keeps it in commit order. */
   case class EventRow(eventId: Long, aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregateType: AggregateType,
                       event: Event[_], userId: UserId, timestamp: Instant, metadata: Option[EventMetadata] = None)
 }
 
+/** An event as the memory store keeps it per aggregate. */
 case class EventStoreEntry[AGGREGATE_ROOT](userId: UserId, timestamp: Instant, version: AggregateVersion, event: Event[AGGREGATE_ROOT],
                                            metadata: Option[EventMetadata] = None)
 
 // State is read and changed under the object's lock: owners, the outbox poller and the replayer call the store from
 // their own threads. Callbacks run outside the lock, on a snapshot. `commitOrder`: keep every event in one list in
 // commit order, for rebuilds; an ephemeral store (D77) keeps none, so dropping an aggregate does not walk them all.
+/** `EventStoreState` in memory, for tests. */
 class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState {
 
   private var eventsRows: List[EventRow] = List.empty

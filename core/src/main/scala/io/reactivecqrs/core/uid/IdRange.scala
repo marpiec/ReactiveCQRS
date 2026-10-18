@@ -11,9 +11,12 @@ import io.reactivecqrs.api.id.AggregateId
 case class IdRange(installation: Int) {
   require(installation >= 0 && installation <= IdRange.MaxInstallation, "installation number must be between 0 and " + IdRange.MaxInstallation)
 
+  /** The range's first id. */
   val from: Long = installation.toLong * IdRange.Span
+  /** The first id after the range. */
   val until: Long = math.min(from + IdRange.Span, IdRange.Limit)
 
+  /** Whether `id` is in the range. */
   def contains(id: Long): Boolean = id >= from && id < until
 
   /** Why a caller may not choose this id for a new aggregate: not positive (negative ids are ephemeral aggregates', D77),
@@ -27,10 +30,14 @@ case class IdRange(installation: Int) {
 }
 
 object IdRange {
-  val Span: Long = 1000000000000L // 10^12
+  /** The ids of one installation: 10^12. */
+  val Span: Long = 1000000000000L
+  /** No id reaches 2^53. */
   val Limit: Long = 1L << 53
+  /** The highest installation number. */
   val MaxInstallation: Int = ((Limit - 1) / Span).toInt
 
+  /** Installation 0's range. */
   val Legacy: IdRange = IdRange(0)
 
   /** `reactivecqrs.installation-number`. */

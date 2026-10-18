@@ -12,6 +12,7 @@ import scalikejdbc._
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 
+/** A subscription was not at the version a write expected: another writer moved it (`SubscriptionsState.newVersion`). */
 class OptimisticLockingFailed(message: String) extends Exception(message)
 
 /** A kind of subscription; equal by its id, so one read from another node is the same kind. */
@@ -25,10 +26,14 @@ class SubscriptionType(val id: Short) extends Serializable {
 }
 
 object SubscriptionType {
+  /** Aggregate listeners: the aggregate's state. */
   val AGGREGATES = new SubscriptionType(1)
+  /** Event listeners: the events. */
   val EVENTS = new SubscriptionType(2)
+  /** Listeners of aggregates with events: both. */
   val AGGREGATES_WITH_EVENTS = new SubscriptionType(3)
 
+  /** The kind stored as `id`. */
   def apply(id: Short): SubscriptionType = {
     if(id == 1) {
       AGGREGATES
@@ -46,6 +51,9 @@ object SubscriptionType {
 case class SubscriptionFailure(subscriptionType: SubscriptionType, aggregateType: AggregateType, aggregateId: AggregateId, version: AggregateVersion,
                                error: String, since: Instant)
 
+/** Where subscribers keep, per kind of subscription and aggregate, the last version they applied (`subscriptions`), and
+  * the aggregates they gave up on (`subscription_failures`): `PostgresSubscriptionsState`, or `MemorySubscriptionsState`
+  * for tests. */
 trait SubscriptionsState {
 
   /** The last version of the aggregate that the subscriber applied in this kind of subscription; zero when none. */
@@ -76,15 +84,23 @@ trait SubscriptionsState {
   // D20a: a subscriber that gave up on an aggregate records it; it answers deliveries of that aggregate with
   // MessageFailed until the failure is cleared (a retry, or a skip of the failed version), and lists it in its status.
   // A later failure of the same subscription replaces the earlier one.
+
+  /** Records that the subscriber gave up on an aggregate. */
   def recordFailure(subscriberName: String, failure: SubscriptionFailure): Unit
+  /** The subscriber's failures. */
   def failures(subscriberName: String): Seq[SubscriptionFailure]
+  /** In the caller's transaction, clears the subscriber's failure on an aggregate (retried, or its version skipped). */
   def clearFailure(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId)(implicit session: DBSession): Unit
 
+  /** Runs `block` in a read-only session of the state's store. */
   def readOnly[A](block: DBSession => A): A
+  /** Runs `block` in a transaction of the state's store. */
   def localTx[A](block: DBSession => A): A
+  /** Runs `block` in an auto-commit session of the state's store. */
   def autoCommit[A](block: DBSession => A): A
 }
 
+/** `SubscriptionsState` in memory, for tests: no transactions. */
 class MemorySubscriptionsState extends SubscriptionsState {
 
   private case class SubscriptionsKey(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId)
@@ -145,7 +161,7 @@ class MemorySubscriptionsState extends SubscriptionsState {
 }
 
 
-object SubscriptionCacheKey {
+private[projection] object SubscriptionCacheKey {
   def get(typesNamesState: TypesNamesState, subscriberName: String, subscriptionType: SubscriptionType): String = {
     s"${typesNamesState.typeIdByClassName(subscriberName)}|${subscriptionType.id}"
   }
@@ -163,6 +179,7 @@ object SubscriptionCacheKey {
 class PostgresSubscriptionsState(typesNamesState: TypesNamesState, eventsLogger: Option[Logger] = None,
                                  maxCachedAggregates: Int = 10000) extends SubscriptionsState {
 
+  /** Creates the tables and indexes it needs, when missing; returns this state. */
   def initSchema(): PostgresSubscriptionsState = SchemaLock {
     createSubscriptionsTable()
     createSubscriptionsSequence()

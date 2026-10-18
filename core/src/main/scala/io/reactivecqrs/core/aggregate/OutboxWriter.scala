@@ -20,5 +20,6 @@ trait OutboxWriter[AGGREGATE_ROOT] {
 
 /** Mixed into the `AggregateContext` of a type whose commands write such rows. */
 trait WithOutboxWriter[AGGREGATE_ROOT] { self: AggregateContext[AGGREGATE_ROOT] =>
+  /** The writer of the type's rows. */
   def outboxWriter: OutboxWriter[AGGREGATE_ROOT]
 }
