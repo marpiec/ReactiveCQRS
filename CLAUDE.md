@@ -63,7 +63,8 @@ sbt "project core" "~compile"   # incremental
   Memory-backed variants (`Memory*State`, `MemoryDocumentStore`) are test doubles.
 - Publishing: `publishMavenStyle`, target `https://nexus.neula.in/...`
   (overridable via `-DsnapshotsRepo=`). Version lives in `project/Common.scala`
-  (`version := "1.0.0"`, released 18/10/2026, tag `v1.0.0`) — bump it there, not per-module.
+  (`version := "1.0.1-SNAPSHOT"`; the last release is 1.0.0, 18/10/2026, tag `v1.0.0`) — bump it there,
+  not per-module. The README and the book give users the last release's coordinates.
 
 ---
 

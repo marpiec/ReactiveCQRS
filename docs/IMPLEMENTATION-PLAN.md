@@ -2586,3 +2586,5 @@ Open test-infrastructure items:
   release, by the owner's decision: the rehearsal on a copy of production (F52, F53), from which Neula plans
   its move, and the publication of mpjsons 0.7.0 and of the library to Nexus (F179). F184 (the rebuild's
   5–8 %) is profiled after it.
+- After the tag, master moves to `1.0.1-SNAPSHOT`, so a later build does not publish as 1.0.0; the README
+  and the books keep the released coordinates.
