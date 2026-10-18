@@ -61,13 +61,19 @@ are the only ones that survive that without surprises.
 ## Step 2: the events
 
 Each line in the cart's diary is an event: a small case class that extends `Event`, with the state
-class as its type parameter.
+class as its type parameter. `Event`, and every other class of the library this chapter uses, comes
+from two packages of the API, imported at the top of the file:
 
-<!-- snippet: e1/Carts.scala#events -->
+<!-- snippet: e1/Carts.scala#imports -->
 ```scala
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
+```
 
+The cart's three events:
+
+<!-- snippet: e1/Carts.scala#events -->
+```scala
 case class ShoppingCartCreated(name: String) extends FirstEvent[ShoppingCart] {
   def spaceId: SpaceId = SpaceId(0)
 }

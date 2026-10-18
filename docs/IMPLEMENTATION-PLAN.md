@@ -2392,3 +2392,14 @@ Open test-infrastructure items:
   handlers and the whole context. The book calls the context `ShoppingCartContext`, as the examples do
   (chapters 2, 3 and 10; the test domain keeps `ShoppingCartAggregateContext`). E11 follows: the replay
   of chapter 3's diary ends in `Item(2, "oranges")`, and `ItemRemoved` has its golden file.
+
+**18/10/2026: chapter 4 and the README's quick start take their code from E1**
+- Chapter 4's program is E1's `FirstProgram`: `main` holds the connection pool and the actor system,
+  `run` the tables, the actors and the commands, so `FirstProgramSpec` runs it against the test
+  database and checks that it prints what the chapter's "Running it" shows (ids aside). The chapter's
+  six steps are its regions, the composed futures are `ComposedCommands`, and the spec also checks the
+  chapter's two exercises (an old version, a sixth item) as they print. Blocks that show one call (the
+  spelled-out uid generator, a second command bus, the asks) stay fragments, as the M7 design allows.
+- The README's quick start was a hand-copied cart without a read model; it is now E1 whole: the cart,
+  its read model, `BasicSetup`'s wiring, and its command and query. `Carts.scala` has its imports in a
+  region of their own, which chapter 3 shows before the events.

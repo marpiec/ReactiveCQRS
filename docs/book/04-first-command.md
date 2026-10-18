@@ -29,21 +29,25 @@ You create all of them except the owners, each one after the pieces it needs. Le
 a time. ("One per system" becomes "one per machine", or "one in the whole cluster", in
 [chapter 17](17-cluster.md); for now we have one machine and one actor system.)
 
+Each step's code is a piece of E1's `FirstProgram`
+(`examples/src/main/scala/io/reactivecqrs/examples/e1/FirstProgram.scala`), which you will see whole at
+the end of the chapter, with its imports.
+
 ## Step 1: the database
 
-Exactly as in [chapter 2](02-setting-up.md): the connection pool first, then the tables.
+Exactly as in [chapter 2](02-setting-up.md): the connection pool first,
 
+<!-- snippet: e1/FirstProgram.scala#pool -->
 ```scala
-import io.mpjsons.MPJsons
-import io.reactivecqrs.core.commandhandler.PostgresCommandResponseState
-import io.reactivecqrs.core.eventstore.PostgresEventStoreState
-import io.reactivecqrs.core.types.PostgresTypesNamesState
-import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
-
 Class.forName("org.postgresql.Driver")
 ConnectionPool.singleton("jdbc:postgresql://localhost:5432/reactivecqrs", "reactivecqrs", "reactivecqrs",
   ConnectionPoolSettings(initialSize = 5, maxSize = 32, connectionTimeoutMillis = 3000L))
+```
 
+then the tables:
+
+<!-- snippet: e1/FirstProgram.scala#tables -->
+```scala
 val mpjsons = new MPJsons
 val typesNames = new PostgresTypesNamesState().initSchema()
 val eventStore = new PostgresEventStoreState(mpjsons, typesNames).initSchema()
@@ -55,9 +59,8 @@ add the two other `initSchema()` calls of chapter 2.
 
 ## Step 2: the actor system
 
+<!-- snippet: e1/FirstProgram.scala#system -->
 ```scala
-import org.apache.pekko.actor.ActorSystem
-
 val system = ActorSystem("shop")
 ```
 
@@ -69,9 +72,8 @@ when it starts.
 New carts need ids, and every command gets one too (it comes back in the error answers you will meet
 below). The uid generator hands them out:
 
+<!-- snippet: e1/FirstProgram.scala#uids -->
 ```scala
-import io.reactivecqrs.core.uid.UidGeneratorActor
-
 val uidGenerator = system.actorOf(UidGeneratorActor.postgres(system), "uidGenerator")
 ```
 
@@ -103,12 +105,9 @@ when only a fifth of the current pool is left, so a command hardly ever waits fo
 
 ## Step 4: the event bus
 
+<!-- snippet: e1/FirstProgram.scala#eventBus -->
 ```scala
-import io.reactivecqrs.core.eventbus.EventsBusActor
-import org.apache.pekko.actor.Props
-
 val eventBus = system.actorOf(Props(new EventsBusActor()), "eventBus")
-
 eventBus ! EventsBusActor.RegisterSubscribers(Nil)
 ```
 
@@ -131,13 +130,10 @@ start would never reach them. So the bus waits, and holds what it receives in th
 
 Now the front desk for carts. You give it your context from chapter 3 and the pieces of steps 1 to 4:
 
+<!-- snippet: e1/FirstProgram.scala#carts -->
 ```scala
-import com.example.shop.cart.ShoppingCartAggregateContext
-import io.reactivecqrs.core.commandhandler.AggregateCommandBusActor
-
 val carts = system.actorOf(
-  AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStore, responses, eventBus),
-  "carts")
+  AggregateCommandBusActor(new ShoppingCartContext, uidGenerator, eventStore, responses, eventBus), "carts")
 ```
 
 `AggregateCommandBusActor(...)` returns the `Props` of a command bus for the context's aggregate
@@ -158,21 +154,20 @@ A second aggregate type is one more line, sharing everything else:
 
 ```scala
 val invoices = system.actorOf(
-  AggregateCommandBusActor(new InvoiceAggregateContext, uidGenerator, eventStore, responses, eventBus),
+  AggregateCommandBusActor(new InvoiceContext, uidGenerator, eventStore, responses, eventBus),
   "invoices")
 ```
 
-(`InvoiceAggregateContext` is a context you would write yourself, like the cart's.)
+(`InvoiceContext` is a context you would write yourself, like the cart's.)
 
 > **Remember:** one command bus per aggregate type. All of them share one uid generator, one event
 > store, one response store and one event bus.
 
 ## Step 6: the outbox poller
 
+<!-- snippet: e1/FirstProgram.scala#poller -->
 ```scala
-import io.reactivecqrs.core.delivery.OutboxPollerActor
-
-val outboxPoller = system.actorOf(Props(new OutboxPollerActor(eventStore, eventBus)), "outboxPoller")
+system.actorOf(Props(new OutboxPollerActor(eventStore, eventBus)), "outboxPoller")
 ```
 
 Every event is written to the **outbox** (the `events_to_publish` table) in the same transaction as
@@ -288,12 +283,14 @@ past (an older version, the state at a moment, the list of events), see
 
 ## The whole program
 
-Here are all the steps in one place. It creates a cart, adds two items and prints the cart:
+Here are all the steps in one place: E1's `FirstProgram`. It creates a cart, adds two items and
+prints the cart. `main` opens what the program holds, the connection pool and the actor system, and
+closes them at the end; `run` does the rest, and E1's test runs it against a test database of its
+own. In your project, with the cart in a package of its own, add its import
+(`import com.example.shop.cart._`).
 
+<!-- snippet: e1/FirstProgram.scala#program -->
 ```scala
-package com.example.shop
-
-import com.example.shop.cart._
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.UserId
@@ -312,26 +309,33 @@ import scala.concurrent.Await
 import scala.concurrent.duration._
 import scala.util.Try
 
-object Main {
+object FirstProgram {
 
   def main(args: Array[String]): Unit = {
-    // 1. The database: the pool first, then the tables.
     Class.forName("org.postgresql.Driver")
     ConnectionPool.singleton("jdbc:postgresql://localhost:5432/reactivecqrs", "reactivecqrs", "reactivecqrs",
       ConnectionPoolSettings(initialSize = 5, maxSize = 32, connectionTimeoutMillis = 3000L))
+    val system = ActorSystem("shop")
+    try run(system)
+    finally {
+      Await.result(system.terminate(), 30.seconds)
+      ConnectionPool.closeAll()
+    }
+  }
 
+  def run(system: ActorSystem): Unit = {
+    // 1. The tables.
     val mpjsons = new MPJsons
     val typesNames = new PostgresTypesNamesState().initSchema()
     val eventStore = new PostgresEventStoreState(mpjsons, typesNames).initSchema()
     val responses = new PostgresCommandResponseState(mpjsons, typesNames).initSchema()
 
     // 2. The actors.
-    val system = ActorSystem("shop")
     val uidGenerator = system.actorOf(UidGeneratorActor.postgres(system), "uidGenerator")
     val eventBus = system.actorOf(Props(new EventsBusActor()), "eventBus")
-    val carts = system.actorOf(
-      AggregateCommandBusActor(new ShoppingCartAggregateContext, uidGenerator, eventStore, responses, eventBus), "carts")
     eventBus ! EventsBusActor.RegisterSubscribers(Nil)
+    val carts = system.actorOf(
+      AggregateCommandBusActor(new ShoppingCartContext, uidGenerator, eventStore, responses, eventBus), "carts")
     system.actorOf(Props(new OutboxPollerActor(eventStore, eventBus)), "outboxPoller")
 
     // 3. Talking to the carts.
@@ -344,21 +348,16 @@ object Main {
         case other => throw new IllegalStateException(command.getClass.getSimpleName + " failed: " + other)
       }
 
-    try {
-      val created = send(CreateShoppingCart(alice, "Groceries"))
-      println("Created: " + created)
+    val created = send(CreateShoppingCart(alice, "Groceries"))
+    println("Created: " + created)
 
-      val withApples = send(AddItem(alice, created.aggregateId, created.aggregateVersion, "apples"))
-      val withOranges = send(AddItem(alice, created.aggregateId, withApples.aggregateVersion, "oranges"))
-      println("Now at: " + withOranges.aggregateVersion)
+    val withApples = send(AddItem(alice, created.aggregateId, created.aggregateVersion, "apples"))
+    val withOranges = send(AddItem(alice, created.aggregateId, withApples.aggregateVersion, "oranges"))
+    println("Now at: " + withOranges.aggregateVersion)
 
-      val cart = Await.result((carts ? GetAggregate(created.aggregateId)).mapTo[Try[Aggregate[ShoppingCart]]],
-        timeout.duration).get
-      println("The cart: " + cart)
-    } finally {
-      Await.result(system.terminate(), 30.seconds)
-      ConnectionPool.closeAll()
-    }
+    val cart = Await.result((carts ? GetAggregate(created.aggregateId)).mapTo[Try[Aggregate[ShoppingCart]]],
+      timeout.duration).get
+    println("The cart: " + cart)
   }
 }
 ```
@@ -368,7 +367,8 @@ lock at work: each command says "I am changing the cart as it was after my last 
 
 ## Running it
 
-Start it with `sbt "runMain com.example.shop.Main"`. Among Pekko's start-up lines you will see the
+Start it with `sbt "examples/runMain io.reactivecqrs.examples.e1.FirstProgram"` (in your project,
+`sbt "runMain ..."` with your object's full name). Among Pekko's start-up lines you will see the
 event bus report `Event bus started with 0 subscriptions`, and then, on a fresh database:
 
 ```
@@ -391,11 +391,11 @@ SELECT e.aggregate_id, e.version, t.name AS event_class, e.event
 ```
 
 ```
- aggregate_id | version |                event_class                |        event
---------------+---------+-------------------------------------------+----------------------
-         1001 |       1 | com.example.shop.cart.ShoppingCartCreated | {"name":"Groceries"}
-         1001 |       2 | com.example.shop.cart.ItemAdded           | {"name":"apples"}
-         1001 |       3 | com.example.shop.cart.ItemAdded           | {"name":"oranges"}
+ aggregate_id | version |                   event_class                   |        event
+--------------+---------+-------------------------------------------------+----------------------
+         1001 |       1 | io.reactivecqrs.examples.e1.ShoppingCartCreated | {"name":"Groceries"}
+         1001 |       2 | io.reactivecqrs.examples.e1.ItemAdded           | {"name":"apples"}
+         1001 |       3 | io.reactivecqrs.examples.e1.ItemAdded           | {"name":"oranges"}
 ```
 
 Three lines, three facts. The cart itself, the `ShoppingCart` value you printed, is stored nowhere:
@@ -421,7 +421,7 @@ Make two small changes to the program and watch the answers.
    then, so the program stops with:
 
    ```
-   AddItem failed: AggregateConcurrentModificationError(Id(...),AggregateType(com.example.shop.cart.ShoppingCart),Version(1),Version(2))
+   AddItem failed: AggregateConcurrentModificationError(Id(...),AggregateType(io.reactivecqrs.examples.e1.ShoppingCart),Version(1),Version(2))
    ```
 
    Nothing was stored, and your handler did not even run.
@@ -434,10 +434,10 @@ Make two small changes to the program and watch the answers.
 
 `Await` was a shortcut for a small program. In a real application, a command arrives in a web
 request or a message handler, and blocking a thread per command would waste threads you need. Keep
-the `Future`s and chain them instead:
+the `Future`s (`scala.concurrent.Future`) and chain them instead, as E1's `ComposedCommands` does:
 
+<!-- snippet: e1/ComposedCommands.scala#compose -->
 ```scala
-import scala.concurrent.Future
 import system.dispatcher   // an ExecutionContext for flatMap
 
 def sendAsync(command: AnyRef): Future[SuccessResponse] =

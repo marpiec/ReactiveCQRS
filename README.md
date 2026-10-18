@@ -89,98 +89,160 @@ To build from source instead, clone this repository and run `sbt publishLocal`.
 
 ## Quick start
 
-A shopping cart, from the book's first chapters.
+E1, the book's first example: a shopping cart, and a read model that lists the carts. Its code is in
+[examples/src/main/scala/io/reactivecqrs/examples/e1](examples/src/main/scala/io/reactivecqrs/examples/e1);
+with PostgreSQL set up as in [chapter 2](docs/book/02-setting-up.md), run it with
+`sbt "examples/runMain io.reactivecqrs.examples.e1.BasicSetup"`.
 
 **The domain**: a state, its events and commands, and a context that ties them together.
 
+<!-- snippet: e1/Carts.scala#domain -->
 ```scala
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
 
-case class ShoppingCart(name: String, items: Vector[String])
+case class ShoppingCart(name: String, items: Vector[Item])
+
+case class Item(id: Int, name: String)
 
 case class ShoppingCartCreated(name: String) extends FirstEvent[ShoppingCart] {
-  def spaceId: SpaceId = SpaceId(0) // the organization the cart belongs to; 0 is the platform
+  def spaceId: SpaceId = SpaceId(0)
 }
+
 case class ItemAdded(name: String) extends Event[ShoppingCart]
+
+case class ItemRemoved(id: Int) extends Event[ShoppingCart]
 
 case class CreateShoppingCart(userId: UserId, name: String)
   extends FirstCommand[ShoppingCart, CustomCommandResponse[_]]
-case class AddItem(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, name: String)
-  extends Command[ShoppingCart, CustomCommandResponse[_]]
+
+case class AddItem(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
+                   name: String) extends Command[ShoppingCart, CustomCommandResponse[_]]
+
+case class RemoveItem(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
+                      id: Int) extends Command[ShoppingCart, CustomCommandResponse[_]]
 
 class ShoppingCartContext extends AggregateContext[ShoppingCart] {
+
   override val version: Int = 1
+
   override def initialAggregateRoot: ShoppingCart = ShoppingCart("", Vector.empty)
 
   override def commandHandlers = cart => {
-    case c: CreateShoppingCart => CommandSuccess(ShoppingCartCreated(c.name))
+    case c: CreateShoppingCart =>
+      CommandSuccess(ShoppingCartCreated(c.name))
     case c: AddItem =>
       if (cart.items.size >= 5) CommandFailure("Cannot have more than 5 items in your cart")
       else CommandSuccess(ItemAdded(c.name))
+    case c: RemoveItem =>
+      if (cart.items.exists(_.id == c.id)) CommandSuccess(ItemRemoved(c.id))
+      else CommandFailure("There is no item " + c.id + " in the cart")
   }
 
   override def eventHandlers = (userId, timestamp, cart) => {
-    case e: ShoppingCartCreated => ShoppingCart(e.name, Vector.empty)
-    case e: ItemAdded => cart.copy(items = cart.items :+ e.name)
+    case e: ShoppingCartCreated =>
+      ShoppingCart(e.name, Vector.empty)
+    case e: ItemAdded =>
+      val nextId = cart.items.foldLeft(0)((maxId, item) => math.max(maxId, item.id)) + 1
+      cart.copy(items = cart.items :+ Item(nextId, e.name))
+    case e: ItemRemoved =>
+      cart.copy(items = cart.items.filterNot(_.id == e.id))
+  }
+}
+```
+
+**The read model**: a projection that keeps one document per cart and answers questions about it.
+
+<!-- snippet: e1/CartsList.scala#projection -->
+```scala
+case class CartSummary(name: String, itemCount: Int, version: Int)
+
+case class GetCartSummary(cartId: AggregateId)                                   // answered with Option[CartSummary]
+case class GetCartSummaryAtLeast(cartId: AggregateId, version: AggregateVersion) // the same, once it has the version
+
+class CartsListProjection(val subscriptionsState: SubscriptionsState,
+                          store: DocumentStore[CartSummary]) extends ProjectionActor {
+
+  override protected val projectionName: String = "CartsList"
+
+  protected val listeners = List(
+    AggregateListener[ShoppingCart] { (cartId, version, created, cart) => implicit session =>
+      cart match {
+        case Some(c) =>
+          val summary = CartSummary(c.name, c.items.size, version.asInt)
+          if (created) store.insertDocument(0, cartId.asLong, summary)
+          else store.overwriteDocument(cartId.asLong, summary)
+        case None =>
+          store.removeDocument(cartId.asLong)
+      }
+    })
+
+  override protected def receiveQuery: Receive = {
+    case GetCartSummary(cartId) =>
+      sender() ! store.getDocument(cartId.asLong).map(_.document)
+    case GetCartSummaryAtLeast(cartId, version) => // waits up to 2 seconds for the projection to catch up
+      delayIfNotAvailable(sender(), () =>
+        store.getDocument(cartId.asLong).map(_.document).filter(_.version >= version.asInt), 2000)
   }
 }
 ```
 
 **The wiring**: a connection pool first, then the tables, then the actors.
 
+<!-- snippet: e1/BasicSetup.scala#pool -->
 ```scala
-import io.mpjsons.MPJsons
-import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCommandResponseState}
-import io.reactivecqrs.core.delivery.OutboxPollerActor
-import io.reactivecqrs.core.eventbus.EventsBusActor
-import io.reactivecqrs.core.eventstore.PostgresEventStoreState
-import io.reactivecqrs.core.types.PostgresTypesNamesState
-import io.reactivecqrs.core.uid.UidGeneratorActor
-import org.apache.pekko.actor.{ActorSystem, Props}
-import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
+def connect(url: String, user: String, password: String): Unit = {
+  Class.forName("org.postgresql.Driver")
+  ConnectionPool.singleton(url, user, password,
+    ConnectionPoolSettings(initialSize = 5, maxSize = 32, connectionTimeoutMillis = 3000L))
+}
+```
 
-Class.forName("org.postgresql.Driver")
-ConnectionPool.singleton("jdbc:postgresql://localhost:5432/reactivecqrs", "reactivecqrs", "reactivecqrs",
-  ConnectionPoolSettings(initialSize = 5, maxSize = 32, connectionTimeoutMillis = 3000L))
-
+<!-- snippet: e1/BasicSetup.scala#wiring -->
+```scala
 val mpjsons = new MPJsons
 val typesNames = new PostgresTypesNamesState().initSchema()
 val eventStore = new PostgresEventStoreState(mpjsons, typesNames).initSchema()
 val responses = new PostgresCommandResponseState(mpjsons, typesNames).initSchema()
+val subscriptions = new PostgresSubscriptionsState(typesNames).initSchema()
 
-val system = ActorSystem("shop")
 val uidGenerator = system.actorOf(UidGeneratorActor.postgres(system), "uidGenerator")
 val eventBus = system.actorOf(Props(new EventsBusActor()), "eventBus")
-val carts = system.actorOf(AggregateCommandBusActor(new ShoppingCartContext, uidGenerator, eventStore, responses, eventBus), "carts")
-eventBus ! EventsBusActor.RegisterSubscribers(Nil) // the projections and sagas, once you have some
+val carts = system.actorOf(
+  AggregateCommandBusActor(new ShoppingCartContext, uidGenerator, eventStore, responses, eventBus), "carts")
+val cartsStore = new PostgresDocumentStore[CartSummary]("e1_carts_list", mpjsons, new NoopDocumentStoreCache)
+val cartsList = system.actorOf(
+  Props(new CartsListProjection(subscriptions, cartsStore)).withDispatcher(BlockingDispatcher.id), "cartsList")
+eventBus ! EventsBusActor.RegisterSubscribers(List(cartsList)) // every projection, saga and listener
 system.actorOf(Props(new OutboxPollerActor(eventStore, eventBus)), "outboxPoller")
 ```
 
-**Sending commands**: each answer carries the aggregate's new version, which the next command
-expects.
+**Commands and a query**: each answer carries the aggregate's new version, which the next command
+expects; the read model's question waits until the projection has caught up with that version.
 
+<!-- snippet: e1/BasicSetup.scala#commands -->
 ```scala
-import org.apache.pekko.pattern.ask
-import org.apache.pekko.util.Timeout
-import scala.concurrent.Await
-import scala.concurrent.duration._
+/** What the host keeps of the shop: where its commands and its questions go. */
+final case class Shop(carts: ActorRef, cartsList: ActorRef)
 
-implicit val timeout: Timeout = Timeout(70.seconds)
-val alice = UserId(1)
+def fillCart(shop: Shop, user: UserId)(implicit timeout: Timeout): Option[CartSummary] = {
+  def send(command: AnyRef): CustomCommandResponse[_] =
+    Await.result((shop.carts ? command).mapTo[CustomCommandResponse[_]], timeout.duration)
 
-def send(command: AnyRef): CustomCommandResponse[_] =
-  Await.result((carts ? command).mapTo[CustomCommandResponse[_]], timeout.duration)
-
-send(CreateShoppingCart(alice, "Groceries")) match {
-  case SuccessResponse(cartId, version) =>          // SuccessResponse(Id(1001),Version(1))
-    send(AddItem(alice, cartId, version, "apples")) // SuccessResponse(Id(1001),Version(2))
-  case refused => println("Refused: " + refused)
+  send(CreateShoppingCart(user, "Groceries")) match {
+    case SuccessResponse(cartId, version) =>   // the new cart's id, at version 1
+      send(AddItem(user, cartId, version, "apples")) match {
+        case SuccessResponse(_, added) =>        // version 2
+          Await.result((shop.cartsList ? GetCartSummaryAtLeast(cartId, added)).mapTo[Option[CartSummary]], timeout.duration)
+        case refused => throw new IllegalStateException("Not added: " + refused)
+      }
+    case refused => throw new IllegalStateException("Not created: " + refused)
+  }
 }
 ```
 
-From here, [the book](docs/book/README.md) adds read models, sagas, rebuilds, organizations and the
-cluster, one chapter at a time.
+From here, [the book](docs/book/README.md) explains each piece and adds sagas, rebuilds, organizations
+and the cluster, one chapter at a time.
 
 ## Modules
 

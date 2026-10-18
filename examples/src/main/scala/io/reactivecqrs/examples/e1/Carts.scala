@@ -3,6 +3,11 @@ package io.reactivecqrs.examples.e1
 // E1's domain (chapter 3): a shopping cart, its events, its commands, and the context that ties them together.
 
 // #domain
+// #imports
+import io.reactivecqrs.api._
+import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
+// #imports
+
 // #state
 case class ShoppingCart(name: String, items: Vector[Item])
 
@@ -10,9 +15,6 @@ case class Item(id: Int, name: String)
 // #state
 
 // #events
-import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.{AggregateId, SpaceId, UserId}
-
 case class ShoppingCartCreated(name: String) extends FirstEvent[ShoppingCart] {
   def spaceId: SpaceId = SpaceId(0)
 }

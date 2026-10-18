@@ -28,9 +28,6 @@ import scala.concurrent.duration._
   */
 object BasicSetup {
 
-  /** What the host keeps of the shop: where its commands and its questions go. */
-  final case class Shop(carts: ActorRef, cartsList: ActorRef)
-
   // #pool
   def connect(url: String, user: String, password: String): Unit = {
     Class.forName("org.postgresql.Driver")
@@ -61,6 +58,9 @@ object BasicSetup {
   }
 
   // #commands
+  /** What the host keeps of the shop: where its commands and its questions go. */
+  final case class Shop(carts: ActorRef, cartsList: ActorRef)
+
   def fillCart(shop: Shop, user: UserId)(implicit timeout: Timeout): Option[CartSummary] = {
     def send(command: AnyRef): CustomCommandResponse[_] =
       Await.result((shop.carts ? command).mapTo[CustomCommandResponse[_]], timeout.duration)
