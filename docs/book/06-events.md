@@ -26,7 +26,7 @@ override def eventHandlers = (userId, timestamp, shoppingCart) => {
   case e: ItemAdded => itemAdded(shoppingCart, e)
   case e: ItemRemoved => itemRemoved(shoppingCart, e)
   case e: ShoppingCartDeleted => null
-  case e: CartNameRewritten => cartNameRewritten(shoppingCart, e)
+  case e: CartNameRewritten => cartNameRewritten(shoppingCart, e) // shoppingCart.copy(name = e.name)
   case e: CartSquashed => ShoppingCart(e.name, e.items)
 }
 ```

@@ -67,6 +67,7 @@ to keep. One aggregate type can use both.
 The summary page is an event like any other, and you write it. It must be able to rebuild the
 whole state on its own. In the test domain:
 
+<!-- snippet: shoppingcart/Events.scala#cartSquashed -->
 ```scala
 /** The squash event of a cart: its state at the squash point. */
 case class CartSquashed(spaceId: SpaceId, name: String, items: Vector[Item]) extends FirstEvent[ShoppingCart]
@@ -76,23 +77,19 @@ Why a `FirstEvent`? After a squash it *is* the first event of the aggregate's hi
 events name the organization the aggregate belongs to, its space ([chapter 16](16-organizations.md)).
 Every cart of the test domain lives in space 0.
 
-Then tell the context about it:
+Then tell the context about it. Its event handlers apply the squash event, like any other,
 
+<!-- snippet: shoppingcart/ShoppingCartAggregateContext.scala#cartSquashedHandler -->
 ```scala
-import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.SpaceId
+case e: CartSquashed => ShoppingCart(e.name, e.items)
+```
 
-class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
-  // ... version, initialAggregateRoot and the command handlers, as before
+and its squash policy says how to make one from a state:
 
-  override def eventHandlers = (userId, timestamp, shoppingCart) => {
-    // ... the cart's other events, as before
-    case e: CartSquashed => ShoppingCart(e.name, e.items)
-  }
-
-  override val squash: Option[SquashPolicy[ShoppingCart]] =
-    Some(SquashPolicy(cart => CartSquashed(SpaceId(0), cart.name, cart.items)))
-}
+<!-- snippet: shoppingcart/ShoppingCartAggregateContext.scala#squashPolicy -->
+```scala
+override val squash: Option[SquashPolicy[ShoppingCart]] =
+  Some(SquashPolicy(cart => CartSquashed(SpaceId(0), cart.name, cart.items)))
 ```
 
 `SquashPolicy` takes three things:
@@ -121,6 +118,7 @@ Two kinds of projections do meet the squash event: one being rebuilt
 *first* event they ever see of that cart, at version N. So handle it like a creation that brings
 the whole state. The test domain's cart list does it like this:
 
+<!-- snippet: shoppingcart/ShoppingCartsListProjection.scala#squashedDocument -->
 ```scala
 case CartSquashed(_, name, _) => // a squash event holds the whole state: the document is made from it
   documentStore.updateDocument(0, aggregateId.asLong, _ => Document(name))
@@ -137,8 +135,10 @@ works whether the projection knew the cart before or not. A projection that list
 
 ## Step 2: squash on request
 
-Squashing one aggregate is one message to its command bus:
+Squashing one aggregate is one message to its command bus. This chapter's blocks run in `SquashingSpec`
+(`examples/src/test/scala/io/reactivecqrs/examples/cart/`), which checks what they do:
 
+<!-- snippet: cart/SquashingSpec.scala#request -->
 ```scala
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.UserId
@@ -226,8 +226,9 @@ the squash event.
 
 Sometimes a summary *should* forget something: an old, closed cart whose items nobody needs any
 more. Mix `SquashMayChangeState` into such a squash event class, and the check only makes sure your
-handlers can apply it, without comparing. The test suite has one that keeps only the cart's name:
+handlers can apply it, without comparing. This chapter's spec has one that keeps only the cart's name:
 
+<!-- snippet: cart/SquashingSpec.scala#cartArchived -->
 ```scala
 case class CartArchived(spaceId: SpaceId, name: String) extends FirstEvent[ShoppingCart] with SquashMayChangeState
 ```
@@ -275,6 +276,7 @@ squash point before those events disappear; otherwise it could never get them ag
 The historical reads of [chapter 7](07-reading-the-past.md) still work at the squash point and
 after it. Below it, they refuse instead of guessing:
 
+<!-- snippet: cart/SquashingSpec.scala#old -->
 ```scala
 import scala.util.Try
 
@@ -296,11 +298,13 @@ answered `EventHandlingError`, and the log says why. Later events can be undone 
 cart can be copied at the squash point or later. With the cart squashed up to 4 and now at
 version 5:
 
+<!-- snippet: cart/SquashingSpec.scala#belowThePoint -->
 ```scala
-UndoShoppingCartChange(userId, cartId, AggregateVersion(5), 2) // would reach version 4: EventHandlingError
-UndoShoppingCartChange(userId, cartId, AggregateVersion(5), 1) // SuccessResponse(cartId, AggregateVersion(6))
-DuplicateShoppingCart(userId, cartId, AggregateVersion(3))     // below the point: EventHandlingError
-DuplicateShoppingCart(userId, cartId, AggregateVersion(4))     // fine: the copy starts from the summary
+val commands = Seq(
+  UndoShoppingCartChange(userId, cartId, AggregateVersion(5), 2), // would reach version 4: EventHandlingError
+  UndoShoppingCartChange(userId, cartId, AggregateVersion(5), 1), // SuccessResponse(cartId, AggregateVersion(6))
+  DuplicateShoppingCart(userId, cartId, AggregateVersion(3)),     // below the point: EventHandlingError
+  DuplicateShoppingCart(userId, cartId, AggregateVersion(4)))     // fine: the copy starts from the summary
 ```
 
 ### Snapshots
@@ -347,9 +351,10 @@ apply it.
 
 ### The rule
 
-```scala
-import scala.concurrent.duration._
+Here it is in `AutomaticallySquashedCarts`, a context of carts that extends the test domain's:
 
+<!-- snippet: cart/SquashingSpec.scala#automatic -->
+```scala
 override val squash: Option[SquashPolicy[ShoppingCart]] = Some(SquashPolicy(
   toEvent = cart => CartSquashed(SpaceId(0), cart.name, cart.items),
   automatic = Some(AutomaticSquash(afterEvents = 1000, keepLast = 100))))
@@ -367,6 +372,7 @@ before those `keepLast`". Here is the rule above at work on one cart:
 
 With `keepNewerThan`, recent events stay too, however many there are:
 
+<!-- snippet: cart/SquashingSpec.scala#keepNewerThan -->
 ```scala
 AutomaticSquash(afterEvents = 1000, keepLast = 100, keepNewerThan = Some(30.days))
 ```
@@ -380,6 +386,7 @@ leaves fewer than `afterEvents` events to squash, the aggregate waits for a late
 A rule is only a rule; something has to act on it. That is the `SquashScheduler`: one per system,
 started by the host next to the command buses.
 
+<!-- snippet: cart/SquashingSpec.scala#scheduler -->
 ```scala
 import io.reactivecqrs.core.aggregate.SquashScheduler
 import io.reactivecqrs.core.aggregate.SquashScheduler.SquashTarget
@@ -387,7 +394,7 @@ import io.reactivecqrs.core.cluster.Singletons
 import org.apache.pekko.actor.{ActorRef, Props}
 
 val squashScheduler: ActorRef = Singletons.start(system, "squashScheduler",
-  Props(new SquashScheduler(eventStore, Seq(SquashTarget.of(new ShoppingCartAggregateContext, carts)))))
+  Props(new SquashScheduler(eventStore, Seq(SquashTarget.of(new AutomaticallySquashedCarts, carts)))))
 ```
 
 - **`SquashTarget.of(context, commandBus)`** names one aggregate type: its context's rule and its
@@ -408,13 +415,14 @@ What the scheduler does, with the default `SquashSchedulerOptions`:
 4. A refused aggregate is simply tried again in a later run. A run that comes while the previous
    one is still going is skipped.
 
-All four can be changed:
+All four can be changed, in the scheduler's `Props`:
 
+<!-- snippet: cart/SquashingSpec.scala#options -->
 ```scala
 import io.reactivecqrs.core.aggregate.SquashSchedulerOptions
 
-new SquashScheduler(eventStore, Seq(SquashTarget.of(new ShoppingCartAggregateContext, carts)),
-  SquashSchedulerOptions(firstRunAfter = 5.minutes, interval = 30.minutes, perRun = 500, answerTimeout = 2.minutes))
+val withOptions = Props(new SquashScheduler(eventStore, Seq(SquashTarget.of(new AutomaticallySquashedCarts, carts)),
+  SquashSchedulerOptions(firstRunAfter = 5.minutes, interval = 30.minutes, perRun = 500, answerTimeout = 2.minutes)))
 ```
 
 Its squash events are stored with `UserId(0)` and a metadata envelope whose actor is
@@ -432,6 +440,7 @@ hand.
 
 ### Watching it
 
+<!-- snippet: cart/SquashingSpec.scala#status -->
 ```scala
 val status: Future[SquashScheduler.SquashStatus] =
   (squashScheduler ? SquashScheduler.GetSquashStatus).mapTo[SquashScheduler.SquashStatus]
@@ -451,6 +460,7 @@ its summary page; the binder keeps the originals.
 
 That binder is the **archive**. Name the audit event classes in `keep`:
 
+<!-- snippet: cart/SquashingSpec.scala#keep -->
 ```scala
 override val squash: Option[SquashPolicy[ShoppingCart]] =
   Some(SquashPolicy(cart => CartSquashed(SpaceId(0), cart.name, cart.items), keep = Set(classOf[ItemAdded])))
@@ -465,6 +475,7 @@ event of a copy that the squash detaches, as long as they are of a kept class.
 The test suite's example: a cart gets an apple (version 2) and a pear (3), loses the apple (4) and
 gets a plum (5). It is squashed up to 4. Now ask for its archive:
 
+<!-- snippet: cart/SquashingSpec.scala#archived -->
 ```scala
 val archived: Future[Try[ArchivedEvents[ShoppingCart]]] =
   (carts ? GetArchivedEvents(cartId)).mapTo[Try[ArchivedEvents[ShoppingCart]]]
@@ -487,6 +498,7 @@ delete ([chapter 6](06-events.md)) removes the archive together with the aggrega
 Put the pieces together and you get a retention policy: "keep the last 90 days as they are, keep the
 audit events for good, let the rest go":
 
+<!-- snippet: cart/SquashingSpec.scala#retention -->
 ```scala
 override val squash: Option[SquashPolicy[ShoppingCart]] = Some(SquashPolicy(
   toEvent = cart => CartSquashed(SpaceId(0), cart.name, cart.items),
@@ -505,6 +517,7 @@ Event classes pile up over the years: a changed event shape becomes a new class
 event uses it. Squash is how old events finally leave the history. To find out whether a class is
 still needed, ask `StoredDataCheck`:
 
+<!-- snippet: cart/SquashingSpec.scala#usersOf -->
 ```scala
 import io.reactivecqrs.core.tools.StoredDataCheck
 

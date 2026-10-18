@@ -23,8 +23,8 @@ abstract class CartSpec extends CommonSpec with BeforeAndAfterAll {
   protected val mpjsons = new MPJsons
   protected val typesNames = new PostgresTypesNamesState().initSchema()
   protected val eventStore = new PostgresEventStoreState(mpjsons, typesNames).initSchema()
-  private val responseState = new PostgresCommandResponseState(mpjsons, typesNames).initSchema()
-  private val uidGenerator = system.actorOf(UidGeneratorActor.postgres(system), "uidGenerator")
+  protected val responseState = new PostgresCommandResponseState(mpjsons, typesNames).initSchema()
+  protected val uidGenerator = system.actorOf(UidGeneratorActor.postgres(system), "uidGenerator")
 
   /** A command bus of carts run by `context`, with an event bus of its own: a bus has one publisher per type. */
   protected def carts(context: AggregateContext[ShoppingCart], name: String, store: EventStoreState = eventStore): ActorRef = {

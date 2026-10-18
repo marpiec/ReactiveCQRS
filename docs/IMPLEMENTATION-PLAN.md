@@ -2438,3 +2438,20 @@ Open test-infrastructure items:
   experiment (a snapshot at version 3, a passivation that writes none, a restore from the snapshot,
   seen in the `reactivecqrs.restore` measure). Named so as not to be confused with the test domain's
   `SnapshotSpec`, which the chapter cites.
+
+**18/10/2026: chapters 14 and 15's code is compiled and checked**
+- Chapter 14: all 17 blocks are regions, of the test domain (its squash event, handler, policy and
+  list projection) and of `SquashingSpec`. The spec runs the chapter's squash on request (the cart
+  as it was, its history from the squash event, the user and time of the request, the read below the
+  point and its message), the honesty check and `SquashMayChangeState`, the undos and copies below
+  the point, the scheduler with a rule (one squash, `SquashStatus(1, 0, 0)`), the archive and
+  `usersOf`'s `ClassUser(cart, 1, 2)`. Two blocks were wrong as written: the scheduler was given the
+  test domain's context, which has no automatic rule (`SquashTarget.of` throws for it), and the
+  options block created the actor with `new` outside `Props`, which Pekko refuses.
+- Chapter 15: all nine blocks are regions. `RewritingSpec` fixes the chapter's "Grocceries" with
+  `RewriteCartName`, checks that a rewritten event keeps its class and that a rewrite without a new
+  event is stored at the same version, and runs the complete rewrite on the chapter's orders
+  (`Orders.scala`, new: an order that keeps its customer's name and e-mail, squashed with the placing
+  archived, and a managed projection of who placed it): the squash event, the archive and the read
+  model hold the customer no more, and `history_rewrites` has its row. The run block imported
+  `HistoryRewriter` but not `RewriteReport`, which it names.

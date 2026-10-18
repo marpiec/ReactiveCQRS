@@ -27,5 +27,7 @@ case class ShoppingCartChangesUndone(eventsCount: Int) extends UndoEvent[Shoppin
 // #undone
 
 case class CartNameRewritten(name: String) extends Event[ShoppingCart]
-/** The squash event of a cart (D48): its state at the squash point. */
+// #cartSquashed
+/** The squash event of a cart: its state at the squash point. */
 case class CartSquashed(spaceId: SpaceId, name: String, items: Vector[Item]) extends FirstEvent[ShoppingCart]
+// #cartSquashed

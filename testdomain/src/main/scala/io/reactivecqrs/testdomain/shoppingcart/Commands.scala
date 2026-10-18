@@ -48,10 +48,18 @@ case class DeleteShoppingCart(idempotencyId: Option[SagaStep], userId: UserId, a
   extends Command[ShoppingCart, CustomCommandResponse[_]] with IdempotentCommand[SagaStep]
 
 
+// #rewriteCommands
 case class RewriteCartName(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
                            name: String) extends RewriteHistoryCommand[ShoppingCart, CustomCommandResponse[_]] {
   override def eventsTypes = Set(classOf[ShoppingCartCreated])
 }
+
+/** Renames the cart throughout its history, on whatever version it has (like an anonymization). */
+case class RewriteCartNameConcurrently(userId: UserId, aggregateId: AggregateId, name: String)
+  extends RewriteHistoryConcurrentCommand[ShoppingCart, CustomCommandResponse[_]] {
+  override def eventsTypes = Set(classOf[ShoppingCartCreated])
+}
+// #rewriteCommands
 
 // #clientKey
 /** A key chosen by the caller, the way a client retrying a request would send it. */
@@ -76,9 +84,3 @@ case class ItemReceipt(itemName: String)
 
 /** A recurring check that changes nothing: its handler returns no events (Neula R9). */
 case class CheckCart(userId: UserId, aggregateId: AggregateId) extends ConcurrentCommand[ShoppingCart, CustomCommandResponse[_]]
-
-/** Renames the cart throughout its history, on whatever version it has (like an anonymization). */
-case class RewriteCartNameConcurrently(userId: UserId, aggregateId: AggregateId, name: String)
-  extends RewriteHistoryConcurrentCommand[ShoppingCart, CustomCommandResponse[_]] {
-  override def eventsTypes = Set(classOf[ShoppingCartCreated])
-}

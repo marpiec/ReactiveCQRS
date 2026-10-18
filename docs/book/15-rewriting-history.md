@@ -41,10 +41,8 @@ Like ordinary commands ([chapter 5](05-command-flavors.md)), rewrite commands co
 Both have one more member, `eventsTypes`: the event classes you want to change. The test domain has
 one of each:
 
+<!-- snippet: shoppingcart/Commands.scala#rewriteCommands -->
 ```scala
-import io.reactivecqrs.api._
-import io.reactivecqrs.api.id.{AggregateId, UserId}
-
 case class RewriteCartName(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion,
                            name: String) extends RewriteHistoryCommand[ShoppingCart, CustomCommandResponse[_]] {
   override def eventsTypes = Set(classOf[ShoppingCartCreated])
@@ -65,6 +63,7 @@ Rewrite commands do not go to `commandHandlers`. They have a handler of their ow
 `rewriteHistoryCommandHandlers`, which receives two things: the events to rewrite and the current
 state.
 
+<!-- snippet: shoppingcart/ShoppingCartAggregateContext.scala#rewriteHandlers -->
 ```scala
 override def rewriteHistoryCommandHandlers = (events, shoppingCart) => {
   case c: RewriteCartName => rewriteCartName(c.name, events)
@@ -75,6 +74,7 @@ override def rewriteHistoryCommandHandlers = (events, shoppingCart) => {
 `events` is an `Iterable[EventWithVersion[ShoppingCart]]`: the aggregate's own events of the
 classes in `eventsTypes`, oldest first, each with its version. The test domain's handler:
 
+<!-- snippet: shoppingcart/CommandsHandlers.scala#rewriteCartName -->
 ```scala
 def rewriteCartName(name: String, events: Iterable[EventWithVersion[ShoppingCart]]) = {
   val rewritten: Iterable[EventWithVersion[ShoppingCart]] = events.map(ev => ev.event match {
@@ -101,6 +101,10 @@ may also say no with `CommandFailure`, or take its time with `AsyncCommandResult
 
 ## Sending it
 
+This chapter's blocks run in `RewritingSpec`
+(`examples/src/test/scala/io/reactivecqrs/examples/cart/`), which checks what they do:
+
+<!-- snippet: cart/RewritingSpec.scala#send -->
 ```scala
 import org.apache.pekko.pattern.ask
 import org.apache.pekko.util.Timeout
@@ -174,8 +178,9 @@ What the library did, in order:
 Projections never see a rewritten event: it is not published again. A cart list that shows
 "Grocceries" goes on showing it, unless something tells it. That is the job of the new event,
 `CartNameRewritten` in the test domain: a **compensating event**. Every projection that shows the
-cart's name handles it, for example:
+cart's name handles it; the test domain's cart list, for example:
 
+<!-- snippet: shoppingcart/ShoppingCartsListProjection.scala#nameRewritten -->
 ```scala
 case CartNameRewritten(name) =>
   documentStore.updateDocument(0, aggregateId.asLong, _ => Document(name))
@@ -184,6 +189,7 @@ case CartNameRewritten(name) =>
 The aggregate's own event handler applies it too. It sets the name, which the corrected creation
 event has already given, so nothing changes, and the history stays consistent from top to bottom:
 
+<!-- snippet: shoppingcart/ShoppingCartAggregateContext.scala#nameRewrittenHandler -->
 ```scala
 case e: CartNameRewritten => cartNameRewritten(shoppingCart, e) // shoppingCart.copy(name = e.name)
 ```
@@ -229,8 +235,12 @@ them. That is the **complete rewrite**.
 
 ### Step 1: describe the change as data
 
-A change is a small case class that says what to erase. It extends `HistoryChange`:
+The example is an order that keeps its customer's name and e-mail address: `Order`, with the events
+`OrderPlaced` and `OrderSquashed`, in `examples/src/test/scala/io/reactivecqrs/examples/cart/Orders.scala`.
+Its customer asks to be forgotten. A change is a small case class that says what to erase. It
+extends `HistoryChange`:
 
+<!-- snippet: cart/Orders.scala#eraseCustomer -->
 ```scala
 import io.reactivecqrs.api.HistoryChange
 
@@ -242,6 +252,7 @@ case class EraseCustomer(customer: CustomerId) extends HistoryChange
 The context gets `historyChanges`: for a change, a partial function from an event to the event it
 becomes. Events it does not match stay as they are.
 
+<!-- snippet: cart/Orders.scala#historyChanges -->
 ```scala
 override def historyChanges: HistoryChange => PartialFunction[Event[Order], Event[Order]] = {
   case EraseCustomer(c) => {
@@ -262,8 +273,9 @@ can hold the value (an `actor` or a `custom` entry, [chapter 6](06-events.md)), 
 
 ### Step 3: run it
 
+<!-- snippet: cart/RewritingSpec.scala#run -->
 ```scala
-import io.reactivecqrs.core.rewrite.HistoryRewriter
+import io.reactivecqrs.core.rewrite.{HistoryRewriter, RewriteReport}
 
 val report: Future[RewriteReport] =
   new HistoryRewriter(orders, eventStore, projections = Map("orders" -> ordersProjection))

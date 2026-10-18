@@ -37,10 +37,12 @@ class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
     // #undoHandler
   }
 
+  // #rewriteHandlers
   override def rewriteHistoryCommandHandlers = (events, shoppingCart) => {
     case c: RewriteCartName => rewriteCartName(c.name, events)
     case c: RewriteCartNameConcurrently => rewriteCartName(c.name, events)
   }
+  // #rewriteHandlers
 
   // #eventHandlers
   override def eventHandlers = (userId, timestamp, shoppingCart) => {
@@ -53,12 +55,19 @@ class ShoppingCartAggregateContext extends AggregateContext[ShoppingCart] {
     // #deletedHandler
     case e: ShoppingCartDeleted => null
     // #deletedHandler
-    case e: CartNameRewritten => cartNameRewritten(shoppingCart, e)
+    // #nameRewrittenHandler
+    case e: CartNameRewritten => cartNameRewritten(shoppingCart, e) // shoppingCart.copy(name = e.name)
+    // #nameRewrittenHandler
+    // #cartSquashedHandler
     case e: CartSquashed => ShoppingCart(e.name, e.items)
+    // #cartSquashedHandler
   }
   // #eventHandlers
 
-  override val squash: Option[SquashPolicy[ShoppingCart]] = Some(SquashPolicy(cart => CartSquashed(SpaceId(0), cart.name, cart.items)))
+  // #squashPolicy
+  override val squash: Option[SquashPolicy[ShoppingCart]] =
+    Some(SquashPolicy(cart => CartSquashed(SpaceId(0), cart.name, cart.items)))
+  // #squashPolicy
 
   override def initialAggregateRoot: ShoppingCart = ShoppingCart("", Vector())
 
