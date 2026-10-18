@@ -56,8 +56,10 @@ object DraftsSetup {
     val draft = send(buses.drafts, CreateList(user, "Maybe this weekend")).asInstanceOf[SuccessResponse] // a negative id
     send(buses.drafts, WriteItem(user, draft.aggregateId, draft.aggregateVersion, "tent"))
     send(buses.drafts, WriteItem(user, draft.aggregateId, AggregateVersion(2), "stove"))
-    val kept = Await.result((buses.drafts ? Materialize(draft.aggregateId, user)).mapTo[MaterializeResponse], timeout.duration)
     // #draft
+    // #keep
+    val kept = Await.result((buses.drafts ? Materialize(draft.aggregateId, user)).mapTo[MaterializeResponse], timeout.duration)
+    // #keep
     val stored = kept match {
       case Materialized(_, persistentId) => Await.result((buses.lists ? GetAggregate(persistentId)).mapTo[Try[Aggregate[ShoppingList]]], timeout.duration).get
       case refused => throw new IllegalStateException("Not kept: " + refused)
