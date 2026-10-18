@@ -5,7 +5,7 @@ import io.reactivecqrs.api.AggregateVersion
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.documentstore.{InCache, MapDocumentStoreCache, Note, PostgresDocumentStore, VersionedDocument}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
-import io.reactivecqrs.testkit.TestDatabase
+import io.reactivecqrs.testkit.{TestDatabase, TestIds}
 import org.scalatest.GivenWhenThen
 import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.must.Matchers
@@ -19,7 +19,7 @@ class CachesAfterRollbackSpec extends AnyFeatureSpec with GivenWhenThen with Mat
   private val typesNamesState = new PostgresTypesNamesState().initSchema()
   private val subscriptionsState = new PostgresSubscriptionsState(typesNamesState).initSchema()
 
-  private def newAggregateId() = AggregateId(System.nanoTime())
+  private def newAggregateId() = AggregateId(TestIds.aggregate()) // unique: nanoTime can repeat within one expression
 
   private def failingTransaction(work: scalikejdbc.DBSession => Unit): Unit = {
     an[IllegalStateException] must be thrownBy subscriptionsState.localTx { session =>

@@ -5,7 +5,7 @@ import java.time.Instant
 import io.reactivecqrs.api.{AggregateType, AggregateVersion}
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.types.PostgresTypesNamesState
-import io.reactivecqrs.testkit.TestDatabase
+import io.reactivecqrs.testkit.{TestDatabase, TestIds}
 import org.scalatest.GivenWhenThen
 import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.must.Matchers
@@ -24,7 +24,7 @@ class PostgresSubscriptionsStateSpec extends AnyFeatureSpec with GivenWhenThen w
   private def newState(maxCachedAggregates: Int = 10000) =
     new PostgresSubscriptionsState(typesNamesState, maxCachedAggregates = maxCachedAggregates).initSchema()
 
-  private def newAggregateId() = AggregateId(System.nanoTime())
+  private def newAggregateId() = AggregateId(TestIds.aggregate()) // unique: nanoTime can repeat within one expression
 
   private def advance(state: PostgresSubscriptionsState, subscriber: String, id: AggregateId, from: Int, to: Int): Unit =
     state.localTx { implicit session => state.newVersion(subscriber, SubscriptionType.EVENTS, id, AggregateVersion(from), AggregateVersion(to)) }
