@@ -663,6 +663,27 @@ kontaktowy, do jakiego klastra należy, i dołącza do tego, który mu wskażą.
 punkty kontaktowe zgłoszą, że nie należą do żadnego, tworzą nowy klaster, zaczynając od tego
 z najniższym adresem.
 
+**Start, który się nie uda, kończy proces.** Jeśli `startNode` rzuci wyjątek (baza danych nie działa,
+krok schematu nie może wziąć blokady), węzeł jest już w klastrze. Członek bez swoich aktorów brałby
+shardy, których nigdy nie obsłuży, a jako najstarszy uruchamiałby singletony za wszystkich, więc
+`startProcess` każe mu odejść i zamknąć system aktorów, a `main` kończy proces; Kubernetes albo
+`restart: unless-stopped` w Docker Compose uruchamia go ponownie:
+
+<!-- snippet: e2/ClusterSetup.scala#startedOrLeft -->
+```scala
+/** `start` on `system`; when it fails (the database is down, a schema step cannot take its lock), the node leaves the
+  * cluster and its actor system ends, and the failure is thrown, so the process ends and is started again. A node
+  * that stayed a member without its actors would take shards it never serves, and as the oldest member it would run
+  * the singletons, the outbox poller and the projections, for the whole cluster (F287). */
+def startedOrLeft[T](system: ActorSystem)(start: => T): T =
+  try start catch {
+    case NonFatal(e) =>
+      system.log.error(e, "The node could not start: it leaves the cluster, and its process ends")
+      Await.ready(CoordinatedShutdown(system).run(CoordinatedShutdown.UnknownReason), 2.minutes)
+      throw e
+  }
+```
+
 Manifest Kubernetesa ma cztery części, które warto znać:
 
 1. **Konto usługi (service account) z rolą**: `get`, `watch` i `list` na `pods`, żeby Bootstrap znalazł

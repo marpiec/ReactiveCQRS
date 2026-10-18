@@ -11,6 +11,8 @@ import org.apache.pekko.actor.{ActorRef, Props}
 import org.apache.pekko.testkit.TestProbe
 import scalikejdbc._
 
+import java.util.concurrent.atomic.AtomicInteger
+
 import scala.annotation.nowarn
 import scala.concurrent.{Future, Promise}
 import scala.concurrent.duration._
@@ -40,6 +42,16 @@ class LegacyGreeter(val state: SagaState, val uidGenerator: ActorRef, override v
     case Greet(_, text) => if (hold) Promise[SagaHandlingStatus]().future else Future.successful(SagaSucceded(Greeted("Hi, " + text)))
   }
   override def handleRevert(step: SagaStep): ReceiveRevert = PartialFunction.empty
+}
+
+/** A saga written for 0.12 whose step fails (an ask timed out: its command may have been applied); counts its runs. */
+@nowarn("cat=deprecation")
+class LegacyTimingOut(val state: SagaState, val uidGenerator: ActorRef, override val name: String, runs: AtomicInteger) extends SagaActor {
+  override def handleOrder(step: SagaStep): ReceiveOrder = { case _ =>
+    runs.incrementAndGet()
+    Future.failed(new java.util.concurrent.TimeoutException("the command was not answered in time"))
+  }
+  override def handleRevert(step: SagaStep): ReceiveRevert = { case _ => Future.successful(SagaRevertSucceded) }
 }
 
 // AR5, D86: sagas as definitions run by the library's runner; the deprecated SagaActor runs on the same state machine.
@@ -79,6 +91,15 @@ class SagaRunnerSpec extends CommonSpec {
         awaitAssert(capture.all.exists(_.contains("Saga revert failed")) mustBe true, 5.seconds, 50.millis)
         capture.containing(value) mustBe empty
       } finally capture.close()
+    }
+
+    // F285: its commands carry no idempotency key, as 0.12's did not, so a step run again could apply one twice.
+    Scenario("F285 a SagaActor's step that failed is not run again: the saga reverts, as in 0.12") {
+      val runs = new AtomicInteger()
+      val saga = system.actorOf(Props(new LegacyTimingOut(sagaState, uidGenerator, "LegacyTimingOut-" + System.nanoTime(), runs)))
+
+      saga.askFor[SagaResponse](Greet(user, "Dan"), 30.seconds) mustBe a[SagaFailureResponse]
+      runs.get mustBe 1
     }
 
     Scenario("a saga written as a SagaActor, as before 1.0, still runs") {

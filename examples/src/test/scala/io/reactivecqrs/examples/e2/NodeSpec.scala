@@ -86,4 +86,20 @@ class NodeSpec extends AnyFeatureSpec with Matchers with Eventually {
       } finally Await.ready(system.terminate(), 30.seconds)
     }
   }
+
+  Feature("A node whose start fails (F287)") {
+
+    Scenario("F287 leaves the cluster and ends its actor system, so its process ends instead of staying a member that is never ready") {
+      val system = ActorSystem("failing-start", ConfigFactory.parseString(
+        """pekko.actor.provider = cluster
+          |pekko.remote.artery.canonical { hostname = "127.0.0.1", port = 0 }
+          |pekko.coordinated-shutdown.exit-jvm = off""".stripMargin).withFallback(ConfigFactory.load()))
+      Cluster(system).join(Cluster(system).selfAddress)
+      eventually(Cluster(system).selfMember.status mustBe MemberStatus.Up)
+
+      the[IllegalStateException] thrownBy ClusterSetup.startedOrLeft(system)(throw new IllegalStateException("the database is down")) must
+        have message "the database is down"
+      Await.ready(system.whenTerminated, 30.seconds).isCompleted mustBe true
+    }
+  }
 }

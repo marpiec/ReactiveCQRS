@@ -61,4 +61,6 @@ object SagaDefinition {
   val defaultPersistRetries: Backoff = Backoff(100.millis, 30.seconds, maxAttempts = 10)
   /** From 1 s, doubling, at most 30 s, 5 attempts. */
   val defaultStepRetries: Backoff = Backoff(1.second, 30.seconds, maxAttempts = 5)
+  /** One attempt: a step that failed is not run again, and the saga reverts (F285). */
+  val noStepRetries: Backoff = Backoff(1.second, 1.second, maxAttempts = 1)
 }

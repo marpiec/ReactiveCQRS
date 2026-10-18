@@ -443,6 +443,10 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 
 ### Commands and aggregates
 
+#### F277 — During the 1.0.0 → 1.0.1 rollout, a 1.0.0 node's snapshot update keeps the shape a 1.0.1 node wrote
+- **High**, likely · **Closed, not a problem** (19/10/2026): 1.0.0 never ran in production; Neula goes from 0.12.47 to the first 1.0.x it deploys, so no 1.0.0 node writes snapshots beside a 1.0.1 one. A snapshot written by 0.12 or 1.0.0 has no shape and is never used (F196).
+- **Found:** the second risk assessment (18/10/2026); notes STORE-2, SYS-5 in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md).
+
 #### F242 — `StoreFirstEvent` is accepted by any persistent bus, and stores any first event without the command handlers
 - **Low**, likely · **Fixed for 1.0.1** (18/10/2026, the quick wins after the risk assessment) · `AggregateCommandBusActor.StoreMaterialized`
 - **Fix:** an ephemeral aggregate's owner sends its first event wrapped in `StoreMaterialized`, private to the library; a persistent bus refuses a `StoreFirstEvent` sent on its own with a `FailureResponse`. Defence in depth: code inside the library's packages, or reflection, can still make the wrapper.
@@ -1000,6 +1004,11 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 
 ### Performance and runtime
 
+#### F287 — A start that fails after the actor system exists leaves a live, never-ready member (E2): an outage at start outlasts its cause
+- **High**, likely · **Fixed for 1.0.1** (19/10/2026, E2's `NodeSpec` "F287", red under a mutation) · E2's `ClusterSetup.startedOrLeft`
+- **Fix:** E2's `startProcess` runs the start through `startedOrLeft`: when it fails, the node leaves the cluster (coordinated shutdown) and the failure is thrown; `main` ends the process with status 1, and Kubernetes, or Docker Compose's restart policy, starts it again. Chapter 17 shows it, for hosts to copy.
+- **Found:** the second risk assessment (18/10/2026); note SYS-1 in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md).
+
 #### F279 — F218's pacing stops at most 200 owners a second: under sustained traffic `Local` owners grow without bound
 - **High**, likely · **Fixed for 1.0.1** (18/10/2026, a regression of F218 found by the second risk assessment; `PassivationSpec` "F279", a simulation of 10 minutes at 1 000 new aggregates a second: 540 000 owners before, bounded after; red under a mutation) · `Passivation`, `LocalOwners`
 - **Fix:** the sweep's decision moved to the pure `Passivation`; each round stops at least 200 and a tenth of those due, so the stops keep pace with the new owners and the backlog stays about ten seconds' worth. Owners live their 2 idle minutes as before.
@@ -1198,6 +1207,15 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Found:** planning the short JSON keys measurement (IMPLEMENTATION-PLAN §7.1, M6, 17/10/2026).
 
 ### Sagas
+
+#### F285 — Step re-runs, on by default and for `SagaActor` too, resend commands: without keys, a step applied but answered as failed is applied again
+- **High** (at Neula; Medium elsewhere), likely · **Fixed for 1.0.1** (19/10/2026, `SagaRunnerSpec` "F285", red before, red under a mutation) · `SagaActor.stepRetries`
+- **Fix:** a saga written as a `SagaActor` (0.12's way, whose commands carry no idempotency key) runs a failed step once and reverts, as in 0.12 (`SagaDefinition.noStepRetries`); one whose commands are keyed overrides `stepRetries`. A `SagaDefinition` keeps F205's re-runs, as its contract asks for keyed commands; chapter 12 says so, and adds the key as the sixth step of moving a `SagaActor`. The runner cannot see which commands a step sends, so it cannot re-run only keyed ones.
+- **Found:** the second risk assessment (18/10/2026); notes CLSG-2, SYS-6 in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md).
+
+#### F316 — A rollback to 1.0.0 after keyed sagas finished leaves the pending sagas of that name unresumed
+- **Medium**, likely · **Closed, not a problem** (19/10/2026): 1.0.0 never ran in production, so there is nothing to roll back to.
+- **Found:** the second risk assessment (18/10/2026); note CLSG-6 in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md).
 
 #### F205 — A saga step whose command timed out is reverted, but the command can still be applied later, and nothing undoes it
 - **High**, likely · **Fixed for 1.0.1** (18/10/2026, step 3 of the risk assessment; `SagaFaultsSpec` "F205", red under a mutation) · `SagaRunning`, `SagaDefinition.stepRetries`, the book's examples

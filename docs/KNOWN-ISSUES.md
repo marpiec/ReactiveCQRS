@@ -191,7 +191,7 @@ Changes must keep these true (from `ARCHITECTURE.md` §10, extended by the decis
 
 ## 3. Issues in the library
 
-The issues still open. The 268 closed ones (fixed, accepted, decided or found not to be a problem) are in
+The issues still open. The 272 closed ones (fixed, accepted, decided or found not to be a problem) are in
 [`KNOWN-ISSUES-ARCHIVE.md`](KNOWN-ISSUES-ARCHIVE.md), by area, as they were recorded; a number named in the code or in
 the other documents (`F99`) is found there. F185–F274 were found by the risk assessment of 1.0.0 (18/10/2026), and F275–F335 by
 the second one, of 1.0.1-SNAPSHOT ([RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md)), at the end of this section.
@@ -259,9 +259,6 @@ on a dependency's behaviour, timing or configuration; "scenario" says how probab
 #### F276 — The snapshot shape ignores subclasses held through a trait or abstract class: a field added to one is restored as zero, false or null
 - **High**, likely · scenario possible · Open; continues F196 · details under F276 in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md) §3 and the notes ([OWN-3](risk-assessment-2/owner.md))
 
-#### F277 — During the 1.0.0 → 1.0.1 rollout, a 1.0.0 node's snapshot update keeps the shape a 1.0.1 node wrote
-- **High**, likely · scenario unlikely · Open; continues F196 · details under F277 in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md) §3 and the notes ([STORE-2](risk-assessment-2/event-store.md), [SYS-5](risk-assessment-2/cross-cutting.md))
-
 #### F278 — Schema-lock waiters each hold a pooled connection: many store set-ups at once make lock holders fail in turn and saturate the blocking dispatcher
 - **High**, likely · scenario possible · Open; continues F272 · details under F278 in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md) §3 and the notes ([DOCS-1](risk-assessment-2/document-store.md), [SYS-2](risk-assessment-2/cross-cutting.md))
 
@@ -277,14 +274,8 @@ on a dependency's behaviour, timing or configuration; "scenario" says how probab
 #### F284 — A saga's compare-and-set miss after its own write whose acknowledgement was lost stops the saga; its caller is never answered
 - **High**, likely · scenario unlikely · Open; continues F206, F232 · details under F284 in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md) §3 and the notes ([CLSG-1](risk-assessment-2/cluster-and-sagas.md))
 
-#### F285 — Step re-runs, on by default and for `SagaActor` too, resend commands: without keys, a step applied but answered as failed is applied again
-- **High** (at Neula; Medium elsewhere), likely · scenario possible · Open; continues F205, H3 · details under F285 in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md) §3 and the notes ([CLSG-2](risk-assessment-2/cluster-and-sagas.md), [SYS-6](risk-assessment-2/cross-cutting.md))
-
 #### F286 — A step's retries span about 15–40 s: a longer failover reverts a step whose command committed, and a revert in the same outage gives up silently
 - **High**, likely · scenario unlikely · Open; continues F205 · details under F286 in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md) §3 and the notes ([CLSG-3](risk-assessment-2/cluster-and-sagas.md))
-
-#### F287 — A start that fails after the actor system exists leaves a live, never-ready member (E2): an outage at start outlasts its cause
-- **High**, likely · scenario possible · Open; continues F233, F188 · details under F287 in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md) §3 and the notes ([SYS-1](risk-assessment-2/cross-cutting.md))
 
 #### F288 — A non-success answer to a materialization, an unknown outcome included, unfreezes the draft, so F208's lost edits come back
 - **Medium**, likely · scenario unlikely · Open; continues F208, F253 · details in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md) §2 and the notes ([OWN-2](risk-assessment-2/owner.md), [BUS-1](risk-assessment-2/command-bus.md))
@@ -360,9 +351,6 @@ on a dependency's behaviour, timing or configuration; "scenario" says how probab
 
 #### F315 — Finished keyed sagas' rows stay 30 days with their last order: the table grows, every load reads them, erasure does not reach them
 - **Medium**, likely · scenario possible · Open; continues F207 · details in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md) §2 and the notes ([CLSG-5](risk-assessment-2/cluster-and-sagas.md))
-
-#### F316 — A rollback to 1.0.0 after keyed sagas finished leaves the pending sagas of that name unresumed
-- **Medium**, likely · scenario unlikely · Open; continues F252, F151 · details in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md) §2 and the notes ([CLSG-6](risk-assessment-2/cluster-and-sagas.md))
 
 #### F317 — F227 stops early only for library values: one large application value is still serialized whole
 - **Medium**, likely · scenario possible · Open; continues F227 · details in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md) §2 and the notes ([CLSG-8](risk-assessment-2/cluster-and-sagas.md))
@@ -469,7 +457,7 @@ From §7 of Neula's change requests.
 | M5 | F46 ✔ (sharded types), F48 ✔, F63 ✔, F93 ✔ (flow control), F99 ✔, F119 ✔, F120 ✔, F121 ✔, F122 ✔, F123 ✔, F125 ✔, F126 ✔, F127 ✔, F128 ✔, F129 ✔, F130 ✔, F131 ✔, F132 ✔, F133 ✔, F134 ✔, F135 ✔, F136 (accepted), F137 ✔, F138 ✔, F139 ✔, F140 ✔, F141 ✔, F142 ✔ (F78 between nodes ✔ in M3) |
 | M6 | F8 ✔ (complete), F124 ✔, F143 ✔, F144 ✔, F145 ✔, F146 ✔, F147 ✔, F149 ✔, F150 ✔, F151 ✔, F154 ✔, F158 ✔, F159 ✔, F167 ✔, F168 ✔, F172 ✔, F174 ✔; F155 decided (review 8) |
 | M7 | AR5 ✔ (moved from M5 at review 7; D86); F148 ✔, F152 ✔, F153 ✔, F156 ✔, F157 ✔, F160 ✔, F161 ✔, F162 ✔, F163 ✔, F164 ✔, F165 ✔, F166 ✔, F169 ✔ (found writing the book), F170 ✔, F171 ✔, F173 ✔, F175 (accepted), F176 ✔ (found writing E10), F177 ✔ (found writing E11), F178 ✔ (found running E2 in Docker), F179 (deferred: the owner publishes mpjsons later), F180 ✔ (found running E2 on Kubernetes), F181 ✔ (found writing chapter 6's spec), F182 ✔ (found by E2's fault tests in Docker), F183 ✔ (found writing the Scaladoc), F184 (open, found by review 9's bench) |
-| After 1.0 | F185–F274, found by the risk assessment of 18/10/2026 ([RISK-ASSESSMENT.md](RISK-ASSESSMENT.md) §13 orders them); its step 1, for 1.0.1: F185 ✔, F186 ✔, F187 ✔, F188 ✔, F189 ✔, F190 ✔, F191 ✔, F193 ✔, F200 ✔, F252 (keys ✔), F255 ✔, F272 ✔; D87; step 2: F192 ✔, F194 ✔, F195 ✔, F196 ✔, F197 ✔, F198 ✔, F199 ✔, F225 ✔, F226 ✔, F201 ✔, F237 ✔, F244 ✔, F245 ✔, F248 ✔, F254 ✔, F259 ✔, F261 ✔; step 3: F205 ✔, F206 ✔, F207 ✔, F208 ✔, F209 ✔, F232 ✔, F236 ✔, F256 ✔, F257 ✔; step 4: F210 ✔, F211 ✔, F212 ✔, F221 ✔, F222 ✔, F223 ✔, F228 ✔, F258 ✔, F260 ✔, F264 ✔, F268 ✔, F273 ✔; item 15: F213 ✔, F214 ✔, F216 ✔, F218 ✔, F219 ✔, F220 ✔, F229 ✔, F230 ✔, F231 ✔, F234 ✔, F235 ✔, F217 (part), F215 open; item 16: F203 ✔, F204 ✔, F233 ✔, F240 ✔, F247 (part) ✔, F249 ✔, F250 ✔, F269 ✔, F270 and F271 documented, open; after step 4: F224 ✔, F246 ✔, F251 ✔, F252 ✔, F253 ✔, F263 ✔, F265 ✔, F266 ✔, F267 ✔; quick wins: F202 ✔, F227 ✔, F241 ✔, F242 ✔, F262 ✔, F217 (index) ✔; left open with their reasons: F238, F239, F243, F274; F275–F335, found by the second risk assessment of 18/10/2026 ([RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md) §6 orders them); its regressions: F275 ✔, F279 ✔, F282 ✔, F304 ✔, F312 ✔, F314 ✔; the rest open |
+| After 1.0 | F185–F274, found by the risk assessment of 18/10/2026 ([RISK-ASSESSMENT.md](RISK-ASSESSMENT.md) §13 orders them); its step 1, for 1.0.1: F185 ✔, F186 ✔, F187 ✔, F188 ✔, F189 ✔, F190 ✔, F191 ✔, F193 ✔, F200 ✔, F252 (keys ✔), F255 ✔, F272 ✔; D87; step 2: F192 ✔, F194 ✔, F195 ✔, F196 ✔, F197 ✔, F198 ✔, F199 ✔, F225 ✔, F226 ✔, F201 ✔, F237 ✔, F244 ✔, F245 ✔, F248 ✔, F254 ✔, F259 ✔, F261 ✔; step 3: F205 ✔, F206 ✔, F207 ✔, F208 ✔, F209 ✔, F232 ✔, F236 ✔, F256 ✔, F257 ✔; step 4: F210 ✔, F211 ✔, F212 ✔, F221 ✔, F222 ✔, F223 ✔, F228 ✔, F258 ✔, F260 ✔, F264 ✔, F268 ✔, F273 ✔; item 15: F213 ✔, F214 ✔, F216 ✔, F218 ✔, F219 ✔, F220 ✔, F229 ✔, F230 ✔, F231 ✔, F234 ✔, F235 ✔, F217 (part), F215 open; item 16: F203 ✔, F204 ✔, F233 ✔, F240 ✔, F247 (part) ✔, F249 ✔, F250 ✔, F269 ✔, F270 and F271 documented, open; after step 4: F224 ✔, F246 ✔, F251 ✔, F252 ✔, F253 ✔, F263 ✔, F265 ✔, F266 ✔, F267 ✔; quick wins: F202 ✔, F227 ✔, F241 ✔, F242 ✔, F262 ✔, F217 (index) ✔; left open with their reasons: F238, F239, F243, F274; F275–F335, found by the second risk assessment of 18/10/2026 ([RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md) §6 orders them); its regressions: F275 ✔, F279 ✔, F282 ✔, F304 ✔, F312 ✔, F314 ✔; before the release: F285 ✔, F287 ✔; F277 and F316 closed, 1.0.0 never ran in production; the rest open |
 
 ---
 

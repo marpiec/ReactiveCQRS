@@ -1,5 +1,6 @@
 package io.reactivecqrs.core.saga
 
+import io.reactivecqrs.core.util.Backoff
 import org.apache.pekko.actor.ActorRef
 
 /**
@@ -17,4 +18,9 @@ abstract class SagaActor extends SagaRunning with SagaDefinition {
   val state: SagaState
 
   final override protected def definition: SagaDefinition = this
+
+  /** F285: a saga written for 0.12 sends its commands without an idempotency key, as 0.12 had none, so a step that
+    * failed is not run again (a command applied late would be applied twice): the saga reverts, as in 0.12. Override it
+    * with `SagaDefinition.defaultStepRetries` once every command of its steps carries the `SagaStep` as its key. */
+  override def stepRetries: Backoff = SagaDefinition.noStepRetries
 }

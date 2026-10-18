@@ -482,6 +482,10 @@ prób (`stepRetries` definicji). Polecenie zastosowane z opóźnieniem, już po 
 poddało, odpowiada wtedy zapisaną odpowiedzią, a saga idzie dalej. Dopiero krok, który wciąż zawodzi,
 każe sadze się wycofać, a jej nadawca dostaje `SagaFailureResponse`.
 
+Saga wciąż napisana jako `SagaActor` wykonuje krok, który zawiódł, tylko raz i się wycofuje, jak w 0.12:
+jej polecenia, pisane przed 1.0, nie mają klucza idempotencji, więc powtórzony krok mógłby zastosować
+któreś dwa razy.
+
 Zdecyduj więc, które odpowiedzi są odmowami. Zwracaj `SagaFailed` przy odmowie, która się nie zmieni
 (`FailureResponse`: towaru nie ma). Pozwól `Future` zawieść przy odpowiedzi, która może się zmienić,
 gdy polecenie zostanie wysłane jeszcze raz: `CommandRejected` (w trakcie aktualizacji, rozdział 17),
@@ -547,7 +551,7 @@ usuwania organizacji.
 Przed wersją 1.0 saga była aktorem: klasą rozszerzającą `SagaActor`, która podawała `state`,
 `uidGenerator`, `name` i obie funkcje. W 1.0 taka saga wciąż działa, w środku na tym samym runnerze,
 ale jest oznaczona jako przestarzała: jej kod dzieli aktora z runnerem, więc może dotykać tego,
-czego powinien dotykać tylko runner. Każdą taką sagę przeniesiesz w pięciu drobnych zmianach:
+czego powinien dotykać tylko runner. Każdą taką sagę przeniesiesz w sześciu drobnych zmianach:
 
 1. `extends SagaActor` zmienia się w `extends SagaDefinition`.
 2. `val state` i `val uidGenerator` znikają z konstruktora: trafiają do `SagaRunner.props` albo
@@ -558,6 +562,9 @@ czego powinien dotykać tylko runner. Każdą taką sagę przeniesiesz w pięciu
 4. `override protected` przy `spaceOf` albo `persistRetries` zmienia się w `override`.
 5. Tam, gdzie saga była uruchamiana, `Props(new MySaga(state, uidGenerator, ...))` zmienia się w
    `SagaRunner.props(new MySaga(...)(system.dispatcher, Timeout(60.seconds)), uidGenerator, state)`.
+6. Każde polecenie wysyłane przez jej kroki niesie `SagaStep` kroku jako klucz idempotencji (najpierw,
+   jak wyżej): definicja wykonuje krok, który zawiódł, ponownie, więc polecenie bez klucza mogłoby
+   zostać zastosowane dwa razy.
 
 Zachowaj `name` i klasy zleceń: to pod nimi przechowywane są zapisane sagi, a sagi w toku wznowią
 się w runnerze o tej samej nazwie. Dokładnie to sprawdza `SagaRunnerSpec`.

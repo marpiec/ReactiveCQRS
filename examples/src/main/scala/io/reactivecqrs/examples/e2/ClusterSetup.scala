@@ -16,7 +16,7 @@ import io.reactivecqrs.core.rebuild.{PostgresProjectionRegistry, Projections, Pr
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.UidGeneratorActor
 import io.reactivecqrs.examples.e1.{AddItem, BasicSetup, CartSummary, CartsListProjection, CreateShoppingCart, GetCartSummaryAtLeast}
-import org.apache.pekko.actor.{ActorRef, ActorSystem, Props}
+import org.apache.pekko.actor.{ActorRef, ActorSystem, CoordinatedShutdown, Props}
 import org.apache.pekko.management.cluster.bootstrap.ClusterBootstrap
 import org.apache.pekko.management.scaladsl.PekkoManagement
 import org.apache.pekko.pattern.ask
@@ -24,6 +24,7 @@ import org.apache.pekko.util.Timeout
 
 import scala.concurrent.Await
 import scala.concurrent.duration._
+import scala.util.control.NonFatal
 
 /**
   * E2, a cluster (chapter 17): E1's carts on every node, sharded, and their carts list, a managed projection that runs
@@ -112,13 +113,29 @@ object ClusterSetup {
   def startProcess(cartContext: ShardedCartContext = new ShardedCartContext): (ActorSystem, Node) = {
     connectFromEnvironment()
     val system = ActorSystem("shop", nodeConfig(sys.env.get))
-    PekkoManagement(system).start() // the health checks, /ready and /alive, and Bootstrap's endpoint, on port 8558
-    ClusterBootstrap(system).start() // joins the cluster the contact points report, or forms one with them (F180)
-    (system, startNode(system, cartContext))
+    startedOrLeft(system) {
+      PekkoManagement(system).start() // the health checks, /ready and /alive, and Bootstrap's endpoint, on port 8558
+      ClusterBootstrap(system).start() // joins the cluster the contact points report, or forms one with them (F180)
+      (system, startNode(system, cartContext))
+    }
   }
 
+  // #startedOrLeft
+  /** `start` on `system`; when it fails (the database is down, a schema step cannot take its lock), the node leaves the
+    * cluster and its actor system ends, and the failure is thrown, so the process ends and is started again. A node
+    * that stayed a member without its actors would take shards it never serves, and as the oldest member it would run
+    * the singletons, the outbox poller and the projections, for the whole cluster (F287). */
+  def startedOrLeft[T](system: ActorSystem)(start: => T): T =
+    try start catch {
+      case NonFatal(e) =>
+        system.log.error(e, "The node could not start: it leaves the cluster, and its process ends")
+        Await.ready(CoordinatedShutdown(system).run(CoordinatedShutdown.UnknownReason), 2.minutes)
+        throw e
+    }
+  // #startedOrLeft
+
   def main(args: Array[String]): Unit = {
-    val (system, node) = startProcess()
+    val (system, node) = try startProcess() catch { case NonFatal(_) => sys.exit(1) } // logged; Kubernetes starts it again
 
     // Once the node is ready (its bus knows the carts list), it makes a cart and reads it from the carts list.
     val deadline = 2.minutes.fromNow

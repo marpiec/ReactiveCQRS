@@ -2751,3 +2751,10 @@ Open test-infrastructure items:
   `FramesOf100Spec`; behaviour over time under sustained load, simulated (`PassivationSpec`). Builders in specs run under
   a stopping parent, as in production.
 - Still before the release (RISK-ASSESSMENT-2 §6 step 1): F277 or its upgrade note, F285's upgrade warning, F287.
+
+
+**19/10/2026: the rest of the second assessment's release blockers**
+- 1.0.0 never ran in production (the owner, 19/10/2026): F277 and F316, whose only scenario is a 1.0.0 node or a
+  rollback to 1.0.0, are closed as not a problem; zero-downtime upgrades count from the first release Neula runs.
+- Fixed: F285 (a `SagaActor`'s failed step is not run again, as in 0.12), F287 (E2 leaves the cluster and ends its
+  process when its start fails). Each with a test red before or under a mutation. Step 1 of RISK-ASSESSMENT-2 §6 is done.

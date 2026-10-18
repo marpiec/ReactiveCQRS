@@ -15,6 +15,11 @@ that [the second assessment](docs/RISK-ASSESSMENT-2.md) found in them.
   - **New:** `SkipFailedVersion(id, pastMissing = true)` moves past missing versions that exist but cannot arrive.
   - `java.time` values sent between nodes on their own are read again (refused since F240). **Changed:** a value no
     node reads (a plain class) is refused by the sending node, with an exception naming its class.
+- **Sagas written as a `SagaActor`** run a failed step once and revert, as in 0.12: their commands carry no idempotency
+  key, so a step run again could apply one twice (F285, chapter 12). A `SagaDefinition` runs a failed step again, so
+  its commands must carry the step as their key.
+- **E2 ends a node whose start fails:** it leaves the cluster and its process ends, to be started again, instead of
+  staying a member that is never ready (F287, chapter 17; copy it in your host).
 
 - **No values in logs** (F190, F191). The library logs no SQL statements and describes a failure without the event, state,
   order or document it was about: by its classes, SQLState, constraint, table and column. The same text goes into

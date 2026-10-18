@@ -470,6 +470,9 @@ definition's `stepRetries`). A command that was applied late, after the ask gave
 with its stored response, and the saga goes on forward. Only a step that keeps failing makes the
 saga revert, with a `SagaFailureResponse` for its caller.
 
+A saga still written as a `SagaActor` runs a failed step only once and reverts, as in 0.12: its
+commands, written before 1.0, carry no idempotency key, so a step run again could apply one twice.
+
 So decide which answers are refusals. Return `SagaFailed` for a refusal that will not change (a
 `FailureResponse`: the stock is not there). Fail the `Future` for an answer that may change when
 the command is sent again: `CommandRejected` (during an upgrade, chapter 17), `CommandHandlingError`,
@@ -529,7 +532,7 @@ The space is stored with the saga when it starts. `None`, the default, keeps a s
 
 Before 1.0 a saga was an actor: a class extending `SagaActor`, giving `state`, `uidGenerator`, `name`
 and the two functions. It still runs in 1.0, on the same runner inside, but it is deprecated: its
-code shares the runner's actor, so it can touch what only the runner should. Move each one in five
+code shares the runner's actor, so it can touch what only the runner should. Move each one in six
 small changes:
 
 1. `extends SagaActor` becomes `extends SagaDefinition`.
@@ -541,6 +544,8 @@ small changes:
 4. `override protected` on `spaceOf` or `persistRetries` becomes `override`.
 5. Where the saga was started, `Props(new MySaga(state, uidGenerator, ...))` becomes
    `SagaRunner.props(new MySaga(...)(system.dispatcher, Timeout(60.seconds)), uidGenerator, state)`.
+6. Every command its steps send carries the step's `SagaStep` as its idempotency key (first, as
+   above): a definition runs a failed step again, so a command without a key could be applied twice.
 
 Keep the `name` and the order classes: they are what the stored sagas are kept under, and the sagas
 in flight resume under the runner of the same name. `SagaRunnerSpec` checks exactly that.

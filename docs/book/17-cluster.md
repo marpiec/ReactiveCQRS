@@ -645,6 +645,27 @@ with seed nodes, Bootstrap does not run. A starting node asks every contact poin
 cluster it belongs to, and joins the one they report. Only when the required contact points, all of
 them, report none do they form a new cluster, the one with the lowest address first.
 
+**A start that fails ends the process.** If `startNode` throws (the database is down, a schema step
+cannot take its lock), the node has already joined the cluster. A member without its actors would
+take shards it never serves, and as the oldest member it would run the singletons for everyone, so
+`startProcess` has it leave and end its actor system, and `main` ends the process; Kubernetes, or
+Docker Compose's `restart: unless-stopped`, starts it again:
+
+<!-- snippet: e2/ClusterSetup.scala#startedOrLeft -->
+```scala
+/** `start` on `system`; when it fails (the database is down, a schema step cannot take its lock), the node leaves the
+  * cluster and its actor system ends, and the failure is thrown, so the process ends and is started again. A node
+  * that stayed a member without its actors would take shards it never serves, and as the oldest member it would run
+  * the singletons, the outbox poller and the projections, for the whole cluster (F287). */
+def startedOrLeft[T](system: ActorSystem)(start: => T): T =
+  try start catch {
+    case NonFatal(e) =>
+      system.log.error(e, "The node could not start: it leaves the cluster, and its process ends")
+      Await.ready(CoordinatedShutdown(system).run(CoordinatedShutdown.UnknownReason), 2.minutes)
+      throw e
+  }
+```
+
 The Kubernetes manifest has four parts worth knowing:
 
 1. **A service account with a role**: `get`, `watch` and `list` on `pods`, so Bootstrap finds the
