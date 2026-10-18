@@ -17,15 +17,17 @@ import scala.concurrent.duration._
 // E2's node, three times in one JVM (the test kit's TestCluster), against the test database.
 class ClusterSpec extends AnyFeatureSpec with Matchers with Eventually with ActorAskSupport with BeforeAndAfterAll {
 
-  TestDatabase.init()
-
   implicit override val patienceConfig: PatienceConfig = PatienceConfig(Span(60, Seconds), Span(200, Millis))
   private implicit val timeout: Timeout = Timeout(70.seconds)
 
+  // #threeNodes
+  TestDatabase.init()
   private val systems = TestCluster.start(3, name = "shop")
-  private val Vector(nodeA, nodeB, nodeC) = systems.map(ClusterSetup.startNode): @unchecked
+  private val nodes = systems.map(system => ClusterSetup.startNode(system)) // what the host starts on a node
 
   override def afterAll(): Unit = TestCluster.stop(systems)
+  // #threeNodes
+  private val Vector(nodeA, nodeB, nodeC) = nodes: @unchecked
 
   private def addItem(node: ClusterSetup.Node, response: SuccessResponse, item: String): SuccessResponse =
     node.carts.askFor[CustomCommandResponse[_]](AddItem(UserId(1), response.aggregateId, response.aggregateVersion, item)) match {

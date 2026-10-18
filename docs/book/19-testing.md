@@ -407,9 +407,11 @@ class CartsOnPostgresSpec extends ShopSpec {
 ### Tests that take minutes, in milliseconds
 
 The outbox poller waits minutes before it re-publishes ([chapter 18](18-production.md)).
-`TestClock` is a `java.time.Clock` that moves only when the test moves it; `OutboxPollerSpec` gives
-one to the poller, with polls far apart so that it polls only when told:
+`TestClock` is a `java.time.Clock` that moves only when the test moves it. E11's `DeliveriesSpec` gives
+one to the poller, as the library's `OutboxPollerSpec` does, with polls far apart so that it polls only
+when told:
 
+<!-- snippet: e11/DeliveriesSpec.scala#clock -->
 ```scala
 import io.reactivecqrs.core.delivery.{OutboxPollerActor, OutboxPollerOptions}
 import io.reactivecqrs.testkit.TestClock
@@ -552,20 +554,22 @@ between two production nodes.
 
 The library tests its cluster behaviour by starting several actor systems inside one test, each a
 node on a local port, all over the run's PostgreSQL schema. The test kit's `TestCluster` does it for
-your tests too:
+your tests too. E2's `ClusterSpec` starts its three nodes like this, with
+`io.reactivecqrs.testkit.{TestCluster, TestDatabase}` imported:
 
+<!-- snippet: e2/ClusterSpec.scala#threeNodes -->
 ```scala
-import io.reactivecqrs.testkit.{TestCluster, TestDatabase}
-
 TestDatabase.init()
-val systems = TestCluster.start(3, "pekko.cluster.sharding.passivation.default-idle-strategy.idle-entity.timeout = 3s")
-val nodes = systems.map(system => new MyNode(system)) // what your host starts on a node
-// ... the scenario ...
-TestCluster.stop(systems)
+private val systems = TestCluster.start(3, name = "shop")
+private val nodes = systems.map(system => ClusterSetup.startNode(system)) // what the host starts on a node
+
+override def afterAll(): Unit = TestCluster.stop(systems)
 ```
 
-- `TestCluster.start(count, extra)` starts the nodes, joins them and waits until all are up; the first
-  is the oldest. `extra` is configuration on top.
+- `TestCluster.start(count, extra, appVersion, name)` starts the nodes, joins them and waits until all
+  are up; the first is the oldest. `extra` is configuration on top, such as
+  `"pekko.cluster.sharding.passivation.default-idle-strategy.idle-entity.timeout = 3s"`; `name` names
+  the actor systems.
 - `TestCluster.join(to, 2, appVersion = _ => "2.0.0")` adds nodes of another version later, for
   rolling upgrades; `TestCluster.stop(systems)` shuts them down.
 - Each node's configuration is the cluster provider on `127.0.0.1` with port 0, the split brain
@@ -586,17 +590,23 @@ behave exactly like a single node; the library runs its whole suite both ways.
 - **Hold a command mid-flight with a promise.** `AggregateOwnerSpec`'s `CountWhenReleased` command
   has a handler that returns an `AsyncCommandResult` of a future the test completes when it likes.
   Meanwhile the test can passivate the owner, send other commands, or let the timeout pass.
-- **A probe as a subscriber.** In `OutboxPollerSpec` a `TestProbe` is the bus's only subscriber: it
-  answers the bus's question itself, then catches deliveries, skipping those of other specs' carts:
+- **A probe as a subscriber.** In E11's `DeliveriesSpec`, as in the library's `OutboxPollerSpec`, a
+  `TestProbe` is the bus's only subscriber. It answers the bus's question itself,
 
+  <!-- snippet: e11/DeliveriesSpec.scala#probe -->
   ```scala
   val subscriber = TestProbe()
   val bus = system.actorOf(Props(new EventsBusActor()))
   bus ! RegisterSubscribers(Seq(subscriber.ref))
   subscriber.expectMsg(GetSubscriptionRequests(subscriber.ref))
   subscriber.reply(SubscriptionRequests(Seq(SubscribeForEvents(AggregateType.of[ShoppingCart], subscriber.ref)), subscriber.ref))
+  ```
 
-  // ... after a command on cartId:
+  and, after a command on `cartId`, catches the cart's delivery, skipping those of other specs' carts,
+  and acknowledges it:
+
+  <!-- snippet: e11/DeliveriesSpec.scala#catch -->
+  ```scala
   val versions = subscriber.fishForSpecificMessage(10.seconds) {
     case e: IdentifiableEvents[_] if e.aggregateId == cartId => e.events.map(_.version.asInt)
   }
