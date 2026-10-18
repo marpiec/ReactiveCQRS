@@ -193,6 +193,7 @@ Sometimes a rule needs to wait: for a price list, say, or a stock service. Then 
 imaginary stock service of your own, whose `isAvailable` answers a `Future[Boolean]` (and with an
 `ExecutionContext` of yours in scope):
 
+<!-- snippet: e1/TryingItOutSpec.scala#asyncAddItem -->
 ```scala
 case c: AddItem =>
   AsyncCommandResult(stock.isAvailable(c.name).map { available =>
@@ -342,6 +343,7 @@ you need it:
 Here is the best part of all this: the handlers are plain functions, so you can try them without
 starting anything. Replaying a diary is a fold over the events:
 
+<!-- snippet: e1/TryingItOutSpec.scala#fold -->
 ```scala
 import java.time.Instant
 import io.reactivecqrs.api.id.UserId
@@ -361,6 +363,7 @@ val cart = diary.foldLeft(context.initialAggregateRoot) { (state, event) =>
 That fold is, in miniature, what the library does whenever it reads a cart back from the database.
 And asking for a decision is one function call:
 
+<!-- snippet: e1/TryingItOutSpec.scala#decision -->
 ```scala
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId

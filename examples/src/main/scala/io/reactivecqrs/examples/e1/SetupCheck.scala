@@ -17,9 +17,14 @@ object SetupCheck {
                           sagaState: PostgresSagaState, subscriptions: PostgresSubscriptionsState)
 
   def main(args: Array[String]): Unit = {
+    // #pool
     Class.forName("org.postgresql.Driver")
-    ConnectionPool.singleton("jdbc:postgresql://localhost:5432/reactivecqrs", "reactivecqrs", "reactivecqrs",
+    ConnectionPool.singleton(
+      "jdbc:postgresql://localhost:5432/reactivecqrs",
+      "reactivecqrs",
+      "reactivecqrs",
       ConnectionPoolSettings(initialSize = 5, maxSize = 32, connectionTimeoutMillis = 3000L))
+    // #pool
     try {
       initTables()
       println("The tables are ready.")

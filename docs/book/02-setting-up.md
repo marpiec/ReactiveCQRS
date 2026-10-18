@@ -100,12 +100,12 @@ application owns that pool: it creates it, sizes it and closes it. And it must c
 any library code runs**, because some library classes talk to the database the moment they are
 made.
 
-This is how the library's own tests do it (`TestDatabase`), with the pool enlarged from their 20
-connections to 32 (more on that number below):
+This is how E1's `SetupCheck`, the program at the end of this chapter, does it, with
+`scalikejdbc.{ConnectionPool, ConnectionPoolSettings}` imported. The library's own tests
+(`TestDatabase`) do the same with 20 connections; here the pool has 32 (more on that number below):
 
+<!-- snippet: e1/SetupCheck.scala#pool -->
 ```scala
-import scalikejdbc.{ConnectionPool, ConnectionPoolSettings}
-
 Class.forName("org.postgresql.Driver")
 ConnectionPool.singleton(
   "jdbc:postgresql://localhost:5432/reactivecqrs",
@@ -348,7 +348,10 @@ object SetupCheck {
 
   def main(args: Array[String]): Unit = {
     Class.forName("org.postgresql.Driver")
-    ConnectionPool.singleton("jdbc:postgresql://localhost:5432/reactivecqrs", "reactivecqrs", "reactivecqrs",
+    ConnectionPool.singleton(
+      "jdbc:postgresql://localhost:5432/reactivecqrs",
+      "reactivecqrs",
+      "reactivecqrs",
       ConnectionPoolSettings(initialSize = 5, maxSize = 32, connectionTimeoutMillis = 3000L))
     try {
       initTables()
