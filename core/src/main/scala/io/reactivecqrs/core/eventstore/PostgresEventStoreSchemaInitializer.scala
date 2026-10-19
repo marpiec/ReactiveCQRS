@@ -18,6 +18,13 @@ private[eventstore] object PostgresEventStoreSchemaInitializer {
   def versionsRepeat()(implicit session: DBSession): Boolean =
     sql"SELECT EXISTS (SELECT 1 FROM events GROUP BY aggregate_id, version HAVING count(*) > 1)".map(_.boolean(1)).single().contains(true)
 
+  /** Whether `table` has fewer than 100 000 rows, so an index on it is built at start rather than online (D69). The
+    * statistics say so cheaply; G5: a table never analyzed (a restored copy) says it too, whatever its size, so a small
+    * answer is checked by counting up to the limit, which costs a few milliseconds where it is true. */
+  private[eventstore] def small(table: String)(implicit session: DBSession): Boolean =
+    SQL(s"SELECT reltuples::bigint FROM pg_class WHERE oid = '$table'::regclass").map(_.long(1)).single.apply().getOrElse(0L) < 100000L &&
+      SQL(s"SELECT count(*) FROM (SELECT 1 FROM $table LIMIT 100000) AS first").map(_.long(1)).single.apply().getOrElse(0L) < 100000L
+
   /** Whether the unique index is there, or can be built: no version is stored twice. */
   def versionsCanBeUnique()(implicit session: DBSession): Boolean = Ddl.has(UniqueVersions) || !versionsRepeat()
 }
@@ -208,9 +215,7 @@ class PostgresEventStoreSchemaInitializer  {
     Ddl.createIndex("aggregates_own_type_idx", "CREATE INDEX IF NOT EXISTS aggregates_own_type_idx ON aggregates (type_id, id) WHERE id = base_id")
   }
 
-  private def small(table: String): Boolean = DB.readOnly { implicit session =>
-    SQL(s"SELECT reltuples::bigint FROM pg_class WHERE oid = '$table'::regclass").map(_.long(1)).single.apply().getOrElse(0L) < 100000L
-  }
+  private def small(table: String): Boolean = DB.readOnly(implicit session => PostgresEventStoreSchemaInitializer.small(table))
 
   // F124: each event's aggregate type and space, so a build of some types, or of one space, reads only their events in
   // commit order. The procedures write a key with each event, and the cascade deletes it with the event. The rows from

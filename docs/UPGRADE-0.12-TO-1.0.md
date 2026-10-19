@@ -65,8 +65,10 @@ On a restored copy of the production database, with the 1.0 build of the applica
 | `backfillEventKeys()` | | |
 | rebuilds of the projections whose version changed | | |
 
-The rehearsal decides one thing more: whether the space backfill can run against production before the stop, while
-0.12 serves (D81 plans it so, as it is the longest job), or right after the start, online.
+The space backfill runs after the start, online: on a 0.12 schema it can do nothing, as it reads `events.metadata` and
+writes `event_keys`, which 1.0's first start adds (F336). `buildIndexesConcurrently()`, on the other hand, may run
+against production before the stop, while 0.12 serves: it builds on 0.12's columns, without blocking writes, and takes
+the heaviest index work out of the window. Try it first in the rehearsal, on the copy under test traffic (F339).
 
 ## 3. The day before
 
@@ -118,13 +120,16 @@ If something is wrong and no command of the new version was taken yet, the way b
 While the application serves, each once, in this order (the book's
 [chapter 18, "After an upgrade: the online jobs"](book/18-production.md)):
 
-1. `buildIndexesConcurrently()`: the indexes too large to build at start, without blocking writes.
-2. `backfillSpaces(spaceOf)`, unless it ran before the stop: gives the aggregates without a space the space of their
-   first event, in batches. Rebuilds of one organization's read models wait for it.
-3. `backfillEventKeys()`: every event's type and space, so builds of a few types or one organization read only their
+1. `buildIndexesConcurrently()` (unless it ran before the stop): the indexes too large to build at start, without
+   blocking writes.
+2. `PostgresDocumentStore.buildSpaceIndexesConcurrently()`, from one process: each document table's index on its
+   space, by which a purge or a rebuild of one organization clears it (F217).
+3. `backfillSpaces(spaceOf)`: gives the aggregates without a space the space of their first event, in batches;
+   run it again while `left` shrinks, and decide on what stays. Rebuilds of one organization's read models wait for it.
+4. `backfillEventKeys()`: every event's type and space, so builds of a few types or one organization read only their
    events; until it is done they walk the whole store.
-4. `buildIndexesConcurrently()` again: the indexes the event keys and the aggregates' own rows need.
-5. `Projections.retire(name)` for each projection the new code removed.
+5. `buildIndexesConcurrently()` again: the indexes the event keys and the aggregates' own rows need.
+6. `Projections.retire(name)` for each projection the new code removed.
 
 From here on, upgrades are rolling: a new app-version per release, the oldest node last
 ([chapter 17](book/17-cluster.md)).

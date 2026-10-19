@@ -58,6 +58,14 @@ object TestDatabase {
 
   private val settings = ConnectionPoolSettings(initialSize = 5, maxSize = 32, connectionTimeoutMillis = 3000L)
 
+  /** Runs `block` with the default pool limited to `maxSize` connections (this run's schema), then with the usual pool
+    * again: for tests of what a small pool does. Nothing else may use the pool meanwhile. */
+  def withPoolOf[A](maxSize: Int)(block: => A): A = {
+    init()
+    ConnectionPool.singleton(inSchemaUrl(schema), user, password, settings.copy(initialSize = 1, maxSize = maxSize))
+    try block finally ConnectionPool.singleton(inSchemaUrl(schema), user, password, settings)
+  }
+
   /** Runs `block` with the default pool on a second schema of this run (`<schema>_<suffix>`, created if missing), as a
     * second installation, then on this run's schema again. Nothing else may use the pool meanwhile: the library's
     * objects made inside the block belong to the second installation. */

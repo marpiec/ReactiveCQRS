@@ -240,6 +240,24 @@ class PostgresDocumentStoreSpec extends AnyFeatureSpec with GivenWhenThen with B
     }
   }
 
+  Feature("Conditions on an empty list of values (F309)") {
+    Scenario("F309 one of no values matches nothing, as in the memory store, alone or with other conditions") {
+      val store = new PostgresDocumentStore[Label]("f309_empty", mpjsons, new NoopDocumentStoreCache)
+      try {
+        DB.localTx(implicit session => store.insertDocument(0, 1, Label("a")))
+        def found(conditions: ExpectedValue*): Set[Long] = store.findDocument(DocumentStoreQuery.basic(conditions)).map(_._1).toSet
+
+        found(ExpectedMultipleTextValues(Seq("name"), Nil)) mustBe empty
+        found(ExpectedMultipleIntValues(Seq("name"), Nil)) mustBe empty
+        found(ExpectedMultipleLongValues(Seq("name"), Nil)) mustBe empty
+        found(ExpectedMultipleTextValuesInArray(Seq("names"), Nil)) mustBe empty
+        found(ExpectedSingleTextValue(Seq("name"), "a"), ExpectedMultipleTextValues(Seq("name"), Nil)) mustBe empty
+        found(ExpectedMultipleTextValues(Seq("name"), Nil), ExpectedSingleTextValue(Seq("name"), "a")) mustBe empty
+        found(ExpectedSingleTextValue(Seq("name"), "a")) mustBe Set(1L)
+      } finally store.dropTable()
+    }
+  }
+
   Feature("The index on space_id (F217)") {
     Scenario("F217 a new table gets it; an older one gets it from the tool, built concurrently, once") {
       val store = new PostgresDocumentStore[Label]("f217_spaces", mpjsons, new NoopDocumentStoreCache)

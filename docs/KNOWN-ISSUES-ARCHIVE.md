@@ -820,6 +820,17 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 
 ### Event store and SQL
 
+#### F336 — The space backfill cannot run on a 0.12 schema, and says nothing
+- **Medium**, likely · **Closed, documented** (19/10/2026, L5) · `PostgresEventStoreState.backfillSpaces`
+- **Finding:** it reads first events with `readPart`, which selects `events.metadata`, and updates `event_keys`; both come with 1.0's first start. On a 0.12 schema every read fails inside its `Try`, every aggregate lands in `left`, and nothing is filled. D81 had planned the backfill before the stop, while 0.12 serves.
+- **Resolution:** the runbook (§2, §6) and the book's chapter 18 run it after the first start of 1.0. D81 refined accordingly.
+- **Found:** the Neula migration analysis (19/10/2026, `neulaserver/docs/REACTIVECQRS-1.0-MIGRATION.md` §3 and its data-and-cutover notes).
+
+#### F337 — One first event whose space throws stops the whole space backfill
+- **Medium**, likely · **Fixed for 1.0.1** (19/10/2026, L1; `PostgresEventStoreStateSpec` "G2", red before, red under a mutation) · `PostgresEventStoreState.backfillSpaces`
+- **Fix:** an aggregate whose space cannot be found is left, as one `spaceOf` cannot place: its first event unreadable, a space that throws (an old row without the field it is computed from: Neula's `PersonCreated` of 15–22/04/2015 and `PersonNotificationCreated` of 28/04–19/05/2017), or a `spaceOf` that throws; a first event whose own space throws goes to `spaceOf` first. Before, the throw left the backfill.
+- **Found:** the Neula migration analysis (19/10/2026, `neulaserver/docs/REACTIVECQRS-1.0-MIGRATION.md` §3 and its data-and-cutover notes).
+
 #### F275 — A command whose events put an undo before another event is always refused on PostgreSQL
 - **High**, likely · **Fixed for 1.0.1** (18/10/2026, a regression of F195 found by the second risk assessment; `EventStoreStateSpec` "F275", on both stores, red on PostgreSQL, red under two mutations) · `PostgresEventStoreState.persist`
 - **Fix:** a command with an undo or duplication event checks the history generation once, before its first event, under the aggregate's row lock (as the memory store does); its later events are stored without the check, so its own undo is not taken for another writer's change. It also closes a gap of F195: a command that starts with an undo is now checked too.
@@ -1130,6 +1141,11 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 
 ### Document store
 
+#### F309 — An empty value list makes invalid SQL on PostgreSQL and an empty result in memory
+- **Medium**, likely · **Fixed for 1.0.1** (19/10/2026, L3; `PostgresDocumentStoreSpec` and `MemoryDocumentStoreSpec` "F309", red on PostgreSQL before, red under a mutation) · `PostgresDocumentStore`
+- **Fix:** a condition on one of no values (`ExpectedMultipleTextValues`, `…IntValues`, `…LongValues`, `ExpectedMultipleTextValuesInArray` with an empty list) is `FALSE`: it matches nothing, alone or with other conditions, on both stores. Before, PostgreSQL refused the statement, and a listener that built such a query from its data stuck on the aggregate.
+- **Found:** the second risk assessment (18/10/2026); note DOCS-5 in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md).
+
 #### F266 — `clearSpace` and `clearAllData` evict the document cache before the commit, not after
 - **Low**, unlikely · **Fixed for 1.0.1** (18/10/2026, after step 4 of the risk assessment; no test of its own) · `PostgresDocumentStore`
 - **Fix:** the evictions run at once and again after the commit, so a read that fills the cache in between is evicted too.
@@ -1277,6 +1293,11 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 
 ### Serialization (mpjsons 0.7)
 
+#### F338 — `StoredDataCheck` cannot read a projection table of a generic document class
+- **Medium**, likely · **Fixed for 1.0.1** (19/10/2026, L2; `StoredDataCheckSpec` "G3", red before) · `StoredDataCheck.ProjectionTable`
+- **Fix:** a table is read by its document's full type (a `TypeTag`), as its store reads it, so `AggregateWrapper[Kanban]` reads; it was read by the erased class, which mpjsons could not bind ("Unbound type parameter"), so every row of Neula's ~20 such tables would have been reported unreadable and real failures hidden among them. The report names the class with its type arguments.
+- **Found:** the Neula migration analysis (19/10/2026, `neulaserver/docs/REACTIVECQRS-1.0-MIGRATION.md` §3 and its data-and-cutover notes).
+
 #### F314 — F240's reader refuses values sent on their own that are not case classes (java.time, plain classes, arrays, enums), which 1.0.0 read
 - **Medium**, likely · **Fixed for 1.0.1** (18/10/2026, a regression of F240 found by the second risk assessment; `FramesOf100Spec`, frames written by 1.0.0's own code, red before; `ClusterSerializerSpec` "F314" ×2; red under two mutations) · `ClusterSerializer.carriedAsJson`
 - **Fix:** the reader also takes `java.time` values; the writer refuses, on the sending node, any value the reader would not make (a plain class), with an exception naming its class. The corpus showed that 1.0.0 could not send enums, arrays or `FiniteDuration` on their own at all (mpjsons refuses them), so none is in flight during the upgrade. Chapter 17 gives the rule (its fifth).
@@ -1308,6 +1329,16 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Found:** M5 close, audit of the cluster.
 
 ### Schema initialization
+
+#### F340 — A restored database whose statistics are missing makes the first start build large indexes without CONCURRENTLY
+- **Medium**, possible · **Fixed for 1.0.1** (19/10/2026, L5; `PostgresEventStoreStateSpec` "G5", red under a mutation) · `PostgresEventStoreSchemaInitializer.small`
+- **Fix:** the start judged a table small (indexes built at start, blocking its writes) by `pg_class.reltuples`, which is -1 or 0 for a table never analyzed, as after some restores; a small answer is now confirmed by counting up to 100 000 rows, a few milliseconds where it is true.
+- **Found:** the Neula migration analysis (19/10/2026, `neulaserver/docs/REACTIVECQRS-1.0-MIGRATION.md` §3 and its data-and-cutover notes).
+
+#### F278 — Schema-lock waiters each hold a pooled connection: many store set-ups at once make lock holders fail in turn and saturate the blocking dispatcher
+- **High**, likely · **Fixed for 1.0.1** (19/10/2026, the library's prerequisites of Neula's migration, L8; `SchemaLockSpec` "F278": 12 set-ups at once on a pool of 4, each needing a second connection; 9 failed before, none after; red under a mutation) · `SchemaLock`
+- **Fix:** the threads of one process wait for the lock in the process, in turn (a fair lock, within the same five minutes), holding no connection; only the one that has its turn borrows a connection and waits on the database's advisory lock. The pool always has a connection left for the holder's work. Left: the waiting threads still occupy their dispatcher's threads while they wait, which a node starting very many stores at once feels as a slower start, not as failures.
+- **Found:** the second risk assessment (18/10/2026); notes DOCS-1, SYS-2 in [RISK-ASSESSMENT-2.md](RISK-ASSESSMENT-2.md).
 
 #### F247 — The SMALLINT type-id space is consumed by every build, and by every node's first sight of a name
 - **Medium**, unlikely · **Fixed for 1.0.1** in part (18/10/2026, step 4 of the risk assessment; `PostgresTypesNamesStateSpec` "F247", red under a mutation) · `PostgresTypesNamesState`
@@ -1524,6 +1555,11 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Found:** writing the book (M6, 17/10/2026).
 
 ### Code structure
+
+#### F341 — Renaming `api.Nothing` to `NoInfo` silently changes what 0.12 code means
+- **Medium**, likely · **Fixed for 1.0.1** (19/10/2026, L4; `OldNothingSpec`) · `io.reactivecqrs.api` package object
+- **Fix:** `Nothing` is a deprecated alias of `NoInfo` (type and value) in the `api` package again. Without it, 0.12 code that says `Nothing` after `import io.reactivecqrs.api._` got `scala.Nothing` with no error: Neula has 59 such uses in 9 files, and a pattern `case _: Nothing` (`VolatileFlow.scala:368`) would never have matched. Now that code means what it meant and the compiler names each use. The alias found three places in the library itself that meant `scala.Nothing`; one was `ProjectionActor`'s check of listener types, which it would have changed; all three say `scala.Nothing` now.
+- **Found:** the Neula migration analysis (19/10/2026, `neulaserver/docs/REACTIVECQRS-1.0-MIGRATION.md` §3 and its data-and-cutover notes).
 
 #### F177 — The test kit's `??` makes the compiler warn at every `val` it gives a value to
 - **Low** (the published test kit), confirmed · **Fixed in M7** (18/10/2026; a clean compile of the specs gives no dead-code warning, 135 before, and E11's specs use `askFor`) · `ActorAskSupport` (test kit)

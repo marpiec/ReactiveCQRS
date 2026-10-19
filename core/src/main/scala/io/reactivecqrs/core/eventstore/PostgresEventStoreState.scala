@@ -471,11 +471,13 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
         sql"""SELECT id, type_id, coalesce(squashed_version, 1) FROM aggregates WHERE base_id = id AND space_id = -1 AND id > $after ORDER BY id LIMIT $batchSize"""
           .map(rs => (AggregateId(rs.long(1)), AggregateType(typesNamesState.classNameById(rs.short(2))), AggregateVersion(rs.int(3)))).list()
       }
+      // G2: an aggregate whose space cannot be found (its first event unreadable, a space that throws, as an old row
+      // without the field it is computed from does, or a `spaceOf` that throws) is left, as one `spaceOf` cannot place.
       val spaces = batch.map { case (id, aggregateType, first) =>
-        id -> Try(readEventsRange[Any](id, first, first).headOption.map(_.event)).toOption.flatten.flatMap {
-          case event: FirstEvent[_] if event.spaceId.asLong >= 0 => Some(event.spaceId)
+        id -> Try(readEventsRange[Any](id, first, first).headOption.map(_.event).flatMap {
+          case event: FirstEvent[_] if Try(event.spaceId.asLong >= 0).getOrElse(false) => Some(event.spaceId)
           case event => spaceOf(aggregateType, id, event)
-        }
+        }).toOption.flatten
       }
       DB.localTx { implicit session =>
         spaces.foreach {
@@ -511,7 +513,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   private def tableExists(table: String)(implicit session: DBSession): Boolean =
     SQL(s"SELECT to_regclass('$table') IS NOT NULL").map(_.boolean(1)).single().getOrElse(false)
 
-  private def exists(query: SQL[Nothing, NoExtractor])(implicit session: DBSession): Boolean = query.map(_.boolean(1)).single().getOrElse(false)
+  private def exists(query: SQL[scala.Nothing, NoExtractor])(implicit session: DBSession): Boolean = query.map(_.boolean(1)).single().getOrElse(false)
 
   private def failedSubscription(aggregateId: Long)(implicit session: DBSession): Boolean = tableExists("subscription_failures") &&
     exists(sql"""SELECT EXISTS (SELECT 1 FROM subscription_failures WHERE aggregate_id = $aggregateId)""")

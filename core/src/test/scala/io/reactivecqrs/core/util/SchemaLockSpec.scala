@@ -13,6 +13,8 @@ import io.reactivecqrs.testkit.TestDatabase
 import org.scalatest.featurespec.AnyFeatureSpec
 import org.scalatest.matchers.must.Matchers
 
+import scalikejdbc._
+
 import scala.util.Try
 
 // F63, D69: nodes that start together initialize the schema one at a time.
@@ -43,6 +45,18 @@ class SchemaLockSpec extends AnyFeatureSpec with Matchers {
         }
         failures mustBe empty
       } finally pool.shutdown()
+    }
+
+    // F278: many stores of one node set up at once (a node's managed projections start together). A waiter that held a
+    // pooled connection while it waited would leave the holder none for its work.
+    Scenario("F278 more initializations at once than the pool has connections, each needing a second one, all succeed") {
+      val threads = Executors.newFixedThreadPool(12)
+      try TestDatabase.withPoolOf(4) {
+        val runs = (1 to 12).map(_ => threads.submit(new Callable[Try[Long]] {
+          def call(): Try[Long] = Try(SchemaLock(DB.autoCommit(implicit session => sql"SELECT pg_sleep(0.05), 1".map(_.long(2)).single().get)))
+        }))
+        runs.map(_.get(2, TimeUnit.MINUTES)).filter(_.isFailure).map(_.failed.get.toString) mustBe empty
+      } finally threads.shutdown()
     }
 
     Scenario("an initialization inside another one runs at once, on the same thread") {

@@ -20,6 +20,21 @@ that [the second assessment](docs/RISK-ASSESSMENT-2.md) found in them.
   its commands must carry the step as their key.
 - **E2 ends a node whose start fails:** it leaves the cluster and its process ends, to be started again, instead of
   staying a member that is never ready (F287, chapter 17; copy it in your host).
+- **For the move from 0.12** (F278, F309, F336–F341, chapters 16 and 18, the runbook), found by the analysis of
+  Neula's migration:
+  - **Changed:** `Nothing` is back in `io.reactivecqrs.api`, a deprecated alias of `NoInfo`: code written for 0.12
+    that says `Nothing` after `import io.reactivecqrs.api._` keeps its meaning, where it silently became
+    `scala.Nothing`; the compiler names each use to rename. Say `scala.Nothing` where the bottom type is meant.
+  - Many document stores set up at once no longer exhaust the pool: the threads of a node wait for the schema lock
+    holding no connection.
+  - A query condition on an empty list of values matches nothing, as in the memory store, instead of invalid SQL.
+  - `backfillSpaces` leaves an aggregate whose first event's space throws (an old row without its field), instead of
+    stopping; run it after the first start of 1.0, as on a 0.12 schema it does nothing.
+  - `StoredDataCheck.ProjectionTable` reads a generic document class (`Wrapper[Item]`) as its store does.
+  - A restored database whose statistics are missing no longer makes the first start build large indexes in a way that
+    blocks writes.
+  - **Release:** published to `neula-snapshots` for a snapshot version and `neula-releases` otherwise (`-DreleasesRepo`
+    and `-DsnapshotsRepo` override them); only `api`, `core` and `testkit` are published.
 
 - **No values in logs** (F190, F191). The library logs no SQL statements and describes a failure without the event, state,
   order or document it was about: by its classes, SQLState, constraint, table and column. The same text goes into

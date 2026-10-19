@@ -88,6 +88,13 @@ class MemoryDocumentStoreSpec extends AnyFeatureSpecLike with GivenWhenThen with
       keysFor(ExpectedSingleTextValueLike(Seq("name"), "b_nana")) mustBe Set(3)
     }
 
+    Scenario("F309 one of no values matches nothing, as on PostgreSQL") {
+      keysFor(ExpectedMultipleTextValues(Seq("name"), Nil)) mustBe empty
+      keysFor(ExpectedMultipleIntValues(Seq("count"), Nil)) mustBe empty
+      keysFor(ExpectedMultipleLongValues(Seq("total"), Nil)) mustBe empty
+      keysFor(ExpectedMultipleTextValuesInArray(Seq("tags"), Nil)) mustBe empty
+    }
+
     Scenario("array elements are searched by text value") {
       keysFor(ExpectedSingleTextValueInArray(Seq("tags"), "red")) mustBe Set(1)
       keysFor(ExpectedMultipleTextValuesInArray(Seq("tags"), Seq("green", "blue"))) mustBe Set(1, 2)

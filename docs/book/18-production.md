@@ -213,7 +213,8 @@ val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, mis
   index and logs an error, and `StoredDataCheck` names the pairs (`repeatedVersions`).
 - `backfillSpaces(spaceOf)` gives aggregates stored without an organization the space of their first
   event; for old first events that do not know theirs, you pass a function that does
-  ([chapter 16](16-organizations.md)). Run it before you rebuild a projection for one organization.
+  ([chapter 16](16-organizations.md)). Run it after the first start of the new version (on a 0.12
+  schema it does nothing), and before you rebuild a projection for one organization.
 - `backfillEventKeys()` gives every older event its key (its aggregate's type and space), so a
   projection build reads only the events it needs. Run it once *every* node runs 1.0, then
   `buildIndexesConcurrently()` again. From then on, do not go back to an earlier version: earlier

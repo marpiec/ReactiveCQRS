@@ -322,7 +322,10 @@ zobaczysz, co znaczą dla organizacji.
    (`LegacyCartCreated` zastępuje tu dowolne twoje stare pierwsze zdarzenie, które trzyma
    organizację we własnym polu; spec E9 ma takie zdarzenie, żeby te kroki dało się skompilować i
    uruchomić.) `filled` liczy agregaty, które dostały przestrzeń; `left` wymienia te, których
-   przestrzeni nie ustaliło ani zdarzenie, ani twoja funkcja: przejrzyj je ręcznie.
+   przestrzeni nie ustaliło ani zdarzenie, ani twoja funkcja: przejrzyj je ręcznie. Pierwsze
+   zdarzenie, którego przestrzeni nie da się obliczyć (starszy wiersz nie ma pola, z którego się
+   bierze, więc rzuca wyjątek), też trafia do twojej funkcji, a to, dla którego twoja funkcja rzuci
+   wyjątek, zostaje w `left`: jeden zły wiersz nigdy nie zatrzymuje uzupełniania.
 
 4. **Nadaj starym zdarzeniom klucze**, gdy już *każdy* węzeł działa na nowej wersji:
 

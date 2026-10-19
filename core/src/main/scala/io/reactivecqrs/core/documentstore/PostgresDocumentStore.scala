@@ -324,8 +324,14 @@ sealed trait PostgresDocumentStoreTrait[T <: AnyRef] {
   private def whereClause(values: Seq[ExpectedValue]): String =
     if (values.isEmpty) "" else " WHERE" + constructWhereClauseForExpectedValues(values)
 
+  // F309: one of no values matches nothing (`FALSE`), as in the memory store; `in ()` and an empty array are invalid SQL,
+  // which a listener would fail on for ever. The empty lists bind no values, so the others keep their places.
   private def constructWhereClauseForExpectedValues(values: Seq[ExpectedValue]): String = {
     values.map{
+      case ExpectedMultipleTextValues(_, v) if v.isEmpty => "FALSE"
+      case ExpectedMultipleIntValues(_, v) if v.isEmpty => "FALSE"
+      case ExpectedMultipleLongValues(_, v) if v.isEmpty => "FALSE"
+      case ExpectedMultipleTextValuesInArray(_, v) if v.isEmpty => "FALSE"
       case ExpectedNoValue(path) => s"document #>> ${JsonPath.literal(path)} IS NULL"
       case ExpectedMultipleTextValues(path, v) => s"document #>> ${JsonPath.literal(path)} in (${List.fill(v.size)("?").mkString(",")})"
       case ExpectedMultipleIntValues(path, v) => s"(document #> ${JsonPath.literal(path)})::int in (${List.fill(v.size)("?").mkString(",")})"

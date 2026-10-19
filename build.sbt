@@ -1,11 +1,12 @@
 Common.settings("main")
+publish / skip := true // the aggregate root: only api, core and testkit are published
 
 val testkit = project.in(file("testkit"))
 val api = project.in(file("api"))
 val core = project.in(file("core")).dependsOn(api, testkit % "test->test")
 //val memory = project.in(file("memory")).dependsOn(core).dependsOn(utils)
 //val postgres = project.in(file("postgres")).dependsOn(utils)
-val testdomain = project.in(file("testdomain")).dependsOn(api, core, testkit % "test->test")
+val testdomain = project.in(file("testdomain")).dependsOn(api, core, testkit % "test->test").settings(publish / skip := true)
 // The book's examples (M7): runnable, tested, not published; their sources are the book's code. The chapters that
 // use the test domain's cart (5 to 7 and 13 to 15) run their code against it.
 val examples = project.in(file("examples")).dependsOn(api, core, testdomain, testkit % "test->test")

@@ -312,7 +312,9 @@ other production steps; here is what they mean for organizations.
 
    (`LegacyCartCreated` stands for whatever old first event of yours keeps the organization in a
    field of its own; E9's spec has one, to compile and run these steps.) `filled` counts the aggregates that got a space; `left` lists those that
-   neither the event nor your function could place: look at them by hand.
+   neither the event nor your function could place: look at them by hand. A first event whose space
+   cannot be computed (an old row lacks the field it comes from, so it throws) goes to your function
+   too, and one your function throws for is left: one bad row never stops the backfill.
 
 4. **Give old events their keys**, once *every* node runs the new version:
 

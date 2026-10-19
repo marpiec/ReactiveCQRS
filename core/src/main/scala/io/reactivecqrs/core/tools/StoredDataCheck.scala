@@ -8,6 +8,7 @@ import scalikejdbc._
 
 import scala.collection.mutable
 import scala.reflect.{ClassTag, classTag}
+import scala.reflect.runtime.universe.{TypeTag, typeOf}
 import scala.util.{Failure, Success, Try}
 import io.reactivecqrs.core.util.SqlLogging.withoutValues
 import io.reactivecqrs.core.util.Errors
@@ -26,10 +27,14 @@ import io.reactivecqrs.core.util.Errors
  */
 object StoredDataCheck {
 
-  /** A projection table, named as its document store was (without the `projection_` prefix), with its document class. */
-  case class ProjectionTable[T <: AnyRef: ClassTag](name: String) {
-    private[tools] def read(mpjsons: MPJsons, json: String): Unit = mpjsons.deserialize[T](json, className)
-    private[tools] def className: String = classTag[T].runtimeClass.getName // D75: by class, not by Scala 2 reflection
+  /** A projection table, named as its document store was (without the `projection_` prefix), with its document type.
+    * G3: read by its full type, as the store reads it, so a document generic in its content (`Wrapper[Item]`) reads. */
+  case class ProjectionTable[T <: AnyRef: TypeTag: ClassTag](name: String) {
+    private[tools] def read(mpjsons: MPJsons, json: String): Unit = mpjsons.deserialize[T](json)
+    private[tools] def className: String = {
+      val arguments = typeOf[T].dealias.typeArgs
+      classTag[T].runtimeClass.getName + (if (arguments.isEmpty) "" else arguments.mkString("[", ", ", "]"))
+    }
   }
 
   /** One class of one table: rows read, rows that did not read, and the first of those. */

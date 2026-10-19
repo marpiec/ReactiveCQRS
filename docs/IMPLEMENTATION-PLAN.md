@@ -2758,3 +2758,14 @@ Open test-infrastructure items:
   rollback to 1.0.0, are closed as not a problem; zero-downtime upgrades count from the first release Neula runs.
 - Fixed: F285 (a `SagaActor`'s failed step is not run again, as in 0.12), F287 (E2 leaves the cluster and ends its
   process when its start fails). Each with a test red before or under a mutation. Step 1 of RISK-ASSESSMENT-2 §6 is done.
+
+
+**19/10/2026: the library's prerequisites of Neula's migration (`neulaserver/docs/REACTIVECQRS-1.0-MIGRATION.md` §3)**
+- Fixed: F337 (L1, the space backfill leaves an aggregate whose first event's space throws), F338 (L2, `StoredDataCheck`
+  reads generic document classes), F309 (L3, a condition on no values matches nothing), F341 (L4, `api.Nothing` a
+  deprecated alias of `NoInfo` again; it found three library uses that meant `scala.Nothing`), F278 (L8, schema-lock
+  waiters hold no connection), F340 (G5, a never-analyzed table is judged by its rows). Each with a test red before or
+  under a mutation.
+- Documented: F336 (the space backfill runs after the first start; D81 refined). Open: F339 (indexes before the stop,
+  to prove in the rehearsal). L7 not needed: the build reaches mpjsons through the private repository.
+- Release mechanics (L6): published to `neula-snapshots` or `neula-releases` by version; only `api`, `core`, `testkit`.

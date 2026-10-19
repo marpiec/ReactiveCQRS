@@ -20,7 +20,7 @@ class FaultTestsSpec extends AnyFeatureSpec with Matchers with Eventually with A
 
   implicit override val patienceConfig: PatienceConfig = PatienceConfig(Span(60, Seconds), Span(200, Millis))
 
-  private def count(query: SQL[Nothing, NoExtractor]): Long = DB.readOnly(implicit session => query.map(_.long(1)).single().getOrElse(0L))
+  private def count(query: SQL[scala.Nothing, NoExtractor]): Long = DB.readOnly(implicit session => query.map(_.long(1)).single().getOrElse(0L))
 
   Feature("E2's fault tests, without the faults") {
 

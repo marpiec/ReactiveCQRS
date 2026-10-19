@@ -29,6 +29,11 @@ case class EraseNumberAnywhere(number: Int) extends io.reactivecqrs.api.HistoryC
   override def inUnreadableEvent(json: String): Option[String] = Some(json.replace(":" + number, ":0"))
 }
 
+/** G2: a first event whose space comes from a field an old row may lack (read as null). */
+case class EventOfOrganization(organization: String) extends FirstEvent[SomeAggregate] {
+  def spaceId: SpaceId = SpaceId(organization.toLong)
+}
+
 /** The first event of an aggregate of a given organization. */
 case class EventInSpace(space: Long) extends FirstEvent[SomeAggregate] {
   def spaceId: SpaceId = SpaceId(space)
@@ -573,5 +578,47 @@ class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStore
     eventStoreState.asInstanceOf[PostgresEventStoreState].backfillSpaces()
 
     keysOf(f.aggregateId).map(_._2) mustBe Seq(0L, 0L)
+  }
+
+  // G5: a restored copy whose statistics are missing looks empty to them; the start must not build a large table's
+  // indexes without CONCURRENTLY, blocking its writes.
+  Scenario("G5 a table never analyzed is judged by its rows, not by its missing statistics") {
+    DB.autoCommit { implicit session =>
+      sql"DROP TABLE IF EXISTS g5_unanalyzed".execute()
+      sql"CREATE TABLE g5_unanalyzed (n INT)".execute()
+      sql"INSERT INTO g5_unanalyzed SELECT generate_series(1, 100001)".update()
+    }
+    try {
+      DB.readOnly(implicit session => PostgresEventStoreSchemaInitializer.small("g5_unanalyzed")) mustBe false
+      DB.autoCommit { implicit session => // a small table, analyzed (autovacuum may analyze it meanwhile anyway)
+        sql"DELETE FROM g5_unanalyzed WHERE n > 10".update()
+        sql"ANALYZE g5_unanalyzed".execute()
+      }
+      DB.readOnly(implicit session => PostgresEventStoreSchemaInitializer.small("g5_unanalyzed")) mustBe true
+    } finally DB.autoCommit(implicit session => sql"DROP TABLE g5_unanalyzed".execute())
+  }
+
+  // G2: an old first event whose space cannot be computed (a field it was stored without reads as null) is left, as one
+  // `spaceOf` cannot place; it does not stop the backfill of the others.
+  Scenario("G2 a first event whose space throws, or a spaceOf that throws, leaves its aggregate; the others are filled") {
+    val (broken, refused, fine, placed) = (new TestFixture(eventStoreState), new TestFixture(eventStoreState),
+      new TestFixture(eventStoreState), new TestFixture(eventStoreState))
+    Seq(broken, refused, fine, placed).foreach(_.storeEvents(Seq(EventOfOrganization("0"))))
+    DB.autoCommit { implicit session =>
+      Seq(broken, refused, fine, placed).foreach(f => sql"UPDATE aggregates SET space_id = -1 WHERE id = ${f.aggregateId.asLong}".update())
+      Seq(broken, placed).foreach(f => sql"UPDATE events SET event = '{}' WHERE aggregate_id = ${f.aggregateId.asLong}".update())
+      sql"UPDATE events SET event = '{\"organization\": \"-1\"}' WHERE aggregate_id = ${refused.aggregateId.asLong}".update()
+    }
+    val spaceOf: (AggregateType, AggregateId, Event[_]) => Option[SpaceId] =
+      (_, id, _) => if (id == refused.aggregateId) throw new IllegalStateException("spaceOf failed")
+        else if (id == placed.aggregateId) Some(SpaceId(0)) else None // spaceOf places one whose own space throws
+
+    val result = eventStoreState.asInstanceOf[PostgresEventStoreState].backfillSpaces(spaceOf)
+
+    result.left must contain allOf (broken.aggregateId, refused.aggregateId)
+    result.left must not contain fine.aggregateId
+    Seq(fine, placed).foreach { f =>
+      DB.readOnly(implicit session => sql"SELECT space_id FROM aggregates WHERE id = ${f.aggregateId.asLong}".map(_.long(1)).single()) mustBe Some(0L)
+    }
   }
 }

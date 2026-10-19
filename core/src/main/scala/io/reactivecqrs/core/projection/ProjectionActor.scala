@@ -381,7 +381,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   private lazy val handlers: Receive = receiveUpdate orElse receiveQuery
 
   private def validateListeners() = {
-    if (listeners.exists(l => l.aggregateType == AggregateType.of[Any] || l.aggregateType == AggregateType.of[Nothing])) {
+    if (listeners.exists(l => l.aggregateType == AggregateType.of[Any] || l.aggregateType == AggregateType.of[scala.Nothing])) {
       throw new IllegalArgumentException("Listeners cannot have type defined as Nothing, Any or _ but were: " + listeners.map(_.aggregateType.typeName))
     }
     // F164: a second listener of a kind for a type would replace the first in the maps, silently.

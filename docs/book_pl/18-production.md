@@ -216,8 +216,8 @@ val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, mis
   zwykły indeks, w logu pojawia się błąd, a `StoredDataCheck` wymienia te pary (`repeatedVersions`).
 - `backfillSpaces(spaceOf)` nadaje agregatom zapisanym bez organizacji przestrzeń z ich pierwszego
   zdarzenia; dla starych pierwszych zdarzeń, które swojej przestrzeni nie znają, przekazujesz funkcję,
-  która ją zna ([rozdział 16](16-organizations.md)). Zrób to, zanim przebudujesz projekcję dla jednej
-  organizacji.
+  która ją zna ([rozdział 16](16-organizations.md)). Zrób to po pierwszym starcie nowej wersji (na
+  schemacie 0.12 niczego nie zrobi) i zanim przebudujesz projekcję dla jednej organizacji.
 - `backfillEventKeys()` nadaje każdemu starszemu zdarzeniu klucz (typ i przestrzeń jego agregatu),
   dzięki czemu budowa projekcji czyta tylko te zdarzenia, których potrzebuje. Uruchom to, gdy *każdy*
   węzeł działa już na 1.0, a potem jeszcze raz `buildIndexesConcurrently()`. Od tej chwili nie wracaj

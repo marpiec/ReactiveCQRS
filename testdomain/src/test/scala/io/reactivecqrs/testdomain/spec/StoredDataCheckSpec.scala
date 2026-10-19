@@ -131,5 +131,23 @@ class StoredDataCheckSpec extends CommonSpec {
         report.text must include("Tables not found, so not read: sagas, commands_responses, projection_never_made")
       }
     }
+
+    // G3: a document class generic in its content, as a store of AggregateWrapper[Kanban] holds, is read as the store
+    // reads it (by its full type), not as an erased class whose type parameter mpjsons cannot bind.
+    Scenario("G3 a table of a generic document class reads, its class named with its type arguments") {
+      val generic = new PostgresDocumentStore[Wrapped[Item]]("stored_data_check_generic", mpjsons, new NoopDocumentStoreCache[Wrapped[Item], AnyRef])
+      try {
+        DB.localTx(implicit session => generic.insertDocument(0, TestIds.aggregate(), Wrapped(Item(1, "apple"))))
+
+        val report = StoredDataCheck.run(mpjsons, typesNamesState, Seq(ProjectionTable[Wrapped[Item]]("stored_data_check_generic")))
+
+        val read = report.results.filter(_.table == "projection_stored_data_check_generic")
+        read.map(r => (r.rows, r.unreadable)) mustBe Seq((1L, 0L))
+        read.head.className must include("Wrapped[")
+      } finally generic.dropTable()
+    }
   }
 }
+
+/** G3: a generic document, as Neula's AggregateWrapper[X]. */
+case class Wrapped[A](value: A)

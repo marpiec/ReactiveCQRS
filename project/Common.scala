@@ -51,11 +51,11 @@ object Common {
 
     pomIncludeRepository := { _ => false },
 
+    // A snapshot to neula-snapshots, a release (an RC included) to neula-releases; the credentials come from the
+    // publishing machine (~/.sbt), never from the build.
     publishTo := Some(
-      "snapshots" at sys.props.getOrElse(
-        "snapshotsRepo",
-        "https://nexus.neula.in/repository/neula-releases"
-      )
+      if (isSnapshot.value) "neula-snapshots" at sys.props.getOrElse("snapshotsRepo", "https://nexus.neula.in/repository/neula-snapshots")
+      else "neula-releases" at sys.props.getOrElse("releasesRepo", "https://nexus.neula.in/repository/neula-releases")
     )
 
   )
