@@ -4,6 +4,9 @@ Notable changes of ReactiveCQRS, newest first. Dates are DD/MM/YYYY.
 
 ## 1.0.1 (not released)
 
+**1.0.1-RC1 (19/10/2026, tag `v1.0.1-RC1`):** a release candidate of everything below, for Neula's migration branch and
+its rehearsal on a copy of production; the final 1.0.1 follows them.
+
 Fixes from [the risk assessment of 1.0.0](docs/RISK-ASSESSMENT.md), in the order of its plan (§13), and the regressions
 that [the second assessment](docs/RISK-ASSESSMENT-2.md) found in them.
 
