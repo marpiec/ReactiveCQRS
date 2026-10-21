@@ -200,7 +200,7 @@ version that needs them is up. Each is safe to stop and run again.
 ```scala
 eventStore.buildIndexesConcurrently()          // indexes built without blocking writes
 val spaces = eventStore.backfillSpaces()       // SpaceBackfill(filled, left)
-val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, missing)
+val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, missing, orphans)
 ```
 
 - `buildIndexesConcurrently()` builds the indexes that a large table cannot get in a start-up
@@ -218,7 +218,12 @@ val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, mis
 - `backfillEventKeys()` gives every older event its key (its aggregate's type and space), so a
   projection build reads only the events it needs. Run it once *every* node runs 1.0, then
   `buildIndexesConcurrently()` again. From then on, do not go back to an earlier version: earlier
-  versions write events without keys.
+  versions write events without keys. Events whose aggregate has no row of its own (*orphans*, left
+  by some old delete) cannot get a key; it reports them in `orphans` and logs a warning, but they do
+  not keep it from finishing: no restore, build or reconciliation reads them (they all start from
+  the aggregate's own row), and the same holds for an orphan made later, whose events keep keys that
+  lead nowhere. Nothing deletes them: decide yourself (remove them as in "Removing an aggregate by
+  hand" below, or keep them).
 
 ### 8. Before an upgrade: the stored-data check
 
@@ -245,7 +250,10 @@ events by event type version (in 1.0 they must all be 0), and the tables it did 
 (`report.repeatedVersions`, which keep the unique index of step 7 from being built) and, when you
 pass `contexts = Seq(...)` with every aggregate context of the application, the aggregate types none
 of them has (`report.typesWithoutContext`): their command buses would refuse to restore those
-aggregates (`reactivecqrs.aggregate-type-check`, appendix E). Both must be empty.
+aggregates (`reactivecqrs.aggregate-type-check`, appendix E). Both must be empty. Since 1.0.1-RC2 it
+also lists the orphan events, whose aggregate has no row of its own (`report.orphans`: how many, of
+how many aggregates, and the first hundred aggregates with their event counts, classes, first and
+last event ids and times). Nothing reads them; whether they go is your call.
 
 Before you delete an old event class from your code, `StoredDataCheck.usersOf(className)` tells you
 which aggregates still have events of it, in the events and in the squash archive.
@@ -300,6 +308,7 @@ are safe for any metrics system. What you get:
 | `reactivecqrs.outbox.republished` | count | | re-publications the poller asked for |
 | `reactivecqrs.outbox.read.abandoned` | count | | reads of the outbox given up after `readTimeout`: a connection no longer answers |
 | `reactivecqrs.message.too.large` | count | `class` | messages too large to cross nodes ([chapter 17](17-cluster.md)) |
+| `reactivecqrs.builds.held` | gauge | | full builds waiting for a `BuildHold` ([chapter 10](10-rebuilding-projections.md)); 0 once it is over |
 
 > **Tip:** three alerts cover most trouble: `reactivecqrs.outbox.given.up` above zero,
 > `reactivecqrs.bus.behind` growing for one subscriber, and `reactivecqrs.command` with
@@ -320,7 +329,7 @@ a support tool):
 | `GetOutboxStatus` | the outbox poller | `OutboxStatus`: aggregates waiting in the outbox, and those given up |
 | `GetProjectionStatus` | each projection | `ProjectionStatus`: failed aggregates, retries and gaps ([chapter 9](09-projection-failures.md)) |
 | `GetBuilds` | each managed projection | `Builds`: the active build and the one in progress ([chapter 10](10-rebuilding-projections.md)) |
-| `GetBuildStatus` | each managed projection | `BuildStatus`: the running build's phase and how far it got |
+| `GetBuildStatus` | each managed projection | `BuildStatus`: the running build's phase and how far it got; `heldBy` while a hold keeps it waiting |
 | `GetSquashStatus` | the squash scheduler | `SquashStatus`: squashed, refused, still waiting |
 
 In a cluster, ask the poller, the scheduler and the projections through their proxies, from any
@@ -337,6 +346,7 @@ node; ask each node's bus separately.
 | "Event bus starts without the subscriptions of: ..." | event bus | a registered subscriber did not answer in `registrationTimeout`; the bus runs, but no event leaves the outbox until it answers |
 | "Subscriber ... stopped before it answered" | event bus | a registered subscriber stopped at start; no event leaves the outbox until it is removed or the node restarts |
 | "Event bus asked ... for its subscriptions and got a failure" | event bus | a subscriber could not answer; it is asked again at every tick, and the line gives the cause |
+| "Full builds of projections are held: ..." (a warning) | `Projections` | a `BuildHold` keeps builds waiting, for the reason given; "... are released" follows once it is over |
 | "Event bus registered ... after its start" | event bus | a `RegisterSubscribers` came after the start: those subscribers missed what was published before |
 | "Delivery waits for ..." and "... deliveries wait longer than ..." | event bus | a subscriber is slow to answer |
 | "Subscribers with events held beyond their window ..." | event bus | a projection is behind; its events wait in the store |

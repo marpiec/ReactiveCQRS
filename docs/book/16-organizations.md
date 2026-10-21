@@ -322,13 +322,17 @@ other production steps; here is what they mean for organizations.
    ```scala
    import io.reactivecqrs.core.eventstore.EventKeysBackfill
 
-   val keys: EventKeysBackfill = eventStore.backfillEventKeys()  // EventKeysBackfill(written, missing)
+   val keys: EventKeysBackfill = eventStore.backfillEventKeys()  // EventKeysBackfill(written, missing, orphans)
    ```
 
    It works through the events in batches of 10 000 (`batchSize`) and records when every event has
    its key; from then on, a rebuild of one organization, or a build of a few types, reads only its
    own events. Until then they read through the whole store, which is correct, just slow. `missing`
-   counts events it could not key (those whose aggregate's row is missing).
+   counts events it could not key although their aggregate has its row (zero, unless a node of an
+   older version wrote meanwhile). Events whose aggregate has no row of its own at all, *orphans*
+   left by some old delete, are counted apart in `orphans`, with the first hundred aggregates listed
+   (ids, event counts and classes, first and last event); they never keep the backfill from
+   finishing, as nothing reads them anyway. Chapter 18 says what to do with them.
 
 5. **Rebuild the read models that wrote no real space**: documents written before documents had a
    space, or with `0` for everything. A full rebuild ([chapter 10](10-rebuilding-projections.md))

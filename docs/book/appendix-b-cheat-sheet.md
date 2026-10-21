@@ -242,7 +242,7 @@ Not messages, but calls your application makes, mostly at start or as one-off jo
 | `new PostgresSagaState(mpjsons, typesNames).initSchema()` | `Unit` | At every start, when you have sagas. |
 | `new PostgresProjectionRegistry().initSchema()` | The `PostgresProjectionRegistry` | At every start, when you have managed projections. |
 | `eventStore.buildIndexesConcurrently()` | `Unit` | Once after an upgrade, in the background: it builds the newer indexes without blocking writes, and does nothing when they exist. |
-| `eventStore.backfillEventKeys()` | `EventKeysBackfill(written, missing)` | Once, in the background, after every node runs a version with event keys. `missing` counts events whose aggregate row is missing. |
+| `eventStore.backfillEventKeys()` | `EventKeysBackfill(written, missing, orphans)` | Once, in the background, after every node runs a version with event keys. `orphans`: events whose aggregate has no row of its own, which nothing reads; they do not keep the step from being recorded. |
 | `eventStore.backfillSpaces(spaceOf)` | `SpaceBackfill(filled, left)` | Once, for aggregates stored before spaces were required, before you rebuild an organization. `left` lists those it could not place. |
 | `StoredDataCheck.run(mpjsons, typesNames, projections)` | `StoredDataCheck.Report` | Before an upgrade, on a copy of production. `report.text` is a readable table; `report.unreadable` counts the rows that do not read; `report.missingTables` names the tables it did not find. |
 | `StoredDataCheck.usersOf(className)` | `StoredDataCheck.ClassUsers(className, events, archived, aggregates)` | Before removing an event class from the code: when `events` and `archived` are both 0, nothing uses it. |

@@ -1316,7 +1316,10 @@ served unchanged meanwhile (`ServeStale`), it then catches up through a reconcil
 It binds each instance to its build (`BindSubscriber`), subscribes the instances that take
 deliveries (`ConnectedTo`, answering the bus's `GetSubscriptionRequests`, or `AddSubscriptions`
 once the bus runs), puts the build in progress into `BuildFromStore`, and runs its
-`ProjectionBuilder` when one of the runtime's build slots is free (`buildsAtOnce`, 2). Every
+`ProjectionBuilder` when one of the runtime's build slots is free (`buildsAtOnce`, 2) and no `BuildHold` holds full
+builds (D89: the slots grant none until its check, run on the blocking dispatcher every `checkEvery` while a build
+waits, answers None, such as the store's `buildReadiness`; the held supervisors keep the reason for `Builds` and
+`BuildStatus`; targeted rebuilds and the catch-up use no slot and are not held). Every
 other message goes to the instance that **serves**: the active build, or a new projection's
 first build, which serves while it is built. While a new version builds, the active build keeps
 applying live events with the current code (`ServeLive`, so parked queries keep working) or
@@ -1806,6 +1809,7 @@ or after the library's actors start. `metrics/RecordingMetrics` keeps them in me
 | `reactivecqrs.outbox.republished` | count | | re-publications the poller asked for |
 | `reactivecqrs.outbox.read.abandoned` | count | | reads of the outbox given up after `readTimeout` (F186) |
 | `reactivecqrs.message.too.large` | count | `class` | messages too large to cross nodes (F121) |
+| `reactivecqrs.builds.held` | gauge | | at each check of a `BuildHold` and when a held build stops waiting: the full builds held; 0 once the hold is over (D89) |
 
 Tracing goes with the metadata envelope (R13, D32): `EventMetadata.traceContext` holds the W3C
 trace context a command brings (`WithMetadata`), and every event it stores carries it to the

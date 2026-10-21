@@ -333,14 +333,18 @@ zobaczysz, co znaczą dla organizacji.
    ```scala
    import io.reactivecqrs.core.eventstore.EventKeysBackfill
 
-   val keys: EventKeysBackfill = eventStore.backfillEventKeys()  // EventKeysBackfill(written, missing)
+   val keys: EventKeysBackfill = eventStore.backfillEventKeys()  // EventKeysBackfill(written, missing, orphans)
    ```
 
    Przechodzi przez zdarzenia w partiach po 10 000 (`batchSize`) i zapisuje moment, w którym każde
    zdarzenie ma już klucz; od tej pory przebudowa jednej organizacji albo budowa kilku typów czyta
    tylko własne zdarzenia. Do tego czasu czytają cały magazyn, co jest poprawne, tylko wolne.
-   `missing` liczy zdarzenia, którym nie udało się nadać klucza (te, których agregat nie ma swojego
-   wiersza).
+   `missing` liczy zdarzenia, którym nie udało się nadać klucza, choć ich agregat ma swój wiersz (zero,
+   chyba że w międzyczasie pisał węzeł starszej wersji). Zdarzenia, których agregat w ogóle nie ma
+   własnego wiersza, *sieroty* po jakimś dawnym usunięciu, liczone są osobno w `orphans`, z pierwszą
+   setką agregatów na liście (identyfikatory, liczby i klasy zdarzeń, pierwsze i ostatnie zdarzenie);
+   nigdy nie wstrzymują zakończenia uzupełniania, bo i tak nic ich nie czyta. Co z nimi zrobić, mówi
+   rozdział 18.
 
 5. **Przebuduj modele odczytu, które nie zapisywały prawdziwej przestrzeni**: dokumenty zapisane,
    zanim dokumenty dostały przestrzeń, albo z `0` dla wszystkiego. Pełna przebudowa

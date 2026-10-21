@@ -3,6 +3,7 @@ package io.reactivecqrs.core.tools
 import io.mpjsons.MPJsons
 import io.reactivecqrs.api.AggregateContext
 import io.reactivecqrs.core.commandhandler.PostgresCommandResponseState
+import io.reactivecqrs.core.eventstore.{OrphanEvents, PostgresEventStoreState}
 import io.reactivecqrs.core.types.TypesNamesState
 import scalikejdbc._
 
@@ -16,7 +17,7 @@ import io.reactivecqrs.core.util.Errors
 /**
  * The dry run of D78: reads every stored JSON value with the mpjsons version on the classpath and reports, per table
  * and class, how many rows were read and which could not be (F52). It also gives the other pre-checks of a production
- * copy: aggregates without a space (F49) and events by event type version (D29). It only reads.
+ * copy: aggregates without a space (F49), events by event type version (D29) and orphan events (F342). It only reads.
  *
  * Run it from the application, which has all stored classes on its classpath, against a copy of production:
  * {{{
@@ -41,10 +42,11 @@ object StoredDataCheck {
   case class ClassResult(table: String, className: String, rows: Long, unreadable: Long, examples: Seq[String])
 
   /** `missingTables`: the tables to read that the database does not have (F181), such as the saga table of an
-    * application without sagas, or the archive of a database from before 1.0. */
+    * application without sagas, or the archive of a database from before 1.0. `orphans` (F342): the events whose
+    * aggregate has no row of its own, which no read path reads, with the first 100 of their aggregates. */
   case class Report(results: Seq[ClassResult], aggregatesWithoutSpace: Long, eventsByTypeVersion: Map[Int, Long],
                     missingTables: Seq[String] = Nil, repeatedVersions: Seq[RepeatedVersion] = Nil,
-                    typesWithoutContext: Map[String, Long] = Map.empty) {
+                    typesWithoutContext: Map[String, Long] = Map.empty, orphans: OrphanEvents = OrphanEvents.none) {
 
     def unreadable: Long = results.map(_.unreadable).sum
 
@@ -58,7 +60,11 @@ object StoredDataCheck {
         (if (repeatedVersions.isEmpty) "" else "Versions stored twice or more (F198; the first 100): " +
           repeatedVersions.map(r => s"aggregate ${r.aggregateId} version ${r.version} (${r.events} events)").mkString(", ") + "\n") +
         (if (typesWithoutContext.isEmpty) "" else "Aggregate types no context given has (F197; their aggregates are not restored): " +
-          typesWithoutContext.toSeq.sorted.map { case (t, n) => s"$t: $n" }.mkString(", ") + "\n")
+          typesWithoutContext.toSeq.sorted.map { case (t, n) => s"$t: $n" }.mkString(", ") + "\n") +
+        (if (orphans.events == 0) "" else s"Events whose aggregate has no row of its own (F342; no read path reads them): ${orphans.events} of " +
+          s"${orphans.aggregates} aggregates; the first ${orphans.listed.size}: " + orphans.listed.map(o => s"aggregate ${o.aggregateId.asLong}: " +
+          s"${o.events} events (${o.eventClasses.mkString(", ")}), ids ${o.firstEventId} to ${o.lastEventId}, ${o.firstEventTime} to ${o.lastEventTime}")
+          .mkString("; ") + "\n")
     }
   }
 
@@ -139,7 +145,8 @@ object StoredDataCheck {
           val known = contexts.map(_.aggregateType.typeName).toSet
           sql"SELECT type_id, count(*) FROM aggregates WHERE id = base_id GROUP BY type_id".map(rs => className(rs.short(1)) -> rs.long(2)).list()
             .filterNot { case (name, _) => known.contains(name) }.toMap
-        })
+        },
+        PostgresEventStoreState.orphanEvents(typesNamesState, 100))
     }
   }
 

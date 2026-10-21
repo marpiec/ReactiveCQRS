@@ -316,6 +316,35 @@ Four things start one:
 
 At most two builds run at once (`buildsAtOnce`); the others wait for their turn.
 
+### Holding builds until the store is ready
+
+Right after an upgrade, a big store may not be ready for builds yet: until its events have their
+keys and its aggregates their index by type (the online jobs of
+[chapter 18](18-production.md)), every build reads the whole `events` table, which can take hours on
+a hundred million events. You can tell full builds to wait for the store:
+
+```scala
+val projections = new Projections(system, ProjectionsSettings(eventStore, subscriptions, registry,
+  contexts, holdBuilds = Some(BuildHold.untilStoreReady(eventStore))))
+```
+
+Every 30 seconds (`checkEvery`) while a build waits, the hold asks the store
+(`eventStore.buildReadiness()`: the event keys' step recorded, the index `aggregates_own_type_idx`
+valid; `readyForBuilds()` for a plain yes or no). Once it is ready, the waiting builds start in the
+order they asked, and the hold is over. Meanwhile:
+
+- `GetBuilds` answers `Builds(..., heldBy = Some(reason))` and `GetBuildStatus` answers phase
+  `Waiting` with the same `heldBy`; the gauge `reactivecqrs.builds.held` counts the builds held, and
+  one log line says when the hold starts and one when it ends.
+- The active build serves as usual. Under `ServeLive` it keeps taking live events; under `ServeStale`
+  it stays as it is until the new build is done, so a long hold keeps it stale longer. A new
+  projection's first build is what serves, so it serves nothing until the hold is over.
+- Targeted rebuilds (`RebuildAggregates`) are not held: they read only the aggregates they need.
+
+`BuildHold(heldBy, checkEvery)` takes any check of your own (a function that answers why builds must
+wait, or `None`). By default nothing is held. In a cluster every node asks the same database, so
+they all agree.
+
 ## Asking for a rebuild
 
 Fixed a bug in a listener without changing anything else? Ask for a fresh build of the same

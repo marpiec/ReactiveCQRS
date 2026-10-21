@@ -73,7 +73,7 @@ class ProductionSpec extends CartSpec {
       // #maintenance
       eventStore.buildIndexesConcurrently()          // indexes built without blocking writes
       val spaces = eventStore.backfillSpaces()       // SpaceBackfill(filled, left)
-      val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, missing)
+      val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, missing, orphans)
       // #maintenance
       (spaces, keys) mustBe ((SpaceBackfill(0, Nil), EventKeysBackfill(0, 0))) // a 1.0 store has every space and key
 

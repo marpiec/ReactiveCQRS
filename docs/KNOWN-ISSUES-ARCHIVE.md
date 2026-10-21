@@ -820,6 +820,12 @@ but F93 are fixed in M2; the tests named were red first, or red under a mutation
 
 ### Event store and SQL
 
+#### F342 — Orphan events keep the event keys' step from ever being recorded, so every build reads the whole `events` table
+- **Medium**, confirmed (Neula's rehearsal on a copy of `neula_cloud`: 4 ProcessFlow aggregates from 2020 with 77 events and no `aggregates` row) · **Fixed for 1.0.1-RC2** (21/10/2026, CR-1 of Neula's MR-11; `PostgresEventStoreStateSpec` "F342", `StoredDataCheckSpec` "F342") · `PostgresEventStoreState.backfillEventKeys`, `StoredDataCheck`
+- **Symptom:** `backfillEventKeys` keyed events through their aggregate's own row and counted every event left without a key as `missing`; it recorded `schema_steps('event_keys')` only when that count was 0. The events of an aggregate with no own row (an orphan) can never be keyed, so the step was never recorded, every event-ordered bulk pass kept walking the whole `events` table, and Neula's online job exited 1 for ever. Builds and reconciliations already skipped orphans without a word, and `StoredDataCheck` did not report them.
+- **Fix:** the backfill reads, per batch, the events it could not key grouped by aggregate, with whether the aggregate has its own row: `missing` counts only those that have one, and `orphans` (`OrphanEvents`: events, aggregates, and the first `orphansListed` aggregates with their event counts, classes, first and last event ids and times) the rest, with a warning; the step is recorded once `missing` is 0. `StoredDataCheck.Report.orphans` lists every orphan (one anti-join over `events`). Nothing is deleted (D88). No read path reads an orphan: restores join the aggregate's rows, builds read through its own row (`ownRow`), reconciliations walk the own rows; an orphan made after the step keeps its keys, which a build follows to nothing. Past 10 000 orphan aggregates in one walk the count of aggregates may count one twice.
+- **Found:** Neula's MR-11 (21/10/2026, `neulaserver/docs/reactivecqrs-1.0-migration/mr11-reactivecqrs-requests.md`, CR-1).
+
 #### F336 — The space backfill cannot run on a 0.12 schema, and says nothing
 - **Medium**, likely · **Closed, documented** (19/10/2026, L5) · `PostgresEventStoreState.backfillSpaces`
 - **Finding:** it reads first events with `readPart`, which selects `events.metadata`, and updates `event_keys`; both come with 1.0's first start. On a 0.12 schema every read fails inside its `Try`, every aggregate lands in `left`, and nothing is filled. D81 had planned the backfill before the stop, while 0.12 serves.
@@ -1376,6 +1382,12 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Fix:** `schemaname = current_schema()`, `to_regclass(…)` and `'events'::regclass`, so the library works in whatever schema the connection's `search_path` selects. Also `countAllEvents` treats the `-1` estimate of a never-analyzed table (PostgreSQL 14+) like 0 and counts exactly.
 
 ### Rebuild
+
+#### F343 — Nothing can hold a full build: right after an upgrade every build reads the whole store
+- **Medium**, likely · **Fixed for 1.0.1-RC2** (21/10/2026, CR-2 of Neula's MR-11; `BuildHoldSpec`) · `BuildSlots`, `ProjectionsSettings`
+- **Symptom:** a full build starts as soon as `BuildSlots` grants it a slot (at connect, after a builder restart, on `RebuildProjection`). Until the event keys' step is recorded every event-ordered bulk pass reads the whole `events` table ("hours at 100 million events"), and until `aggregates_own_type_idx` exists every page of aggregates takes about 100 ms instead of 1 ms. A host that starts builds at the first start after an upgrade (Neula 2.2) builds before its online jobs have run.
+- **Fix:** `ProjectionsSettings.holdBuilds: Option[BuildHold]` (None by default): the slots grant nothing while the hold's check answers a reason, asked on the blocking dispatcher every `checkEvery` while a build waits; once it answers None the waiting builds are granted in queue order and the hold is over (D89). `BuildHold.untilStoreReady(store)` checks `PostgresEventStoreState.buildReadiness()` (public, with `readyForBuilds()`): the step recorded and the index valid, read from the database, so every node agrees. A held build shows `heldBy` in `Builds` and `BuildStatus`; the gauge `reactivecqrs.builds.held`, one log line when a hold starts and one when it ends. Targeted rebuilds and the F202 catch-up use no slot and are not held.
+- **Found:** Neula's MR-11 (21/10/2026, CR-2).
 
 #### F282 — The F202 catch-up follows the rolled-back code's `whileBuilding`: the usual rollback gets none
 - **High**, likely · **Fixed for 1.0.1** (18/10/2026, a regression of F202 found by the second risk assessment; `ProjectionsSpec` "F202" now as the book does it, `ServeStale` on the new version only: red before, red under a mutation) · `ProjectionSupervisor.decideBuilds`

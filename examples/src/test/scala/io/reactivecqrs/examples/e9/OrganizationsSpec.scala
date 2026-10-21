@@ -119,7 +119,7 @@ class OrganizationsSpec extends CommonSpec {
         // #backfillKeys
         import io.reactivecqrs.core.eventstore.EventKeysBackfill
 
-        val keys: EventKeysBackfill = eventStore.backfillEventKeys()  // EventKeysBackfill(written, missing)
+        val keys: EventKeysBackfill = eventStore.backfillEventKeys()  // EventKeysBackfill(written, missing, orphans)
         // #backfillKeys
         keys mustBe EventKeysBackfill(0, 0) // every event of a 1.0 store has its key
       } finally Await.ready(app.terminate(), 30.seconds)

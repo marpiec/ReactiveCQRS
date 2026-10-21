@@ -567,6 +567,61 @@ class PostgresEventStoreStateSpec extends EventStoreStateSpec(PostgresEventStore
     }
   }
 
+  // F342 (CR-1): an aggregate's events without its own row (left by an old delete) can never be keyed; they must not keep
+  // the step from being recorded, which would leave every build walking the whole table.
+  Scenario("F342 orphan events are reported apart, and the event keys' step is recorded without them") {
+    TestDatabase.inSchema("orphans") {
+      val typesNames = new PostgresTypesNamesState().initSchema()
+      val created = new PostgresEventStoreState(new MPJsons, typesNames).initSchema()
+      def store = new PostgresEventStoreState(new MPJsons, typesNames) // reads the step afresh
+      val (keyed, unkeyed, orphan) = (new TestFixture(created), new TestFixture(created), new TestFixture(created))
+      keyed.storeEvents(Seq(EventA("keyed"), EventB(2)))
+      unkeyed.storeEvents(Seq(EventA("unkeyed"), EventB(2), EventC(true)))
+      orphan.storeEvents(Seq(EventA("orphan"), EventB(2)))
+      def idsOf(id: AggregateId): Seq[Long] = DB.readOnly { implicit session =>
+        sql"SELECT id FROM events WHERE aggregate_id = ${id.asLong} ORDER BY id".map(_.long(1)).list()
+      }
+      def stepRecorded: Boolean = DB.readOnly(implicit session => sql"SELECT EXISTS (SELECT 1 FROM schema_steps WHERE name = 'event_keys')".map(_.boolean(1)).single().get)
+
+      Given("events written before the keys, and an orphan: the events of an aggregate whose row an old delete removed")
+      DB.autoCommit { implicit session =>
+        sql"DELETE FROM event_keys WHERE id IN (SELECT id FROM events WHERE aggregate_id IN (${unkeyed.aggregateId.asLong}, ${orphan.aggregateId.asLong}))".update()
+        sql"DELETE FROM aggregates WHERE id = ${orphan.aggregateId.asLong}".update()
+        sql"DELETE FROM schema_steps WHERE name = 'event_keys'".update()
+      }
+      val times = DB.readOnly { implicit session =>
+        sql"SELECT min(event_time), max(event_time) FROM events WHERE aggregate_id = ${orphan.aggregateId.asLong}".map(rs =>
+          (rs.underlying.getTimestamp(1, java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))).toInstant,
+            rs.underlying.getTimestamp(2, java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC"))).toInstant)).single().get
+      }
+
+      When("the backfill runs, a few ids at a time")
+      val backfill = store.backfillEventKeys(batchSize = 2)
+
+      Then("it keys the others, records the step and reports the orphan apart")
+      (backfill.written, backfill.missing) mustBe ((3L, 0L))
+      stepRecorded mustBe true
+      val expected = OrphanEvents(2L, 1L, Seq(OrphanAggregate(orphan.aggregateId, 2L, Seq(classOf[EventA].getName, classOf[EventB].getName),
+        idsOf(orphan.aggregateId).head, idsOf(orphan.aggregateId).last, times._1, times._2)))
+      backfill.orphans mustBe expected
+
+      And("a build of the type reads through the keys, and gets nothing of the orphan")
+      val types = Seq(AggregateType.of[SomeAggregate])
+      def page: Seq[Long] = store.readCommittedPage(types, 0L, 1000, AggregateScope.All, Long.MaxValue).events.map(_.id)
+      page mustBe (idsOf(keyed.aggregateId) ++ idsOf(unkeyed.aggregateId)).sorted
+      DB.autoCommit { implicit session => // a missing key shows which way a store reads: a walk of `events` would find it
+        sql"DELETE FROM event_keys WHERE id = ${idsOf(keyed.aggregateId).last}".update()
+      }
+      page mustBe (idsOf(keyed.aggregateId).init ++ idsOf(unkeyed.aggregateId)).sorted
+      store.backfillEventKeys() // gives the key back
+      store.aggregatesOf(types, AggregateId(Long.MinValue), 1000).map(_.aggregateId) must not contain orphan.aggregateId
+
+      And("a second run changes nothing, and still reports the orphan")
+      store.backfillEventKeys(batchSize = 2) mustBe EventKeysBackfill(0L, 0L, expected)
+      idsOf(orphan.aggregateId).size mustBe 2
+    }
+  }
+
   Scenario("the space backfill gives the keys of an aggregate's events its space too (F124)") {
     val f = new TestFixture(eventStoreState)
     f.storeEvents(Seq(EventA("one"), EventB(2)))

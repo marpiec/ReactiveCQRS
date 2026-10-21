@@ -6,7 +6,8 @@ import io.reactivecqrs.api.{AggregateContext, AggregateType, MessageTooLargeExce
 import io.reactivecqrs.api.id.{AggregateId, SpaceId}
 import io.reactivecqrs.core.cluster.{Members, Singletons}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
-import io.reactivecqrs.core.eventstore.{AggregateScope, EventStoreState}
+import io.reactivecqrs.core.eventstore.{AggregateScope, EventStoreState, PostgresEventStoreState}
+import io.reactivecqrs.core.metrics.ReactiveMetrics
 import io.reactivecqrs.core.projection._
 import io.reactivecqrs.core.rebuild.ProjectionBuilder._
 import io.reactivecqrs.core.rebuild.ProjectionSupervisor._
@@ -26,10 +27,30 @@ import io.reactivecqrs.core.util.Errors
   * @param contexts the aggregate contexts whose states projections receive, for their builds (D59) and for the context
   *                 versions a build records (D63)
   * @param buildsAtOnce how many builds run at the same time; the others wait
+  * @param holdBuilds what full builds wait for before they start (CR-2, D89), such as `BuildHold.untilStoreReady`; none
+  *                   by default
   */
 case class ProjectionsSettings(eventStore: EventStoreState, subscriptionsState: SubscriptionsState, registry: ProjectionRegistry,
                                contexts: Seq[AggregateContext[_]], builder: BuilderSettings = BuilderSettings(),
-                               buildsAtOnce: Int = 2, restartAfter: FiniteDuration = 10.seconds)
+                               buildsAtOnce: Int = 2, restartAfter: FiniteDuration = 10.seconds, holdBuilds: Option[BuildHold] = None)
+
+/**
+  * CR-2, D89: full builds of managed projections (their bulk passes, which read the whole store) wait while `heldBy`
+  * answers why they must, asked every `checkEvery` while a build waits, on the blocking dispatcher; once it answers None
+  * the waiting builds start in the order they asked, and the hold is over for the life of the `Projections`. Builds
+  * that wait are subscribed and acknowledge their deliveries unapplied, as while they wait for their turn; the active
+  * builds serve on, those under `ServeLive` taking live events (`ServeStale` ones stay as they are, and a projection's
+  * first build serves nothing until it is built). Targeted rebuilds (`RebuildAggregates`) and the catch-up after a
+  * rollback do not wait: they read only the aggregates they need.
+  */
+case class BuildHold(heldBy: () => Option[String], checkEvery: FiniteDuration = 30.seconds)
+
+object BuildHold {
+  /** Holds full builds until `store` is ready for them (`buildReadiness`: the event keys complete and the index of the
+    * aggregates' own rows by type valid), or an operator released them (`releaseBuildHold`). */
+  def untilStoreReady(store: PostgresEventStoreState, checkEvery: FiniteDuration = 30.seconds): BuildHold =
+    BuildHold(() => store.buildsHeldBy(), checkEvery)
+}
 
 /**
   * Runs managed projections (D57, D70): `start` creates a projection's supervisor, whose `ActorRef` the host uses where it
@@ -41,7 +62,7 @@ class Projections(actors: ActorRefFactory, val settings: ProjectionsSettings) {
 
   private[rebuild] val sources: Map[AggregateType, ReplaySource] = ReplaySource.of(settings.contexts, settings.eventStore)
   private[rebuild] val contextVersions: Map[String, Int] = settings.contexts.map(c => c.aggregateType.typeName -> c.version).toMap
-  private[rebuild] val slots: ActorRef = actors.actorOf(Props(new BuildSlots(settings.buildsAtOnce)))
+  private[rebuild] val slots: ActorRef = actors.actorOf(Props(new BuildSlots(settings.buildsAtOnce, settings.holdBuilds)))
 
   /** Starts the projection `name` at `version`; its supervisor is named `actorName`. The instance `create` makes for a
     * build must take its stores' table names from that build (`build.documentStore(...)`). `P`, the projection's class,
@@ -124,12 +145,15 @@ object ProjectionSupervisor {
 
   /** Asks the supervisor for its `Builds`. */
   case object GetBuilds
-  /** `caughtUp`: the build in progress has every event; it replaces the active build once it has no failed subscription. */
-  case class Builds(name: String, active: Option[BuildRecord], building: Option[BuildRecord], caughtUp: Boolean)
+  /** `caughtUp`: the build in progress has every event; it replaces the active build once it has no failed subscription.
+    * `heldBy`: while full builds are held (CR-2), why; the build in progress then waits to start its bulk pass. */
+  case class Builds(name: String, active: Option[BuildRecord], building: Option[BuildRecord], caughtUp: Boolean, heldBy: Option[String] = None)
 
   private[rebuild] case object RequestBuildSlot
   private[rebuild] case object BuildSlotGranted
   private[rebuild] case object ReleaseBuildSlot
+  /** To a supervisor whose request waits: why it is held (CR-2), or None once the hold is over. */
+  private[rebuild] case class BuildSlotHeld(heldBy: Option[String])
 
   private case object Start
   private case object CheckSwitch
@@ -163,17 +187,27 @@ private[rebuild] object NoPositions extends BuildPositions {
   override def save(position: BuildPosition): Unit = ()
 }
 
-/** At most `slots` builds at once, granted in the order they were asked for; a supervisor holds or waits for one at most. */
-private[rebuild] class BuildSlots(slots: Int) extends Actor {
+/** At most `slots` builds at once, granted in the order they were asked for; a supervisor holds or waits for one at most.
+  * With a `hold` (CR-2), none is granted until it is over. */
+private[rebuild] class BuildSlots(slots: Int, hold: Option[BuildHold] = None) extends Actor with MyActorLogging {
   private var holders = Set[ActorRef]()
   private val waiting = mutable.Queue[ActorRef]()
+  private var heldBy: Option[String] = None // the hold's last answer, while it holds
+  private var released = hold.isEmpty
+  private var checking = false
+  private var checkDue = false // a check is scheduled
+
+  private case class Checked(answer: Try[Option[String]])
+  private case object Check
 
   override def receive: Receive = {
     case RequestBuildSlot =>
       val supervisor = sender()
       if (!holders.contains(supervisor) && !waiting.contains(supervisor)) {
         context.watch(supervisor)
-        if (holders.size < slots) grant(supervisor) else waiting.enqueue(supervisor)
+        waiting.enqueue(supervisor)
+        grantWaiting()
+        if (heldBy.isDefined) supervisor ! BuildSlotHeld(heldBy)
       }
     case ReleaseBuildSlot =>
       waiting.dequeueAll(_ == sender())
@@ -181,16 +215,61 @@ private[rebuild] class BuildSlots(slots: Int) extends Actor {
     case Terminated(supervisor) =>
       waiting.dequeueAll(_ == supervisor)
       release(supervisor)
+    case Check =>
+      checkDue = false
+      check()
+    case Checked(answer) =>
+      checking = false
+      checked(answer.fold(e => Some("the hold could not be checked: " + Errors.describe(e)), identity))
   }
+
+  private def grantWaiting(): Unit =
+    if (!released) check()
+    else while (holders.size < slots && waiting.nonEmpty) grant(waiting.dequeue())
+
+  // The hold is asked off this actor's thread, as it may read the database; only while a build waits.
+  private def check(): Unit = for (h <- hold if !released && !checking && !checkDue && waiting.nonEmpty) {
+    checking = true
+    val blocking = context.system.dispatchers.lookup(BlockingDispatcher.id)
+    scala.concurrent.Future(h.heldBy())(blocking).onComplete(answer => self ! Checked(answer))(blocking)
+  }
+
+  private def checked(answer: Option[String]): Unit = answer match {
+    case None =>
+      if (heldBy.isDefined) {
+        log.info("Full builds of projections are released; the " + waiting.size + " waiting start in turn (CR-2)")
+        waiting.foreach(_ ! BuildSlotHeld(None))
+      }
+      heldBy = None
+      released = true
+      gauge(0L)
+      grantWaiting()
+    case Some(reason) =>
+      if (!heldBy.contains(reason)) {
+        if (heldBy.isEmpty) log.warning("Full builds of projections are held: " + reason + "; " + waiting.size + " wait (CR-2)")
+        heldBy = Some(reason)
+        waiting.foreach(_ ! BuildSlotHeld(heldBy))
+      }
+      gauge(waiting.size.toLong)
+      for (h <- hold if waiting.nonEmpty) {
+        checkDue = true
+        context.system.scheduler.scheduleOnce(h.checkEvery, self, Check)(context.dispatcher)
+      }
+  }
+
+  private def gauge(held: Long): Unit = ReactiveMetrics(context.system).metrics.gauge("reactivecqrs.builds.held", Map.empty, held)
 
   private def grant(supervisor: ActorRef): Unit = {
     holders += supervisor
     supervisor ! BuildSlotGranted
   }
 
-  private def release(supervisor: ActorRef): Unit = if (holders.contains(supervisor)) {
-    holders -= supervisor
-    if (waiting.nonEmpty) grant(waiting.dequeue())
+  private def release(supervisor: ActorRef): Unit = {
+    if (holders.contains(supervisor)) {
+      holders -= supervisor
+      grantWaiting()
+    }
+    if (heldBy.isDefined) gauge(waiting.size.toLong)
   }
 }
 
@@ -240,6 +319,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   private var catchingUp: Option[ActorRef] = None
   private var jobs = Vector[Job]() // the jobs waiting, in order
   private var buildStopped = false // the build's instance stopped by itself; a new one starts after a wait
+  private var heldBy: Option[String] = None // CR-2: why the build waits for its slot, while full builds are held
   // F110: instances that stopped, kept in the bus as stopped subscribers (their events stay in the outbox) until their
   // replacements are subscribed; then they leave it, and their outbox rows go to the replacements.
   private var replaced = Vector[ActorRef]()
@@ -412,7 +492,9 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
     case GetSubscriptionRequests(registered) =>
       asked(sender(), registered)
       subscribeTakers()
+    case BuildSlotHeld(reason) => heldBy = reason
     case BuildSlotGranted =>
+      heldBy = None
       if (runningBuild.isDefined && builder.isEmpty) startBuilder()
       else if (builder.isEmpty) runtime.slots ! ReleaseBuildSlot // nothing to build any more
     case RestartBuild => if (buildStopped) building.foreach { stopped =>
@@ -468,11 +550,11 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       case Some(b) => b.ref.forward(message)
       case None => sender() ! RebuildRefused("no build is running")
     }
-    case GetBuilds => sender() ! Builds(spec.name, active.map(_.record), building.map(b => saved(b.record)), caughtUp)
+    case GetBuilds => sender() ! Builds(spec.name, active.map(_.record), building.map(b => saved(b.record)), caughtUp, heldBy.filter(_ => building.isDefined))
     // F152: the running builder answers, a full build's or a targeted rebuild's.
     case GetBuildStatus => builder.orElse(targeted.flatMap(_.builder)) match {
       case Some(b) => b.forward(GetBuildStatus)
-      case None => sender() ! building.fold(BuildStatus.NoBuild)(b => BuildStatus.waiting(saved(b.record).position.position))
+      case None => sender() ! building.fold(BuildStatus.NoBuild)(b => BuildStatus.waiting(saved(b.record).position.position, heldBy))
     }
     case request: RequestRepublish => builder.foreach(_.forward(request)) // from the build in progress, before its builder runs
     case Terminated(ref) => terminated(ref)

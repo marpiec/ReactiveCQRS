@@ -4,6 +4,19 @@ Notable changes of ReactiveCQRS, newest first. Dates are DD/MM/YYYY.
 
 ## 1.0.1 (not released)
 
+**1.0.1-RC2 (not tagged yet):** what Neula's MR-11 needs of the library (its change requests CR-1 to CR-4), on top
+of RC1. Every new setting defaults to the behaviour of RC1.
+
+- **Orphan events no longer block the event keys** (F342, D88, chapters 16 and 18): `backfillEventKeys` counts the
+  events whose aggregate has no row of its own apart (`EventKeysBackfill.orphans`: how many, of how many aggregates,
+  the first ones listed with their event counts, classes, first and last ids and times), logs a warning, and records
+  its step once every other event has a key. `StoredDataCheck`'s report lists them (`orphans`). Nothing deletes them.
+- **New:** full builds can wait until the store is ready (F343, D89, chapter 10):
+  `ProjectionsSettings(..., holdBuilds = Some(BuildHold.untilStoreReady(eventStore)))` holds them until the event keys'
+  step is recorded and `aggregates_own_type_idx` is valid (`eventStore.buildReadiness()`, `readyForBuilds()`), checked
+  every 30 s. A held build shows why in `Builds.heldBy` and `BuildStatus.heldBy`; gauge `reactivecqrs.builds.held`.
+  Targeted rebuilds are not held.
+
 **1.0.1-RC1 (19/10/2026, tag `v1.0.1-RC1`):** a release candidate of everything below, for Neula's migration branch and
 its rehearsal on a copy of production; the final 1.0.1 follows them.
 

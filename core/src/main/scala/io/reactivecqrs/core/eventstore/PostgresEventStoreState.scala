@@ -21,8 +21,61 @@ import io.reactivecqrs.core.util.Errors
   * gave one. */
 case class SpaceBackfill(filled: Int, left: Seq[AggregateId])
 
-/** What the event keys backfill did (F124): keys written, and events still without one (an aggregate row missing). */
-case class EventKeysBackfill(written: Long, missing: Long)
+/** What the event keys backfill did (F124): keys written, and events still without one although their aggregate has its
+  * own row (none, unless a node of a version before the keys wrote meanwhile). F342: `orphans`, the events whose
+  * aggregate has no row of its own, which no key can be given, are counted apart. */
+case class EventKeysBackfill(written: Long, missing: Long, orphans: OrphanEvents = OrphanEvents.none)
+
+/** F342: events whose aggregate has no row of its own in `aggregates` (orphans, such as an old delete left behind): no
+  * read path reads them, neither a restore nor a build. `events` of `aggregates` aggregates; `listed`: the first of those
+  * aggregates, by id. Nothing deletes them: what to do with them is the operator's choice (chapter 18). */
+case class OrphanEvents(events: Long, aggregates: Long, listed: Seq[OrphanAggregate]) {
+  // A walk by id range meets an aggregate's orphans batch by batch: those of an aggregate it holds are added to it. It
+  // holds up to `Tracked` aggregates; past them an aggregate met in two batches is counted twice.
+  private[eventstore] def adding(found: Seq[OrphanAggregate]): OrphanEvents = found.foldLeft(this) { (sum, aggregate) =>
+    sum.listed.indexWhere(_.aggregateId == aggregate.aggregateId) match {
+      case -1 => OrphanEvents(sum.events + aggregate.events, sum.aggregates + 1,
+        if (sum.listed.size < OrphanEvents.Tracked) sum.listed :+ aggregate else sum.listed)
+      case i => sum.copy(events = sum.events + aggregate.events, listed = sum.listed.updated(i, sum.listed(i).and(aggregate)))
+    }
+  }
+
+  private[eventstore] def first(count: Int): OrphanEvents = copy(listed = listed.sortBy(_.aggregateId.asLong).take(count))
+}
+
+object OrphanEvents {
+  /** No orphan events. */
+  val none: OrphanEvents = OrphanEvents(0L, 0L, Nil)
+  private val Tracked = 10000
+}
+
+/** CR-2: what a full build of a projection needs of the store to read only what it needs: every event keyed by its
+  * aggregate's type and space (`eventKeys`: the step `backfillEventKeys` records; until then each bulk pass reads the
+  * whole `events` table), and the index of the aggregates' own rows by type (`ownTypeIndex`: `aggregates_own_type_idx`
+  * exists and is valid; until then a page of aggregates takes about 100 ms instead of 1 ms on a large installation). */
+case class StoreReadiness(eventKeys: Boolean, ownTypeIndex: Boolean) {
+  /** Both are there. */
+  def ready: Boolean = eventKeys && ownTypeIndex
+  /** What is missing, in words; None when ready. */
+  def missing: Option[String] = if (ready) None else Some(Seq(
+    if (eventKeys) None else Some("the event keys are not complete (backfillEventKeys)"),
+    if (ownTypeIndex) None else Some("the index aggregates_own_type_idx is missing or invalid (buildIndexesConcurrently)")).flatten.mkString(" and "))
+}
+
+/** CR-3: how far an event-key backfill got: the last event id it walked, and what it found up to there. */
+private[core] case class EventKeysProgress(after: Long, written: Long, missing: Long, orphans: OrphanEvents)
+private[core] object EventKeysProgress {
+  val Start: EventKeysProgress = EventKeysProgress(0L, 0L, 0L, OrphanEvents.none)
+}
+
+/** One aggregate's orphan events: how many, their classes, and the first and last of them (ids and times). */
+case class OrphanAggregate(aggregateId: AggregateId, events: Long, eventClasses: Seq[String], firstEventId: Long, lastEventId: Long,
+                           firstEventTime: Instant, lastEventTime: Instant) {
+  private[eventstore] def and(other: OrphanAggregate): OrphanAggregate = OrphanAggregate(aggregateId, events + other.events,
+    (eventClasses ++ other.eventClasses).distinct.sorted, math.min(firstEventId, other.firstEventId), math.max(lastEventId, other.lastEventId),
+    if (other.firstEventTime.isBefore(firstEventTime)) other.firstEventTime else firstEventTime,
+    if (other.lastEventTime.isAfter(lastEventTime)) other.lastEventTime else lastEventTime)
+}
 
 /** The event store in PostgreSQL (chapter 2): the events, aggregates, outbox, snapshots and archive tables.
   *
@@ -327,43 +380,67 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 
   /**
     * F124: gives the events written before `event_keys` their keys (their aggregate's type and space), in id order, a
-    * batch of `batchSize` ids per transaction, `pause` apart, and once every event has one, records
-    * the step, from which builds read by type and space. Online and idempotent (D69): run it in the background once every
-    * node runs this version (a node of the previous one, started again, would write events without keys); stopped, it is
-    * run again. Returns the keys it wrote and the events still without one (those of a missing aggregate row).
+    * batch of `batchSize` ids per transaction, `pause` apart, and once every event whose aggregate has its own row has
+    * one, records the step, from which builds read by type and space. Online and idempotent (D69): run it in the
+    * background once every node runs this version (a node of the previous one, started again, would write events without
+    * keys); stopped, it is run again. Returns the keys it wrote, the events still without one, and the orphans.
+    *
+    * F342: the events of an aggregate that has no row of its own (orphans, such as an old delete left behind) cannot be
+    * keyed: they are reported apart (`orphans`, the first `orphansListed` aggregates listed) and do not keep the step
+    * from being recorded, as no read path reads them (a restore, a build and a reconciliation all start from the
+    * aggregate's own row). Nothing deletes them (D88). The same holds for an orphan made after the step: its events keep
+    * their keys, which a build follows to nothing.
     */
-  def backfillEventKeys(batchSize: Int = 10000, pause: FiniteDuration = 100.millis): EventKeysBackfill = {
-    // F220: no scan of the whole table: the walk by id range skips the events that have keys (`ON CONFLICT`) and counts,
-    // per batch, those it could not key; it pauses between batches for the database's other work, and a batch that fails
-    // (an event deleted meanwhile by a squash or a purge breaks the key's reference) is tried again, its rows read anew.
-    // Events written meanwhile get keys as they are stored.
+  def backfillEventKeys(batchSize: Int = 10000, pause: FiniteDuration = 100.millis, orphansListed: Int = 100): EventKeysBackfill =
+    backfillEventKeysFrom(EventKeysProgress.Start, batchSize, pause, orphansListed)(_ => true)
+
+  /** CR-3: the backfill from `progress` on, with `continue` told each batch's progress (to save it), which stops the
+    * walk by answering false; the step is recorded only by a walk that reached the end. */
+  private[core] def backfillEventKeysFrom(progress: EventKeysProgress, batchSize: Int, pause: FiniteDuration, orphansListed: Int)
+                                         (continue: EventKeysProgress => Boolean): EventKeysBackfill = {
+    // F220: no scan of the whole table: the walk by id range skips the events that have keys (`ON CONFLICT`) and reads,
+    // per batch, those it could not key (by aggregate, F342); it pauses between batches for the database's other work,
+    // and a batch that fails (an event deleted meanwhile by a squash or a purge breaks the key's reference) is tried
+    // again, its rows read anew. Events written meanwhile get keys as they are stored.
     val (first, last) = DB.readOnly(implicit session => sql"""SELECT coalesce(min(id), 1), coalesce(max(id), 0) FROM events""".map(rs => (rs.long(1), rs.long(2))).single().get)
     val retries = Backoff(1.second, 30.seconds, maxAttempts = 10)
-    def batch(after: Long, upTo: Long, attempt: Int): (Int, Long) = try DB.localTx { implicit session =>
+    def batch(after: Long, upTo: Long, attempt: Int): (Int, Seq[(Boolean, OrphanAggregate)]) = try DB.localTx { implicit session =>
       val keyed = sql"""INSERT INTO event_keys (id, type_id, space_id)
            | SELECT e.id, a.type_id, a.space_id FROM events e CROSS JOIN LATERAL $ownRow a
            | WHERE e.id > $after AND e.id <= $upTo ON CONFLICT (id) DO NOTHING""".stripMargin.update() // each finds its own row by key (F172)
-      (keyed, sql"""SELECT count(*) FROM events e WHERE e.id > $after AND e.id <= $upTo AND NOT EXISTS (SELECT 1 FROM event_keys k WHERE k.id = e.id)"""
-        .map(_.long(1)).single().get)
+      val unkeyed = sqls"""SELECT e.aggregate_id, e.id, e.event_time, e.event_type_id FROM events e
+                          | WHERE e.id > $after AND e.id <= $upTo AND NOT EXISTS (SELECT 1 FROM event_keys k WHERE k.id = e.id)""".stripMargin
+      (keyed, PostgresEventStoreState.groupedByAggregate(unkeyed, typesNamesState))
     } catch {
       case NonFatal(e) if !retries.exhausted(attempt) =>
         PostgresEventStoreState.log.warn("Backfilling event keys after id " + after + " failed (attempt " + attempt + "), trying again: " + Errors.describe(e))
         Thread.sleep(retries.delay(attempt + 1).toMillis)
         batch(after, upTo, attempt + 1)
     }
-    var (written, missing, after) = (0L, 0L, first - 1)
-    while (after < last) {
+    var current = progress
+    var going = true
+    var after = math.max(progress.after, first - 1)
+    while (going && after < last) {
       val upTo = math.min(after + batchSize, last)
-      val (keyed, without) = batch(after, upTo, 1)
-      written += keyed
-      missing += without
+      val (keyed, unkeyed) = batch(after, upTo, 1)
+      val (owned, orphans) = unkeyed.partition(_._1)
       after = upTo
-      if (after < last) Thread.sleep(pause.toMillis)
+      current = EventKeysProgress(after, current.written + keyed, current.missing + owned.map(_._2.events).sum,
+        current.orphans.adding(orphans.map(_._2)))
+      going = continue(current)
+      if (going && after < last) Thread.sleep(pause.toMillis)
     }
-    if (missing == 0) DB.autoCommit { implicit session =>
+    val done = after >= last
+    if (done && current.missing == 0) DB.autoCommit { implicit session =>
       sql"""INSERT INTO schema_steps (name, completed) VALUES ('event_keys', current_timestamp) ON CONFLICT (name) DO NOTHING""".update()
+      eventKeysComplete = true
     }
-    EventKeysBackfill(written, missing)
+    if (done && current.orphans.events > 0) PostgresEventStoreState.log.warn(s"${current.orphans.events} events of ${current.orphans.aggregates} " +
+      "aggregates have no row of their own in `aggregates` (orphans, F342): no read path reads them, and they cannot be keyed" +
+      (if (current.missing == 0) "; the event keys' step is recorded without them" else "") + ". The first: " + current.orphans.first(10).listed.map(o =>
+        s"${o.aggregateId.asLong} (${o.events} events of ${o.eventClasses.mkString(", ")})").mkString(", ") +
+      ". StoredDataCheck lists them; nothing deletes them")
+    EventKeysBackfill(current.written, current.missing, current.orphans.first(orphansListed))
   }
 
   // F124: the step is looked for again at most once a minute until it is found; it is never undone.
@@ -378,6 +455,22 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     }
     eventKeysComplete
   }
+
+  /** CR-2: whether full builds of projections find what lets them read only what they need: the event keys' step
+    * (`backfillEventKeys`, F124) and a valid index of the aggregates' own rows by type (`buildIndexesConcurrently`,
+    * F173). Read from the database each time, so every node of a cluster gives the same answer. */
+  def buildReadiness(): StoreReadiness = DB.readOnly { implicit session =>
+    StoreReadiness(exists(sql"""SELECT EXISTS (SELECT 1 FROM schema_steps WHERE name = 'event_keys')"""),
+      exists(sql"""SELECT i.indisvalid FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+                  | WHERE c.relname = 'aggregates_own_type_idx' AND n.nspname = current_schema()""".stripMargin))
+  }
+
+  /** CR-2: `buildReadiness().ready`, "the event store is ready for builds". */
+  def readyForBuilds(): Boolean = buildReadiness().ready
+
+  /** CR-2: why full builds wait (`BuildHold.untilStoreReady`): what the store lacks (`buildReadiness`); None once it is
+    * ready. */
+  def buildsHeldBy(): Option[String] = buildReadiness().missing
 
   // The aggregate's own row of its chain gives the type: a duplicate's events are read under it, not its base.
   // F126: the rows are chosen by their stored sizes first (`octet_length`, which PostgreSQL takes from a TOAST pointer
@@ -931,6 +1024,34 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
 object PostgresEventStoreState {
 
   private[eventstore] val log = org.slf4j.LoggerFactory.getLogger(classOf[PostgresEventStoreState])
+
+  private val Utc = TimeZone.getTimeZone("UTC")
+
+  // F342: the event rows `rows` selects (aggregate_id, id, event_time, event_type_id), by aggregate, each with whether
+  // the aggregate has its own row.
+  private[eventstore] def groupedByAggregate(rows: SQLSyntax, typesNames: TypesNamesState)(implicit session: DBSession): Seq[(Boolean, OrphanAggregate)] =
+    sql"""SELECT u.aggregate_id, EXISTS (SELECT 1 FROM aggregates a WHERE a.id = u.aggregate_id AND a.base_id = u.aggregate_id),
+         |   count(*), min(u.id), max(u.id), min(u.event_time), max(u.event_time), array_agg(DISTINCT u.event_type_id)
+         | FROM ($rows) u GROUP BY u.aggregate_id ORDER BY u.aggregate_id""".stripMargin.map(rs => (rs.boolean(2), orphanAggregate(rs, typesNames))).list()
+
+  /** F342: every orphan event of the store (whose aggregate has no row of its own), with the first `listed` of their
+    * aggregates. Reads the whole `events` table, as `StoredDataCheck` does anyway. */
+  private[core] def orphanEvents(typesNames: TypesNamesState, listed: Int)(implicit session: DBSession): OrphanEvents = {
+    val rows = sql"""WITH o AS (SELECT e.aggregate_id, count(*) AS n, min(e.id) AS first_id, max(e.id) AS last_id, min(e.event_time) AS first_time,
+         |     max(e.event_time) AS last_time, array_agg(DISTINCT e.event_type_id) AS types FROM events e
+         |   WHERE NOT EXISTS (SELECT 1 FROM aggregates a WHERE a.id = e.aggregate_id AND a.base_id = e.aggregate_id) GROUP BY e.aggregate_id)
+         |SELECT aggregate_id, false, n, first_id, last_id, first_time, last_time, types, (SELECT count(*) FROM o), (SELECT sum(n) FROM o)
+         | FROM o ORDER BY aggregate_id LIMIT $listed""".stripMargin.map(rs => (orphanAggregate(rs, typesNames), rs.long(9), rs.long(10))).list()
+    rows.headOption.fold(OrphanEvents.none) { case (_, aggregates, events) => OrphanEvents(events, aggregates, rows.map(_._1)) }
+  }
+
+  // Columns 1 and 3 to 8 of the queries above.
+  private def orphanAggregate(rs: WrappedResultSet, typesNames: TypesNamesState): OrphanAggregate = {
+    val typeIds = rs.array(8).getArray.asInstanceOf[Array[AnyRef]].toSeq.map(id => id.toString.toShort)
+    OrphanAggregate(AggregateId(rs.long(1)), rs.long(3), typeIds.map(id => Try(typesNames.classNameById(id)).getOrElse("unknown type id " + id)).distinct.sorted,
+      rs.long(4), rs.long(5), rs.underlying.getTimestamp(6, Calendar.getInstance(Utc)).toInstant,
+      rs.underlying.getTimestamp(7, Calendar.getInstance(Utc)).toInstant)
+  }
 
   /** The bytes of `s` in UTF-8, as PostgreSQL keeps it (`octet_length`), counted without encoding it: a size the store
     * reports when it writes is the one it reports when it reads (F142). */

@@ -247,7 +247,7 @@ jednorazowe zadania.
 | `new PostgresSagaState(mpjsons, typesNames).initSchema()` | `Unit` | Przy każdym starcie, jeśli masz sagi. |
 | `new PostgresProjectionRegistry().initSchema()` | `PostgresProjectionRegistry` | Przy każdym starcie, jeśli masz projekcje zarządzane. |
 | `eventStore.buildIndexesConcurrently()` | `Unit` | Raz po aktualizacji, w tle: buduje nowsze indeksy bez blokowania zapisów, a gdy już istnieją, nic nie robi. |
-| `eventStore.backfillEventKeys()` | `EventKeysBackfill(written, missing)` | Raz, w tle, gdy każdy węzeł działa już w wersji z kluczami zdarzeń. `missing` liczy zdarzenia, którym brakuje wiersza agregatu. |
+| `eventStore.backfillEventKeys()` | `EventKeysBackfill(written, missing, orphans)` | Raz, w tle, gdy każdy węzeł działa już w wersji z kluczami zdarzeń. `orphans`: zdarzenia, których agregat nie ma własnego wiersza i których nic nie czyta; nie wstrzymują zapisania kroku. |
 | `eventStore.backfillSpaces(spaceOf)` | `SpaceBackfill(filled, left)` | Raz, dla agregatów zapisanych, zanim przestrzenie stały się obowiązkowe, przed przebudową organizacji. `left` wymienia te, którym nie udało się przypisać przestrzeni. |
 | `StoredDataCheck.run(mpjsons, typesNames, projections)` | `StoredDataCheck.Report` | Przed aktualizacją, na kopii produkcji. `report.text` to czytelna tabela; `report.unreadable` liczy wiersze, których nie da się odczytać; `report.missingTables` wymienia tabele, których nie znaleziono. |
 | `StoredDataCheck.usersOf(className)` | `StoredDataCheck.ClassUsers(className, events, archived, aggregates)` | Przed usunięciem klasy zdarzenia z kodu: gdy `events` i `archived` wynoszą 0, nic jej nie używa. |

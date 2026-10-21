@@ -323,6 +323,36 @@ Budowę uruchamiają cztery rzeczy:
 
 Naraz działają najwyżej dwie budowy (`buildsAtOnce`); pozostałe czekają na swoją kolej.
 
+### Wstrzymanie budów, aż magazyn będzie gotowy
+
+Tuż po aktualizacji duży magazyn może jeszcze nie być gotowy na budowy: dopóki jego zdarzenia nie mają
+kluczy, a agregaty indeksu według typu (zadania online z [rozdziału 18](18-production.md)), każda
+budowa czyta całą tabelę `events`, co przy stu milionach zdarzeń może trwać godzinami. Możesz kazać
+pełnym budowom poczekać na magazyn:
+
+```scala
+val projections = new Projections(system, ProjectionsSettings(eventStore, subscriptions, registry,
+  contexts, holdBuilds = Some(BuildHold.untilStoreReady(eventStore))))
+```
+
+Co 30 sekund (`checkEvery`), dopóki jakaś budowa czeka, wstrzymanie pyta magazyn
+(`eventStore.buildReadiness()`: zapisany krok kluczy zdarzeń i poprawny indeks
+`aggregates_own_type_idx`; `readyForBuilds()` daje samo „tak” albo „nie”). Gdy magazyn jest gotowy,
+czekające budowy ruszają w kolejności, w jakiej prosiły, i wstrzymanie się kończy. W tym czasie:
+
+- `GetBuilds` odpowiada `Builds(..., heldBy = Some(powód))`, a `GetBuildStatus` fazą `Waiting` z tym
+  samym `heldBy`; wskaźnik `reactivecqrs.builds.held` liczy wstrzymane budowy, a w logu pojawia się
+  jedna linia na początek wstrzymania i jedna na jego koniec.
+- Aktywna budowa obsługuje zapytania jak zwykle. Przy `ServeLive` dalej przyjmuje zdarzenia na żywo;
+  przy `ServeStale` zostaje taka, jaka jest, aż nowa budowa skończy, więc długie wstrzymanie dłużej
+  trzyma ją nieaktualną. Pierwsza budowa nowej projekcji to ta, która obsługuje zapytania, więc do
+  końca wstrzymania nie podaje nic.
+- Przebudowy celowane (`RebuildAggregates`) nie są wstrzymywane: czytają tylko potrzebne im agregaty.
+
+`BuildHold(heldBy, checkEvery)` przyjmuje też twoje własne sprawdzenie (funkcję, która mówi, dlaczego
+budowy mają czekać, albo `None`). Domyślnie nic nie jest wstrzymywane. W klastrze każdy węzeł pyta tę
+samą bazę, więc wszystkie się zgadzają.
+
 ## Prośba o przebudowę
 
 Poprawka błędu w listenerze, bez żadnych innych zmian? Poproś o świeżą budowę tej samej wersji:

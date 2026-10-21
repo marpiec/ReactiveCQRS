@@ -146,6 +146,25 @@ class StoredDataCheckSpec extends CommonSpec {
         read.head.className must include("Wrapped[")
       } finally generic.dropTable()
     }
+
+    // F342 (CR-1): events whose aggregate lost its own row are read by nothing; the check names them.
+    Scenario("F342 lists the events whose aggregate has no row of its own") {
+      TestDatabase.inSchema("orphans") {
+        val typesNames = new PostgresTypesNamesState().initSchema()
+        val store = new PostgresEventStoreState(mpjsons, typesNames).initSchema()
+        val (kept, orphan) = (AggregateId(TestIds.aggregate()), AggregateId(TestIds.aggregate()))
+        Seq(kept, orphan).foreach(id => store.localTx(session => store.persistEvents(id, NewEvents[ShoppingCart](userId, AggregateVersion.ZERO, Instant.now,
+          Seq(ShoppingCartCreated("Orphan"), ItemAdded("apple"), ItemAdded("pear"))))(session)).get)
+        DB.autoCommit(implicit session => sql"DELETE FROM aggregates WHERE id = ${orphan.asLong}".update())
+
+        val report = StoredDataCheck.run(mpjsons, typesNames)
+
+        (report.orphans.events, report.orphans.aggregates) mustBe ((3L, 1L))
+        report.orphans.listed.map(o => (o.aggregateId, o.events, o.eventClasses)) mustBe
+          Seq((orphan, 3L, Seq(classOf[ItemAdded].getName, classOf[ShoppingCartCreated].getName)))
+        report.text must include("aggregate " + orphan.asLong + ": 3 events")
+      }
+    }
   }
 }
 

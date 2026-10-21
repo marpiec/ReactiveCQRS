@@ -203,7 +203,7 @@ wersja, która ich potrzebuje, już działa. Każde można bezpiecznie przerwać
 ```scala
 eventStore.buildIndexesConcurrently()          // indexes built without blocking writes
 val spaces = eventStore.backfillSpaces()       // SpaceBackfill(filled, left)
-val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, missing)
+val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, missing, orphans)
 ```
 
 - `buildIndexesConcurrently()` buduje indeksy, których duża tabela nie może dostać w transakcji przy
@@ -221,7 +221,13 @@ val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, mis
 - `backfillEventKeys()` nadaje każdemu starszemu zdarzeniu klucz (typ i przestrzeń jego agregatu),
   dzięki czemu budowa projekcji czyta tylko te zdarzenia, których potrzebuje. Uruchom to, gdy *każdy*
   węzeł działa już na 1.0, a potem jeszcze raz `buildIndexesConcurrently()`. Od tej chwili nie wracaj
-  do wcześniejszej wersji: wcześniejsze wersje zapisują zdarzenia bez kluczy.
+  do wcześniejszej wersji: wcześniejsze wersje zapisują zdarzenia bez kluczy. Zdarzenia, których
+  agregat nie ma własnego wiersza (*sieroty* po jakimś dawnym usunięciu), nie mogą dostać klucza;
+  zadanie zgłasza je w `orphans` i zapisuje ostrzeżenie w logu, ale nie wstrzymują jego zakończenia:
+  nie czyta ich żadne odtwarzanie, budowa ani uzgadnianie (wszystkie zaczynają od własnego wiersza
+  agregatu), i tak samo jest z sierotą powstałą później, której zdarzenia zachowują klucze prowadzące
+  donikąd. Nic ich nie usuwa: decyzja należy do ciebie (usuń je jak w „Usuwaniu agregatu ręcznie”
+  niżej albo zostaw).
 
 ### 8. Przed aktualizacją: sprawdzenie zapisanych danych
 
@@ -249,7 +255,10 @@ wersji typu zdarzenia (w 1.0 wszystkie muszą mieć 0) oraz tabele, których nie
 (`report.repeatedVersions`, przez które nie powstaje unikalny indeks z kroku 7) oraz, gdy podasz
 `contexts = Seq(...)` z każdym kontekstem agregatu aplikacji, typy agregatów, których żaden z nich nie
 ma (`report.typesWithoutContext`): ich szyny poleceń odmówiłyby odtworzenia tych agregatów
-(`reactivecqrs.aggregate-type-check`, dodatek E). Oba muszą być puste.
+(`reactivecqrs.aggregate-type-check`, dodatek E). Oba muszą być puste. Od 1.0.1-RC2 raport wymienia
+też zdarzenia-sieroty, których agregat nie ma własnego wiersza (`report.orphans`: ile ich jest, z ilu
+agregatów, i pierwszą setkę agregatów z liczbą i klasami zdarzeń oraz identyfikatorami i czasami
+pierwszego i ostatniego zdarzenia). Nic ich nie czyta; czy mają zniknąć, decydujesz ty.
 
 Zanim usuniesz z kodu starą klasę zdarzenia, `StoredDataCheck.usersOf(className)` powie ci, które
 agregaty wciąż mają zdarzenia tej klasy, w zdarzeniach i w archiwum squasha.
@@ -304,6 +313,7 @@ co dostajesz:
 | `reactivecqrs.outbox.republished` | licznik | | ponowne publikacje, o które poprosił poller |
 | `reactivecqrs.outbox.read.abandoned` | licznik | | odczyty outboxu porzucone po `readTimeout`: połączenie przestało odpowiadać |
 | `reactivecqrs.message.too.large` | licznik | `class` | komunikaty zbyt duże, by przejść między węzłami ([rozdział 17](17-cluster.md)) |
+| `reactivecqrs.builds.held` | wskaźnik | | pełne budowy czekające na `BuildHold` ([rozdział 10](10-rebuilding-projections.md)); 0, gdy wstrzymanie się skończy |
 
 > **Wskazówka:** trzy alerty wyłapują większość kłopotów: `reactivecqrs.outbox.given.up` powyżej zera,
 > `reactivecqrs.bus.behind` rosnące dla jednego subskrybenta i `reactivecqrs.command` z
@@ -324,7 +334,7 @@ administracyjnej, z endpointu health check, z narzędzia zespołu wsparcia):
 | `GetOutboxStatus` | poller outboxu | `OutboxStatus`: agregaty czekające w outboxie i te, które poller zgłosił jako niedostarczone |
 | `GetProjectionStatus` | każda projekcja | `ProjectionStatus`: agregaty z błędami, ponawiane próby i luki ([rozdział 9](09-projection-failures.md)) |
 | `GetBuilds` | każda projekcja zarządzana | `Builds`: aktywna budowa i ta w toku ([rozdział 10](10-rebuilding-projections.md)) |
-| `GetBuildStatus` | każda projekcja zarządzana | `BuildStatus`: faza trwającej budowy i to, jak daleko doszła |
+| `GetBuildStatus` | każda projekcja zarządzana | `BuildStatus`: faza trwającej budowy i to, jak daleko doszła; `heldBy`, gdy czeka wstrzymana |
 | `GetSquashStatus` | scheduler squasha | `SquashStatus`: zwinięte, odrzucone, wciąż czekające |
 
 W klastrze pytania do pollera, schedulera i projekcji wysyłaj przez ich proxy, z dowolnego węzła;
@@ -341,6 +351,7 @@ szynę każdego węzła pytaj osobno.
 | „Event bus starts without the subscriptions of: ...” | szyna zdarzeń | zarejestrowany subskrybent nie odpowiedział w `registrationTimeout`; szyna działa, ale żadne zdarzenie nie opuszcza outboxu, dopóki nie odpowie |
 | „Subscriber ... stopped before it answered” | szyna zdarzeń | zarejestrowany subskrybent zatrzymał się przy starcie; żadne zdarzenie nie opuszcza outboxu, dopóki nie zostanie usunięty albo węzeł nie wystartuje ponownie |
 | „Event bus asked ... for its subscriptions and got a failure” | szyna zdarzeń | subskrybent nie mógł odpowiedzieć; jest pytany ponownie przy każdym takcie, a linia podaje przyczynę |
+| „Full builds of projections are held: ...” (ostrzeżenie) | `Projections` | `BuildHold` wstrzymuje budowy z podanego powodu; gdy wstrzymanie się skończy, pojawia się „... are released” |
 | „Event bus registered ... after its start” | szyna zdarzeń | `RegisterSubscribers` przyszło po starcie: ci subskrybenci ominęli to, co opublikowano wcześniej |
 | „Delivery waits for ...” i „... deliveries wait longer than ...” | szyna zdarzeń | subskrybent wolno odpowiada |
 | „Subscribers with events held beyond their window ...” | szyna zdarzeń | projekcja zostaje w tyle; jej zdarzenia czekają w magazynie zdarzeń |
