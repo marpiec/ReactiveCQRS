@@ -193,8 +193,51 @@ event after 767 ms.
 
 ### 7. After an upgrade: the online jobs
 
-Some jobs are too heavy to run while a node starts. You run them once, in the background, after the
-version that needs them is up. Each is safe to stop and run again.
+Some jobs are too heavy to run while a node starts: big indexes and backfills over every event. They
+run once, in the background, after the version that needs them is up. The simplest way is to let the
+application run them itself, and have full builds of projections wait for them:
+
+```scala
+import io.reactivecqrs.core.jobs.{OnlineJobs, OnlineJobsSettings}
+import io.reactivecqrs.core.rebuild.BuildHold
+
+val onlineJobs = OnlineJobs.start(system, OnlineJobsSettings(eventStore, spaceOf = spaceOfOldAggregates))
+val projections = new Projections(system, ProjectionsSettings(eventStore, subscriptions, registry,
+  contexts, holdBuilds = Some(BuildHold.untilStoreReady(eventStore))))
+```
+
+`OnlineJobs.start` (on every node; in a cluster it is a singleton) runs three jobs, one after the other:
+
+1. **`indexes`**: the event store's large indexes and each document table's index by organization;
+2. **`event-keys`**: every older event's key, once no node of the cluster runs an older version (it
+   waits while one does: such a node would write events without keys);
+3. **`spaces`**: the organization of aggregates stored before they had one, with your `spaceOf`
+   ([chapter 16](16-organizations.md)).
+
+Each is paced as below, and each is saved as it goes, in the table `online_jobs`: a node that stops
+in the middle leaves it to the next runner, which skips what is done and continues the event keys
+from the last batch. Only one runner works at a time (it holds a PostgreSQL advisory lock), and its
+index builds run on a connection of their own whose timeout is `longStatementTimeout` (6 hours), not
+your pool's `socketTimeout`, which would cut a long `CREATE INDEX CONCURRENTLY` short. Ask it how it
+goes:
+
+```scala
+import io.reactivecqrs.core.jobs.OnlineJobs.{GetOnlineJobsStatus, ReleaseBuildHold, RetryOnlineJobs}
+
+onlineJobs ? GetOnlineJobsStatus  // OnlineJobsStatus(jobs, buildHoldReleased, readiness)
+onlineJobs ? RetryOnlineJobs      // runs the failed jobs again
+onlineJobs ? ReleaseBuildHold     // BuildHoldReleased: held builds start, ready or not
+```
+
+Each job is `Waiting`, `Running`, `Done` or `Failed`, with its counts (events keyed, events left,
+spaces filled and left) and, for the event keys, the orphan events it met. With the hold, full builds
+start once the indexes and keys are there ([chapter 10](10-rebuilding-projections.md)). A failed job
+keeps them waiting, and `Builds.heldBy` names the failure; fix the cause and send `RetryOnlineJobs`,
+or, if the builds should run anyway, `ReleaseBuildHold`, which releases them on every node and stays
+so. Metrics `reactivecqrs.online.job` (0 waiting, 1 running, 2 done, 3 failed) and
+`reactivecqrs.online.job.progress`, by `job`, follow it, and each change of a job is one log line.
+
+You can also run the jobs yourself, from a maintenance task:
 
 <!-- snippet: cart/ProductionSpec.scala#maintenance -->
 ```scala
@@ -308,6 +351,9 @@ are safe for any metrics system. What you get:
 | `reactivecqrs.outbox.republished` | count | | re-publications the poller asked for |
 | `reactivecqrs.outbox.read.abandoned` | count | | reads of the outbox given up after `readTimeout`: a connection no longer answers |
 | `reactivecqrs.message.too.large` | count | `class` | messages too large to cross nodes ([chapter 17](17-cluster.md)) |
+| `reactivecqrs.restore.failures` | gauge | | aggregates that cannot be restored, recorded (at each outbox poll) |
+| `reactivecqrs.online.job` | gauge | `job` | each online job's state: 0 waiting, 1 running, 2 done, 3 failed |
+| `reactivecqrs.online.job.progress` | gauge | `job` | how far it got: document tables indexed, events keyed, spaces filled |
 | `reactivecqrs.builds.held` | gauge | | full builds waiting for a `BuildHold` ([chapter 10](10-rebuilding-projections.md)); 0 once it is over |
 
 > **Tip:** three alerts cover most trouble: `reactivecqrs.outbox.given.up` above zero,
@@ -331,6 +377,7 @@ a support tool):
 | `GetBuilds` | each managed projection | `Builds`: the active build and the one in progress ([chapter 10](10-rebuilding-projections.md)) |
 | `GetBuildStatus` | each managed projection | `BuildStatus`: the running build's phase and how far it got; `heldBy` while a hold keeps it waiting |
 | `GetSquashStatus` | the squash scheduler | `SquashStatus`: squashed, refused, still waiting |
+| `GetOnlineJobsStatus` | the online jobs' runner | `OnlineJobsStatus`: each job's state and counts, whether the build hold was released, and what the store lacks for builds |
 
 In a cluster, ask the poller, the scheduler and the projections through their proxies, from any
 node; ask each node's bus separately.
@@ -346,6 +393,8 @@ node; ask each node's bus separately.
 | "Event bus starts without the subscriptions of: ..." | event bus | a registered subscriber did not answer in `registrationTimeout`; the bus runs, but no event leaves the outbox until it answers |
 | "Subscriber ... stopped before it answered" | event bus | a registered subscriber stopped at start; no event leaves the outbox until it is removed or the node restarts |
 | "Event bus asked ... for its subscriptions and got a failure" | event bus | a subscriber could not answer; it is asked again at every tick, and the line gives the cause |
+| "Aggregate ... cannot be restored; it is recorded" or "Building ...: ... cannot be restored; it is recorded" (warnings) | owner, builder | an aggregate your code cannot replay; once per aggregate. See "When stored data is wrong" |
+| "Online job ... failed: ..." | the online jobs' runner | a job failed; builds held for it keep waiting until `RetryOnlineJobs` or `ReleaseBuildHold` |
 | "Full builds of projections are held: ..." (a warning) | `Projections` | a `BuildHold` keeps builds waiting, for the reason given; "... are released" follows once it is over |
 | "Event bus registered ... after its start" | event bus | a `RegisterSubscribers` came after the start: those subscribers missed what was published before |
 | "Delivery waits for ..." and "... deliveries wait longer than ..." | event bus | a subscriber is slow to answer |
@@ -398,6 +447,103 @@ Watch, as for any busy PostgreSQL: connections in use (`pg_stat_activity`), auto
 tables (`pg_stat_user_tables`), and table and index sizes. The hot tables are `events_to_publish`
 (the outbox: an insert and a delete per event), `subscriptions` (an update per event per projection)
 and `aggregates` (an update per command). Give them a low autovacuum scale factor, so it runs often.
+
+## When stored data is wrong
+
+Years of history collect a few surprises: an event your handler no longer accepts, a row an old
+script deleted by halves. The library never repairs such data behind your back; it finds it, tells
+you, and keeps the rest running. This section is the operator's side of it;
+[chapter 10](10-rebuilding-projections.md) shows what a build does meanwhile.
+
+### Aggregates that cannot be restored
+
+An aggregate cannot be restored when one of its events cannot be read, or when your event handler
+throws on it (a `MatchError` for an event the code forgot, a check that old data fails). Whoever meets
+it records it, in the table `restore_failures`: the aggregate's owner (for a command, a query or a
+re-publication), a build of a projection (in any of its phases), or `RestoreCheck` below. Each record
+holds the aggregate, its type and organization, the version and event id it failed at, the
+exception's class and message (without values, as every log line), where it happened, when first
+and last, how many times, and whether an operator skipped it in a build. One warning goes to the
+log per aggregate, not per retry, and the gauge `reactivecqrs.restore.failures` counts them at each
+outbox poll. Read them:
+
+```scala
+import io.reactivecqrs.core.eventstore.RestoreFailureFilter
+
+eventStore.restoreFailures()                                              // all of them, the oldest first
+eventStore.restoreFailures(RestoreFailureFilter(projection = Some("carts"))) // those of one projection's builds
+```
+
+A record goes when the aggregate restores again there, when it is deleted for good or purged, or when
+its build is dropped. An owner that cannot restore its aggregate answers a projection asking for its
+events with `CannotRestore(aggregateId, reason)`, so the projection's failure says why at once,
+instead of "versions from N are missing" ten minutes later.
+
+Before an upgrade, find them all at once, with your new code, on a copy of production:
+
+```scala
+import io.reactivecqrs.core.tools.RestoreCheck
+
+val report = RestoreCheck.run(eventStore, Seq(cartContext))  // restores every cart with this code
+println(report.text)
+```
+
+It restores every aggregate of the contexts you pass, records those that fail (and clears the records
+of those that pass), and lists the first hundred. It reads a page of aggregates at a time; give it a
+`pause` to run it on a live database.
+
+What then? Three ways out, the first one preferred:
+
+1. **Fix the code.** A handler that throws on old data is a bug of the handler: make it accept the
+   event, deploy, and send `RetryAllFailedSubscriptions` to the projections that failed (through
+   `ToBuildInProgress` for a build in progress). The aggregate restores again, the records go, and a
+   blocked build switches at its next look.
+2. **Skip the aggregate in one build**, when its documents can wait: `SkipAggregate(aggregateId)`
+   ([chapter 10](10-rebuilding-projections.md)). The data stays; the build simply leaves the
+   aggregate out, and the record says "skipped".
+3. **Remove the aggregate**, when it should not exist at all. That is the next section.
+
+### Removing an aggregate by hand
+
+The library has no call that deletes an aggregate it cannot restore: a permanent delete is an event,
+and an aggregate that cannot be restored takes no command. You remove it in one transaction, with
+these statements, which name every table of the library that holds rows of one aggregate (here
+`4711`; put your id in every line):
+
+```sql
+BEGIN;
+-- Stop (ROLLBACK) if this lists anything: copies of the aggregate read its events.
+SELECT id FROM aggregates WHERE base_id = 4711 AND id <> 4711;
+DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = 4711);
+DELETE FROM events WHERE aggregate_id = 4711;              -- its event_keys go with them
+DELETE FROM events_archive WHERE aggregate_id = 4711;
+DELETE FROM events_to_publish WHERE aggregate_id = 4711;
+DELETE FROM snapshots WHERE aggregate_id = 4711;
+DELETE FROM aggregate_lineage WHERE aggregate_id = 4711 OR copied_from = 4711;
+DELETE FROM history_rewrites WHERE aggregate_id = 4711;
+DELETE FROM subscriptions WHERE aggregate_id = 4711;
+DELETE FROM subscription_failures WHERE aggregate_id = 4711;
+DELETE FROM commands_responses WHERE aggregate_id = 4711;
+DELETE FROM restore_failures WHERE aggregate_id = 4711;
+DELETE FROM aggregates WHERE id = 4711;                    -- its own row, and its rows of the bases it copied
+COMMIT;
+```
+
+Run it while nothing writes to the aggregate (nothing can: its owner cannot restore it). The first
+query must list nothing: an aggregate that others were duplicated from carries part of their
+history, and removing it would break them. Afterwards, send `RetryAllFailedSubscriptions` to every
+projection that failed on it (and through `ToBuildInProgress` to a build in progress): a retry of an
+aggregate that no longer exists clears its failure, as for one deleted for good, and a build that
+waited only for it switches at its next look, without a restart.
+
+What it leaves: the documents your projections derived from the aggregate before it failed. Clear
+them as a permanent delete would, or with a targeted rebuild of the aggregate
+(`RebuildAggregates(OneAggregate(id))`, whose `clearForRebuild` removes them, and which then finds
+nothing to deliver). The same statements remove orphan events (an aggregate whose row is already
+gone): the `aggregates` lines then delete nothing.
+
+> **Warning:** this is the only place where you delete events yourself. Take a backup first, check the
+> aggregate id twice, and keep the output of `StoredDataCheck` and `restoreFailures` from before.
 
 ## Under heavy load
 

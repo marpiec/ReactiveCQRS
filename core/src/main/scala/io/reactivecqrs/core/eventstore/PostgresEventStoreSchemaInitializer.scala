@@ -57,6 +57,8 @@ class PostgresEventStoreSchemaInitializer  {
     createEventKeysTable()
     createEventsArchiveTable()
     createLineageAndRewritesTables()
+    createRestoreFailuresTable()
+    createOnlineJobsTable()
     installProcedures()
     completeEventKeysWhenNoEvents()
   }
@@ -253,6 +255,22 @@ class PostgresEventStoreSchemaInitializer  {
     }
     Ddl.createIndex("aggregate_lineage_copied_from_idx", "CREATE INDEX IF NOT EXISTS aggregate_lineage_copied_from_idx ON aggregate_lineage (copied_from)")
     Ddl.createIndex("history_rewrites_aggregate_idx", "CREATE INDEX IF NOT EXISTS history_rewrites_aggregate_idx ON history_rewrites (aggregate_id)")
+  }
+
+  // CR-4: the aggregates that could not be restored, one row per aggregate and place (its owner, `RestoreCheck`, or a
+  // build of a projection, by the build's subscriber); times are UTC.
+  private def createRestoreFailuresTable(): Unit = DB.autoCommit { implicit session =>
+    sql"""CREATE TABLE IF NOT EXISTS restore_failures (aggregate_id BIGINT NOT NULL, source VARCHAR(16) NOT NULL, subscriber VARCHAR(512) NOT NULL,
+         |  projection VARCHAR(512), build INT, type_id SMALLINT NOT NULL, space_id BIGINT NOT NULL, version INT NOT NULL, event_id BIGINT,
+         |  error_class VARCHAR(512) NOT NULL, error TEXT NOT NULL, first_seen TIMESTAMP NOT NULL, last_seen TIMESTAMP NOT NULL, times INT NOT NULL,
+         |  skipped TIMESTAMP, PRIMARY KEY (aggregate_id, source, subscriber))""".stripMargin.execute()
+  }
+
+  // CR-3: the online jobs' state, so a runner started again resumes them, and an operator's release of the build hold;
+  // times are UTC.
+  private def createOnlineJobsTable(): Unit = DB.autoCommit { implicit session =>
+    sql"""CREATE TABLE IF NOT EXISTS online_jobs (name VARCHAR(64) NOT NULL PRIMARY KEY, state VARCHAR(16) NOT NULL, position BIGINT NOT NULL,
+         |  result TEXT, error TEXT, started TIMESTAMP, finished TIMESTAMP)""".stripMargin.execute()
   }
 
   // An installation without events has none to backfill. Checked once the procedures write keys, so an event written

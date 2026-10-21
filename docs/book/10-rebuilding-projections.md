@@ -385,6 +385,33 @@ cartNames ? ToBuildInProgress(SkipFailedVersion(cartId))    // FailedSubscriptio
 Once the failures are retried or skipped, the build switches at its next look. With no build
 running, the answer is `RebuildRefused("no build is running")`.
 
+### A cart the build cannot read
+
+The hardest case: a cart whose history your code cannot replay any more. Your event handler throws
+on one of its old events, or an event cannot be read at all. A build needs every cart's state, so it
+records the failure ("the aggregate cannot be restored: ...", with the cause), leaves the cart out,
+goes on with the others, and then waits for you, like any build with failures. It also writes the cart
+into the records of carts that cannot be restored, with the event it failed at
+(`eventStore.restoreFailures()`, [chapter 18](18-production.md)). Retrying does not help until
+something changes; three things can:
+
+- **You fix the handler** and deploy: `RetryAllFailedSubscriptions` through `ToBuildInProgress`, and
+  the build applies the cart and switches.
+- **You remove the cart** (chapter 18 shows how) and retry: a cart that no longer exists clears its
+  failure, and the build switches.
+- **You skip the whole cart in this build**, at any phase of it, even while the bulk pass runs:
+
+```scala
+import io.reactivecqrs.core.projection.SkipAggregate
+
+cartNames ? ToBuildInProgress(SkipAggregate(cartId))  // AggregateSkipped(cartId, upTo, subscriptions)
+cartNames ? SkipAggregate(cartId)                     // the same, in the active build
+```
+
+Skipping marks every version of the cart, up to the one stored, as applied in that build, without
+applying anything, and clears its failures; the build then switches without the cart's documents.
+Its record says "skipped". `SkipFailedVersion` still skips one failed version at a time.
+
 ## Repairing a few aggregates: targeted rebuilds
 
 Sometimes one page of a catalogue has a typo. You reprint that page, not the whole catalogue. A

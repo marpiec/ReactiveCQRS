@@ -2,8 +2,9 @@ package io.reactivecqrs.core.rebuild
 
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
+import io.reactivecqrs.core.delivery.NothingToRepublish
 import io.reactivecqrs.core.eventbus.EventsBusActor.{MessageAck, MessageFailed, RequestRepublish}
-import io.reactivecqrs.core.eventstore.{AggregateScope, CommittedEvent, EventStoreState, StoredAggregate}
+import io.reactivecqrs.core.eventstore.{AggregateScope, CommittedEvent, EventStoreState, RestoreFailedAtEventException, RestoreFailureSeen, RestoreFailureSource, StoredAggregate}
 import io.reactivecqrs.core.projection._
 import io.reactivecqrs.core.rebuild.ProjectionBuilder._
 import io.reactivecqrs.core.util.MyActorLogging
@@ -87,10 +88,14 @@ object ProjectionBuilder {
   * position of the bulk pass is saved after each chunk the projection applied, so a build continues after a crash
   * and repeats at most the chunks in flight; the projection's own versions make that repetition harmless. Reads are
   * synchronous on the builder's thread: create it on the blocking dispatcher.
+  *
+  * CR-4: with `restoreFailures` (the build it builds), an aggregate it cannot restore or read is recorded in the store
+  * (`EventStoreState.recordRestoreFailure`), in any phase.
   */
 class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPlan, eventStore: EventStoreState,
                         subscriptionsState: SubscriptionsState, sources: Map[AggregateType, ReplaySource], positions: BuildPositions,
-                        reportTo: ActorRef, settings: BuilderSettings = BuilderSettings(), targeted: Option[AggregateScope] = None)
+                        reportTo: ActorRef, settings: BuilderSettings = BuilderSettings(), targeted: Option[AggregateScope] = None,
+                        restoreFailures: Option[RestoreFailureSource.Build] = None)
   extends Actor with MyActorLogging {
 
   // A targeted rebuild (D63) delivers the aggregates in scope to a projection that is live already: no BuildFromStore,
@@ -317,17 +322,44 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
         val state = if (kinds.exists(_ != SubscriptionType.EVENTS)) Option(states.after(head.aggregateType, head.aggregateId, readable, head.squashedUpTo)) else None
         kinds.map(kind => item(kind, head.aggregateType, head.aggregateId, readable, state, startsAtSquash))
       } catch {
-        case NonFatal(e) if !Errors.transient(e) => unreadableItems(head, "its state cannot be restored: " + Errors.describe(e))
+        case NonFatal(e) if !Errors.transient(e) =>
+          record(head.aggregateType, head.aggregateId, e)
+          unreadableItems(head, failureText(e))
       }
     }
     // A row that cannot be read ends its run; the projection fails the subscription there (F82).
-    val forUnreadable = run.find(_.event.isLeft).toSeq.flatMap(bad => unreadableItems(bad, bad.event.left.toOption.get))
+    val forUnreadable = run.find(_.event.isLeft).toSeq.flatMap { bad =>
+      val error = bad.event.left.toOption.get
+      recordSeen(bad.aggregateType, bad.aggregateId, build => RestoreFailureSeen(bad.aggregateId, bad.aggregateType, build, bad.version.asInt, Some(bad.id),
+        bad.aggregateId, error.takeWhile(c => c != ':' && c != ';'), error))
+      unreadableItems(bad, "a stored event cannot be read: " + error)
+    }
     forReadable ++ forUnreadable
   }
 
   // F117: a store that cannot be read now (the connection lost, the database restarting or short of resources) is read
   // again later, as a page is; only what cannot be read at all fails its subscription. In a page this retries the page;
   // in a gap fill the builder stops and its supervisor starts it again from the saved position.
+
+  // CR-4: what the subscription's failure says: the aggregate cannot be restored (a handler failed on one of its events),
+  // or one of its events cannot be read.
+  private def failureText(e: Throwable): String = {
+    val at = Iterator.iterate(e)(_.getCause).takeWhile(_ != null).take(10).collectFirst { case r: RestoreFailedAtEventException => r }
+    (if (at.exists(r => r.getCause != null && r.eventId.isEmpty)) "the aggregate cannot be restored: " else "a stored event cannot be read: ") +
+      Errors.describe(at.flatMap(r => Option(r.getCause)).getOrElse(e))
+  }
+
+  private def record(aggregateType: AggregateType, id: AggregateId, e: Throwable): Unit =
+    recordSeen(aggregateType, id, build => RestoreFailureSeen.of(id, aggregateType, build, e))
+
+  private def recordSeen(aggregateType: AggregateType, id: AggregateId, seen: RestoreFailureSource.Build => RestoreFailureSeen): Unit = restoreFailures.foreach { build =>
+    try {
+      if (eventStore.recordRestoreFailure(seen(build)))
+        log.warning("Building " + subscriberName + ": " + aggregateType.simpleName + " " + id.asLong + " cannot be restored; it is recorded (restoreFailures)")
+    } catch {
+      case NonFatal(failure) => log.warning("Building " + subscriberName + " could not record that aggregate " + id.asLong + " cannot be restored: " + Errors.describe(failure))
+    }
+  }
 
   private def unreadableItems(at: CommittedEvent, error: String): Seq[ChunkItem] = {
     unreadable += 1
@@ -402,7 +434,8 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
       case NonFatal(e) if !Errors.transient(e) =>
         unreadable += 1
         log.error(e, "Building " + subscriberName + ": " + aggregateType.simpleName + " " + id.asLong + " cannot be read from version " + from.asInt)
-        Seq(ChunkItem(kind, aggregateType, id, from, from, Nil, None, unreadable = Some(Errors.describe(e))))
+        record(aggregateType, id, e)
+        Seq(ChunkItem(kind, aggregateType, id, from, from, Nil, None, unreadable = Some(failureText(e))))
     }
 
   // Missing versions are read by version and sent before anything else; a gap means a row was committed late, so the
@@ -412,7 +445,11 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
     gaps.distinct.reverseIterator.foreach { case (aggregateType, id, from) =>
       work.prepend(() => {
         val squashed = eventStore.squashedVersion(id)
-        plan.kindsOf(aggregateType).flatMap(kind => itemsFrom(aggregateType, id, kind, from, squashed))
+        val items = plan.kindsOf(aggregateType).flatMap(kind => itemsFrom(aggregateType, id, kind, from, squashed))
+        // CR-4: an aggregate removed meanwhile (by an operator, chapter 18) has nothing to give: a retry of its failure
+        // clears it, as the owner's answer does after the build.
+        if (items.isEmpty && eventStore.storedVersion(id).isEmpty) target ! NothingToRepublish(id, AggregateVersion.ZERO)
+        items
       })
     }
   }

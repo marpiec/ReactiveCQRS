@@ -6,7 +6,7 @@ import java.util.concurrent.{ExecutorService, Executors, TimeUnit}
 import org.apache.pekko.actor.{Actor, ActorRef, Cancellable, Status}
 import io.reactivecqrs.api.id.{AggregateId, SpaceId}
 import io.reactivecqrs.api._
-import io.reactivecqrs.core.delivery.{NothingToRepublish, SequenceGate}
+import io.reactivecqrs.core.delivery.{CannotRestore, NothingToRepublish, SequenceGate}
 import io.reactivecqrs.core.delivery.SequenceGate.{AlreadyApplied, Apply, Gap}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
 import io.reactivecqrs.core.metrics.ReactiveMetrics
@@ -150,6 +150,21 @@ case class FailedSubscriptionsRetried(count: Int)
 case class SkipFailedVersion(aggregateId: AggregateId, pastMissing: Boolean = false)
 /** The answer to both: how many failed subscriptions of the aggregate were retried or skipped. */
 case class FailedSubscriptionsHandled(aggregateId: AggregateId, count: Int)
+
+/** CR-4: skips every version of the aggregate, up to its stored version, in one build: to a managed projection's
+  * supervisor for its active build, or inside `ToBuildInProgress` for the build in progress, at any phase of it. Every
+  * subscription of the build to the aggregate is marked applied up to that version without applying it, its failures
+  * cleared, and its record of a failed restore says "skipped" (`restoreFailures`). Answered with `AggregateSkipped`, or
+  * `Status.Failure` from a projection that is not managed. */
+case class SkipAggregate(aggregateId: AggregateId)
+/** The answer to `SkipAggregate`: the subscriptions skipped, up to `upTo` (0 for an aggregate that no longer exists, whose
+  * failures are cleared). */
+case class AggregateSkipped(aggregateId: AggregateId, upTo: AggregateVersion, subscriptions: Int)
+/** From the supervisor, `SkipAggregate` with what the store says of the aggregate: its type and version, if it exists. */
+private[core] case class SkipAggregateUpTo(aggregateId: AggregateId, aggregateType: Option[AggregateType], upTo: AggregateVersion)
+/** To the supervisor, from an instance of a build: a failure of the aggregate was cleared, so its record of a failed
+  * restore in the build goes (CR-4). */
+private[core] case class BuildFailureCleared(aggregateId: AggregateId)
 
 
 object ProjectionActorOptions {
@@ -499,6 +514,10 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       retryRateLimited(failed.keys.toVector)
       sender() ! FailedSubscriptionsRetried(count)
     case SkipFailedVersion(aggregateId, pastMissing) => sender() ! FailedSubscriptionsHandled(aggregateId, skipFailedVersions(aggregateId, pastMissing))
+    case SkipAggregateUpTo(aggregateId, aggregateType, upTo) => sender() ! skipAggregate(aggregateId, aggregateType, upTo)
+    case SkipAggregate(_) => sender() ! Status.Failure(new IllegalArgumentException("SkipAggregate goes to a managed projection's supervisor, which " +
+      "reads the aggregate's version from the store; projection " + projectionName + " is not managed"))
+    case CannotRestore(aggregateId, reason) => cannotRestore(aggregateId, reason)
     case RetryNextFailure => retryNextFailure()
     case LoadFailures => loadFailures()
     case NothingToRepublish(aggregateId, version) => nothingAfter(aggregateId, version)
@@ -626,6 +645,13 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       queue.retryOf.filter(_.version > version).foreach(clearRetried(key, queue, _))
       if (queue.scheduled.exists(_._2 == GapRecheck)) queue.scheduled = None
       forgetIfIdle(key, queue)
+    }
+
+  // CR-4: the aggregate's owner cannot restore it, so the versions asked of it will not come: the subscriptions waiting
+  // for them give up now, with that cause, instead of after `gapGiveUpAfter`.
+  private def cannotRestore(aggregateId: AggregateId, reason: String): Unit =
+    queues.toSeq.filter { case (key, queue) => key.aggregateId == aggregateId && queue.gapRequestedFrom.isDefined }.foreach { case (key, queue) =>
+      giveUp(key, queue, queue.aggregateType, queue.gapRequestedFrom.get, "the aggregate cannot be restored: " + reason, None)
     }
 
   // R17: whether the projection's class implements clearForRebuild; the default refuses every target.
@@ -841,6 +867,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       case Success(_) =>
         queue.retryOf = None
         failureCleared(failure)
+        if (boundSubscriber.isDefined) context.parent ! BuildFailureCleared(key.aggregateId) // CR-4: its build's record goes
         log.info("Projection " + projectionName + " recovered from its failure on " + failure.aggregateType.simpleName + " " + key.aggregateId.asLong)
       case Failure(e) =>
         log.error(e, "Projection " + projectionName + " applied the failed version of aggregate " + key.aggregateId.asLong +
@@ -1027,7 +1054,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
           case Apply(from, _) if item.unreadable.isDefined =>
             // F82: a stored event that cannot be read fails its subscription, visibly, instead of stopping the build;
             // its queue, if it has one, is answered as failed too (D20a).
-            giveUp(key, queueFor(key, item.aggregateType), item.aggregateType, from, "a stored event cannot be read: " + item.unreadable.get, None)
+            giveUp(key, queueFor(key, item.aggregateType), item.aggregateType, from, item.unreadable.get, None)
             stopped += key
           case Apply(from, to) =>
             batches :+= ((key, item, Batch(item.aggregateType, applied, from, to, item.events.dropWhile(_.version < from), item.aggregateRoot, Nil, Nil)))
@@ -1125,6 +1152,32 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       case Failure(e) =>
         log.error(e, "Projection " + projectionName + " could not skip version " + failure.version.asInt + " of aggregate " + aggregateId.asLong)
         false
+    }
+  }
+
+  // CR-4: every subscription of the aggregate is marked applied up to `upTo`, without applying anything; its failures and
+  // waiting deliveries go. Chunks and deliveries of it that come later are taken for applied.
+  private def skipAggregate(aggregateId: AggregateId, aggregateType: Option[AggregateType], upTo: AggregateVersion): Any = {
+    val kinds = (aggregateType.toSeq.flatMap(t => Seq(SubscriptionType.AGGREGATES -> aggregateListenersMap.contains(t),
+      SubscriptionType.EVENTS -> eventListenersMap.contains(t), SubscriptionType.AGGREGATES_WITH_EVENTS -> aggregateWithEventListenersMap.contains(t))
+      .collect { case (kind, true) => kind }) ++ (failed.keys ++ queues.keys).filter(_.aggregateId == aggregateId).map(_.subscriptionType)).distinct
+    val failures = failed.collect { case (key, failure) if key.aggregateId == aggregateId => failure }.toSeq
+    Try(subscriptionsState.localTx { session =>
+      kinds.foreach { kind =>
+        val key = Key(kind, aggregateId)
+        val applied = appliedVersion(key)
+        if (applied < upTo) advance(key, applied, upTo)(session)
+        subscriptionsState.clearFailure(subscriberName, kind, aggregateId)(session)
+      }
+    }) match {
+      case Success(_) =>
+        forget(Set(aggregateId))
+        log.warning("Projection " + projectionName + " skipped aggregate " + aggregateId.asLong + " up to version " + upTo.asInt + " on request")
+        failures.foreach(failureCleared)
+        AggregateSkipped(aggregateId, upTo, kinds.size)
+      case Failure(e) =>
+        log.error(e, "Projection " + projectionName + " could not skip aggregate " + aggregateId.asLong)
+        Status.Failure(e)
     }
   }
 

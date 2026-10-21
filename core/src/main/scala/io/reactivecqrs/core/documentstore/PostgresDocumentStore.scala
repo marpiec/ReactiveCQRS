@@ -29,7 +29,10 @@ object PostgresDocumentStore {
     * organization's purge and targeted rebuild delete, built with `CREATE INDEX CONCURRENTLY`, so writes go on. A table
     * gets it as it is created; run this once, in the background, for tables created before 1.0.1. An index that an
     * interrupted build left invalid is built again. Returns the tables it indexed. */
-  def buildSpaceIndexesConcurrently(): Seq[String] = DB.autoCommit { implicit session =>
+  def buildSpaceIndexesConcurrently(): Seq[String] = DB.autoCommit(buildSpaceIndexesIn(_))
+
+  /** CR-3: `buildSpaceIndexesConcurrently()` on the connection of `session`, such as the online jobs' own. */
+  private[core] def buildSpaceIndexesIn(implicit session: DBSession): Seq[String] = {
     val tables = sql"""SELECT table_name FROM information_schema.columns WHERE table_schema = current_schema() AND column_name = 'space_id'"""
       .map(_.string(1)).list().filter(table => table.startsWith("projection_") && table.matches("[a-z0-9_]+"))
     tables.filterNot(table => PostgresDocumentStoreTrait.spaceIndexes(table).exists(_._2)).map { table =>

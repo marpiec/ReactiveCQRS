@@ -7,9 +7,9 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, CommandId, UserId}
 import io.reactivecqrs.core.cluster.Members
 import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, Idempotency, IdempotencyKeyRefused, IdempotencyKeyTakenException}
-import io.reactivecqrs.core.delivery.{NothingToRepublish, RepublishOutbox, RepublishRange}
+import io.reactivecqrs.core.delivery.{CannotRestore, NothingToRepublish, RepublishOutbox, RepublishRange}
 import io.reactivecqrs.core.eventbus.EventsBusActor.{PublishEvents, PublishEventsAck}
-import io.reactivecqrs.core.eventstore.{EventStoreState, HistoryChangedException, NewEvents}
+import io.reactivecqrs.core.eventstore.{EventStoreState, HistoryChangedException, NewEvents, RestoreFailureSeen, RestoreFailureSource}
 import io.reactivecqrs.core.metrics.ReactiveMetrics
 import io.reactivecqrs.core.util.{Backoff, MyActorLogging, RandomUtil}
 import org.apache.pekko.actor.{Actor, ActorRef, Cancellable}
@@ -243,10 +243,18 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
         snapshotVersion = restored.fromSnapshot.getOrElse(AggregateVersion.ZERO)
         generation = restored.generation
         restoreFailure = None
+        recorded(eventStore.clearRestoreFailure(aggregateId, RestoreFailureSource.Owner))
         None
       case Failure(e) =>
         log.error(e, "Restoring aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " failed, retry after " + failedRestoreRetryAfter)
         val failure = new AggregateRestoreFailedException(aggregateId, aggregateType, Errors.redacted(e))
+        // CR-4: the aggregate's failure is recorded, so an operator finds it; one asked of the wrong type's bus (F197),
+        // or a database that cannot be reached, says nothing of the aggregate.
+        if (!e.isInstanceOf[AggregateTypeMismatchException] && !Errors.transient(e)) recorded {
+          if (eventStore.recordRestoreFailure(RestoreFailureSeen.of(aggregateId, aggregateType, RestoreFailureSource.Owner, e)))
+            log.warning("Aggregate " + aggregateId.asLong + " of type " + aggregateType.simpleName + " cannot be restored; it is recorded " +
+              "(restoreFailures): " + Errors.describe(e))
+        }
         restoreFailure = Some(failure)
         context.become(failedRestore(failure))
         context.system.scheduler.scheduleOnce(failedRestoreRetryAfter, self, AskToStop)
@@ -269,7 +277,20 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     case MinVersionDeadline => answerExpiredMinVersionQueries()
     case AskToStop | PassivateOwner(_) => askToStop()
     case StopOwner | StopOwnerStale => stopNow(withSnapshot = false)
+    // CR-4: a subscriber asking for versions is told why they do not come, instead of waiting for a gap's give-up. The
+    // aggregate is read again first: an operator may have repaired it, or removed it, meanwhile.
+    case range @ RepublishRange(_, _, subscriber) => restore() match {
+      case None =>
+        context.become(restored)
+        restored(range)
+      case Some(again) => subscriber ! CannotRestore(aggregateId, Option(Errors.message(again)).getOrElse(again.getClass.getName))
+    }
     case _ => () // nothing to publish without a state
+  }
+
+  // CR-4: a record that cannot be written is logged; the owner goes on.
+  private def recorded(work: => Unit): Unit = try work catch {
+    case NonFatal(e) => log.warning("The record of aggregate " + aggregateId.asLong + "'s restore could not be written: " + Errors.describe(e))
   }
 
   // Asks whoever keeps the messages that arrive while this owner stops, its shard or the command bus, to stop it.

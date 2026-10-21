@@ -3,7 +3,9 @@ package io.reactivecqrs.core.rebuild
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.AggregateId
 import io.reactivecqrs.core.aggregate.AggregateRestorer
-import io.reactivecqrs.core.eventstore.EventStoreState
+import io.reactivecqrs.core.eventstore.{EventStoreState, RestoreFailedAtEventException}
+
+import scala.util.control.NonFatal
 
 /** What a build reads of one aggregate type to give its state listeners the states (D59, D60): its restorer (snapshot
   * plus tail, D30) and its event handlers. */
@@ -53,7 +55,11 @@ class ReplayStates(sources: Map[AggregateType, ReplaySource], capacity: Int) {
       state = event.event match {
         case duplication: DuplicationEvent[_] => baseState(duplication).map(source.applied(_, event)).getOrElse(source.stateAt(id, Some(event.version)))
         case _: UndoEvent[_] => source.stateAt(id, Some(event.version))
-        case _ => source.applied(state, event)
+        case _ =>
+          // CR-4: a handler that throws names the event it failed at.
+          try source.applied(state, event) catch {
+            case NonFatal(e) => throw new RestoreFailedAtEventException(id, event.version.asInt, event.event.getClass.getName, None, e)
+          }
       }
     }
     states.put(id, (events.last.version, state))

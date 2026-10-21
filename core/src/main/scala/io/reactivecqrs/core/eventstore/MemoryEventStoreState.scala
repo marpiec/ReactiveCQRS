@@ -400,6 +400,50 @@ class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState
     }
   }
 
+  // CR-4: the records of aggregates that cannot be restored, as PostgreSQL keeps them; without spaces (-1).
+  private var restoreFailureRecords = Map[(AggregateId, RestoreFailureSource), RestoreFailure]()
+
+  override def recordRestoreFailure(failure: RestoreFailureSeen): Boolean = synchronized {
+    val known = restoreFailureRecords.keys.exists(_._1 == failure.aggregateId)
+    val now = Instant.now
+    val key = (failure.aggregateId, failure.source)
+    val before = restoreFailureRecords.get(key)
+    restoreFailureRecords += key -> RestoreFailure(failure.aggregateId, failure.aggregateType, io.reactivecqrs.api.id.SpaceId(-1), failure.version,
+      failure.eventId, failure.errorClass, failure.error, failure.source, before.fold(now)(_.firstSeen), now, before.fold(1)(_.times + 1),
+      before.flatMap(_.skipped))
+    !known
+  }
+
+  override def clearRestoreFailure(aggregateId: AggregateId, source: RestoreFailureSource): Unit = synchronized {
+    restoreFailureRecords -= ((aggregateId, source))
+  }
+
+  override def clearBuildRestoreFailures(projection: String, build: Int): Unit = synchronized {
+    restoreFailureRecords = restoreFailureRecords.filterNot {
+      case ((_, RestoreFailureSource.Build(p, b, _)), _) => p == projection && b == build
+      case _ => false
+    }
+  }
+
+  override def restoreFailureSkipped(aggregateId: AggregateId, aggregateType: Option[AggregateType], source: RestoreFailureSource.Build): Unit = synchronized {
+    val now = Instant.now
+    restoreFailureRecords.get((aggregateId, source)) match {
+      case Some(record) => restoreFailureRecords += (aggregateId, source) -> record.copy(skipped = Some(now))
+      case None => aggregateType.foreach(t => restoreFailureRecords += (aggregateId, source) -> RestoreFailure(aggregateId, t,
+        io.reactivecqrs.api.id.SpaceId(-1), 0, None, "", "skipped by an operator", source, now, now, 0, Some(now)))
+    }
+  }
+
+  override def restoreFailures(filter: RestoreFailureFilter, limit: Int): Seq[RestoreFailure] = synchronized {
+    restoreFailureRecords.values.toSeq.filter(r => filter.aggregateType.forall(_ == r.aggregateType) && filter.spaceId.forall(_ == r.spaceId) &&
+      filter.projection.forall(p => r.source match {
+        case RestoreFailureSource.Build(projection, _, _) => projection == p
+        case _ => false
+      })).sortBy(r => (r.firstSeen, r.aggregateId.asLong)).take(limit)
+  }
+
+  override def restoreFailuresCount(): Long = synchronized(restoreFailureRecords.keys.map(_._1).toSet.size.toLong)
+
   /** Whether the store has events of the aggregate. */
   def holds(aggregateId: AggregateId): Boolean = synchronized(eventStore.contains(aggregateId))
 
@@ -448,6 +492,7 @@ class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState
       eventsToPublish = eventsToPublish.filterNot { case ((eventAggregateId, _), _) => eventAggregateId == aggregateId }
       squashedVersions -= aggregateId
       lineage = (lineage - aggregateId).map { case (copy, bases) => copy -> (bases - aggregateId) }.filter(_._2.nonEmpty) // D76
+      restoreFailureRecords = restoreFailureRecords.filterNot(_._1._1 == aggregateId) // CR-4
     }
   }
 

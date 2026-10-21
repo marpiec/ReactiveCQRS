@@ -1809,6 +1809,9 @@ or after the library's actors start. `metrics/RecordingMetrics` keeps them in me
 | `reactivecqrs.outbox.republished` | count | | re-publications the poller asked for |
 | `reactivecqrs.outbox.read.abandoned` | count | | reads of the outbox given up after `readTimeout` (F186) |
 | `reactivecqrs.message.too.large` | count | `class` | messages too large to cross nodes (F121) |
+| `reactivecqrs.restore.failures` | gauge | | at each outbox poll: the aggregates with a record in `restore_failures` (CR-4, D90) |
+| `reactivecqrs.online.job` | gauge | `job` | at each change of an online job: 0 waiting, 1 running, 2 done, 3 failed (D91) |
+| `reactivecqrs.online.job.progress` | gauge | `job` | as it goes: document tables indexed, events keyed, spaces filled |
 | `reactivecqrs.builds.held` | gauge | | at each check of a `BuildHold` and when a held build stops waiting: the full builds held; 0 once the hold is over (D89) |
 
 Tracing goes with the metadata envelope (R13, D32): `EventMetadata.traceContext` holds the W3C

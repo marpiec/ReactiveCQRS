@@ -227,7 +227,11 @@ dostarczenie: „jestem na wersji 3, a to jest wersja 5”. Wtedy:
 nie ma nic po tym, o co prosi projekcja (koszyk jest w wersji 3, a nieaktualny wpis poprosił o 4),
 mówi o tym, a projekcja przestaje czekać; wpis awarii wersji, których nigdy nie było, zostaje wtedy
 usunięty. Wpis awarii, której wersję projekcja już zastosowała (jego usunięcie nie powiodło się po
-ponowieniu, które ją zastosowało), znika od razu po odczytaniu, zamiast stać się luką.
+ponowieniu, które ją zastosowało), znika od razu po odczytaniu, zamiast stać się luką. A gdy właściciel
+w ogóle nie umie odtworzyć koszyka (zdarzenie, na którym twoje handlery rzucają wyjątek), od razu to
+mówi (`CannotRestore`): projekcja zapisuje wtedy awarię, „the aggregate cannot be restored: ...” z
+przyczyną, zamiast czekać dziesięć minut na wersje, które nie mogą przyjść. Co zrobić z takim koszykiem,
+mówi rozdział 18.
 
 Gdy projekcja nie ma jeszcze nic z koszyka (jej przebudowa celowana go wyzerowała albo dodano ją
 później), a przychodzi zdarzenie na żywo, właściciel najpierw daje jej historię koszyka. Ta historia

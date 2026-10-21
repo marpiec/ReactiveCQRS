@@ -16,6 +16,8 @@ import scala.util.Failure
 case class OldShape(id: Int, name: String, dropped: List[String])
 case class NewShape(id: Int, name: String, added: Option[Int], counted: Long, withDefault: String = "given")
 case class ChangedShape(id: String, name: String)
+// 1.0.1-RC1's shapes of the messages 1.0.1-RC2 added a field to (CR-2).
+case class BuildStatusOfRc1(phase: String, position: Long, eventsSent: Long, gapsFilled: Long, handedOver: Long, unreadable: Long)
 // An actor's own messages are defined inside its class, so they hold its instance.
 class Holder { case class Inner(id: Int) }
 
@@ -49,6 +51,17 @@ class ClusterSerializerSpec extends AnyFeatureSpec with Matchers with BeforeAndA
 
     Scenario("an older node skips the fields it does not know") {
       asWrittenFor(NewShape(1, "a", Some(2), 3L), classOf[OldShape]) mustBe OldShape(1, "a", null)
+    }
+
+    Scenario("1.0.1-RC2's messages: a status of RC1 reads without its hold, and the new answers travel") {
+      import io.reactivecqrs.api.AggregateVersion
+      import io.reactivecqrs.api.id.AggregateId
+      import io.reactivecqrs.core.rebuild.ProjectionBuilder.BuildStatus
+      asWrittenFor(BuildStatusOfRc1("Bulk", 5, 6, 7, 8, 9), classOf[BuildStatus]) mustBe BuildStatus("Bulk", 5, 6, 7, 8, 9, None)
+      val serializer = new ClusterSerializer(system)
+      Seq(BuildStatus("Waiting", 1, 0, 0, 0, 0, Some("the event keys are not complete")), io.reactivecqrs.core.delivery.CannotRestore(AggregateId(7), "a cause"),
+        io.reactivecqrs.core.projection.SkipAggregate(AggregateId(7)), io.reactivecqrs.core.projection.AggregateSkipped(AggregateId(7), AggregateVersion(3), 1)
+      ).foreach(message => serializer.fromBinary(serializer.toBinary(message), serializer.manifest(message)) mustBe message)
     }
 
     Scenario("a field whose type changed fails the message") {

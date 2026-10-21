@@ -215,6 +215,10 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
   `SagaDefinition` (name, steps, reverts), the library's `SagaRunner` runs it; `CONTINUES`/`REVERTING`/
   `ERROR` phases. `SagaActor` (the 0.12 way, subclassing the runner) is deprecated and runs on the same
   state machine, `SagaRunning`.
+- **`OnlineJobsRunner`** (`core/.../jobs/`, 1.0.1-RC2, D91) — opt-in (`OnlineJobs.start`, a singleton plus an advisory
+  lock): the online jobs in order (indexes, event keys once no older app-version runs, spaces), saved in `online_jobs`
+  and resumed; long statements on its own connection with `longStatementTimeout`. `BuildHold.untilStoreReady` in
+  `ProjectionsSettings.holdBuilds` holds full builds until the store's `buildReadiness` (or `ReleaseBuildHold`).
 - **`UidGeneratorActor`** — hands out id pools (`PostgresUidGenerator` reads
   `NEXTVAL`/`increment_by` from a sequence; pool size = sequence step).
 
@@ -252,6 +256,13 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
 - **`events_archive`** (M6, R11) — the audit events a squash kept: the event row as it was, its
   undo mark (`undone_from`) and when it was archived; read only by `GetArchivedEvents` and
   `StoredDataCheck`, never by restores or builds.
+- **`online_jobs`** (1.0.1-RC2, CR-3, D91) — each online job's saved state (`indexes`, `event-keys`, `spaces`: state,
+  the event keys' position, result JSON, error) for `OnlineJobsRunner`, and the row `build-hold` an operator's
+  `releaseBuildHold` writes.
+- **`restore_failures`** (1.0.1-RC2, CR-4, D90) — the aggregates that could not be restored, per aggregate and place
+  (`owner`, `check` for `RestoreCheck`, `build` with the projection, build and subscriber): the event it failed at, the
+  cause, first and last seen, times, `skipped` (`SkipAggregate`). Upserted by owners and builders, cleared when the
+  aggregate restores there again, is deleted or its build dropped; listed by `EventStoreState.restoreFailures`.
 - **`event_keys`** (M6, F124) — `id PK (→ events.id, cascade), type_id, space_id`: each
   event's aggregate type and space, written by the procedures, so a build of some types or of
   one organization reads only its events; `schema_steps` records when `backfillEventKeys()`

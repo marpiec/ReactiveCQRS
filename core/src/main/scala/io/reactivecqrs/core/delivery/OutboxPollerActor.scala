@@ -23,7 +23,7 @@ object OutboxPollerActor {
     * `gaveUp`: the first 100 of those reported as undelivered, the longest waiting first, and `gaveUpTotal` all of
     * them: an answer stays small enough for another node (F228). */
   case class OutboxStatus(waiting: Int, gaveUp: Seq[WaitingInOutbox], gaveUpTotal: Int = 0)
-  private case class Read(number: Int, result: Try[Seq[WaitingInOutbox]])
+  private case class Read(number: Int, result: Try[Seq[WaitingInOutbox]], restoreFailures: Option[Long])
 }
 
 /** When the outbox poller reads the outbox, and what it does with what waits there.
@@ -72,7 +72,11 @@ class OutboxPollerActor(eventStore: EventStoreState, eventBus: ActorRef, options
       }
       read(number)
     }
-    case Read(number, result) => if (reads.ended(number)) poll(result)
+    case Read(number, result, restoreFailures) => if (reads.ended(number)) {
+      // CR-4: the aggregates that cannot be restored, counted at each poll.
+      restoreFailures.foreach(ReactiveMetrics(context.system).metrics.gauge("reactivecqrs.restore.failures", Map.empty, _))
+      poll(result)
+    }
     case GetOutboxStatus =>
       val gaveUp = memory.values.filter(_.gaveUp).map(_.waiting).toSeq
       sender() ! OutboxStatus(lastWaiting, gaveUp.sortBy(w => (w.since, w.aggregateId.asLong)).take(StatusItems), gaveUp.size)
@@ -82,11 +86,12 @@ class OutboxPollerActor(eventStore: EventStoreState, eventBus: ActorRef, options
   private def read(number: Int): Unit =
     Future {
       val oldest = eventStore.readWaitingInOutbox(options.maxTracked)
-      if (oldest.size < options.maxTracked) oldest else {
+      val waiting = if (oldest.size < options.maxTracked) oldest else {
         val known = oldest.map(_.aggregateId).toSet
         oldest ++ eventStore.readNewestWaitingInOutbox(options.maxTracked / 2).filterNot(w => known.contains(w.aggregateId))
       }
-    }(BlockingDispatcher(context.system)).onComplete(result => self ! Read(number, result))
+      (waiting, Try(eventStore.restoreFailuresCount()).toOption)
+    }(BlockingDispatcher(context.system)).onComplete(result => self ! Read(number, result.map(_._1), result.toOption.flatMap(_._2)))
 
   // A failed read is logged and retried at the next poll (AR7: a throw would restart the poller and forget the attempts).
   private def poll(result: Try[Seq[WaitingInOutbox]]): Unit = result match {

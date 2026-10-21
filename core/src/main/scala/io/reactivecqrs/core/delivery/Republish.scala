@@ -22,3 +22,9 @@ case class RepublishRange(aggregateId: AggregateId, from: AggregateVersion, subs
 
 /** F201: the owner's answer to a `RepublishRange` from beyond its version: the aggregate has nothing after `version`. */
 case class NothingToRepublish(aggregateId: AggregateId, version: AggregateVersion)
+
+/** CR-4: the owner's answer to a `RepublishRange` when it cannot restore the aggregate, with why (as `Errors.message`
+  * gives it): the subscriber records its failure with that cause at once, instead of after `gapGiveUpAfter`. A message
+  * added in 1.0.1-RC2: a node of an earlier version drops it, and its projection gives up after the gap's time, as
+  * before. */
+case class CannotRestore(aggregateId: AggregateId, reason: String)

@@ -6,7 +6,7 @@ import io.reactivecqrs.api.{AggregateContext, AggregateType, MessageTooLargeExce
 import io.reactivecqrs.api.id.{AggregateId, SpaceId}
 import io.reactivecqrs.core.cluster.{Members, Singletons}
 import io.reactivecqrs.core.eventbus.EventsBusActor._
-import io.reactivecqrs.core.eventstore.{AggregateScope, EventStoreState, PostgresEventStoreState}
+import io.reactivecqrs.core.eventstore.{AggregateScope, EventStoreState, PostgresEventStoreState, RestoreFailureSource}
 import io.reactivecqrs.core.metrics.ReactiveMetrics
 import io.reactivecqrs.core.projection._
 import io.reactivecqrs.core.rebuild.ProjectionBuilder._
@@ -91,6 +91,7 @@ class Projections(actors: ActorRefFactory, val settings: ProjectionsSettings) {
     } else SchemaLock {
       settings.registry.builds(name).foreach { build =>
         settings.subscriptionsState.clearSubscriptionsInfo(build.subscriber)
+        settings.eventStore.clearBuildRestoreFailures(name, build.number) // CR-4
         settings.registry.drop(name, build.number)
       }
       settings.registry.remove(name)
@@ -546,6 +547,18 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       }
     case SubscriberRemoved(old) => removedFrom(old, sender())
     case RebuildProjection => rebuild()
+    case SkipAggregate(aggregateId) => serving match {
+      case Some(s) => skipAggregate(s, aggregateId)
+      case None => sender() ! RebuildRefused("no build serves")
+    }
+    case ToBuildInProgress(SkipAggregate(aggregateId)) => runningBuild match {
+      case Some(b) => skipAggregate(b, aggregateId)
+      case None => sender() ! RebuildRefused("no build is running")
+    }
+    case BuildFailureCleared(aggregateId) => (active ++ building).find(_.ref == sender()).foreach { i =>
+      logged("could not clear the record of aggregate " + aggregateId.asLong + "'s failed restore")(
+        settings.eventStore.clearRestoreFailure(aggregateId, failuresOf(i.record)))
+    }
     case ToBuildInProgress(message) => runningBuild match {
       case Some(b) => b.ref.forward(message)
       case None => sender() ! RebuildRefused("no build is running")
@@ -566,6 +579,19 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   private def saved(record: BuildRecord): BuildRecord =
     Try(registry.builds(spec.name)).toOption.flatMap(_.find(_.number == record.number)).getOrElse(record)
 
+  // CR-4: where a build's builder records the aggregates it cannot restore.
+  private def failuresOf(record: BuildRecord): RestoreFailureSource.Build = RestoreFailureSource.Build(spec.name, record.number, record.subscriber)
+
+  // CR-4: the instance skips every version of the aggregate up to the one stored; its record of the build says so.
+  private def skipAggregate(instance: Instance, aggregateId: AggregateId): Unit = {
+    val stored = listeners.map(_._1).distinct match {
+      case Nil => None
+      case types => settings.eventStore.aggregatesOf(types, AggregateId(aggregateId.asLong - 1), 1).find(_.aggregateId == aggregateId)
+    }
+    settings.eventStore.restoreFailureSkipped(aggregateId, stored.map(_.aggregateType), failuresOf(instance.record))
+    instance.ref.forward(SkipAggregateUpTo(aggregateId, stored.map(_.aggregateType), stored.fold(io.reactivecqrs.api.AggregateVersion.ZERO)(_.version)))
+  }
+
   private def startBuilder(): Unit = runningBuild.foreach { b =>
     val missing = listeners.collect { case (t, kind) if kind != SubscriptionType.EVENTS && !runtime.sources.contains(t) => t.typeName }.distinct
     if (missing.nonEmpty) {
@@ -574,7 +600,8 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
     } else {
       val positions = new RegistryBuildPositions(registry, spec.name, b.record.number)
       builder = Some(context.watch(context.actorOf(Props(new ProjectionBuilder(b.ref, b.record.subscriber, BuildPlan(listeners), settings.eventStore,
-        settings.subscriptionsState, runtime.sources, positions, self, settings.builder)).withDispatcher(BlockingDispatcher.id), childName("builder", b.record.number))))
+        settings.subscriptionsState, runtime.sources, positions, self, settings.builder, restoreFailures = Some(failuresOf(b.record)))).withDispatcher(BlockingDispatcher.id),
+        childName("builder", b.record.number))))
     }
   }
 
@@ -715,14 +742,15 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
     catchUpDue = false
     log.warning("Projection " + spec.name + ": the active build served unchanged while an abandoned build was built; it catches up")
     catchingUp = Some(context.watch(context.actorOf(Props(new ProjectionBuilder(a.ref, a.record.subscriber, BuildPlan(listeners), settings.eventStore,
-      settings.subscriptionsState, runtime.sources, ReconcileOnly, self, settings.builder, Some(AggregateScope.All))).withDispatcher(BlockingDispatcher.id),
+      settings.subscriptionsState, runtime.sources, ReconcileOnly, self, settings.builder, Some(AggregateScope.All), Some(failuresOf(a.record)))).withDispatcher(BlockingDispatcher.id),
       childName("catch-up", a.record.number))))
   }
 
   private def startTargetedBuilder(): Unit = for (t <- targeted; instance <- instanceOfJob(t.job)) {
     val plan = BuildPlan(listeners.filter { case (aggregateType, _) => t.types.contains(aggregateType) })
     val builder = context.watch(context.actorOf(Props(new ProjectionBuilder(instance.ref, instance.record.subscriber, plan, settings.eventStore,
-      settings.subscriptionsState, runtime.sources, NoPositions, self, settings.builder, Some(scopeOf(t.target)))).withDispatcher(BlockingDispatcher.id)))
+      settings.subscriptionsState, runtime.sources, NoPositions, self, settings.builder, Some(scopeOf(t.target)), Some(failuresOf(instance.record))))
+      .withDispatcher(BlockingDispatcher.id)))
     targeted = Some(t.copy(builder = Some(builder)))
   }
 
@@ -827,6 +855,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   private def drop(retired: BuildRecord): Unit =
     try {
       settings.subscriptionsState.clearSubscriptionsInfo(retired.subscriber)
+      settings.eventStore.clearBuildRestoreFailures(spec.name, retired.number) // CR-4
       registry.drop(spec.name, retired.number)
       log.info("Projection " + spec.name + ": build " + retired.number + " is dropped")
     } catch {

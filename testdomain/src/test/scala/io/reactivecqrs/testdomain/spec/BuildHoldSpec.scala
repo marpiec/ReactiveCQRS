@@ -93,7 +93,7 @@ class BuildHoldSpec extends CommonSpec {
         Given("version 1, built, on a store just upgraded: its events without keys, its index of aggregates by type missing")
         val first = new Node(None)(projections => notesProjection(projections, 1))
         val note = first.create("note", "one")
-        awaitAssert(builds(first.supervisor).active.map(_.number) mustBe Some(1), 60.seconds, 100.millis)
+        awaitAssert(builds(first.supervisor).building mustBe None, 60.seconds, 100.millis) // the first build serves while built: built
         awaitAssert(linesOf(first.supervisor, note) mustBe Some(NoteLines("note", Vector("one"))), 10.seconds)
         first.stop()
         notReady()

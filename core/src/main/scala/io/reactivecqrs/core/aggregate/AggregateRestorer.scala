@@ -4,10 +4,11 @@ import java.time.Instant
 
 import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.{AggregateId, UserId}
-import io.reactivecqrs.core.eventstore.{EventStoreState, Snapshot}
+import io.reactivecqrs.core.eventstore.{EventStoreState, RestoreFailedAtEventException, Snapshot}
 import org.slf4j.LoggerFactory
 
 import scala.util.{Failure, Success, Try}
+import scala.util.control.NonFatal
 import io.reactivecqrs.core.util.Errors
 
 /** An aggregate's version and root as read from the store; the root is null once the aggregate was deleted.
@@ -61,7 +62,7 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
         var root = initialState()
         // The version is the last own event's: after a squash (D47) the own events start at the squash point.
         eventStore.readAndProcessEvents[AGGREGATE_ROOT](aggregateId, at) { (userId, timestamp, event, eventAggregateId, eventVersion, noop) =>
-          if (!noop) root = eventHandlers(userId, timestamp, root)(event)
+          if (!noop) root = applied(eventAggregateId, eventVersion, event)(eventHandlers(userId, timestamp, root)(event))
           if (eventAggregateId == aggregateId) version = AggregateVersion(eventVersion)
         }
         Restored(version, root, None, generation)
@@ -78,11 +79,17 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
                          upTo: Option[AggregateVersion]): (AggregateVersion, AGGREGATE_ROOT) = {
     var (newest, state) = (version, root)
     eventStore.readAndProcessOwnEvents[AGGREGATE_ROOT](aggregateId, version, upTo) { (userId, timestamp, event, eventVersion, noop) =>
-      if (!noop) state = eventHandlers(userId, timestamp, state)(event)
+      if (!noop) state = applied(aggregateId, eventVersion, event)(eventHandlers(userId, timestamp, state)(event))
       newest = AggregateVersion(eventVersion)
     }
     (newest, state)
   }
+
+  // CR-4: a handler that throws names the event it failed at, so the failure can be recorded with it.
+  private def applied(eventAggregateId: AggregateId, version: Int, event: Any)(handled: => AGGREGATE_ROOT): AGGREGATE_ROOT =
+    try handled catch {
+      case NonFatal(e) => throw new RestoreFailedAtEventException(eventAggregateId, version, event.getClass.getName, None, e)
+    }
 
   // Reads at an instant do not use snapshots: a snapshot does not record when its version was reached.
   private def usableSnapshot(aggregateId: AggregateId, at: Option[Either[AggregateVersion, Instant]]): Option[Snapshot[AGGREGATE_ROOT]] = snapshots match {

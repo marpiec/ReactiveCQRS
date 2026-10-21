@@ -221,4 +221,27 @@ abstract class EventStoreState {
 
   /** Runs `block` in a transaction of the store; what was registered with `AfterCommit` in it runs once it commits. */
   def localTx[A](block: DBSession => A): A
+
+  // ************** CR-4: aggregates that cannot be restored. A store that keeps no records (the ephemeral one) records
+  // nothing.
+
+  /** Records, or counts once more, that the aggregate could not be restored there; true when the aggregate had no record
+    * before, from anywhere (the caller then logs a warning). */
+  def recordRestoreFailure(failure: RestoreFailureSeen): Boolean = false
+
+  /** The aggregate restores again, or no longer exists, there: its record there goes. */
+  def clearRestoreFailure(aggregateId: AggregateId, source: RestoreFailureSource): Unit = ()
+
+  /** Every record of a projection's build goes (the build was dropped). */
+  def clearBuildRestoreFailures(projection: String, build: Int): Unit = ()
+
+  /** An operator skipped the aggregate in that build (`SkipAggregate`): its record there says so from now on; one is
+    * made when there is none. */
+  def restoreFailureSkipped(aggregateId: AggregateId, aggregateType: Option[AggregateType], source: RestoreFailureSource.Build): Unit = ()
+
+  /** The records, the oldest first, at most `limit`. */
+  def restoreFailures(filter: RestoreFailureFilter = RestoreFailureFilter(), limit: Int = 1000): Seq[RestoreFailure] = Seq.empty
+
+  /** How many aggregates have a record, from anywhere. */
+  def restoreFailuresCount(): Long = 0L
 }

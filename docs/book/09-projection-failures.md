@@ -225,7 +225,11 @@ comes: "I am at version 3, and this is version 5". Then:
 what the projection asks for (the cart is at version 3, and a stale record asked for 4), it says so,
 and the projection stops waiting; a failure record of versions that never existed is then deleted.
 A failure record whose version the projection has already applied (its deletion failed after the
-retry that applied it) is deleted as soon as it is read, instead of becoming a gap.
+retry that applied it) is deleted as soon as it is read, instead of becoming a gap. And when the
+owner cannot restore the cart at all (an event your handlers throw on), it answers that at once
+(`CannotRestore`): the projection records the failure then, "the aggregate cannot be restored: ..."
+with the cause, instead of waiting ten minutes for versions that cannot come. Chapter 18 says what to
+do about such a cart.
 
 When a projection has nothing of a cart yet (its targeted rebuild reset it, or it was added late)
 and a live event arrives, the owner gives it the cart's history first. That history is applied as a

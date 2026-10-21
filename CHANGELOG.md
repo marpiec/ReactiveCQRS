@@ -16,6 +16,22 @@ of RC1. Every new setting defaults to the behaviour of RC1.
   step is recorded and `aggregates_own_type_idx` is valid (`eventStore.buildReadiness()`, `readyForBuilds()`), checked
   every 30 s. A held build shows why in `Builds.heldBy` and `BuildStatus.heldBy`; gauge `reactivecqrs.builds.held`.
   Targeted rebuilds are not held.
+- **Aggregates that cannot be restored are recorded, and an operator can resolve them** (F344, F345, D90, chapters 9,
+  10 and 18): owners, builds (any phase) and the new `RestoreCheck` record each aggregate they cannot restore in
+  `restore_failures` (the event it failed at, the cause, where, when, how many times), listed by
+  `eventStore.restoreFailures(RestoreFailureFilter(...))`, counted by the gauge `reactivecqrs.restore.failures`, one
+  warning per aggregate. **Changed:** an owner that cannot restore answers a request for versions with
+  `CannotRestore(id, reason)`, so the projection's failure names the cause at once instead of a gap after 10 minutes,
+  and a build's failure reads "the aggregate cannot be restored: ...". **New:** `SkipAggregate(id)` skips a whole
+  aggregate in one build, at any phase (`ToBuildInProgress` for the build in progress); chapter 18 gives the SQL that
+  removes an aggregate by hand, after which a retry clears its failures and a blocked build switches.
+- **New: the online jobs run in the background inside the application** (F347, D91, chapter 18), opt-in:
+  `OnlineJobs.start(system, OnlineJobsSettings(eventStore, spaceOf = ...))` runs the indexes, the event keys (once no
+  node runs an older app-version) and the space backfill in order, one runner at a time (a singleton and an advisory
+  lock), saved in the new table `online_jobs` so a restart resumes them; its index builds use a connection of their own
+  with `longStatementTimeout` (6 h), not the pool's `socketTimeout`. `GetOnlineJobsStatus`, `RetryOnlineJobs`,
+  `ReleaseBuildHold` (also `eventStore.releaseBuildHold()`); with `BuildHold.untilStoreReady` full builds wait for it,
+  and a failed job keeps them waiting, named in `Builds.heldBy`.
 
 **1.0.1-RC1 (19/10/2026, tag `v1.0.1-RC1`):** a release candidate of everything below, for Neula's migration branch and
 its rehearsal on a copy of production; the final 1.0.1 follows them.

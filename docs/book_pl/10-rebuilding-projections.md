@@ -393,6 +393,33 @@ cartNames ? ToBuildInProgress(SkipFailedVersion(cartId))    // FailedSubscriptio
 Gdy ponowisz albo pominiesz to, co się nie udało, budowa przełączy się przy najbliższym sprawdzeniu.
 Gdy żadna budowa nie trwa, odpowiedzią jest `RebuildRefused("no build is running")`.
 
+### Koszyk, którego budowa nie umie odczytać
+
+Najtrudniejszy przypadek: koszyk, którego historii twój kod już nie umie odtworzyć. Handler zdarzeń
+rzuca wyjątek na jednym z jego starych zdarzeń albo zdarzenia w ogóle nie da się odczytać. Budowa
+potrzebuje stanu każdego koszyka, więc zapisuje niepowodzenie („the aggregate cannot be restored: ...”,
+z przyczyną), pomija koszyk, buduje dalej pozostałe, a potem czeka na ciebie, jak każda budowa z
+niepowodzeniami. Wpisuje też koszyk do zapisów agregatów, których nie da się odtworzyć, razem ze
+zdarzeniem, na którym się nie udało (`eventStore.restoreFailures()`, [rozdział 18](18-production.md)).
+Ponowna próba nic nie da, dopóki coś się nie zmieni; zmienić mogą trzy rzeczy:
+
+- **Poprawiasz handler** i wdrażasz poprawkę: `RetryAllFailedSubscriptions` przez `ToBuildInProgress`,
+  a budowa stosuje koszyk i się przełącza.
+- **Usuwasz koszyk** (rozdział 18 pokazuje jak) i ponawiasz: koszyk, którego już nie ma, czyści swoje
+  niepowodzenie, a budowa się przełącza.
+- **Pomijasz cały koszyk w tej budowie**, w dowolnej jej fazie, nawet w trakcie głównego przebiegu:
+
+```scala
+import io.reactivecqrs.core.projection.SkipAggregate
+
+cartNames ? ToBuildInProgress(SkipAggregate(cartId))  // AggregateSkipped(cartId, upTo, subscriptions)
+cartNames ? SkipAggregate(cartId)                     // the same, in the active build
+```
+
+Pominięcie oznacza każdą wersję koszyka, aż do zapisanej, jako zastosowaną w tej budowie, niczego nie
+stosując, i czyści jego niepowodzenia; budowa przełącza się wtedy bez dokumentów tego koszyka. Jego
+zapis mówi „skipped”. `SkipFailedVersion` nadal pomija jedną nieudaną wersję naraz.
+
 ## Naprawa kilku agregatów: przebudowy celowane
 
 Czasem na jednej stronie katalogu jest literówka. Drukujesz od nowa tę jedną stronę, a nie cały

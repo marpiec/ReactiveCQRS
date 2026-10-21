@@ -196,8 +196,53 @@ zobaczyły pierwsze zdarzenie po 767 ms.
 
 ### 7. Po aktualizacji: zadania online
 
-Niektóre zadania są zbyt ciężkie, żeby wykonywać je przy starcie węzła. Uruchamiasz je raz, w tle, gdy
-wersja, która ich potrzebuje, już działa. Każde można bezpiecznie przerwać i uruchomić ponownie.
+Niektóre zadania są zbyt ciężkie, żeby wykonywać je przy starcie węzła: duże indeksy i uzupełnienia
+przechodzące przez wszystkie zdarzenia. Wykonują się raz, w tle, gdy wersja, która ich potrzebuje, już
+działa. Najprościej pozwolić aplikacji uruchomić je samej, a pełnym budowom projekcji kazać na nie
+poczekać:
+
+```scala
+import io.reactivecqrs.core.jobs.{OnlineJobs, OnlineJobsSettings}
+import io.reactivecqrs.core.rebuild.BuildHold
+
+val onlineJobs = OnlineJobs.start(system, OnlineJobsSettings(eventStore, spaceOf = spaceOfOldAggregates))
+val projections = new Projections(system, ProjectionsSettings(eventStore, subscriptions, registry,
+  contexts, holdBuilds = Some(BuildHold.untilStoreReady(eventStore))))
+```
+
+`OnlineJobs.start` (na każdym węźle; w klastrze to singleton) wykonuje trzy zadania, jedno po drugim:
+
+1. **`indexes`**: duże indeksy magazynu zdarzeń i indeks każdej tabeli dokumentów według organizacji;
+2. **`event-keys`**: klucz każdego starszego zdarzenia, gdy żaden węzeł klastra nie działa już na
+   starszej wersji (czeka, dopóki taki działa: zapisywałby zdarzenia bez kluczy);
+3. **`spaces`**: organizację agregatów zapisanych, zanim ją miały, z twoim `spaceOf`
+   ([rozdział 16](16-organizations.md)).
+
+Każde idzie w tempie opisanym niżej i każde zapisuje postęp w tabeli `online_jobs`: węzeł, który
+zatrzyma się w połowie, zostawia pracę następnemu, a ten pomija to, co skończone, i kontynuuje klucze
+zdarzeń od ostatniej partii. Naraz pracuje tylko jeden (trzyma blokadę doradczą PostgreSQL), a jego
+budowy indeksów idą osobnym połączeniem, którego limit czasu to `longStatementTimeout` (6 godzin), a
+nie `socketTimeout` twojej puli, który przerwałby długie `CREATE INDEX CONCURRENTLY`. Zapytaj, jak mu
+idzie:
+
+```scala
+import io.reactivecqrs.core.jobs.OnlineJobs.{GetOnlineJobsStatus, ReleaseBuildHold, RetryOnlineJobs}
+
+onlineJobs ? GetOnlineJobsStatus  // OnlineJobsStatus(jobs, buildHoldReleased, readiness)
+onlineJobs ? RetryOnlineJobs      // runs the failed jobs again
+onlineJobs ? ReleaseBuildHold     // BuildHoldReleased: held builds start, ready or not
+```
+
+Każde zadanie jest `Waiting`, `Running`, `Done` albo `Failed`, z licznikami (zdarzenia z kluczem,
+pozostałe zdarzenia, uzupełnione i pozostałe przestrzenie) i, przy kluczach zdarzeń, ze spotkanymi
+zdarzeniami-sierotami. Ze wstrzymaniem pełne budowy ruszają, gdy indeksy i klucze są gotowe
+([rozdział 10](10-rebuilding-projections.md)). Zadanie zakończone porażką trzyma je dalej, a
+`Builds.heldBy` podaje przyczynę; usuń ją i wyślij `RetryOnlineJobs` albo, jeśli budowy mają ruszyć
+mimo to, `ReleaseBuildHold`, które zwalnia je na każdym węźle, na stałe. Śledzą to metryki
+`reactivecqrs.online.job` (0 czeka, 1 działa, 2 gotowe, 3 porażka) i `reactivecqrs.online.job.progress`,
+według `job`, a każda zmiana stanu zadania to jedna linia w logu.
+
+Możesz też uruchomić zadania sam, z zadania serwisowego:
 
 <!-- snippet: cart/ProductionSpec.scala#maintenance -->
 ```scala
@@ -313,6 +358,9 @@ co dostajesz:
 | `reactivecqrs.outbox.republished` | licznik | | ponowne publikacje, o które poprosił poller |
 | `reactivecqrs.outbox.read.abandoned` | licznik | | odczyty outboxu porzucone po `readTimeout`: połączenie przestało odpowiadać |
 | `reactivecqrs.message.too.large` | licznik | `class` | komunikaty zbyt duże, by przejść między węzłami ([rozdział 17](17-cluster.md)) |
+| `reactivecqrs.restore.failures` | wskaźnik | | zapisane agregaty, których nie da się odtworzyć (przy każdym przeglądzie outboxu) |
+| `reactivecqrs.online.job` | wskaźnik | `job` | stan każdego zadania online: 0 czeka, 1 działa, 2 gotowe, 3 porażka |
+| `reactivecqrs.online.job.progress` | wskaźnik | `job` | jak daleko doszło: zindeksowane tabele dokumentów, zdarzenia z kluczem, uzupełnione przestrzenie |
 | `reactivecqrs.builds.held` | wskaźnik | | pełne budowy czekające na `BuildHold` ([rozdział 10](10-rebuilding-projections.md)); 0, gdy wstrzymanie się skończy |
 
 > **Wskazówka:** trzy alerty wyłapują większość kłopotów: `reactivecqrs.outbox.given.up` powyżej zera,
@@ -336,6 +384,7 @@ administracyjnej, z endpointu health check, z narzędzia zespołu wsparcia):
 | `GetBuilds` | każda projekcja zarządzana | `Builds`: aktywna budowa i ta w toku ([rozdział 10](10-rebuilding-projections.md)) |
 | `GetBuildStatus` | każda projekcja zarządzana | `BuildStatus`: faza trwającej budowy i to, jak daleko doszła; `heldBy`, gdy czeka wstrzymana |
 | `GetSquashStatus` | scheduler squasha | `SquashStatus`: zwinięte, odrzucone, wciąż czekające |
+| `GetOnlineJobsStatus` | wykonawca zadań online | `OnlineJobsStatus`: stan i liczniki każdego zadania, czy zwolniono wstrzymanie budów i czego magazynowi brakuje do budów |
 
 W klastrze pytania do pollera, schedulera i projekcji wysyłaj przez ich proxy, z dowolnego węzła;
 szynę każdego węzła pytaj osobno.
@@ -351,6 +400,8 @@ szynę każdego węzła pytaj osobno.
 | „Event bus starts without the subscriptions of: ...” | szyna zdarzeń | zarejestrowany subskrybent nie odpowiedział w `registrationTimeout`; szyna działa, ale żadne zdarzenie nie opuszcza outboxu, dopóki nie odpowie |
 | „Subscriber ... stopped before it answered” | szyna zdarzeń | zarejestrowany subskrybent zatrzymał się przy starcie; żadne zdarzenie nie opuszcza outboxu, dopóki nie zostanie usunięty albo węzeł nie wystartuje ponownie |
 | „Event bus asked ... for its subscriptions and got a failure” | szyna zdarzeń | subskrybent nie mógł odpowiedzieć; jest pytany ponownie przy każdym takcie, a linia podaje przyczynę |
+| „Aggregate ... cannot be restored; it is recorded” albo „Building ...: ... cannot be restored; it is recorded” (ostrzeżenia) | właściciel, budowniczy | agregat, którego twój kod nie umie odtworzyć; raz na agregat. Zob. „Gdy zapisane dane są błędne” |
+| „Online job ... failed: ...” | wykonawca zadań online | zadanie się nie powiodło; budowy wstrzymane na nie czekają do `RetryOnlineJobs` albo `ReleaseBuildHold` |
 | „Full builds of projections are held: ...” (ostrzeżenie) | `Projections` | `BuildHold` wstrzymuje budowy z podanego powodu; gdy wstrzymanie się skończy, pojawia się „... are released” |
 | „Event bus registered ... after its start” | szyna zdarzeń | `RegisterSubscribers` przyszło po starcie: ci subskrybenci ominęli to, co opublikowano wcześniej |
 | „Delivery waits for ...” i „... deliveries wait longer than ...” | szyna zdarzeń | subskrybent wolno odpowiada |
@@ -403,6 +454,105 @@ autovacuum na gorących tabelach (`pg_stat_user_tables`) oraz rozmiary tabel i i
 to `events_to_publish` (outbox: jedno wstawienie i jedno usunięcie na zdarzenie), `subscriptions`
 (jedna aktualizacja na zdarzenie na projekcję) i `aggregates` (jedna aktualizacja na polecenie). Ustaw
 im niski współczynnik skali autovacuum, żeby uruchamiał się często.
+
+## Gdy zapisane dane są błędne
+
+Lata historii zbierają trochę niespodzianek: zdarzenie, którego twój handler już nie przyjmuje,
+wiersz, który stary skrypt usunął do połowy. Biblioteka nigdy nie naprawia takich danych za twoimi
+plecami; znajduje je, mówi ci o nich i dba, żeby reszta działała. Ta sekcja to strona operatora;
+[rozdział 10](10-rebuilding-projections.md) pokazuje, co w tym czasie robi budowa.
+
+### Agregaty, których nie da się odtworzyć
+
+Agregatu nie da się odtworzyć, gdy jednego z jego zdarzeń nie da się odczytać albo gdy twój handler
+zdarzeń rzuca na nim wyjątek (`MatchError` dla zdarzenia, o którym kod zapomniał, sprawdzenie, którego
+stare dane nie przechodzą). Kto na niego trafi, ten go zapisuje w tabeli `restore_failures`: właściciel
+agregatu (przy poleceniu, zapytaniu albo ponownej publikacji), budowa projekcji (w każdej ze swoich
+faz) albo `RestoreCheck` opisany niżej. Każdy zapis zawiera agregat, jego typ i organizację, wersję i
+identyfikator zdarzenia, na którym się nie udało, klasę i komunikat wyjątku (bez wartości, jak każda
+linia logu), miejsce, czas pierwszego i ostatniego razu, liczbę razy i informację, czy operator pominął
+go w budowie. Do logu trafia jedno ostrzeżenie na agregat, nie na każdą ponowną próbę, a wskaźnik
+`reactivecqrs.restore.failures` liczy je przy każdym przeglądzie outboxu. Odczytaj je:
+
+```scala
+import io.reactivecqrs.core.eventstore.RestoreFailureFilter
+
+eventStore.restoreFailures()                                              // all of them, the oldest first
+eventStore.restoreFailures(RestoreFailureFilter(projection = Some("carts"))) // those of one projection's builds
+```
+
+Zapis znika, gdy agregat znów da się w tym miejscu odtworzyć, gdy zostanie usunięty na dobre albo
+wyczyszczony z organizacją, albo gdy jego budowa zostanie porzucona. Właściciel, który nie może
+odtworzyć swojego agregatu, odpowiada projekcji proszącej o jego zdarzenia komunikatem
+`CannotRestore(aggregateId, reason)`, więc niepowodzenie projekcji od razu mówi dlaczego, zamiast
+„versions from N are missing” dziesięć minut później.
+
+Przed aktualizacją znajdź je wszystkie naraz, nowym kodem, na kopii produkcji:
+
+```scala
+import io.reactivecqrs.core.tools.RestoreCheck
+
+val report = RestoreCheck.run(eventStore, Seq(cartContext))  // restores every cart with this code
+println(report.text)
+```
+
+Odtwarza każdy agregat przekazanych kontekstów, zapisuje te, których się nie udało (i usuwa zapisy
+tych, które przeszły), i wymienia pierwszą setkę. Czyta po stronie agregatów naraz; daj mu `pause`,
+żeby uruchomić go na działającej bazie.
+
+I co dalej? Trzy wyjścia, najlepsze pierwsze:
+
+1. **Popraw kod.** Handler, który rzuca wyjątek na starych danych, to błąd handlera: niech przyjmie to
+   zdarzenie, wdróż poprawkę i wyślij `RetryAllFailedSubscriptions` do projekcji, którym się nie udało
+   (przez `ToBuildInProgress` do trwającej budowy). Agregat znów się odtwarza, zapisy znikają, a
+   wstrzymana budowa przełącza się przy najbliższym sprawdzeniu.
+2. **Pomiń agregat w jednej budowie**, gdy jego dokumenty mogą poczekać: `SkipAggregate(aggregateId)`
+   ([rozdział 10](10-rebuilding-projections.md)). Dane zostają; budowa po prostu go pomija, a zapis
+   mówi „skipped”.
+3. **Usuń agregat**, gdy w ogóle nie powinien istnieć. O tym następna sekcja.
+
+### Usuwanie agregatu ręcznie
+
+Biblioteka nie ma wywołania, które usuwa agregat niedający się odtworzyć: trwałe usunięcie to
+zdarzenie, a agregat, którego nie da się odtworzyć, nie przyjmie polecenia. Usuwasz go w jednej
+transakcji, tymi poleceniami, które wymieniają każdą tabelę biblioteki trzymającą wiersze jednego
+agregatu (tu `4711`; wpisz swój identyfikator w każdej linii):
+
+```sql
+BEGIN;
+-- Stop (ROLLBACK) if this lists anything: copies of the aggregate read its events.
+SELECT id FROM aggregates WHERE base_id = 4711 AND id <> 4711;
+DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = 4711);
+DELETE FROM events WHERE aggregate_id = 4711;              -- its event_keys go with them
+DELETE FROM events_archive WHERE aggregate_id = 4711;
+DELETE FROM events_to_publish WHERE aggregate_id = 4711;
+DELETE FROM snapshots WHERE aggregate_id = 4711;
+DELETE FROM aggregate_lineage WHERE aggregate_id = 4711 OR copied_from = 4711;
+DELETE FROM history_rewrites WHERE aggregate_id = 4711;
+DELETE FROM subscriptions WHERE aggregate_id = 4711;
+DELETE FROM subscription_failures WHERE aggregate_id = 4711;
+DELETE FROM commands_responses WHERE aggregate_id = 4711;
+DELETE FROM restore_failures WHERE aggregate_id = 4711;
+DELETE FROM aggregates WHERE id = 4711;                    -- its own row, and its rows of the bases it copied
+COMMIT;
+```
+
+Uruchom je, gdy nic nie pisze do agregatu (nic nie może: jego właściciel nie potrafi go odtworzyć).
+Pierwsze zapytanie nie może niczego zwrócić: agregat, z którego zduplikowano inne, niesie część ich
+historii, a jego usunięcie by je zepsuło. Potem wyślij `RetryAllFailedSubscriptions` do każdej
+projekcji, której się na nim nie udało (i przez `ToBuildInProgress` do trwającej budowy): ponowna próba
+dla agregatu, którego już nie ma, czyści jego niepowodzenie, jak dla usuniętego na dobre, a budowa,
+która czekała tylko na niego, przełącza się przy najbliższym sprawdzeniu, bez restartu.
+
+Co zostaje: dokumenty, które twoje projekcje wyprowadziły z agregatu, zanim zaczął zawodzić. Wyczyść
+je tak, jak zrobiłoby to trwałe usunięcie, albo przebudową celowaną agregatu
+(`RebuildAggregates(OneAggregate(id))`, którego `clearForRebuild` je usuwa, a potem nie znajduje nic
+do dostarczenia). Te same polecenia usuwają zdarzenia-sieroty (agregat, którego wiersza już nie ma):
+linie z `aggregates` niczego wtedy nie usuwają.
+
+> **Ostrzeżenie:** to jedyne miejsce, w którym sam usuwasz zdarzenia. Najpierw zrób kopię zapasową,
+> sprawdź identyfikator agregatu dwa razy i zachowaj wyniki `StoredDataCheck` i `restoreFailures`
+> sprzed zmiany.
 
 ## Pod dużym obciążeniem
 

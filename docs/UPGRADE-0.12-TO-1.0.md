@@ -118,7 +118,9 @@ If something is wrong and no command of the new version was taken yet, the way b
 ## 6. Afterwards, in the background
 
 While the application serves, each once, in this order (the book's
-[chapter 18, "After an upgrade: the online jobs"](book/18-production.md)):
+[chapter 18, "After an upgrade: the online jobs"](book/18-production.md)). Since 1.0.1-RC2 the application can run
+steps 1 to 4 itself, in the background, with `OnlineJobs.start`, and hold full builds of projections until they are
+done (`BuildHold.untilStoreReady`): no manual step, and no build that reads the whole `events` table.
 
 1. `buildIndexesConcurrently()` (unless it ran before the stop): the indexes too large to build at start, without
    blocking writes.
