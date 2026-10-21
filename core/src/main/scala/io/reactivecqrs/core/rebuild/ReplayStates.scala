@@ -58,7 +58,7 @@ class ReplayStates(sources: Map[AggregateType, ReplaySource], capacity: Int) {
         case _ =>
           // CR-4: a handler that throws names the event it failed at.
           try source.applied(state, event) catch {
-            case NonFatal(e) => throw new RestoreFailedAtEventException(id, event.version.asInt, event.event.getClass.getName, None, e)
+            case NonFatal(e) => throw new RestoreFailedAtEventException(id, event.version.asInt, event.event.getClass.getName, None, unreadable = false, e)
           }
       }
     }

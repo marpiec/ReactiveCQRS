@@ -88,7 +88,7 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
   // CR-4: a handler that throws names the event it failed at, so the failure can be recorded with it.
   private def applied(eventAggregateId: AggregateId, version: Int, event: Any)(handled: => AGGREGATE_ROOT): AGGREGATE_ROOT =
     try handled catch {
-      case NonFatal(e) => throw new RestoreFailedAtEventException(eventAggregateId, version, event.getClass.getName, None, e)
+      case NonFatal(e) => throw new RestoreFailedAtEventException(eventAggregateId, version, event.getClass.getName, None, unreadable = false, e)
     }
 
   // Reads at an instant do not use snapshots: a snapshot does not record when its version was reached.

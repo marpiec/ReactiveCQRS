@@ -337,7 +337,7 @@ val projections = new Projections(system, ProjectionsSettings(eventStore, subscr
 
 Co 30 sekund (`checkEvery`), dopóki jakaś budowa czeka, wstrzymanie pyta magazyn
 (`eventStore.buildReadiness()`: zapisany krok kluczy zdarzeń i poprawny indeks
-`aggregates_own_type_idx`; `readyForBuilds()` daje samo „tak” albo „nie”). Gdy magazyn jest gotowy,
+`aggregates_own_type_idx`; jego `ready` daje samo „tak” albo „nie”). Gdy magazyn jest gotowy,
 czekające budowy ruszają w kolejności, w jakiej prosiły, i wstrzymanie się kończy. W tym czasie:
 
 - `GetBuilds` odpowiada `Builds(..., heldBy = Some(powód))`, a `GetBuildStatus` fazą `Waiting` z tym

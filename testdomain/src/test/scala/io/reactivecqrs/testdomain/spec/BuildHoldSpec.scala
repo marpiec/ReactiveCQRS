@@ -120,7 +120,7 @@ class BuildHoldSpec extends CommonSpec {
         When("the online jobs make the store ready")
         eventStore.backfillEventKeys()
         eventStore.buildIndexesConcurrently()
-        eventStore.readyForBuilds() mustBe true
+        eventStore.buildReadiness().ready mustBe true
 
         Then("the build starts within a check and switches")
         awaitAssert(builds(second.supervisor).active.map(_.number) mustBe Some(2), 60.seconds, 100.millis)

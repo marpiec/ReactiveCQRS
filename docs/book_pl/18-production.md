@@ -226,19 +226,20 @@ nie `socketTimeout` twojej puli, który przerwałby długie `CREATE INDEX CONCUR
 idzie:
 
 ```scala
-import io.reactivecqrs.core.jobs.OnlineJobs.{GetOnlineJobsStatus, ReleaseBuildHold, RetryOnlineJobs}
+import io.reactivecqrs.core.jobs.OnlineJobs.{GetOnlineJobsStatus, RetryOnlineJobs}
 
 onlineJobs ? GetOnlineJobsStatus  // OnlineJobsStatus(jobs, buildHoldReleased, readiness)
 onlineJobs ? RetryOnlineJobs      // runs the failed jobs again
-onlineJobs ? ReleaseBuildHold     // BuildHoldReleased: held builds start, ready or not
+eventStore.releaseBuildHold()     // the override: held builds start, ready or not
 ```
 
-Każde zadanie jest `Waiting`, `Running`, `Done` albo `Failed`, z licznikami (zdarzenia z kluczem,
+Stan (`state`) każdego zadania to `OnlineJobState.Waiting`, `Running`, `Done` albo `Failed`, z licznikami (zdarzenia z kluczem,
 pozostałe zdarzenia, uzupełnione i pozostałe przestrzenie) i, przy kluczach zdarzeń, ze spotkanymi
 zdarzeniami-sierotami. Ze wstrzymaniem pełne budowy ruszają, gdy indeksy i klucze są gotowe
 ([rozdział 10](10-rebuilding-projections.md)). Zadanie zakończone porażką trzyma je dalej, a
-`Builds.heldBy` podaje przyczynę; usuń ją i wyślij `RetryOnlineJobs` albo, jeśli budowy mają ruszyć
-mimo to, `ReleaseBuildHold`, które zwalnia je na każdym węźle, na stałe. Śledzą to metryki
+`Builds.heldBy` podaje przyczynę; usuń ją i wyślij `RetryOnlineJobs` (zadanie zakończone porażką rusza
+też ponownie przy następnym starcie) albo, jeśli budowy mają ruszyć mimo to, wywołaj
+`eventStore.releaseBuildHold()`, które zwalnia je na każdym węźle, na stałe. Śledzą to metryki
 `reactivecqrs.online.job` (0 czeka, 1 działa, 2 gotowe, 3 porażka) i `reactivecqrs.online.job.progress`,
 według `job`, a każda zmiana stanu zadania to jedna linia w logu.
 
@@ -401,7 +402,7 @@ szynę każdego węzła pytaj osobno.
 | „Subscriber ... stopped before it answered” | szyna zdarzeń | zarejestrowany subskrybent zatrzymał się przy starcie; żadne zdarzenie nie opuszcza outboxu, dopóki nie zostanie usunięty albo węzeł nie wystartuje ponownie |
 | „Event bus asked ... for its subscriptions and got a failure” | szyna zdarzeń | subskrybent nie mógł odpowiedzieć; jest pytany ponownie przy każdym takcie, a linia podaje przyczynę |
 | „Aggregate ... cannot be restored; it is recorded” albo „Building ...: ... cannot be restored; it is recorded” (ostrzeżenia) | właściciel, budowniczy | agregat, którego twój kod nie umie odtworzyć; raz na agregat. Zob. „Gdy zapisane dane są błędne” |
-| „Online job ... failed: ...” | wykonawca zadań online | zadanie się nie powiodło; budowy wstrzymane na nie czekają do `RetryOnlineJobs` albo `ReleaseBuildHold` |
+| „Online job ... failed: ...” | wykonawca zadań online | zadanie się nie powiodło; budowy wstrzymane na nie czekają do `RetryOnlineJobs`, następnego startu albo `releaseBuildHold()` |
 | „Full builds of projections are held: ...” (ostrzeżenie) | `Projections` | `BuildHold` wstrzymuje budowy z podanego powodu; gdy wstrzymanie się skończy, pojawia się „... are released” |
 | „Event bus registered ... after its start” | szyna zdarzeń | `RegisterSubscribers` przyszło po starcie: ci subskrybenci ominęli to, co opublikowano wcześniej |
 | „Delivery waits for ...” i „... deliveries wait longer than ...” | szyna zdarzeń | subskrybent wolno odpowiada |
@@ -497,7 +498,7 @@ println(report.text)
 ```
 
 Odtwarza każdy agregat przekazanych kontekstów, zapisuje te, których się nie udało (i usuwa zapisy
-tych, które przeszły), i wymienia pierwszą setkę. Czyta po stronie agregatów naraz; daj mu `pause`,
+tych, które przeszły), i wymienia pierwszą setkę identyfikatorów (`report.failed`; przyczyny są w zapisach). Czyta po stronie agregatów naraz; daj mu `pause`,
 żeby uruchomić go na działającej bazie.
 
 I co dalej? Trzy wyjścia, najlepsze pierwsze:

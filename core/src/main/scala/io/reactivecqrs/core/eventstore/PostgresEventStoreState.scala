@@ -35,12 +35,12 @@ case class OrphanEvents(events: Long, aggregates: Long, listed: Seq[OrphanAggreg
   private[eventstore] def adding(found: Seq[OrphanAggregate]): OrphanEvents = found.foldLeft(this) { (sum, aggregate) =>
     sum.listed.indexWhere(_.aggregateId == aggregate.aggregateId) match {
       case -1 => OrphanEvents(sum.events + aggregate.events, sum.aggregates + 1,
-        if (sum.listed.size < OrphanEvents.Tracked) sum.listed :+ aggregate else sum.listed)
+        if (sum.listed.size < OrphanEvents.Tracked) sum.listed.toVector :+ aggregate else sum.listed)
       case i => sum.copy(events = sum.events + aggregate.events, listed = sum.listed.updated(i, sum.listed(i).and(aggregate)))
     }
   }
 
-  private[eventstore] def first(count: Int): OrphanEvents = copy(listed = listed.sortBy(_.aggregateId.asLong).take(count))
+  private[core] def first(count: Int): OrphanEvents = copy(listed = listed.sortBy(_.aggregateId.asLong).take(count))
 }
 
 object OrphanEvents {
@@ -310,7 +310,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     try mpjsons.deserialize[Event[AGGREGATE_ROOT]](rs.string(5), eventClass(rs.short(3), rs.short(4), eventAggregateId.asLong, version)) catch {
       case e: UnsupportedEventVersionException => throw e // D29: it names the aggregate and the version itself
       case NonFatal(e) => throw new RestoreFailedAtEventException(eventAggregateId, version,
-        Try(typesNamesState.classNameById(rs.short(3))).getOrElse("unknown type id " + rs.short(3)), Some(eventId), e)
+        Try(typesNamesState.classNameById(rs.short(3))).getOrElse("unknown type id " + rs.short(3)), Some(eventId), unreadable = true, e)
     }
 
   override def readSnapshot[AGGREGATE_ROOT](aggregateId: AggregateId, stateClassName: String): Option[Try[Snapshot[AGGREGATE_ROOT]]] = DB.readOnly { implicit session =>
@@ -480,9 +480,6 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
                   | WHERE c.relname = 'aggregates_own_type_idx' AND n.nspname = current_schema()""".stripMargin))
   }
 
-  /** CR-2: `buildReadiness().ready`, "the event store is ready for builds". */
-  def readyForBuilds(): Boolean = buildReadiness().ready
-
   /** CR-2, CR-3: why full builds wait (`BuildHold.untilStoreReady`): what the store lacks (`buildReadiness`), with the
     * failure of an online job that would make it ready, if one failed; None once it is ready, or once an operator
     * released the hold (`releaseBuildHold`). */
@@ -494,15 +491,14 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   }
 
   /** CR-3: an operator's override: full builds held by `BuildHold.untilStoreReady` start, ready or not, on every node,
-    * from the next check on; it lasts. */
+    * at their next check. Recorded as a schema step, so it lasts: later holds of this installation hold nothing. */
   def releaseBuildHold(): Unit = DB.autoCommit { implicit session =>
-    sql"""INSERT INTO online_jobs (name, state, position, started) VALUES ('build-hold', 'Released', 0, (now() AT TIME ZONE 'UTC'))
-         | ON CONFLICT (name) DO UPDATE SET state = 'Released'""".stripMargin.update()
+    sql"""INSERT INTO schema_steps (name, completed) VALUES ('build_hold_released', current_timestamp) ON CONFLICT (name) DO NOTHING""".update()
   }
 
   /** CR-3: whether an operator released the build hold. */
-  def buildHoldReleased(): Boolean = DB.readOnly { implicit session =>
-    exists(sql"""SELECT EXISTS (SELECT 1 FROM online_jobs WHERE name = 'build-hold' AND state = 'Released')""")
+  private[core] def buildHoldReleased(): Boolean = DB.readOnly { implicit session =>
+    exists(sql"""SELECT EXISTS (SELECT 1 FROM schema_steps WHERE name = 'build_hold_released')""")
   }
 
   /** CR-3: an online job's saved state. */
@@ -1078,7 +1074,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     case RestoreFailureSource.Build(projection, build, subscriber) => ("build", subscriber, Some(projection), Some(build))
   }
 
-  override def recordRestoreFailure(failure: RestoreFailureSeen): Boolean = DB.localTx { implicit session =>
+  override private[core] def recordRestoreFailure(failure: RestoreFailureSeen): Boolean = DB.localTx { implicit session =>
     val id = failure.aggregateId.asLong
     val (source, subscriber, projection, build) = sourceColumns(failure.source)
     val known = exists(sql"""SELECT EXISTS (SELECT 1 FROM restore_failures WHERE aggregate_id = $id)""")
@@ -1109,25 +1105,25 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     restoreFailuresKnown
   }
 
-  override def clearRestoreFailure(aggregateId: AggregateId, source: RestoreFailureSource): Unit = if (restoreFailuresMayExist()) {
+  override private[core] def clearRestoreFailure(aggregateId: AggregateId, source: RestoreFailureSource): Unit = if (restoreFailuresMayExist()) {
     val (sourceName, subscriber, _, _) = sourceColumns(source)
     DB.autoCommit { implicit session =>
       sql"""DELETE FROM restore_failures WHERE aggregate_id = ${aggregateId.asLong} AND source = $sourceName AND subscriber = $subscriber""".update()
     }
   }
 
-  override def clearBuildRestoreFailures(projection: String, build: Int): Unit = DB.autoCommit { implicit session =>
+  override private[core] def clearBuildRestoreFailures(projection: String, build: Int): Unit = DB.autoCommit { implicit session =>
     sql"""DELETE FROM restore_failures WHERE source = 'build' AND projection = $projection AND build = $build""".update()
   }
 
-  override def restoreFailureSkipped(aggregateId: AggregateId, aggregateType: Option[AggregateType], source: RestoreFailureSource.Build): Unit =
+  override private[core] def restoreFailureSkipped(aggregateId: AggregateId, aggregateType: AggregateType, source: RestoreFailureSource.Build): Unit =
     DB.localTx { implicit session =>
       val id = aggregateId.asLong
       val marked = sql"""UPDATE restore_failures SET skipped = $utcNow WHERE aggregate_id = $id AND source = 'build' AND subscriber = ${source.subscriber}""".update()
-      if (marked == 0) aggregateType.foreach { t =>
+      if (marked == 0) {
         sql"""INSERT INTO restore_failures (aggregate_id, source, subscriber, projection, build, type_id, space_id, version, error_class, error,
              |   first_seen, last_seen, times, skipped)
-             | SELECT $id, 'build', ${source.subscriber}, ${source.projection}, ${source.build}, ${typesNamesState.typeIdByClassName(t.typeName)},
+             | SELECT $id, 'build', ${source.subscriber}, ${source.projection}, ${source.build}, ${typesNamesState.typeIdByClassName(aggregateType.typeName)},
              |   coalesce(a.space_id, -1), coalesce(a.base_version, 0), '', 'skipped by an operator', $utcNow, $utcNow, 0, $utcNow
              | FROM (SELECT 1) one LEFT JOIN aggregates a ON a.id = $id AND a.base_id = $id
              | ON CONFLICT (aggregate_id, source, subscriber) DO UPDATE SET skipped = EXCLUDED.skipped""".stripMargin.update()
@@ -1149,7 +1145,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
         case _ => RestoreFailureSource.Build(rs.string(4), rs.int(5), rs.string(3))
       }
       RestoreFailure(AggregateId(rs.long(1)), AggregateType(Try(typesNamesState.classNameById(rs.short(6))).getOrElse("unknown type id " + rs.short(6))),
-        SpaceId(rs.long(7)), rs.int(8), rs.longOpt(9), rs.string(10), rs.string(11), source, utcTime(rs.underlying, 12), utcTime(rs.underlying, 13),
+        Some(SpaceId(rs.long(7))).filter(_.asLong >= 0), Some(rs.int(8)).filter(_ > 0).map(AggregateVersion(_)), rs.longOpt(9), rs.string(10), rs.string(11), source, utcTime(rs.underlying, 12), utcTime(rs.underlying, 13),
         rs.int(14), Option(rs.underlying.getTimestamp(15, Calendar.getInstance(Utc))).map(_.toInstant))
     }.list()
   }

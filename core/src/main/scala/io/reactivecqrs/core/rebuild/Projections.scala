@@ -559,6 +559,12 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       logged("could not clear the record of aggregate " + aggregateId.asLong + "'s failed restore")(
         settings.eventStore.clearRestoreFailure(aggregateId, failuresOf(i.record)))
     }
+    case BuildAggregateSkipped(aggregateId, aggregateType) => (active ++ building).find(_.ref == sender()).foreach { i =>
+      logged("could not mark the record of aggregate " + aggregateId.asLong + " skipped")(aggregateType match {
+        case Some(t) => settings.eventStore.restoreFailureSkipped(aggregateId, t, failuresOf(i.record))
+        case None => settings.eventStore.clearRestoreFailure(aggregateId, failuresOf(i.record)) // it is gone
+      })
+    }
     case ToBuildInProgress(message) => runningBuild match {
       case Some(b) => b.ref.forward(message)
       case None => sender() ! RebuildRefused("no build is running")
@@ -582,14 +588,14 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   // CR-4: where a build's builder records the aggregates it cannot restore.
   private def failuresOf(record: BuildRecord): RestoreFailureSource.Build = RestoreFailureSource.Build(spec.name, record.number, record.subscriber)
 
-  // CR-4: the instance skips every version of the aggregate up to the one stored; its record of the build says so.
+  // CR-4: the instance skips every version of the aggregate up to the one stored (none of an aggregate that is gone);
+  // once it did, it tells this supervisor, which marks the build's record (`BuildAggregateSkipped`).
   private def skipAggregate(instance: Instance, aggregateId: AggregateId): Unit = {
-    val stored = listeners.map(_._1).distinct match {
-      case Nil => None
-      case types => settings.eventStore.aggregatesOf(types, AggregateId(aggregateId.asLong - 1), 1).find(_.aggregateId == aggregateId)
-    }
-    settings.eventStore.restoreFailureSkipped(aggregateId, stored.map(_.aggregateType), failuresOf(instance.record))
-    instance.ref.forward(SkipAggregateUpTo(aggregateId, stored.map(_.aggregateType), stored.fold(io.reactivecqrs.api.AggregateVersion.ZERO)(_.version)))
+    val aggregateType = settings.eventStore.generationAndType(aggregateId)._2.map(AggregateType(_))
+    if (aggregateType.exists(t => !listeners.exists(_._1 == t))) {
+      sender() ! RebuildRefused("aggregate " + aggregateId.asLong + " is a " + aggregateType.get.simpleName + ", which projection " + spec.name + " does not receive")
+    } else instance.ref.forward(SkipAggregateUpTo(aggregateId, aggregateType,
+      settings.eventStore.storedVersion(aggregateId).fold(io.reactivecqrs.api.AggregateVersion.ZERO)(_._1)))
   }
 
   private def startBuilder(): Unit = runningBuild.foreach { b =>

@@ -73,7 +73,7 @@ class OutboxPollerActor(eventStore: EventStoreState, eventBus: ActorRef, options
       read(number)
     }
     case Read(number, result, restoreFailures) => if (reads.ended(number)) {
-      // CR-4: the aggregates that cannot be restored, counted at each poll.
+      // CR-4: the aggregates that cannot be restored, counted here as the poller is the one periodic reader of a system.
       restoreFailures.foreach(ReactiveMetrics(context.system).metrics.gauge("reactivecqrs.restore.failures", Map.empty, _))
       poll(result)
     }

@@ -222,19 +222,19 @@ your pool's `socketTimeout`, which would cut a long `CREATE INDEX CONCURRENTLY` 
 goes:
 
 ```scala
-import io.reactivecqrs.core.jobs.OnlineJobs.{GetOnlineJobsStatus, ReleaseBuildHold, RetryOnlineJobs}
+import io.reactivecqrs.core.jobs.OnlineJobs.{GetOnlineJobsStatus, RetryOnlineJobs}
 
 onlineJobs ? GetOnlineJobsStatus  // OnlineJobsStatus(jobs, buildHoldReleased, readiness)
 onlineJobs ? RetryOnlineJobs      // runs the failed jobs again
-onlineJobs ? ReleaseBuildHold     // BuildHoldReleased: held builds start, ready or not
+eventStore.releaseBuildHold()     // the override: held builds start, ready or not
 ```
 
-Each job is `Waiting`, `Running`, `Done` or `Failed`, with its counts (events keyed, events left,
+Each job's `state` is `OnlineJobState.Waiting`, `Running`, `Done` or `Failed`, with its counts (events keyed, events left,
 spaces filled and left) and, for the event keys, the orphan events it met. With the hold, full builds
 start once the indexes and keys are there ([chapter 10](10-rebuilding-projections.md)). A failed job
-keeps them waiting, and `Builds.heldBy` names the failure; fix the cause and send `RetryOnlineJobs`,
-or, if the builds should run anyway, `ReleaseBuildHold`, which releases them on every node and stays
-so. Metrics `reactivecqrs.online.job` (0 waiting, 1 running, 2 done, 3 failed) and
+keeps them waiting, and `Builds.heldBy` names the failure; fix the cause and send `RetryOnlineJobs`
+(a failed job also runs again at the next start), or, if the builds should run anyway, call
+`eventStore.releaseBuildHold()`, which releases them on every node, for good. Metrics `reactivecqrs.online.job` (0 waiting, 1 running, 2 done, 3 failed) and
 `reactivecqrs.online.job.progress`, by `job`, follow it, and each change of a job is one log line.
 
 You can also run the jobs yourself, from a maintenance task:
@@ -394,7 +394,7 @@ node; ask each node's bus separately.
 | "Subscriber ... stopped before it answered" | event bus | a registered subscriber stopped at start; no event leaves the outbox until it is removed or the node restarts |
 | "Event bus asked ... for its subscriptions and got a failure" | event bus | a subscriber could not answer; it is asked again at every tick, and the line gives the cause |
 | "Aggregate ... cannot be restored; it is recorded" or "Building ...: ... cannot be restored; it is recorded" (warnings) | owner, builder | an aggregate your code cannot replay; once per aggregate. See "When stored data is wrong" |
-| "Online job ... failed: ..." | the online jobs' runner | a job failed; builds held for it keep waiting until `RetryOnlineJobs` or `ReleaseBuildHold` |
+| "Online job ... failed: ..." | the online jobs' runner | a job failed; builds held for it keep waiting until `RetryOnlineJobs`, the next start, or `releaseBuildHold()` |
 | "Full builds of projections are held: ..." (a warning) | `Projections` | a `BuildHold` keeps builds waiting, for the reason given; "... are released" follows once it is over |
 | "Event bus registered ... after its start" | event bus | a `RegisterSubscribers` came after the start: those subscribers missed what was published before |
 | "Delivery waits for ..." and "... deliveries wait longer than ..." | event bus | a subscriber is slow to answer |
@@ -489,7 +489,7 @@ println(report.text)
 ```
 
 It restores every aggregate of the contexts you pass, records those that fail (and clears the records
-of those that pass), and lists the first hundred. It reads a page of aggregates at a time; give it a
+of those that pass), and lists the first hundred ids (`report.failed`; the records say why). It reads a page of aggregates at a time; give it a
 `pause` to run it on a live database.
 
 What then? Three ways out, the first one preferred:

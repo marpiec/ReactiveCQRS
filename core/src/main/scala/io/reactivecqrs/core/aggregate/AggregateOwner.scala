@@ -277,14 +277,14 @@ class AggregateOwner[AGGREGATE_ROOT](settings: OwnerSettings[AGGREGATE_ROOT], id
     case MinVersionDeadline => answerExpiredMinVersionQueries()
     case AskToStop | PassivateOwner(_) => askToStop()
     case StopOwner | StopOwnerStale => stopNow(withSnapshot = false)
-    // CR-4: a subscriber asking for versions is told why they do not come, instead of waiting for a gap's give-up. The
-    // aggregate is read again first: an operator may have repaired it, or removed it, meanwhile.
-    case range @ RepublishRange(_, _, subscriber) => restore() match {
-      case None =>
+    // CR-4: a subscriber asking for versions is told why they do not come, instead of waiting for a gap's give-up. An
+    // aggregate an operator removed meanwhile (chapter 18) is restored as gone: one key lookup tells. A code fix needs a
+    // new owner, which the passivation after `failedRestoreRetryAfter` gives.
+    case range @ RepublishRange(_, _, subscriber) =>
+      if (Try(eventStore.storedVersion(aggregateId)).toOption.contains(None) && restore().isEmpty) {
         context.become(restored)
         restored(range)
-      case Some(again) => subscriber ! CannotRestore(aggregateId, Option(Errors.message(again)).getOrElse(again.getClass.getName))
-    }
+      } else subscriber ! CannotRestore(aggregateId, Option(failure.getCause).flatMap(c => Option(Errors.message(c))).getOrElse(Errors.message(failure)))
     case _ => () // nothing to publish without a state
   }
 

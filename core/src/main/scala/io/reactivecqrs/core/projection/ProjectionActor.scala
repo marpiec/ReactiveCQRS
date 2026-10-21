@@ -165,6 +165,8 @@ private[core] case class SkipAggregateUpTo(aggregateId: AggregateId, aggregateTy
 /** To the supervisor, from an instance of a build: a failure of the aggregate was cleared, so its record of a failed
   * restore in the build goes (CR-4). */
 private[core] case class BuildFailureCleared(aggregateId: AggregateId)
+/** To the supervisor, from an instance of a build: the aggregate was skipped (CR-4); None for one that is gone. */
+private[core] case class BuildAggregateSkipped(aggregateId: AggregateId, aggregateType: Option[AggregateType])
 
 
 object ProjectionActorOptions {
@@ -1174,6 +1176,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         forget(Set(aggregateId))
         log.warning("Projection " + projectionName + " skipped aggregate " + aggregateId.asLong + " up to version " + upTo.asInt + " on request")
         failures.foreach(failureCleared)
+        if (boundSubscriber.isDefined) context.parent ! BuildAggregateSkipped(aggregateId, aggregateType)
         AggregateSkipped(aggregateId, upTo, kinds.size)
       case Failure(e) =>
         log.error(e, "Projection " + projectionName + " could not skip aggregate " + aggregateId.asLong)

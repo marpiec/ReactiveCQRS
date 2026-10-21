@@ -400,42 +400,42 @@ class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState
     }
   }
 
-  // CR-4: the records of aggregates that cannot be restored, as PostgreSQL keeps them; without spaces (-1).
+  // CR-4: the records of aggregates that cannot be restored, as PostgreSQL keeps them; without spaces.
   private var restoreFailureRecords = Map[(AggregateId, RestoreFailureSource), RestoreFailure]()
 
-  override def recordRestoreFailure(failure: RestoreFailureSeen): Boolean = synchronized {
+  override private[core] def recordRestoreFailure(failure: RestoreFailureSeen): Boolean = synchronized {
     val known = restoreFailureRecords.keys.exists(_._1 == failure.aggregateId)
     val now = Instant.now
     val key = (failure.aggregateId, failure.source)
     val before = restoreFailureRecords.get(key)
-    restoreFailureRecords += key -> RestoreFailure(failure.aggregateId, failure.aggregateType, io.reactivecqrs.api.id.SpaceId(-1), failure.version,
+    restoreFailureRecords += key -> RestoreFailure(failure.aggregateId, failure.aggregateType, None, Some(failure.version).filter(_ > 0).map(AggregateVersion(_)),
       failure.eventId, failure.errorClass, failure.error, failure.source, before.fold(now)(_.firstSeen), now, before.fold(1)(_.times + 1),
       before.flatMap(_.skipped))
     !known
   }
 
-  override def clearRestoreFailure(aggregateId: AggregateId, source: RestoreFailureSource): Unit = synchronized {
+  override private[core] def clearRestoreFailure(aggregateId: AggregateId, source: RestoreFailureSource): Unit = synchronized {
     restoreFailureRecords -= ((aggregateId, source))
   }
 
-  override def clearBuildRestoreFailures(projection: String, build: Int): Unit = synchronized {
+  override private[core] def clearBuildRestoreFailures(projection: String, build: Int): Unit = synchronized {
     restoreFailureRecords = restoreFailureRecords.filterNot {
       case ((_, RestoreFailureSource.Build(p, b, _)), _) => p == projection && b == build
       case _ => false
     }
   }
 
-  override def restoreFailureSkipped(aggregateId: AggregateId, aggregateType: Option[AggregateType], source: RestoreFailureSource.Build): Unit = synchronized {
+  override private[core] def restoreFailureSkipped(aggregateId: AggregateId, aggregateType: AggregateType, source: RestoreFailureSource.Build): Unit = synchronized {
     val now = Instant.now
     restoreFailureRecords.get((aggregateId, source)) match {
       case Some(record) => restoreFailureRecords += (aggregateId, source) -> record.copy(skipped = Some(now))
-      case None => aggregateType.foreach(t => restoreFailureRecords += (aggregateId, source) -> RestoreFailure(aggregateId, t,
-        io.reactivecqrs.api.id.SpaceId(-1), 0, None, "", "skipped by an operator", source, now, now, 0, Some(now)))
+      case None => restoreFailureRecords += (aggregateId, source) -> RestoreFailure(aggregateId, aggregateType, None, None, None, "",
+        "skipped by an operator", source, now, now, 0, Some(now))
     }
   }
 
   override def restoreFailures(filter: RestoreFailureFilter, limit: Int): Seq[RestoreFailure] = synchronized {
-    restoreFailureRecords.values.toSeq.filter(r => filter.aggregateType.forall(_ == r.aggregateType) && filter.spaceId.forall(_ == r.spaceId) &&
+    restoreFailureRecords.values.toSeq.filter(r => filter.aggregateType.forall(_ == r.aggregateType) && filter.spaceId.forall(r.spaceId.contains) &&
       filter.projection.forall(p => r.source match {
         case RestoreFailureSource.Build(projection, _, _) => projection == p
         case _ => false

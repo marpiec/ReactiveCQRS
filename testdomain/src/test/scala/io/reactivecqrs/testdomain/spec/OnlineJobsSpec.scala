@@ -101,7 +101,7 @@ class OnlineJobsSpec extends CommonSpec {
 
   private def builds(supervisor: ActorRef): Builds = supervisor.askFor[Builds](GetBuilds, 5.seconds)
   private def jobs(runner: ActorRef): OnlineJobsStatus = runner.askFor[OnlineJobsStatus](GetOnlineJobsStatus, 5.seconds)
-  private def stateOf(runner: ActorRef): Seq[(String, String)] = jobs(runner).jobs.map(j => j.name -> j.state)
+  private def stateOf(runner: ActorRef): Seq[(String, String)] = jobs(runner).jobs.map(j => j.name -> j.state.toString)
   private def switchedTo(supervisor: ActorRef, build: Int): Unit =
     awaitAssert(builds(supervisor).active.map(_.number) mustBe Some(build), 60.seconds, 200.millis)
 
@@ -112,7 +112,7 @@ class OnlineJobsSpec extends CommonSpec {
         val installation = new Installation
         import installation._
         val (node, ids) = heldBuild()
-        eventStore.readyForBuilds() mustBe false
+        eventStore.buildReadiness().ready mustBe false
 
         When("the runner starts")
         val jobsRunner = runner()
@@ -154,7 +154,7 @@ class OnlineJobsSpec extends CommonSpec {
         }, 10.seconds, 10.millis)
         val (state, position) = savedKeys()
         state mustBe "Running"
-        eventStore.readyForBuilds() mustBe false
+        eventStore.buildReadiness().ready mustBe false
 
         And("an event before its position whose key went meanwhile, which only a walk from the start would key again")
         val firstEvent = DB.readOnly(implicit s => sql"SELECT min(id) FROM events".map(_.long(1)).single().get)
@@ -190,18 +190,18 @@ class OnlineJobsSpec extends CommonSpec {
         builds(node.supervisor).active.map(_.number) mustBe Some(1)
 
         When("an operator releases the hold")
-        jobsRunner.askFor[BuildHoldReleased.type](ReleaseBuildHold) mustBe BuildHoldReleased
+        eventStore.releaseBuildHold()
 
         Then("the build runs and switches, although the store is not ready")
         switchedTo(node.supervisor, 2)
-        eventStore.readyForBuilds() mustBe false
+        eventStore.buildReadiness().ready mustBe false
         jobs(jobsRunner).buildHoldReleased mustBe true
 
         And("once the cause is gone, the failed job runs again on request")
         DB.autoCommit(implicit s => sql"DROP TABLE aggregates_space_idx".execute())
         jobsRunner.askFor[OnlineJobsStatus](RetryOnlineJobs)
         awaitAssert(stateOf(jobsRunner).head mustBe (Indexes -> "Done"), 60.seconds, 200.millis)
-        eventStore.readyForBuilds() mustBe true
+        eventStore.buildReadiness().ready mustBe true
         Singletons.stop(system, jobsRunner)
         node.stop()
       }

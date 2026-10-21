@@ -331,7 +331,7 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
     val forUnreadable = run.find(_.event.isLeft).toSeq.flatMap { bad =>
       val error = bad.event.left.toOption.get
       recordSeen(bad.aggregateType, bad.aggregateId, build => RestoreFailureSeen(bad.aggregateId, bad.aggregateType, build, bad.version.asInt, Some(bad.id),
-        bad.aggregateId, error.takeWhile(c => c != ':' && c != ';'), error))
+        bad.aggregateId, "(unreadable event)", error))
       unreadableItems(bad, "a stored event cannot be read: " + error)
     }
     forReadable ++ forUnreadable
@@ -345,7 +345,7 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
   // or one of its events cannot be read.
   private def failureText(e: Throwable): String = {
     val at = Iterator.iterate(e)(_.getCause).takeWhile(_ != null).take(10).collectFirst { case r: RestoreFailedAtEventException => r }
-    (if (at.exists(r => r.getCause != null && r.eventId.isEmpty)) "the aggregate cannot be restored: " else "a stored event cannot be read: ") +
+    (if (at.exists(!_.unreadable)) "the aggregate cannot be restored: " else "a stored event cannot be read: ") +
       Errors.describe(at.flatMap(r => Option(r.getCause)).getOrElse(e))
   }
 

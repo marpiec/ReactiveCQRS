@@ -144,7 +144,7 @@ class RestoreFailuresSpec extends CommonSpec {
         val build = registry.projection("rf-notes").get.building.get
         val recorded = eventStore.restoreFailures(RestoreFailureFilter(projection = Some("rf-notes")))
         recorded.map(r => (r.aggregateId, r.version, r.eventId, r.errorClass, r.source)) mustBe
-          Seq((bad, 2, Some(eventIdOf(bad, 2)), classOf[IllegalStateException].getName, RestoreFailureSource.Build("rf-notes", 2, build.subscriber)))
+          Seq((bad, Some(AggregateVersion(2)), Some(eventIdOf(bad, 2)), classOf[IllegalStateException].getName, RestoreFailureSource.Build("rf-notes", 2, build.subscriber)))
         recorded.head.error must include("a poisoned line")
         recorded.head.aggregateType mustBe AggregateType.of[BuildNote]
 
@@ -160,7 +160,9 @@ class RestoreFailuresSpec extends CommonSpec {
         awaitAssert({
           val status = buildStatus(node.supervisor)
           status.retrying mustBe empty
-          status.failures.map(_.error).mkString must include("Restoring aggregate " + bad.asLong)
+          val error = status.failures.map(_.error).mkString
+          error must include("Applying " + classOf[BuildNoteLineAdded].getName + " at version 2 of aggregate " + bad.asLong)
+          error must include("a poisoned line")
         }, 15.seconds, 200.millis)
         builds(node.supervisor).active.map(_.number) mustBe Some(1)
         node.stop()
@@ -214,11 +216,12 @@ class RestoreFailuresSpec extends CommonSpec {
         val (node, _, bad) = blockedBuild()
         blockedBy(node.supervisor, bad)
         node.notes.askFor[Any](GetAggregate(bad)) mustBe a[Failure[_]]
-        RestoreCheck.run(eventStore, Seq(new PoisonNoteContext)).failed.map(_.aggregateId) mustBe Seq(bad)
+        RestoreCheck.run(eventStore, Seq(new PoisonNoteContext)).failed mustBe Seq(bad)
         awaitAssert(eventStore.restoreFailures().map(_.source.getClass.getSimpleName).toSet.size mustBe 3, 5.seconds) // owner, build, check
 
-        When("the handler takes the line again, and the failures are retried")
+        When("the handler takes the line again (a deploy), and the failures are retried")
         PoisonedNotes.fixed = true
+        node.notes ! io.reactivecqrs.core.commandhandler.AggregateCommandBusActor.PassivateAggregate(bad) // as a deploy of the fix starts new owners
         node.supervisor.askFor[FailedSubscriptionsRetried](ToBuildInProgress(RetryAllFailedSubscriptions)).count mustBe 1
 
         Then("the build applies the aggregate and switches")

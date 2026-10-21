@@ -13,7 +13,7 @@ of RC1. Every new setting defaults to the behaviour of RC1.
   its step once every other event has a key. `StoredDataCheck`'s report lists them (`orphans`). Nothing deletes them.
 - **New:** full builds can wait until the store is ready (F343, D89, chapter 10):
   `ProjectionsSettings(..., holdBuilds = Some(BuildHold.untilStoreReady(eventStore)))` holds them until the event keys'
-  step is recorded and `aggregates_own_type_idx` is valid (`eventStore.buildReadiness()`, `readyForBuilds()`), checked
+  step is recorded and `aggregates_own_type_idx` is valid (`eventStore.buildReadiness()`), checked
   every 30 s. A held build shows why in `Builds.heldBy` and `BuildStatus.heldBy`; gauge `reactivecqrs.builds.held`.
   Targeted rebuilds are not held.
 - **Aggregates that cannot be restored are recorded, and an operator can resolve them** (F344, F345, D90, chapters 9,
@@ -29,9 +29,9 @@ of RC1. Every new setting defaults to the behaviour of RC1.
   `OnlineJobs.start(system, OnlineJobsSettings(eventStore, spaceOf = ...))` runs the indexes, the event keys (once no
   node runs an older app-version) and the space backfill in order, one runner at a time (a singleton and an advisory
   lock), saved in the new table `online_jobs` so a restart resumes them; its index builds use a connection of their own
-  with `longStatementTimeout` (6 h), not the pool's `socketTimeout`. `GetOnlineJobsStatus`, `RetryOnlineJobs`,
-  `ReleaseBuildHold` (also `eventStore.releaseBuildHold()`); with `BuildHold.untilStoreReady` full builds wait for it,
-  and a failed job keeps them waiting, named in `Builds.heldBy`.
+  with `longStatementTimeout` (6 h), not the pool's `socketTimeout`. `GetOnlineJobsStatus`, `RetryOnlineJobs` (a
+  failed job also runs again at the next start); with `BuildHold.untilStoreReady` full builds wait for it, a failed job
+  keeps them waiting, named in `Builds.heldBy`, and `eventStore.releaseBuildHold()` is the operator's lasting override.
 
 **1.0.1-RC1 (19/10/2026, tag `v1.0.1-RC1`):** a release candidate of everything below, for Neula's migration branch and
 its rehearsal on a copy of production; the final 1.0.1 follows them.

@@ -227,17 +227,17 @@ abstract class EventStoreState {
 
   /** Records, or counts once more, that the aggregate could not be restored there; true when the aggregate had no record
     * before, from anywhere (the caller then logs a warning). */
-  def recordRestoreFailure(failure: RestoreFailureSeen): Boolean = false
+  private[core] def recordRestoreFailure(failure: RestoreFailureSeen): Boolean = false
 
   /** The aggregate restores again, or no longer exists, there: its record there goes. */
-  def clearRestoreFailure(aggregateId: AggregateId, source: RestoreFailureSource): Unit = ()
+  private[core] def clearRestoreFailure(aggregateId: AggregateId, source: RestoreFailureSource): Unit = ()
 
   /** Every record of a projection's build goes (the build was dropped). */
-  def clearBuildRestoreFailures(projection: String, build: Int): Unit = ()
+  private[core] def clearBuildRestoreFailures(projection: String, build: Int): Unit = ()
 
   /** An operator skipped the aggregate in that build (`SkipAggregate`): its record there says so from now on; one is
-    * made when there is none. */
-  def restoreFailureSkipped(aggregateId: AggregateId, aggregateType: Option[AggregateType], source: RestoreFailureSource.Build): Unit = ()
+    * made when there is none. Called once the build skipped it. */
+  private[core] def restoreFailureSkipped(aggregateId: AggregateId, aggregateType: AggregateType, source: RestoreFailureSource.Build): Unit = ()
 
   /** The records, the oldest first, at most `limit`. */
   def restoreFailures(filter: RestoreFailureFilter = RestoreFailureFilter(), limit: Int = 1000): Seq[RestoreFailure] = Seq.empty

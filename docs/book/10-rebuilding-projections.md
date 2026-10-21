@@ -330,7 +330,7 @@ val projections = new Projections(system, ProjectionsSettings(eventStore, subscr
 
 Every 30 seconds (`checkEvery`) while a build waits, the hold asks the store
 (`eventStore.buildReadiness()`: the event keys' step recorded, the index `aggregates_own_type_idx`
-valid; `readyForBuilds()` for a plain yes or no). Once it is ready, the waiting builds start in the
+valid; its `ready` is the plain yes or no). Once it is ready, the waiting builds start in the
 order they asked, and the hold is over. Meanwhile:
 
 - `GetBuilds` answers `Builds(..., heldBy = Some(reason))` and `GetBuildStatus` answers phase
