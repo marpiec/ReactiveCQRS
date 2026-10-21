@@ -202,6 +202,9 @@ odsyła cię do innego („zob. *Przestrzeń*”), właśnie tam znajdziesz peł
   się na jednym agregacie po mniej więcej dwóch minutach ponawiania. Na dostarczenia tego agregatu
   projekcja odpowiada niepowodzeniem, dopóki tej subskrypcji nie ponowisz albo nie pominiesz.
   ([rozdział 9](09-projection-failures.md))
+- **Nieudane odtworzenie** (*restore failure*, `RestoreFailure`, `restoreFailures()`): zapis agregatu, którego
+  nie dało się odtworzyć, zrobiony przez jego właściciela, budowę albo `RestoreCheck`, ze zdarzeniem, na którym
+  się nie udało, i przyczyną. ([rozdział 18](18-production.md))
 - **Numer instalacji** (*installation number*, `reactivecqrs.installation-number`): daje instalacji
   własny zakres identyfikatorów agregatów (od numeru × 10^12 wzwyż), żeby identyfikatory pozostały
   unikalne, gdy dane różnych instalacji się spotkają. 0, wartość domyślna, to zakres wszystkich
@@ -399,6 +402,9 @@ odsyła cię do innego („zob. *Przestrzeń*”), właśnie tam znajdziesz peł
   agregatem. Odtwarza stan, przepuszcza polecenia przez twoje handlery, zapisuje zdarzenia i je
   publikuje; startuje wraz z pierwszym komunikatem i jest zatrzymywany, gdy nic nie robi.
   ([rozdział 1](01-cqrs-without-the-headache.md), [rozdział 4](04-first-command.md))
+- **Wstrzymanie budów** (*build hold*, `BuildHold`, `ProjectionsSettings.holdBuilds`): to, na co pełne budowy
+  projekcji zarządzanych czekają, zanim ruszą, na przykład magazyn gotowy na budowy
+  (`BuildHold.untilStoreReady`). ([rozdział 10](10-rebuilding-projections.md))
 - **Writer outboxu** (*outbox writer*, `WithOutboxWriter`, `OutboxWriter`): pozwala kontekstowi
   agregatu zapisywać własne wiersze (zadania, wiadomości do wysłania) w tej samej transakcji co jego
   zdarzenia. ([rozdział 18](18-production.md))
@@ -418,6 +424,9 @@ odsyła cię do innego („zob. *Przestrzeń*”), właśnie tam znajdziesz peł
 - **Zdarzenie** (*event*, `Event`): fakt o jednym agregacie, w czasie przeszłym, na przykład
   `ItemAdded("milk")`. Zdarzenia przechowuje się na zawsze, jako JSON zapisany pod nazwą ich klasy.
   ([rozdział 1](01-cqrs-without-the-headache.md), [rozdział 6](06-events.md))
+- **Zdarzenie-sierota** (*orphan event*): zdarzenie, którego agregat nie ma własnego wiersza w `aggregates`,
+  zwykle pozostałość po dawnym usunięciu. Nic go nie czyta; wymieniają je uzupełnienia i `StoredDataCheck`.
+  ([rozdział 21](21-rebuilds-and-repairs.md))
 - **Zdarzenie kompensujące** (*compensating event*): nowe zdarzenie, które zapisujesz obok przepisania
   historii, na przykład `CartNameRewritten`, żeby projekcje dowiedziały się o zmianie.
   ([rozdział 15](15-rewriting-history.md))

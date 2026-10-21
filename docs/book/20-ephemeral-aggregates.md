@@ -151,7 +151,8 @@ Queries fail the same way: `GetAggregate` answers `Failure(EphemeralAggregateLos
 - Unused drafts are dropped after `idleTime`, at most `maxAggregates` are held, and a lost or unknown
   draft is answered as such.
 
-That is the end of the chapters. The appendices are for looking things up:
+One chapter is left, for later: [chapter 21](21-rebuilds-and-repairs.md) goes into projection rebuilds and the repair
+of stored data in depth. The appendices are for looking things up:
 [the glossary](appendix-a-glossary.md),
 [the cheat sheet of messages and answers](appendix-b-cheat-sheet.md), and
 [troubleshooting](appendix-c-troubleshooting.md).

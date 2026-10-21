@@ -36,6 +36,8 @@ tego, czego twój projekt potrzebuje dzisiaj.
 - **Część VI, Organizacje, klastry i produkcja**: organizacje (przestrzenie), praca na kilku węzłach,
   utrzymanie tego wszystkiego w ruchu i testowanie.
 - **Część VII, Brudnopis**: agregaty efemeryczne, które żyją w pamięci, dopóki ich nie zachowasz.
+- **Część VIII, Od podszewki**: życie budowy projekcji krok po kroku i co zrobić z zapisanymi danymi, które nie
+  pasują.
 - **Dodatki**: słownik pojęć, ściągawka z komunikatów, poradnik rozwiązywania problemów, architektura
   w obrazkach i wszystkie ustawienia w jednym miejscu.
 
@@ -92,6 +94,10 @@ tego, czego twój projekt potrzebuje dzisiaj.
 **Część VII: Brudnopis**
 
 20. [Agregaty efemeryczne: szkice, które żyją w pamięci](20-ephemeral-aggregates.md)
+
+**Część VIII: Od podszewki**
+
+21. [Przebudowy i naprawy od podszewki](21-rebuilds-and-repairs.md)
 
 **Dodatki**
 

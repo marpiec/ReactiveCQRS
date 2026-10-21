@@ -156,7 +156,8 @@ Zapytania zawodzą w ten sam sposób: `GetAggregate` odpowiada
 - Nieużywane szkice znikają po `idleTime`, szyna trzyma ich najwyżej `maxAggregates`, a o utraconym
   lub nieznanym szkicu odpowiedź mówi wprost.
 
-To już koniec rozdziałów. Dodatki służą do szybkiego wyszukiwania informacji:
+Został jeden rozdział, na później: [rozdział 21](21-rebuilds-and-repairs.md) wchodzi głęboko w przebudowy projekcji
+i naprawę zapisanych danych. Dodatki służą do szybkiego wyszukiwania informacji:
 [słownik pojęć](appendix-a-glossary.md),
 [ściągawka: komunikaty i odpowiedzi](appendix-b-cheat-sheet.md) i
 [rozwiązywanie problemów](appendix-c-troubleshooting.md).

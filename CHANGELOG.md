@@ -32,6 +32,9 @@ of RC1. Every new setting defaults to the behaviour of RC1.
   with `longStatementTimeout` (6 h), not the pool's `socketTimeout`. `GetOnlineJobsStatus`, `RetryOnlineJobs` (a
   failed job also runs again at the next start); with `BuildHold.untilStoreReady` full builds wait for it, a failed job
   keeps them waiting, named in `Builds.heldBy`, and `eventStore.releaseBuildHold()` is the operator's lasting override.
+- **Book:** a new chapter 21, "Rebuilds and Repairs in Depth": the life of a build step by step, what stops it at each
+  step and how you see it, a map of stored data that does not fit (its check and its repairs), and planning a rebuild
+  on a large installation.
 
 **1.0.1-RC1 (19/10/2026, tag `v1.0.1-RC1`):** a release candidate of everything below, for Neula's migration branch and
 its rehearsal on a copy of production; the final 1.0.1 follows them.

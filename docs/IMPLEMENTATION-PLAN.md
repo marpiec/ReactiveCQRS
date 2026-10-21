@@ -2769,3 +2769,15 @@ Open test-infrastructure items:
 - Documented: F336 (the space backfill runs after the first start; D81 refined). Open: F339 (indexes before the stop,
   to prove in the rehearsal). L7 not needed: the build reaches mpjsons through the private repository.
 - Release mechanics (L6): published to `neula-snapshots` or `neula-releases` by version; only `api`, `core`, `testkit`.
+
+
+**21/10/2026: 1.0.1-RC2, what Neula's MR-11 needs (`neulaserver/docs/reactivecqrs-1.0-migration/mr11-reactivecqrs-requests.md`)**
+- CR-1: F342 (orphan events reported apart, the event keys' step recorded without them; D88). CR-2: F343 (`holdBuilds`,
+  `BuildHold.untilStoreReady`, `buildReadiness`; D89). CR-4: F344, F345 (`restore_failures`, `RestoreCheck`, `CannotRestore`,
+  `SkipAggregate`, the removal by hand; D90). CR-3: F347 (`OnlineJobs`; D91). Each with a PostgreSQL spec; the owner's
+  answer red under a mutation.
+- A review of the four (a reviewer agent) found three bugs before the commit of record, fixed with the API trimmed:
+  `fb759d6f`. Open: F346, a question for the owner.
+- Phase B: F300, F310 and F328 examined and left open, as not needed for Neula 2.2 (the reasons in their entries).
+- Book: chapter 21, "Rebuilds and Repairs in Depth" (the life of a build, what stops it, stored data that does not fit,
+  planning a rebuild), in both languages.

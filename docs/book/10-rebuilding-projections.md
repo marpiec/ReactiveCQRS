@@ -586,5 +586,8 @@ Things that help:
   `clearForRebuild`.
 - Subscribers whose job is a side effect stay unmanaged, and are never rebuilt.
 
+For the life of a build step by step, what can stop it at each step, planning a rebuild on a large store, and
+stored data that does not fit, see [chapter 21](21-rebuilds-and-repairs.md).
+
 Next: [chapter 11](11-subscribable-projections.md) pushes live updates from your projections to the
 screens that watch them.

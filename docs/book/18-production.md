@@ -453,7 +453,8 @@ and `aggregates` (an update per command). Give them a low autovacuum scale facto
 Years of history collect a few surprises: an event your handler no longer accepts, a row an old
 script deleted by halves. The library never repairs such data behind your back; it finds it, tells
 you, and keeps the rest running. This section is the operator's side of it;
-[chapter 10](10-rebuilding-projections.md) shows what a build does meanwhile.
+[chapter 10](10-rebuilding-projections.md) shows what a build does meanwhile, and
+[chapter 21](21-rebuilds-and-repairs.md) maps every kind of such data to its check and its repairs.
 
 ### Aggregates that cannot be restored
 

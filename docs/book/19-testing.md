@@ -636,5 +636,5 @@ behave exactly like a single node; the library runs its whole suite both ways.
 - `SchemaReference` guards stored formats, a round trip through the serializer guards messages
   between nodes, and the test kit's `TestCluster` runs several nodes in one test.
 
-Next: [chapter 20](20-ephemeral-aggregates.md), the last one, is about aggregates that live only in
+Next: [chapter 20](20-ephemeral-aggregates.md) is about aggregates that live only in
 memory: drafts you keep when they matter.

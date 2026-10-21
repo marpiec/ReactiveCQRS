@@ -35,6 +35,8 @@ your project needs today.
 - **Part VI, Organizations, clusters and production**: organizations (spaces), running on several
   nodes, operating it all, and testing.
 - **Part VII, Scratch paper**: ephemeral aggregates, which live in memory until you keep them.
+- **Part VIII, In depth**: the life of a projection build step by step, and what to do with stored data that does
+  not fit.
 - **Appendices**: a glossary, a cheat sheet of messages, a troubleshooting guide, the architecture
   in pictures, and every setting in one place.
 
@@ -90,6 +92,10 @@ your project needs today.
 **Part VII: Scratch paper**
 
 20. [Ephemeral Aggregates: Drafts That Live in Memory](20-ephemeral-aggregates.md)
+
+**Part VIII: In depth**
+
+21. [Rebuilds and Repairs in Depth](21-rebuilds-and-repairs.md)
 
 **Appendices**
 

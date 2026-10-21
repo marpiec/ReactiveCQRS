@@ -647,5 +647,5 @@ jak pojedynczy węzeł; biblioteka uruchamia cały swój zestaw testów na oba s
 - `SchemaReference` pilnuje zapisanych formatów, serializacja tam i z powrotem pilnuje komunikatów
   między węzłami, a `TestCluster` z test kitu uruchamia kilka węzłów w jednym teście.
 
-Dalej: [rozdział 20](20-ephemeral-aggregates.md), ostatni, opowiada o agregatach, które żyją tylko w
+Dalej: [rozdział 20](20-ephemeral-aggregates.md) opowiada o agregatach, które żyją tylko w
 pamięci: o szkicach, które zachowujesz, kiedy okażą się ważne.

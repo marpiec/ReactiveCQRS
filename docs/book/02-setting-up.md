@@ -187,7 +187,7 @@ line. Only the dictionary has to come first; after it, the order does not matter
 | Call | Creates | Needed for |
 |---|---|---|
 | `PostgresTypesNamesState.initSchema()` | `types_names` | everything: the class-name dictionary |
-| `PostgresEventStoreState.initSchema()` | `events`, `aggregates`, `events_to_publish` (the outbox), `noop_events`, `snapshots`, `event_keys`, `events_archive`, `schema_steps`, `aggregate_lineage`, `history_rewrites`, and the stored procedures that write events | everything: this is the event store |
+| `PostgresEventStoreState.initSchema()` | `events`, `aggregates`, `events_to_publish` (the outbox), `noop_events`, `snapshots`, `event_keys`, `events_archive`, `schema_steps`, `aggregate_lineage`, `history_rewrites`, `restore_failures`, `online_jobs`, and the stored procedures that write events | everything: this is the event store |
 | `PostgresCommandResponseState.initSchema()` | `commands_responses` | every command bus; idempotent commands ([chapter 5](05-command-flavors.md)) |
 | `PostgresSagaState.initSchema()` | `sagas` | sagas ([chapter 12](12-sagas.md)) |
 | `PostgresSubscriptionsState.initSchema()` | `subscriptions`, `subscription_failures` | projections ([chapter 8](08-projections.md)) |
@@ -379,10 +379,10 @@ object SetupCheck {
 
 Put it in your project's package and run it with `sbt "runMain com.example.shop.SetupCheck"` (in this
 repository, `sbt "examples/runMain io.reactivecqrs.examples.e1.SetupCheck"`). It prints `The tables are
-ready.`, and `\dt` in `psql` lists fifteen tables: `aggregate_lineage`, `aggregates`,
+ready.`, and `\dt` in `psql` lists seventeen tables: `aggregate_lineage`, `aggregates`,
 `commands_responses`, `event_keys`, `events`, `events_archive`, `events_to_publish`,
-`history_rewrites`, `noop_events`, `sagas`, `schema_steps`, `snapshots`, `subscription_failures`,
-`subscriptions` and `types_names`. All empty, all waiting. (`SetupCheckSpec` checks this list.)
+`history_rewrites`, `noop_events`, `online_jobs`, `restore_failures`, `sagas`, `schema_steps`,
+`snapshots`, `subscription_failures`, `subscriptions` and `types_names`. All empty, all waiting. (`SetupCheckSpec` checks this list.)
 
 Now run it a second time. Same message, no errors, nothing changed: that is the idempotence of
 step 4 in action.

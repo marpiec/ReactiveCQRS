@@ -64,6 +64,8 @@ that entry has the full story.
 - **Build**: one version of a managed projection, with its own tables and its own progress. A new
   build is filled from the event store while the active build keeps serving, then replaces it in
   one switch. ([chapter 10](10-rebuilding-projections.md))
+- **Build hold** (`BuildHold`, `ProjectionsSettings.holdBuilds`): what full builds of managed projections wait for
+  before they start, such as a store that is ready for them (`BuildHold.untilStoreReady`). ([chapter 10](10-rebuilding-projections.md))
 
 ## C
 
@@ -253,6 +255,8 @@ that entry has the full story.
   refused when it is stored. ([chapter 1](01-cqrs-without-the-headache.md),
   [chapter 5](05-command-flavors.md))
 - **Organization**: see *Space*. ([chapter 16](16-organizations.md))
+- **Orphan event**: an event whose aggregate has no row of its own in `aggregates`, usually left by an old
+  delete. Nothing reads it; the backfills and `StoredDataCheck` list it. ([chapter 21](21-rebuilds-and-repairs.md))
 - **Outbox** (`events_to_publish`): a table of events that some subscriber has not confirmed yet.
   It is written in the same transaction as the events, so nothing is lost when a machine stops
   halfway. ([chapter 1](01-cqrs-without-the-headache.md), [chapter 9](09-projection-failures.md))
@@ -302,6 +306,9 @@ that entry has the full story.
   a projection asked for to fill a gap. ([chapter 9](09-projection-failures.md))
 - **Restore**: how an owner gets its aggregate's state when it starts: by replaying the events, or
   from a snapshot and the events after it. ([chapter 6](06-events.md), [chapter 13](13-snapshots.md))
+- **Restore failure** (`RestoreFailure`, `restoreFailures()`): the record of an aggregate that could not be
+  restored, written by its owner, a build or `RestoreCheck`, with the event it failed at and the cause.
+  ([chapter 18](18-production.md))
 - **Rolling upgrade**: upgrading a cluster one node at a time, so old and new versions run side by
   side for a while, without downtime. ([chapter 17](17-cluster.md))
 

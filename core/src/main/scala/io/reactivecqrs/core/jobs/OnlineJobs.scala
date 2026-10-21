@@ -13,6 +13,7 @@ import io.reactivecqrs.core.metrics.ReactiveMetrics
 import io.reactivecqrs.core.util.{BlockingDispatcher, Errors, MyActorLogging}
 import org.apache.pekko.actor.{Actor, ActorRef, ActorSystem, Props}
 import scalikejdbc._
+import io.reactivecqrs.core.util.SqlLogging.withoutValues
 
 import scala.concurrent.Future
 import scala.concurrent.duration._

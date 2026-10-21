@@ -461,7 +461,8 @@ im niski współczynnik skali autovacuum, żeby uruchamiał się często.
 Lata historii zbierają trochę niespodzianek: zdarzenie, którego twój handler już nie przyjmuje,
 wiersz, który stary skrypt usunął do połowy. Biblioteka nigdy nie naprawia takich danych za twoimi
 plecami; znajduje je, mówi ci o nich i dba, żeby reszta działała. Ta sekcja to strona operatora;
-[rozdział 10](10-rebuilding-projections.md) pokazuje, co w tym czasie robi budowa.
+[rozdział 10](10-rebuilding-projections.md) pokazuje, co w tym czasie robi budowa, a
+[rozdział 21](21-rebuilds-and-repairs.md) przypisuje każdemu rodzajowi takich danych jego sprawdzenie i naprawy.
 
 ### Agregaty, których nie da się odtworzyć
 

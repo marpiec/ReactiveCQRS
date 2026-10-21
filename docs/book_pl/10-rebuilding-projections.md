@@ -602,5 +602,8 @@ Co pomaga:
 - Subskrybenci, których zadaniem jest efekt uboczny, zostają niezarządzani i nigdy nie są
   przebudowywani.
 
+Życie budowy krok po kroku, to, co może ją zatrzymać na każdym etapie, planowanie przebudowy dużego magazynu i
+zapisane dane, które nie pasują, opisuje [rozdział 21](21-rebuilds-and-repairs.md).
+
 W [rozdziale 11](11-subscribable-projections.md) twoje projekcje zaczną wypychać aktualizacje na żywo
 na ekrany, które je obserwują.
