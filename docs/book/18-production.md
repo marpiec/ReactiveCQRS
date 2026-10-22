@@ -551,7 +551,7 @@ gone): the `aggregates` lines then delete nothing.
 Each aggregate's events are numbered 1, 2, 3 and so on, with no holes: one owner writes them, in
 order. A hole can only come from outside, such as a row deleted by hand years ago. A restore does not
 notice (it applies the events it finds), but a build does: it cannot deliver version 27 to a read
-model that never got 26. Since the release after 1.0.1-RC2 the build fails the aggregate there, once, with
+model that never got 26. Since 1.0.2 the build fails the aggregate there, once, with
 "versions from 26 to 26 are missing from the store", records it (`restoreFailures`, error class
 `missing versions`) and goes on with the others; before, it asked for the missing versions again and
 again, without a word. To move past the hole and apply what follows it, skip the missing versions:

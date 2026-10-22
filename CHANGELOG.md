@@ -2,9 +2,9 @@
 
 Notable changes of ReactiveCQRS, newest first. Dates are DD/MM/YYYY.
 
-## 1.0.1 (not released)
+## 1.0.2 (22/10/2026)
 
-**After 1.0.1-RC2 (not tagged yet):** Neula's MR-11 change requests CR-6 and CR-7, from its second rehearsal.
+Neula's MR-11 change requests CR-6 and CR-7, from its second rehearsal, on top of 1.0.1.
 
 - **A version missing from the store no longer stops a build for ever** (F348, D92, chapters 10, 18 and 21): a build
   fails the aggregate at the hole, once, with "versions from N to M are missing from the store" (in `ProjectionStatus`,
@@ -15,6 +15,8 @@ Notable changes of ReactiveCQRS, newest first. Dates are DD/MM/YYYY.
 - **A build's status is answered at once** (F349, chapter 10): the supervisor answers `GetBuildStatus` from what the
   builder reported last (`BuildStatus.reportedAt`), never waiting on its reads; `BuildStatus.statesRestored` counts the
   replay states read again, for sizing `maxReplayStates`.
+
+## 1.0.1 (22/10/2026)
 
 **1.0.1-RC2 (22/10/2026, tag `v1.0.1-RC2`):** what Neula's MR-11 needs of the library (its change requests CR-1 to
 CR-4), on top of RC1. Every new setting defaults to the behaviour of RC1.

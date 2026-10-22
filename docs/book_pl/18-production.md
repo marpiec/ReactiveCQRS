@@ -561,7 +561,7 @@ linie z `aggregates` niczego wtedy nie usuwają.
 Zdarzenia każdego agregatu mają numery 1, 2, 3 i tak dalej, bez dziur: zapisuje je jeden właściciel,
 po kolei. Dziura może przyjść tylko z zewnątrz, na przykład z wiersza usuniętego ręcznie lata temu.
 Odtwarzanie jej nie zauważa (stosuje zdarzenia, które znajdzie), ale budowa tak: nie może dostarczyć
-wersji 27 modelowi odczytu, który nigdy nie dostał 26. Od wydania po 1.0.1-RC2 budowa odnotowuje tam porażkę
+wersji 27 modelowi odczytu, który nigdy nie dostał 26. Od 1.0.2 budowa odnotowuje tam porażkę
 agregatu, raz, z „versions from 26 to 26 are missing from the store”, zapisuje ją (`restoreFailures`,
 klasa błędu `missing versions`) i buduje dalej pozostałe; wcześniej prosiła o brakujące wersje w
 kółko, bez słowa. Żeby przejść przez dziurę i zastosować to, co po niej, pomiń brakujące wersje:
