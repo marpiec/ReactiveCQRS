@@ -383,7 +383,7 @@ administracyjnej, z endpointu health check, z narzędzia zespołu wsparcia):
 | `GetOutboxStatus` | poller outboxu | `OutboxStatus`: agregaty czekające w outboxie i te, które poller zgłosił jako niedostarczone |
 | `GetProjectionStatus` | każda projekcja | `ProjectionStatus`: agregaty z błędami, ponawiane próby i luki ([rozdział 9](09-projection-failures.md)) |
 | `GetBuilds` | każda projekcja zarządzana | `Builds`: aktywna budowa i ta w toku ([rozdział 10](10-rebuilding-projections.md)) |
-| `GetBuildStatus` | każda projekcja zarządzana | `BuildStatus`: faza trwającej budowy i to, jak daleko doszła; `heldBy`, gdy czeka wstrzymana |
+| `GetBuildStatus` | każda projekcja zarządzana | `BuildStatus`: faza trwającej budowy i to, jak daleko doszła, tak jak ostatnio zgłosił jej budowniczy (`reportedAt`), od razu; `heldBy`, gdy czeka wstrzymana |
 | `GetSquashStatus` | scheduler squasha | `SquashStatus`: zwinięte, odrzucone, wciąż czekające |
 | `GetOnlineJobsStatus` | wykonawca zadań online | `OnlineJobsStatus`: stan i liczniki każdego zadania, czy zwolniono wstrzymanie budów i czego magazynowi brakuje do budów |
 
@@ -555,6 +555,38 @@ linie z `aggregates` niczego wtedy nie usuwają.
 > **Ostrzeżenie:** to jedyne miejsce, w którym sam usuwasz zdarzenia. Najpierw zrób kopię zapasową,
 > sprawdź identyfikator agregatu dwa razy i zachowaj wyniki `StoredDataCheck` i `restoreFailures`
 > sprzed zmiany.
+
+### Wersje, których brakuje w magazynie
+
+Zdarzenia każdego agregatu mają numery 1, 2, 3 i tak dalej, bez dziur: zapisuje je jeden właściciel,
+po kolei. Dziura może przyjść tylko z zewnątrz, na przykład z wiersza usuniętego ręcznie lata temu.
+Odtwarzanie jej nie zauważa (stosuje zdarzenia, które znajdzie), ale budowa tak: nie może dostarczyć
+wersji 27 modelowi odczytu, który nigdy nie dostał 26. Od wydania po 1.0.1-RC2 budowa odnotowuje tam porażkę
+agregatu, raz, z „versions from 26 to 26 are missing from the store”, zapisuje ją (`restoreFailures`,
+klasa błędu `missing versions`) i buduje dalej pozostałe; wcześniej prosiła o brakujące wersje w
+kółko, bez słowa. Żeby przejść przez dziurę i zastosować to, co po niej, pomiń brakujące wersje:
+
+```scala
+cartNames ? ToBuildInProgress(SkipFailedVersion(cartId, pastMissing = true))
+```
+
+`SkipAggregate` pominąłby zamiast tego cały agregat. Znajdź takie agregaty przed aktualizacją:
+wymienia je `RestoreCheck` (`report.gaps`: pierwsza brakująca wersja każdego agregatu i ile ich
+brakuje), a także to zapytanie tylko do odczytu, które czyta całą tabelę `events` (uruchom je na
+kopii albo gdy baza ma spokój):
+
+```sql
+SELECT a.id, a.type_id, a.base_version - coalesce(a.squashed_version, 1) + 1 - count(DISTINCT e.version) AS missing
+  FROM aggregates a
+  JOIN events e ON e.aggregate_id = a.id AND e.version BETWEEN coalesce(a.squashed_version, 1) AND a.base_version
+ WHERE a.id = a.base_id
+ GROUP BY a.id, a.type_id, a.base_version, a.squashed_version
+HAVING count(DISTINCT e.version) < a.base_version - coalesce(a.squashed_version, 1) + 1;
+```
+
+Agregat po squashu liczy się od punktu squasha; duplikat liczy tylko własne zdarzenia.
+`RestoreFailureFilter(source = Some(RestoreFailureSource.Check))` wymienia tylko to, co zapisał
+sprawdzian.
 
 ## Pod dużym obciążeniem
 

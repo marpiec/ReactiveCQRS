@@ -375,7 +375,7 @@ a support tool):
 | `GetOutboxStatus` | the outbox poller | `OutboxStatus`: aggregates waiting in the outbox, and those given up |
 | `GetProjectionStatus` | each projection | `ProjectionStatus`: failed aggregates, retries and gaps ([chapter 9](09-projection-failures.md)) |
 | `GetBuilds` | each managed projection | `Builds`: the active build and the one in progress ([chapter 10](10-rebuilding-projections.md)) |
-| `GetBuildStatus` | each managed projection | `BuildStatus`: the running build's phase and how far it got; `heldBy` while a hold keeps it waiting |
+| `GetBuildStatus` | each managed projection | `BuildStatus`: the running build's phase and how far it got, as its builder last reported (`reportedAt`), answered at once; `heldBy` while a hold keeps it waiting |
 | `GetSquashStatus` | the squash scheduler | `SquashStatus`: squashed, refused, still waiting |
 | `GetOnlineJobsStatus` | the online jobs' runner | `OnlineJobsStatus`: each job's state and counts, whether the build hold was released, and what the store lacks for builds |
 
@@ -545,6 +545,37 @@ gone): the `aggregates` lines then delete nothing.
 
 > **Warning:** this is the only place where you delete events yourself. Take a backup first, check the
 > aggregate id twice, and keep the output of `StoredDataCheck` and `restoreFailures` from before.
+
+### Versions missing from the store
+
+Each aggregate's events are numbered 1, 2, 3 and so on, with no holes: one owner writes them, in
+order. A hole can only come from outside, such as a row deleted by hand years ago. A restore does not
+notice (it applies the events it finds), but a build does: it cannot deliver version 27 to a read
+model that never got 26. Since the release after 1.0.1-RC2 the build fails the aggregate there, once, with
+"versions from 26 to 26 are missing from the store", records it (`restoreFailures`, error class
+`missing versions`) and goes on with the others; before, it asked for the missing versions again and
+again, without a word. To move past the hole and apply what follows it, skip the missing versions:
+
+```scala
+cartNames ? ToBuildInProgress(SkipFailedVersion(cartId, pastMissing = true))
+```
+
+`SkipAggregate` would leave out the whole aggregate instead. Find such aggregates before an upgrade:
+`RestoreCheck` lists them (`report.gaps`: each aggregate's first missing version and how many), and so
+does this read-only query, which reads the whole `events` table (run it on a copy, or when the
+database is quiet):
+
+```sql
+SELECT a.id, a.type_id, a.base_version - coalesce(a.squashed_version, 1) + 1 - count(DISTINCT e.version) AS missing
+  FROM aggregates a
+  JOIN events e ON e.aggregate_id = a.id AND e.version BETWEEN coalesce(a.squashed_version, 1) AND a.base_version
+ WHERE a.id = a.base_id
+ GROUP BY a.id, a.type_id, a.base_version, a.squashed_version
+HAVING count(DISTINCT e.version) < a.base_version - coalesce(a.squashed_version, 1) + 1;
+```
+
+A squashed aggregate counts from its squash point; a duplicate counts its own events only.
+`RestoreFailureFilter(source = Some(RestoreFailureSource.Check))` lists only what the check recorded.
 
 ## Under heavy load
 

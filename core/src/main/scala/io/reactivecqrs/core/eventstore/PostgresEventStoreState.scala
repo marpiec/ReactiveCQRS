@@ -1135,7 +1135,11 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
     val conditions = Seq(
       filter.aggregateType.map(t => sqls"type_id = ${typesNamesState.typeIdByClassName(t.typeName)}"),
       filter.spaceId.map(s => sqls"space_id = ${s.asLong}"),
-      filter.projection.map(p => sqls"projection = $p")).flatten
+      filter.projection.map(p => sqls"projection = $p"),
+      filter.source.map(s => sourceColumns(s) match {
+        case ("build", subscriber, _, _) => sqls"source = 'build' AND subscriber = $subscriber"
+        case (name, _, _, _) => sqls"source = $name"
+      })).flatten
     val where = if (conditions.isEmpty) sqls"" else sqls"WHERE ${sqls.join(conditions, sqls"AND")}"
     sql"""SELECT aggregate_id, source, subscriber, projection, build, type_id, space_id, version, event_id, error_class, error, first_seen, last_seen,
          |   times, skipped FROM restore_failures $where ORDER BY first_seen, aggregate_id, source, subscriber LIMIT $limit""".stripMargin.map { rs =>
@@ -1148,6 +1152,19 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
         Some(SpaceId(rs.long(7))).filter(_.asLong >= 0), Some(rs.int(8)).filter(_ > 0).map(AggregateVersion(_)), rs.longOpt(9), rs.string(10), rs.string(11), source, utcTime(rs.underlying, 12), utcTime(rs.underlying, 13),
         rs.int(14), Option(rs.underlying.getTimestamp(15, Calendar.getInstance(Utc))).map(_.toInstant))
     }.list()
+  }
+
+  // CR-6: one probe of `events (aggregate_id, version)` per aggregate; each version counted once (F198's repeats aside).
+  override private[core] def versionGaps(ids: Seq[AggregateId]): Seq[VersionGap] = if (ids.isEmpty) Nil else DB.readOnly { implicit session =>
+    sql"""WITH own AS (SELECT a.id, coalesce(a.squashed_version, 1) AS lo, a.base_version AS hi FROM aggregates a
+         |     WHERE a.id IN (${ids.map(_.asLong)}) AND a.base_id = a.id),
+         |   v AS (SELECT o.id, o.lo, e.version, lag(e.version) OVER (PARTITION BY o.id ORDER BY e.version) AS prev
+         |     FROM own o JOIN events e ON e.aggregate_id = o.id AND e.version BETWEEN o.lo AND o.hi),
+         |   s AS (SELECT o.id, o.lo, o.hi, count(DISTINCT v.version) AS present, max(v.version) AS top,
+         |     min(CASE WHEN v.version > coalesce(v.prev, o.lo - 1) + 1 THEN coalesce(v.prev, o.lo - 1) + 1 END) AS gap
+         |     FROM own o LEFT JOIN v ON v.id = o.id GROUP BY o.id, o.lo, o.hi)
+         |SELECT id, coalesce(gap, coalesce(top, lo - 1) + 1), (hi - lo + 1) - present FROM s WHERE present < hi - lo + 1 ORDER BY id""".stripMargin
+      .map(rs => VersionGap(AggregateId(rs.long(1)), AggregateVersion(rs.int(2)), rs.int(3))).list()
   }
 
   override def restoreFailuresCount(): Long = DB.readOnly { implicit session =>

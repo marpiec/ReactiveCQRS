@@ -233,7 +233,10 @@ val buildStatus = (cartNames ? GetBuildStatus).mapTo[BuildStatus]
 ```
 
 The `phase` goes `Bulk` (reading the store), `GoingLive` and `Reconciling` (joining the live
-events), then `CaughtUp`. Without a builder at work the supervisor answers `Waiting` (the build
+events), then `CaughtUp`. The supervisor answers at once, with what the builder reported last (after each
+chunk, and every 2 seconds; `reportedAt` says when), so a builder busy with a long read never makes you
+wait; `statesRestored` counts the replay states it had to read again, which tells whether
+`maxReplayStates` is too small for your aggregates. Without a builder at work the supervisor answers `Waiting` (the build
 waits for its turn, or for a restart after a failure) or `NoBuild`. The other numbers count the
 events sent, the gaps filled, the aggregates handed over to live delivery and the events that
 could not be read.
@@ -411,6 +414,11 @@ cartNames ? SkipAggregate(cartId)                     // the same, in the active
 Skipping marks every version of the cart, up to the one stored, as applied in that build, without
 applying anything, and clears its failures; the build then switches without the cart's documents.
 Its record says "skipped". `SkipFailedVersion` still skips one failed version at a time.
+
+One more kind: a cart whose stored versions have a hole (version 26 deleted by hand, say). The build
+fails it with "versions from 26 to 26 are missing from the store"; skip the hole alone with
+`SkipFailedVersion(cartId, pastMissing = true)`, and the versions after it are applied
+([chapter 18](18-production.md), "Versions missing from the store").
 
 ## Repairing a few aggregates: targeted rebuilds
 

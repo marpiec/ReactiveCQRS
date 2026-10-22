@@ -4,6 +4,18 @@ Notable changes of ReactiveCQRS, newest first. Dates are DD/MM/YYYY.
 
 ## 1.0.1 (not released)
 
+**After 1.0.1-RC2 (not tagged yet):** Neula's MR-11 change requests CR-6 and CR-7, from its second rehearsal.
+
+- **A version missing from the store no longer stops a build for ever** (F348, D92, chapters 10, 18 and 21): a build
+  fails the aggregate at the hole, once, with "versions from N to M are missing from the store" (in `ProjectionStatus`,
+  `restoreFailures` as `missing versions`, one warning), instead of asking for it again without end and without a word.
+  **Changed:** `SkipFailedVersion(id, pastMissing = true)` passes the whole missing range and applies the versions after
+  it. **New:** `RestoreCheck`'s report lists such aggregates (`gaps`); chapter 18 gives a read-only query;
+  `RestoreFailureFilter(source = ...)` lists the records of one source.
+- **A build's status is answered at once** (F349, chapter 10): the supervisor answers `GetBuildStatus` from what the
+  builder reported last (`BuildStatus.reportedAt`), never waiting on its reads; `BuildStatus.statesRestored` counts the
+  replay states read again, for sizing `maxReplayStates`.
+
 **1.0.1-RC2 (22/10/2026, tag `v1.0.1-RC2`):** what Neula's MR-11 needs of the library (its change requests CR-1 to
 CR-4), on top of RC1. Every new setting defaults to the behaviour of RC1.
 

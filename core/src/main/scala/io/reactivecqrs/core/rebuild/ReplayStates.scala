@@ -49,7 +49,10 @@ class ReplayStates(sources: Map[AggregateType, ReplaySource], capacity: Int) {
     val known = Option(states.get(id)).collect { case (version, state) if version.asInt == first.asInt - 1 => state }
     var state: Any = known.getOrElse {
       // The aggregate's first event, or its squash event (nothing exists before it), apply to the initial state.
-      if (first.isOne || squashedUpTo.contains(first)) source.initial else source.stateAt(id, Some(AggregateVersion(first.asInt - 1)))
+      if (first.isOne || squashedUpTo.contains(first)) source.initial else {
+        restores += 1
+        source.stateAt(id, Some(AggregateVersion(first.asInt - 1)))
+      }
     }
     events.foreach { event =>
       state = event.event match {
@@ -72,4 +75,9 @@ class ReplayStates(sources: Map[AggregateType, ReplaySource], capacity: Int) {
 
   /** How many states are open. */
   def open: Int = states.size()
+
+  /** CR-7: how many states were read again from the store, as more were open than `capacity` (or a run came back). */
+  def restored: Long = restores
+
+  private var restores = 0L
 }

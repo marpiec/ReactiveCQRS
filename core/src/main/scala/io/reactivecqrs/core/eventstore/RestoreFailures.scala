@@ -34,8 +34,14 @@ case class RestoreFailure(aggregateId: AggregateId, aggregateType: AggregateType
                           eventId: Option[Long], errorClass: String, error: String, source: RestoreFailureSource, firstSeen: Instant,
                           lastSeen: Instant, times: Int, skipped: Option[Instant])
 
-/** CR-4: which records `restoreFailures` lists; `projection` keeps the records of that projection's builds. */
-case class RestoreFailureFilter(aggregateType: Option[AggregateType] = None, spaceId: Option[SpaceId] = None, projection: Option[String] = None)
+/** CR-4: which records `restoreFailures` lists; `projection` keeps the records of that projection's builds, `source` (CR-6)
+  * those of one place: `Owner`, `Check`, or one build. */
+case class RestoreFailureFilter(aggregateType: Option[AggregateType] = None, spaceId: Option[SpaceId] = None, projection: Option[String] = None,
+                                source: Option[RestoreFailureSource] = None)
+
+/** CR-6: an aggregate whose own stored versions are not contiguous: `missing` versions are not stored, the first of them
+  * `firstMissing`. Nothing reads them, so restores do not notice, but every build of the type stops there. */
+case class VersionGap(aggregateId: AggregateId, firstMissing: AggregateVersion, missing: Int)
 
 /** CR-4: a failed restore to record (0 for an unknown version). */
 private[core] case class RestoreFailureSeen(aggregateId: AggregateId, aggregateType: AggregateType, source: RestoreFailureSource, version: Int,

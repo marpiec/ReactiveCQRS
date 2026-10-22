@@ -165,6 +165,20 @@ private[core] case class SkipAggregateUpTo(aggregateId: AggregateId, aggregateTy
 /** To the supervisor, from an instance of a build: a failure of the aggregate was cleared, so its record of a failed
   * restore in the build goes (CR-4). */
 private[core] case class BuildFailureCleared(aggregateId: AggregateId)
+/** CR-6: the failures of versions that never arrived. Their error starts with `Prefix` (F201: such versions are not
+  * marked applied by a plain skip); one the store lacks names its range, which `SkipFailedVersion(pastMissing = true)`
+  * moves past whole. */
+private[core] object MissingVersions {
+  val Prefix = "versions from "
+  def fromStore(start: AggregateVersion, end: AggregateVersion): String = Prefix + start.asInt + " to " + end.asInt + " are missing from the store"
+  private val FromStore = """versions from (\d+) to (\d+) are missing from the store""".r.unanchored
+  /** The last version a "missing from the store" failure names. */
+  def endOf(error: String): Option[AggregateVersion] = error match {
+    case FromStore(_, end) => Some(AggregateVersion(end.toInt))
+    case _ => None
+  }
+}
+
 /** To the supervisor, from an instance of a build: the aggregate was skipped (CR-4); None for one that is gone. */
 private[core] case class BuildAggregateSkipped(aggregateId: AggregateId, aggregateType: Option[AggregateType])
 
@@ -794,7 +808,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   private val gapRequestRepeats = Backoff(options.gapRequestRepeat, 5.minutes, maxAttempts = Int.MaxValue)
 
   // How a failure of versions that never came starts: it is not a version the listener failed on (F201).
-  private val MissingVersions = "versions from "
+  private val MissingVersions = io.reactivecqrs.core.projection.MissingVersions.Prefix
 
   private def afterBatch(key: Key, queue: Queue, batch: Batch, outcome: Try[Unit]): Unit = {
     queue.processing = false
@@ -1138,16 +1152,21 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
   private def skipFailedVersions(aggregateId: AggregateId, pastMissing: Boolean): Int = failed.keys.filter(_.aggregateId == aggregateId).toSeq.count { key =>
     val failure = failed(key)
     val waitForMissing = failure.error.startsWith(MissingVersions) && !pastMissing
+    // CR-6: versions the store lacks are passed whole: every one the failure names.
+    val upTo = (if (pastMissing) io.reactivecqrs.core.projection.MissingVersions.endOf(failure.error) else None).filter(_ > failure.version).getOrElse(failure.version)
     Try(subscriptionsState.localTx { session =>
       // From the version applied, which is below the one before the failure where the failure is at a squash start (F113).
       val applied = appliedVersion(key)
-      if (applied < failure.version && !waitForMissing) advance(key, applied, failure.version)(session)
+      if (applied < upTo && !waitForMissing) advance(key, applied, upTo)(session)
       subscriptionsState.clearFailure(subscriberName, key.subscriptionType, key.aggregateId)(session)
     }) match {
       case Success(_) =>
-        log.warning("Projection " + projectionName + " skipped version " + failure.version.asInt + " of " + failure.aggregateType.simpleName + " " + aggregateId.asLong)
+        log.warning("Projection " + projectionName + " skipped version " + failure.version.asInt + (if (upTo > failure.version) " to " + upTo.asInt else "") +
+          " of " + failure.aggregateType.simpleName + " " + aggregateId.asLong)
         failed -= key
-        val next = if (waitForMissing) failure.version else failure.version.increment
+        // CR-6: in a build, its record of the aggregate says an operator acted.
+        if (pastMissing && boundSubscriber.isDefined && failure.error.startsWith(MissingVersions)) context.parent ! BuildAggregateSkipped(aggregateId, Some(failure.aggregateType))
+        val next = if (waitForMissing) failure.version else upTo.increment
         republisher.foreach(_ ! RequestRepublish(self, failure.aggregateType, failure.aggregateId, next))
         failureCleared(failure)
         true

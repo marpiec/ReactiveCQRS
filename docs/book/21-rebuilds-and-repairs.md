@@ -137,15 +137,16 @@ skip it (`SkipFailedVersion` for one version, `SkipAggregate` for all of it).
 
 ### Data the build cannot use
 
-Three things look alike from far away, and the failure tells them apart:
+Four things look alike from far away, and the failure tells them apart:
 
 | The failure says | What it means | Where else you see it |
 |---|---|---|
 | `a stored event cannot be read: ...` | an event's JSON no longer reads into its class (a field changed type, a class was renamed) | `StoredDataCheck`'s `unreadable` |
 | `the aggregate cannot be restored: ...` | the events read, but your event handler throws on one of them while the state is replayed | `eventStore.restoreFailures()`, `RestoreCheck` |
+| `versions from N to M are missing from the store` | the aggregate's stored versions have a hole: those versions are not in the store at all | `eventStore.restoreFailures()` (`missing versions`), `RestoreCheck` (`report.gaps`) |
 | `versions from N are missing: ...` | versions were asked for and never came (rare during a build: the builder reads the store itself) | `ProjectionStatus.waitingForGap` before it is recorded |
 
-The first two are recorded at once, with the aggregate, the event it failed at and the cause, and the
+The first three are recorded at once, with the aggregate, the event it failed at and the cause, and the
 build goes on without that aggregate. Part 3 says what to do about each.
 
 > **Tip:** a projection that only listens to events (`EventsListener`) needs no states, so a handler
@@ -182,6 +183,7 @@ explained below it.
 | a handler throws while the state is replayed | `restoreFailures()`, `RestoreCheck`, a command's `AggregateRestoreFailedException` | fix the handler; skip it in a build; remove the aggregate |
 | events whose aggregate has no row of its own (orphans) | `backfillEventKeys` (`orphans`), `StoredDataCheck` (`orphans`) | leave them (nothing reads them); remove them |
 | two events of one version | `StoredDataCheck` (`repeatedVersions`) | decide which one is real and delete the other by hand |
+| a version missing from an aggregate's history | `RestoreCheck` (`gaps`), the query of [chapter 18](18-production.md); builds: "versions from N to M are missing from the store" | skip the hole in each build (`SkipFailedVersion(id, pastMissing = true)`); skip the aggregate; remove it |
 | aggregates without an organization | `backfillSpaces` (`left`), `StoredDataCheck` (`aggregatesWithoutSpace`) | a `spaceOf` function that places them ([chapter 16](16-organizations.md)) |
 | aggregates of a type no context has | `StoredDataCheck` (`typesWithoutContext`, with `contexts`) | give the type its context back, or leave them unread |
 | a document that is wrong although the events are right | your users, or a comparison with a fresh build | `RebuildAggregates` for it ([chapter 10](10-rebuilding-projections.md)) |

@@ -439,7 +439,7 @@ class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState
       filter.projection.forall(p => r.source match {
         case RestoreFailureSource.Build(projection, _, _) => projection == p
         case _ => false
-      })).sortBy(r => (r.firstSeen, r.aggregateId.asLong)).take(limit)
+      }) && filter.source.forall(_ == r.source)).sortBy(r => (r.firstSeen, r.aggregateId.asLong)).take(limit)
   }
 
   override def restoreFailuresCount(): Long = synchronized(restoreFailureRecords.keys.map(_._1).toSet.size.toLong)

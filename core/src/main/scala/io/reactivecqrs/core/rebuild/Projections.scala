@@ -321,6 +321,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   private var jobs = Vector[Job]() // the jobs waiting, in order
   private var buildStopped = false // the build's instance stopped by itself; a new one starts after a wait
   private var heldBy: Option[String] = None // CR-2: why the build waits for its slot, while full builds are held
+  private var reports = Map[ActorRef, BuildStatus]() // CR-7: what each running builder reported last
   // F110: instances that stopped, kept in the bus as stopped subscribers (their events stay in the outbox) until their
   // replacements are subscribed; then they leave it, and their outbox rows go to the replacements.
   private var replaced = Vector[ActorRef]()
@@ -571,8 +572,10 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
     }
     case GetBuilds => sender() ! Builds(spec.name, active.map(_.record), building.map(b => saved(b.record)), caughtUp, heldBy.filter(_ => building.isDefined))
     // F152: the running builder answers, a full build's or a targeted rebuild's.
+    case BuildStatusReport(status) => reports += sender() -> status
+    // CR-7: answered at once, from what the builder reported last, never waiting on its reads.
     case GetBuildStatus => builder.orElse(targeted.flatMap(_.builder)) match {
-      case Some(b) => b.forward(GetBuildStatus)
+      case Some(b) => sender() ! reports.getOrElse(b, BuildStatus("Starting", saved(building.getOrElse(active.get).record).position.position, 0, 0, 0, 0))
       case None => sender() ! building.fold(BuildStatus.NoBuild)(b => BuildStatus.waiting(saved(b.record).position.position, heldBy))
     }
     case request: RequestRepublish => builder.foreach(_.forward(request)) // from the build in progress, before its builder runs
@@ -606,7 +609,8 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
     } else {
       val positions = new RegistryBuildPositions(registry, spec.name, b.record.number)
       builder = Some(context.watch(context.actorOf(Props(new ProjectionBuilder(b.ref, b.record.subscriber, BuildPlan(listeners), settings.eventStore,
-        settings.subscriptionsState, runtime.sources, positions, self, settings.builder, restoreFailures = Some(failuresOf(b.record)))).withDispatcher(BlockingDispatcher.id),
+        settings.subscriptionsState, runtime.sources, positions, self, settings.builder, restoreFailures = Some(failuresOf(b.record)), reportStatus = true))
+        .withDispatcher(BlockingDispatcher.id),
         childName("builder", b.record.number))))
     }
   }
@@ -755,8 +759,8 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   private def startTargetedBuilder(): Unit = for (t <- targeted; instance <- instanceOfJob(t.job)) {
     val plan = BuildPlan(listeners.filter { case (aggregateType, _) => t.types.contains(aggregateType) })
     val builder = context.watch(context.actorOf(Props(new ProjectionBuilder(instance.ref, instance.record.subscriber, plan, settings.eventStore,
-      settings.subscriptionsState, runtime.sources, NoPositions, self, settings.builder, Some(scopeOf(t.target)), Some(failuresOf(instance.record))))
-      .withDispatcher(BlockingDispatcher.id)))
+      settings.subscriptionsState, runtime.sources, NoPositions, self, settings.builder, Some(scopeOf(t.target)), Some(failuresOf(instance.record)),
+      reportStatus = true)).withDispatcher(BlockingDispatcher.id)))
     targeted = Some(t.copy(builder = Some(builder)))
   }
 
@@ -795,6 +799,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   }
 
   private def terminated(ref: ActorRef): Unit = if (buses.contains(ref) || unanswered.contains(ref)) busEnded(ref) else {
+    reports -= ref
     retiring.remove(ref) match {
       case Some(retired) => drop(retired)
       case None if catchingUp.contains(ref) =>

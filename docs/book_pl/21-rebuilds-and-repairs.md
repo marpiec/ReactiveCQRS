@@ -140,15 +140,16 @@ mogą poczekać, pomijasz go (`SkipFailedVersion` dla jednej wersji, `SkipAggreg
 
 ### Dane, których budowa nie umie użyć
 
-Trzy rzeczy z daleka wyglądają podobnie, a awaria pozwala je odróżnić:
+Cztery rzeczy z daleka wyglądają podobnie, a awaria pozwala je odróżnić:
 
 | Awaria mówi | Co to znaczy | Gdzie jeszcze to widać |
 |---|---|---|
 | `a stored event cannot be read: ...` | JSON zdarzenia nie daje się już odczytać do jego klasy (pole zmieniło typ, klasa zmieniła nazwę) | `unreadable` w `StoredDataCheck` |
 | `the aggregate cannot be restored: ...` | zdarzenia dają się odczytać, ale twój handler zdarzeń rzuca wyjątek na jednym z nich, gdy stan jest odtwarzany | `eventStore.restoreFailures()`, `RestoreCheck` |
+| `versions from N to M are missing from the store` | zapisane wersje agregatu mają dziurę: tych wersji w ogóle nie ma w magazynie | `eventStore.restoreFailures()` (`missing versions`), `RestoreCheck` (`report.gaps`) |
 | `versions from N are missing: ...` | o wersje poproszono, a nigdy nie przyszły (rzadkie w trakcie budowy: budowniczy sam czyta magazyn) | `ProjectionStatus.waitingForGap`, zanim awaria zostanie zapisana |
 
-Dwie pierwsze są zapisywane od razu, z agregatem, zdarzeniem, na którym się nie udało, i przyczyną, a
+Trzy pierwsze są zapisywane od razu, z agregatem, zdarzeniem, na którym się nie udało, i przyczyną, a
 budowa idzie dalej bez tego agregatu. Część 3 mówi, co zrobić z każdą z nich.
 
 > **Wskazówka:** projekcja, która słucha tylko zdarzeń (`EventsListener`), nie potrzebuje stanów, więc
@@ -184,6 +185,7 @@ klasami, wersjami i przyczynami, nigdy z wartościami), utrzymuje **wszystko inn
 | zdarzenie o niezerowej wersji typu zdarzenia | `StoredDataCheck` (`eventsByTypeVersion`) | zmigruj je ręcznie, zanim przeczyta je 1.0 (D29) |
 | handler rzuca wyjątek, gdy stan jest odtwarzany | `restoreFailures()`, `RestoreCheck`, `AggregateRestoreFailedException` polecenia | popraw handler; pomiń agregat w budowie; usuń agregat |
 | zdarzenia, których agregat nie ma własnego wiersza (sieroty) | `backfillEventKeys` (`orphans`), `StoredDataCheck` (`orphans`) | zostaw je (nic ich nie czyta); usuń je |
+| wersja, której brakuje w historii agregatu | `RestoreCheck` (`gaps`), zapytanie z [rozdziału 18](18-production.md); budowy: „versions from N to M are missing from the store” | pomiń dziurę w każdej budowie (`SkipFailedVersion(id, pastMissing = true)`); pomiń agregat; usuń go |
 | dwa zdarzenia jednej wersji | `StoredDataCheck` (`repeatedVersions`) | zdecyduj, które jest prawdziwe, i usuń drugie ręcznie |
 | agregaty bez organizacji | `backfillSpaces` (`left`), `StoredDataCheck` (`aggregatesWithoutSpace`) | funkcja `spaceOf`, która je przydziela ([rozdział 16](16-organizations.md)) |
 | agregaty typu, którego nie ma żaden kontekst | `StoredDataCheck` (`typesWithoutContext`, z `contexts`) | oddaj typowi jego kontekst albo zostaw je nieczytane |

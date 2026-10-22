@@ -238,7 +238,10 @@ val buildStatus = (cartNames ? GetBuildStatus).mapTo[BuildStatus]
 ```
 
 Faza (`phase`) przechodzi przez `Bulk` (czytanie magazynu), `GoingLive` i `Reconciling` (dołączanie
-do zdarzeń na żywo), a na końcu `CaughtUp`. Gdy żaden budowniczy nie pracuje, nadzorca odpowiada
+do zdarzeń na żywo), a na końcu `CaughtUp`. Nadzorca odpowiada od razu tym, co budowniczy zgłosił
+ostatnio (po każdej porcji i co 2 sekundy; `reportedAt` mówi kiedy), więc budowniczy zajęty długim
+odczytem nigdy nie każe ci czekać; `statesRestored` liczy stany powtórki, które musiał odczytać ponownie,
+co pokazuje, czy `maxReplayStates` nie jest za małe dla twoich agregatów. Gdy żaden budowniczy nie pracuje, nadzorca odpowiada
 `Waiting` (budowa czeka na swoją kolej albo na restart po błędzie) lub `NoBuild`. Pozostałe liczby
 to: wysłane zdarzenia, wypełnione luki, agregaty przekazane do dostarczania na żywo i zdarzenia,
 których nie udało się odczytać.
@@ -419,6 +422,11 @@ cartNames ? SkipAggregate(cartId)                     // the same, in the active
 Pominięcie oznacza każdą wersję koszyka, aż do zapisanej, jako zastosowaną w tej budowie, niczego nie
 stosując, i czyści jego niepowodzenia; budowa przełącza się wtedy bez dokumentów tego koszyka. Jego
 zapis mówi „skipped”. `SkipFailedVersion` nadal pomija jedną nieudaną wersję naraz.
+
+Jeszcze jeden rodzaj: koszyk, którego zapisane wersje mają dziurę (powiedzmy, wersję 26 usuniętą
+ręcznie). Budowa odnotowuje jego porażkę z „versions from 26 to 26 are missing from the store”; pomiń
+samą dziurę przez `SkipFailedVersion(cartId, pastMissing = true)`, a wersje po niej zostaną zastosowane
+([rozdział 18](18-production.md), „Wersje, których brakuje w magazynie”).
 
 ## Naprawa kilku agregatów: przebudowy celowane
 

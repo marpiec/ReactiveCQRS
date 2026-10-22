@@ -244,4 +244,8 @@ abstract class EventStoreState {
 
   /** How many aggregates have a record, from anywhere. */
   def restoreFailuresCount(): Long = 0L
+
+  /** CR-6: the aggregates of `ids` whose own stored versions (from the squash point, if any, to the stored version) are
+    * not contiguous. */
+  private[core] def versionGaps(ids: Seq[AggregateId]): Seq[VersionGap] = Seq.empty
 }

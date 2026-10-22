@@ -54,13 +54,15 @@ object ProjectionBuilder {
     * failure for it (D20a). */
   case object BuildCaughtUp
 
-  /** Answered by a projection's supervisor too (F152), with the running builder's status. */
+  /** Answered by a projection's supervisor too (F152): CR-7, at once, with the status its running builder reported last. */
   case object GetBuildStatus
-  /** `phase`: `Bulk`, `GoingLive`, `Reconciling` or `CaughtUp` from a builder; from the supervisor without one,
-    * `Waiting` (a build waits for its turn, a restart, or, with `heldBy` saying why, a hold of full builds: CR-2) or
-    * `NoBuild`. `position`: how far the bulk pass got. */
+  /** `phase`: `Bulk`, `GoingLive`, `Reconciling` or `CaughtUp` from a builder (`Starting` before its first report); from
+    * the supervisor without one, `Waiting` (a build waits for its turn, a restart, or, with `heldBy` saying why, a hold of
+    * full builds: CR-2) or `NoBuild`. `position`: how far the bulk pass got. `reportedAt` (CR-7): when the builder
+    * reported these numbers, which it does after each chunk and every 2 s; a builder in a long read reports late.
+    * `statesRestored`: replay states read again from the store as more were open than `maxReplayStates` (D59). */
   case class BuildStatus(phase: String, position: Long, eventsSent: Long, gapsFilled: Long, handedOver: Long, unreadable: Long,
-                         heldBy: Option[String] = None)
+                         heldBy: Option[String] = None, reportedAt: Option[java.time.Instant] = None, statesRestored: Long = 0)
   object BuildStatus {
     /** No build runs. */
     val NoBuild: BuildStatus = BuildStatus("NoBuild", 0, 0, 0, 0, 0)
@@ -68,7 +70,11 @@ object ProjectionBuilder {
     def waiting(position: Long, heldBy: Option[String] = None): BuildStatus = BuildStatus("Waiting", position, 0, 0, 0, 0, heldBy)
   }
 
+  /** CR-7: to its `reportTo`, the builder's status now. */
+  private[rebuild] case class BuildStatusReport(status: BuildStatus)
+
   private case object Retry
+  private case object ReportStatus
 }
 
 /**
@@ -90,12 +96,14 @@ object ProjectionBuilder {
   * synchronous on the builder's thread: create it on the blocking dispatcher.
   *
   * CR-4: with `restoreFailures` (the build it builds), an aggregate it cannot restore or read is recorded in the store
-  * (`EventStoreState.recordRestoreFailure`), in any phase.
+  * (`EventStoreState.recordRestoreFailure`), in any phase. CR-7: with `reportStatus`, it tells `reportTo` its status
+  * (`BuildStatusReport`) as it starts, after each chunk applied, at each phase and every 2 s, so its supervisor answers
+  * status questions without waiting on its reads.
   */
 class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPlan, eventStore: EventStoreState,
                         subscriptionsState: SubscriptionsState, sources: Map[AggregateType, ReplaySource], positions: BuildPositions,
                         reportTo: ActorRef, settings: BuilderSettings = BuilderSettings(), targeted: Option[AggregateScope] = None,
-                        restoreFailures: Option[RestoreFailureSource.Build] = None)
+                        restoreFailures: Option[RestoreFailureSource.Build] = None, reportStatus: Boolean = false)
   extends Actor with MyActorLogging {
 
   // A targeted rebuild (D63) delivers the aggregates in scope to a projection that is live already: no BuildFromStore,
@@ -130,7 +138,17 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
   private var handedOver = 0L
   private var unreadable = 0L
 
+  private val reports = if (reportStatus) Some(context.system.scheduler.scheduleWithFixedDelay(2.seconds, 2.seconds, self, ReportStatus)(context.dispatcher)) else None
+
+  override def postStop(): Unit = reports.foreach(_.cancel())
+
+  private def status: BuildStatus = BuildStatus(phase.toString, position, eventsSent, gapsFilled, handedOver, unreadable,
+    reportedAt = Some(java.time.Instant.now), statesRestored = states.restored)
+
+  private def report(): Unit = if (reportStatus) reportTo ! BuildStatusReport(status)
+
   override def preStart(): Unit = {
+    report()
     context.watch(target)
     val start = positions.read()
     if (start.bulkDone) {
@@ -154,6 +172,7 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
       handedOver += handed
       fill(gaps.map(gap => (gap.aggregateType, gap.aggregateId, gap.from)))
       pump()
+      report()
     case _: MessageAck | _: MessageFailed =>
       outstanding -= 1
       pump()
@@ -172,8 +191,8 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
     case Retry =>
       waitingToRetry = false
       pump()
-    case GetBuildStatus =>
-      sender() ! BuildStatus(phase.toString, position, eventsSent, gapsFilled, handedOver, unreadable)
+    case GetBuildStatus => sender() ! status
+    case ReportStatus => report()
     case Terminated(`target`) =>
       log.warning("Projection " + subscriberName + " stopped; its build stops")
       context.stop(self)
@@ -201,6 +220,7 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
         phase = CaughtUp
         log.info("Projection " + subscriberName + " is built: " + eventsSent + " events delivered, " + gapsFilled + " gaps filled, " +
           handedOver + " items applied one at a time, " + unreadable + " unreadable")
+        report()
         reportTo ! BuildCaughtUp
         context.stop(self) // with its replay states
       case _ => ()
@@ -250,12 +270,14 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
     save(BuildPosition(bulkDone = true, 0L))
     if (targeted.isDefined) reconcile() else {
       phase = GoingLive
+      report()
       target ! GoLive
     }
   }
 
   private def reconcile(): Unit = {
     phase = Reconciling
+    report()
     position = 0L
     readAll = false
     pump()
@@ -354,8 +376,9 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
 
   private def recordSeen(aggregateType: AggregateType, id: AggregateId, seen: RestoreFailureSource.Build => RestoreFailureSeen): Unit = restoreFailures.foreach { build =>
     try {
-      if (eventStore.recordRestoreFailure(seen(build)))
-        log.warning("Building " + subscriberName + ": " + aggregateType.simpleName + " " + id.asLong + " cannot be restored; it is recorded (restoreFailures)")
+      val failure = seen(build)
+      if (eventStore.recordRestoreFailure(failure)) log.warning("Building " + subscriberName + ": " + aggregateType.simpleName + " " + id.asLong +
+        (if (failure.errorClass == "missing versions") ": " + failure.error else " cannot be restored") + "; it is recorded (restoreFailures)")
     } catch {
       case NonFatal(failure) => log.warning("Building " + subscriberName + " could not record that aggregate " + id.asLong + " cannot be restored: " + Errors.describe(failure))
     }
@@ -412,23 +435,33 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
         var parts = Vector[ChunkItem]()
         var squashed = squashedUpTo
         var next = squashed.filter(_ > from).getOrElse(from)
+        var missing = Option.empty[(AggregateVersion, AggregateVersion)]
         var more = true
         while (more) {
           val part = eventStore.readPart[Any](id, next, AggregateVersion((next.asInt.toLong + settings.chunkEvents - 1).min(Int.MaxValue).toInt), settings.chunkBytes)
-          if (part.isEmpty) {
-            squashed = eventStore.squashedVersion(id)
-            if (squashed.exists(_ > next)) next = squashed.get else more = false
-          } else {
-            val events = part.map(_._1)
-            parts :+= item(kind, aggregateType, id, events, None, squashed.contains(events.head.version)).copy(bytes = part.map(_._2.toLong).sum)
-            next = events.last.version.increment
+          val firstStored = part.headOption.map(_._1.version).orElse(storedFrom(id, next))
+          if (firstStored.forall(_ > next)) squashed = eventStore.squashedVersion(id)
+          firstStored match {
+            case _ if squashed.exists(_ > next) => next = squashed.get // a squash moved the start since: read from it
+            case None => more = false
+            case Some(stored) if stored > next =>
+              // CR-6, D92: versions below one that is stored are never committed late (one owner writes them in order),
+              // so `next` to `stored - 1` are missing from the store.
+              missing = Some((next, AggregateVersion(stored.asInt - 1)))
+              more = false
+            case Some(_) if part.isEmpty => () // committed since the part was read: read it again
+            case Some(_) =>
+              val events = part.map(_._1)
+              parts :+= item(kind, aggregateType, id, events, None, squashed.contains(events.head.version)).copy(bytes = part.map(_._2.toLong).sum)
+              next = events.last.version.increment
           }
         }
         // Every part carries the state after the last, restored once, as an owner's re-published parts do.
-        if (kind == SubscriptionType.AGGREGATES_WITH_EVENTS && parts.nonEmpty) {
+        val delivered = if (kind == SubscriptionType.AGGREGATES_WITH_EVENTS && parts.nonEmpty) {
           val state = Option(sources(aggregateType).stateAt(id, Some(parts.last.last)))
           parts.map(_.copy(aggregateRoot = state))
         } else parts
+        delivered ++ missing.map { case (start, end) => missingItem(kind, aggregateType, id, start, end, MissingVersions.fromStore(start, end)) }
       }
     } catch {
       case NonFatal(e) if !Errors.transient(e) =>
@@ -438,12 +471,36 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
         Seq(ChunkItem(kind, aggregateType, id, from, from, Nil, None, unreadable = Some(failureText(e))))
     }
 
+  // CR-6: the first version of the aggregate stored from `from` on, when the part read from it was empty: a gap longer
+  // than a part, or missing versions at the end (then the stored version, past which nothing is).
+  private def storedFrom(id: AggregateId, from: AggregateVersion): Option[AggregateVersion] =
+    eventStore.storedVersion(id).map(_._1).filter(_ >= from).map { stored =>
+      eventStore.readPart[Any](id, from, stored, 1L).headOption.map(_._1.version).getOrElse(stored.increment)
+    }
+
+  // CR-6: the versions `start` to `end` of the aggregate cannot be delivered: the subscription fails there (D20a), with a
+  // "versions from" error that `SkipFailedVersion(pastMissing = true)` moves past; recorded, one warning per aggregate.
+  private def missingItem(kind: SubscriptionType, aggregateType: AggregateType, id: AggregateId, start: AggregateVersion, end: AggregateVersion,
+                          error: String): ChunkItem = {
+    recordSeen(aggregateType, id, build => RestoreFailureSeen(id, aggregateType, build, start.asInt, None, id, "missing versions", error))
+    ChunkItem(kind, aggregateType, id, start, end, Nil, None, unreadable = Some(error))
+  }
+
+  // CR-6: how often each gap was filled; one asked for again and again without the projection's version moving fails.
+  private val fills = mutable.Map[(AggregateId, AggregateVersion), Int]()
+
   // Missing versions are read by version and sent before anything else; a gap means a row was committed late, so the
-  // rest of that aggregate's runs in later chunks may be gaps too, and are read again the same way.
+  // rest of that aggregate's runs in later chunks may be gaps too, and are read again the same way. CR-6: a gap asked for
+  // more often than chunks can be in flight with it, without moving on, ends as a failure, so no fill is repeated for
+  // ever; versions missing from the store end so at the first read (`itemsFrom`).
   private def fill(gaps: Seq[(AggregateType, AggregateId, AggregateVersion)]): Unit = if (gaps.nonEmpty) {
     gapsFilled += gaps.size
     gaps.distinct.reverseIterator.foreach { case (aggregateType, id, from) =>
-      work.prepend(() => {
+      val asked = fills.getOrElse((id, from), 0) + 1
+      fills((id, from)) = asked
+      if (asked > settings.chunksInFlight + 2) work.prepend(() => plan.kindsOf(aggregateType).map(kind => missingItem(kind, aggregateType, id, from, from,
+        MissingVersions.Prefix + from.asInt + " were asked for " + asked + " times in this build without arriving")))
+      else work.prepend(() => {
         val squashed = eventStore.squashedVersion(id)
         val items = plan.kindsOf(aggregateType).flatMap(kind => itemsFrom(aggregateType, id, kind, from, squashed))
         // CR-4: an aggregate removed meanwhile (by an operator, chapter 18) has nothing to give: a retry of its failure
