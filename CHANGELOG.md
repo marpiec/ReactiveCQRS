@@ -2,7 +2,7 @@
 
 Notable changes of ReactiveCQRS, newest first. Dates are DD/MM/YYYY.
 
-## 1.0.3 (not released)
+## 1.0.3 (23/10/2026)
 
 Neula's change request CR-8, parts B and A.6, on top of 1.0.2. Every new setting defaults to the behaviour of 1.0.2.
 
