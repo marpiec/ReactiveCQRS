@@ -117,6 +117,7 @@ Składowe twojego `AggregateContext`; nadpisz te, których potrzebujesz.
 | `BuilderSettings` `pageSize`, `pageBytes` | `1000` zdarzeń, `64 MB` | Ile magazynu budowa czyta za jednym razem. | [10](10-rebuilding-projections.md), [18](18-production.md) |
 | `chunkEvents`, `chunkBytes`, `chunksInFlight` | `1000`, `16 MB`, `2` | Części, które budowa przekazuje swojej projekcji, i ile z nich jest naraz w drodze. | [10](10-rebuilding-projections.md) |
 | `maxReplayStates`, `retryAfter` | `10000`, `5 s` | Najwięcej stanów agregatów, które budowa trzyma otwarte, odtwarzając magazyn w kolejności zatwierdzeń; czas oczekiwania po awarii magazynu albo projekcji. | — |
+| `restoreThreads` | `1` | Ile agregatów naraz odtwarza budowa projekcji tylko na stanach; każdy wątek trzyma połączenie z bazą, gdy czyta. | [10](10-rebuilding-projections.md) |
 | `Projections.start(name, version, actorName, whileBuilding)` | `ServeLive` | Czy aktywna budowa dalej przyjmuje dostarczenia, gdy powstaje nowa (`ServeStale`: nie przyjmuje). | [10](10-rebuilding-projections.md) |
 
 ## Sagi, squash, organizacje i przepisania

@@ -1401,6 +1401,18 @@ F100–F107 were found by the read-only audit at the M3 close (review 5, 16/10/2
 - **Fix:** a builder of a managed projection reports its status to its supervisor (`BuildStatusReport`) as it starts, after each chunk applied, at each phase and every 2 s; the supervisor answers `GetBuildStatus` at once from the last report (`BuildStatus.reportedAt`; `Starting` before the first). `BuildStatus.statesRestored` counts the replay states read again after a miss, for sizing `maxReplayStates`.
 - **Found:** Neula's MR-11, second rehearsal (22/10/2026, CR-7).
 
+#### F350 — A final-state build restores its aggregates one at a time
+- **Low** (performance), likely (Neula's estimate: restoring every ProcessFlow once takes about 12 minutes on one thread, against about 42 for its build with the state and events) · **Fixed for 1.0.3** (23/10/2026, CR-8 B; `ProjectionBuilderSpec` "CR-8", red under the restores on the builder's thread) · `ProjectionBuilder.finalStates`
+- **Symptom:** a build of a projection whose listeners take the state only (D62) restores each aggregate of a page in turn on the builder's thread, though the restores are independent: one core, whatever the machine has.
+- **Fix:** `BuilderSettings.restoreThreads` (default 1, as before): a page's states are restored on that many threads of the builder's own, each with a connection while it reads, and the items made from them on the builder's thread in the aggregates' order, so the projection gets the same items in the same chunks and saves the same positions; a state that cannot be restored is handled as on one thread (CR-4). D93.
+- **Found:** Neula's CR-8 (23/10/2026).
+
+#### F351 — A build's status does not tell what bounds it
+- **Low**, confirmed (Neula needed a flight recording to find where a 42-minute build spent its time) · **Fixed for 1.0.3** (23/10/2026, CR-8 A.6; `ProjectionBuilderSpec` "CR-8") · `ProjectionBuilder`, `BuildStatus`
+- **Symptom:** `BuildStatus` counted what a build sent, not the time it spent reading the store, replaying states or waiting for its projection, so an operator could not tell whether more threads, a faster projection or a faster store would help.
+- **Fix:** `BuildStatus.readingMillis` (store reads, events parsed as read; what gaps and the reconciliation read), `replayingMillis` (the bulk pass's items: replay states, restores) and `waitingMillis` (between messages, unless waiting for its own retry: the projection applying chunks or going live). New fields with defaults, so nodes of 1.0.2 and 1.0.3 read each other's status (D68; `ClusterSerializerSpec`).
+- **Found:** Neula's CR-8 (23/10/2026).
+
 #### F344 — An aggregate that cannot be restored blocks a build silently: the cause is lost, nothing lists it, and the owner ignores the retry
 - **High** (a build never switches), confirmed (Neula's rehearsal: 7 ProcessFlow aggregates whose handler throws on replay) · **Fixed for 1.0.1-RC2** (21/10/2026, CR-4 of Neula's MR-11; `RestoreFailuresSpec`, the owner's answer red under a mutation) · `AggregateOwner`, `ProjectionBuilder`, `ProjectionActor`, the event stores
 - **Symptom:** a state replay that throws marks the build's run unreadable and the projection records a failure under the build; the build never switches. A retry asks the owner to publish again, and an owner that cannot restore ignored the request: the failure ended as "versions from N are missing" after `gapGiveUpAfter` (10 minutes). Nothing recorded which aggregates cannot be restored, nor where; Neula kept an offline `RestoreCheck` of its own.

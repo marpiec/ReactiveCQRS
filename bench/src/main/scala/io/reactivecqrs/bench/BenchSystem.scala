@@ -10,6 +10,7 @@ import io.reactivecqrs.core.eventbus._
 import io.reactivecqrs.core.eventstore.PostgresEventStoreState
 import io.reactivecqrs.core.projection.{PostgresSubscriptionsState, SubscriptionsState}
 import io.reactivecqrs.core.rebuild.ProjectionSupervisor.{Builds, GetBuilds}
+import io.reactivecqrs.core.rebuild.ProjectionBuilder.BuilderSettings
 import io.reactivecqrs.core.rebuild.{PostgresProjectionRegistry, Projections, ProjectionsSettings}
 import io.reactivecqrs.core.types.PostgresTypesNamesState
 import io.reactivecqrs.core.uid.{PostgresUidGenerator, UidGeneratorActor}
@@ -70,10 +71,12 @@ class BenchStores {
   * counters and, optionally, two projections, one events-based and one aggregate-based. `managed` starts them through
   * the projections runtime (M4), so new ones are first built from the stored events; otherwise they are created
   * directly and take only what is delivered live. Subscription versions live in the database (F3). `failing` makes the
-  * events-based projection fail for a counter; `context` sets the counters' command processing and snapshots.
+  * events-based projection fail for a counter; `context` sets the counters' command processing and snapshots. Managed,
+  * `builder` sets how they are built, and `stateOnly` starts the aggregate-based one alone.
   */
 class BenchSystem(name: String, stores: BenchStores, projections: Boolean, managed: Boolean = false,
-                  failing: io.reactivecqrs.api.id.AggregateId => Boolean = _ => false, context: CounterContext = new CounterContext) {
+                  failing: io.reactivecqrs.api.id.AggregateId => Boolean = _ => false, context: CounterContext = new CounterContext,
+                  builder: BuilderSettings = BuilderSettings(), stateOnly: Boolean = false) {
 
   val system: ActorSystem = ActorSystem(name)
 
@@ -99,13 +102,13 @@ class BenchSystem(name: String, stores: BenchStores, projections: Boolean, manag
   private def stateStore(table: String) = new PostgresDocumentStore[Counter](table, stores.mpjsons, new NoopDocumentStoreCache[Counter, AnyRef])
 
   private val subscribers = if (!projections) Nil else if (managed) {
-    val runtime = new Projections(system, ProjectionsSettings(stores.eventStore, subscriptionsState, stores.registry, Seq(context)))
-    List(runtime.start[ManagedCountingProjection](name + "Progress", 1, "progressProjection") { build =>
+    val runtime = new Projections(system, ProjectionsSettings(stores.eventStore, subscriptionsState, stores.registry, Seq(context), builder))
+    val state = runtime.start[ManagedCounterStateProjection](name + "State", 1, "stateProjection") { build =>
+      new ManagedCounterStateProjection(subscriptionsState, stateStore(build.documentStore(name + "_state")), name + "State")
+    }
+    if (stateOnly) List(state) else List(runtime.start[ManagedCountingProjection](name + "Progress", 1, "progressProjection") { build =>
         new ManagedCountingProjection(subscriptionsState, progressStore(build.documentStore(name + "_progress")), name + "Progress", failing)
-      },
-      runtime.start[ManagedCounterStateProjection](name + "State", 1, "stateProjection") { build =>
-        new ManagedCounterStateProjection(subscriptionsState, stateStore(build.documentStore(name + "_state")), name + "State")
-      })
+      }, state)
   } else {
     List(system.actorOf(Props(new CountingProjection(subscriptionsState, progressStore(name + "_progress"), name + "Progress", failing))
       .withDispatcher(BlockingDispatcher.id), "progressProjection"),

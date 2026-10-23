@@ -5,7 +5,7 @@ object Common {
 
   def settings(moduleName: String) = Seq[Setting[_]](
 
-    version := "1.0.2",
+    version := "1.0.3-SNAPSHOT",
 
     organization := "io.reactivecqrs",
     name := s"reactivecqrs-$moduleName",

@@ -1248,7 +1248,8 @@ handlers. It runs on the blocking dispatcher and reads synchronously on its own 
    a run that starts at the aggregate's first event or squash event starts from the initial
    state. A projection whose listeners all take the state only (D62) gets one item per
    aggregate instead, its final state (`aggregatesOf` pages through the aggregates), which
-   starts its subscription. A page is at most `pageSize` events and `pageBytes` (64 MB) of them, a
+   starts its subscription; a page's states are restored on `restoreThreads` threads of the
+   builder's own (CR-8, D93), the items made from them on its thread, in the aggregates' order. A page is at most `pageSize` events and `pageBytes` (64 MB) of them, a
    chunk at most `chunkEvents` (1 000) events and `chunkBytes` (16 MB), at least one event each
    (F126): a run of one aggregate ends where it would pass them, and a chunk ends before an item
    that would not fit (F140). A page its bytes cut short is not taken for the last. Chunks go two in

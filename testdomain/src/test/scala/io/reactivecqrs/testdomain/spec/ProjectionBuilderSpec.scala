@@ -157,6 +157,40 @@ class CountingReplaySource(context: AggregateContext[_], eventStore: EventStoreS
   }
 }
 
+/** CR-8: records how many states it restored at once at most; restoring a note of `slow` takes `pause` ms longer, and
+  * one of `broken` fails. */
+class ThreadsReplaySource(context: AggregateContext[_], eventStore: EventStoreState, slow: Set[AggregateId] = Set.empty, pause: Long = 0,
+                          broken: Set[AggregateId] = Set.empty) extends ReplaySource(context.asInstanceOf[AggregateContext[Any]], eventStore) {
+  private val running = new AtomicInteger()
+  val mostAtOnce = new AtomicInteger()
+  override def stateAt(id: AggregateId, version: Option[AggregateVersion]): Any = {
+    mostAtOnce.accumulateAndGet(running.incrementAndGet(), math.max)
+    try {
+      if (slow.contains(id)) Thread.sleep(pause)
+      if (broken.contains(id)) throw new IllegalStateException("note " + id.asLong + " cannot be restored")
+      super.stateAt(id, version)
+    } finally running.decrementAndGet()
+  }
+}
+
+/** The store, each listing of aggregates taking `pause` ms longer. */
+class SlowListingEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNamesState, pause: Long) extends PostgresEventStoreState(mpjsons, typesNamesState) {
+  override def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int, scope: AggregateScope): Seq[StoredAggregate] = {
+    Thread.sleep(pause)
+    super.aggregatesOf(types, after, limit, scope)
+  }
+}
+
+/** Passes everything on to the projection, recording the aggregates of each chunk's items, in their order. */
+class ChunkIdsRecorder(projection: ActorRef, ids: ConcurrentLinkedQueue[Long]) extends Actor {
+  override def receive: Receive = {
+    case chunk: ApplyChunk =>
+      chunk.items.foreach(item => ids.add(item.aggregateId.asLong))
+      projection.forward(chunk)
+    case other => projection.forward(other)
+  }
+}
+
 /** Passes everything on to the projection, recording how many events each chunk holds. */
 /** F312: a builder's parent, which stops it when it fails, as a projection's supervisor does (AR7): a test must not pass
   * because a builder that failed was restarted. */
@@ -545,6 +579,108 @@ class ProjectionBuilderSpec extends CommonSpec {
       Then("its state was restored once, and the view is the live one")
       counting.restoresOf(note) mustBe 1
       documents(rebuiltViews, Seq(note)) mustBe documents(liveViews, Seq(note))
+    }
+  }
+
+  Feature("Final-state builds on several threads, and where a build's time goes (CR-8)") {
+
+    Scenario("a final-state build restores on several threads and gives the projection the same items, in the same order") {
+      Given("live states of notes with undo, duplication, deletion and a squash, and a note whose state cannot be restored")
+      val liveLines = lines("m4b_threads_live")
+      val live = new Live(Seq(onBlocking(Props(new NoteStates("m4b-threads-live", subscriptions, liveLines)))))
+      val plain = (1 to 12).map { n =>
+        val id = live.create("threads " + n)
+        (1 to 2).foreach(v => live.add(id, v, "line " + v))
+        id
+      }
+      val undone = live.create("undone")
+      live.add(undone, 1, "a")
+      live.send(UndoBuildNote(userId, undone, AggregateVersion(2), 1))
+      val copy = live.send(DuplicateBuildNote(userId, plain.head, AggregateVersion(2))).aggregateId
+      val deleted = live.create("deleted")
+      live.send(DeleteBuildNote(userId, deleted, AggregateVersion(1)))
+      val squashed = live.create("squashed")
+      live.add(squashed, 1, "x")
+      val broken = live.create("broken")
+      val all = plain ++ Seq(undone, copy, deleted, squashed, broken)
+      live.delivered(all)
+      live.notes.askFor[SquashResponse](SquashAggregate(squashed, AggregateVersion(2))) mustBe AggregateSquashed(squashed, AggregateVersion(2))
+
+      When("it is built on one thread and on four, in pages of eight notes")
+      def buildOn(threads: Int, identity: String): (PostgresDocumentStore[NoteLines], ActorRef, ThreadsReplaySource, Seq[Long]) = {
+        val (store, ids) = (lines(identity.replace('-', '_')), new ConcurrentLinkedQueue[Long]())
+        val source = new ThreadsReplaySource(noteContext, eventStore, slow = all.toSet, pause = 20, broken = Set(broken))
+        val target = onBlocking(Props(new NoteStates(identity, subscriptions, store)))
+        build(system.actorOf(Props(new ChunkIdsRecorder(target, ids))), identity, settings = BuilderSettings(pageSize = 8, chunkEvents = 5, restoreThreads = threads),
+          replaySources = Map(AggregateType.of[BuildNote] -> source))
+        (store, target, source, ids.toArray.map(_.asInstanceOf[Long]).toSeq)
+      }
+      val (oneStore, oneTarget, oneSource, oneOrder) = buildOn(1, "m4b-threads-one")
+      val (fourStore, fourTarget, fourSource, fourOrder) = buildOn(4, "m4b-threads-four")
+
+      Then("four threads restored several states at once, one thread one at a time")
+      oneSource.mostAtOnce.get mustBe 1
+      fourSource.mostAtOnce.get must be > 1
+
+      And("the projection got the same items in the same chunks' order, by aggregate, and holds the same states as the live one")
+      fourOrder mustBe oneOrder
+      oneOrder mustBe oneOrder.sorted
+      documents(fourStore, all) mustBe documents(oneStore, all)
+      documents(fourStore, all) mustBe documents(liveLines, all) - broken
+
+      And("the note that cannot be restored failed its subscription in both")
+      def failed(target: ActorRef) = target.askFor[ProjectionStatus](GetProjectionStatus, 5.seconds).failures.map(_.aggregateId).toSet
+      failed(fourTarget) mustBe failed(oneTarget)
+      failed(fourTarget) must contain(broken)
+
+      When("a build on four threads stops after its second chunk is applied, and starts again from the position it saved")
+      val resumed = lines("m4b_threads_resumed")
+      val settings = BuilderSettings(pageSize = 8, chunkEvents = 5, restoreThreads = 4)
+      val firstTarget = onBlocking(Props(new NoteStates("m4b-threads-resumed", subscriptions, resumed)))
+      val saves = new AtomicInteger()
+      val stopped = TestProbe()
+      val positions = new MemoryBuildPositions(position => if (!position.bulkDone && saves.incrementAndGet() == 2) {
+        system.stop(firstTarget)
+        stopped.ref ! position
+      })
+      val sources = Map(AggregateType.of[BuildNote] -> new ThreadsReplaySource(noteContext, eventStore, broken = Set(broken)))
+      builderOf(firstTarget, "m4b-threads-resumed", TestProbe().ref, positions = positions, settings = settings, replaySources = sources)
+      stopped.expectMsgType[BuildPosition](30.seconds).position must be > 0L
+      build(onBlocking(Props(new NoteStates("m4b-threads-resumed", subscriptions, resumed))), "m4b-threads-resumed", positions = positions,
+        settings = settings, replaySources = sources)
+
+      Then("it holds what the build that ran through holds")
+      documents(resumed, all) mustBe documents(fourStore, all)
+    }
+
+    Scenario("a build's status says how long it read the store, replayed states and waited for the projection") {
+      Given("notes whose listing takes 100 ms and whose states take 50 ms each to restore, and a projection that takes 300 ms a chunk")
+      val live = new Live(Nil)
+      val notes = (1 to 3).map(n => live.create("timed " + n)).toSet
+      val listing = onBlocking(Props(new NoteStates("m4b-timed", subscriptions, lines("m4b_timed"))))
+      val plan = BuildPlan(listing.askFor[Listeners](GetListeners, 5.seconds).subscriptions)
+      system.stop(listing)
+      val projection = TestProbe()
+      val builder = onBlocking(Props(new ProjectionBuilder(projection.ref, "m4b-timed", plan, new SlowListingEventStore(mpjsons, typesNamesState, 100),
+        subscriptions, Map(AggregateType.of[BuildNote] -> new ThreadsReplaySource(noteContext, eventStore, slow = notes, pause = 50)), new MemoryBuildPositions,
+        TestProbe().ref, BuilderSettings(pageSize = 100000, chunkEvents = 100000))))
+
+      When("its bulk pass is done")
+      projection.fishForMessage(60.seconds) {
+        case chunk: ApplyChunk =>
+          Thread.sleep(300)
+          projection.reply(ChunkApplied(chunk.id, Nil, 0))
+          false
+        case GoLive => true
+        case _ => false
+      }
+
+      Then("its status shows each")
+      val status = builder.askFor[BuildStatus](GetBuildStatus, 5.seconds)
+      status.phase mustBe "GoingLive"
+      status.readingMillis must be >= 100L
+      status.replayingMillis must be >= 150L
+      status.waitingMillis must be >= 300L
     }
   }
 }

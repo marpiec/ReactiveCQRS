@@ -241,7 +241,11 @@ Faza (`phase`) przechodzi przez `Bulk` (czytanie magazynu), `GoingLive` i `Recon
 do zdarzeń na żywo), a na końcu `CaughtUp`. Nadzorca odpowiada od razu tym, co budowniczy zgłosił
 ostatnio (po każdej porcji i co 2 sekundy; `reportedAt` mówi kiedy), więc budowniczy zajęty długim
 odczytem nigdy nie każe ci czekać; `statesRestored` liczy stany powtórki, które musiał odczytać ponownie,
-co pokazuje, czy `maxReplayStates` nie jest za małe dla twoich agregatów. Gdy żaden budowniczy nie pracuje, nadzorca odpowiada
+co pokazuje, czy `maxReplayStates` nie jest za małe dla twoich agregatów. Trzy kolejne liczby mówią,
+na co poszedł czas budowy: `readingMillis` (czytanie magazynu, razem z parsowaniem zdarzeń),
+`replayingMillis` (nakładanie zdarzeń na stany powtórki i odtwarzanie stanów) oraz `waitingMillis`
+(czekanie, aż projekcja nałoży swoje porcje). Budowę, która głównie czeka, ogranicza praca samej
+projekcji; tę, która głównie odtwarza, obsługa zdarzeń agregatów. Gdy żaden budowniczy nie pracuje, nadzorca odpowiada
 `Waiting` (budowa czeka na swoją kolej albo na restart po błędzie) lub `NoBuild`. Pozostałe liczby
 to: wysłane zdarzenia, wypełnione luki, agregaty przekazane do dostarczania na żywo i zdarzenia,
 których nie udało się odczytać.
@@ -569,7 +573,11 @@ Co pomaga:
 
 - **Projekcje tylko na stanach mają mniej pracy.** Gdy każdy listener projekcji jest
   `AggregateListener`, jak w `CartNames`, budowa pomija historię: przekazuje końcowy stan każdego
-  agregatu, jeden raz.
+  agregatu, jeden raz. `BuilderSettings(restoreThreads = 4)` odtwarza cztery takie stany naraz, na
+  własnych wątkach budowy; projekcja dostaje je w tej samej kolejności i tych samych porcjach. Każdy
+  wątek trzyma połączenie z bazą, gdy czyta, więc dobierz pulę połączeń na `buildsAtOnce` ×
+  `restoreThreads` ponad pracę na żywo. Budowy, które odtwarzają zdarzenia w kolejności zatwierdzeń,
+  działają na jednym wątku.
 - **Migawki pomagają też budowom.** Budowa, która odtwarza zdarzenia w kolejności zatwierdzeń, trzyma
   otwartych najwyżej 10 000 stanów agregatów; stan, który porzuciła, odczytuje ponownie z jego
   migawki (rozdział 13) i zdarzeń po niej.

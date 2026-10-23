@@ -116,6 +116,7 @@ Members of your `AggregateContext`; override the ones you need.
 | `BuilderSettings` `pageSize`, `pageBytes` | `1000` events, `64 MB` | How much of the store a build reads at a time. | [10](10-rebuilding-projections.md), [18](18-production.md) |
 | `chunkEvents`, `chunkBytes`, `chunksInFlight` | `1000`, `16 MB`, `2` | The parts a build hands its projection, and how many are on their way at once. | [10](10-rebuilding-projections.md) |
 | `maxReplayStates`, `retryAfter` | `10000`, `5 s` | The most aggregate states a build keeps open while it replays the store in commit order; the wait after the store or the projection failed. | — |
+| `restoreThreads` | `1` | How many aggregates a build of a state-only projection restores at once, each thread with a database connection while it reads. | [10](10-rebuilding-projections.md) |
 | `Projections.start(name, version, actorName, whileBuilding)` | `ServeLive` | Whether the active build keeps taking deliveries while a new one is built (`ServeStale`: it does not). | [10](10-rebuilding-projections.md) |
 
 ## Sagas, squash, organizations and rewrites

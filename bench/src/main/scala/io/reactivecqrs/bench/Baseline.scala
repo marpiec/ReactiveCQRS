@@ -119,6 +119,8 @@ object Baseline {
       if (runs("heavy")) heavy(stores, config, report)
       // Short JSON keys (§7.1): a comparison with a report of its own, so only when listed.
       if (config.scenarios.contains("jsonNames")) JsonNames.run(stores, config, report)
+      // CR-8: a final-state build on 1, 2, 4 and 8 threads, only when listed.
+      if (config.scenarios.contains("restoreThreads")) restoreThreads(stores, config, report)
     } finally {
       BenchDatabase.drop()
     }
@@ -237,6 +239,30 @@ object Baseline {
       "Two new managed projections of the counters, built from the store when they start (D57–D62): the events-based one " +
         "in commit order, in chunks of 1 000 events applied in one transaction each; the state-only one from each counter's " +
         "final state (D62). Times count from the start of the system.")
+  }
+
+  private def restoreThreads(stores: BenchStores, config: Config, report: Report): Unit = {
+    val note = "n" * config.noteSize
+    (1 to config.rebuildAggregates).foreach(i => writeHistory(stores, AggregateId(4000000000L + i), config.rebuildEventsPerAggregate, note))
+    val (aggregates, events) = DB.readOnly { implicit session =>
+      (sql"SELECT count(*) FROM aggregates WHERE base_order = 1".map(_.long(1)).single().get, sql"SELECT count(*) FROM events".map(_.long(1)).single().get)
+    }
+    // The first build only warms the JVM and the caches; it is not reported.
+    val rows = Seq(1, 1, 2, 4, 8).zipWithIndex.map { case (threads, run) =>
+      val started = System.nanoTime()
+      val system = new BenchSystem("restore" + run, stores, projections = true, managed = true,
+        builder = io.reactivecqrs.core.rebuild.ProjectionBuilder.BuilderSettings(restoreThreads = threads), stateOnly = true)
+      val builtNanos = awaitUntil(20.minutes)(system.built()).map(_ => System.nanoTime() - started)
+      system.shutdown()
+      Seq(threads.toString, builtNanos.map(millis).getOrElse("not within 20 minutes"),
+        builtNanos.map(nanos => f"${aggregates / seconds(nanos)}%.0f aggregates/s").getOrElse("-"),
+        builtNanos.map(nanos => f"${events / seconds(nanos)}%.0f events/s").getOrElse("-"))
+    }.drop(1)
+    report.section("Final-state build on several threads (CR-8)", Seq("restoreThreads", "until built and switched", "aggregates restored", "events read"), rows,
+      s"A new managed state-only projection of the counters, built from each one's final state (D62), once per thread count: " +
+        s"$aggregates aggregates, $events events in the store (${config.rebuildAggregates} counters of ${config.rebuildEventsPerAggregate} events " +
+        "written for this, plus the earlier scenarios'). No snapshots, so each restore reads every event of its counter. " +
+        "Times count from the start of the system, after a first build on one thread that warms the JVM and the caches.")
   }
 
   private def restore(stores: BenchStores, config: Config, report: Report): Unit = {

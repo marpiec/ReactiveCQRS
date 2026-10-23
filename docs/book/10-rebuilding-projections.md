@@ -236,7 +236,11 @@ The `phase` goes `Bulk` (reading the store), `GoingLive` and `Reconciling` (join
 events), then `CaughtUp`. The supervisor answers at once, with what the builder reported last (after each
 chunk, and every 2 seconds; `reportedAt` says when), so a builder busy with a long read never makes you
 wait; `statesRestored` counts the replay states it had to read again, which tells whether
-`maxReplayStates` is too small for your aggregates. Without a builder at work the supervisor answers `Waiting` (the build
+`maxReplayStates` is too small for your aggregates. Three more numbers say where the build's time
+went: `readingMillis` (reading the store, parsing the events included), `replayingMillis` (applying
+events to the replay states, and restoring states) and `waitingMillis` (waiting for the projection to
+apply its chunks). A build mostly waiting is bound by the projection's own work; one mostly replaying,
+by the aggregates' event handlers. Without a builder at work the supervisor answers `Waiting` (the build
 waits for its turn, or for a restart after a failure) or `NoBuild`. The other numbers count the
 events sent, the gaps filled, the aggregates handed over to live delivery and the events that
 could not be read.
@@ -555,7 +559,11 @@ Things that help:
 
 - **State-only projections do less work.** When every listener of a projection is an
   `AggregateListener`, as in `CartNames`, the build skips the history: it hands over each
-  aggregate's final state, once.
+  aggregate's final state, once. `BuilderSettings(restoreThreads = 4)` restores four of those states
+  at once, on threads of the build's own; the projection still gets them in the same order and
+  chunks. Each thread holds a database connection while it reads, so size the connection pool for
+  `buildsAtOnce` × `restoreThreads` on top of your live work. Builds that replay events in commit
+  order run on one thread.
 - **Snapshots help builds too.** A build that replays events in commit order keeps at most 10 000
   aggregate states open; a state it dropped is read again from its snapshot (chapter 13) and the
   events after it.

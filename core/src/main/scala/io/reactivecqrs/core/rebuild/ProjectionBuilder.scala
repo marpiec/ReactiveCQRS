@@ -10,8 +10,12 @@ import io.reactivecqrs.core.rebuild.ProjectionBuilder._
 import io.reactivecqrs.core.util.MyActorLogging
 import org.apache.pekko.actor.{Actor, ActorRef, Status, Terminated}
 
+import java.util.concurrent.Executors
+
 import scala.collection.mutable
+import scala.concurrent.{Await, ExecutionContext, Future}
 import scala.concurrent.duration._
+import scala.util.Try
 import scala.util.control.NonFatal
 import io.reactivecqrs.core.util.Errors
 
@@ -46,9 +50,12 @@ object ProjectionBuilder {
     * @param chunkEvents events per chunk, one transaction of the projection, and at most `chunkBytes` of events (F126)
     * @param chunksInFlight chunks sent and not yet applied: the next page is read while the projection applies them
     * @param maxReplayStates aggregate states kept open by a commit-order replay (D59)
-    * @param retryAfter the wait after the store or the projection failed */
+    * @param retryAfter the wait after the store or the projection failed
+    * @param restoreThreads CR-8: how many aggregates a final-state build (D62) restores at once, each on a thread of the
+    *                       builder's own and with a database connection while it reads; 1 restores them on its thread */
   case class BuilderSettings(pageSize: Int = 1000, chunkEvents: Int = 1000, chunksInFlight: Int = 2, maxReplayStates: Int = 10000,
-                             retryAfter: FiniteDuration = 5.seconds, pageBytes: Long = 64L * 1024 * 1024, chunkBytes: Long = 16L * 1024 * 1024)
+                             retryAfter: FiniteDuration = 5.seconds, pageBytes: Long = 64L * 1024 * 1024, chunkBytes: Long = 16L * 1024 * 1024,
+                             restoreThreads: Int = 1)
 
   /** To `reportTo`: the projection is live and has applied every event committed before it went live, or recorded a
     * failure for it (D20a). */
@@ -60,9 +67,14 @@ object ProjectionBuilder {
     * the supervisor without one, `Waiting` (a build waits for its turn, a restart, or, with `heldBy` saying why, a hold of
     * full builds: CR-2) or `NoBuild`. `position`: how far the bulk pass got. `reportedAt` (CR-7): when the builder
     * reported these numbers, which it does after each chunk and every 2 s; a builder in a long read reports late.
-    * `statesRestored`: replay states read again from the store as more were open than `maxReplayStates` (D59). */
+    * `statesRestored`: replay states read again from the store as more were open than `maxReplayStates` (D59).
+    * CR-8, where the builder's time went: `readingMillis` reading the store (the events parsed as they are read, and what
+    * the gaps and the reconciliation read, states included), `replayingMillis` making the bulk pass's items (applying
+    * events to replay states, restoring states), `waitingMillis` waiting for the projection to apply its chunks or go
+    * live. The rest is the builder's own work and its waits to retry. */
   case class BuildStatus(phase: String, position: Long, eventsSent: Long, gapsFilled: Long, handedOver: Long, unreadable: Long,
-                         heldBy: Option[String] = None, reportedAt: Option[java.time.Instant] = None, statesRestored: Long = 0)
+                         heldBy: Option[String] = None, reportedAt: Option[java.time.Instant] = None, statesRestored: Long = 0,
+                         readingMillis: Long = 0, replayingMillis: Long = 0, waitingMillis: Long = 0)
   object BuildStatus {
     /** No build runs. */
     val NoBuild: BuildStatus = BuildStatus("NoBuild", 0, 0, 0, 0, 0)
@@ -93,7 +105,8 @@ object ProjectionBuilder {
   * Missing versions the projection reports (`ChunkApplied.gaps`, `RequestRepublish`) are read again by version. The
   * position of the bulk pass is saved after each chunk the projection applied, so a build continues after a crash
   * and repeats at most the chunks in flight; the projection's own versions make that repetition harmless. Reads are
-  * synchronous on the builder's thread: create it on the blocking dispatcher.
+  * synchronous on the builder's thread: create it on the blocking dispatcher. CR-8: a final-state build restores a page's
+  * states on `restoreThreads` threads of its own and waits for them; everything else stays on the builder's thread.
   *
   * CR-4: with `restoreFailures` (the build it builds), an aggregate it cannot restore or read is recorded in the store
   * (`EventStoreState.recordRestoreFailure`), in any phase. CR-7: with `reportStatus`, it tells `reportTo` its status
@@ -140,10 +153,35 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
 
   private val reports = if (reportStatus) Some(context.system.scheduler.scheduleWithFixedDelay(2.seconds, 2.seconds, self, ReportStatus)(context.dispatcher)) else None
 
-  override def postStop(): Unit = reports.foreach(_.cancel())
+  // CR-8: the threads a final-state build restores its aggregates on, when more than one.
+  private val restorers = if (settings.restoreThreads > 1 && plan.finalStates) Some(Executors.newFixedThreadPool(settings.restoreThreads)) else None
+  private val restoring = restorers.map(ExecutionContext.fromExecutor)
+
+  // CR-8: where the time went, in nanoseconds, and since when the builder waits for the projection.
+  private var reading = 0L
+  private var replaying = 0L
+  private var waiting = 0L
+  private var idleSince = Option.empty[Long]
+
+  override def postStop(): Unit = {
+    reports.foreach(_.cancel())
+    restorers.foreach(_.shutdown())
+  }
 
   private def status: BuildStatus = BuildStatus(phase.toString, position, eventsSent, gapsFilled, handedOver, unreadable,
-    reportedAt = Some(java.time.Instant.now), statesRestored = states.restored)
+    reportedAt = Some(java.time.Instant.now), statesRestored = states.restored, readingMillis = reading / 1000000,
+    replayingMillis = replaying / 1000000, waitingMillis = waiting / 1000000)
+
+  private def reads[T](body: => T): T = timed(body)(reading += _)
+  private def replays[T](body: => T): T = timed(body)(replaying += _)
+  private def timed[T](body: => T)(spent: Long => Unit): T = {
+    val start = System.nanoTime()
+    try body finally spent(System.nanoTime() - start)
+  }
+
+  // Between messages the builder waits for the projection: to apply a chunk, to answer an item handed over, or to go
+  // live. A wait for its own retry is not counted.
+  private def idle(): Unit = idleSince = if (waitingToRetry) None else Some(System.nanoTime())
 
   private def report(): Unit = if (reportStatus) reportTo ! BuildStatusReport(status)
 
@@ -161,9 +199,16 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
         (if (plan.finalStates) " from the final states of its aggregates (D62)" else " from the events in commit order (D59)"))
       pump()
     }
+    idle()
   }
 
-  override def receive: Receive = {
+  override def receive: Receive = { case message =>
+    idleSince.foreach(since => waiting += System.nanoTime() - since)
+    handle.applyOrElse(message, unhandled)
+    idle()
+  }
+
+  private val handle: Receive = {
     case ChunkApplied(id, gaps, handed) =>
       inFlight.dequeueFirst(_._1.id == id).foreach { case (_, reached) =>
         if (phase == Bulk && reached >= 0) save(BuildPosition(bulkDone = false, reached))
@@ -251,7 +296,7 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
     var read = true
     while (read && work.nonEmpty && events < settings.chunkEvents && bytes < settings.chunkBytes) {
       try {
-        val made = work.head()
+        val made = reads(work.head())
         work.dequeue()
         items ++= made
         events += made.map(item => math.max(item.events.size, 1)).sum
@@ -287,12 +332,14 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
   private def readNextPage(): Boolean = try {
     var cut = false // a page its bytes ended is short, but not the last (F126)
     val (items, reached, count) = phase match {
-      case Bulk if plan.finalStates => finalStates(eventStore.aggregatesOf(plan.types, AggregateId(position), settings.pageSize, scope))
+      case Bulk if plan.finalStates =>
+        val aggregates = reads(eventStore.aggregatesOf(plan.types, AggregateId(position), settings.pageSize, scope))
+        replays(finalStates(aggregates))
       case Bulk =>
-        val page = eventStore.readCommittedPage(plan.types, position, settings.pageSize, scope, settings.pageBytes)
+        val page = reads(eventStore.readCommittedPage(plan.types, position, settings.pageSize, scope, settings.pageBytes))
         cut = page.cut
-        committed(page.events)
-      case _ => behind(eventStore.aggregatesOf(plan.types, AggregateId(position), settings.pageSize, scope))
+        replays(committed(page.events))
+      case _ => reads(behind(eventStore.aggregatesOf(plan.types, AggregateId(position), settings.pageSize, scope)))
     }
     readAll = count < settings.pageSize && !cut
     position = reached
@@ -397,11 +444,25 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
     ChunkItem(kind, aggregateType, id, events.head.version, events.last.version, withEvents, state, startsAtSquash)
   }
 
-  // D62: one item per aggregate, its final state (snapshot plus tail), which starts the subscription.
+  // D62: one item per aggregate, its final state (snapshot plus tail), which starts the subscription. CR-8: the states
+  // are restored on `restoreThreads` threads, the items made from them on this one, in the aggregates' order.
   private def finalStates(aggregates: Seq[StoredAggregate]): (Seq[(ChunkItem, Long)], Long, Int) = {
-    val items = aggregates.map(a => itemsFrom(a.aggregateType, a.aggregateId, SubscriptionType.AGGREGATES, AggregateVersion(1), a.squashedUpTo, Some(a.version))
-      .map(_ -> a.aggregateId.asLong)).flatten
+    val items = aggregates.zip(restored(aggregates)).flatMap { case (a, state) =>
+      itemsFrom(a.aggregateType, a.aggregateId, SubscriptionType.AGGREGATES, AggregateVersion(1), a.squashedUpTo, Some(a.version), Some(state))
+        .map(_ -> a.aggregateId.asLong)
+    }
     (items, aggregates.lastOption.map(_.aggregateId.asLong).getOrElse(position), aggregates.size)
+  }
+
+  // Each aggregate's state at its version, or why it could not be restored, which `itemsFrom` handles as its own.
+  private def restored(aggregates: Seq[StoredAggregate]): Seq[Try[Any]] = {
+    def restore(a: StoredAggregate): Try[Any] = Try(sources(a.aggregateType).stateAt(a.aggregateId, Some(a.version)))
+    restoring match {
+      case Some(pool) if aggregates.size > 1 =>
+        implicit val ec: ExecutionContext = pool
+        Await.result(Future.traverse(aggregates)(a => Future(restore(a))), Duration.Inf)
+      case _ => aggregates.map(restore)
+    }
   }
 
   // ************** The reconciliation, and missing versions
@@ -422,13 +483,14 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
 
   // The versions of one aggregate from `from` on, read by version; a range from below the squash point starts at the
   // squash event (D51), which starts the subscription (F98). A state listener gets the state at `version` (read when not
-  // given) as a whole state, which needs nothing before it.
+  // given) as a whole state, which needs nothing before it; `state`: that state, restored already.
   private def itemsFrom(aggregateType: AggregateType, id: AggregateId, kind: SubscriptionType, from: AggregateVersion,
-                        squashedUpTo: Option[AggregateVersion], version: Option[AggregateVersion] = None): Seq[ChunkItem] =
+                        squashedUpTo: Option[AggregateVersion], version: Option[AggregateVersion] = None, state: Option[Try[Any]] = None): Seq[ChunkItem] =
     try {
       if (kind == SubscriptionType.AGGREGATES) {
         val current = version.orElse(eventStore.aggregatesOf(Seq(aggregateType), AggregateId(id.asLong - 1), 1).find(_.aggregateId == id).map(_.version))
-        current.toSeq.map(v => ChunkItem(kind, aggregateType, id, from, v, Nil, Option(sources(aggregateType).stateAt(id, Some(v))), startsSequence = true))
+        current.toSeq.map(v => ChunkItem(kind, aggregateType, id, from, v, Nil, Option(state.fold(sources(aggregateType).stateAt(id, Some(v)))(_.get)),
+          startsSequence = true))
       } else {
         // In parts of at most a chunk's events and bytes (F126, F140), one item each. Nothing is stored below the squash
         // point: the range starts at it, and goes on from it when a squash since then left a part empty.

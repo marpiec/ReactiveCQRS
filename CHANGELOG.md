@@ -2,6 +2,16 @@
 
 Notable changes of ReactiveCQRS, newest first. Dates are DD/MM/YYYY.
 
+## 1.0.3 (not released)
+
+Neula's change request CR-8, parts B and A.6, on top of 1.0.2. Every new setting defaults to the behaviour of 1.0.2.
+
+- **New:** a build of a state-only projection restores its aggregates on several threads (F350, D93, chapter 10):
+  `BuilderSettings(restoreThreads = n)`, default 1. The projection gets the same items in the same order and chunks;
+  each thread holds a database connection while it reads. Builds that replay events in commit order stay on one thread.
+- **New:** a build's status says where its time went (F351, chapter 10): `BuildStatus.readingMillis`,
+  `replayingMillis` and `waitingMillis` (waiting for the projection). Nodes of 1.0.2 and 1.0.3 read each other's status.
+
 ## 1.0.2 (22/10/2026)
 
 Neula's MR-11 change requests CR-6 and CR-7, from its second rehearsal, on top of 1.0.1.

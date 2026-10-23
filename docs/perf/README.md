@@ -28,7 +28,10 @@ The name becomes the report file, `docs/perf/<name>.md`. Sizes can follow the na
 `jsonNames` `jsonRuns`, `jsonCalls`, `jsonCommands`, `jsonRestoreEvents`, `jsonRebuildEvents`, `jsonDocuments`), and
 `scenarios=commands,contended,serial,rebuild,restore,soak,deliverySoak,burst,long,large,heavy` runs only those (all
 by default; the baselines run the first seven); `jsonNames` runs only when listed
-(`sbt "bench/run jsonnames-M6 scenarios=jsonNames"`, about 30 minutes). For example a quick check:
+(`sbt "bench/run jsonnames-M6 scenarios=jsonNames"`, about 30 minutes), and so does `restoreThreads`, a
+final-state build on 1, 2, 4 and 8 threads over `rebuildAggregates` counters of `rebuildEventsPerAggregate` events
+(CR-8, `sbt "bench/run restore-threads-1.0.3 scenarios=restoreThreads rebuildAggregates=10000 rebuildEventsPerAggregate=50"`).
+For example a quick check:
 
 ```bash
 sbt "bench/run smoke workers=2 commandsPerWorker=10 restoreSizes=100,1000 soakSeconds=5"

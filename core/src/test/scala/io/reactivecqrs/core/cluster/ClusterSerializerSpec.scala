@@ -18,6 +18,9 @@ case class NewShape(id: Int, name: String, added: Option[Int], counted: Long, wi
 case class ChangedShape(id: String, name: String)
 // 1.0.1-RC1's shapes of the messages 1.0.1-RC2 added a field to (CR-2).
 case class BuildStatusOfRc1(phase: String, position: Long, eventsSent: Long, gapsFilled: Long, handedOver: Long, unreadable: Long)
+// 1.0.2's shape of the build status, which 1.0.3 added the timings to (CR-8).
+case class BuildStatusOf102(phase: String, position: Long, eventsSent: Long, gapsFilled: Long, handedOver: Long, unreadable: Long,
+                            heldBy: Option[String], reportedAt: Option[java.time.Instant], statesRestored: Long)
 // An actor's own messages are defined inside its class, so they hold its instance.
 class Holder { case class Inner(id: Int) }
 
@@ -62,6 +65,15 @@ class ClusterSerializerSpec extends AnyFeatureSpec with Matchers with BeforeAndA
       Seq(BuildStatus("Waiting", 1, 0, 0, 0, 0, Some("the event keys are not complete")), io.reactivecqrs.core.delivery.CannotRestore(AggregateId(7), "a cause"),
         io.reactivecqrs.core.projection.SkipAggregate(AggregateId(7)), io.reactivecqrs.core.projection.AggregateSkipped(AggregateId(7), AggregateVersion(3), 1)
       ).foreach(message => serializer.fromBinary(serializer.toBinary(message), serializer.manifest(message)) mustBe message)
+    }
+
+    Scenario("1.0.3's build status: one of 1.0.2 reads without its timings, and the timings travel (CR-8)") {
+      import io.reactivecqrs.core.rebuild.ProjectionBuilder.BuildStatus
+      val at = Some(java.time.Instant.parse("2026-10-23T10:00:00Z"))
+      asWrittenFor(BuildStatusOf102("Bulk", 5, 6, 7, 8, 9, None, at, 3), classOf[BuildStatus]) mustBe BuildStatus("Bulk", 5, 6, 7, 8, 9, None, at, 3)
+      val timed = BuildStatus("Bulk", 5, 6, 7, 8, 9, None, at, 3, readingMillis = 10, replayingMillis = 20, waitingMillis = 30)
+      val serializer = new ClusterSerializer(system)
+      serializer.fromBinary(serializer.toBinary(timed), serializer.manifest(timed)) mustBe timed
     }
 
     Scenario("a field whose type changed fails the message") {
