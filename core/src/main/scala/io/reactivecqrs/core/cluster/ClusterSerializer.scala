@@ -261,7 +261,7 @@ object ClusterSerializer {
           "value sent between nodes is a case class or object, a collection, a string, number, boolean, character or java.time value")
         out.writeByte(Json)
         str(className)
-        str(json.serialize[Any](other, className))
+        bytes(json.serializeToBytes[Any](other, className))
     }
 
     /** A library case class, field by field with the fields' names (D68); `className` differs from its own only in tests.
@@ -290,7 +290,7 @@ object ClusterSerializer {
         out.writeLong(e.timestamp.getEpochSecond)
         out.writeInt(e.timestamp.getNano)
         out.writeInt(index(className))
-        str(json.serialize[Any](e.event, className))
+        bytes(json.serializeToBytes[Any](e.event, className))
         write(e.storedMetadata)
       }
     }
@@ -329,10 +329,12 @@ object ClusterSerializer {
       fields.foreach(write)
     }
 
-    private def str(s: String): Unit = {
-      val bytes = s.getBytes(UTF_8)
-      out.writeInt(bytes.length)
-      out.write(bytes)
+    private def str(s: String): Unit = bytes(s.getBytes(UTF_8))
+
+    // A string's UTF-8 bytes, after their length; JSON is written so straight from mpjsons, without the string (D94).
+    private def bytes(utf8: Array[Byte]): Unit = {
+      out.writeInt(utf8.length)
+      out.write(utf8)
     }
   }
 

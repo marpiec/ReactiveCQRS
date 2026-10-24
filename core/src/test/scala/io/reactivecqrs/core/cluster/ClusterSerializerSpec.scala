@@ -81,6 +81,29 @@ class ClusterSerializerSpec extends AnyFeatureSpec with Matchers with BeforeAndA
     }
   }
 
+  Feature("The bytes on the wire (D94)") {
+
+    Scenario("an application's value goes as JSON in the same bytes as before: its class, then its JSON's UTF-8 bytes") {
+      val value = example.NoteValue(7, "zażółć gęślą jaźń")
+      val mpjsons = ClusterSerialization(system).mpjsons
+      val written = new ByteArrayOutputStream()
+      val out = new DataOutputStream(written)
+      new ClusterSerializer.Writer(out, mpjsons).write(value)
+      out.flush()
+
+      // 1.0.3's writer: the JSON built as a string, then encoded.
+      val before = new ByteArrayOutputStream()
+      val old = new DataOutputStream(before)
+      def str(s: String): Unit = { val b = s.getBytes("UTF-8"); old.writeInt(b.length); old.write(b) }
+      old.writeByte(24) // as JSON
+      str(value.getClass.getName)
+      str(mpjsons.serialize[Any](value, value.getClass.getName))
+      old.flush()
+
+      written.toByteArray mustBe before.toByteArray
+    }
+  }
+
   Feature("The limits of messages between nodes") {
 
     Scenario("F249 with large-message destinations, an ordinary destination keeps the ordinary frame's limit") {
