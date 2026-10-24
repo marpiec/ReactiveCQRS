@@ -1,9 +1,9 @@
-# E2's node image (chapter 17): a Java 21 runtime and the examples' jars, which `sbt examples/stageE2` puts in
+# E2's node image (chapter 17): a Java 25 runtime (mpjsons needs it) and the examples' jars, which `sbt examples/stageE2` puts in
 # examples/target/e2/lib. Docker Compose builds it (docker-compose.yml); by hand, from the repository's root:
 #   sbt examples/stageE2
 #   docker build -f examples/deploy/e2/Dockerfile -t reactivecqrs-e2:1.0.0 examples/target/e2
 
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:25-jre
 
 WORKDIR /app
 COPY lib /app/lib

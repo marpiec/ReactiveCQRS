@@ -614,7 +614,7 @@ E2 ma w `examples/deploy/e2/` wszystko, czego trzeba, żeby uruchomić jego węz
 
 | Plik | Co to jest |
 |---|---|
-| `Dockerfile` | obraz ze środowiskiem uruchomieniowym Javy 21 i jarami przykładów, który uruchamia `ClusterSetup` z E2 |
+| `Dockerfile` | obraz ze środowiskiem uruchomieniowym Javy 25 i jarami przykładów, który uruchamia `ClusterSetup` z E2 |
 | `docker-compose.yml` | trzy węzły i PostgreSQL na jednej maszynie |
 | `kubernetes.yaml` | trzy węzły na Kubernetesie, z dzierżawą dla split brain resolvera |
 

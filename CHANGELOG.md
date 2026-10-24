@@ -2,6 +2,13 @@
 
 Notable changes of ReactiveCQRS, newest first. Dates are DD/MM/YYYY.
 
+## Unreleased
+
+- **Breaking for users on Java 21 to 24: the library now needs a Java 25 runtime** (D94, chapter 2). It depends on
+  mpjsons 0.7.8 (was 0.7.0), the version Neula runs it with; mpjsons 0.7.6 and later need Java 25. The library's own
+  classes are still compiled for Java 21. The stored JSON is unchanged (`StoredFormatsSpec`). E2's image runs on
+  `eclipse-temurin:25-jre`.
+
 ## 1.0.3 (23/10/2026)
 
 Neula's change request CR-8, parts B and A.6, on top of 1.0.2. Every new setting defaults to the behaviour of 1.0.2.

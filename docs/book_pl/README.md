@@ -126,8 +126,8 @@ przedstawia jako hipotetyczny lub celowo błędny.
 
 ## Wersja, którą opisuje ta książka
 
-ReactiveCQRS **1.0** (wydanie `1.0.0` z 18/10/2026), na Scali 2.13, Apache Pekko 1.7, Javie 21
-i PostgreSQL. Każda funkcja, którą pokazuje książka, jest zbudowana i przetestowana.
+ReactiveCQRS **1.0** (wydanie `1.0.0` z 18/10/2026), na Scali 2.13, Apache Pekko 1.7, Javie 25
+(klasy biblioteki kompilowane dla 21) i PostgreSQL. Każda funkcja, którą pokazuje książka, jest zbudowana i przetestowana.
 
 Dla opiekunów biblioteki: jak działa ona w środku, opisuje [`../ARCHITECTURE.md`](../ARCHITECTURE.md);
 znane problemy i podjęte decyzje są w [`../KNOWN-ISSUES.md`](../KNOWN-ISSUES.md); zachowanie pod dużym

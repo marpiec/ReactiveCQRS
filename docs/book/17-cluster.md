@@ -597,7 +597,7 @@ E2 comes with what it takes to run its nodes as separate processes, in `examples
 
 | File | What it is |
 |---|---|
-| `Dockerfile` | an image with a Java 21 runtime and the examples' jars, which runs E2's `ClusterSetup` |
+| `Dockerfile` | an image with a Java 25 runtime and the examples' jars, which runs E2's `ClusterSetup` |
 | `docker-compose.yml` | three nodes and a PostgreSQL on one machine |
 | `kubernetes.yaml` | three nodes on Kubernetes, with the split brain resolver's lease |
 

@@ -63,7 +63,7 @@ It was built for, and runs, the Neula platform.
 
 ## Requirements
 
-- JDK 21 or newer (the library is compiled for Java 21)
+- JDK 25 or newer to run it, as mpjsons 0.7.8 needs it (the library's own classes are compiled for Java 21)
 - Scala 2.13 (the library is built with 2.13.18)
 - PostgreSQL (measured on 17.4)
 - sbt

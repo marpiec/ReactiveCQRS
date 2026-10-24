@@ -65,7 +65,7 @@ object Common {
     val pekkoVersion = "1.7.1"
 
     val common = Seq(
-      "io.mpjsons" %% "mpjsons" % "0.7.0",
+      "io.mpjsons" %% "mpjsons" % "0.7.8",
       "com.typesafe" % "config" % "1.4.3",
       "org.slf4j" % "slf4j-api" % "2.0.17",
       "org.scala-lang.modules" %% "scala-parallel-collections" % "1.2.0",

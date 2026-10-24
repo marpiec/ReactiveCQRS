@@ -124,8 +124,8 @@ hypothetical, or wrong on purpose.
 
 ## The version this book describes
 
-ReactiveCQRS **1.0** (`1.0.0`, released 18/10/2026), on Scala 2.13, Apache Pekko 1.7, Java 21 and
-PostgreSQL. Every feature the book shows is built and tested.
+ReactiveCQRS **1.0** (`1.0.0`, released 18/10/2026), on Scala 2.13, Apache Pekko 1.7, Java 25 (the
+library's classes compiled for 21) and PostgreSQL. Every feature the book shows is built and tested.
 
 For maintainers: how the library works inside is in [`../ARCHITECTURE.md`](../ARCHITECTURE.md);
 known problems and decisions are in [`../KNOWN-ISSUES.md`](../KNOWN-ISSUES.md); behaviour under

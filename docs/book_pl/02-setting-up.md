@@ -9,8 +9,9 @@ później oszczędzi ci najwięcej drapania się po głowie. Zróbmy miejsce na 
 
 ## Co musisz mieć na biurku
 
-- **JDK w wersji 21 lub nowszej.** Biblioteka jest kompilowana dla Javy 21 (`-release 21` w jej
-  ustawieniach kompilacji), a jej zestawy testów działają też na Javie 25.
+- **JDK w wersji 25 lub nowszej.** Biblioteka JSON, z której korzysta biblioteka, mpjsons 0.7.8,
+  wymaga do działania Javy 25. Własne klasy biblioteki są nadal kompilowane dla Javy 21 (`-release 21`
+  w jej ustawieniach kompilacji).
 - **Scala 2.13.** Biblioteka jest kompilowana Scalą 2.13.18 i publikowana tylko dla 2.13.
 - **sbt**, narzędzie do budowania projektów w Scali. Wystarczy dowolne wydanie 1.x; sama biblioteka
   buduje się wersją 1.11.7.
@@ -393,7 +394,7 @@ z kroku 4 w działaniu.
 
 ## Co już umiesz
 
-- Potrzebujesz JDK 21 lub nowszego, Scali 2.13, sbt i PostgreSQL; Pekko, ScalikeJDBC i sterownik JDBC
+- Potrzebujesz JDK 25 lub nowszego, Scali 2.13, sbt i PostgreSQL; Pekko, ScalikeJDBC i sterownik JDBC
   biblioteka przynosi ze sobą.
 - Biblioteka to `io.reactivecqrs %% reactivecqrs-api` (dla twojej domeny)
   i `io.reactivecqrs %% reactivecqrs-core` (maszyneria), w wersji `1.0.0`.
