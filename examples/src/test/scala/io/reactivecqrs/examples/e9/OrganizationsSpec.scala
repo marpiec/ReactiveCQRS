@@ -70,10 +70,10 @@ class OrganizationsSpec extends CommonSpec {
         // #spaceRows
         import io.reactivecqrs.core.tools.StoredDataCheck
 
-        val left = StoredDataCheck.spaceRows(42L) // Map(aggregates -> 0, event_keys -> 0, sagas -> 0, projection_shop_carts_v1 -> 0)
+        val left = StoredDataCheck.spaceRows(42L) // Map(aggregates -> 0, events -> 0, sagas -> 0, projection_shop_carts_v1 -> 0)
         // #spaceRows
         left.values.sum mustBe 0L
-        left.keySet must contain allOf ("aggregates", "event_keys", "projection_shop_carts_v1")
+        left.keySet must contain allOf ("aggregates", "events", "projection_shop_carts_v1")
       } finally Await.ready(app.terminate(), 30.seconds)
     }
 

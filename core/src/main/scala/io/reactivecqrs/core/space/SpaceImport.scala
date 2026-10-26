@@ -305,9 +305,9 @@ class SpaceImport(eventStore: PostgresEventStoreState, uidGenerator: ActorRef, c
     }
     def flushEvents(): Unit = if (eventRows.nonEmpty) {
       DB.localTx { implicit session =>
-        sql"""WITH e AS (INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event, metadata)
-             |   VALUES (nextval('events_seq'), ?, ?, ?, ?, ?, 0, ?, ?::jsonb) RETURNING id),
-             | k AS (INSERT INTO event_keys (id, type_id, space_id) SELECT id, ?, ? FROM e)
+        sql"""WITH e AS (INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event, metadata,
+             |     type_id, space_id)
+             |   VALUES (nextval('events_seq'), ?, ?, ?, ?, ?, 0, ?, ?::jsonb, ?, ?) RETURNING id)
              | INSERT INTO noop_events (id, from_version) SELECT id, ?::int FROM e WHERE ?::int IS NOT NULL""".stripMargin.batch(eventRows.toSeq: _*).apply[Seq]()
       }
       eventRows.clear()

@@ -23,7 +23,7 @@ class SetupCheckSpec extends AnyFeatureSpec with Matchers {
         SetupCheck.initTables()
         (first, tables())
       }
-      first mustBe Set("aggregate_lineage", "aggregates", "commands_responses", "event_keys", "events", "events_archive",
+      first mustBe Set("aggregate_lineage", "aggregates", "commands_responses", "events", "events_archive",
         "events_to_publish", "history_rewrites", "noop_events", "online_jobs", "restore_failures", "sagas", "schema_steps", "snapshots", "subscription_failures",
         "subscriptions", "types_names")
       second mustBe first

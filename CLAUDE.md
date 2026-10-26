@@ -235,7 +235,7 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
 ### Event store (`PostgresEventStoreSchemaInitializer.scala`)
 - **`events`** — `id (events_seq) PK, user_id, aggregate_id, event_time, version,
   event_type_id, event_type_version, event TEXT(json), metadata JSONB` (the
-  envelope of D32; null when none).
+  envelope of D32; null when none), `type_id, space_id` (the event keys, below).
   Indices: `events(aggregate_id)`, `events(aggregate_id, id)`.
 - **`aggregates`** — PK `(id, base_id)`, plus `space_id, creation_time, type_id,
   base_order, base_id, base_version, squashed_version` (the squash point, D49, D51),
@@ -264,10 +264,12 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
   (`owner`, `check` for `RestoreCheck`, `build` with the projection, build and subscriber): the event it failed at, the
   cause, first and last seen, times, `skipped` (`SkipAggregate`). Upserted by owners and builders, cleared when the
   aggregate restores there again, is deleted or its build dropped; listed by `EventStoreState.restoreFailures`.
-- **`event_keys`** (M6, F124) — `id PK (→ events.id, cascade), type_id, space_id`: each
-  event's aggregate type and space, written by the procedures, so a build of some types or of
-  one organization reads only its events; `schema_steps` records when `backfillEventKeys()`
-  gave every older event its key (until then builds walk `events`).
+- **Event keys** (M6, F124; columns of `events` since D95) — `events.type_id, space_id`: each
+  event's aggregate type and space, written by the procedures, indexed `(type_id, id)` and
+  `(space_id, type_id, id)`, so a build of some types or of one organization reads only its
+  events; `schema_steps` records when `backfillEventKeys()` gave every older event its keys, and
+  builds use them once their indexes are valid too (until then builds walk `events`). 1.0.0–1.0.4
+  kept them in a table `event_keys`, which a start drops.
 
 ### Event bus tables (unused since 1.0)
 - **`event_bus`** (the 0.12 cursor of the last published version per aggregate) and

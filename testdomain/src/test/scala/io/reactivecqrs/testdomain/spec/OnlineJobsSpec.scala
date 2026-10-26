@@ -45,7 +45,9 @@ class OnlineJobsSpec extends CommonSpec {
     /** As a large store just upgraded: no event has a key, the indexes are not built, two aggregates have no space. */
     def needsTheJobs(withoutSpace: Seq[AggregateId]): Unit = DB.autoCommit { implicit session =>
       sql"DELETE FROM schema_steps WHERE name = 'event_keys'".update()
-      sql"DELETE FROM event_keys".update()
+      sql"UPDATE events SET type_id = NULL, space_id = NULL".update()
+      sql"DROP INDEX IF EXISTS events_type_idx".execute()
+      sql"DROP INDEX IF EXISTS events_space_idx".execute()
       sql"DROP INDEX IF EXISTS aggregates_own_type_idx".execute()
       sql"DROP INDEX IF EXISTS aggregates_space_id_idx".execute()
       withoutSpace.foreach(id => sql"UPDATE aggregates SET space_id = -1 WHERE id = ${id.asLong}".update())
@@ -56,7 +58,7 @@ class OnlineJobsSpec extends CommonSpec {
       sql"SELECT state, position FROM online_jobs WHERE name = 'event-keys'".map(rs => (rs.string(1), rs.long(2))).single().get
     }
 
-    def keyed(id: Long): Boolean = DB.readOnly(implicit session => sql"SELECT EXISTS (SELECT 1 FROM event_keys WHERE id = $id)".map(_.boolean(1)).single().get)
+    def keyed(id: Long): Boolean = DB.readOnly(implicit session => sql"SELECT type_id IS NOT NULL FROM events WHERE id = $id".map(_.boolean(1)).single().get)
 
     class Node(version: Int, hold: Option[BuildHold]) {
       nodes += 1
@@ -159,7 +161,7 @@ class OnlineJobsSpec extends CommonSpec {
         And("an event before its position whose key went meanwhile, which only a walk from the start would key again")
         val firstEvent = DB.readOnly(implicit s => sql"SELECT min(id) FROM events".map(_.long(1)).single().get)
         firstEvent must be <= position
-        DB.autoCommit(implicit s => sql"DELETE FROM event_keys WHERE id = $firstEvent".update())
+        DB.autoCommit(implicit s => sql"UPDATE events SET type_id = NULL, space_id = NULL WHERE id = $firstEvent".update())
 
         When("a runner starts again")
         val second = runner()

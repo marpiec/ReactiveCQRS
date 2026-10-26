@@ -135,7 +135,6 @@ erDiagram
   aggregates ||--o{ events : "ma"
   events ||--o| noop_events : "cofnięte przez"
   events ||--o| events_to_publish : "czeka w outboxie"
-  events ||--|| event_keys : "typ i przestrzeń"
   aggregates ||--o| snapshots : "ostatni stan"
   aggregates ||--o{ events_archive : "zachowane przez squash"
   aggregates ||--o{ subscriptions : "zastosowane wersje"

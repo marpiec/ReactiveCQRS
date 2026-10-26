@@ -103,6 +103,12 @@ Options considered:
 4. Leaving it, and documenting that a build reads the whole store. Rejected: an organization's
    rebuild after every import would read every organization's events.
 
+> **Changed (26/10/2026, D95):** option 1 replaced option 2 before any store of 1.0 ran in
+> production. The keys are columns of `events`: a build reads them with the event in one index scan
+> per type, and the table and its cascade are gone. The one-time `UPDATE` of every older row is the
+> price (D28 allowed it here, as only new nullable columns are filled); the keys' indexes are built
+> after it. The rest of this section describes the table as it was.
+
 **Measured** (bench, `scenarios=commands`, two single runs each, the same day): with the extra
 insert, 9 182 and 9 406 commands/s without subscribers and 4 300 and 5 104 with two projections;
 without it, 9 076 and 9 846, and 5 185 and 5 001; p50 1.4–1.5 ms either way. The difference is

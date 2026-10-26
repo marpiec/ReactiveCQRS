@@ -193,7 +193,7 @@ class PurgeSpec extends CommonSpec {
       rowsOf(folder).filter(_._2 > 0).keySet mustBe Set("events", "events_archive", "snapshots", "subscriptions", "commands_responses",
         "purge_spec_rows", "aggregates", "aggregates read")
 
-      StoredDataCheck.spaceRows(space.asLong).filter(_._2 > 0).keySet mustBe Set("aggregates", "event_keys", "sagas", "projection_purge_folders")
+      StoredDataCheck.spaceRows(space.asLong).filter(_._2 > 0).keySet mustBe Set("aggregates", "events", "sagas", "projection_purge_folders")
 
       When("the organization is purged")
       val report = purgeOf(space)
@@ -205,7 +205,7 @@ class PurgeSpec extends CommonSpec {
       report.rows("sagas") mustBe 1L
       And("nothing is stored for its aggregates any more, in any table")
       Seq(folder, copy).foreach(id => rowsOf(id).filter(_._2 > 0) mustBe empty)
-      count("event_keys", "space_id", space.asLong) mustBe 0L
+      count("events", "space_id", space.asLong) mustBe 0L
       count("sagas", "space_id", space.asLong) mustBe 0L
       Seq(folder, copy).map(docOf) mustBe Seq(None, None)
       StoredDataCheck.spaceRows(space.asLong).filter(_._2 > 0) mustBe empty

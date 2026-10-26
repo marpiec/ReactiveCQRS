@@ -266,7 +266,9 @@ val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, mis
   schemacie 0.12 niczego nie zrobi) i zanim przebudujesz projekcję dla jednej organizacji.
 - `backfillEventKeys()` nadaje każdemu starszemu zdarzeniu klucz (typ i przestrzeń jego agregatu),
   dzięki czemu budowa projekcji czyta tylko te zdarzenia, których potrzebuje. Uruchom to, gdy *każdy*
-  węzeł działa już na 1.0, a potem jeszcze raz `buildIndexesConcurrently()`. Od tej chwili nie wracaj
+  węzeł działa już na 1.0, a potem jeszcze raz `buildIndexesConcurrently()`, które zbuduje indeksy kluczy. Zadanie zapisuje
+  każdy starszy wiersz zdarzenia jeszcze raz, więc `events` i jego indeksy rosną mniej więcej o
+  rozmiar tabeli, dopóki VACUUM nie usunie starych wersji wierszy: zapewnij na to miejsce na dysku. Od tej chwili nie wracaj
   do wcześniejszej wersji: wcześniejsze wersje zapisują zdarzenia bez kluczy. Zdarzenia, których
   agregat nie ma własnego wiersza (*sieroty* po jakimś dawnym usunięciu), nie mogą dostać klucza;
   zadanie zgłasza je w `orphans` i zapisuje ostrzeżenie w logu, ale nie wstrzymują jego zakończenia:
@@ -525,7 +527,7 @@ BEGIN;
 -- Stop (ROLLBACK) if this lists anything: copies of the aggregate read its events.
 SELECT id FROM aggregates WHERE base_id = 4711 AND id <> 4711;
 DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = 4711);
-DELETE FROM events WHERE aggregate_id = 4711;              -- its event_keys go with them
+DELETE FROM events WHERE aggregate_id = 4711;
 DELETE FROM events_archive WHERE aggregate_id = 4711;
 DELETE FROM events_to_publish WHERE aggregate_id = 4711;
 DELETE FROM snapshots WHERE aggregate_id = 4711;

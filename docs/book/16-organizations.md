@@ -246,9 +246,9 @@ A rebuild of one organization is refused (`RebuildRefused`) while any aggregate 
 types has no space yet: aggregates stored by older versions of the library may lack one, and the
 reason tells you to run `backfillSpaces` first. That is the next section.
 
-> **Under the hood:** the store finds an organization's events through a narrow table of keys,
-> `event_keys`, which records each event's aggregate type and space. Once every older event has its
-> key, rebuilding one organization reads that organization's events only, not the whole store
+> **Under the hood:** the store finds an organization's events through their keys: two columns of
+> `events` that record each event's aggregate type and space, with an index. Once every older event has its
+> keys, rebuilding one organization reads that organization's events only, not the whole store
 > (issue F124). See [ARCHITECTURE.md, section 8](../ARCHITECTURE.md).
 
 ## Upgrading an installation that already has data
@@ -435,7 +435,7 @@ inside each bite's transaction, so its rows go together with the library's, or n
 ```scala
 import io.reactivecqrs.core.tools.StoredDataCheck
 
-val left = StoredDataCheck.spaceRows(42L) // Map(aggregates -> 0, event_keys -> 0, sagas -> 0, projection_shop_carts_v1 -> 0)
+val left = StoredDataCheck.spaceRows(42L) // Map(aggregates -> 0, events -> 0, sagas -> 0, projection_shop_carts_v1 -> 0)
 ```
 
 It counts what the space still has in the library's tables and in every read-model table. After a

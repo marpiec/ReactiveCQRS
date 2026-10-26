@@ -8,6 +8,13 @@ Notable changes of ReactiveCQRS, newest first. Dates are DD/MM/YYYY.
   mpjsons 0.7.8 (was 0.7.0), the version Neula runs it with; mpjsons 0.7.6 and later need Java 25. The library's own
   classes are still compiled for Java 21. The stored JSON is unchanged (`StoredFormatsSpec`). E2's image runs on
   `eclipse-temurin:25-jre`.
+- **Changed: the event keys are two columns of `events`** (D95, chapters 16 and 18): `type_id` and `space_id`, indexed
+  by type and by space and type, in place of the table `event_keys`. A build of some types, or of one organization,
+  reads a page in one index scan per type. A store of 1.0.0–1.0.4 loses the table at start, and runs the indexes' and
+  the event keys' online jobs again. `backfillEventKeys` now writes each older event row once more: `events` and its
+  indexes grow by about the table's size until VACUUM. The keys' indexes are built after the backfill (by its online
+  job, or by `buildIndexesConcurrently` once it is done), and builds use the keys only once both indexes are valid.
+  `StoredDataCheck.spaceRows` counts `events` in place of `event_keys`.
 
 ## 1.0.3 (23/10/2026)
 

@@ -199,11 +199,13 @@ Estimated from the measured numbers. None of this was run at this scale.
     aggregates interleave, the build slows down by one restore per miss (not measured). Projections
     that need only the latest state build from final states instead (D62): one restore per
     aggregate.
-  - The commit-order read reads only its types' events (or its organization's) through
-    `event_keys` (F124, since M6), once `backfillEventKeys()` has given every event from before
-    a key; until then it walks the store up to its position. The keys cost about 40 bytes a row
-    before their two indexes (estimated: about 4 GB per 100 million events with them); writing
-    them cost nothing measurable (within the runs' spread, `docs/design/M6-organizations.md`).
+  - The commit-order read reads only its types' events (or its organization's) through their
+    keys (F124, since M6; two columns of `events` since D95), once `backfillEventKeys()` has given
+    every event from before its keys and their two indexes are built; until then it walks the store
+    up to its position. Writing the keys with each event cost nothing measurable (within the runs'
+    spread, `docs/design/M6-organizations.md`). The backfill writes every older event row once
+    more, so `events` and its indexes grow by about the table's size until VACUUM (D95); the keys'
+    indexes are built after it, to take no entry per updated row.
 - **Purging an organization** (R17, since M6). The purge deletes in batches of at most 1 000
   aggregates and 100 000 events, one transaction each, and waits for the owners and the projections
   to answer each batch, so its load on the database and the nodes stays bounded; its duration grows

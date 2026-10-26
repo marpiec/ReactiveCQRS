@@ -260,7 +260,9 @@ val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, mis
   schema it does nothing), and before you rebuild a projection for one organization.
 - `backfillEventKeys()` gives every older event its key (its aggregate's type and space), so a
   projection build reads only the events it needs. Run it once *every* node runs 1.0, then
-  `buildIndexesConcurrently()` again. From then on, do not go back to an earlier version: earlier
+  `buildIndexesConcurrently()` again, which builds the keys' indexes. It writes each older event row once
+  more, so `events` and its indexes grow by about the table's size until VACUUM takes the old row
+  versions: have the disk for it. From then on, do not go back to an earlier version: earlier
   versions write events without keys. Events whose aggregate has no row of its own (*orphans*, left
   by some old delete) cannot get a key; it reports them in `orphans` and logs a warning, but they do
   not keep it from finishing: no restore, build or reconciliation reads them (they all start from
@@ -516,7 +518,7 @@ BEGIN;
 -- Stop (ROLLBACK) if this lists anything: copies of the aggregate read its events.
 SELECT id FROM aggregates WHERE base_id = 4711 AND id <> 4711;
 DELETE FROM noop_events WHERE id IN (SELECT id FROM events WHERE aggregate_id = 4711);
-DELETE FROM events WHERE aggregate_id = 4711;              -- its event_keys go with them
+DELETE FROM events WHERE aggregate_id = 4711;
 DELETE FROM events_archive WHERE aggregate_id = 4711;
 DELETE FROM events_to_publish WHERE aggregate_id = 4711;
 DELETE FROM snapshots WHERE aggregate_id = 4711;

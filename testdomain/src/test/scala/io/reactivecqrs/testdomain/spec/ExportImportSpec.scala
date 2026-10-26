@@ -141,7 +141,7 @@ class ExportImportSpec extends CommonSpec {
         stateOf(target, folder) mustBe Some(Folder(SpaceId(999), "Taken", Vector.empty))
         target.readEventsRange[Folder](copy, AggregateVersion(1), AggregateVersion(1)).map(_.event) mustBe Seq(FolderCopied(into, moved, AggregateVersion(2)))
         target.readArchive[Folder](moved).map(e => (e.info.version.asInt, e.info.event)) mustBe Seq(2 -> NoteAdded("one"))
-        DB.readOnly(implicit session => sql"SELECT count(*) FROM event_keys WHERE space_id = ${into.asLong}".map(_.long(1)).single().get) mustBe 9L
+        DB.readOnly(implicit session => sql"SELECT count(*) FROM events WHERE space_id = ${into.asLong}".map(_.long(1)).single().get) mustBe 9L
         And("the copy within the organization reads its base's new id; the detached one reads nothing outside")
         DB.readOnly(implicit session => sql"SELECT id, base_id FROM aggregates WHERE id IN (${Seq(copy.asLong, theirs.asLong)}) ORDER BY id, base_order"
           .map(rs => (rs.long(1), rs.long(2))).list()) mustBe Seq((copy.asLong, moved.asLong), (copy.asLong, copy.asLong), (theirs.asLong, theirs.asLong))

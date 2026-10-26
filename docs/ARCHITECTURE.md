@@ -335,7 +335,7 @@ run works in a new schema (`TestDatabase`).
 
 | Table | Columns / keys | Role |
 |---|---|---|
-| `events` (`:29-41`) | `id` (from `events_seq`) PK, `user_id`, `aggregate_id`, `event_time TIMESTAMP`, `version`, `event_type_id`, `event_type_version` (always 0, D29), `event TEXT`, since M3 `metadata JSONB` (the envelope, D32; null when none); indexes `(aggregate_id)`, `(aggregate_id, id)`, and `(aggregate_id, version)`, unique since 1.0.1 (`events_aggregate_version_uidx`, F198: no aggregate has two events of one version), made at start on a small store and online by `buildIndexesConcurrently()` on a large one (F38), which keeps the plain index while `StoredDataCheck` reports repeated versions | append-only event log |
+| `events` (`:29-41`) | `id` (from `events_seq`) PK, `user_id`, `aggregate_id`, `event_time TIMESTAMP`, `version`, `event_type_id`, `event_type_version` (always 0, D29), `event TEXT`, since M3 `metadata JSONB` (the envelope, D32; null when none); indexes `(aggregate_id)`, `(aggregate_id, id)`, and `(aggregate_id, version)`, unique since 1.0.1 (`events_aggregate_version_uidx`, F198: no aggregate has two events of one version), made at start on a small store and online by `buildIndexesConcurrently()` on a large one (F38), which keeps the plain index while `StoredDataCheck` reports repeated versions; since D95 `type_id`, `space_id` (the event keys: its aggregate's type and space, F124; null until `backfillEventKeys()` fills an older row), indexed `(type_id, id)` and `(space_id, type_id, id)` (`events_type_idx`, `events_space_idx`: at start on a small store, otherwise by `buildIndexesConcurrently()` once every event has its keys) | append-only event log |
 | `aggregates` (`:103-115`) | PK `(id, base_id)`, `space_id`, `creation_time`, `type_id`, `base_order`, `base_id`, `base_version`, since M3 `squashed_version` (null unless squashed, D49), since M5 `history_generation` (F119); indexes `(type_id)`, `(base_id)`, since M6 `(space_id, id)` (an organization's aggregates in id order, built online on a large installation), and since M7 `(type_id, id) WHERE id = base_id` (a type's own rows in id order, for the walks of builds, F173; built online on a large installation) | one row per (aggregate, ancestor) in its duplication chain; the own row (`base_id = id`) holds the **current version** used for locking |
 | `noop_events` (`:75-81`) | `id` (= `events.id`) PK, `from_version` | events cancelled by an undo, effective from that version |
 | `snapshots` (since M3) | `aggregate_id` PK, `version`, `context_version`, `schema_version`, `state TEXT`, `created` | the latest performance snapshot of an aggregate (D30, §4.3); disposable |
@@ -343,8 +343,7 @@ run works in a new schema (`TestDatabase`).
 | `aggregate_lineage` (since M6) | PK `(aggregate_id, copied_from)`, `at_version`, `detached`; index `(copied_from)` | the bases a detached copy read when it was detached (every detach writes them, D76, and so does a squash of the copy itself, F193): a complete rewrite of a base follows them to the copies that hold its values (§4.9) |
 | `history_rewrites` (since M6) | `id` PK, `aggregate_id` (indexed), `user_id`, `at`, `change_class`, `classes`, `fields`, `events`, `archived` | one audit row per complete rewrite of an aggregate (D76): who, when, which change, the event classes and fields it altered, how many rows; never a value |
 | `events_to_publish` (`:83-101`) | `event_id` PK, `aggregate_id`, `version`, `user_id`, `event_time`; index `(aggregate_id, version)` | **outbox**: events not yet confirmed by every subscriber |
-| `event_keys` (since M6) | `id` PK (→ `events.id`, deleted with it), `type_id`, `space_id` of the event's aggregate; indexes `(type_id, id)`, `(space_id, type_id, id)` | the commit-order pass by type and organization (F124): written by the three procedures with each event; the rows from before by `backfillEventKeys()` |
-| `schema_steps` (since M6) | `name` PK, `completed` | online steps that have completed (D69): `event_keys` once every event has a key |
+| `schema_steps` (since M6) | `name` PK, `completed` | online steps that have completed (D69): `event_keys` once every event has its keys (in `events`, D95) |
 | `types_names` (`TypesNamesState.scala`) | `id SMALLINT`, unique `name` | class-name ↔ id dictionary (aggregates, events, subscribers, responses) |
 | `commands_responses` (`CommandResponseState.scala`) | `id`, `key` (unique), `handling_timestamp` (indexed, for retention), `response`, `response_type_id`, and since 1.0 `info`, `info_type_id` (the info of a `CustomSuccessResponse`, F64), since M6 `aggregate_id` (indexed: the aggregate of the response, for a purge, R17) | idempotent responses (D12) |
 
@@ -1233,8 +1232,9 @@ handlers. It runs on the blocking dispatcher and reads synchronously on its own 
 
 1. **Bulk pass.** `readCommittedPage(types, after, limit, scope, maxBytes)` pages through the events of the plan's
    types in commit order (`events.id`, D59), each under its own aggregate (a duplicate's own
-   events, not its base's); since M6 (F124) it reads only those events: through `event_keys`, one
-   index scan per type (in an organization, by its space), once every event has a key, and named
+   events, not its base's); since M6 (F124) it reads only those events: through the event keys (D95:
+   `events (type_id, id)`, in an organization `(space_id, type_id, id)`), one index scan per type, once every event has
+   its keys and their indexes are valid, and named
    aggregates through `events (aggregate_id, id)`. Before the keys' backfill completed, it walks
    `events` up to the page's last row, as before; undone events and undo events included (D60), with the aggregate's
    squash point. Each event finds its aggregate's own row by key, one lookup per event (F172): a join

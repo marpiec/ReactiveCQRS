@@ -199,7 +199,7 @@ class OnlineJobsRunner(settings: OnlineJobsSettings) extends Actor with MyActorL
       report(statusOf(runningRow))
       val outcome = Try(name match {
         case Indexes => indexes(connection, runningRow)
-        case EventKeys => eventKeys(runningRow)
+        case EventKeys => eventKeys(connection, runningRow)
         case _ => spaces(runningRow)
       })
       val ended = outcome.fold(e => runningRow.copy(state = Failed.toString, error = Some(Errors.describe(e)), finished = Some(Instant.now)), identity)
@@ -218,7 +218,7 @@ class OnlineJobsRunner(settings: OnlineJobsSettings) extends Actor with MyActorL
   }
 
   // Its progress is saved at most every 5 s, and when it ends: a resumed walk repeats at most those batches, harmlessly.
-  private def eventKeys(row: OnlineJobRow): OnlineJobRow = {
+  private def eventKeys(connection: Connection, row: OnlineJobRow): OnlineJobRow = {
     val before = row.result.flatMap(read[EventKeysBackfill]).getOrElse(EventKeysBackfill(0L, 0L))
     val lastId = DB.readOnly(implicit session => sql"SELECT coalesce(max(id), 0) FROM events".map(_.long(1)).single().getOrElse(0L))
     var last = row
@@ -236,7 +236,11 @@ class OnlineJobsRunner(settings: OnlineJobsSettings) extends Actor with MyActorL
     if (stopping) last
     else {
       val done = last.copy(position = math.max(last.position, lastId), result = Some(json(result)), finished = Some(Instant.now))
-      if (result.missing == 0) done.copy(state = Done.toString)
+      if (result.missing == 0) {
+        // D95: the keys' indexes, built once the keys are there, on this connection: a long statement
+        DB(connection).autoClose(false).autoCommit(store.buildEventKeyIndexesIn(_))
+        done.copy(state = Done.toString)
+      }
       else done.copy(state = Failed.toString, error = Some(s"${result.missing} events have no key although their aggregate has its row: a node of an " +
         "older version wrote meanwhile; run the job again"))
     }

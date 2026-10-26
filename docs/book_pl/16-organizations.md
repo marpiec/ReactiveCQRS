@@ -253,9 +253,9 @@ projekcji nie ma jeszcze przestrzeni: agregatom zapisanym przez starsze wersje b
 brakować, a powód odmowy podpowiada, żeby najpierw uruchomić `backfillSpaces`. O tym jest następna
 sekcja.
 
-> **Pod maską:** magazyn znajduje zdarzenia organizacji przez wąską tabelę kluczy, `event_keys`,
-> która zapisuje typ agregatu i przestrzeń każdego zdarzenia. Gdy każde starsze zdarzenie ma już swój
-> klucz, przebudowa jednej organizacji czyta tylko zdarzenia tej organizacji, a nie cały magazyn
+> **Pod maską:** magazyn znajduje zdarzenia organizacji po ich kluczach: dwóch kolumnach `events`,
+> które zapisują typ agregatu i przestrzeń każdego zdarzenia, z indeksem. Gdy każde starsze zdarzenie ma już
+> swoje klucze, przebudowa jednej organizacji czyta tylko zdarzenia tej organizacji, a nie cały magazyn
 > (problem F124). Zobacz [ARCHITECTURE.md, sekcję 8](../ARCHITECTURE.md).
 
 ## Aktualizacja instalacji, która ma już dane
@@ -448,7 +448,7 @@ działa w transakcji każdego kęsa, więc jego wiersze znikają razem z wiersza
 ```scala
 import io.reactivecqrs.core.tools.StoredDataCheck
 
-val left = StoredDataCheck.spaceRows(42L) // Map(aggregates -> 0, event_keys -> 0, sagas -> 0, projection_shop_carts_v1 -> 0)
+val left = StoredDataCheck.spaceRows(42L) // Map(aggregates -> 0, events -> 0, sagas -> 0, projection_shop_carts_v1 -> 0)
 ```
 
 Liczy, co przestrzeń wciąż ma w tabelach biblioteki i w każdej tabeli modelu odczytu. Po kompletnym

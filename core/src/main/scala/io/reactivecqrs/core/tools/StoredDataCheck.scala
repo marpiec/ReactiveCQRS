@@ -150,7 +150,7 @@ object StoredDataCheck {
     }
   }
 
-  /** R17: what an organization still has: its aggregates, its events (by their keys), its sagas and the documents of
+  /** R17: what an organization still has: its aggregates, its events (by their keys, D95), its sagas and the documents of
     * every projection table, by table; after a purge, all zero. Projection tables are read whole (no index by space). */
   def spaceRows(space: Long): Map[String, Long] = DB.readOnly { implicit session =>
     def has(table: String, column: String): Boolean =
@@ -160,7 +160,7 @@ object StoredDataCheck {
       table -> sql"SELECT count(*) FROM ${SQLSyntax.createUnsafely(table)} WHERE space_id = $space".map(_.long(1)).single().getOrElse(0L)
     val documents = sql"""SELECT table_name FROM information_schema.columns WHERE table_schema = current_schema()
                          |  AND table_name LIKE 'projection%' AND column_name = 'space_id' ORDER BY table_name""".stripMargin.map(_.string(1)).list()
-    (Seq("aggregates", "event_keys", "sagas").filter(has(_, "space_id")) ++ documents).map(counted).toMap
+    (Seq("aggregates", "events", "sagas").filter(has(_, "space_id")) ++ documents).map(counted).toMap
   }
 
   /** The aggregates that still have events of a class: in `events`, in the archive, and the first `limit` of them with

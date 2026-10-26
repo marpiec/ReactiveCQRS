@@ -44,7 +44,7 @@ class BuildHoldSpec extends CommonSpec {
     /** As after an upgrade of a large installation: the events from before have no keys, the index is not built. */
     def notReady(): Unit = DB.autoCommit { implicit session =>
       sql"DELETE FROM schema_steps WHERE name = 'event_keys'".update()
-      sql"DELETE FROM event_keys".update()
+      sql"UPDATE events SET type_id = NULL, space_id = NULL".update()
       sql"DROP INDEX IF EXISTS aggregates_own_type_idx".execute()
     }
 

@@ -132,8 +132,8 @@ odsyła cię do innego („zob. *Przestrzeń*”), właśnie tam znajdziesz peł
   idempotentne; jego `asDbKey` musi być unikalny we wszystkich typach agregatów. Jednym z takich
   kluczy jest `SagaStep`, możesz też napisać własny. Zapisane odpowiedzi są domyślnie przechowywane
   przez 30 dni. ([rozdział 5](05-command-flavors.md))
-- **Klucze zdarzeń** (*event keys*, `event_keys`): tabela, która zapisuje typ agregatu i przestrzeń
-  każdego zdarzenia, żeby przebudowa kilku typów albo jednej organizacji czytała tylko własne
+- **Klucze zdarzeń** (*event keys*): dwie kolumny `events` (`type_id`, `space_id`), które zapisują typ
+  agregatu i przestrzeń każdego zdarzenia, żeby przebudowa kilku typów albo jednej organizacji czytała tylko własne
   zdarzenia. ([rozdział 16](16-organizations.md), [rozdział 18](18-production.md))
 - **Kontekst agregatu** (*aggregate context*, `AggregateContext`): klasa, którą piszesz dla jednego
   typu agregatu: jego stan początkowy (`initialAggregateRoot`), handlery poleceń, handlery zdarzeń,

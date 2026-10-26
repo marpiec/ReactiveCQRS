@@ -2781,3 +2781,8 @@ Open test-infrastructure items:
 - Phase B: F300, F310 and F328 examined and left open, as not needed for Neula 2.2 (the reasons in their entries).
 - Book: chapter 21, "Rebuilds and Repairs in Depth" (the life of a build, what stops it, stored data that does not fit,
   planning a rebuild), in both languages.
+
+**26/10/2026: the event keys in `events` (D95)**
+- The owner's choice: F124's keys move from the table `event_keys` to the columns `events.type_id` and `space_id`, before any
+  1.0 store runs in production. Procedures version 3; the backfill updates the rows; the keys' indexes after it; a 1.0.x
+  store drops the table and runs its online jobs again. PostgreSQL specs red first (six scenarios, one new for the drop).

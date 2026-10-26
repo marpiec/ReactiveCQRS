@@ -191,7 +191,7 @@ słownik musi być pierwszy; po nim kolejność nie ma znaczenia.
 | Wywołanie | Tworzy | Potrzebne do |
 |---|---|---|
 | `PostgresTypesNamesState.initSchema()` | `types_names` | wszystkiego: to słownik nazw klas |
-| `PostgresEventStoreState.initSchema()` | `events`, `aggregates`, `events_to_publish` (outbox), `noop_events`, `snapshots`, `event_keys`, `events_archive`, `schema_steps`, `aggregate_lineage`, `history_rewrites`, `restore_failures`, `online_jobs` oraz procedury składowane, które zapisują zdarzenia | wszystkiego: to jest magazyn zdarzeń |
+| `PostgresEventStoreState.initSchema()` | `events`, `aggregates`, `events_to_publish` (outbox), `noop_events`, `snapshots`, `events_archive`, `schema_steps`, `aggregate_lineage`, `history_rewrites`, `restore_failures`, `online_jobs` oraz procedury składowane, które zapisują zdarzenia | wszystkiego: to jest magazyn zdarzeń |
 | `PostgresCommandResponseState.initSchema()` | `commands_responses` | każdej szyny poleceń; poleceń idempotentnych ([rozdział 5](05-command-flavors.md)) |
 | `PostgresSagaState.initSchema()` | `sagas` | sag ([rozdział 12](12-sagas.md)) |
 | `PostgresSubscriptionsState.initSchema()` | `subscriptions`, `subscription_failures` | projekcji ([rozdział 8](08-projections.md)) |
@@ -383,8 +383,8 @@ object SetupCheck {
 
 Umieść go w pakiecie swojego projektu i uruchom poleceniem `sbt "runMain com.example.shop.SetupCheck"`
 (w tym repozytorium: `sbt "examples/runMain io.reactivecqrs.examples.e1.SetupCheck"`). Program wypisuje
-`The tables are ready.`, a `\dt` w `psql` pokazuje siedemnaście tabel: `aggregate_lineage`, `aggregates`,
-`commands_responses`, `event_keys`, `events`, `events_archive`, `events_to_publish`,
+`The tables are ready.`, a `\dt` w `psql` pokazuje szesnaście tabel: `aggregate_lineage`, `aggregates`,
+`commands_responses`, `events`, `events_archive`, `events_to_publish`,
 `history_rewrites`, `noop_events`, `online_jobs`, `restore_failures`, `sagas`, `schema_steps`,
 `snapshots`, `subscription_failures`, `subscriptions` i `types_names`. Wszystkie puste, wszystkie czekają. (Tę listę sprawdza
 `SetupCheckSpec`.)
