@@ -64,7 +64,7 @@ sbt "project core" "~compile"   # incremental
   Memory-backed variants (`Memory*State`, `MemoryDocumentStore`) are test doubles.
 - Publishing: `publishMavenStyle`, target `https://nexus.neula.in/...`
   (overridable via `-DsnapshotsRepo=`). Version lives in `project/Common.scala`
-  (`version := "1.0.3"`; released: 1.0.0, 18/10/2026, tag `v1.0.0`; 1.0.1 and 1.0.2, 22/10/2026; 1.0.3, 23/10/2026) — bump it there,
+  (`version := "1.0.5"`; released: 1.0.0, 18/10/2026, tag `v1.0.0`; 1.0.1 and 1.0.2, 22/10/2026; 1.0.3, 23/10/2026; 1.0.4 and 1.0.5 only in local Maven repositories so far) — bump it there,
   not per-module. The README and the book give users the last release's coordinates.
 
 ---
@@ -206,7 +206,8 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
 - **`Projections` / `ProjectionSupervisor`** (`core/.../rebuild/`, M4) — managed projections: the host starts
   each read model through `Projections.start`, whose supervisor (the `ActorRef` the host queries) runs one
   instance per build (tables named by the build, D57), builds a new version from the store with
-  `ProjectionBuilder` (commit order, replay states, chunks, then GoLive and a reconciliation) while the
+  `ProjectionBuilder` (a type at a time in the order of the projection's listeners, each aggregate whole, read on
+  several threads, D96; chunks, then GoLive and a reconciliation) while the
   active build serves, switches in one registry update (D70) and drops the retired build (also, at start, any
   build a stop left undropped). It never restarts (AR7); an instance that stops is replaced, a failing build
   alone while the active one serves, and the bus keeps what the stopped one did not take in the outbox for its
@@ -217,8 +218,8 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
   `ERROR` phases. `SagaActor` (the 0.12 way, subclassing the runner) is deprecated and runs on the same
   state machine, `SagaRunning`.
 - **`OnlineJobsRunner`** (`core/.../jobs/`, 1.0.1-RC2, D91) — opt-in (`OnlineJobs.start`, a singleton plus an advisory
-  lock): the online jobs in order (indexes, event keys once no older app-version runs, spaces), saved in `online_jobs`
-  and resumed; long statements on its own connection with `longStatementTimeout`. `BuildHold.untilStoreReady` in
+  lock): the online jobs in order (indexes, spaces), saved in `online_jobs`
+  and skipped once done; long statements on its own connection with `longStatementTimeout`. `BuildHold.untilStoreReady` in
   `ProjectionsSettings.holdBuilds` holds full builds until the store's `buildReadiness` (or `releaseBuildHold()`).
 - **`UidGeneratorActor`** — hands out id pools (`PostgresUidGenerator` reads
   `NEXTVAL`/`increment_by` from a sequence; pool size = sequence step).
@@ -235,8 +236,9 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
 ### Event store (`PostgresEventStoreSchemaInitializer.scala`)
 - **`events`** — `id (events_seq) PK, user_id, aggregate_id, event_time, version,
   event_type_id, event_type_version, event TEXT(json), metadata JSONB` (the
-  envelope of D32; null when none), `type_id, space_id` (the event keys, below).
-  Indices: `events(aggregate_id)`, `events(aggregate_id, id)`.
+  envelope of D32; null when none).
+  Indices: `events(aggregate_id)`, `events(aggregate_id, id)`, unique `events(aggregate_id, version)` (F198; builds
+  read each aggregate by it, D96).
 - **`aggregates`** — PK `(id, base_id)`, plus `space_id, creation_time, type_id,
   base_order, base_id, base_version, squashed_version` (the squash point, D49, D51),
   `history_generation` (raised by changes that make snapshots wrong; a snapshot is written only
@@ -257,19 +259,13 @@ procedures** (`add_event`, `add_undo_event`, `add_duplication_event`) defined in
 - **`events_archive`** (M6, R11) — the audit events a squash kept: the event row as it was, its
   undo mark (`undone_from`) and when it was archived; read only by `GetArchivedEvents` and
   `StoredDataCheck`, never by restores or builds.
-- **`online_jobs`** (1.0.1-RC2, CR-3, D91) — each online job's saved state (`indexes`, `event-keys`, `spaces`: state,
-  the event keys' position, result JSON, error) for `OnlineJobsRunner`. An operator's `releaseBuildHold()` is the
+- **`online_jobs`** (1.0.1-RC2, CR-3, D91) — each online job's saved state (`indexes`, `spaces`: state, result JSON,
+  error) for `OnlineJobsRunner`. An operator's `releaseBuildHold()` is the
   `schema_steps` row `build_hold_released`.
 - **`restore_failures`** (1.0.1-RC2, CR-4, D90) — the aggregates that could not be restored, per aggregate and place
   (`owner`, `check` for `RestoreCheck`, `build` with the projection, build and subscriber): the event it failed at, the
   cause, first and last seen, times, `skipped` (`SkipAggregate`). Upserted by owners and builders, cleared when the
   aggregate restores there again, is deleted or its build dropped; listed by `EventStoreState.restoreFailures`.
-- **Event keys** (M6, F124; columns of `events` since D95) — `events.type_id, space_id`: each
-  event's aggregate type and space, written by the procedures, indexed `(type_id, id)` and
-  `(space_id, type_id, id)`, so a build of some types or of one organization reads only its
-  events; `schema_steps` records when `backfillEventKeys()` gave every older event its keys, and
-  builds use them once their indexes are valid too (until then builds walk `events`). 1.0.0–1.0.4
-  kept them in a table `event_keys`, which a start drops.
 
 ### Event bus tables (unused since 1.0)
 - **`event_bus`** (the 0.12 cursor of the last published version per aggregate) and

@@ -126,6 +126,12 @@ The builder (step 3) feeds the building instance directly from the store:
    of about 1 000 events go to the instance, which applies each in one transaction (D61);
    two are in flight, so the next page is read while the instance applies. The bus's
    deliveries meanwhile are acknowledged unapplied: their events are in the store.
+   > **Changed (26/10/2026, D96):** the bulk pass no longer follows commit order. It delivers the
+   > projection's types one at a time, in the order of its listeners, each aggregate whole: its
+   > events read by version in parts of a chunk, with the state after the last (snapshot plus tail),
+   > read on several threads, the items in the aggregates' order. A projection relies on each
+   > aggregate's own order and on its listeners' order of types, never on the order of aggregates,
+   > which live delivery does not keep either. Replay states and the event keys (M6) go with it.
 2. **GoLive.** The instance applies the bus's deliveries from now on.
 3. **Reconciliation.** Every aggregate whose stored version is above the build's subscription
    version gets what it lacks, read by version: the events committed after the bulk pass read

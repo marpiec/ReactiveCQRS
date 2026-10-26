@@ -111,12 +111,12 @@ Members of your `AggregateContext`; override the ones you need.
 | `maxBatchesPerTransaction` | `100` | The most aggregates whose updates share one transaction. | [8](08-projections.md) |
 | `purgedDropWindow` | `30 minutes` | After a purge, how long deliveries of the purged aggregates are acknowledged without being applied. | [16](16-organizations.md) |
 | `SubscribableProjectionActor(updatesCacheTTL, subscriptionTTL, options)` | `Duration.ZERO`, `600000` ms, `DEFAULT` | How long sent updates are kept for new subscribers; how long a subscription lives without renewal. | [11](11-subscribable-projections.md) |
-| `OnlineJobsSettings(eventStore, spaceOf, batchSize, pause, longStatementTimeout, checkEvery)` | none, `10000`, `100 ms`, `6 hours`, `10 s` | The online jobs run in the background (`OnlineJobs.start`): the space function, the pace of the backfills, the timeout of the index builds' own connection, how often it looks again while it waits. | [18](18-production.md) |
+| `OnlineJobsSettings(eventStore, spaceOf, longStatementTimeout, checkEvery)` | none, `6 hours`, `10 s` | The online jobs run in the background (`OnlineJobs.start`): the space function, the timeout of the index builds' own connection, how often it looks again while it waits. | [18](18-production.md) |
 | `ProjectionsSettings(eventStore, subscriptionsState, registry, contexts, builder, buildsAtOnce, restartAfter, holdBuilds)` | `BuilderSettings()`, `2`, `10 s`, `None` | Managed projections: how builds read the store, how many run at once, how long the supervisor waits after a failure, and what full builds wait for (`BuildHold.untilStoreReady(eventStore)`, checked every 30 s). | [10](10-rebuilding-projections.md) |
 | `BuilderSettings` `pageSize`, `pageBytes` | `1000` events, `64 MB` | How much of the store a build reads at a time. | [10](10-rebuilding-projections.md), [18](18-production.md) |
 | `chunkEvents`, `chunkBytes`, `chunksInFlight` | `1000`, `16 MB`, `2` | The parts a build hands its projection, and how many are on their way at once. | [10](10-rebuilding-projections.md) |
-| `maxReplayStates`, `retryAfter` | `10000`, `5 s` | The most aggregate states a build keeps open while it replays the store in commit order; the wait after the store or the projection failed. | — |
-| `restoreThreads` | `1` | How many aggregates a build of a state-only projection restores at once, each thread with a database connection while it reads. | [10](10-rebuilding-projections.md) |
+| `retryAfter` | `5 s` | The wait after the store or the projection failed. | — |
+| `restoreThreads` | `4` | How many aggregates of a type a build reads at once (their events or states), each thread with a database connection while it reads. | [10](10-rebuilding-projections.md) |
 | `Projections.start(name, version, actorName, whileBuilding)` | `ServeLive` | Whether the active build keeps taking deliveries while a new one is built (`ServeStale`: it does not). | [10](10-rebuilding-projections.md) |
 
 ## Sagas, squash, organizations and rewrites
@@ -143,7 +143,6 @@ Members of your `AggregateContext`; override the ones you need.
 | `StoredDataCheck.run(mpjsons, typesNames, projections, examplesPerClass, fetchSize)` | none, `5`, `1000` | Reads every stored value; lists up to 5 unreadable rows per class. | [6](06-events.md), [18](18-production.md) |
 | `StoredDataCheck.usersOf(className, limit)` | `100` | The aggregates that still have events of a class. | [6](06-events.md), [14](14-squash.md) |
 | `eventStore.backfillSpaces(spaceOf, batchSize)` | none, `1000` | Gives aggregates stored before spaces their space. | [16](16-organizations.md) |
-| `eventStore.backfillEventKeys(batchSize)` | `10000` | Gives events stored before event keys their key. | [16](16-organizations.md) |
 
 ## System properties
 

@@ -46,8 +46,8 @@ case class ProjectionsSettings(eventStore: EventStoreState, subscriptionsState: 
 case class BuildHold(heldBy: () => Option[String], checkEvery: FiniteDuration = 30.seconds)
 
 object BuildHold {
-  /** Holds full builds until `store` is ready for them (`buildReadiness`: the event keys complete and the index of the
-    * aggregates' own rows by type valid), or an operator released them (`releaseBuildHold`). */
+  /** Holds full builds until `store` is ready for them (`buildReadiness`: the index of the aggregates' own rows by
+    * type and the index of the events by aggregate and version valid), or an operator released them (`releaseBuildHold`). */
   def untilStoreReady(store: PostgresEventStoreState, checkEvery: FiniteDuration = 30.seconds): BuildHold =
     BuildHold(() => store.buildsHeldBy(), checkEvery)
 }
@@ -134,7 +134,7 @@ object ProjectionSupervisor {
 
   /** Rebuilds, in place, what the active build derived from the target (D63, R14): the projection clears it
     * (`clearForRebuild`) and forgets its versions of the target's aggregates in one transaction, then gets their events
-    * again from the store, in commit order. Answered with `AggregatesRebuilt`, or `RebuildRefused`; one that a stop
+    * again from the store, a type at a time in the order of its listeners (D96). Answered with `AggregatesRebuilt`, or `RebuildRefused`; one that a stop
     * interrupted runs again at the next start. An organization's aggregates need their space (F49's backfill). */
   case class RebuildAggregates(target: RebuildTarget)
   /** The answer to `RebuildAggregates`: how many aggregates were rebuilt. */

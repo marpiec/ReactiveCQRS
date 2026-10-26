@@ -205,7 +205,6 @@ class PurgeSpec extends CommonSpec {
       report.rows("sagas") mustBe 1L
       And("nothing is stored for its aggregates any more, in any table")
       Seq(folder, copy).foreach(id => rowsOf(id).filter(_._2 > 0) mustBe empty)
-      count("events", "space_id", space.asLong) mustBe 0L
       count("sagas", "space_id", space.asLong) mustBe 0L
       Seq(folder, copy).map(docOf) mustBe Seq(None, None)
       StoredDataCheck.spaceRows(space.asLong).filter(_._2 > 0) mustBe empty

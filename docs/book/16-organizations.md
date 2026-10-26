@@ -246,16 +246,16 @@ A rebuild of one organization is refused (`RebuildRefused`) while any aggregate 
 types has no space yet: aggregates stored by older versions of the library may lack one, and the
 reason tells you to run `backfillSpaces` first. That is the next section.
 
-> **Under the hood:** the store finds an organization's events through their keys: two columns of
-> `events` that record each event's aggregate type and space, with an index. Once every older event has its
-> keys, rebuilding one organization reads that organization's events only, not the whole store
-> (issue F124). See [ARCHITECTURE.md, section 8](../ARCHITECTURE.md).
+> **Under the hood:** a rebuild of one organization lists the projection's aggregates of that
+> organization a type at a time, through the index of the aggregates' own rows by type, and reads the
+> events of those aggregates only, not the whole store (D96). See
+> [ARCHITECTURE.md, section 8](../ARCHITECTURE.md).
 
 ## Upgrading an installation that already has data
 
 An installation that has been running for a while may hold aggregates stored before every first
-event had to name a space (their space is -1), documents written before documents had a space (also
--1), and events written before event keys existed. A few one-off jobs put that right. All of them
+event had to name a space (their space is -1), and documents written before documents had a space
+(also -1). A few one-off jobs put that right. All of them
 run online, while your application works, in small transactions, and all of them can be stopped and
 run again: they go on from where they left off. [Chapter 18](18-production.md) lists them with the
 other production steps; here is what they mean for organizations.
@@ -316,30 +316,9 @@ other production steps; here is what they mean for organizations.
    cannot be computed (an old row lacks the field it comes from, so it throws) goes to your function
    too, and one your function throws for is left: one bad row never stops the backfill.
 
-4. **Give old events their keys**, once *every* node runs the new version:
-
-   <!-- snippet: e9/OrganizationsSpec.scala#backfillKeys -->
-   ```scala
-   import io.reactivecqrs.core.eventstore.EventKeysBackfill
-
-   val keys: EventKeysBackfill = eventStore.backfillEventKeys()  // EventKeysBackfill(written, missing, orphans)
-   ```
-
-   It works through the events in batches of 10 000 (`batchSize`) and records when every event has
-   its key; from then on, a rebuild of one organization, or a build of a few types, reads only its
-   own events. Until then they read through the whole store, which is correct, just slow. `missing`
-   counts events it could not key although their aggregate has its row (zero, unless a node of an
-   older version wrote meanwhile). Events whose aggregate has no row of its own at all, *orphans*
-   left by some old delete, are counted apart in `orphans`, with the first hundred aggregates listed
-   (ids, event counts and classes, first and last event); they never keep the backfill from
-   finishing, as nothing reads them anyway. Chapter 18 says what to do with them.
-
-5. **Rebuild the read models that wrote no real space**: documents written before documents had a
+4. **Rebuild the read models that wrote no real space**: documents written before documents had a
    space, or with `0` for everything. A full rebuild ([chapter 10](10-rebuilding-projections.md))
    writes them again, with the spaces your projection now passes.
-
-> **Warning:** once `backfillEventKeys` has finished, do not go back to an older version of the
-> library: older versions write events without keys, and builds would miss those events.
 
 > **Tip:** run these jobs from a maintenance task or a background thread, never on your
 > application's start-up path. On a large store they take a while, and none of them needs the
@@ -554,8 +533,8 @@ to look at; they are left as they are.
 - Keep the space in the state when a squash event or a state-listening projection needs it.
 - Documents carry the space (`insertDocument(space.asLong, key, document)`), so one organization's
   documents can be cleared (`clearSpace`) and rebuilt (`RebuildAggregates(RebuildTarget.OneSpace(space))`).
-- An installation with older data runs `buildIndexesConcurrently`, `buildSpaceIndexesConcurrently`,
-  `backfillSpaces` and `backfillEventKeys` once, online.
+- An installation with older data runs `buildIndexesConcurrently`, `buildSpaceIndexesConcurrently`
+  and `backfillSpaces` once, online.
 - `SpacePurge` removes an organization: it checks first, detaches other organizations' copies,
   deletes in small transactions with your `PurgeHook`s, clears the projections, and reports; run it
   again until `complete`, and verify with `StoredDataCheck.spaceRows`.

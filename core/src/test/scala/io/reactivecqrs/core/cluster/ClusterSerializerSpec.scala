@@ -62,7 +62,7 @@ class ClusterSerializerSpec extends AnyFeatureSpec with Matchers with BeforeAndA
       import io.reactivecqrs.core.rebuild.ProjectionBuilder.BuildStatus
       asWrittenFor(BuildStatusOfRc1("Bulk", 5, 6, 7, 8, 9), classOf[BuildStatus]) mustBe BuildStatus("Bulk", 5, 6, 7, 8, 9, None)
       val serializer = new ClusterSerializer(system)
-      Seq(BuildStatus("Waiting", 1, 0, 0, 0, 0, Some("the event keys are not complete")), io.reactivecqrs.core.delivery.CannotRestore(AggregateId(7), "a cause"),
+      Seq(BuildStatus("Waiting", 1, 0, 0, 0, 0, Some("the index aggregates_own_type_idx is missing or invalid")), io.reactivecqrs.core.delivery.CannotRestore(AggregateId(7), "a cause"),
         io.reactivecqrs.core.projection.SkipAggregate(AggregateId(7)), io.reactivecqrs.core.projection.AggregateSkipped(AggregateId(7), AggregateVersion(3), 1)
       ).foreach(message => serializer.fromBinary(serializer.toBinary(message), serializer.manifest(message)) mustBe message)
     }
@@ -70,8 +70,8 @@ class ClusterSerializerSpec extends AnyFeatureSpec with Matchers with BeforeAndA
     Scenario("1.0.3's build status: one of 1.0.2 reads without its timings, and the timings travel (CR-8)") {
       import io.reactivecqrs.core.rebuild.ProjectionBuilder.BuildStatus
       val at = Some(java.time.Instant.parse("2026-10-23T10:00:00Z"))
-      asWrittenFor(BuildStatusOf102("Bulk", 5, 6, 7, 8, 9, None, at, 3), classOf[BuildStatus]) mustBe BuildStatus("Bulk", 5, 6, 7, 8, 9, None, at, 3)
-      val timed = BuildStatus("Bulk", 5, 6, 7, 8, 9, None, at, 3, readingMillis = 10, replayingMillis = 20, waitingMillis = 30)
+      asWrittenFor(BuildStatusOf102("Bulk", 5, 6, 7, 8, 9, None, at, 3), classOf[BuildStatus]) mustBe BuildStatus("Bulk", 5, 6, 7, 8, 9, None, at) // D96: without its replay states
+      val timed = BuildStatus("Bulk", 5, 6, 7, 8, 9, None, at, readingMillis = 10, replayingMillis = 20, waitingMillis = 30, typeIndex = 1, types = 3)
       val serializer = new ClusterSerializer(system)
       serializer.fromBinary(serializer.toBinary(timed), serializer.manifest(timed)) mustBe timed
     }

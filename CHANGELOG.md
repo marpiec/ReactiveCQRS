@@ -8,13 +8,22 @@ Notable changes of ReactiveCQRS, newest first. Dates are DD/MM/YYYY.
   mpjsons 0.7.8 (was 0.7.0), the version Neula runs it with; mpjsons 0.7.6 and later need Java 25. The library's own
   classes are still compiled for Java 21. The stored JSON is unchanged (`StoredFormatsSpec`). E2's image runs on
   `eclipse-temurin:25-jre`.
-- **Changed: the event keys are two columns of `events`** (D95, chapters 16 and 18): `type_id` and `space_id`, indexed
-  by type and by space and type, in place of the table `event_keys`. A build of some types, or of one organization,
-  reads a page in one index scan per type. A store of 1.0.0–1.0.4 loses the table at start, and runs the indexes' and
-  the event keys' online jobs again. `backfillEventKeys` now writes each older event row once more: `events` and its
-  indexes grow by about the table's size until VACUUM. The keys' indexes are built after the backfill (by its online
-  job, or by `buildIndexesConcurrently` once it is done), and builds use the keys only once both indexes are valid.
-  `StoredDataCheck.spaceRows` counts `events` in place of `event_keys`.
+- **Changed: a build goes a type at a time, each aggregate whole, on several threads** (D96, chapters 10, 16, 18 and
+  21). A full build delivers the projection's aggregate types in the order of its `listeners` (as 0.12's replayer did),
+  each aggregate's events by version with the state after them, read on `BuilderSettings.restoreThreads` threads
+  (**default 4**, was 1) for every kind of projection, in the same order and chunks whatever the threads. A projection
+  may rely on each aggregate's own order and on the order of its listeners' types, never on the order of aggregates
+  or on how an aggregate's events are grouped: put the listener of a type another needs first. A build resumes from the
+  type and the aggregate it reached (`BuildPosition.typeIndex`, the column `projection_builds.type_index`).
+  `BuildStatus.typeIndex` and `types` say which type the bulk pass reads; its `position` is an aggregate id of that type.
+- **Removed: the event keys** (D96): no table, no columns, no backfill. **Breaking:** `backfillEventKeys` and
+  `EventKeysBackfill` are gone, and so are the `event-keys` online job, `OnlineJobsSettings.batchSize` and `pause`
+  and `OnlineJobStatus.orphans`; `StoreReadiness(eventKeys, ownTypeIndex)` is `StoreReadiness(ownTypeIndex,
+  versionIndex)` (the index of the events by aggregate and version); `EventStoreState.readCommittedPage` and
+  `readCommitted`, `BuilderSettings.maxReplayStates`, `BuildStatus.statesRestored` and `ReplayStates` are gone
+  (`ReplaySource` stays). The procedures are version 4. `StoredDataCheck.spaceRows` counts an organization's events
+  through its aggregates. The D95 columns and the table of 1.0.0–1.0.4 never reached a production store; a development
+  store of 1.0.x keeps an unused `event_keys` table, which can be dropped by hand.
 
 ## 1.0.3 (23/10/2026)
 

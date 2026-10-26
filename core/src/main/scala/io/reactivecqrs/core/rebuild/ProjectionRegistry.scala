@@ -105,6 +105,7 @@ class PostgresProjectionRegistry extends ProjectionRegistry {
            |  contexts TEXT NOT NULL,
            |  bulk_done BOOLEAN NOT NULL DEFAULT false,
            |  position BIGINT NOT NULL DEFAULT 0,
+           |  type_index INT NOT NULL DEFAULT 0,
            |  created TIMESTAMP NOT NULL,
            |  PRIMARY KEY (name, build))""".stripMargin.execute()
       sql"""CREATE TABLE IF NOT EXISTS projection_build_objects (
@@ -115,11 +116,12 @@ class PostgresProjectionRegistry extends ProjectionRegistry {
            |  PRIMARY KEY (name, build, object_name, is_sequence))""".stripMargin.execute()
     }
     Ddl.addColumn("projections", "pending_target", "TEXT") // F185: only when it is missing
+    Ddl.addColumn("projection_builds", "type_index", "INT NOT NULL DEFAULT 0") // D96: the bulk pass's type
     this
   }
 
   private def build(rs: WrappedResultSet): BuildRecord = BuildRecord(rs.string("name"), rs.int("build"), rs.int("version"), rs.string("suffix"),
-    rs.string("subscriber"), contextsOf(rs.string("contexts")), BuildPosition(rs.boolean("bulk_done"), rs.long("position")))
+    rs.string("subscriber"), contextsOf(rs.string("contexts")), BuildPosition(rs.boolean("bulk_done"), rs.long("position"), rs.int("type_index")))
 
   private def buildOf(name: String, number: Int)(implicit session: DBSession): Option[BuildRecord] =
     sql"""SELECT * FROM projection_builds WHERE name = $name AND build = $number""".map(build).single()
@@ -155,9 +157,9 @@ class PostgresProjectionRegistry extends ProjectionRegistry {
   }
 
   private def insertBuild(record: BuildRecord)(implicit session: DBSession): BuildRecord = {
-    sql"""INSERT INTO projection_builds (name, build, version, suffix, subscriber, contexts, bulk_done, position, created)
+    sql"""INSERT INTO projection_builds (name, build, version, suffix, subscriber, contexts, bulk_done, position, type_index, created)
          | VALUES (${record.name}, ${record.number}, ${record.version}, ${record.suffix}, ${record.subscriber}, ${contextsText(record.contexts)},
-         |   ${record.position.bulkDone}, ${record.position.position}, current_timestamp)""".stripMargin.update()
+         |   ${record.position.bulkDone}, ${record.position.position}, ${record.position.typeIndex}, current_timestamp)""".stripMargin.update()
     record
   }
 
@@ -173,7 +175,7 @@ class PostgresProjectionRegistry extends ProjectionRegistry {
   }
 
   override def savePosition(name: String, build: Int, position: BuildPosition): Unit = DB.autoCommit { implicit session =>
-    sql"""UPDATE projection_builds SET bulk_done = ${position.bulkDone}, position = ${position.position} WHERE name = $name AND build = $build""".update()
+    sql"""UPDATE projection_builds SET bulk_done = ${position.bulkDone}, position = ${position.position}, type_index = ${position.typeIndex} WHERE name = $name AND build = $build""".update()
   }
 
   override def setPendingTarget(name: String, target: Option[String]): Unit = DB.autoCommit { implicit session =>

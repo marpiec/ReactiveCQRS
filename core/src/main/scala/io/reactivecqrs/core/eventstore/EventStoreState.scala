@@ -21,15 +21,6 @@ case class Snapshot[AGGREGATE_ROOT](version: AggregateVersion, contextVersion: I
 /** An aggregate with rows waiting in the outbox: its oldest waiting version, and when that event was written. */
 case class WaitingInOutbox(aggregateType: AggregateType, aggregateId: AggregateId, oldestVersion: AggregateVersion, since: Instant)
 
-/** A stored event in commit order (D59): its row id, its aggregate's type and squash point (D51), and the event, or why
-  * it cannot be read; `size`: its stored JSON's length (F126), 0 when the store does not know it. */
-case class CommittedEvent(id: Long, aggregateType: AggregateType, aggregateId: AggregateId, version: AggregateVersion,
-                          squashedUpTo: Option[AggregateVersion], event: Either[String, EventInfo[Any]], size: Int = 0)
-
-/** A page of events in commit order; `cut`: its bytes ended it before its limit of events (F126), so a shorter page does
-  * not mean that no more events are stored. */
-case class CommittedPage(events: Seq[CommittedEvent], cut: Boolean)
-
 /** An event as stored: its version, and its stored JSON's bytes, which bound batches (F126, F142); 0 when the
   * store does not know it. */
 case class StoredEvent[AGGREGATE_ROOT](event: Event[AGGREGATE_ROOT], version: AggregateVersion, size: Int)
@@ -64,7 +55,7 @@ object AggregateScope {
 }
 
 /** Where events are stored (`PostgresEventStoreState`; `MemoryEventStoreState` for tests): what owners write and
-  * restore, the outbox, snapshots, squash and its archive, and the reads in commit order that rebuilds take. Hosts make
+  * restore, the outbox, snapshots, squash and its archive, and the reads by type and aggregate that rebuilds take. Hosts make
   * one per installation and give it to the command buses, the outbox poller and `Projections`. */
 abstract class EventStoreState {
   /** Stores the events after `expectedVersion`: each with its version and stored size. */
@@ -111,19 +102,10 @@ abstract class EventStoreState {
     * any more). An owner that may share its aggregate with another node's owner compares it with its own (F131). */
   def storedVersion(aggregateId: AggregateId): Option[(AggregateVersion, Int)]
 
-  // ************** Rebuild (D58, D59)
+  // ************** Rebuild (D58, D96)
 
-  /** Up to `limit` events of the aggregates of `types` with row ids above `after`, in commit order (row id), each under
-  * its own aggregate (a duplicate's own events, not its base's), and no more than `maxBytes` of stored JSON, but at least
-  * one (F126). Undone events and undo events too, as live delivery sent them (D60). A row that cannot be read is
-  * returned with the reason, so one bad row does not stop a rebuild. */
-  def readCommittedPage(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope, maxBytes: Long): CommittedPage
-
-  /** `readCommittedPage` without a limit of bytes. */
-  final def readCommitted(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[CommittedEvent] =
-    readCommittedPage(types, after, limit, scope, Long.MaxValue).events
-
-  /** Up to `limit` aggregates of `types` with ids above `after`, in id order. */
+  /** Up to `limit` aggregates of `types` with ids above `after`, in id order: their own rows (a duplicate's, not its
+    * base's), each with its version and squash point. A build reads them a type at a time, then each one's events. */
   def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[StoredAggregate]
 
   /** Removes delivered versions from the outbox. It may return before the rows are gone (the PostgreSQL store batches

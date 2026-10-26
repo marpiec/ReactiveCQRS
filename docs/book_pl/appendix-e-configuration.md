@@ -112,12 +112,12 @@ Składowe twojego `AggregateContext`; nadpisz te, których potrzebujesz.
 | `maxBatchesPerTransaction` | `100` | Najwięcej agregatów, których aktualizacje dzielą jedną transakcję. | [8](08-projections.md) |
 | `purgedDropWindow` | `30 minutes` | Jak długo po usunięciu organizacji dostarczenia usuniętych agregatów są potwierdzane bez stosowania. | [16](16-organizations.md) |
 | `SubscribableProjectionActor(updatesCacheTTL, subscriptionTTL, options)` | `Duration.ZERO`, `600000` ms, `DEFAULT` | Jak długo wysłane aktualizacje są trzymane dla nowych subskrybentów; jak długo subskrypcja żyje bez odnowienia. | [11](11-subscribable-projections.md) |
-| `OnlineJobsSettings(eventStore, spaceOf, batchSize, pause, longStatementTimeout, checkEvery)` | brak, `10000`, `100 ms`, `6 hours`, `10 s` | Zadania online wykonywane w tle (`OnlineJobs.start`): funkcja przestrzeni, tempo uzupełnień, limit czasu osobnego połączenia budów indeksów, jak często sprawdza ponownie, gdy czeka. | [18](18-production.md) |
+| `OnlineJobsSettings(eventStore, spaceOf, longStatementTimeout, checkEvery)` | brak, `6 hours`, `10 s` | Zadania online wykonywane w tle (`OnlineJobs.start`): funkcja przestrzeni, limit czasu osobnego połączenia budów indeksów, jak często sprawdza ponownie, gdy czeka. | [18](18-production.md) |
 | `ProjectionsSettings(eventStore, subscriptionsState, registry, contexts, builder, buildsAtOnce, restartAfter, holdBuilds)` | `BuilderSettings()`, `2`, `10 s`, `None` | Projekcje zarządzane: jak budowy czytają magazyn, ile z nich działa naraz, jak długo nadzorca czeka po awarii i na co czekają pełne budowy (`BuildHold.untilStoreReady(eventStore)`, sprawdzane co 30 s). | [10](10-rebuilding-projections.md) |
 | `BuilderSettings` `pageSize`, `pageBytes` | `1000` zdarzeń, `64 MB` | Ile magazynu budowa czyta za jednym razem. | [10](10-rebuilding-projections.md), [18](18-production.md) |
 | `chunkEvents`, `chunkBytes`, `chunksInFlight` | `1000`, `16 MB`, `2` | Części, które budowa przekazuje swojej projekcji, i ile z nich jest naraz w drodze. | [10](10-rebuilding-projections.md) |
-| `maxReplayStates`, `retryAfter` | `10000`, `5 s` | Najwięcej stanów agregatów, które budowa trzyma otwarte, odtwarzając magazyn w kolejności zatwierdzeń; czas oczekiwania po awarii magazynu albo projekcji. | — |
-| `restoreThreads` | `1` | Ile agregatów naraz odtwarza budowa projekcji tylko na stanach; każdy wątek trzyma połączenie z bazą, gdy czyta. | [10](10-rebuilding-projections.md) |
+| `retryAfter` | `5 s` | Czas oczekiwania po awarii magazynu albo projekcji. | — |
+| `restoreThreads` | `4` | Ile agregatów jednego typu budowa czyta naraz (ich zdarzenia albo stany); każdy wątek trzyma połączenie z bazą, gdy czyta. | [10](10-rebuilding-projections.md) |
 | `Projections.start(name, version, actorName, whileBuilding)` | `ServeLive` | Czy aktywna budowa dalej przyjmuje dostarczenia, gdy powstaje nowa (`ServeStale`: nie przyjmuje). | [10](10-rebuilding-projections.md) |
 
 ## Sagi, squash, organizacje i przepisania
@@ -144,7 +144,6 @@ Składowe twojego `AggregateContext`; nadpisz te, których potrzebujesz.
 | `StoredDataCheck.run(mpjsons, typesNames, projections, examplesPerClass, fetchSize)` | brak, `5`, `1000` | Czyta każdą zapisaną wartość; wymienia do 5 nieczytelnych wierszy na klasę. | [6](06-events.md), [18](18-production.md) |
 | `StoredDataCheck.usersOf(className, limit)` | `100` | Agregaty, które wciąż mają zdarzenia danej klasy. | [6](06-events.md), [14](14-squash.md) |
 | `eventStore.backfillSpaces(spaceOf, batchSize)` | brak, `1000` | Nadaje przestrzeń agregatom zapisanym, zanim pojawiły się przestrzenie. | [16](16-organizations.md) |
-| `eventStore.backfillEventKeys(batchSize)` | `10000` | Nadaje klucz zdarzeniom zapisanym, zanim pojawiły się klucze zdarzeń. | [16](16-organizations.md) |
 
 ## Właściwości systemowe
 

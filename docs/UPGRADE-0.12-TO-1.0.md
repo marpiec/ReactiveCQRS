@@ -62,11 +62,10 @@ On a restored copy of the production database, with the 1.0 build of the applica
 | first 1.0 start (schema steps) | | |
 | `buildIndexesConcurrently()` | | |
 | `backfillSpaces(...)` | | |
-| `backfillEventKeys()` | | |
 | rebuilds of the projections whose version changed | | |
 
-The space backfill runs after the start, online: on a 0.12 schema it can do nothing, as it reads `events.metadata` and
-writes the events' keys, columns 1.0's first start adds (F336). `buildIndexesConcurrently()`, on the other hand, may run
+The space backfill runs after the start, online: on a 0.12 schema it can do nothing, as it reads `events.metadata`, a
+column 1.0's first start adds (F336). `buildIndexesConcurrently()`, on the other hand, may run
 against production before the stop, while 0.12 serves: it builds on 0.12's columns, without blocking writes, and takes
 the heaviest index work out of the window. Try it first in the rehearsal, on the copy under test traffic (F339).
 
@@ -119,8 +118,8 @@ If something is wrong and no command of the new version was taken yet, the way b
 
 While the application serves, each once, in this order (the book's
 [chapter 18, "After an upgrade: the online jobs"](book/18-production.md)). Since 1.0.1-RC2 the application can run
-steps 1 to 4 itself, in the background, with `OnlineJobs.start`, and hold full builds of projections until they are
-done (`BuildHold.untilStoreReady`): no manual step, and no build that reads the whole `events` table.
+steps 1 to 3 itself, in the background, with `OnlineJobs.start`, and hold full builds of projections until they are
+done (`BuildHold.untilStoreReady`): no manual step, and no build on missing indexes.
 
 1. `buildIndexesConcurrently()` (unless it ran before the stop): the indexes too large to build at start, without
    blocking writes.
@@ -128,12 +127,7 @@ done (`BuildHold.untilStoreReady`): no manual step, and no build that reads the 
    space, by which a purge or a rebuild of one organization clears it (F217).
 3. `backfillSpaces(spaceOf)`: gives the aggregates without a space the space of their first event, in batches;
    run it again while `left` shrinks, and decide on what stays. Rebuilds of one organization's read models wait for it.
-4. `backfillEventKeys()`: every event's type and space, so builds of a few types or one organization read only their
-   events; until it is done they walk the whole store. It writes each older event row once more (D95): `events` and its
-   indexes grow by about the table's size until VACUUM takes the old row versions; plan the disk for it.
-5. `buildIndexesConcurrently()` again: the indexes the event keys (built only now, after their backfill) and the
-   aggregates' own rows need.
-6. `Projections.retire(name)` for each projection the new code removed.
+4. `Projections.retire(name)` for each projection the new code removed.
 
 From here on, upgrades are rolling: a new app-version per release, the oldest node last
 ([chapter 17](book/17-cluster.md)).

@@ -197,7 +197,7 @@ zobaczyły pierwsze zdarzenie po 767 ms.
 ### 7. Po aktualizacji: zadania online
 
 Niektóre zadania są zbyt ciężkie, żeby wykonywać je przy starcie węzła: duże indeksy i uzupełnienia
-przechodzące przez wszystkie zdarzenia. Wykonują się raz, w tle, gdy wersja, która ich potrzebuje, już
+przechodzące przez wszystkie agregaty. Wykonują się raz, w tle, gdy wersja, która ich potrzebuje, już
 działa. Najprościej pozwolić aplikacji uruchomić je samej, a pełnym budowom projekcji kazać na nie
 poczekać:
 
@@ -210,17 +210,14 @@ val projections = new Projections(system, ProjectionsSettings(eventStore, subscr
   contexts, holdBuilds = Some(BuildHold.untilStoreReady(eventStore))))
 ```
 
-`OnlineJobs.start` (na każdym węźle; w klastrze to singleton) wykonuje trzy zadania, jedno po drugim:
+`OnlineJobs.start` (na każdym węźle; w klastrze to singleton) wykonuje dwa zadania, jedno po drugim:
 
 1. **`indexes`**: duże indeksy magazynu zdarzeń i indeks każdej tabeli dokumentów według organizacji;
-2. **`event-keys`**: klucz każdego starszego zdarzenia, gdy żaden węzeł klastra nie działa już na
-   starszej wersji (czeka, dopóki taki działa: zapisywałby zdarzenia bez kluczy);
-3. **`spaces`**: organizację agregatów zapisanych, zanim ją miały, z twoim `spaceOf`
+2. **`spaces`**: organizację agregatów zapisanych, zanim ją miały, z twoim `spaceOf`
    ([rozdział 16](16-organizations.md)).
 
-Każde idzie w tempie opisanym niżej i każde zapisuje postęp w tabeli `online_jobs`: węzeł, który
-zatrzyma się w połowie, zostawia pracę następnemu, a ten pomija to, co skończone, i kontynuuje klucze
-zdarzeń od ostatniej partii. Naraz pracuje tylko jeden (trzyma blokadę doradczą PostgreSQL), a jego
+Każde idzie w tempie opisanym niżej i każde zapisuje się w tabeli `online_jobs`, gdy się skończy: węzeł,
+który zatrzyma się w połowie, zostawia pracę następnemu, a ten pomija to, co skończone. Naraz pracuje tylko jeden (trzyma blokadę doradczą PostgreSQL), a jego
 budowy indeksów idą osobnym połączeniem, którego limit czasu to `longStatementTimeout` (6 godzin), a
 nie `socketTimeout` twojej puli, który przerwałby długie `CREATE INDEX CONCURRENTLY`. Zapytaj, jak mu
 idzie:
@@ -233,10 +230,9 @@ onlineJobs ? RetryOnlineJobs      // runs the failed jobs again
 eventStore.releaseBuildHold()     // the override: held builds start, ready or not
 ```
 
-Stan (`state`) każdego zadania to `OnlineJobState.Waiting`, `Running`, `Done` albo `Failed`, z licznikami (zdarzenia z kluczem,
-pozostałe zdarzenia, uzupełnione i pozostałe przestrzenie) i, przy kluczach zdarzeń, ze spotkanymi
-zdarzeniami-sierotami. Ze wstrzymaniem pełne budowy ruszają, gdy indeksy i klucze są gotowe
-([rozdział 10](10-rebuilding-projections.md)). Zadanie zakończone porażką trzyma je dalej, a
+Stan (`state`) każdego zadania to `OnlineJobState.Waiting`, `Running`, `Done` albo `Failed`, z licznikami
+(tabele dokumentów z indeksem, uzupełnione i pozostałe przestrzenie). Ze wstrzymaniem pełne budowy
+ruszają, gdy indeksy są gotowe ([rozdział 10](10-rebuilding-projections.md)). Zadanie zakończone porażką trzyma je dalej, a
 `Builds.heldBy` podaje przyczynę; usuń ją i wyślij `RetryOnlineJobs` (zadanie zakończone porażką rusza
 też ponownie przy następnym starcie) albo, jeśli budowy mają ruszyć mimo to, wywołaj
 `eventStore.releaseBuildHold()`, które zwalnia je na każdym węźle, na stałe. Śledzą to metryki
@@ -249,7 +245,6 @@ Możesz też uruchomić zadania sam, z zadania serwisowego:
 ```scala
 eventStore.buildIndexesConcurrently()          // indexes built without blocking writes
 val spaces = eventStore.backfillSpaces()       // SpaceBackfill(filled, left)
-val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, missing, orphans)
 ```
 
 - `buildIndexesConcurrently()` buduje indeksy, których duża tabela nie może dostać w transakcji przy
@@ -264,19 +259,6 @@ val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, mis
   zdarzenia; dla starych pierwszych zdarzeń, które swojej przestrzeni nie znają, przekazujesz funkcję,
   która ją zna ([rozdział 16](16-organizations.md)). Zrób to po pierwszym starcie nowej wersji (na
   schemacie 0.12 niczego nie zrobi) i zanim przebudujesz projekcję dla jednej organizacji.
-- `backfillEventKeys()` nadaje każdemu starszemu zdarzeniu klucz (typ i przestrzeń jego agregatu),
-  dzięki czemu budowa projekcji czyta tylko te zdarzenia, których potrzebuje. Uruchom to, gdy *każdy*
-  węzeł działa już na 1.0, a potem jeszcze raz `buildIndexesConcurrently()`, które zbuduje indeksy kluczy. Zadanie zapisuje
-  każdy starszy wiersz zdarzenia jeszcze raz, więc `events` i jego indeksy rosną mniej więcej o
-  rozmiar tabeli, dopóki VACUUM nie usunie starych wersji wierszy: zapewnij na to miejsce na dysku. Od tej chwili nie wracaj
-  do wcześniejszej wersji: wcześniejsze wersje zapisują zdarzenia bez kluczy. Zdarzenia, których
-  agregat nie ma własnego wiersza (*sieroty* po jakimś dawnym usunięciu), nie mogą dostać klucza;
-  zadanie zgłasza je w `orphans` i zapisuje ostrzeżenie w logu, ale nie wstrzymują jego zakończenia:
-  nie czyta ich żadne odtwarzanie, budowa ani uzgadnianie (wszystkie zaczynają od własnego wiersza
-  agregatu), i tak samo jest z sierotą powstałą później, której zdarzenia zachowują klucze prowadzące
-  donikąd. Nic ich nie usuwa: decyzja należy do ciebie (usuń je jak w „Usuwaniu agregatu ręcznie”
-  niżej albo zostaw).
-
 ### 8. Przed aktualizacją: sprawdzenie zapisanych danych
 
 Zanim przeniesiesz bazę danych na nową wersję, sprawdź, czy nowa wersja potrafi przeczytać wszystko,
@@ -363,7 +345,7 @@ co dostajesz:
 | `reactivecqrs.message.too.large` | licznik | `class` | komunikaty zbyt duże, by przejść między węzłami ([rozdział 17](17-cluster.md)) |
 | `reactivecqrs.restore.failures` | wskaźnik | | zapisane agregaty, których nie da się odtworzyć (przy każdym przeglądzie outboxu) |
 | `reactivecqrs.online.job` | wskaźnik | `job` | stan każdego zadania online: 0 czeka, 1 działa, 2 gotowe, 3 porażka |
-| `reactivecqrs.online.job.progress` | wskaźnik | `job` | jak daleko doszło: zindeksowane tabele dokumentów, zdarzenia z kluczem, uzupełnione przestrzenie |
+| `reactivecqrs.online.job.progress` | wskaźnik | `job` | jak daleko doszło: zindeksowane tabele dokumentów, uzupełnione przestrzenie |
 | `reactivecqrs.builds.held` | wskaźnik | | pełne budowy czekające na `BuildHold` ([rozdział 10](10-rebuilding-projections.md)); 0, gdy wstrzymanie się skończy |
 
 > **Wskazówka:** trzy alerty wyłapują większość kłopotów: `reactivecqrs.outbox.given.up` powyżej zera,
@@ -645,7 +627,7 @@ jednego zdarzenia (nic z tego nie było uruchamiane w takiej skali):
 |---|---|---|
 | tabela zdarzeń z indeksami | około 38 GB | 382 bajty na zdarzenie, zmierzone z notatkami o długości 200 znaków; przeskaluj według JSON-a swoich zdarzeń |
 | zapisanie ich przy pełnym obciążeniu, bez subskrybentów | około 2,5 godziny | 11 226 zdarzeń/s (`load-M5`) |
-| jedna przebudowa projekcji opartej na zdarzeniach | około 4,1 godziny | 6 769 zdarzeń/s (`baseline-M4`) |
+| jedna przebudowa projekcji opartej na zdarzeniach | około 4,8 godziny | 5 749 zdarzeń/s (`d96-after`) |
 | opróżnienie zaległości outboxu z 1 miliona agregatów | około 8,3 godziny | 1 000 agregatów na 30-sekundowy przegląd |
 
 Kiedy zapisy wyprzedzają projekcję, szyna wysyła jej najwyżej **okno** 10 000 zdarzeń i 64 MB, na
@@ -667,7 +649,7 @@ Co robić:
   zamiast pozwalać jej nadrabiać przez outbox po 1 000 agregatów na przegląd; albo przyspiesz poller,
   dopóki outbox się nie opróżni:
   `OutboxPollerOptions(redelivery = RedeliveryPolicy.Options(maxRepublishPerPoll = 5000))`.
-- **Planuj czas przebudowy na podstawie tempa:** około 6 800 zdarzeń/s na budowę na mierzonej
+- **Planuj czas przebudowy na podstawie tempa:** około 5 800 zdarzeń/s na budowę na mierzonej
   maszynie.
 - **Licz miejsce na dysku według własnych zdarzeń:** rozmiar ich JSON-a plus około 190 bajtów na
   zdarzenie (oszacowanie).
@@ -836,8 +818,6 @@ w kolejności, w jakiej je spotkasz.
 
 17. `buildIndexesConcurrently()`.
 18. `backfillSpaces(...)`, zanim przebudujesz jakąkolwiek projekcję dla jednej organizacji.
-19. Gdy każdy węzeł działa już na 1.0: `backfillEventKeys()`, a potem jeszcze raz
-    `buildIndexesConcurrently()`.
 
 **Nowości, które możesz włączyć, po jednym kontekście naraz, kiedy tylko zechcesz:** migawki
 ([rozdział 13](13-snapshots.md)), szeregowe przetwarzanie poleceń ([rozdział 5](05-command-flavors.md)),

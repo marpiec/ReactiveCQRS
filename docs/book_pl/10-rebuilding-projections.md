@@ -238,14 +238,15 @@ val buildStatus = (cartNames ? GetBuildStatus).mapTo[BuildStatus]
 ```
 
 Faza (`phase`) przechodzi przez `Bulk` (czytanie magazynu), `GoingLive` i `Reconciling` (dołączanie
-do zdarzeń na żywo), a na końcu `CaughtUp`. Nadzorca odpowiada od razu tym, co budowniczy zgłosił
+do zdarzeń na żywo), a na końcu `CaughtUp`. W fazie `Bulk` `typeIndex` mówi, który z typów projekcji
+(`types`) budowa czyta (licząc od 0, w kolejności jej listenerów), a `position` ostatni agregat tego
+typu, do którego doszła. Nadzorca odpowiada od razu tym, co budowniczy zgłosił
 ostatnio (po każdej porcji i co 2 sekundy; `reportedAt` mówi kiedy), więc budowniczy zajęty długim
-odczytem nigdy nie każe ci czekać; `statesRestored` liczy stany powtórki, które musiał odczytać ponownie,
-co pokazuje, czy `maxReplayStates` nie jest za małe dla twoich agregatów. Trzy kolejne liczby mówią,
-na co poszedł czas budowy: `readingMillis` (czytanie magazynu, razem z parsowaniem zdarzeń),
-`replayingMillis` (nakładanie zdarzeń na stany powtórki i odtwarzanie stanów) oraz `waitingMillis`
+odczytem nigdy nie każe ci czekać. Trzy kolejne liczby mówią, na co poszedł czas budowy:
+`readingMillis` (czytanie stron agregatów oraz tego, co czytają luki i uzgadnianie), `replayingMillis`
+(czytanie zdarzeń każdego agregatu i odtwarzanie stanów, na wątkach budowy) oraz `waitingMillis`
 (czekanie, aż projekcja nałoży swoje porcje). Budowę, która głównie czeka, ogranicza praca samej
-projekcji; tę, która głównie odtwarza, obsługa zdarzeń agregatów. Gdy żaden budowniczy nie pracuje, nadzorca odpowiada
+projekcji; tę, która głównie odtwarza, czytanie magazynu i obsługa zdarzeń agregatów. Gdy żaden budowniczy nie pracuje, nadzorca odpowiada
 `Waiting` (budowa czeka na swoją kolej albo na restart po błędzie) lub `NoBuild`. Pozostałe liczby
 to: wysłane zdarzenia, wypełnione luki, agregaty przekazane do dostarczania na żywo i zdarzenia,
 których nie udało się odczytać.
@@ -314,6 +315,43 @@ rzeczy się jednak różnią, a projekcja potrafi je rozpoznać:
 - **Porcje.** Budowa zatwierdza wiele agregatów w jednej transakcji, a po zatrzymaniu wznawia pracę
   od ostatniej zapisanej porcji. Listener, który między wywołaniami trzyma stan w pamięci, poza
   swoimi tabelami, nie może na tym stanie polegać w trakcie budowy.
+- **Kolejność agregatów.** Budowa dostarcza jeden typ agregatu naraz, w kolejności `listeners` twojej
+  projekcji, i każdy agregat w całości, jego zdarzenia w kolejności wersji; agregaty jednego typu
+  przychodzą w kolejności swoich identyfikatorów. Na żywo zdarzenia różnych agregatów przychodzą
+  przemieszane, tak jak przyszły ich polecenia. Następna sekcja mówi, na czym projekcja może polegać.
+
+### Nigdy nie polegaj na kolejności agregatów
+
+Dostarczanie na żywo też nie porządkuje zdarzeń dwóch agregatów: właściciel każdego agregatu publikuje
+swoje zdarzenia sam, na dowolnym węźle klastra, a dostarczenie, które się nie udało, przychodzi
+później jeszcze raz. Dlatego projekcja może polegać tylko na dwóch kolejnościach:
+
+- **na własnych zdarzeniach każdego agregatu, w kolejności wersji**, zawsze, na żywo i w budowie;
+- **na kolejności typów swoich listenerów**, w budowie. Projekcja, która obsługując zamówienie, czyta
+  dokument zapisany przez zdarzenia klienta, umieszcza listener klientów na początku:
+
+  ```scala
+  protected val listeners = List(
+    EventsListener[Customer](customerChanged), // a build delivers every customer first
+    EventsListener[Order](orderChanged))       // then every order, which finds its customer
+  ```
+
+Na żywo zamówienie wciąż może przyjść przed dokumentem swojego klienta: klient powstał chwilę
+wcześniej na innym węźle. Dlatego listener zamówień musi poradzić sobie z klientem, którego jeszcze nie
+znajduje, a listener klientów musi aktualizować zamówienia, które się do niego odwołują. A wartości,
+która zależy od tego, kiedy zdarzenie jednego agregatu przyszło względem zdarzenia innego („nazwa
+klienta w chwili zamówienia”), nie da się w ogóle przebudować: zapisz ją we własnym zdarzeniu
+zamówienia, gdy zamówienie jest składane.
+
+Zmiana kolejności `listeners` zmienia to, jak projekcja się przebudowuje, i nic cię o tym nie ostrzeże:
+zachowaj kolejność, której potrzebuje listener danego typu, i wyjaśnij ją w komentarzu.
+
+Projekcja nie może też polegać na tym, jak zgrupowane są zdarzenia agregatu. Na żywo dostarczenie
+zwykle niesie zdarzenia jednego polecenia; budowa przekazuje naraz do 1 000 zdarzeń agregatu, ze
+stanem po ostatnim z nich (rozdział 8: listener stanu widzi stan po całej paczce zdarzeń). Listener,
+który zapisuje wiersz koszyka w organizacji koszyka, musi na przykład przenieść ten wiersz, gdy stan
+wskazuje inną organizację (może to zrobić cofnięcie), a nie liczyć na to, że widział każdy stan po
+drodze.
 
 ## Kiedy zaczyna się budowa?
 
@@ -332,10 +370,10 @@ Naraz działają najwyżej dwie budowy (`buildsAtOnce`); pozostałe czekają na 
 
 ### Wstrzymanie budów, aż magazyn będzie gotowy
 
-Tuż po aktualizacji duży magazyn może jeszcze nie być gotowy na budowy: dopóki jego zdarzenia nie mają
-kluczy, a agregaty indeksu według typu (zadania online z [rozdziału 18](18-production.md)), każda
-budowa czyta całą tabelę `events`, co przy stu milionach zdarzeń może trwać godzinami. Możesz kazać
-pełnym budowom poczekać na magazyn:
+Tuż po aktualizacji duży magazyn może jeszcze nie być gotowy na budowy: dopóki jego agregaty nie mają
+indeksu według typu, a zdarzenia indeksu według agregatu i wersji (zadania online z
+[rozdziału 18](18-production.md)), każda strona, którą czyta budowa, jest wolna: około 100 ms zamiast
+1 ms dla strony agregatów przy milionie agregatów. Możesz kazać pełnym budowom poczekać na magazyn:
 
 ```scala
 val projections = new Projections(system, ProjectionsSettings(eventStore, subscriptions, registry,
@@ -343,8 +381,8 @@ val projections = new Projections(system, ProjectionsSettings(eventStore, subscr
 ```
 
 Co 30 sekund (`checkEvery`), dopóki jakaś budowa czeka, wstrzymanie pyta magazyn
-(`eventStore.buildReadiness()`: zapisany krok kluczy zdarzeń i poprawny indeks
-`aggregates_own_type_idx`; jego `ready` daje samo „tak” albo „nie”). Gdy magazyn jest gotowy,
+(`eventStore.buildReadiness()`: poprawny indeks `aggregates_own_type_idx` i indeks zdarzeń według
+agregatu i wersji; jego `ready` daje samo „tak” albo „nie”). Gdy magazyn jest gotowy,
 czekające budowy ruszają w kolejności, w jakiej prosiły, i wstrzymanie się kończy. W tym czasie:
 
 - `GetBuilds` odpowiada `Builds(..., heldBy = Some(powód))`, a `GetBuildStatus` fazą `Waiting` z tym
@@ -558,49 +596,46 @@ czeka, aż na każdym węźle będzie działać nowa wersja (rozdział 17).
 ## Ile to trwa
 
 Budowa czyta każde zdarzenie typów, których słucha projekcja. Pomiar na jednej maszynie (przebieg
-`baseline-M4` z benchmarku, 17/10/2026: Windows 10, 12 wątków procesora, OpenJDK 17 ze stertą 2 GB,
-PostgreSQL 17.4 na tej samej maszynie): dwie nowe projekcje zarządzane, obejmujące 112 211 zdarzeń,
-były obie zbudowane i przełączone około 16,6 sekundy po starcie systemu. Ta oparta na zdarzeniach
-przetwarzała 6 769 zdarzeń na sekundę, a szczytowe zużycie sterty wyniosło 150 MB. To jeden przebieg
-na jednej maszynie: dobry do orientacji, ale nie obietnica dla twojej.
+`d96-after` z benchmarku, 27/10/2026: Windows 10, 12 wątków procesora, Java 25 ze stertą 2 GB,
+PostgreSQL 17.4 na tej samej maszynie): dwie nowe projekcje zarządzane, obejmujące 500 000 zdarzeń
+10 000 agregatów, były obie zbudowane i przełączone około 87 sekund po starcie systemu. Ta oparta na
+zdarzeniach, która zapisuje dokument przy każdym zdarzeniu, przetwarzała 5 749 zdarzeń na sekundę, a
+szczytowe zużycie sterty wyniosło 211 MB. To jeden przebieg na jednej maszynie: dobry do orientacji,
+ale nie obietnica dla twojej.
 
 Na podstawie tego tempa `docs/SCALING.md` szacuje, że przebudowa projekcji opartej na zdarzeniach,
-obejmującej 100 milionów zdarzeń, zajmie około 4,1 godziny (oszacowanie, nie pomiar). Przebudowa
+obejmującej 100 milionów zdarzeń, zajmie około 4,8 godziny (oszacowanie, nie pomiar). Przebudowa
 kosztuje czas i obciążenie bazy danych, ale nie przestój: aktywna budowa przez cały czas obsługuje
 zapytania.
 
 Co pomaga:
 
+- **Budowa czyta na kilku wątkach.** `BuilderSettings(restoreThreads = 4)`, wartość domyślna, czyta
+  cztery agregaty jednego typu naraz, ich zdarzenia i stany, na własnych wątkach budowy; projekcja
+  dostaje je w tej samej kolejności i tych samych porcjach. Każdy wątek trzyma połączenie z bazą, gdy
+  czyta, więc dobierz pulę połączeń na `buildsAtOnce` × `restoreThreads` ponad pracę na żywo.
+  Projekcja nanosi porcje po jednej.
 - **Projekcje tylko na stanach mają mniej pracy.** Gdy każdy listener projekcji jest
   `AggregateListener`, jak w `CartNames`, budowa pomija historię: przekazuje końcowy stan każdego
-  agregatu, jeden raz. `BuilderSettings(restoreThreads = 4)` odtwarza cztery takie stany naraz, na
-  własnych wątkach budowy; projekcja dostaje je w tej samej kolejności i tych samych porcjach. Każdy
-  wątek trzyma połączenie z bazą, gdy czyta, więc dobierz pulę połączeń na `buildsAtOnce` ×
-  `restoreThreads` ponad pracę na żywo. Budowy, które odtwarzają zdarzenia w kolejności zatwierdzeń,
-  działają na jednym wątku.
-- **Migawki pomagają też budowom.** Budowa, która odtwarza zdarzenia w kolejności zatwierdzeń, trzyma
-  otwartych najwyżej 10 000 stanów agregatów; stan, który porzuciła, odczytuje ponownie z jego
-  migawki (rozdział 13) i zdarzeń po niej.
+  agregatu, jeden raz.
+- **Migawki pomagają też budowom.** Stan pochodzi z migawki agregatu (rozdział 13) i zdarzeń po niej.
 - **Dwie budowy naraz** (`buildsAtOnce = 2`) to wartość domyślna i zalecana: każda budowa czyta
   magazyn i zapisuje własne tabele.
 - **Duże zdarzenia?**
   `ProjectionsSettings(..., builder = BuilderSettings(pageSize = ..., chunkEvents = ...))` ustala,
-  ile zdarzeń budowa czyta i nanosi naraz: domyślnie po 1 000, przy czym najwyżej 64 MB na stronę i
-  16 MB na porcję. `BuilderSettings` znajdziesz w `io.reactivecqrs.core.rebuild.ProjectionBuilder`.
-- **Instalacje po aktualizacji:** budowa jednego typu albo jednej organizacji czyta tylko swoje
-  zdarzenia, gdy każde zapisane zdarzenie ma klucz. Instalacja, która miała już zdarzenia, gdy
-  wprowadzono klucze, uruchamia raz `backfillEventKeys()` (rozdział 18); do tego czasu takie budowy
-  przechodzą przez cały magazyn.
+  ile agregatów budowa czyta naraz i ile zdarzeń nanosi naraz: domyślnie po 1 000, przy czym najwyżej
+  64 MB zdarzeń na stronę i 16 MB na porcję. `BuilderSettings` znajdziesz w
+  `io.reactivecqrs.core.rebuild.ProjectionBuilder`.
 
-> **Pod maską:** budowa ma trzy fazy. Przebieg masowy czyta zdarzenia projekcji w kolejności
-> zatwierdzeń (projekcja tylko na stanach dostaje zamiast nich stany końcowe) i nanosi je porcjami do
-> 1 000 zdarzeń, każdą w osobnej transakcji, po dwie porcje w locie; w tym czasie nowa budowa
-> potwierdza dostarczenia z szyny, nie nanosząc ich, bo ich zdarzenia są w magazynie. Potem przechodzi
-> na żywo i nanosi dostarczenia z szyny. Na koniec uzgadnianie porównuje wersję każdego agregatu z
-> wersją w budowie i dostarcza to, czego brakuje: zdarzenia zapisane w trakcie przebiegu i wiersze
-> zatwierdzone z opóźnieniem. Pozycja jest zapisywana po każdej porcji, więc wznowiona budowa powtarza
-> najwyżej porcje, które były w locie, a wersje subskrypcji sprawiają, że to nieszkodliwe (D57–D63,
-> D70). Pełną historię znajdziesz w [ARCHITECTURE.md, sekcja 8](../ARCHITECTURE.md) i w
+> **Pod maską:** budowa ma trzy fazy. Przebieg masowy czyta typy projekcji w kolejności jej
+> listenerów, po stronie agregatów danego typu naraz, a zdarzenia każdego agregatu (albo, dla
+> listenera stanów, jego stan końcowy) na kilku wątkach; nanosi je porcjami do 1 000 zdarzeń, każdą w
+> osobnej transakcji, po dwie porcje w locie. W tym czasie nowa budowa potwierdza dostarczenia z
+> szyny, nie nanosząc ich, bo ich zdarzenia są w magazynie. Potem przechodzi na żywo i nanosi
+> dostarczenia z szyny. Na koniec uzgadnianie porównuje wersję każdego agregatu z wersją w budowie i
+> dostarcza to, czego brakuje: zdarzenia zapisane po tym, jak przebieg przeczytał agregat. Pozycja (typ
+> i agregat) jest zapisywana po każdej porcji, więc wznowiona budowa powtarza najwyżej porcje, które
+> były w locie, a wersje subskrypcji sprawiają, że to nieszkodliwe (D57, D58, D60–D63, D70, D96). Pełną historię znajdziesz w [ARCHITECTURE.md, sekcja 8](../ARCHITECTURE.md) i w
 > [dokumencie projektowym M4](../design/M4-rebuild.md).
 
 ## Co już umiesz
@@ -615,6 +650,8 @@ Co pomaga:
   obserwowania i odblokowywania budów.
 - `RebuildAggregates` naprawia w miejscu jeden agregat, typ albo organizację, przez twoje
   `clearForRebuild`.
+- Projekcja polega na kolejności w obrębie każdego agregatu i na kolejności typów swoich
+  `listeners`, nigdy na kolejności agregatów.
 - Subskrybenci, których zadaniem jest efekt uboczny, zostają niezarządzani i nigdy nie są
   przebudowywani.
 

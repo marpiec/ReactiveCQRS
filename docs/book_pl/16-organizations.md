@@ -253,17 +253,15 @@ projekcji nie ma jeszcze przestrzeni: agregatom zapisanym przez starsze wersje b
 brakować, a powód odmowy podpowiada, żeby najpierw uruchomić `backfillSpaces`. O tym jest następna
 sekcja.
 
-> **Pod maską:** magazyn znajduje zdarzenia organizacji po ich kluczach: dwóch kolumnach `events`,
-> które zapisują typ agregatu i przestrzeń każdego zdarzenia, z indeksem. Gdy każde starsze zdarzenie ma już
-> swoje klucze, przebudowa jednej organizacji czyta tylko zdarzenia tej organizacji, a nie cały magazyn
-> (problem F124). Zobacz [ARCHITECTURE.md, sekcję 8](../ARCHITECTURE.md).
+> **Pod maską:** przebudowa jednej organizacji wypisuje agregaty projekcji należące do tej organizacji,
+> typ po typie, przez indeks własnych wierszy agregatów według typu, i czyta tylko zdarzenia tych
+> agregatów, a nie cały magazyn (D96). Zobacz [ARCHITECTURE.md, sekcję 8](../ARCHITECTURE.md).
 
 ## Aktualizacja instalacji, która ma już dane
 
 Instalacja, która działa już od jakiegoś czasu, może przechowywać agregaty zapisane, zanim każde
-pierwsze zdarzenie musiało podawać przestrzeń (ich przestrzeń to -1), dokumenty zapisane, zanim
-dokumenty dostały przestrzeń (też -1), i zdarzenia zapisane, zanim pojawiły się klucze zdarzeń.
-Naprawia to kilka jednorazowych zadań. Wszystkie działają online, w trakcie pracy aplikacji, w małych
+pierwsze zdarzenie musiało podawać przestrzeń (ich przestrzeń to -1), i dokumenty zapisane, zanim
+dokumenty dostały przestrzeń (też -1). Naprawia to kilka jednorazowych zadań. Wszystkie działają online, w trakcie pracy aplikacji, w małych
 transakcjach, i wszystkie można zatrzymać i uruchomić ponownie: ruszają dalej od miejsca, w którym
 skończyły. [Rozdział 18](18-production.md) wymienia je razem z innymi krokami produkcyjnymi; tutaj
 zobaczysz, co znaczą dla organizacji.
@@ -327,32 +325,10 @@ zobaczysz, co znaczą dla organizacji.
    bierze, więc rzuca wyjątek), też trafia do twojej funkcji, a to, dla którego twoja funkcja rzuci
    wyjątek, zostaje w `left`: jeden zły wiersz nigdy nie zatrzymuje uzupełniania.
 
-4. **Nadaj starym zdarzeniom klucze**, gdy już *każdy* węzeł działa na nowej wersji:
-
-   <!-- snippet: e9/OrganizationsSpec.scala#backfillKeys -->
-   ```scala
-   import io.reactivecqrs.core.eventstore.EventKeysBackfill
-
-   val keys: EventKeysBackfill = eventStore.backfillEventKeys()  // EventKeysBackfill(written, missing, orphans)
-   ```
-
-   Przechodzi przez zdarzenia w partiach po 10 000 (`batchSize`) i zapisuje moment, w którym każde
-   zdarzenie ma już klucz; od tej pory przebudowa jednej organizacji albo budowa kilku typów czyta
-   tylko własne zdarzenia. Do tego czasu czytają cały magazyn, co jest poprawne, tylko wolne.
-   `missing` liczy zdarzenia, którym nie udało się nadać klucza, choć ich agregat ma swój wiersz (zero,
-   chyba że w międzyczasie pisał węzeł starszej wersji). Zdarzenia, których agregat w ogóle nie ma
-   własnego wiersza, *sieroty* po jakimś dawnym usunięciu, liczone są osobno w `orphans`, z pierwszą
-   setką agregatów na liście (identyfikatory, liczby i klasy zdarzeń, pierwsze i ostatnie zdarzenie);
-   nigdy nie wstrzymują zakończenia uzupełniania, bo i tak nic ich nie czyta. Co z nimi zrobić, mówi
-   rozdział 18.
-
-5. **Przebuduj modele odczytu, które nie zapisywały prawdziwej przestrzeni**: dokumenty zapisane,
+4. **Przebuduj modele odczytu, które nie zapisywały prawdziwej przestrzeni**: dokumenty zapisane,
    zanim dokumenty dostały przestrzeń, albo z `0` dla wszystkiego. Pełna przebudowa
    ([rozdział 10](10-rebuilding-projections.md)) zapisze je od nowa, z przestrzeniami, które twoja
    projekcja teraz przekazuje.
-
-> **Ostrzeżenie:** gdy `backfillEventKeys` skończy pracę, nie wracaj do starszej wersji biblioteki:
-> starsze wersje zapisują zdarzenia bez kluczy, a budowy pominęłyby te zdarzenia.
 
 > **Wskazówka:** uruchamiaj te zadania z zadania serwisowego albo z wątku w tle, nigdy na ścieżce
 > startu aplikacji. Na dużym magazynie trwają dłuższą chwilę, a żadne z nich nie wymaga, żeby
@@ -573,7 +549,7 @@ Przejrzyj je; import zostawia je takie, jakie są.
   organizacji można wyczyścić (`clearSpace`) i przebudować
   (`RebuildAggregates(RebuildTarget.OneSpace(space))`).
 - Instalacja ze starszymi danymi uruchamia raz, online, `buildIndexesConcurrently`,
-  `buildSpaceIndexesConcurrently`, `backfillSpaces` i `backfillEventKeys`.
+  `buildSpaceIndexesConcurrently` i `backfillSpaces`.
 - `SpacePurge` usuwa organizację: najpierw sprawdza, odłącza kopie należące do innych organizacji,
   usuwa w małych transakcjach razem z twoimi `PurgeHook`, czyści projekcje i składa raport;
   uruchamiaj je ponownie aż do `complete` i sprawdź wynik przez `StoredDataCheck.spaceRows`.

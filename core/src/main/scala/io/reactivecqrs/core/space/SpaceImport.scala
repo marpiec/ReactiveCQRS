@@ -285,7 +285,6 @@ class SpaceImport(eventStore: PostgresEventStoreState, uidGenerator: ActorRef, c
   private def write(file: Path, into: SpaceId, plan: Plan, mapping: Mapping): ImportReport = {
     import mapping.mapped
     val types = eventStore.types
-    val rootTypes = new mutable.LongMap[Short]()
     var (aggregates, events, archived) = (0, 0L, 0L)
 
     val aggregateRows = mutable.ArrayBuffer[Seq[Any]]()
@@ -305,9 +304,8 @@ class SpaceImport(eventStore: PostgresEventStoreState, uidGenerator: ActorRef, c
     }
     def flushEvents(): Unit = if (eventRows.nonEmpty) {
       DB.localTx { implicit session =>
-        sql"""WITH e AS (INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event, metadata,
-             |     type_id, space_id)
-             |   VALUES (nextval('events_seq'), ?, ?, ?, ?, ?, 0, ?, ?::jsonb, ?, ?) RETURNING id)
+        sql"""WITH e AS (INSERT INTO events (id, user_id, aggregate_id, event_time, version, event_type_id, event_type_version, event, metadata)
+             |   VALUES (nextval('events_seq'), ?, ?, ?, ?, ?, 0, ?, ?::jsonb) RETURNING id)
              | INSERT INTO noop_events (id, from_version) SELECT id, ?::int FROM e WHERE ?::int IS NOT NULL""".stripMargin.batch(eventRows.toSeq: _*).apply[Seq]()
       }
       eventRows.clear()
@@ -330,7 +328,6 @@ class SpaceImport(eventStore: PostgresEventStoreState, uidGenerator: ActorRef, c
         line.aggregate.foreach { a =>
           val id = mapped(a.id)
           val typeId = types.typeIdByClassName(a.rootClass)
-          rootTypes(a.id) = typeId
           val created = utc(Instant.parse(a.created))
           aggregateRows += Seq(into.asLong, id, created, typeId, a.chain.size + 1, id, a.version, a.squashedVersion.map(Integer.valueOf).orNull)
           a.chain.foreach(row => aggregateRows += Seq(into.asLong, id, created, typeId, row.order, mapped(row.base), row.version, null))
@@ -343,7 +340,7 @@ class SpaceImport(eventStore: PostgresEventStoreState, uidGenerator: ActorRef, c
           val (eventClass, json, metadata) = rewritten(e.aggregate, e.eventClass, e.json, e.metadata)
           val undone = e.undoneFrom.map(Integer.valueOf).orNull
           eventRows += Seq(mapped(e.user), mapped(e.aggregate), utc(Instant.parse(e.time)), e.version, types.typeIdByClassName(eventClass), json,
-            metadata.orNull, rootTypes(e.aggregate), into.asLong, undone, undone)
+            metadata.orNull, undone, undone)
           bytes += json.length + metadata.map(_.length).getOrElse(0)
           events += 1
           if (full(eventRows.size)) flushEvents()

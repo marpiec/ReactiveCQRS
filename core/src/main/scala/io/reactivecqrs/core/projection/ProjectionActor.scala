@@ -117,7 +117,7 @@ case object GoLive
 /** The answer to `GoLive`. */
 case object ProjectionLive
 
-/** From a builder (D58, D61): versions of many aggregates, in commit order, applied in one transaction. Answered with
+/** From a builder (D58, D61): versions of many aggregates, each whole (D96), applied in one transaction. Answered with
   * `ChunkApplied`. */
 case class ApplyChunk(id: Long, items: Seq[ChunkItem])
 /** One subscription's versions `first` to `last` of one aggregate: its events (none for a state listener) and the
@@ -437,10 +437,7 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
       eventBus = Some(sender())
       sender() ! SubscriptionRequests(subscriptionRequests, registered)
       loadFailures()
-    case GetListeners => sender() ! Listeners(
-      aggregateListenersMap.keys.toSeq.map(_ -> SubscriptionType.AGGREGATES) ++
-        eventListenersMap.keys.toSeq.map(_ -> SubscriptionType.EVENTS) ++
-        aggregateWithEventListenersMap.keys.toSeq.map(_ -> SubscriptionType.AGGREGATES_WITH_EVENTS))
+    case GetListeners => sender() ! Listeners(subscriptions)
     case e: IdentifiableEvents[_] =>
       receiveDelivery(Key(SubscriptionType.EVENTS, e.aggregateId), e.aggregateType,
         Pending(e.events.map(_.version), e.events.asInstanceOf[Seq[EventInfo[Any]]], None, sender(), e.startsAtSquash))
@@ -1214,11 +1211,23 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
 
   protected def receiveQuery: Receive
 
-  // Asked by the event bus at start (D15): one subscription per listener.
-  private def subscriptionRequests: Seq[SubscribeRequest] =
-    aggregateListenersMap.keySet.toSeq.map(aggregateType => SubscribeForAggregates(aggregateType, self)) ++
-      eventListenersMap.keySet.toSeq.map(aggregateType => SubscribeForEvents(aggregateType, self)) ++
-      aggregateWithEventListenersMap.keySet.toSeq.map(aggregateType => SubscribeForAggregatesWithEvents(aggregateType, self))
+  // One subscription per listener, in the order of `listeners`, which is the order a build delivers the aggregate types
+  // in (D96).
+  private def subscriptions: Seq[(AggregateType, SubscriptionType)] = {
+    validateListeners()
+    listeners.collect {
+      case l: AggregateListener[_] => l.aggregateType -> SubscriptionType.AGGREGATES
+      case l: EventsListener[_] => l.aggregateType -> SubscriptionType.EVENTS
+      case l: AggregateWithEventsListener[_] => l.aggregateType -> SubscriptionType.AGGREGATES_WITH_EVENTS
+    }.distinct
+  }
+
+  // Asked by the event bus at start (D15).
+  private def subscriptionRequests: Seq[SubscribeRequest] = subscriptions.map {
+    case (aggregateType, SubscriptionType.AGGREGATES) => SubscribeForAggregates(aggregateType, self)
+    case (aggregateType, SubscriptionType.EVENTS) => SubscribeForEvents(aggregateType, self)
+    case (aggregateType, _) => SubscribeForAggregatesWithEvents(aggregateType, self)
+  }
 
   override def postRestart(reason: Throwable): Unit = {
     // do not call preStart

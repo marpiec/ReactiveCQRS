@@ -228,7 +228,7 @@ class ProjectionDeliverySpec extends CommonSpec {
 
   Feature("Chunks from a builder (D58, D61)") {
 
-    Scenario("a chunk applies many aggregates in commit order, and nothing that was applied before") {
+    Scenario("a chunk applies many aggregates in its order, and nothing that was applied before") {
       val f = new Fixture
       val (a, b) = (newId(), newId())
 

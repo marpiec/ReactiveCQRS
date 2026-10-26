@@ -369,13 +369,10 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     var read = Vector[Option[EventMetadata]]()
     eventStoreState.readAndProcessEventsWithMetadata[SomeAggregate](f.aggregateId, None)((event, _, _) => read :+= event.storedMetadata)
     read mustBe Vector(Some(metadata), Some(metadata), None)
-
-    eventStoreState.readCommitted(Seq(AggregateType.of[SomeAggregate]), 0L, Int.MaxValue, AggregateScope.Only(Set(f.aggregateId)))
-      .map(_.event.toOption.get.storedMetadata) mustBe Vector(Some(metadata), Some(metadata), None)
   }
 
-  // D59, D60: what a rebuild reads.
-  Scenario("Events are read in commit order, each under its own aggregate, undone ones and undos too, within a scope") {
+  // D96, D60: what a rebuild reads: a type's aggregates, then each one's own events, undone ones and undos too.
+  Scenario("A type's aggregates are listed in id order within a scope, and each one's own events read by version") {
     val (a, b) = (new TestFixture(eventStoreState), new TestFixture(eventStoreState))
     a.storeEvents(Seq(EventA("a"), EventB(2)))
     b.storeEvents(Seq(EventA("b")))
@@ -385,12 +382,10 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     val ids = Set(a.aggregateId, b.aggregateId, copy.aggregateId)
     val someType = AggregateType.of[SomeAggregate]
 
-    val rows = eventStoreState.readCommitted(Seq(someType), 0L, Int.MaxValue, AggregateScope.Only(ids))
-    rows.map(_.id) mustBe rows.map(_.id).sorted
-    rows.map(row => (row.aggregateId, row.version.asInt, row.event.toOption.get.event.getClass.getSimpleName)) mustBe Seq(
-      (a.aggregateId, 1, "EventA"), (a.aggregateId, 2, "EventB"), (b.aggregateId, 1, "EventA"), (a.aggregateId, 3, "Undo"),
-      (copy.aggregateId, 1, "Copy"), (copy.aggregateId, 2, "EventC")) // the copy's own events only
-    eventStoreState.readCommitted(Seq(someType), rows(2).id, 2, AggregateScope.Only(ids)).map(_.version.asInt) mustBe Seq(3, 1)
+    def own(fixture: TestFixture): Seq[String] = eventStoreState.readPart[Any](fixture.aggregateId, AggregateVersion(1), AggregateVersion(10), Long.MaxValue)
+      .map(_._1.event.getClass.getSimpleName)
+    own(a) mustBe Seq("EventA", "EventB", "Undo")
+    own(copy) mustBe Seq("Copy", "EventC") // the copy's own events only
 
     eventStoreState.aggregatesOf(Seq(someType), AggregateId(Long.MinValue), 10, AggregateScope.Only(ids))
       .map(s => (s.aggregateId, s.version.asInt)) mustBe Seq(a, b, copy).map(_.aggregateId).sortBy(_.asLong).map(id =>

@@ -53,8 +53,8 @@ that entry has the full story.
 ## B
 
 - **Backfill**: an online job that fills in data for rows written before a feature existed.
-  `backfillSpaces` gives old aggregates their space; `backfillEventKeys` gives old events their
-  keys. ([chapter 16](16-organizations.md), [chapter 18](18-production.md))
+  `backfillSpaces` gives old aggregates their space. ([chapter 16](16-organizations.md),
+  [chapter 18](18-production.md))
 - **Base aggregate**: the aggregate a duplicate was copied from. See *Duplication*.
   ([chapter 6](06-events.md))
 - **Blocking dispatcher** (`reactivecqrs.blocking-dispatcher`): the pool of 32 threads where
@@ -138,9 +138,6 @@ that entry has the full story.
   ([chapter 3](03-first-aggregate.md), [chapter 6](06-events.md))
 - **Event info** (`EventInfo`): an event as listeners and queries see it: its version, the event,
   the user, the time and the metadata envelope. ([chapter 8](08-projections.md))
-- **Event keys**: two columns of `events` (`type_id`, `space_id`) that record each event's aggregate
-  type and space, so a rebuild of a few types, or of one organization, reads only its own events.
-  ([chapter 16](16-organizations.md), [chapter 18](18-production.md))
 - **Event sourcing**: keeping the history of events as the source of truth, and getting the current
   state by replaying them. ([chapter 1](01-cqrs-without-the-headache.md))
 - **Event store** (`PostgresEventStoreState`): the part of the library that keeps events and

@@ -233,14 +233,15 @@ val buildStatus = (cartNames ? GetBuildStatus).mapTo[BuildStatus]
 ```
 
 The `phase` goes `Bulk` (reading the store), `GoingLive` and `Reconciling` (joining the live
-events), then `CaughtUp`. The supervisor answers at once, with what the builder reported last (after each
+events), then `CaughtUp`. In `Bulk`, `typeIndex` says which of the projection's `types` the build
+reads (counting from 0, in the order of its listeners) and `position` the last aggregate of that type
+it reached. The supervisor answers at once, with what the builder reported last (after each
 chunk, and every 2 seconds; `reportedAt` says when), so a builder busy with a long read never makes you
-wait; `statesRestored` counts the replay states it had to read again, which tells whether
-`maxReplayStates` is too small for your aggregates. Three more numbers say where the build's time
-went: `readingMillis` (reading the store, parsing the events included), `replayingMillis` (applying
-events to the replay states, and restoring states) and `waitingMillis` (waiting for the projection to
-apply its chunks). A build mostly waiting is bound by the projection's own work; one mostly replaying,
-by the aggregates' event handlers. Without a builder at work the supervisor answers `Waiting` (the build
+wait. Three more numbers say where the build's time went: `readingMillis` (reading pages of
+aggregates, and what the gaps and the reconciliation read), `replayingMillis` (reading each
+aggregate's events and restoring states, on the build's threads) and `waitingMillis` (waiting for the
+projection to apply its chunks). A build mostly waiting is bound by the projection's own work; one
+mostly replaying, by reading the store and the aggregates' event handlers. Without a builder at work the supervisor answers `Waiting` (the build
 waits for its turn, or for a restart after a failure) or `NoBuild`. The other numbers count the
 events sent, the gaps filled, the aggregates handed over to live delivery and the events that
 could not be read.
@@ -308,6 +309,42 @@ projection can tell:
 - **Chunks.** A build commits many aggregates per transaction and resumes after a stop from its last
   saved chunk. A listener that keeps state in memory between calls, outside its tables, cannot rely
   on that state while it is built.
+- **The order of aggregates.** A build delivers one aggregate type at a time, in the order of your
+  projection's `listeners`, and every aggregate whole, its events in version order; the aggregates of
+  a type come in the order of their ids. Live, events of different aggregates come mixed, as their
+  commands came. The next section says what your projection may rely on.
+
+### Never depend on the order of aggregates
+
+Live delivery does not order the events of two aggregates either: each aggregate's owner publishes
+its events on its own, on any node of a cluster, and a delivery that failed comes again later. So a
+projection may rely on two orders only:
+
+- **each aggregate's own events, in version order**, always, live and in a build;
+- **the order of its listeners' types**, in a build. A projection that, while it handles an order,
+  reads the document a customer's events wrote lists the customers' listener first:
+
+  ```scala
+  protected val listeners = List(
+    EventsListener[Customer](customerChanged), // a build delivers every customer first
+    EventsListener[Order](orderChanged))       // then every order, which finds its customer
+  ```
+
+Live, an order can still come before its customer's document: the customer was created a moment
+earlier on another node. So the order's listener must cope with a customer it does not find yet, and
+the customer's listener must update the orders that refer to it. And a value that depends on when
+one aggregate's event came compared with another's ("the customer's name at the time of the order")
+cannot be rebuilt at all: put it into the order's own event when the order is placed.
+
+Reordering `listeners` changes how the projection rebuilds, and nothing warns you: keep the order a
+type's listener needs, and say why in a comment.
+
+Nor may a projection rely on how an aggregate's events are grouped. Live, a delivery usually holds
+one command's events; a build hands over up to 1 000 of an aggregate's events at once, with the
+state after the last of them (chapter 8: a state listener sees the state after the whole batch). A
+listener that writes a cart's row in the cart's organization, for example, must move the row when
+the state names another organization (an undo can do that), not count on having seen each state
+on the way.
 
 ## When does a build start?
 
@@ -325,10 +362,10 @@ At most two builds run at once (`buildsAtOnce`); the others wait for their turn.
 
 ### Holding builds until the store is ready
 
-Right after an upgrade, a big store may not be ready for builds yet: until its events have their
-keys and its aggregates their index by type (the online jobs of
-[chapter 18](18-production.md)), every build reads the whole `events` table, which can take hours on
-a hundred million events. You can tell full builds to wait for the store:
+Right after an upgrade, a big store may not be ready for builds yet: until its aggregates have their
+index by type and its events their index by aggregate and version (the online jobs of
+[chapter 18](18-production.md)), every page a build reads is slow: about 100 ms instead of 1 ms for a
+page of aggregates of a million. You can tell full builds to wait for the store:
 
 ```scala
 val projections = new Projections(system, ProjectionsSettings(eventStore, subscriptions, registry,
@@ -336,8 +373,8 @@ val projections = new Projections(system, ProjectionsSettings(eventStore, subscr
 ```
 
 Every 30 seconds (`checkEvery`) while a build waits, the hold asks the store
-(`eventStore.buildReadiness()`: the event keys' step recorded, the index `aggregates_own_type_idx`
-valid; its `ready` is the plain yes or no). Once it is ready, the waiting builds start in the
+(`eventStore.buildReadiness()`: the index `aggregates_own_type_idx` valid, and the index of the events
+by aggregate and version; its `ready` is the plain yes or no). Once it is ready, the waiting builds start in the
 order they asked, and the hold is over. Meanwhile:
 
 - `GetBuilds` answers `Builds(..., heldBy = Some(reason))` and `GetBuildStatus` answers phase
@@ -545,47 +582,44 @@ upgrade, it waits until every node runs the new version (chapter 17).
 ## How long it takes
 
 A build reads every event of the types the projection listens to. Measured on one machine (the
-bench's `baseline-M4` run of 17/10/2026: Windows 10, 12 CPU threads, OpenJDK 17 with a 2 GB heap,
-PostgreSQL 17.4 on the same machine): two new managed projections over 112 211 events were both
-built and switched about 16.6 seconds after the system started. The events-based one took 6 769
-events per second, and the heap peaked at 150 MB. That is one run on one machine: good for
-orientation, not a promise for yours.
+bench's `d96-after` run of 27/10/2026: Windows 10, 12 CPU threads, Java 25 with a 2 GB heap,
+PostgreSQL 17.4 on the same machine): two new managed projections over 500 000 events of 10 000
+aggregates were both built and switched about 87 seconds after the system started. The events-based
+one, which writes a document for every event, took 5 749 events per second, and the heap peaked at
+211 MB. That is one run on one machine: good for orientation, not a promise for yours.
 
-From that rate, `docs/SCALING.md` estimates about 4.1 hours to rebuild an events-based projection
+From that rate, `docs/SCALING.md` estimates about 4.8 hours to rebuild an events-based projection
 over 100 million events (estimated, not measured). A rebuild costs time and database load, not
 downtime: the active build serves throughout.
 
 Things that help:
 
+- **A build reads on several threads.** `BuilderSettings(restoreThreads = 4)`, the default, reads
+  four aggregates of a type at once, their events and states, on threads of the build's own; the
+  projection still gets them in the same order and chunks. Each thread holds a database connection
+  while it reads, so size the connection pool for `buildsAtOnce` × `restoreThreads` on top of your
+  live work. The projection applies the chunks one at a time.
 - **State-only projections do less work.** When every listener of a projection is an
   `AggregateListener`, as in `CartNames`, the build skips the history: it hands over each
-  aggregate's final state, once. `BuilderSettings(restoreThreads = 4)` restores four of those states
-  at once, on threads of the build's own; the projection still gets them in the same order and
-  chunks. Each thread holds a database connection while it reads, so size the connection pool for
-  `buildsAtOnce` × `restoreThreads` on top of your live work. Builds that replay events in commit
-  order run on one thread.
-- **Snapshots help builds too.** A build that replays events in commit order keeps at most 10 000
-  aggregate states open; a state it dropped is read again from its snapshot (chapter 13) and the
+  aggregate's final state, once.
+- **Snapshots help builds too.** A state comes from the aggregate's snapshot (chapter 13) and the
   events after it.
 - **Two builds at a time** (`buildsAtOnce = 2`) is the default and the recommendation: every build
   reads the store and writes tables of its own.
 - **Large events?** `ProjectionsSettings(..., builder = BuilderSettings(pageSize = ..., chunkEvents
-  = ...))` sets how many events a build reads and applies at once: 1 000 each by default, and at
-  most 64 MB per page and 16 MB per chunk. `BuilderSettings` lives in
-  `io.reactivecqrs.core.rebuild.ProjectionBuilder`.
-- **Upgraded installations:** a build of one type or one organization reads only its own events
-  once every stored event has a key. An installation that already had events when keys were
-  introduced runs `backfillEventKeys()` once (chapter 18); until then, such builds walk the whole
-  store.
+  = ...))` sets how many aggregates a build reads at once and how many events it applies at once:
+  1 000 each by default, and at most 64 MB of events per page and 16 MB per chunk.
+  `BuilderSettings` lives in `io.reactivecqrs.core.rebuild.ProjectionBuilder`.
 
-> **Under the hood:** a build has three phases. The bulk pass reads the projection's events in
-> commit order (a state-only projection gets final states instead) and applies them in chunks of up
-> to 1 000 events, one transaction each, two chunks in flight; meanwhile the new build acknowledges
-> the bus's deliveries without applying them, as their events are in the store. Then it goes live
-> and applies the bus's deliveries. Last, a reconciliation compares every aggregate's version with
-> the build's and delivers what is missing: events stored while the pass ran, and rows that
-> committed late. The position is saved after every chunk, so a resumed build repeats at most the
-> chunks in flight, which the subscription versions make harmless (D57–D63, D70). The full story is
+> **Under the hood:** a build has three phases. The bulk pass reads the projection's types in the
+> order of its listeners, a page of a type's aggregates at a time, and each aggregate's events (or,
+> for a state listener, its final state) on several threads; it applies them in chunks of up to
+> 1 000 events, one transaction each, two chunks in flight. Meanwhile the new build acknowledges the
+> bus's deliveries without applying them, as their events are in the store. Then it goes live and
+> applies the bus's deliveries. Last, a reconciliation compares every aggregate's version with the
+> build's and delivers what is missing: the events stored after the pass read the aggregate. The
+> position (a type and an aggregate) is saved after every chunk, so a resumed build repeats at most
+> the chunks in flight, which the subscription versions make harmless (D57, D58, D60–D63, D70, D96). The full story is
 > in [ARCHITECTURE.md, section 8](../ARCHITECTURE.md) and [the M4 design](../design/M4-rebuild.md).
 
 ## What you learned
@@ -600,6 +634,8 @@ Things that help:
   unblock builds.
 - `RebuildAggregates` repairs one aggregate, type or organization in place, through your
   `clearForRebuild`.
+- A projection depends on each aggregate's own order and on the order of its `listeners`' types,
+  never on the order of aggregates.
 - Subscribers whose job is a side effect stay unmanaged, and are never rebuilt.
 
 For the life of a build step by step, what can stop it at each step, planning a rebuild on a large store, and

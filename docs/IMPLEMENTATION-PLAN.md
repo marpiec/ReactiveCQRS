@@ -2786,3 +2786,15 @@ Open test-infrastructure items:
 - The owner's choice: F124's keys move from the table `event_keys` to the columns `events.type_id` and `space_id`, before any
   1.0 store runs in production. Procedures version 3; the backfill updates the rows; the keys' indexes after it; a 1.0.x
   store drops the table and runs its online jobs again. PostgreSQL specs red first (six scenarios, one new for the drop).
+
+**26/10/2026: a build by type and aggregate, without event keys (D96)**
+- The owner's choice: projections never rely on the order of aggregates; the order of types is the order of a projection's
+  listeners, as in 0.12; several threads always read within a type. The bulk pass reads a type's aggregates by id and each
+  one whole by version (`ProjectionBuilder.wholeAggregates`, `readItems`); replay states, commit-order reads and the
+  event keys (D95's columns, before they reached production) go. Procedures version 4; `projection_builds.type_index`.
+- Red first: `ProjectionBuilderSpec`'s "the order of a build" (types in the listeners' order, a resume in the second
+  type). `RebuildEquivalenceSpec`'s projection moved a list's row when an undo moved its space: it had relied on seeing
+  each state on the way, which a build grouping an aggregate's events does not show (chapter 10 says so now).
+- Bench, the same night (`docs/perf/d96-before.md`, `d96-after.md`, one run each): the events-based counters 6 355 events/s
+  before, 5 749 to 5 879 after, bound by the projection's writes; a final-state build on 4 threads 4 778 before, 3 593 to
+  4 900 after (the same code varied up to 25%). An aggregate is read in one query, not three: nothing past its listed version.

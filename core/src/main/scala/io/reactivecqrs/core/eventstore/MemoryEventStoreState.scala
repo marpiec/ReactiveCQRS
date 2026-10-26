@@ -13,7 +13,7 @@ import scala.util.control.NonFatal
 
 /** The memory store's row of an event. */
 object MemoryEventStoreState {
-  /** An event as the memory store keeps it in commit order. */
+  /** An event as the memory store keeps it in its list of every event. */
   case class EventRow(eventId: Long, aggregateId: AggregateId, aggregateVersion: AggregateVersion, aggregateType: AggregateType,
                       event: Event[_], userId: UserId, timestamp: Instant, metadata: Option[EventMetadata] = None)
 }
@@ -24,7 +24,7 @@ case class EventStoreEntry[AGGREGATE_ROOT](userId: UserId, timestamp: Instant, v
 
 // State is read and changed under the object's lock: owners, the outbox poller and the replayer call the store from
 // their own threads. Callbacks run outside the lock, on a snapshot. `commitOrder`: keep every event in one list in
-// commit order, for rebuilds; an ephemeral store (D77) keeps none, so dropping an aggregate does not walk them all.
+// commit order, for the rebuilds' lists of aggregates by type; an ephemeral store (D77) keeps none, so dropping an aggregate does not walk them all.
 /** `EventStoreState` in memory, for tests. */
 class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState {
 
@@ -304,15 +304,6 @@ class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState
     eventsRows = eventsRows.map(row =>
       if (row.aggregateId == aggregateId && row.aggregateVersion == version) row.copy(event = event, userId = userId.getOrElse(row.userId),
         metadata = metadata.getOrElse(row.metadata)) else row)
-  }
-
-  // The sizes are not known here (0), so no page is cut by its bytes.
-  override def readCommittedPage(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope, maxBytes: Long): CommittedPage = synchronized {
-    val wanted = types.toSet
-    CommittedPage(eventsRows.reverseIterator.filter(row => row.eventId > after && wanted.contains(row.aggregateType) && inScope(row.aggregateId, scope)).take(limit).map { row =>
-      CommittedEvent(row.eventId, row.aggregateType, row.aggregateId, row.aggregateVersion, squashedVersions.get(row.aggregateId),
-        Right(EventInfo[Any](row.aggregateVersion, row.event.asInstanceOf[Event[Any]], row.userId, row.timestamp, row.metadata)))
-    }.toVector, cut = false)
   }
 
   override def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[StoredAggregate] = synchronized {

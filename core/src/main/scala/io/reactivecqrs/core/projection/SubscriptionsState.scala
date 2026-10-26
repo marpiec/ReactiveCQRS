@@ -69,7 +69,7 @@ trait SubscriptionsState {
   /** Compare-and-set in the caller's transaction: moves the subscription from `lastAggregateVersion` to
     * `aggregateVersion`, or throws `OptimisticLockingFailed` when it is not at `lastAggregateVersion`, so the caller
     * rolls back the listener's work. One transaction may move a subscription several times (D61: a batch of many
-    * aggregates in commit order); each move starts where the one before it in the transaction ended. */
+    * aggregates); each move starts where the one before it in the transaction ended. */
   def newVersion(subscriberName: String, subscriptionType: SubscriptionType, aggregateId: AggregateId,
                  lastAggregateVersion: AggregateVersion, aggregateVersion: AggregateVersion)(implicit session: DBSession): Unit
 

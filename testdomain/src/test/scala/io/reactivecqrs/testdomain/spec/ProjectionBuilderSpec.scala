@@ -10,7 +10,7 @@ import io.reactivecqrs.core.commandhandler.{AggregateCommandBusActor, PostgresCo
 import io.reactivecqrs.core.documentstore.{Document, DocumentStore, NoopDocumentStoreCache, PostgresDocumentStore}
 import io.reactivecqrs.core.eventbus.EventsBusActor
 import io.reactivecqrs.core.eventbus.EventsBusActor.RegisterSubscribers
-import io.reactivecqrs.core.eventstore.{AggregateScope, CommittedPage, EventStoreState, PostgresEventStoreState, StoredAggregate}
+import io.reactivecqrs.core.eventstore.{AggregateScope, EventStoreState, PostgresEventStoreState, StoredAggregate}
 import io.reactivecqrs.core.projection._
 import io.reactivecqrs.core.rebuild.ProjectionBuilder._
 import io.reactivecqrs.core.rebuild.{ProjectionBuilder, ReplaySource}
@@ -67,6 +67,29 @@ class BuildNoteContext extends AggregateContext[BuildNote] {
   override val squash: Option[SquashPolicy[BuildNote]] = Some(SquashPolicy(note => BuildNoteSquashed(SpaceId(note.space), note.title, note.lines)))
 }
 
+// D96: a second aggregate type of this spec, a tag, for the order of types in a build.
+case class BuildTag(name: String)
+case class BuildTagCreated(name: String) extends FirstEvent[BuildTag] {
+  def spaceId: SpaceId = SpaceId(0)
+}
+case class BuildTagRenamed(name: String) extends Event[BuildTag]
+case class CreateBuildTag(userId: UserId, name: String) extends FirstCommand[BuildTag, CustomCommandResponse[_]]
+case class RenameBuildTag(userId: UserId, aggregateId: AggregateId, expectedVersion: AggregateVersion, name: String)
+  extends Command[BuildTag, CustomCommandResponse[_]]
+
+class BuildTagContext extends AggregateContext[BuildTag] {
+  override val version: Int = 1
+  override def initialAggregateRoot: BuildTag = BuildTag("")
+  override def commandHandlers = _ => {
+    case c: CreateBuildTag => CommandSuccess(BuildTagCreated(c.name))
+    case c: RenameBuildTag => CommandSuccess(BuildTagRenamed(c.name))
+  }
+  override def eventHandlers = (_, _, _) => {
+    case e: BuildTagCreated => BuildTag(e.name)
+    case e: BuildTagRenamed => BuildTag(e.name)
+  }
+}
+
 // Projections that record what they are given, under the identity they are created with, to compare one built live
 // with one built from the store.
 
@@ -99,7 +122,7 @@ class NoteStates(identity: String, subscriptionsState: SubscriptionsState, store
   })
 }
 
-/** Each note's lines and version, from its state with its events: built in commit order with replay states (D59). */
+/** Each note's lines and version, from its state with its events. */
 class NoteViews(identity: String, subscriptionsState: SubscriptionsState, store: DocumentStore[NoteView]) extends RecordingNotes(identity, subscriptionsState) {
   protected val listeners = List(AggregateWithEventsListener[BuildNote] { (id, version, note, _) => implicit session =>
     note match {
@@ -109,6 +132,15 @@ class NoteViews(identity: String, subscriptionsState: SubscriptionsState, store:
   })
 }
 
+/** D96: the notes and tags it is given, as "note <id>" or "tag <id>", one per event, in the order it is given them; its
+  * listeners' order puts the tags first or the notes first. */
+class TypesInOrder(identity: String, subscriptionsState: SubscriptionsState, tagsFirst: Boolean, seen: ConcurrentLinkedQueue[String])
+  extends RecordingNotes(identity, subscriptionsState) {
+  private val notes = EventsListener[BuildNote] { (id, events) => _ => events.foreach(_ => seen.add("note " + id.asLong)) }
+  private val tags = EventsListener[BuildTag] { (id, events) => _ => events.foreach(_ => seen.add("tag " + id.asLong)) }
+  protected val listeners: List[Listener[Any]] = if (tagsFirst) List(tags, notes) else List(notes, tags)
+}
+
 /** A build's position in memory; `onSave` sees each one saved. */
 class MemoryBuildPositions(onSave: BuildPosition => Unit = _ => ()) extends BuildPositions {
   private val current = new AtomicReference(BuildPosition.Start)
@@ -116,12 +148,15 @@ class MemoryBuildPositions(onSave: BuildPosition => Unit = _ => ()) extends Buil
   override def save(position: BuildPosition): Unit = { current.set(position); onSave(position) }
 }
 
-/** The store, but its first read of the row `hidden` leaves that row out, as if its transaction committed late. */
-class LateRowEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNamesState, hidden: Long) extends PostgresEventStoreState(mpjsons, typesNamesState) {
+/** The store, but its first read of a part with `hidden`'s version `version` leaves that version out, as a read that did not
+  * see its row yet. */
+class LateRowEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNamesState, hidden: AggregateId, version: Int)
+  extends PostgresEventStoreState(mpjsons, typesNamesState) {
   private val hiddenOnce = new AtomicInteger(1)
-  override def readCommittedPage(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope, maxBytes: Long): CommittedPage = {
-    val page = super.readCommittedPage(types, after, limit, scope, maxBytes)
-    if (page.events.exists(_.id == hidden) && hiddenOnce.getAndDecrement() > 0) page.copy(events = page.events.filterNot(_.id == hidden)) else page
+  override def readPart[AGGREGATE_ROOT](aggregateId: AggregateId, from: AggregateVersion, to: AggregateVersion, maxBytes: Long): Seq[(EventInfo[AGGREGATE_ROOT], Int)] = {
+    val part = super.readPart[AGGREGATE_ROOT](aggregateId, from, to, maxBytes)
+    if (aggregateId == hidden && part.exists(_._1.version.asInt == version) && hiddenOnce.getAndDecrement() > 0) part.filterNot(_._1.version.asInt == version)
+    else part
   }
 }
 
@@ -220,7 +255,8 @@ class ProjectionBuilderSpec extends CommonSpec {
   private val subscriptions = new PostgresSubscriptionsState(typesNamesState).initSchema()
   private val responses = new PostgresCommandResponseState(mpjsons, typesNamesState).initSchema()
   private val noteContext = new BuildNoteContext
-  private val sources = ReplaySource.of(Seq(noteContext), eventStore)
+  private val tagContext = new BuildTagContext
+  private val sources = ReplaySource.of(Seq(noteContext, tagContext), eventStore)
   private val uidGenerator = system.actorOf(Props(new UidGeneratorActor(
     new PostgresUidGenerator("aggregates_uids_seq"), new PostgresUidGenerator("commands_uids_seq"), new PostgresUidGenerator("sagas_uids_seq"))))
   private val userId = UserId(1)
@@ -236,13 +272,16 @@ class ProjectionBuilderSpec extends CommonSpec {
     val bus: ActorRef = system.actorOf(Props(new EventsBusActor()))
     bus ! RegisterSubscribers(projections)
     val notes: ActorRef = system.actorOf(AggregateCommandBusActor(noteContext, uidGenerator, eventStore, responses, bus))
+    val tags: ActorRef = system.actorOf(AggregateCommandBusActor(tagContext, uidGenerator, eventStore, responses, bus))
 
-    def send(command: AnyRef): SuccessResponse = notes.askFor[CustomCommandResponse[_]](command) match {
+    def send(command: AnyRef, to: ActorRef = notes): SuccessResponse = to.askFor[CustomCommandResponse[_]](command) match {
       case success: SuccessResponse => success
       case other => fail("command failed: " + other)
     }
     def create(title: String): AggregateId = send(CreateBuildNote(userId, title)).aggregateId
     def add(id: AggregateId, at: Int, line: String): Unit = send(AddBuildNoteLine(userId, id, AggregateVersion(at), line))
+    def tag(name: String): AggregateId = send(CreateBuildTag(userId, name), tags).aggregateId
+    def rename(id: AggregateId, at: Int, name: String): Unit = send(RenameBuildTag(userId, id, AggregateVersion(at), name), tags)
 
     /** Waits until every subscriber took every event of these notes: their outbox rows are gone. */
     def delivered(ids: Seq[AggregateId]): Unit =
@@ -363,9 +402,7 @@ class ProjectionBuilderSpec extends CommonSpec {
         id
       }
       live.delivered(ids)
-      val last = DB.readOnly { implicit session =>
-        SQL("SELECT max(id) FROM events WHERE aggregate_id IN (" + ids.map(_.asLong).mkString(",") + ")").map(_.long(1)).single().get
-      }
+      val last = ids.map(_.asLong).max
 
       When("it is built with pages and chunks of about one event's bytes")
       val rebuiltLogs = logs("m4b_bytes_rebuilt")
@@ -439,17 +476,16 @@ class ProjectionBuilderSpec extends CommonSpec {
       counting.parts.get must be < 10 // a few aggregates of three events; without the cursor, every one behind
     }
 
-    Scenario("a row committed after later ones is read again by version when the projection finds the gap") {
+    Scenario("a version a read did not see is read again, and the projection gets every event in order") {
       val liveLogs = logs("m4b_late_live")
       val live = new Live(Seq(onBlocking(Props(new NoteEventsLog("m4b-late-live", subscriptions, liveLogs)))))
       val id = live.create("late")
       (1 to 4).foreach(v => live.add(id, v, "line " + v))
       live.delivered(Seq(id))
-      val secondEvent = DB.readOnly(implicit s => sql"SELECT id FROM events WHERE aggregate_id = ${id.asLong} AND version = 2".map(_.long(1)).single().get)
 
       val rebuiltLogs = logs("m4b_late_rebuilt")
       build(onBlocking(Props(new NoteEventsLog("m4b-late-rebuilt", subscriptions, rebuiltLogs))), "m4b-late-rebuilt",
-        store = new LateRowEventStore(mpjsons, typesNamesState, secondEvent))
+        store = new LateRowEventStore(mpjsons, typesNamesState, id, 2))
 
       documents(rebuiltLogs, Seq(id)) mustBe documents(liveLogs, Seq(id))
     }
@@ -475,6 +511,72 @@ class ProjectionBuilderSpec extends CommonSpec {
       val all = before ++ during ++ after
       live.delivered(all)
       awaitAssert(documents(rebuiltLogs, all) mustBe documents(liveLogs, all), 10.seconds, 100.millis)
+    }
+  }
+
+  Feature("The order of a build (D96)") {
+
+    Scenario("a build delivers its listeners' types in their order, each whole, its aggregates in id order") {
+      Given("notes and tags written in turn")
+      val live = new Live(Nil)
+      val written = (1 to 4).flatMap { n =>
+        val note = live.create("ordered " + n)
+        live.add(note, 1, "line")
+        val tag = live.tag("tag " + n)
+        live.rename(tag, 1, "renamed " + n)
+        Seq(note, tag)
+      }
+      val tags = written.zipWithIndex.collect { case (id, i) if i % 2 == 1 => id }
+
+      When("projections are built, one with its tags' listener first, one with its notes' first")
+      def built(identity: String, tagsFirst: Boolean): Seq[String] = {
+        val seen = new ConcurrentLinkedQueue[String]()
+        build(onBlocking(Props(new TypesInOrder(identity, subscriptions, tagsFirst, seen))), identity)
+        seen.toArray.map(_.toString).toSeq
+      }
+      val tagsFirst = built("m4b-order-tags-first", tagsFirst = true)
+      val notesFirst = built("m4b-order-notes-first", tagsFirst = false)
+
+      Then("each got every tag's and every note's events, the first type's all before the second's")
+      def runs(seen: Seq[String]): Seq[String] = seen.map(_.takeWhile(_ != ' ')).foldLeft(Vector[String]())((kinds, kind) =>
+        if (kinds.lastOption.contains(kind)) kinds else kinds :+ kind)
+      runs(tagsFirst) mustBe Seq("tag", "note")
+      runs(notesFirst) mustBe Seq("note", "tag")
+      val ours = tags.map("tag " + _.asLong).toSet
+      tagsFirst.filter(ours) mustBe tags.sortBy(_.asLong).flatMap(id => Seq.fill(2)("tag " + id.asLong))
+      tagsFirst.sorted mustBe notesFirst.sorted
+    }
+
+    Scenario("a build that stops in its second type continues in it, from the position it saved") {
+      Given("tags and notes")
+      val live = new Live(Nil)
+      (1 to 3).foreach(n => live.tag("resumed tag " + n))
+      (1 to 6).foreach(n => live.create("resumed note " + n))
+
+      When("a build with its tags first stops after its first chunk of notes is applied")
+      val settings = BuilderSettings(pageSize = 2, chunkEvents = 1)
+      val firstSeen = new ConcurrentLinkedQueue[String]()
+      val firstTarget = onBlocking(Props(new TypesInOrder("m4b-order-resumed", subscriptions, tagsFirst = true, firstSeen)))
+      val stopped = TestProbe()
+      val positions = new MemoryBuildPositions(position => if (!position.bulkDone && position.typeIndex == 1 && stopped.msgAvailable == false) {
+        system.stop(firstTarget)
+        stopped.ref ! position
+      })
+      builderOf(firstTarget, "m4b-order-resumed", TestProbe().ref, positions = positions, settings = settings)
+      val saved = stopped.expectMsgType[BuildPosition](30.seconds)
+      saved.typeIndex mustBe 1
+      saved.position must be > 0L
+
+      And("starts again from it")
+      val secondSeen = new ConcurrentLinkedQueue[String]()
+      build(onBlocking(Props(new TypesInOrder("m4b-order-resumed", subscriptions, tagsFirst = true, secondSeen))), "m4b-order-resumed",
+        positions = positions, settings = settings)
+
+      Then("it delivers no tag again, and the notes after the position")
+      val again = secondSeen.toArray.map(_.toString).toSeq
+      again.filter(_.startsWith("tag")) mustBe empty
+      again.map(_.stripPrefix("note ").toLong).forall(_ > saved.position) mustBe true
+      again must not be empty
     }
   }
 
@@ -582,9 +684,9 @@ class ProjectionBuilderSpec extends CommonSpec {
     }
   }
 
-  Feature("Final-state builds on several threads, and where a build's time goes (CR-8)") {
+  Feature("Builds on several threads, and where a build's time goes (CR-8, D96)") {
 
-    Scenario("a final-state build restores on several threads and gives the projection the same items, in the same order") {
+    Scenario("a build reads a type's aggregates on several threads and gives the projection the same items, in the same order") {
       Given("live states of notes with undo, duplication, deletion and a squash, and a note whose state cannot be restored")
       val liveLines = lines("m4b_threads_live")
       val live = new Live(Seq(onBlocking(Props(new NoteStates("m4b-threads-live", subscriptions, liveLines)))))
@@ -663,7 +765,7 @@ class ProjectionBuilderSpec extends CommonSpec {
       val projection = TestProbe()
       val builder = onBlocking(Props(new ProjectionBuilder(projection.ref, "m4b-timed", plan, new SlowListingEventStore(mpjsons, typesNamesState, 100),
         subscriptions, Map(AggregateType.of[BuildNote] -> new ThreadsReplaySource(noteContext, eventStore, slow = notes, pause = 50)), new MemoryBuildPositions,
-        TestProbe().ref, BuilderSettings(pageSize = 100000, chunkEvents = 100000))))
+        TestProbe().ref, BuilderSettings(pageSize = 100000, chunkEvents = 100000, restoreThreads = 1))))
 
       When("its bulk pass is done")
       projection.fishForMessage(60.seconds) {
@@ -678,6 +780,7 @@ class ProjectionBuilderSpec extends CommonSpec {
       Then("its status shows each")
       val status = builder.askFor[BuildStatus](GetBuildStatus, 5.seconds)
       status.phase mustBe "GoingLive"
+      (status.typeIndex, status.types) mustBe ((0, 1)) // D96: one type, the notes
       status.readingMillis must be >= 100L
       status.replayingMillis must be >= 150L
       status.waitingMillis must be >= 300L

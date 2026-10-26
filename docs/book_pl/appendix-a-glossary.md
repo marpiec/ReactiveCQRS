@@ -132,9 +132,6 @@ odsyła cię do innego („zob. *Przestrzeń*”), właśnie tam znajdziesz peł
   idempotentne; jego `asDbKey` musi być unikalny we wszystkich typach agregatów. Jednym z takich
   kluczy jest `SagaStep`, możesz też napisać własny. Zapisane odpowiedzi są domyślnie przechowywane
   przez 30 dni. ([rozdział 5](05-command-flavors.md))
-- **Klucze zdarzeń** (*event keys*): dwie kolumny `events` (`type_id`, `space_id`), które zapisują typ
-  agregatu i przestrzeń każdego zdarzenia, żeby przebudowa kilku typów albo jednej organizacji czytała tylko własne
-  zdarzenia. ([rozdział 16](16-organizations.md), [rozdział 18](18-production.md))
 - **Kontekst agregatu** (*aggregate context*, `AggregateContext`): klasa, którą piszesz dla jednego
   typu agregatu: jego stan początkowy (`initialAggregateRoot`), handlery poleceń, handlery zdarzeń,
   jego `version` i funkcje opcjonalne (migawki, squash, tryb szeregowy, rozmieszczenie).
@@ -387,7 +384,7 @@ odsyła cię do innego („zob. *Przestrzeń*”), właśnie tam znajdziesz peł
 
 - **Uzupełnianie wsteczne** (*backfill*): zadanie wykonywane na działającym systemie, które uzupełnia
   dane w wierszach zapisanych, zanim pojawiła się dana funkcja. `backfillSpaces` daje starym agregatom
-  ich przestrzeń, a `backfillEventKeys` starym zdarzeniom ich klucze.
+  ich przestrzeń.
   ([rozdział 16](16-organizations.md), [rozdział 18](18-production.md))
 
 ## W

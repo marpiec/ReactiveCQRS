@@ -508,8 +508,8 @@ it, use the complete rewrite, `HistoryRewriter` ([chapter 15](15-rewriting-histo
 - **Schema initialization waiting for another node.** Nodes take turns under the schema lock; one
   gives up after five minutes ("The schema lock was not free for 5 minutes: another process
   initializes the schema").
-- **Heavy jobs in the start-up path.** `buildIndexesConcurrently()`, `backfillEventKeys()` and
-  `backfillSpaces(...)` belong in the background, never before the actors start.
+- **Heavy jobs in the start-up path.** `buildIndexesConcurrently()` and `backfillSpaces(...)` belong
+  in the background, never before the actors start.
 
 **What to do:** turn on snapshots for aggregate types with long histories, and squash old history
 ([chapter 13](13-snapshots.md), [chapter 14](14-squash.md)); run heavy jobs in the background; ask

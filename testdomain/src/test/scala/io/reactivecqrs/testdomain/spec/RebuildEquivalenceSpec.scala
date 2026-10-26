@@ -108,11 +108,20 @@ class EqOverview(val subscriptionsState: SubscriptionsState, spaces: DocumentSto
   private def spaceOf(id: AggregateId)(implicit session: DBSession): Option[Long] = index.getDocument(id.asLong).map(_.document.space)
 
   protected val listeners = List(
-    // With its events, so a build replays it in commit order: undo, duplication and a start at a squash event (D59, D60, F98).
+    // With its events, so a build replays each list whole: undo, duplication and a start at a squash event (D60, D96, F98).
     AggregateWithEventsListener[EqList] { (id, version, list, _) => implicit session =>
       list match {
         case Some(l) =>
-          if (spaceOf(id).isEmpty) index.insertDocument(l.space, id.asLong, EqWhere(l.space))
+          // A state listener sees the state after a batch, not each step (chapter 8): an undo of the creation moves the
+          // list to space 0, live after its row was written in its space, in a build often before. The row moves with it.
+          spaceOf(id) match {
+            case None => index.insertDocument(l.space, id.asLong, EqWhere(l.space))
+            case Some(old) if old != l.space =>
+              updateSpace(old, s => s.copy(lists = s.lists.filterNot(_.id == id.asLong)))
+              index.removeDocument(id.asLong)
+              index.insertDocument(l.space, id.asLong, EqWhere(l.space))
+            case Some(_) => ()
+          }
           updateSpace(l.space, s => s.copy(lists = (s.lists.filterNot(_.id == id.asLong) :+ EqListRow(id.asLong, l.title, l.items, version.asInt)).sortBy(_.id)))
         case None => spaceOf(id).foreach { space =>
           updateSpace(space, s => s.copy(lists = s.lists.filterNot(_.id == id.asLong)))

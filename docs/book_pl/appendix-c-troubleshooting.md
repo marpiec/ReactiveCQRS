@@ -517,8 +517,8 @@ ją trzyma, użyj pełnego przepisania historii, `HistoryRewriter` ([rozdział 1
 - **Inicjalizacja schematu, która czeka na inny węzeł.** Węzły po kolei biorą blokadę schematu;
   czekający węzeł rezygnuje po pięciu minutach („The schema lock was not free for 5 minutes: another process
   initializes the schema”).
-- **Ciężkie zadania na ścieżce startu.** `buildIndexesConcurrently()`, `backfillEventKeys()`
-  i `backfillSpaces(...)` mają działać w tle, nigdy przed startem aktorów.
+- **Ciężkie zadania na ścieżce startu.** `buildIndexesConcurrently()` i `backfillSpaces(...)` mają
+  działać w tle, nigdy przed startem aktorów.
 
 **Co zrobić:** włącz migawki dla typów agregatów z długą historią i zwiń starą historię squashem
 ([rozdział 13](13-snapshots.md), [rozdział 14](14-squash.md)); uruchamiaj ciężkie zadania w tle;

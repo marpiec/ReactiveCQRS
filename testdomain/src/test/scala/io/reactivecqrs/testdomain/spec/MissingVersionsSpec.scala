@@ -45,7 +45,7 @@ class GapNoteEvents(val subscriptionsState: SubscriptionsState, store: DocumentS
   override protected val projectionName: String = "GapNoteEvents"
 }
 
-/** The store, counting the reads by version of one aggregate; a page of the bulk pass waits while `held`. */
+/** The store, counting the reads by version of one aggregate; a page of aggregates waits while `held`. */
 class WatchedEventStore(mpjsons: MPJsons, typesNames: PostgresTypesNamesState) extends PostgresEventStoreState(mpjsons, typesNames) {
   @volatile var watched: Long = -1
   val partReads = new AtomicInteger()
@@ -56,12 +56,12 @@ class WatchedEventStore(mpjsons: MPJsons, typesNames: PostgresTypesNamesState) e
     if (aggregateId.asLong == watched) partReads.incrementAndGet()
     super.readPart[AGGREGATE_ROOT](aggregateId, from, to, maxBytes)
   }
-  override def readCommittedPage(types: Seq[AggregateType], after: Long, limit: Int, scope: AggregateScope, maxBytes: Long): CommittedPage = {
+  override def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int, scope: AggregateScope): Seq[StoredAggregate] = {
     if (held.get()) {
       holding.countDown()
       release.await(30, TimeUnit.SECONDS)
     }
-    super.readCommittedPage(types, after, limit, scope, maxBytes)
+    super.aggregatesOf(types, after, limit, scope)
   }
 }
 

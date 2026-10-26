@@ -43,7 +43,7 @@ receive bursts must bound the commands it lets in** (section 2).
 | Outbox poller (`OutboxPollerOptions`) | a poll every 30 s over the 100 000 aggregates waiting longest, at most 1 000 re-published per poll, gives up after 10 min | A large backlog drains at 1 000 aggregates per poll. Given-up aggregates are tried again every 30 minutes (section 4). |
 | Re-publication parts (`OwnerSettings`) | 1 000 events and 16 MB per message | The bus splits them again for a subscriber on another node (F121, section 6). |
 | Subscription version cache | 10 000 aggregates (LRU) | Misses read the database. |
-| Rebuild (`BuilderSettings`) | pages of 1 000 events and 64 MB, chunks of 1 000 events and 16 MB, 2 chunks in flight, 10 000 replay states | Measured: 6 769 events/s (baseline-M4). Evicted states are read again from snapshots (section 4). |
+| Rebuild (`BuilderSettings`) | a type at a time; pages of 1 000 aggregates and 64 MB of their events, read on 4 threads; chunks of 1 000 events and 16 MB, 2 chunks in flight | Measured: 5 749 to 5 879 events/s for a projection writing a document per event, 6 355 with 1.0.4's commit-order builder the same night (d96-before, d96-after, one run each; the same code varied up to 25% between runs): bound by the projection's writes. A final-state build: 3 593 to 4 900 aggregates/s on 4 threads. read again from snapshots (section 4). |
 | Owners in memory | local: an owner idle for 2 min beyond the 200 most recent, or idle for 12 h, is stopped by a sweep every 5 min (`Owners.scala`). Sharded: Pekko passivates after 120 s idle. | Not a limit: every aggregate touched in the last minutes has an owner and its state in memory (section 9). |
 | Messages between nodes (Artery) | `maximum-frame-size` 256 KiB | Pekko drops a larger message unseen. The library splits deliveries, refuses large commands and fails other large messages at once (section 6). |
 | Shard region buffer | 100 000 messages per region | It holds messages while a shard is located or handed over. Beyond that, Pekko drops them. |
@@ -182,30 +182,28 @@ Estimated from the measured numbers. None of this was run at this scale.
 | --- | --- | --- |
 | Events table with indexes | about 38 GB | 382 bytes per event (measured; most events have a 200-character note) × 100 000 000. Scale it by your events' JSON size. |
 | Writing them | about 2.5 h at full load without subscribers; about 5.8 h with two projections | 100 000 000 / 11 226 per second (load-M5); / 4 780 per second (baseline-M4) |
-| One rebuild of an events-based projection | about 4.1 h | 100 000 000 / 6 769 per second (baseline-M4, where every state fit the replay cache) |
+| One rebuild of an events-based projection | about 4.8 h | 100 000 000 / 5 749 per second (d96-after: a projection writing a document per event) |
 | Restoring one aggregate | unchanged | It reads by `aggregate_id`. B-tree depth grows with the logarithm of the table size. |
 | Subscriptions rows | one per (projection, kind, aggregate): 30 000 000 for 10 million aggregates and 3 projections | one row per subscription per aggregate |
 | Draining an outbox backlog | about 8.3 h for 1 million aggregates | 1 000 000 / 1 000 per poll × 30 s |
 
 **What grows with the store:**
-- **Rebuilds.** They take hours: the builder reads every event of the projection's types in commit
-  order. The active build keeps serving while the new one builds (M4), so a rebuild costs time and
+- **Rebuilds.** They take hours: the builder reads every aggregate of the projection's types, a type at
+  a time in the order of its listeners, each aggregate's events by version (D96). The active build keeps serving while the new one builds (M4), so a rebuild costs time and
   database load, not downtime. Until M6 (F172) each page of a build also read every event of its
   types' aggregates once PostgreSQL had analyzed the tables: 786 ms a page over 2 000 000 events,
-  5 ms since (measured), so the time no longer grows with the store's size per page. Two problems
-  appear only at this scale:
-  - A state-listening projection replayed in commit order keeps at most 10 000 aggregate states. An
-    evicted state is read again from its snapshot and the events after it, so when far more
-    aggregates interleave, the build slows down by one restore per miss (not measured). Projections
-    that need only the latest state build from final states instead (D62): one restore per
-    aggregate.
-  - The commit-order read reads only its types' events (or its organization's) through their
-    keys (F124, since M6; two columns of `events` since D95), once `backfillEventKeys()` has given
-    every event from before its keys and their two indexes are built; until then it walks the store
-    up to its position. Writing the keys with each event cost nothing measurable (within the runs'
-    spread, `docs/design/M6-organizations.md`). The backfill writes every older event row once
-    more, so `events` and its indexes grow by about the table's size until VACUUM (D95); the keys'
-    indexes are built after it, to take no entry per updated row.
+  5 ms since (measured), so the time no longer grows with the store's size per page. At this
+  scale:
+  - Each aggregate costs one read of its events (more for one longer than a chunk), and one restore for
+    a state listener (snapshot plus tail, D30), on `restoreThreads` (4) threads, each holding a
+    connection while it reads: a store of 100 million events in 10 million aggregates is 10 million
+    such reads (estimate), spread over the threads. The page of aggregates is read through
+    `aggregates (type_id, id) WHERE id = base_id`, in an organization with its space, so a build of a
+    few types or one organization reads only its own aggregates and their events (D96; F124's event
+    keys, which did this for the commit-order read, are gone with it).
+  - A projection that writes for every event is bound by its own writes, whatever the threads: the
+    bench's counter projection built at about 6 000 events/s with either builder (measured, d96-before
+    and d96-after). `BuildStatus.waitingMillis` shows it.
 - **Purging an organization** (R17, since M6). The purge deletes in batches of at most 1 000
   aggregates and 100 000 events, one transaction each, and waits for the owners and the projections
   to answer each batch, so its load on the database and the nodes stays bounded; its duration grows
@@ -241,7 +239,7 @@ Estimated from the measured numbers. None of this was run at this scale.
   per projection) churn the same way.
 
 **Recommendations.**
-- **Plan rebuild windows from the rate.** About 6 800 events/s per build on the measured machine.
+- **Plan rebuild windows from the rate.** About 5 800 events/s per build on the measured machine.
   Run two builds at once at most (the default).
 - **Prefer final-state builds for state-only projections**, and snapshots for long aggregates.
 - **Tune autovacuum** for `events_to_publish`, `subscriptions` and `aggregates`: a low scale
@@ -467,7 +465,7 @@ Pekko's default dispatcher has 12 threads on the measured machine; since M5, han
 | Bus deliveries and projection mailboxes | the window: at most 10 000 events and 64 MB of them per subscriber and node; a delivery (keys, about 200 bytes) per event held, until the deadline (section 5) | `DeliveryOptions.window`, `windowBytes`, `deadline` |
 | `GetEventsForAggregate` answers | the whole history: 168 MB for 50 000 events (measured) | none |
 | A restore | transient: 52 MB for 50 000 events, 146 MB for 500 000 (measured peaks) | one per owner restoring, at most 32 at once |
-| A rebuild | 150 MB peak for 112 211 events (measured, baseline-M4) | pages, 2 chunks in flight, 10 000 replay states, each the size of a state |
+| A rebuild | 150 MB peak for 112 211 events (measured, baseline-M4) | pages, 2 chunks in flight, the states of the aggregates read at once (measured: 211 to 256 MB peak, d96-after) |
 | Document-store queries without a limit (F211) | every document found, deserialized: about 100 000 × the document's size at the cap (estimated) | the store's `maxRows` (100 000): beyond it the query fails with `TooManyDocumentsException`; page with `limit` and `offset`. `findAll()` and `DocumentStoreQuery.Unbounded` have no bound |
 | Subscription version cache | 10 000 aggregates' versions | LRU |
 | Outbox poller | one entry per waiting aggregate, at most 100 000 | `OutboxPollerOptions.maxTracked` |
@@ -517,7 +515,7 @@ Recorded in [KNOWN-ISSUES](KNOWN-ISSUES.md); the fixed ones are in [its archive]
 | F122: the outbox poll kept every waiting aggregate in memory | fixed in M5 (the grouping still reads the whole outbox) |
 | F123: given-up aggregates waited for the poller's next start | fixed in M5 |
 | F141: retries of given-up aggregates could take a poll's whole budget | fixed in M5 |
-| F124: a commit-order build walks the events of every type to find its own | fixed in M6 (after `backfillEventKeys()` on an existing installation) |
+| F124: a commit-order build walks the events of every type to find its own | fixed in M6; since D96 builds read by type and aggregate, without event keys |
 | F125: the per-aggregate limit let one event too many through | fixed in M5 |
 | F126: batches counted in events held whatever their events weighed | fixed in M5 (restore fetches stay 1 000 rows: hosts with large events lower them) |
 | F127: command handlers ran on Pekko's default dispatcher, so a slow handler stalled the buses and projections | fixed in M5 |

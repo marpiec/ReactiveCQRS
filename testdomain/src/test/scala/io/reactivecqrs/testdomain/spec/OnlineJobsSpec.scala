@@ -42,23 +42,13 @@ class OnlineJobsSpec extends CommonSpec {
     val uidGenerator: ActorRef = system.actorOf(Props(new UidGeneratorActor(
       new PostgresUidGenerator("aggregates_uids_seq"), new PostgresUidGenerator("commands_uids_seq"), new PostgresUidGenerator("sagas_uids_seq"))))
 
-    /** As a large store just upgraded: no event has a key, the indexes are not built, two aggregates have no space. */
+    /** As a large store just upgraded: the indexes are not built, two aggregates have no space. */
     def needsTheJobs(withoutSpace: Seq[AggregateId]): Unit = DB.autoCommit { implicit session =>
-      sql"DELETE FROM schema_steps WHERE name = 'event_keys'".update()
-      sql"UPDATE events SET type_id = NULL, space_id = NULL".update()
-      sql"DROP INDEX IF EXISTS events_type_idx".execute()
-      sql"DROP INDEX IF EXISTS events_space_idx".execute()
+      sql"DROP INDEX IF EXISTS events_aggregate_version_uidx".execute()
       sql"DROP INDEX IF EXISTS aggregates_own_type_idx".execute()
       sql"DROP INDEX IF EXISTS aggregates_space_id_idx".execute()
       withoutSpace.foreach(id => sql"UPDATE aggregates SET space_id = -1 WHERE id = ${id.asLong}".update())
     }
-
-    /** The event keys' job as saved: its state and position. */
-    def savedKeys(): (String, Long) = DB.readOnly { implicit session =>
-      sql"SELECT state, position FROM online_jobs WHERE name = 'event-keys'".map(rs => (rs.string(1), rs.long(2))).single().get
-    }
-
-    def keyed(id: Long): Boolean = DB.readOnly(implicit session => sql"SELECT type_id IS NOT NULL FROM events WHERE id = $id".map(_.boolean(1)).single().get)
 
     class Node(version: Int, hold: Option[BuildHold]) {
       nodes += 1
@@ -95,7 +85,7 @@ class OnlineJobsSpec extends CommonSpec {
       (second, ids)
     }
 
-    def runner(settings: OnlineJobsSettings = OnlineJobsSettings(eventStore, batchSize = 2, pause = Duration.Zero, checkEvery = 300.millis)): ActorRef = {
+    def runner(settings: OnlineJobsSettings = OnlineJobsSettings(eventStore, checkEvery = 300.millis)): ActorRef = {
       nodes += 1
       OnlineJobs.start(system, settings, "online-jobs-" + nodes)
     }
@@ -119,14 +109,11 @@ class OnlineJobsSpec extends CommonSpec {
         When("the runner starts")
         val jobsRunner = runner()
 
-        Then("the indexes, the event keys and the spaces are done, in that order, with what they did")
-        awaitAssert(stateOf(jobsRunner) mustBe Seq(Indexes -> "Done", EventKeys -> "Done", Spaces -> "Done"), 60.seconds, 200.millis)
+        Then("the indexes and the spaces are done, in that order, with what they did")
+        awaitAssert(stateOf(jobsRunner) mustBe Seq(Indexes -> "Done", Spaces -> "Done"), 60.seconds, 200.millis)
         val status = jobs(jobsRunner)
-        val Seq(indexes, keys, spaces) = status.jobs: @unchecked
-        indexes.finished.get.isAfter(keys.started.get) mustBe false
-        keys.finished.get.isAfter(spaces.started.get) mustBe false
-        keys.counts("written") mustBe DB.readOnly(implicit s => sql"SELECT count(*) FROM events".map(_.long(1)).single().get)
-        keys.counts("missing") mustBe 0L
+        val Seq(indexes, spaces) = status.jobs: @unchecked
+        indexes.finished.get.isAfter(spaces.started.get) mustBe false
         (spaces.counts("filled"), spaces.counts("left")) mustBe ((2L, 0L))
         awaitAssert(jobs(jobsRunner).readiness.exists(_.ready) mustBe true, 5.seconds)
 
@@ -134,43 +121,6 @@ class OnlineJobsSpec extends CommonSpec {
         switchedTo(node.supervisor, 2)
         node.supervisor.askFor[Option[NoteLines]](GetNoteLines(ids.head), 5.seconds) mustBe Some(NoteLines("note 1", Vector("LINE")))
         Singletons.stop(system, jobsRunner)
-        node.stop()
-      }
-    }
-
-    Scenario("a runner stopped while it keys the events, started again, continues where it stopped") {
-      TestDatabase.inSchema("online_jobs_resumed") {
-        val installation = new Installation
-        import installation._
-        val (node, _) = heldBuild(notes = 30)
-        val slow = OnlineJobsSettings(eventStore, batchSize = 1, pause = 100.millis, checkEvery = 300.millis)
-
-        Given("a runner that stops in the middle of the event keys")
-        val first = runner(slow)
-        awaitAssert(jobs(first).jobs(1).counts.getOrElse("position", 0L) must be > 0L, 30.seconds, 50.millis)
-        Singletons.stop(system, first)
-        awaitAssert({ // nothing moves any more
-          val before = savedKeys()
-          Thread.sleep(300)
-          savedKeys() mustBe before
-        }, 10.seconds, 10.millis)
-        val (state, position) = savedKeys()
-        state mustBe "Running"
-        eventStore.buildReadiness().ready mustBe false
-
-        And("an event before its position whose key went meanwhile, which only a walk from the start would key again")
-        val firstEvent = DB.readOnly(implicit s => sql"SELECT min(id) FROM events".map(_.long(1)).single().get)
-        firstEvent must be <= position
-        DB.autoCommit(implicit s => sql"UPDATE events SET type_id = NULL, space_id = NULL WHERE id = $firstEvent".update())
-
-        When("a runner starts again")
-        val second = runner()
-
-        Then("it continues from the position: the jobs are done, and the event before it still has no key")
-        awaitAssert(stateOf(second) mustBe Seq(Indexes -> "Done", EventKeys -> "Done", Spaces -> "Done"), 60.seconds, 200.millis)
-        keyed(firstEvent) mustBe false
-        switchedTo(node.supervisor, 2)
-        Singletons.stop(system, second)
         node.stop()
       }
     }
@@ -186,7 +136,7 @@ class OnlineJobsSpec extends CommonSpec {
         val jobsRunner = runner()
 
         Then("the index job fails, the others run, and the build stays held, saying why")
-        awaitAssert(stateOf(jobsRunner) mustBe Seq(Indexes -> "Failed", EventKeys -> "Done", Spaces -> "Done"), 60.seconds, 200.millis)
+        awaitAssert(stateOf(jobsRunner) mustBe Seq(Indexes -> "Failed", Spaces -> "Done"), 60.seconds, 200.millis)
         jobs(jobsRunner).jobs.head.detail.getOrElse("") must include("SQLState")
         awaitAssert(builds(node.supervisor).heldBy.getOrElse("") must include("the online job indexes failed"), 10.seconds, 100.millis)
         builds(node.supervisor).active.map(_.number) mustBe Some(1)

@@ -8,7 +8,7 @@ import io.reactivecqrs.api._
 import io.reactivecqrs.api.id.UserId
 import io.reactivecqrs.core.commandhandler.PostgresCommandResponseState
 import io.reactivecqrs.core.eventbus.EventsBusActor
-import io.reactivecqrs.core.eventstore.{EventKeysBackfill, PostgresEventStoreState, SpaceBackfill}
+import io.reactivecqrs.core.eventstore.{PostgresEventStoreState, SpaceBackfill}
 import io.reactivecqrs.core.projection.PostgresSubscriptionsState
 import io.reactivecqrs.core.rebuild.PostgresProjectionRegistry
 import io.reactivecqrs.core.saga.PostgresSagaState
@@ -73,9 +73,8 @@ class ProductionSpec extends CartSpec {
       // #maintenance
       eventStore.buildIndexesConcurrently()          // indexes built without blocking writes
       val spaces = eventStore.backfillSpaces()       // SpaceBackfill(filled, left)
-      val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, missing, orphans)
       // #maintenance
-      (spaces, keys) mustBe ((SpaceBackfill(0, Nil), EventKeysBackfill(0, 0))) // a 1.0 store has every space and key
+      spaces mustBe SpaceBackfill(0, Nil) // a 1.0 store has every space
 
       // #check
       import io.reactivecqrs.core.tools.StoredDataCheck

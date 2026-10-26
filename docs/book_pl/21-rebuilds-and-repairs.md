@@ -63,18 +63,19 @@ nowego budynku, gdy cały czas jest otwarta: najpierw po kolei przenosisz regał
 drzwi, a na koniec przechodzisz między regałami z katalogiem i dokładasz tych kilka książek, które ktoś
 wypożyczył i oddał w trakcie przeprowadzki.
 
-1. **Główny przebieg** (`Bulk`). Budowniczy czyta zdarzenia typów agregatów projekcji w kolejności, w
-   jakiej je zatwierdzono, stronę po stronie (1 000 zdarzeń, najwyżej 64 MB), tnie je na porcje
-   (1 000 zdarzeń, najwyżej 16 MB) i wysyła każdą porcję do budowy, która nanosi ją w jednej
-   transakcji razem z wersjami subskrypcji, do których dochodzi. W locie są dwie porcje; następna
-   strona jest czytana, gdy one są nanoszone. Po każdej naniesionej porcji pozycja trafia do rejestru.
-   Projekcja, której wszystkie listenery biorą tylko stany (`AggregateListener`), dostaje zamiast tego
-   końcowy stan każdego agregatu, jedną pozycję na agregat.
+1. **Główny przebieg** (`Bulk`). Budowniczy dostarcza typy agregatów projekcji w kolejności jej
+   listenerów, każdy typ w całości przed następnym. Dla danego typu czyta stronę jego agregatów (1 000,
+   i najwyżej 64 MB ich zdarzeń), czyta zdarzenia każdego agregatu na kilku wątkach (domyślnie
+   czterech), tnie je na porcje (1 000 zdarzeń, najwyżej 16 MB) w kolejności agregatów i wysyła każdą
+   porcję do budowy, która nanosi ją w jednej transakcji razem z wersjami subskrypcji, do których
+   dochodzi. Listener stanów dostaje zamiast zdarzeń końcowy stan każdego agregatu, jedną pozycję na
+   agregat. W locie są dwie porcje; następna strona jest czytana, gdy one są nanoszone. Po każdej
+   naniesionej porcji pozycja (typ i agregat, do którego doszła) trafia do rejestru.
 2. **Przejście na żywo** (`GoingLive`). Budowa sama zaczyna nanosić dostarczenia z szyny i ponawia
    awarie, które zapisała w trakcie przebiegu.
 3. **Uzgadnianie** (`Reconciling`). Budowniczy przechodzi przez każdy agregat tych typów i porównuje
    wersję w magazynie z wersją w budowie. To, czego brakuje (zdarzenia zatwierdzone po tym, jak
-   przebieg je minął, wiersze zatwierdzone z opóźnieniem), czyta jeszcze raz według wersji i dostarcza.
+   przebieg przeczytał ich agregat), czyta jeszcze raz według wersji i dostarcza.
 
 Wtedy budowa **nadrobiła zaległości** (`CaughtUp`). Zanim zacznie obsługiwać zapytania, potrzebne są
 jeszcze dwie rzeczy: przebudowy celowane, o które poproszono w międzyczasie, wykonują się także na niej
@@ -92,11 +93,11 @@ Przełączenie to aktualizacja jednego wiersza: od tej chwili zapytania trafiaj�
 - jej tabele i sekwencje zostają usunięte, jej wersje subskrypcji skasowane (partiami po 10 000), a jej
   zapisy o awariach i zapisy o agregatach, których nie umiała odtworzyć, usunięte.
 
-> **Pod maską:** główny przebieg czyta według identyfikatora zdarzenia. Identyfikatory są nadawane, gdy
-> transakcja zapisuje, a nie gdy zatwierdza, więc wiersz z mniejszym identyfikatorem może się pojawić
-> już po tym, jak przebieg minął jego miejsce. Taki wiersz wychodzi jako luka (budowa ma wersję 4,
-> następna seria zaczyna się od 6): budowniczy czyta brakujące wersje jeszcze raz, według wersji.
-> Uzgadnianie wyłapuje wszystko, co zostało. Dlatego budowa kończy się taka sama jak projekcja
+> **Pod maską:** główny przebieg czyta każdy agregat według wersji, od wersji 1 (albo od jego
+> zdarzenia zgniecenia) w górę. Część jednego agregatu, która pomija wersję, kończy się przed luką, a
+> następny odczyt zaczyna się od niej; wersje, których brakuje w magazynie, kończą tam subskrypcję
+> agregatu porażką. Polecenia, które zmieniają agregat po tym, jak przebieg go przeczytał, wyłapuje
+> uzgadnianie. Kolejność agregatów nie gra żadnej roli: dostarczanie na żywo też je miesza (D96). Dlatego budowa kończy się taka sama jak projekcja
 > utrzymywana na żywo, co `RebuildEquivalenceSpec` sprawdza na losowych historiach
 > ([ARCHITECTURE.md, sekcja 8](../ARCHITECTURE.md)).
 
@@ -160,10 +161,10 @@ budowa idzie dalej bez tego agregatu. Część 3 mówi, co zrobić z każdą z n
 
 Na instalacji zaktualizowanej ze starszej wersji budowa może działać, ale powoli:
 
-- dopóki każde starsze zdarzenie nie ma klucza (`backfillEventKeys`), każdy główny przebieg czyta całą
-  tabelę `events`, niezależnie od tego, jakich typów potrzebuje projekcja;
 - dopóki nie istnieje indeks własnych wierszy agregatów według typu (`buildIndexesConcurrently`), każda
-  strona agregatów (stany końcowe, uzgadnianie) zajmuje około 100 ms zamiast 1 ms.
+  strona agregatów zajmuje około 100 ms zamiast 1 ms;
+- dopóki nie istnieje indeks zdarzeń według agregatu i wersji (to samo zadanie), zdarzenia każdego
+  agregatu są czytane przez wolniejszy indeks.
 
 `eventStore.buildReadiness()` mówi, czego brakuje. Lekarstwem jest uruchomienie zadań online
 ([rozdział 18](18-production.md), krok 7) i wstrzymanie budów, dopóki się nie skończą.
@@ -184,7 +185,7 @@ klasami, wersjami i przyczynami, nigdy z wartościami), utrzymuje **wszystko inn
 | JSON zdarzenia nie daje się już odczytać | `StoredDataCheck` (`unreadable`); budowy: „a stored event cannot be read” | popraw klasę albo dodaj konwerter; wymaż wartość ([rozdział 15](15-rewriting-history.md)) |
 | zdarzenie o niezerowej wersji typu zdarzenia | `StoredDataCheck` (`eventsByTypeVersion`) | zmigruj je ręcznie, zanim przeczyta je 1.0 (D29) |
 | handler rzuca wyjątek, gdy stan jest odtwarzany | `restoreFailures()`, `RestoreCheck`, `AggregateRestoreFailedException` polecenia | popraw handler; pomiń agregat w budowie; usuń agregat |
-| zdarzenia, których agregat nie ma własnego wiersza (sieroty) | `backfillEventKeys` (`orphans`), `StoredDataCheck` (`orphans`) | zostaw je (nic ich nie czyta); usuń je |
+| zdarzenia, których agregat nie ma własnego wiersza (sieroty) | `StoredDataCheck` (`orphans`) | zostaw je (nic ich nie czyta); usuń je |
 | wersja, której brakuje w historii agregatu | `RestoreCheck` (`gaps`), zapytanie z [rozdziału 18](18-production.md); budowy: „versions from N to M are missing from the store” | pomiń dziurę w każdej budowie (`SkipFailedVersion(id, pastMissing = true)`); pomiń agregat; usuń go |
 | dwa zdarzenia jednej wersji | `StoredDataCheck` (`repeatedVersions`) | zdecyduj, które jest prawdziwe, i usuń drugie ręcznie |
 | agregaty bez organizacji | `backfillSpaces` (`left`), `StoredDataCheck` (`aggregatesWithoutSpace`) | funkcja `spaceOf`, która je przydziela ([rozdział 16](16-organizations.md)) |
@@ -241,9 +242,8 @@ Potem, od najlepszego wyjścia:
 Sierota to zdarzenie, którego agregat nie ma własnego wiersza w `aggregates`, zwykle pozostałość po
 dawnym usunięciu, które skasowało wiersz, a zdarzeń nie. Sieroty nic nie czyta: odtworzenie, budowa i
 uzgadnianie zaczynają od wiersza agregatu. Sieroty są więc tam, gdzie są, nieszkodliwe, poza miejscem
-na dysku, które zajmują. `backfillEventKeys` i `StoredDataCheck` je wymieniają (ile ich jest, z
-których agregatów, ich klasy, pierwsze i ostatnie zdarzenie); uzupełnianie kluczy zapisuje swój krok
-bez nich. Zatrzymaj je albo usuń tymi samymi poleceniami co agregat (linie `aggregates` niczego wtedy
+na dysku, które zajmują. `StoredDataCheck` je wymienia (ile ich jest, z których agregatów, ich klasy,
+pierwsze i ostatnie zdarzenie). Zatrzymaj je albo usuń tymi samymi poleceniami co agregat (linie `aggregates` niczego wtedy
 nie usuwają).
 
 ### Wersje zapisane dwa razy
@@ -253,8 +253,7 @@ zapisany przez starsze wersje albo nieudany import mogą jednak mieć dla jakieg
 jednej wersji. Odtworzenie czyta wtedy oba. `StoredDataCheck` je wymienia (`repeatedVersions`), a
 dopóki nie znikną, `buildIndexesConcurrently` zostawia stary, nieunikalny indeks i zapisuje w logu
 błąd. Obejrzyj oba zdarzenia, zdecyduj, które agregat naprawdę miał, i usuń drugie po identyfikatorze
-zdarzenia: najpierw jego wiersz `noop_events`, jeśli go ma, tak jak robią to polecenia usuwania (jego
-klucz znika razem z nim).
+zdarzenia: najpierw jego wiersz `noop_events`, jeśli go ma, tak jak robią to polecenia usuwania.
 
 ### Modele odczytu, które się rozjechały
 
@@ -273,14 +272,14 @@ większej liczby, w miejscu, gdy projekcja obsługuje zapytania. Przy błędzie,
 Mała projekcja przebudowuje się w kilka sekund i nie potrzebuje planu. Przy magazynie z dziesiątkami
 milionów zdarzeń warto najpierw wszystko przemyśleć.
 
-1. **Oszacuj czas.** Na mierzonej maszynie budowa nanosiła około 6 800 zdarzeń na sekundę (projekcja
-   oparta na zdarzeniach, każdy stan w pamięci; `docs/perf/baseline-M4.md`, 17/10/2026);
-   `docs/SCALING.md` szacuje około 4,1 godziny na 100 milionów zdarzeń. Projekcja tylko na stanach
+1. **Oszacuj czas.** Na mierzonej maszynie budowa nanosiła około 5 800 zdarzeń na sekundę (projekcja
+   oparta na zdarzeniach, dokument zapisywany przy każdym zdarzeniu; `docs/perf/d96-after.md`,
+   27/10/2026); `docs/SCALING.md` szacuje około 4,8 godziny na 100 milionów zdarzeń. Projekcja tylko na stanach
    czyta stany końcowe, po jednym na agregat, i ma o wiele mniej pracy. Zmierz na kopii produkcji:
    decydują twoje zdarzenia, twoje listenery i twoja baza danych.
 2. **Najpierw przygotuj magazyn.** Na zaktualizowanej instalacji uruchom zadania online i wstrzymaj
    budowy, dopóki się nie skończą (`OnlineJobs.start` i `BuildHold.untilStoreReady`, rozdział 18). Bez
-   kluczy zdarzeń każda budowa czyta każde zdarzenie, niezależnie od tego, jakich typów potrzebuje.
+   ich indeksów każda strona, którą czyta budowa, jest wolna.
 3. **Poszukaj danych, które nie będą pasować**, na kopii, z nowym kodem: `StoredDataCheck` i
    `RestoreCheck`. Każdy agregat z ich list zatrzyma budowę, dopóki o nim nie zdecydujesz.
 4. **Wybierz, co robi stara budowa**: `ServeLive`, jeśli nowy kod umie pracować na starych dokumentach,

@@ -31,6 +31,8 @@ by default; the baselines run the first seven); `jsonNames` runs only when liste
 (`sbt "bench/run jsonnames-M6 scenarios=jsonNames"`, about 30 minutes), and so does `restoreThreads`, a
 final-state build on 1, 2, 4 and 8 threads over `rebuildAggregates` counters of `rebuildEventsPerAggregate` events
 (CR-8, `sbt "bench/run restore-threads-1.0.3 scenarios=restoreThreads rebuildAggregates=10000 rebuildEventsPerAggregate=50"`).
+`d96-before.md` (1.0.4, commit order) and `d96-after.md` (D96, a type at a time, each aggregate whole) run
+`scenarios=rebuild,restoreThreads` with the same sizes, the same night, to compare the two builders.
 For example a quick check:
 
 ```bash

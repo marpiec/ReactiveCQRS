@@ -58,12 +58,12 @@ class ProjectionRegistrySpec extends AnyFeatureSpec with Matchers {
         r.projection(name).map(p => (p.active.map(_.number), p.building.map(_.number))) mustBe Some((Some(next.number), Some(next.number)))
       }
 
-      Scenario("a build keeps its position (D61)") {
+      Scenario("a build keeps its position, with the type it reached (D61, D96)") {
         val (r, name) = (registry(), newName())
         r.startBuild(name, 1, Map.empty)
-        r.savePosition(name, 1, BuildPosition(bulkDone = false, 42L))
-        r.projection(name).flatMap(_.building.map(_.position)) mustBe Some(BuildPosition(bulkDone = false, 42L))
-        new RegistryBuildPositions(r, name, 1).read() mustBe BuildPosition(bulkDone = false, 42L)
+        r.savePosition(name, 1, BuildPosition(bulkDone = false, 42L, typeIndex = 2))
+        r.projection(name).flatMap(_.building.map(_.position)) mustBe Some(BuildPosition(bulkDone = false, 42L, typeIndex = 2))
+        new RegistryBuildPositions(r, name, 1).read() mustBe BuildPosition(bulkDone = false, 42L, typeIndex = 2)
       }
     }
   }

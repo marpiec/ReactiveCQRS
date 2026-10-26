@@ -40,7 +40,7 @@ unless the path says `api/` or `testdomain/`).
 | `OutboxDeletes.scala` (batched outbox deletes) | `eventstore/` |
 | `Backoff.scala` (retry waits, AR6) | `util/` |
 | `ProjectionActor.scala`, `SubscriptionsState.scala`, `SubscribableProjectionActor.scala`, `AggregateListenerActor.scala` | `projection/` |
-| `ProjectionBuilder.scala`, `ReplayStates.scala` (with `ReplaySource`), `Projections.scala` (the runtime and `ProjectionSupervisor`), `ProjectionRegistry.scala`, `ProjectionBuild.scala` (M4) | `rebuild/` |
+| `ProjectionBuilder.scala`, `ReplaySource.scala`, `Projections.scala` (the runtime and `ProjectionSupervisor`), `ProjectionRegistry.scala`, `ProjectionBuild.scala` (M4) | `rebuild/` |
 | `SagaDefinition.scala`, `SagaRunner.scala`, `SagaActor.scala` (deprecated), `PostgresSagaState.scala`, `PostgresSagaSchemaInitializer.scala` | `saga/` |
 | `PostgresDocumentStore.scala`, `DocumentStoreCache.scala` | `documentstore/` |
 | `AfterCommit.scala` (cache updates after commit) | `util/` |
@@ -213,8 +213,8 @@ They run in three places:
 2. **Restore** on the owner's first message, and again on every reload: after an SQL
    conflict, when a command expects a newer version than the owner holds (F19), and after an
    undo, a duplication event or a rewrite (`AggregateRestorer.restore`).
-3. **Replay** during projection builds: the builder's replay states restore an aggregate
-   from its snapshot or history and apply the events after it (`ReplayStates`, §8.1).
+3. **Replay** during projection builds: the builder reads each aggregate whole and restores
+   its states from its snapshot or history and the events after it (`ReplaySource`, §8.1).
 
 Rules that follow:
 
@@ -335,7 +335,7 @@ run works in a new schema (`TestDatabase`).
 
 | Table | Columns / keys | Role |
 |---|---|---|
-| `events` (`:29-41`) | `id` (from `events_seq`) PK, `user_id`, `aggregate_id`, `event_time TIMESTAMP`, `version`, `event_type_id`, `event_type_version` (always 0, D29), `event TEXT`, since M3 `metadata JSONB` (the envelope, D32; null when none); indexes `(aggregate_id)`, `(aggregate_id, id)`, and `(aggregate_id, version)`, unique since 1.0.1 (`events_aggregate_version_uidx`, F198: no aggregate has two events of one version), made at start on a small store and online by `buildIndexesConcurrently()` on a large one (F38), which keeps the plain index while `StoredDataCheck` reports repeated versions; since D95 `type_id`, `space_id` (the event keys: its aggregate's type and space, F124; null until `backfillEventKeys()` fills an older row), indexed `(type_id, id)` and `(space_id, type_id, id)` (`events_type_idx`, `events_space_idx`: at start on a small store, otherwise by `buildIndexesConcurrently()` once every event has its keys) | append-only event log |
+| `events` (`:29-41`) | `id` (from `events_seq`) PK, `user_id`, `aggregate_id`, `event_time TIMESTAMP`, `version`, `event_type_id`, `event_type_version` (always 0, D29), `event TEXT`, since M3 `metadata JSONB` (the envelope, D32; null when none); indexes `(aggregate_id)`, `(aggregate_id, id)`, and `(aggregate_id, version)`, unique since 1.0.1 (`events_aggregate_version_uidx`, F198: no aggregate has two events of one version), made at start on a small store and online by `buildIndexesConcurrently()` on a large one (F38), which keeps the plain index while `StoredDataCheck` reports repeated versions (an event's type and space are its aggregate's own row's: builds read by aggregate, D96) | append-only event log |
 | `aggregates` (`:103-115`) | PK `(id, base_id)`, `space_id`, `creation_time`, `type_id`, `base_order`, `base_id`, `base_version`, since M3 `squashed_version` (null unless squashed, D49), since M5 `history_generation` (F119); indexes `(type_id)`, `(base_id)`, since M6 `(space_id, id)` (an organization's aggregates in id order, built online on a large installation), and since M7 `(type_id, id) WHERE id = base_id` (a type's own rows in id order, for the walks of builds, F173; built online on a large installation) | one row per (aggregate, ancestor) in its duplication chain; the own row (`base_id = id`) holds the **current version** used for locking |
 | `noop_events` (`:75-81`) | `id` (= `events.id`) PK, `from_version` | events cancelled by an undo, effective from that version |
 | `snapshots` (since M3) | `aggregate_id` PK, `version`, `context_version`, `schema_version`, `state TEXT`, `created` | the latest performance snapshot of an aggregate (D30, §4.3); disposable |
@@ -343,7 +343,7 @@ run works in a new schema (`TestDatabase`).
 | `aggregate_lineage` (since M6) | PK `(aggregate_id, copied_from)`, `at_version`, `detached`; index `(copied_from)` | the bases a detached copy read when it was detached (every detach writes them, D76, and so does a squash of the copy itself, F193): a complete rewrite of a base follows them to the copies that hold its values (§4.9) |
 | `history_rewrites` (since M6) | `id` PK, `aggregate_id` (indexed), `user_id`, `at`, `change_class`, `classes`, `fields`, `events`, `archived` | one audit row per complete rewrite of an aggregate (D76): who, when, which change, the event classes and fields it altered, how many rows; never a value |
 | `events_to_publish` (`:83-101`) | `event_id` PK, `aggregate_id`, `version`, `user_id`, `event_time`; index `(aggregate_id, version)` | **outbox**: events not yet confirmed by every subscriber |
-| `schema_steps` (since M6) | `name` PK, `completed` | online steps that have completed (D69): `event_keys` once every event has its keys (in `events`, D95) |
+| `schema_steps` (since M6) | `name` PK, `completed` | online steps that have completed (D69), and the operator's `build_hold_released` |
 | `types_names` (`TypesNamesState.scala`) | `id SMALLINT`, unique `name` | class-name ↔ id dictionary (aggregates, events, subscribers, responses) |
 | `commands_responses` (`CommandResponseState.scala`) | `id`, `key` (unique), `handling_timestamp` (indexed, for retention), `response`, `response_type_id`, and since 1.0 `info`, `info_type_id` (the info of a `CustomSuccessResponse`, F64), since M6 `aggregate_id` (indexed: the aggregate of the response, for a purge, R17) | idempotent responses (D12) |
 
@@ -1046,7 +1046,7 @@ queues. The parallel pool is shut down when the actor stops.
 takes deliveries from any sender and answers that sender, so a builder that reads the event
 store can feed it directly, through the same gate, failure records and status:
 
-- `ApplyChunk(id, items)`: versions of many aggregates in commit order, one `ChunkItem` per
+- `ApplyChunk(id, items)`: versions of many aggregates, each whole (D96), one `ChunkItem` per
   subscription (kind) and run of versions, with the events and the state after the last
   version; `startsSequence` marks an item that needs nothing before it (a squash event, or a
   whole state, D62). The gate decides each item against the version the chunk left its
@@ -1189,7 +1189,7 @@ it may have missed that change (F115).
 listener's transaction, so the version and the listener's writes commit together; the cache
 advances only after the commit (`AfterCommit`, F18). The 0.12 in-memory mode and its `dump()`
 are gone (D61). One transaction may move a subscription several times (a batch of many
-aggregates in commit order, D61): each move is checked against the version the transaction
+aggregates, D61): each move is checked against the version the transaction
 gave it before (`AfterCommit.local`, values that live as long as the transaction), then the
 committed cache.
 
@@ -1230,32 +1230,24 @@ subscriber). `BuildPlan` lists its subscriptions (the projection answers `GetLis
 `ReplaySource.of(contexts, eventStore)` gives each aggregate type's restorer and event
 handlers. It runs on the blocking dispatcher and reads synchronously on its own thread.
 
-1. **Bulk pass.** `readCommittedPage(types, after, limit, scope, maxBytes)` pages through the events of the plan's
-   types in commit order (`events.id`, D59), each under its own aggregate (a duplicate's own
-   events, not its base's); since M6 (F124) it reads only those events: through the event keys (D95:
-   `events (type_id, id)`, in an organization `(space_id, type_id, id)`), one index scan per type, once every event has
-   its keys and their indexes are valid, and named
-   aggregates through `events (aggregate_id, id)`. Before the keys' backfill completed, it walks
-   `events` up to the page's last row, as before; undone events and undo events included (D60), with the aggregate's
-   squash point. Each event finds its aggregate's own row by key, one lookup per event (F172): a join
-   lets the planner, misjudging `id = base_id`, read every event of the store for each page. Consecutive rows of one aggregate with consecutive versions form a run; each
-   run becomes one `ChunkItem` per listener kind, with the state after its last version for
-   state listeners. `ReplayStates` keeps those states for at most `maxReplayStates` (10 000)
-   aggregates, least recently used out: a run continues the state it holds, an evicted or
-   unknown aggregate is restored at the version before the run (snapshot plus tail, D30), an
-   undo or a duplication takes the state the store gives at its version (as the owner did), a
-   duplicate starts from its base's state when the base is held at the duplicated version, and
-   a run that starts at the aggregate's first event or squash event starts from the initial
-   state. A projection whose listeners all take the state only (D62) gets one item per
-   aggregate instead, its final state (`aggregatesOf` pages through the aggregates), which
-   starts its subscription; a page's states are restored on `restoreThreads` threads of the
-   builder's own (CR-8, D93), the items made from them on its thread, in the aggregates' order. A page is at most `pageSize` events and `pageBytes` (64 MB) of them, a
-   chunk at most `chunkEvents` (1 000) events and `chunkBytes` (16 MB), at least one event each
-   (F126): a run of one aggregate ends where it would pass them, and a chunk ends before an item
-   that would not fit (F140). A page its bytes cut short is not taken for the last. Chunks go two in
-   flight, so the next page is read while the projection applies a chunk in one transaction
-   (D61, §6.3). The projection acknowledges the bus's deliveries without applying them
-   meanwhile (`BuildFromStore`).
+1. **Bulk pass (D96).** The plan's types go one at a time, in the order of the projection's listeners (the order
+   a projection may rely on, as 0.12's replayer had it; the order of aggregates it may never rely on, live or in a
+   build). For a type, `aggregatesOf(Seq(type), after, pageSize, scope)` pages through its aggregates' own rows by
+   id (`aggregates (type_id, id) WHERE id = base_id`, in an organization with its space). Each aggregate is read
+   whole, for each listener kind from its first version (or its squash event, F98): `readPart` by version
+   through `events (aggregate_id, version)`, in parts of at most `chunkEvents` events and `chunkBytes`, its own
+   events only (a duplicate's, not its base's), undone events and undo events included (D60); a state listener
+   gets its final state instead (`ReplaySource.stateAt`: snapshot plus tail, D30, D62), and so does an events
+   listener with states, after the last part. `restoreThreads` (4) threads of the builder's own read a group of
+   aggregates at once, each with its connection; the items are made on the builder's thread, in the aggregates'
+   order, so a page is the same whatever the threads. A page is at most `pageSize` aggregates and `pageBytes`
+   (64 MB) of their events; a page its bytes cut short is not the type's last. A chunk is at most
+   `chunkEvents` (1 000) events and `chunkBytes` (16 MB), at least one event each (F126), and ends before an
+   item that would not fit (F140). Chunks go two in flight, so the next page is read while the projection applies
+   a chunk in one transaction (D61, §6.3). The projection acknowledges the bus's deliveries without applying them
+   meanwhile (`BuildFromStore`). Until D96 the pass followed commit order across types (D59), with a
+   cache of replay states and, from M6, event keys (F124, D95) to find a type's events; reading by aggregate needs
+   neither.
 2. **GoLive.** Once the pass is read and every chunk is answered, the builder sends `GoLive`;
    from the projection's `ProjectionLive` on, it applies the bus's deliveries.
 3. **Reconciliation.** `aggregatesOf` pages through every aggregate of the plan's types, and
@@ -1264,26 +1256,25 @@ handlers. It runs on the blocking dispatcher and reads synchronously on its own 
    below the squash point starting at the squash event, F98; a part left empty by a squash since
    the aggregate was listed goes on from the new squash point, F139), each part with the state at
    the range's end, restored once (F140).
-   This covers the events committed after the bulk pass read past them and rows that became
-   visible late (row ids are not commit order between concurrent transactions). Then the
-   builder sends `BuildCaughtUp` to `reportTo`.
+   This covers the events committed after the bulk pass read their aggregate. Then the builder
+   sends `BuildCaughtUp` to `reportTo`.
 
-**Missing versions.** A run ends where a version is missing, so the projection reports the
-gap (`ChunkApplied.gaps`, or `RequestRepublish` from a queue while it is built), and the
+**Missing versions.** A part ends before a version the store does not hold (the read goes on from it, and versions
+the store has lost fail the subscription there, CR-6, D92); the projection reports a gap it finds anyway (`ChunkApplied.gaps`, or `RequestRepublish` from a queue while it is built), and the
 builder reads it again by version, ahead of everything else. The reconciliation and the gaps
 queue what is missing per aggregate and read it when nothing else is ready to send, a chunk's worth
 of aggregates at a time, so memory holds a few chunks, not every missing event of a page (F223).
 
-**Resume (D61).** After each applied chunk of the bulk pass, its position (the last row id, or
-aggregate id for final states) is saved through `BuildPositions`; once the pass ends, that it
-ended. A builder started again continues from there (or goes straight to GoLive and the
+**Resume (D61).** After each applied chunk of the bulk pass, its position (the type's index in the plan,
+`type_index`, and the last aggregate it holds whole; one cut in parts is read again) is saved through
+`BuildPositions`; once the pass ends, that it ended. A builder started again continues from there (or goes straight to GoLive and the
 reconciliation), and repeats at most the chunks that were in flight, which the projection's
 stored versions make harmless.
 
 **Failures.** A store that cannot be read is tried again after `retryAfter` (5 s); a chunk the
 projection could not take is sent again. A row that cannot be read, or an aggregate whose state
 cannot be restored, fails its subscription at that version (D20a, visible in the projection's
-status) and the build goes on (F82).
+status) and the build goes on (F82); the events before it are delivered. A transient error (F117) is read again later.
 
 ### 8.2 Managed projections: the registry and the supervisor (`rebuild/Projections.scala`, M4)
 
@@ -1376,7 +1367,7 @@ document, a space's documents) and its versions and failures of those aggregates
 (`SubscriptionsState.resetVersions`); the deliveries waiting for them are acknowledged, as the
 builder gives their events again.
 A builder scoped to the target (`AggregateScope.Only` or `InSpace`; no `BuildFromStore`, no
-`GoLive`, as the instance stays live) then delivers their events in commit order and reconciles
+`GoLive`, as the instance stays live) then delivers their events, a type at a time, and reconciles
 them; live events of those aggregates meanwhile find a gap and are asked from their owners, and
 the gate drops what comes twice. The answer is `AggregatesRebuilt(target, count)`. A projection
 that does not implement `clearForRebuild` refuses (`RebuildRefused`), and an organization is not
@@ -1518,7 +1509,7 @@ path (F93) came in M5 (§5.2).
 | Delivery tracking | `EventsBusActor` (`publish`, `finish`, `checkDeadlines`, `subscriberStopped`) | a delivery that ends without every ack or failure must not ack the owner; re-publications to one subscriber never do; AR7 (no throws) |
 | New listener kind | `ProjectionActor` (listener class, map, `subscriptionRequests`, the delivery case in `receiveUpdate`, `appliedVersion`, `advance`, `workOf`), `EventsBusActor` (request + message type), `SubscriptionType` | a new `subscription_type` id; everything else goes through the one gate path |
 | Projection progress storage | `SubscriptionsState` | CAS semantics; same-session atomicity; the bounded cache and its eviction on a failed CAS (F29, F77); one transaction may move a subscription several times (D61); failures (D20a) |
-| Rebuild logic | `rebuild/ProjectionBuilder` (phases, chunks, reconciliation), `ReplayStates`, `Projections` (`ProjectionSupervisor`, `BuildSlots`), `ProjectionRegistry` | a build must deliver what live delivery delivers (undone events and undos included, D60); the switch is one update; a retired build's tables, versions and failures go together (F94) |
+| Rebuild logic | `rebuild/ProjectionBuilder` (phases, types in listeners' order, chunks, reconciliation), `ReplaySource`, `Projections` (`ProjectionSupervisor`, `BuildSlots`), `ProjectionRegistry` | a build must deliver what live delivery delivers (undone events and undos included, D60); the switch is one update; a retired build's tables, versions and failures go together (F94) |
 | Idempotency rules | `commandhandler/Idempotency.scala`, `CommandResponseState` | the response is written in the persist transaction (I2); a taken key and a version conflict both answer with the stored response |
 | Retries and timeouts | `util/Backoff`; `AggregateOwner` (concurrent retries, command timeout), `SagaRunner` (write retries), `ProjectionActor` (listener retries), `RedeliveryPolicy`, `PostgresDocumentStore.updateWithRetries` | bounded everywhere; the document-store retry runs inside the listener transaction and must stay immediate (AR6) |
 | New message between nodes | `cluster/ClusterSerializer` (library classes by field name, the application's values through mpjsons, exceptions), the bindings in `reference.conf` | no functions, futures or mutable state in a message that leaves its node; a field added to a library message is an `Option` or has a default, a changed field type needs a new class (D68); a library exception keeps its class only with a field codec and a binding of its own |
@@ -1812,7 +1803,7 @@ or after the library's actors start. `metrics/RecordingMetrics` keeps them in me
 | `reactivecqrs.message.too.large` | count | `class` | messages too large to cross nodes (F121) |
 | `reactivecqrs.restore.failures` | gauge | | at each outbox poll: the aggregates with a record in `restore_failures` (CR-4, D90) |
 | `reactivecqrs.online.job` | gauge | `job` | at each change of an online job: 0 waiting, 1 running, 2 done, 3 failed (D91) |
-| `reactivecqrs.online.job.progress` | gauge | `job` | as it goes: document tables indexed, events keyed, spaces filled |
+| `reactivecqrs.online.job.progress` | gauge | `job` | as it goes: document tables indexed, spaces filled |
 | `reactivecqrs.builds.held` | gauge | | at each check of a `BuildHold` and when a held build stops waiting: the full builds held; 0 once the hold is over (D89) |
 
 Tracing goes with the metadata envelope (R13, D32): `EventMetadata.traceContext` holds the W3C

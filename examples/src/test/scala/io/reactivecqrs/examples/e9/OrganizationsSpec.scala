@@ -77,7 +77,7 @@ class OrganizationsSpec extends CommonSpec {
       } finally Await.ready(app.terminate(), 30.seconds)
     }
 
-    Scenario("an upgrade's steps for organizations: aggregates without a space counted, indexes built, spaces and keys given") {
+    Scenario("an upgrade's steps for organizations: aggregates without a space counted, indexes built, spaces given") {
       val app = TestSystems.newSystem("e9-upgrade")
       try {
         val eventStore = OrganizationsSetup.start(app).eventStore
@@ -115,13 +115,6 @@ class OrganizationsSpec extends CommonSpec {
           // #backfillByEvent
           spaces mustBe SpaceBackfill(0, Nil)
         }
-
-        // #backfillKeys
-        import io.reactivecqrs.core.eventstore.EventKeysBackfill
-
-        val keys: EventKeysBackfill = eventStore.backfillEventKeys()  // EventKeysBackfill(written, missing, orphans)
-        // #backfillKeys
-        keys mustBe EventKeysBackfill(0, 0) // every event of a 1.0 store has its key
       } finally Await.ready(app.terminate(), 30.seconds)
     }
   }

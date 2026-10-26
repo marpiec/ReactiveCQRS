@@ -193,7 +193,7 @@ event after 767 ms.
 
 ### 7. After an upgrade: the online jobs
 
-Some jobs are too heavy to run while a node starts: big indexes and backfills over every event. They
+Some jobs are too heavy to run while a node starts: big indexes and backfills over every aggregate. They
 run once, in the background, after the version that needs them is up. The simplest way is to let the
 application run them itself, and have full builds of projections wait for them:
 
@@ -206,17 +206,14 @@ val projections = new Projections(system, ProjectionsSettings(eventStore, subscr
   contexts, holdBuilds = Some(BuildHold.untilStoreReady(eventStore))))
 ```
 
-`OnlineJobs.start` (on every node; in a cluster it is a singleton) runs three jobs, one after the other:
+`OnlineJobs.start` (on every node; in a cluster it is a singleton) runs two jobs, one after the other:
 
 1. **`indexes`**: the event store's large indexes and each document table's index by organization;
-2. **`event-keys`**: every older event's key, once no node of the cluster runs an older version (it
-   waits while one does: such a node would write events without keys);
-3. **`spaces`**: the organization of aggregates stored before they had one, with your `spaceOf`
+2. **`spaces`**: the organization of aggregates stored before they had one, with your `spaceOf`
    ([chapter 16](16-organizations.md)).
 
-Each is paced as below, and each is saved as it goes, in the table `online_jobs`: a node that stops
-in the middle leaves it to the next runner, which skips what is done and continues the event keys
-from the last batch. Only one runner works at a time (it holds a PostgreSQL advisory lock), and its
+Each is paced as below, and each is saved in the table `online_jobs` when it ends: a node that stops
+in the middle leaves it to the next runner, which skips what is done. Only one runner works at a time (it holds a PostgreSQL advisory lock), and its
 index builds run on a connection of their own whose timeout is `longStatementTimeout` (6 hours), not
 your pool's `socketTimeout`, which would cut a long `CREATE INDEX CONCURRENTLY` short. Ask it how it
 goes:
@@ -229,9 +226,9 @@ onlineJobs ? RetryOnlineJobs      // runs the failed jobs again
 eventStore.releaseBuildHold()     // the override: held builds start, ready or not
 ```
 
-Each job's `state` is `OnlineJobState.Waiting`, `Running`, `Done` or `Failed`, with its counts (events keyed, events left,
-spaces filled and left) and, for the event keys, the orphan events it met. With the hold, full builds
-start once the indexes and keys are there ([chapter 10](10-rebuilding-projections.md)). A failed job
+Each job's `state` is `OnlineJobState.Waiting`, `Running`, `Done` or `Failed`, with its counts (document
+tables indexed, spaces filled and left). With the hold, full builds start once the indexes are there
+([chapter 10](10-rebuilding-projections.md)). A failed job
 keeps them waiting, and `Builds.heldBy` names the failure; fix the cause and send `RetryOnlineJobs`
 (a failed job also runs again at the next start), or, if the builds should run anyway, call
 `eventStore.releaseBuildHold()`, which releases them on every node, for good. Metrics `reactivecqrs.online.job` (0 waiting, 1 running, 2 done, 3 failed) and
@@ -243,7 +240,6 @@ You can also run the jobs yourself, from a maintenance task:
 ```scala
 eventStore.buildIndexesConcurrently()          // indexes built without blocking writes
 val spaces = eventStore.backfillSpaces()       // SpaceBackfill(filled, left)
-val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, missing, orphans)
 ```
 
 - `buildIndexesConcurrently()` builds the indexes that a large table cannot get in a start-up
@@ -258,18 +254,6 @@ val keys = eventStore.backfillEventKeys()      // EventKeysBackfill(written, mis
   event; for old first events that do not know theirs, you pass a function that does
   ([chapter 16](16-organizations.md)). Run it after the first start of the new version (on a 0.12
   schema it does nothing), and before you rebuild a projection for one organization.
-- `backfillEventKeys()` gives every older event its key (its aggregate's type and space), so a
-  projection build reads only the events it needs. Run it once *every* node runs 1.0, then
-  `buildIndexesConcurrently()` again, which builds the keys' indexes. It writes each older event row once
-  more, so `events` and its indexes grow by about the table's size until VACUUM takes the old row
-  versions: have the disk for it. From then on, do not go back to an earlier version: earlier
-  versions write events without keys. Events whose aggregate has no row of its own (*orphans*, left
-  by some old delete) cannot get a key; it reports them in `orphans` and logs a warning, but they do
-  not keep it from finishing: no restore, build or reconciliation reads them (they all start from
-  the aggregate's own row), and the same holds for an orphan made later, whose events keep keys that
-  lead nowhere. Nothing deletes them: decide yourself (remove them as in "Removing an aggregate by
-  hand" below, or keep them).
-
 ### 8. Before an upgrade: the stored-data check
 
 Before you move a database to a new version, check that the new version can read everything in it.
@@ -355,7 +339,7 @@ are safe for any metrics system. What you get:
 | `reactivecqrs.message.too.large` | count | `class` | messages too large to cross nodes ([chapter 17](17-cluster.md)) |
 | `reactivecqrs.restore.failures` | gauge | | aggregates that cannot be restored, recorded (at each outbox poll) |
 | `reactivecqrs.online.job` | gauge | `job` | each online job's state: 0 waiting, 1 running, 2 done, 3 failed |
-| `reactivecqrs.online.job.progress` | gauge | `job` | how far it got: document tables indexed, events keyed, spaces filled |
+| `reactivecqrs.online.job.progress` | gauge | `job` | how far it got: document tables indexed, spaces filled |
 | `reactivecqrs.builds.held` | gauge | | full builds waiting for a `BuildHold` ([chapter 10](10-rebuilding-projections.md)); 0 once it is over |
 
 > **Tip:** three alerts cover most trouble: `reactivecqrs.outbox.given.up` above zero,
@@ -629,7 +613,7 @@ this was run at that scale):
 |---|---|---|
 | events table with its indexes | about 38 GB | 382 bytes per event, measured with 200-character notes; scale by your events' JSON |
 | writing them at full load, no subscribers | about 2.5 hours | 11 226 events/s (`load-M5`) |
-| one rebuild of an events-based projection | about 4.1 hours | 6 769 events/s (`baseline-M4`) |
+| one rebuild of an events-based projection | about 4.8 hours | 5 749 events/s (`d96-after`) |
 | draining an outbox backlog of 1 million aggregates | about 8.3 hours | 1 000 aggregates per 30-second poll |
 
 When writes outrun a projection, the bus sends it at most a **window** of 10 000 events and 64 MB not
@@ -649,7 +633,7 @@ What to do:
   of letting it catch up through the outbox at 1 000 aggregates per poll; or raise the poller's pace
   while it drains:
   `OutboxPollerOptions(redelivery = RedeliveryPolicy.Options(maxRepublishPerPoll = 5000))`.
-- **Plan rebuild windows from the rate:** about 6 800 events/s per build on the measured machine.
+- **Plan rebuild windows from the rate:** about 5 800 events/s per build on the measured machine.
 - **Budget disk from your own events:** their JSON size plus about 190 bytes per event (estimated).
 
 ### Aggregates with tens of thousands of events
@@ -808,7 +792,6 @@ Here are the changes it asks of a host, in the order you meet them.
 
 17. `buildIndexesConcurrently()`.
 18. `backfillSpaces(...)`, before you rebuild any projection for one organization.
-19. Once every node runs 1.0: `backfillEventKeys()`, then `buildIndexesConcurrently()` again.
 
 **New things you may opt into, one context at a time, whenever you like:** snapshots
 ([chapter 13](13-snapshots.md)), serial command processing ([chapter 5](05-command-flavors.md)),

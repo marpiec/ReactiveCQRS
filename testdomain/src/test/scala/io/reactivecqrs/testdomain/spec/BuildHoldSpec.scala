@@ -41,11 +41,10 @@ class BuildHoldSpec extends CommonSpec {
     val uidGenerator: ActorRef = system.actorOf(Props(new UidGeneratorActor(
       new PostgresUidGenerator("aggregates_uids_seq"), new PostgresUidGenerator("commands_uids_seq"), new PostgresUidGenerator("sagas_uids_seq"))))
 
-    /** As after an upgrade of a large installation: the events from before have no keys, the index is not built. */
+    /** As after an upgrade of a large installation: the indexes builds read by are not built. */
     def notReady(): Unit = DB.autoCommit { implicit session =>
-      sql"DELETE FROM schema_steps WHERE name = 'event_keys'".update()
-      sql"UPDATE events SET type_id = NULL, space_id = NULL".update()
       sql"DROP INDEX IF EXISTS aggregates_own_type_idx".execute()
+      sql"DROP INDEX IF EXISTS events_aggregate_version_uidx".execute()
     }
 
     class Node(hold: Option[BuildHold])(start: Projections => ActorRef) {
@@ -90,20 +89,20 @@ class BuildHoldSpec extends CommonSpec {
         val metrics = new RecordingMetrics
         ReactiveMetrics(system).use(metrics)
 
-        Given("version 1, built, on a store just upgraded: its events without keys, its index of aggregates by type missing")
+        Given("version 1, built, on a store just upgraded: its indexes of aggregates by type and of events by version missing")
         val first = new Node(None)(projections => notesProjection(projections, 1))
         val note = first.create("note", "one")
         awaitAssert(builds(first.supervisor).building mustBe None, 60.seconds, 100.millis) // the first build serves while built: built
         awaitAssert(linesOf(first.supervisor, note) mustBe Some(NoteLines("note", Vector("one"))), 10.seconds)
         first.stop()
         notReady()
-        eventStore.buildReadiness() mustBe io.reactivecqrs.core.eventstore.StoreReadiness(eventKeys = false, ownTypeIndex = false)
+        eventStore.buildReadiness() mustBe io.reactivecqrs.core.eventstore.StoreReadiness(ownTypeIndex = false, versionIndex = false)
 
         When("version 2 starts with full builds held until the store is ready")
         val second = new Node(Some(BuildHold.untilStoreReady(eventStore, checkEvery = 300.millis)))(projections => notesProjection(projections, 2))
 
         Then("its build waits, held, and says why, in Builds and in BuildStatus")
-        awaitAssert(builds(second.supervisor).heldBy.getOrElse("") must include("event keys"), 10.seconds, 100.millis)
+        awaitAssert(builds(second.supervisor).heldBy.getOrElse("") must include("events by aggregate and version"), 10.seconds, 100.millis)
         builds(second.supervisor).building.map(_.number) mustBe Some(2)
         val status = second.supervisor.askFor[BuildStatus](GetBuildStatus, 5.seconds)
         (status.phase, status.eventsSent) mustBe (("Waiting", 0L))
@@ -118,7 +117,6 @@ class BuildHoldSpec extends CommonSpec {
         second.supervisor.askFor[BuildStatus](GetBuildStatus, 5.seconds).phase mustBe "Waiting"
 
         When("the online jobs make the store ready")
-        eventStore.backfillEventKeys()
         eventStore.buildIndexesConcurrently()
         eventStore.buildReadiness().ready mustBe true
 

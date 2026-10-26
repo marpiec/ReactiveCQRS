@@ -109,6 +109,12 @@ Options considered:
 > price (D28 allowed it here, as only new nullable columns are filled); the keys' indexes are built
 > after it. The rest of this section describes the table as it was.
 
+> **Changed again (26/10/2026, D96), before either ran in production:** builds no longer read in
+> commit order, so they need no event keys at all. A build lists the aggregates of a type (in an
+> organization, of its space) through `aggregates (type_id, id) WHERE id = base_id` and reads each
+> one's events through `events (aggregate_id, version)`: option 3 above, without the merge, as the
+> projection relies on no order between aggregates. No table, no columns, no backfill.
+
 **Measured** (bench, `scenarios=commands`, two single runs each, the same day): with the extra
 insert, 9 182 and 9 406 commands/s without subscribers and 4 300 and 5 104 with two projections;
 without it, 9 076 and 9 846, and 5 185 and 5 001; p50 1.4–1.5 ms either way. The difference is

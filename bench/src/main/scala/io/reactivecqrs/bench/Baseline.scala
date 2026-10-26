@@ -237,7 +237,7 @@ object Baseline {
       Seq("heap before / peak during", s"${Heap.mb(heapBefore)} / ${Heap.mb(peak)}"),
       Seq("writing the history directly through the event store", f"${config.rebuildAggregates.toLong * config.rebuildEventsPerAggregate / seconds(writeNanos)}%.0f events/s (batches of up to 1000 events per transaction)")),
       "Two new managed projections of the counters, built from the store when they start (D57–D62): the events-based one " +
-        "in commit order, in chunks of 1 000 events applied in one transaction each; the state-only one from each counter's " +
+        "a counter at a time, read on four threads (D96), in chunks of 1 000 events applied in one transaction each; the state-only one from each counter's " +
         "final state (D62). Times count from the start of the system.")
   }
 

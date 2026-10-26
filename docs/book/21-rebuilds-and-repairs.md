@@ -63,18 +63,19 @@ while it stays open: first you carry over the shelves in order, then you open th
 walk the aisles with the catalogue and fetch the few books that were borrowed and returned while you
 were moving.
 
-1. **Bulk** (`Bulk`). The builder reads the events of the projection's aggregate types in the order
-   they were committed, a page at a time (1 000 events, at most 64 MB), cuts them into chunks (1 000
-   events, at most 16 MB), and sends each chunk to the build, which applies it in one transaction
-   together with the subscription versions it reaches. Two chunks are in flight; the next page is
-   read while they are applied. After each applied chunk the position is saved in the registry.
-   A projection whose listeners all take states only (`AggregateListener`) gets each aggregate's
-   final state instead, one item per aggregate.
+1. **Bulk** (`Bulk`). The builder delivers the projection's aggregate types in the order of its
+   listeners, each type whole before the next. For a type it reads a page of its aggregates (1 000, and
+   at most 64 MB of their events), reads each aggregate's events on several threads (four by default),
+   cuts them into chunks (1 000 events, at most 16 MB) in the aggregates' order, and sends each chunk
+   to the build, which applies it in one transaction together with the subscription versions it
+   reaches. A state listener gets each aggregate's final state instead of its events, one item per
+   aggregate. Two chunks are in flight; the next page is read while they are applied. After each
+   applied chunk the position (the type, and the aggregate reached) is saved in the registry.
 2. **Going live** (`GoingLive`). The build starts applying the bus's deliveries itself, and retries
    the failures it recorded during the pass.
 3. **Reconciliation** (`Reconciling`). The builder walks every aggregate of the types and compares
    the version the store has with the version the build has. What is missing (events committed after
-   the pass read past them, rows that committed late) is read again by version and delivered.
+   the pass read their aggregate) is read again by version and delivered.
 
 Then the build is **caught up** (`CaughtUp`). Before it may serve, two more things: the targeted
 rebuilds requested meanwhile run on it too (its bulk pass may have read those aggregates before they
@@ -91,10 +92,11 @@ The switch is a single row update: from that moment, queries go to the new build
 - its tables and sequences are dropped, its subscription versions deleted (in batches of 10 000),
   its failure records and its records of aggregates it could not restore removed.
 
-> **Under the hood:** the bulk pass reads by event id. Ids are handed out when a transaction writes,
-> not when it commits, so a row with a smaller id can appear after the pass read past its place. Such
-> a row shows up as a gap (the build has version 4, the next run starts at 6): the builder reads the
-> missing versions again by version. The reconciliation catches whatever is left. That is why a build
+> **Under the hood:** the bulk pass reads each aggregate by version, from version 1 (or its squash
+> event) up. A part of one aggregate that skips a version ends before the hole, and the next read
+> starts at it; versions missing from the store fail the aggregate's subscription there. Commands that
+> change an aggregate after the pass read it are caught by the reconciliation. The order of aggregates
+> plays no part: live delivery mixes them too (D96). That is why a build
 > ends up equal to a projection kept live, which `RebuildEquivalenceSpec` checks on random histories
 > ([ARCHITECTURE.md, section 8](../ARCHITECTURE.md)).
 
@@ -157,10 +159,10 @@ build goes on without that aggregate. Part 3 says what to do about each.
 
 On an installation upgraded from an older version, a build may run but run slowly:
 
-- until every older event has its key (`backfillEventKeys`), each bulk pass reads the whole `events`
-  table, whatever types the projection needs;
 - until the index of the aggregates' own rows by type exists (`buildIndexesConcurrently`), each
-  page of aggregates (final states, reconciliation) takes about 100 ms instead of 1 ms.
+  page of aggregates takes about 100 ms instead of 1 ms;
+- until the index of the events by aggregate and version exists (the same job), each aggregate's
+  events are read through a slower index.
 
 `eventStore.buildReadiness()` tells you which is missing. The cure is to run the online jobs
 ([chapter 18](18-production.md), step 7), and to hold builds until they are done.
@@ -181,7 +183,7 @@ explained below it.
 | an event's JSON no longer reads | `StoredDataCheck` (`unreadable`); builds: "a stored event cannot be read" | fix the class or add a converter; erase the value ([chapter 15](15-rewriting-history.md)) |
 | an event of a non-zero event type version | `StoredDataCheck` (`eventsByTypeVersion`) | migrate it by hand before 1.0 reads it (D29) |
 | a handler throws while the state is replayed | `restoreFailures()`, `RestoreCheck`, a command's `AggregateRestoreFailedException` | fix the handler; skip it in a build; remove the aggregate |
-| events whose aggregate has no row of its own (orphans) | `backfillEventKeys` (`orphans`), `StoredDataCheck` (`orphans`) | leave them (nothing reads them); remove them |
+| events whose aggregate has no row of its own (orphans) | `StoredDataCheck` (`orphans`) | leave them (nothing reads them); remove them |
 | two events of one version | `StoredDataCheck` (`repeatedVersions`) | decide which one is real and delete the other by hand |
 | a version missing from an aggregate's history | `RestoreCheck` (`gaps`), the query of [chapter 18](18-production.md); builds: "versions from N to M are missing from the store" | skip the hole in each build (`SkipFailedVersion(id, pastMissing = true)`); skip the aggregate; remove it |
 | aggregates without an organization | `backfillSpaces` (`left`), `StoredDataCheck` (`aggregatesWithoutSpace`) | a `spaceOf` function that places them ([chapter 16](16-organizations.md)) |
@@ -236,9 +238,8 @@ Then, in order of preference:
 An orphan is an event whose aggregate has no row of its own in `aggregates`, usually left by an old
 delete that removed the row and not the events. Nothing reads an orphan: a restore, a build and a
 reconciliation all start from the aggregate's row. So orphans are harmless where they are, except
-for the disk they take. `backfillEventKeys` and `StoredDataCheck` list them (how many, of which
-aggregates, their classes, first and last event); the key backfill records its step without them.
-Keep them, or remove them with the same statements as an aggregate (the `aggregates` lines then delete
+for the disk they take. `StoredDataCheck` lists them (how many, of which aggregates, their classes,
+first and last event). Keep them, or remove them with the same statements as an aggregate (the `aggregates` lines then delete
 nothing).
 
 ### Versions stored twice
@@ -248,7 +249,7 @@ written by older versions, or an import gone wrong, may still hold two events of
 aggregate. Restores then read both. `StoredDataCheck` names them (`repeatedVersions`), and until they
 are gone `buildIndexesConcurrently` keeps the old, non-unique index and logs an error. Look at both
 events, decide which one the aggregate really had, and delete the other by its event id: its
-`noop_events` row first, if it has one, as the removal statements do (its key goes with it).
+`noop_events` row first, if it has one, as the removal statements do.
 
 ### Read models that drifted
 
@@ -267,14 +268,14 @@ builds the whole projection again next door and switches.
 A small projection rebuilds in seconds and needs no plan. On a store of tens of millions of events,
 think it through first.
 
-1. **Estimate the time.** On the measured machine a build applied about 6 800 events per second
-   (events-based, every state in memory; `docs/perf/baseline-M4.md`, 17/10/2026); `docs/SCALING.md`
-   estimates about 4.1 hours for 100 million events. A state-only projection reads final states, one
+1. **Estimate the time.** On the measured machine a build applied about 5 800 events per second
+   (events-based, a document written per event; `docs/perf/d96-after.md`, 27/10/2026); `docs/SCALING.md`
+   estimates about 4.8 hours for 100 million events. A state-only projection reads final states, one
    per aggregate, and does far less work. Measure on a copy of production: your events, your listeners
    and your database decide.
 2. **Make the store ready first.** On an upgraded installation, run the online jobs and hold the
    builds until they are done (`OnlineJobs.start` and `BuildHold.untilStoreReady`, chapter 18).
-   Without event keys, every build reads every event, whatever types it needs.
+   Without their indexes, every page a build reads is slow.
 3. **Look for data that will not fit**, on the copy, with the new code: `StoredDataCheck` and
    `RestoreCheck`. Each aggregate they list will stop a build until you decide about it.
 4. **Choose what the old build does**: `ServeLive` if the new code can work on the old documents,
