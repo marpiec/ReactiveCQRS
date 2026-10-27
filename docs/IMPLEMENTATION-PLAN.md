@@ -2798,3 +2798,10 @@ Open test-infrastructure items:
 - Bench, the same night (`docs/perf/d96-before.md`, `d96-after.md`, one run each): the events-based counters 6 355 events/s
   before, 5 749 to 5 879 after, bound by the projection's writes; a final-state build on 4 threads 4 778 before, 3 593 to
   4 900 after (the same code varied up to 25%). An aggregate is read in one query, not three: nothing past its listed version.
+
+**27/10/2026: an aggregate read once, or a part at a time (D97)**
+- From a review of D96 with Neula's measurements: one read per aggregate within a build, and no build holding an aggregate's
+  whole history (1.0.5 held it on each thread). A shared pass over several projections was weighed and left out (D97).
+- Red first: `ProjectionBuilderSpec`'s "what a build holds and reads of one aggregate" (11 parts of a twenty-line note read
+  before two chunks were applied; one part and one restore per short note); `EventStoreStateSpec`'s history read, on both
+  stores. Version 1.0.6.

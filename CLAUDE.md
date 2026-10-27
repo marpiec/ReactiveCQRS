@@ -64,7 +64,7 @@ sbt "project core" "~compile"   # incremental
   Memory-backed variants (`Memory*State`, `MemoryDocumentStore`) are test doubles.
 - Publishing: `publishMavenStyle`, target `https://nexus.neula.in/...`
   (overridable via `-DsnapshotsRepo=`). Version lives in `project/Common.scala`
-  (`version := "1.0.5"`; released: 1.0.0, 18/10/2026, tag `v1.0.0`; 1.0.1 and 1.0.2, 22/10/2026; 1.0.3, 23/10/2026; 1.0.4 and 1.0.5 only in local Maven repositories so far) — bump it there,
+  (`version := "1.0.6"`; released: 1.0.0, 18/10/2026, tag `v1.0.0`; 1.0.1 and 1.0.2, 22/10/2026; 1.0.3, 23/10/2026; 1.0.4 to 1.0.6 only in local Maven repositories so far) — bump it there,
   not per-module. The README and the book give users the last release's coordinates.
 
 ---
@@ -207,7 +207,7 @@ Design of the delivery work in M2: `docs/design/M2-delivery.md`.
   each read model through `Projections.start`, whose supervisor (the `ActorRef` the host queries) runs one
   instance per build (tables named by the build, D57), builds a new version from the store with
   `ProjectionBuilder` (a type at a time in the order of the projection's listeners, each aggregate whole, read on
-  several threads, D96; chunks, then GoLive and a reconciliation) while the
+  several threads, D96; once when it fits a part, else a part at a time with its state first, D97; chunks, then GoLive and a reconciliation) while the
   active build serves, switches in one registry update (D70) and drops the retired build (also, at start, any
   build a stop left undropped). It never restarts (AR7); an instance that stops is replaced, a failing build
   alone while the active one serves, and the bus keeps what the stopped one did not take in the outbox for its

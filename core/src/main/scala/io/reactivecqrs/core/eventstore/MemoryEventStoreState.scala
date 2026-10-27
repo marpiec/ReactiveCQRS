@@ -93,6 +93,11 @@ class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState
     processEvents[AGGREGATE_ROOT](aggregateId, upToVersion)((entry, eventAggregateId, noop) =>
       eventHandler(EventInfo(entry.version, entry.event, entry.userId, entry.timestamp, entry.metadata), eventAggregateId, noop))
 
+  override def readHistory[AGGREGATE_ROOT](aggregateId: AggregateId, version: AggregateVersion)
+                                          (eventHandler: (EventInfo[AGGREGATE_ROOT], AggregateId, Boolean, Int) => Unit): Unit =
+    processEvents[AGGREGATE_ROOT](aggregateId, Some(Left(version)))((entry, eventAggregateId, noop) =>
+      eventHandler(EventInfo(entry.version, entry.event, entry.userId, entry.timestamp, entry.metadata), eventAggregateId, noop, 0))
+
   private def processEvents[AGGREGATE_ROOT](aggregateId: AggregateId, upToVersion: Option[Either[AggregateVersion, Instant]])
                                            (eventHandler: (EventStoreEntry[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit = {
     var eventsForAggregate: Vector[EventStoreEntry[AGGREGATE_ROOT]] = synchronized(eventStore.getOrElse(aggregateId, Vector())).asInstanceOf[Vector[EventStoreEntry[AGGREGATE_ROOT]]]

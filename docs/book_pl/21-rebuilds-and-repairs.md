@@ -69,7 +69,8 @@ wypożyczył i oddał w trakcie przeprowadzki.
    czterech), tnie je na porcje (1 000 zdarzeń, najwyżej 16 MB) w kolejności agregatów i wysyła każdą
    porcję do budowy, która nanosi ją w jednej transakcji razem z wersjami subskrypcji, do których
    dochodzi. Listener stanów dostaje zamiast zdarzeń końcowy stan każdego agregatu, jedną pozycję na
-   agregat. W locie są dwie porcje; następna strona jest czytana, gdy one są nanoszone. Po każdej
+   agregat. Agregat mieszczący się w porcji jest czytany raz, zdarzenia razem ze stanem; dłuższy dostaje
+   najpierw stan, a potem zdarzenia porcja po porcji, więc budowa nigdy nie trzyma całej jego historii. W locie są dwie porcje; następna strona jest czytana, gdy one są nanoszone. Po każdej
    naniesionej porcji pozycja (typ i agregat, do którego doszła) trafia do rejestru.
 2. **Przejście na żywo** (`GoingLive`). Budowa sama zaczyna nanosić dostarczenia z szyny i ponawia
    awarie, które zapisała w trakcie przebiegu.

@@ -618,7 +618,12 @@ Co pomaga:
 - **Projekcje tylko na stanach mają mniej pracy.** Gdy każdy listener projekcji jest
   `AggregateListener`, jak w `CartNames`, budowa pomija historię: przekazuje końcowy stan każdego
   agregatu, jeden raz.
-- **Migawki pomagają też budowom.** Stan pochodzi z migawki agregatu (rozdział 13) i zdarzeń po niej.
+- **Każdy agregat jest czytany raz albo po części.** Agregat, którego zdarzenia mieszczą się w jednej
+  porcji, budowa czyta raz, razem z jego stanem. Dłuższy dostaje najpierw swój stan, a potem swoje
+  zdarzenia porcja po porcji, w miarę jak projekcja je przyjmuje: budowa trzyma kilka porcji agregatu,
+  nigdy całej jego historii.
+- **Migawki pomagają też budowom.** Stan czytany osobno (projekcja tylko na stanach albo agregat
+  dłuższy niż porcja) pochodzi z migawki agregatu (rozdział 13) i zdarzeń po niej.
 - **Dwie budowy naraz** (`buildsAtOnce = 2`) to wartość domyślna i zalecana: każda budowa czyta
   magazyn i zapisuje własne tabele.
 - **Duże zdarzenia?**

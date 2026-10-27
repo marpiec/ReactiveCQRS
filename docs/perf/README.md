@@ -33,6 +33,8 @@ final-state build on 1, 2, 4 and 8 threads over `rebuildAggregates` counters of 
 (CR-8, `sbt "bench/run restore-threads-1.0.3 scenarios=restoreThreads rebuildAggregates=10000 rebuildEventsPerAggregate=50"`).
 `d96-before.md` (1.0.4, commit order) and `d96-after.md` (D96, a type at a time, each aggregate whole) run
 `scenarios=rebuild,restoreThreads` with the same sizes, the same night, to compare the two builders.
+`d97.md` repeats them with D97 (an aggregate read once, or a part at a time); its projections take events or states, not both, so
+the one read does not show there; the heap peak does.
 For example a quick check:
 
 ```bash

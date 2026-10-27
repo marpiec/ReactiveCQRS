@@ -194,9 +194,10 @@ Estimated from the measured numbers. None of this was run at this scale.
   types' aggregates once PostgreSQL had analyzed the tables: 786 ms a page over 2 000 000 events,
   5 ms since (measured), so the time no longer grows with the store's size per page. At this
   scale:
-  - Each aggregate costs one read of its events (more for one longer than a chunk), and one restore for
-    a state listener (snapshot plus tail, D30), on `restoreThreads` (4) threads, each holding a
-    connection while it reads: a store of 100 million events in 10 million aggregates is 10 million
+  - Each aggregate costs one read: of its events, of its state (snapshot plus tail, D30), or of both at
+    once when it fits a chunk (D97); one longer than a chunk costs its state and a read per chunk, and the
+    build holds a few chunks of it, never its whole history. The reads run on `restoreThreads` (4)
+    threads, each holding a connection while it reads: a store of 100 million events in 10 million aggregates is 10 million
     such reads (estimate), spread over the threads. The page of aggregates is read through
     `aggregates (type_id, id) WHERE id = base_id`, in an organization with its space, so a build of a
     few types or one organization reads only its own aggregates and their events (D96; F124's event

@@ -131,7 +131,8 @@ The builder (step 3) feeds the building instance directly from the store:
    > events read by version in parts of a chunk, with the state after the last (snapshot plus tail),
    > read on several threads, the items in the aggregates' order. A projection relies on each
    > aggregate's own order and on its listeners' order of types, never on the order of aggregates,
-   > which live delivery does not keep either. Replay states and the event keys (M6) go with it.
+   > which live delivery does not keep either. Replay states and the event keys (M6) go with it. Since D97 an
+   > aggregate that fits a part is read once, its events and state together, and a longer one a part at a time.
 2. **GoLive.** The instance applies the bus's deliveries from now on.
 3. **Reconciliation.** Every aggregate whose stored version is above the build's subscription
    version gets what it lacks, read by version: the events committed after the bulk pass read

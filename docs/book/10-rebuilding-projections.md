@@ -602,8 +602,12 @@ Things that help:
 - **State-only projections do less work.** When every listener of a projection is an
   `AggregateListener`, as in `CartNames`, the build skips the history: it hands over each
   aggregate's final state, once.
-- **Snapshots help builds too.** A state comes from the aggregate's snapshot (chapter 13) and the
-  events after it.
+- **Each aggregate is read once, or a part at a time.** An aggregate whose events fit one chunk is
+  read once, its events and its state together. A longer one gets its state first, then its events
+  a chunk at a time, as the projection takes them: a build holds a few chunks of an aggregate, never
+  its whole history.
+- **Snapshots help builds too.** A state read on its own (a state-only projection, or an aggregate
+  longer than a chunk) comes from the aggregate's snapshot (chapter 13) and the events after it.
 - **Two builds at a time** (`buildsAtOnce = 2`) is the default and the recommendation: every build
   reads the store and writes tables of its own.
 - **Large events?** `ProjectionsSettings(..., builder = BuilderSettings(pageSize = ..., chunkEvents

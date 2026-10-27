@@ -1238,7 +1238,13 @@ handlers. It runs on the blocking dispatcher and reads synchronously on its own 
    through `events (aggregate_id, version)`, in parts of at most `chunkEvents` events and `chunkBytes`, its own
    events only (a duplicate's, not its base's), undone events and undo events included (D60); a state listener
    gets its final state instead (`ReplaySource.stateAt`: snapshot plus tail, D30, D62), and so does an events
-   listener with states, after the last part. `restoreThreads` (4) threads of the builder's own read a group of
+   listener with states, after the last part. D97: an aggregate whose versions fit one part, when its listeners take
+   events and a state, is read once (`ReplaySource.reading`: `AggregateRestorer.restoreReading` folds the history
+   `EventStoreState.readHistory` gives, with each event's undo mark at the listed version and its size, handing the
+   aggregate's own events on); a longer one gets its state first (snapshot plus tail, at the listed version) and its
+   parts after, a part a step, from `work` (`AggregateRead`, `Reading`), before the page's chunks go, so the build holds
+   a part of an aggregate, never its history; an aggregate whose state cannot be restored is read whole, as before.
+   `restoreThreads` (4) threads of the builder's own read a group of
    aggregates at once, each with its connection; the items are made on the builder's thread, in the aggregates'
    order, so a page is the same whatever the threads. A page is at most `pageSize` aggregates and `pageBytes`
    (64 MB) of their events; a page its bytes cut short is not the type's last. A chunk is at most

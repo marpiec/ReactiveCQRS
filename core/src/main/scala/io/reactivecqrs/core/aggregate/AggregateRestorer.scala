@@ -69,6 +69,22 @@ class AggregateRestorer[AGGREGATE_ROOT](eventStore: EventStoreState,
     }
   }
 
+  /** D97: the aggregate at `version` from its whole history, folded as `restore` folds it without a snapshot, handing
+    * each of its own events, with its stored size, to `own` as it is read: a build gets an aggregate's events and its
+    * state from one read. No type or generation check: a build lists the aggregate by its type. */
+  def restoreReading(aggregateId: AggregateId, version: AggregateVersion)(own: (EventInfo[AGGREGATE_ROOT], Int) => Unit): Restored[AGGREGATE_ROOT] = {
+    var newest = AggregateVersion.ZERO
+    var root = initialState()
+    eventStore.readHistory[AGGREGATE_ROOT](aggregateId, version) { (event, eventAggregateId, noop, size) =>
+      if (!noop) root = applied(eventAggregateId, event.version.asInt, event.event)(eventHandlers(event.userId, event.timestamp, root)(event.event))
+      if (eventAggregateId == aggregateId) {
+        newest = event.version
+        own(event, size)
+      }
+    }
+    Restored(newest, root, None, 0)
+  }
+
   /** F214: `root` at `version` brought up to the newest version, by the own events after it alone: for an owner whose
     * history the store has not changed since it read it (the same generation: no undo, rewrite or squash since). */
   def caughtUp(aggregateId: AggregateId, version: AggregateVersion, root: AGGREGATE_ROOT): (AggregateVersion, AGGREGATE_ROOT) =

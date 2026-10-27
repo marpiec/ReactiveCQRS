@@ -69,7 +69,8 @@ were moving.
    cuts them into chunks (1 000 events, at most 16 MB) in the aggregates' order, and sends each chunk
    to the build, which applies it in one transaction together with the subscription versions it
    reaches. A state listener gets each aggregate's final state instead of its events, one item per
-   aggregate. Two chunks are in flight; the next page is read while they are applied. After each
+   aggregate. An aggregate that fits a chunk is read once, events and state together; a longer one
+   gets its state first and its events a chunk at a time, so the build never holds its whole history. Two chunks are in flight; the next page is read while they are applied. After each
    applied chunk the position (the type, and the aggregate reached) is saved in the registry.
 2. **Going live** (`GoingLive`). The build starts applying the bus's deliveries itself, and retries
    the failures it recorded during the pass.

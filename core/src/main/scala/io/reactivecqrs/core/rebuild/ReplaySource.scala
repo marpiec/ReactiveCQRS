@@ -13,6 +13,16 @@ class ReplaySource(val context: AggregateContext[Any], eventStore: EventStoreSta
 
   /** The aggregate's state at `version`, or at its newest version; null once it was deleted. */
   def stateAt(id: AggregateId, version: Option[AggregateVersion]): Any = restorer.restore(id, version.map(Left(_))).root
+
+  /** The aggregate's newest version and its state then (ZERO and the initial state when nothing is stored). */
+  def newest(id: AggregateId): (AggregateVersion, Any) = {
+    val restored = restorer.restore(id)
+    (restored.version, restored.root)
+  }
+
+  /** D97: the aggregate's state at `version` from one read of its history, which hands `own` each of its own events with
+    * its stored size; null once it was deleted. */
+  def reading(id: AggregateId, version: AggregateVersion)(own: (EventInfo[Any], Int) => Unit): Any = restorer.restoreReading(id, version)(own).root
 }
 
 object ReplaySource {

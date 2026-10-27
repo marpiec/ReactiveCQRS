@@ -98,7 +98,9 @@ object ProjectionBuilder {
   *     of the type's aggregates, then their events and states on `restoreThreads` threads; the projection gets them in
   *     the aggregates' order. Nothing in it follows the order of events across aggregates: a projection may depend only
   *     on each aggregate's own order and on the order of its listeners' types. Meanwhile the projection acknowledges the
-  *     bus's deliveries without applying them (`BuildFromStore`): their events are in the store.
+  *     bus's deliveries without applying them (`BuildFromStore`): their events are in the store. D97: an aggregate that
+  *     fits one part is read once, its events and its state together; a longer one is read a part at a time, its state
+  *     first, so the build never holds an aggregate's whole history.
   *  2. `GoLive`: from then on the projection applies the bus's deliveries.
   *  3. The reconciliation compares every aggregate's version with the projection's and delivers what it lacks: the events
   *     committed after the bulk pass read their aggregate.
@@ -144,9 +146,11 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
   private val ready = mutable.Queue[(ApplyChunk, Reached)]()
   private val inFlight = mutable.Queue[(ApplyChunk, Reached)]()
   // F223: what the gaps and the reconciliation lack (the gaps first), read a chunk's worth of aggregates at a time when
-  // nothing else is ready, so memory holds a few chunks, not every missing event of a page. Its chunks, and those to send
-  // again, go before a bulk page's (`first`); they save no position.
-  private val work = mutable.Queue[() => Seq[ChunkItem]]()
+  // nothing else is ready, so memory holds a few chunks, not every missing event of a page; D97: and the aggregates of a
+  // bulk page longer than a part, a part at a time. Its chunks, and those to send again, go before a bulk page's
+  // (`first`); they save no position, and a page's chunks wait until it is empty, so no position saved passes an
+  // aggregate not yet sent whole.
+  private val work = mutable.Queue[Work]()
   private val first = mutable.Queue[(ApplyChunk, Reached)]()
   private var chunkIds = 0L
   private var outstanding = 0 // items the projection handed to its queues, not answered yet
@@ -302,8 +306,9 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
     var read = true
     while (read && work.nonEmpty && events < settings.chunkEvents && bytes < settings.chunkBytes) {
       try {
-        val made = reads(work.head())
-        work.dequeue()
+        val head = work.head
+        val made = reads(head.next())
+        if (head.done) work.dequeue()
         items ++= made
         events += made.map(item => math.max(item.events.size, 1)).sum
         bytes += made.map(_.bytes).sum
@@ -337,16 +342,17 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
   // Reads one page of the current pass into `ready`; false when the store failed, to be tried again later. D96: the bulk
   // pass reads its types one after another; a type is done at its last page.
   private def readNextPage(): Boolean = try {
-    val (items, reached, count, cut) = phase match {
-      case Bulk if typeIndex >= plan.types.size => (Nil, position, 0, false)
+    val (items, long, reached, count, cut) = phase match {
+      case Bulk if typeIndex >= plan.types.size => (Nil, Nil, position, 0, false)
       case Bulk =>
         val aggregates = reads(eventStore.aggregatesOf(Seq(plan.types(typeIndex)), AggregateId(position), settings.pageSize, scope))
         replays(wholeAggregates(aggregates))
       case _ =>
         val (made, last, read) = reads(behind(eventStore.aggregatesOf(plan.types, AggregateId(position), settings.pageSize, scope)))
-        (made, last, read, false)
+        (made, Nil, last, read, false)
     }
     val lastPage = count < settings.pageSize && !cut // a page its bytes ended is short, but not the last (F126)
+    work ++= long
     chunked(items, reached).foreach { case (chunk, at) => ready.enqueue(chunk -> Reached(typeIndex, at)) }
     position = reached
     if (phase == Bulk && lastPage && typeIndex + 1 < plan.types.size) {
@@ -368,29 +374,34 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
 
   // ************** The bulk pass
 
-  // D96: each aggregate whole, for each of its listener kinds (`itemsFrom` from its first version): its final state for a
-  // state listener (D62), its events in parts for the others, with what cannot be read failing its subscription. Read
-  // on `restoreThreads` threads, a group at a time, until the items reach `pageBytes`; the items are made here, in the
-  // aggregates' order. Returns the items, the last aggregate read, how many were read and whether the bytes ended the page.
-  private def wholeAggregates(aggregates: Seq[StoredAggregate]): (Seq[(ChunkItem, Long)], Long, Int, Boolean) = {
+  // D96: each aggregate whole, for each of its listener kinds, from its first version: its final state for a state
+  // listener (D62), its events in parts for the others, with what cannot be read failing its subscription. Read on
+  // `restoreThreads` threads, a group at a time, until the items reach `pageBytes`; the items are made here, in the
+  // aggregates' order. D97: an aggregate longer than one part goes to `work` after its first part, to be read a part at
+  // a time before the page's chunks go. Returns the items, those aggregates, the last aggregate read, how many were read
+  // and whether the bytes ended the page.
+  private def wholeAggregates(aggregates: Seq[StoredAggregate]): (Seq[(ChunkItem, Long)], Seq[Work], Long, Int, Boolean) = {
     val items = Vector.newBuilder[(ChunkItem, Long)]
+    val long = Vector.newBuilder[Work]
     var bytes = 0L
     var done = 0
     val groups = aggregates.grouped(math.max(settings.restoreThreads, 1))
     while (groups.hasNext && bytes < settings.pageBytes) {
-      val group = groups.next()
-      val read = inParallel(group)(a => plan.kindsOf(a.aggregateType).map(kind =>
-        kind -> Try(readItems(a.aggregateType, a.aggregateId, kind, AggregateVersion(1), a.squashedUpTo, Some(a.version)))))
-      group.zip(read).foreach { case (a, byKind) =>
-        val made = byKind.flatMap { case (kind, result) => settled(a.aggregateType, a.aggregateId, kind, AggregateVersion(1), result) }
-        // A chunk with only some of an aggregate's items reaches the aggregate before it: a build resumed from it reads
-        // this one again whole, and the projection skips the versions it has.
-        items ++= made.init.map(_ -> (a.aggregateId.asLong - 1)) ++ made.lastOption.map(_ -> a.aggregateId.asLong)
+      val group = groups.next().map(a => new AggregateRead(a.aggregateType, a.aggregateId, plan.kindsOf(a.aggregateType), AggregateVersion(1),
+        a.squashedUpTo, Some(a.version)))
+      val stepped = inParallel(group)(read => read.at -> Try(read.step()))
+      group.zip(stepped).foreach { case (read, (at, step)) =>
+        val made = settledStep(read, at, step)
+        if (read.done) {
+          // A chunk with only some of an aggregate's items reaches the aggregate before it: a build resumed from it reads
+          // this one again whole, and the projection skips the versions it has.
+          items ++= made.init.map(_ -> (read.id.asLong - 1)) ++ made.lastOption.map(_ -> read.id.asLong)
+        } else long += new Reading(read, made)
         bytes += made.map(_.bytes).sum
       }
       done += group.size
     }
-    (items.result(), aggregates.take(done).lastOption.map(_.aggregateId.asLong).getOrElse(position), done, done < aggregates.size)
+    (items.result(), long.result(), aggregates.take(done).lastOption.map(_.aggregateId.asLong).getOrElse(position), done, done < aggregates.size)
   }
 
   private def inParallel[A, B](as: Seq[A])(read: A => B): Seq[B] = restoring match {
@@ -441,18 +452,13 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
       ofType.collect { case a if a.version > applied(a.aggregateId) => (a, kind, applied(a.aggregateId)) }
     }
     missing.foreach { case (aggregate, kind, applied) =>
-      work.enqueue(() => itemsFrom(aggregate.aggregateType, aggregate.aggregateId, kind, AggregateVersion(applied.asInt + 1), aggregate.squashedUpTo,
-        Some(aggregate.version)))
+      work.enqueue(new Reading(new AggregateRead(aggregate.aggregateType, aggregate.aggregateId, Seq(kind), AggregateVersion(applied.asInt + 1),
+        aggregate.squashedUpTo, Some(aggregate.version))))
     }
     (Nil, aggregates.lastOption.map(_.aggregateId.asLong).getOrElse(position), aggregates.size)
   }
 
-  // The versions of one aggregate from `from` on (`readItems`), made into items here.
-  private def itemsFrom(aggregateType: AggregateType, id: AggregateId, kind: SubscriptionType, from: AggregateVersion,
-                        squashedUpTo: Option[AggregateVersion], version: Option[AggregateVersion] = None): Seq[ChunkItem] =
-    settled(aggregateType, id, kind, from, Try(readItems(aggregateType, id, kind, from, squashedUpTo, version)))
-
-  // What `readItems` read, on the builder's thread: versions missing from the store fail the subscription there (CR-6);
+  // What a read gave, on the builder's thread: versions missing from the store fail the subscription there (CR-6);
   // what cannot be read at all fails it too, recorded (CR-4); a store that cannot be read now throws, so the page or the
   // gap is read again later (F117).
   private def settled(aggregateType: AggregateType, id: AggregateId, kind: SubscriptionType, from: AggregateVersion, read: Try[Read]): Seq[ChunkItem] =
@@ -464,6 +470,15 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
       case Failure(e) => throw e
     }
 
+  // A step of an `AggregateRead`, settled for each of its kinds; one that failed for good ends the aggregate there.
+  private def settledStep(read: AggregateRead, at: AggregateVersion, step: Try[Seq[(SubscriptionType, Try[Read])]]): Seq[ChunkItem] = step match {
+    case Success(byKind) => byKind.flatMap { case (kind, result) => settled(read.aggregateType, read.id, kind, at, result) }
+    case Failure(e) if NonFatal(e) && !Errors.transient(e) =>
+      read.finish()
+      read.kinds.map(kind => unreadableItem(read.aggregateType, read.id, kind, at, e))
+    case Failure(e) => throw e
+  }
+
   // F82: the subscription fails at `version`, visibly, recorded (CR-4).
   private def unreadableItem(aggregateType: AggregateType, id: AggregateId, kind: SubscriptionType, version: AggregateVersion, e: Throwable): ChunkItem = {
     unreadable += 1
@@ -472,15 +487,220 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
     ChunkItem(kind, aggregateType, id, version, version, Nil, None, unreadable = Some(failureText(e)))
   }
 
-  // What `readItems` read of one aggregate's versions: the items, the versions missing from the store, and a version
-  // whose event cannot be read, with why.
+  // What a read of one aggregate's versions gave: the items, the versions missing from the store, and a version whose
+  // event cannot be read, with why.
   private case class Read(items: Seq[ChunkItem], missing: Option[(AggregateVersion, AggregateVersion)] = None,
                           unreadableAt: Option[(AggregateVersion, Throwable)] = None)
 
-  // The versions of one aggregate from `from` on, read by version, and the versions missing from the store; touches
-  // nothing of the builder's, so it runs on the bulk pass's threads too. A range from below the squash point starts at
-  // the squash event (D51), which starts the subscription (F98). A state listener gets the state at `version` (read when
-  // not given) as a whole state, which needs nothing before it.
+  // ************** Reading an aggregate (D97)
+
+  // What `work` holds: the items it gives next, until it is done. A read that fails for a moment leaves it as it was, to
+  // be read again.
+  private trait Work {
+    def next(): Seq[ChunkItem]
+    def done: Boolean
+  }
+
+  private final class Once(read: () => Seq[ChunkItem]) extends Work {
+    private var taken = false
+    def next(): Seq[ChunkItem] = {
+      val made = read()
+      taken = true
+      made
+    }
+    def done: Boolean = taken
+  }
+
+  // An aggregate read a part at a time, its items made on the builder's thread; `firstItems` are those of the step taken
+  // on the bulk pass's threads.
+  private final class Reading(read: AggregateRead, firstItems: Seq[ChunkItem] = Nil) extends Work {
+    private var pending = firstItems
+    def next(): Seq[ChunkItem] =
+      if (pending.nonEmpty) {
+        val made = pending
+        pending = Nil
+        made
+      } else {
+        val at = read.at
+        settledStep(read, at, Try(read.step()))
+      }
+    def done: Boolean = pending.isEmpty && read.done
+  }
+
+  // Versions a projection lacks, read from `from` to the newest (`fill`).
+  private final class GapFill(aggregateType: AggregateType, id: AggregateId, from: AggregateVersion) extends Work {
+    private var reading = Option.empty[Reading]
+    private var gave = false
+    def next(): Seq[ChunkItem] = {
+      val current = reading.getOrElse {
+        val created = new Reading(new AggregateRead(aggregateType, id, plan.kindsOf(aggregateType), from, eventStore.squashedVersion(id), None))
+        reading = Some(created)
+        created
+      }
+      val made = current.next()
+      gave = gave || made.nonEmpty
+      // CR-4: an aggregate removed meanwhile (by an operator, chapter 18) has nothing to give: a retry of its failure
+      // clears it, as the owner's answer does after the build.
+      if (!gave && current.done && eventStore.storedVersion(id).isEmpty) target ! NothingToRepublish(id, AggregateVersion.ZERO)
+      made
+    }
+    def done: Boolean = reading.exists(_.done)
+  }
+
+  private object LongerThanAPart extends RuntimeException("longer than a part", null, false, false)
+
+  // One aggregate's versions from `from` on, for some of its listener kinds, read a part at a time (`step`), so a build
+  // holds a part of an aggregate, never its whole history. It touches nothing of the builder's, so the bulk pass steps
+  // aggregates on threads of its own.
+  //  - The first step reads an aggregate that fits one part whole: when its listeners take its events and a state, from
+  //    one read of its history, which gives both (`ReplaySource.reading`).
+  //  - Otherwise the state comes first, at the version the parts reach (as listed, or the newest), and the parts follow by
+  //    version, each carrying it, as an owner's re-published parts do. A state that cannot be restored leaves the
+  //    aggregate to `readItems` (whole, as before D97), so its subscription fails where it did.
+  // A range from below the squash point starts at the squash event (D51), which starts the subscription (F98). A step
+  // that fails for a moment (F117) can be taken again: what it changed still holds.
+  private final class AggregateRead(val aggregateType: AggregateType, val id: AggregateId, val kinds: Seq[SubscriptionType],
+                                    from: AggregateVersion, squashedUpTo: Option[AggregateVersion], listed: Option[AggregateVersion]) {
+    private val eventKinds = kinds.filter(_ != SubscriptionType.AGGREGATES)
+    private val wantsState = kinds.exists(_ != SubscriptionType.EVENTS)
+    private var squashed = squashedUpTo
+    private var next = squashed.filter(_ > from).getOrElse(from)
+    private var state = Option.empty[(AggregateVersion, Option[Any])] // the version the parts reach, and the state then
+    private var started = false
+    private var stateGiven = false
+    private var finished = false
+
+    /** The version the next step starts at. */
+    def at: AggregateVersion = next
+    def done: Boolean = finished
+    def finish(): Unit = finished = true
+
+    def step(): Seq[(SubscriptionType, Try[Read])] = {
+      val whole = if (started) None else readOnce()
+      started = true
+      whole match {
+        case Some(read) =>
+          finished = true
+          read
+        case None if wantsState && state.isEmpty && !stateFirst() =>
+          val read = kinds.map(kind => kind -> Try(readItems(aggregateType, id, kind, from, squashedUpTo, listed)))
+          read.collectFirst { case (_, Failure(e)) if Errors.transient(e) => throw e }
+          finished = true
+          read
+        case None => readPart()
+      }
+    }
+
+    // An aggregate listed at a version that fits one part, whose listeners take events and a state: one read. None to
+    // read it by parts: longer than a part in bytes, squashed since it was listed, missing versions (CR-6), or an event
+    // that cannot be read or handled.
+    private def readOnce(): Option[Seq[(SubscriptionType, Try[Read])]] =
+      listed.filter(v => wantsState && eventKinds.nonEmpty && v >= next && v.asInt - next.asInt < settings.chunkEvents).flatMap { v =>
+        val own = Vector.newBuilder[(EventInfo[Any], Int)]
+        var bytes = 0L
+        Try(sources(aggregateType).reading(id, v) { (event, size) =>
+          if (event.version >= next) {
+            own += event -> size
+            bytes += size
+            if (bytes > settings.chunkBytes) throw LongerThanAPart
+          }
+        }) match {
+          case Failure(e) if (e ne LongerThanAPart) && Errors.transient(e) => throw e
+          case Failure(_) => None
+          case Success(root) =>
+            val read = own.result()
+            if (read.map(_._1.version.asInt) != (next.asInt to v.asInt)) None
+            else Some(kinds.map {
+              case SubscriptionType.AGGREGATES => SubscriptionType.AGGREGATES -> Success(Read(Seq(stateItem(v, Option(root)))))
+              case kind => kind -> Success(Read(Seq(partItem(kind, read, Option(root)))))
+            })
+        }
+      }
+
+    // The state the parts carry, first: false when it cannot be restored.
+    private def stateFirst(): Boolean = Try(listed match {
+      case Some(v) => v -> Option(sources(aggregateType).stateAt(id, Some(v)))
+      case None =>
+        val (v, root) = sources(aggregateType).newest(id)
+        v -> Option(root)
+    }) match {
+      case Success(read) =>
+        state = Some(read)
+        true
+      case Failure(e) if Errors.transient(e) => throw e
+      case Failure(_) => false
+    }
+
+    // The state for a state listener (once), and the next part for each kind that takes events; the versions missing
+    // from the store, or an event that cannot be read, end the aggregate.
+    private def readPart(): Seq[(SubscriptionType, Try[Read])] = {
+      val reach = state.map(_._1).orElse(listed)
+      val forState = if (stateGiven || !kinds.contains(SubscriptionType.AGGREGATES)) Nil
+        else Seq(SubscriptionType.AGGREGATES -> Success(Read(state.toSeq.collect { case (v, root) if v > AggregateVersion.ZERO => stateItem(v, root) })))
+      val forEvents = if (eventKinds.isEmpty) {
+        finished = true
+        Nil
+      } else {
+        val (part, missing, unreadableAt) = nextPart(reach)
+        finished = part.isEmpty || missing.isDefined || unreadableAt.isDefined || reach.exists(next > _)
+        eventKinds.map(kind => kind -> Success(Read(part.toSeq.map(read => partItem(kind, read, state.flatMap(_._2))), missing, unreadableAt)))
+      }
+      stateGiven = true
+      forState ++ forEvents
+    }
+
+    // From `next`: at most a chunk's events and bytes (F126, F140), and none past `reach`, whose state the parts carry.
+    private def nextPart(reach: Option[AggregateVersion]): (Option[Seq[(EventInfo[Any], Int)]], Option[(AggregateVersion, AggregateVersion)],
+      Option[(AggregateVersion, Throwable)]) = {
+      var result = Option.empty[(Option[Seq[(EventInfo[Any], Int)]], Option[(AggregateVersion, AggregateVersion)], Option[(AggregateVersion, Throwable)])]
+      while (result.isEmpty) {
+        if (reach.exists(_ < next)) result = Some((None, None, None))
+        else {
+          val upTo = AggregateVersion((next.asInt.toLong + settings.chunkEvents - 1).min(reach.map(_.asInt.toLong).getOrElse(Int.MaxValue.toLong)).toInt)
+          var unreadableAt = Option.empty[(AggregateVersion, Throwable)]
+          val read = try eventStore.readPart[Any](id, next, upTo, settings.chunkBytes) catch {
+            case NonFatal(e) if !Errors.transient(e) =>
+              // F82: an event that cannot be read ends the range: those before it are read one at a time and delivered,
+              // and the subscription fails at it.
+              val (readable, at) = readableBefore(id, next, upTo)
+              unreadableAt = Some(at.getOrElse(throw e)) // each one readable alone: the part's failure, not an event's
+              readable
+          }
+          // A part that skips a version (a row its read did not see yet) ends before the hole; the next read starts at it.
+          val part = read.zipWithIndex.takeWhile { case ((event, _), i) => event.version.asInt == next.asInt + i }.map(_._1)
+          val firstStored = if (unreadableAt.isDefined) part.headOption.map(_._1.version) else read.headOption.map(_._1.version).orElse(storedFrom(id, next))
+          if (unreadableAt.isEmpty && firstStored.forall(_ > next)) squashed = eventStore.squashedVersion(id)
+          firstStored match {
+            case _ if unreadableAt.isEmpty && squashed.exists(_ > next) => next = squashed.get // a squash moved the start since: read from it
+            case None => result = Some((None, None, unreadableAt))
+            case Some(stored) if stored > next =>
+              // CR-6, D92: versions below one that is stored are never committed late (one owner writes them in order),
+              // so `next` to `stored - 1` are missing from the store.
+              result = Some((None, Some((next, AggregateVersion(stored.asInt - 1))), None))
+            case Some(_) if part.isEmpty => () // committed since the part was read: read it again
+            case Some(_) =>
+              next = part.last._1.version.increment
+              result = Some((Some(part), None, unreadableAt))
+          }
+        }
+      }
+      result.get
+    }
+
+    private def partItem(kind: SubscriptionType, read: Seq[(EventInfo[Any], Int)], root: Option[Any]): ChunkItem = {
+      val events = read.map(_._1)
+      item(kind, aggregateType, id, events, if (kind == SubscriptionType.AGGREGATES_WITH_EVENTS) root else None, squashed.contains(events.head.version))
+        .copy(bytes = read.map(_._2.toLong).sum)
+    }
+
+    private def stateItem(version: AggregateVersion, root: Option[Any]): ChunkItem =
+      ChunkItem(SubscriptionType.AGGREGATES, aggregateType, id, from, version, Nil, root, startsSequence = true)
+  }
+
+  // An aggregate whose state cannot be restored, as it was read before D97: its versions from `from` on, whole, and the
+  // versions missing from the store. A state listener gets the state at `version` (read when not given) as a whole
+  // state, which needs nothing before it; its subscription, and that of the events listener with states, fail where the
+  // state cannot be restored.
   private def readItems(aggregateType: AggregateType, id: AggregateId, kind: SubscriptionType, from: AggregateVersion,
                         squashedUpTo: Option[AggregateVersion], version: Option[AggregateVersion]): Read =
     if (kind == SubscriptionType.AGGREGATES) {
@@ -577,22 +797,15 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
 
   // Missing versions are read by version and sent before anything else. CR-6: a gap asked for more often than chunks can
   // be in flight with it, without moving on, ends as a failure, so no fill is repeated for ever; versions missing from
-  // the store end so at the first read (`itemsFrom`).
+  // the store end so at the first read.
   private def fill(gaps: Seq[(AggregateType, AggregateId, AggregateVersion)]): Unit = if (gaps.nonEmpty) {
     gapsFilled += gaps.size
     gaps.distinct.reverseIterator.foreach { case (aggregateType, id, from) =>
       val asked = fills.getOrElse((id, from), 0) + 1
       fills((id, from)) = asked
-      if (asked > settings.chunksInFlight + 2) work.prepend(() => plan.kindsOf(aggregateType).map(kind => missingItem(kind, aggregateType, id, from, from,
-        MissingVersions.Prefix + from.asInt + " were asked for " + asked + " times in this build without arriving")))
-      else work.prepend(() => {
-        val squashed = eventStore.squashedVersion(id)
-        val items = plan.kindsOf(aggregateType).flatMap(kind => itemsFrom(aggregateType, id, kind, from, squashed))
-        // CR-4: an aggregate removed meanwhile (by an operator, chapter 18) has nothing to give: a retry of its failure
-        // clears it, as the owner's answer does after the build.
-        if (items.isEmpty && eventStore.storedVersion(id).isEmpty) target ! NothingToRepublish(id, AggregateVersion.ZERO)
-        items
-      })
+      if (asked > settings.chunksInFlight + 2) work.prepend(new Once(() => plan.kindsOf(aggregateType).map(kind => missingItem(kind, aggregateType, id, from, from,
+        MissingVersions.Prefix + from.asInt + " were asked for " + asked + " times in this build without arriving"))))
+      else work.prepend(new GapFill(aggregateType, id, from))
     }
   }
 

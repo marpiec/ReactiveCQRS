@@ -79,6 +79,11 @@ abstract class EventStoreState {
   def readAndProcessEventsWithMetadata[AGGREGATE_ROOT](aggregateId: AggregateId, version: Option[Either[AggregateVersion, Instant]])
                                                       (eventHandler: (EventInfo[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit
 
+  /** D97: like `readAndProcessEventsWithMetadata` up to `version`, with each event's stored size in bytes (0 where the
+    * store keeps no JSON): a build makes an aggregate's events and its state from this one read. */
+  def readHistory[AGGREGATE_ROOT](aggregateId: AggregateId, version: AggregateVersion)
+                                 (eventHandler: (EventInfo[AGGREGATE_ROOT], AggregateId, Boolean, Int) => Unit): Unit
+
   /** The aggregate's own events after version `after`, up to `upTo` (or its newest), in order, each with whether it
     * was undone as of that version: the tail after a snapshot. A duplicate's base events all come before its own. */
   def readAndProcessOwnEvents[AGGREGATE_ROOT](aggregateId: AggregateId, after: AggregateVersion, upTo: Option[AggregateVersion])

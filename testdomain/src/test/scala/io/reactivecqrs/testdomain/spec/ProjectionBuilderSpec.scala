@@ -167,11 +167,14 @@ class FlakyRangeEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNames
     if (failures.getAndDecrement() > 0) throw new java.sql.SQLException("connection lost", "08006") else super.readPart(aggregateId, from, to, maxBytes)
 }
 
-/** The store, counting the ranges of versions read. */
+/** The store, counting the ranges of versions read, in all and per aggregate. */
 class CountingPartsEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNamesState) extends PostgresEventStoreState(mpjsons, typesNamesState) {
   val parts = new AtomicInteger()
+  private val readOf = new ConcurrentLinkedQueue[AggregateId]()
+  def partsOf(id: AggregateId): Int = readOf.toArray.count(_ == id)
   override def readPart[AGGREGATE_ROOT](aggregateId: AggregateId, from: AggregateVersion, to: AggregateVersion, maxBytes: Long): Seq[(EventInfo[AGGREGATE_ROOT], Int)] = {
     parts.incrementAndGet()
+    readOf.add(aggregateId)
     super.readPart(aggregateId, from, to, maxBytes)
   }
 }
@@ -182,13 +185,23 @@ class StaleSquashEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesName
     super.aggregatesOf(types, after, limit, scope).map(_.copy(squashedUpTo = None))
 }
 
-/** Counts the states it restores, per aggregate. */
+/** Counts the states it restores apart, and those it restores reading the events too (D97), per aggregate. */
 class CountingReplaySource(context: AggregateContext[_], eventStore: EventStoreState) extends ReplaySource(context.asInstanceOf[AggregateContext[Any]], eventStore) {
   private val restored = new ConcurrentLinkedQueue[AggregateId]()
+  private val read = new ConcurrentLinkedQueue[AggregateId]()
   def restoresOf(id: AggregateId): Int = restored.toArray.count(_ == id)
+  def readingsOf(id: AggregateId): Int = read.toArray.count(_ == id)
   override def stateAt(id: AggregateId, version: Option[AggregateVersion]): Any = {
     restored.add(id)
     super.stateAt(id, version)
+  }
+  override def newest(id: AggregateId): (AggregateVersion, Any) = {
+    restored.add(id)
+    super.newest(id)
+  }
+  override def reading(id: AggregateId, version: AggregateVersion)(own: (EventInfo[Any], Int) => Unit): Any = {
+    read.add(id)
+    super.reading(id, version)(own)
   }
 }
 
@@ -681,6 +694,75 @@ class ProjectionBuilderSpec extends CommonSpec {
       Then("its state was restored once, and the view is the live one")
       counting.restoresOf(note) mustBe 1
       documents(rebuiltViews, Seq(note)) mustBe documents(liveViews, Seq(note))
+    }
+  }
+
+  Feature("What a build holds and reads of one aggregate (D97)") {
+
+    Scenario("a long aggregate is read a part at a time, as its chunks are applied, not whole") {
+      Given("a note with twenty lines")
+      val live = new Live(Nil)
+      val note = live.create("read in parts")
+      (1 to 20).foreach(v => live.add(note, v, "line " + v))
+
+      def partsReadWhileTwoChunksWait(identity: String, target: ActorRef): Int = {
+        val plan = BuildPlan(target.askFor[Listeners](GetListeners, 5.seconds).subscriptions)
+        system.stop(target)
+        val counting = new CountingPartsEventStore(mpjsons, typesNamesState)
+        val projection = TestProbe()
+        val builder = onBlocking(Props(new ProjectionBuilder(projection.ref, identity, plan, counting, subscriptions, sources, new MemoryBuildPositions,
+          TestProbe().ref, BuilderSettings(pageSize = 50, chunkEvents = 2, chunksInFlight = 2), targeted = Some(AggregateScope.Only(Set(note))))))
+        projection.fishForMessage(30.seconds) { case _: ApplyChunk => true; case _ => false }
+        projection.expectMsgType[ApplyChunk](5.seconds)
+        projection.expectNoMessage(1.second)
+        system.stop(builder)
+        counting.partsOf(note)
+      }
+
+      When("a log and a view are built in chunks of two events, two in flight, and the projection applies none of them")
+      val forLog = partsReadWhileTwoChunksWait("m4b-parts-log", onBlocking(Props(new NoteEventsLog("m4b-parts-log", subscriptions, logs("m4b_parts_log")))))
+      val forView = partsReadWhileTwoChunksWait("m4b-parts-view", onBlocking(Props(new NoteViews("m4b-parts-view", subscriptions, views("m4b_parts_view")))))
+
+      Then("each builder read about the two chunks' parts, not the note's eleven")
+      forLog must be <= 4
+      forView must be <= 4
+    }
+
+    Scenario("a short aggregate whose listener takes its events and its state is read once") {
+      Given("notes with undo, duplication, deletion and a squash, and their live views")
+      val liveViews = views("m4b_once_live")
+      val live = new Live(Seq(onBlocking(Props(new NoteViews("m4b-once-live", subscriptions, liveViews)))))
+      val plain = live.create("once")
+      (1 to 2).foreach(v => live.add(plain, v, "line " + v))
+      val undone = live.create("once undone")
+      live.add(undone, 1, "a")
+      live.send(UndoBuildNote(userId, undone, AggregateVersion(2), 1))
+      val copy = live.send(DuplicateBuildNote(userId, plain, AggregateVersion(3))).aggregateId
+      live.add(copy, 1, "copied")
+      val deleted = live.create("once deleted")
+      live.send(DeleteBuildNote(userId, deleted, AggregateVersion(1)))
+      val squashed = live.create("once squashed")
+      live.add(squashed, 1, "x")
+      val all = Seq(plain, undone, copy, deleted, squashed)
+      live.delivered(all)
+      live.notes.askFor[SquashResponse](SquashAggregate(squashed, AggregateVersion(2))) mustBe AggregateSquashed(squashed, AggregateVersion(2))
+      live.add(squashed, 2, "y")
+      live.delivered(all)
+
+      When("the views are built")
+      val counting = new CountingPartsEventStore(mpjsons, typesNamesState)
+      val source = new CountingReplaySource(noteContext, eventStore)
+      val rebuilt = views("m4b_once_rebuilt")
+      build(onBlocking(Props(new NoteViews("m4b-once-rebuilt", subscriptions, rebuilt))), "m4b-once-rebuilt", store = counting,
+        replaySources = Map(AggregateType.of[BuildNote] -> source))
+
+      Then("no part was read and no state restored apart: one read of each note gave both")
+      all.map(counting.partsOf) mustBe all.map(_ => 0)
+      all.map(source.restoresOf) mustBe all.map(_ => 0)
+      all.map(source.readingsOf) mustBe all.map(_ => 1)
+
+      And("the views are the live ones")
+      documents(rebuilt, all) mustBe documents(liveViews, all)
     }
   }
 

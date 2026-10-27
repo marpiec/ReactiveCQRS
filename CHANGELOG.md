@@ -4,6 +4,12 @@ Notable changes of ReactiveCQRS, newest first. Dates are DD/MM/YYYY.
 
 ## Unreleased
 
+- **Changed: a build reads an aggregate once, or a part at a time** (D97, chapters 10 and 21). An aggregate whose events
+  fit a chunk is read once, its events and its state together (1.0.5 read the events, then the whole history again for
+  the state). A longer one gets its state first and its events a chunk at a time, as the projection takes them: 1.0.5
+  held each aggregate's whole history while it read it, on each of its threads. **New:**
+  `EventStoreState.readHistory`, `AggregateRestorer.restoreReading`, `ReplaySource.reading` and `newest`.
+
 - **Breaking for users on Java 21 to 24: the library now needs a Java 25 runtime** (D94, chapter 2). It depends on
   mpjsons 0.7.8 (was 0.7.0), the version Neula runs it with; mpjsons 0.7.6 and later need Java 25. The library's own
   classes are still compiled for Java 21. The stored JSON is unchanged (`StoredFormatsSpec`). E2's image runs on

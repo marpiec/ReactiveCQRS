@@ -211,18 +211,24 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
   // were then, and its base's events as for any version.
   override def readAndProcessEvents[AGGREGATE_ROOT](aggregateId: AggregateId, versionOrInstant: Option[Either[AggregateVersion, Instant]])
                                                    (eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean) => Unit): Unit =
-    processEvents[AGGREGATE_ROOT](aggregateId, versionOrInstant, withMetadata = false) { (userId, time, event, eventAggregateId, version, noop, _) =>
+    processEvents[AGGREGATE_ROOT](aggregateId, versionOrInstant, withMetadata = false) { (userId, time, event, eventAggregateId, version, noop, _, _) =>
       eventHandler(userId, time, event, eventAggregateId, version, noop)
     }
 
   override def readAndProcessEventsWithMetadata[AGGREGATE_ROOT](aggregateId: AggregateId, versionOrInstant: Option[Either[AggregateVersion, Instant]])
                                                                (eventHandler: (EventInfo[AGGREGATE_ROOT], AggregateId, Boolean) => Unit): Unit =
-    processEvents[AGGREGATE_ROOT](aggregateId, versionOrInstant, withMetadata = true) { (userId, time, event, eventAggregateId, version, noop, metadata) =>
+    processEvents[AGGREGATE_ROOT](aggregateId, versionOrInstant, withMetadata = true) { (userId, time, event, eventAggregateId, version, noop, metadata, _) =>
       eventHandler(EventInfo(AggregateVersion(version), event, userId, time, metadata), eventAggregateId, noop)
     }
 
+  override def readHistory[AGGREGATE_ROOT](aggregateId: AggregateId, version: AggregateVersion)
+                                          (eventHandler: (EventInfo[AGGREGATE_ROOT], AggregateId, Boolean, Int) => Unit): Unit =
+    processEvents[AGGREGATE_ROOT](aggregateId, Some(Left(version)), withMetadata = true) { (userId, time, event, eventAggregateId, eventVersion, noop, metadata, size) =>
+      eventHandler(EventInfo(AggregateVersion(eventVersion), event, userId, time, metadata), eventAggregateId, noop, size)
+    }
+
   private def processEvents[AGGREGATE_ROOT](aggregateId: AggregateId, versionOrInstant: Option[Either[AggregateVersion, Instant]], withMetadata: Boolean)
-                                           (eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean, Option[EventMetadata]) => Unit): Unit = {
+                                           (eventHandler: (UserId, Instant, Event[AGGREGATE_ROOT], AggregateId, Int, Boolean, Option[EventMetadata], Int) => Unit): Unit = {
     DB.localTx { implicit session =>
       val version: Option[AggregateVersion] = versionOrInstant.map {
         case Left(version) => version
@@ -233,14 +239,16 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       val query = version match {
         case Some(v) =>
           sql"""SELECT user_id, event_time, event_type_id, event_type_version, event, events.version, events.aggregate_id, events.metadata::text,
-                noop_events.id IS NOT NULL AND (events.aggregate_id != ? AND noop_events.from_version <= aggregates.base_version OR events.aggregate_id = ? AND noop_events.from_version <= ?) as noop, events.id
+                noop_events.id IS NOT NULL AND (events.aggregate_id != ? AND noop_events.from_version <= aggregates.base_version OR events.aggregate_id = ? AND noop_events.from_version <= ?) as noop, events.id,
+                octet_length(events.event)
              FROM events
              JOIN aggregates ON events.aggregate_id = aggregates.base_id AND (events.aggregate_id != ? AND events.version <= aggregates.base_version OR events.aggregate_id = ? AND events.version <= ?)
              LEFT JOIN noop_events ON events.id = noop_events.id AND noop_events.from_version <= aggregates.base_version
              WHERE aggregates.id = ? ORDER BY aggregates.base_order, version""".stripMargin.bind(aggregateId.asLong, aggregateId.asLong, v.asInt, aggregateId.asLong, aggregateId.asLong, v.asInt, aggregateId.asLong)
         case None =>
           sql"""SELECT user_id, event_time, event_type_id, event_type_version, event, events.version, events.aggregate_id, events.metadata::text,
-                noop_events.id IS NOT NULL AND noop_events.from_version <= aggregates.base_version as noop, events.id
+                noop_events.id IS NOT NULL AND noop_events.from_version <= aggregates.base_version as noop, events.id,
+                octet_length(events.event)
              FROM events
              JOIN aggregates ON events.aggregate_id = aggregates.base_id AND events.version <= aggregates.base_version
              LEFT JOIN noop_events ON events.id = noop_events.id AND noop_events.from_version <= aggregates.base_version
@@ -249,7 +257,7 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
       query.fetchSize(fetchSize).foreach { rs =>
         val event = readStored[AGGREGATE_ROOT](rs, AggregateId(rs.long(7)), rs.int(6), rs.long(10))
         eventHandler(UserId(rs.long(1)), utcTime(rs.underlying, 2), event, AggregateId(rs.long(7)), rs.int(6), rs.boolean(9),
-          if (withMetadata) metadataOf(rs.string(8)) else None)
+          if (withMetadata) metadataOf(rs.string(8)) else None, rs.int(11))
       }
       // D51: the history below the squash point is gone, and a read of it fails instead of giving a wrong state. Checked
       // after the read, so a squash committed while it ran is seen too; an instant before the squash event's time fails

@@ -393,6 +393,28 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
     eventStoreState.aggregatesOf(Seq(someType), AggregateId(Long.MinValue), 10, AggregateScope.InSpace(SpaceId(77))) mustBe empty
   }
 
+  // D97: one read gives a build an aggregate's events and its state.
+  Scenario("An aggregate's history up to a version is read with its base's, each event's undo mark at that version, and its size") {
+    val a = new TestFixture(eventStoreState)
+    a.storeEvents(Seq(EventA("a"), EventB(2)))
+    a.storeEvents(Seq(Undo(1)))
+    val copy = new TestFixture(eventStoreState)
+    copy.storeEvents(Seq(Copy(SpaceId(0), a.aggregateId, AggregateVersion(1)), EventC(true)))
+
+    def history(fixture: TestFixture, version: Int): Seq[(Long, Int, String, Boolean, Boolean)] = {
+      var read = Vector[(Long, Int, String, Boolean, Boolean)]()
+      eventStoreState.readHistory[Any](fixture.aggregateId, AggregateVersion(version)) { (event, eventAggregateId, noop, size) =>
+        read :+= ((eventAggregateId.asLong, event.version.asInt, event.event.getClass.getSimpleName, noop, size > 0))
+      }
+      read
+    }
+    val sized = eventStoreState.isInstanceOf[PostgresEventStoreState] // the memory store keeps no JSON: sizes 0
+    val (aId, copyId) = (a.aggregateId.asLong, copy.aggregateId.asLong)
+    history(a, 2) mustBe Seq((aId, 1, "EventA", false, sized), (aId, 2, "EventB", false, sized))
+    history(a, 3) mustBe Seq((aId, 1, "EventA", false, sized), (aId, 2, "EventB", true, sized), (aId, 3, "Undo", true, sized))
+    history(copy, 2) mustBe Seq((aId, 1, "EventA", false, sized), (copyId, 1, "Copy", false, sized), (copyId, 2, "EventC", false, sized))
+  }
+
   // F173: a builder walks the aggregates of a projection's types in id order, a page at a time.
   Scenario("A page of several types' aggregates is in id order across the types, after an id, at most a limit long") {
     val a = new TestFixture(eventStoreState)
