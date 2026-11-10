@@ -2814,3 +2814,13 @@ Open test-infrastructure items:
 - Each red under a mutation of what it checks: `EventStoreStateSpec`'s count; `ProjectionBuilderSpec`'s "how far a build is, and whether it moves" (a build
   that continued, a store that cannot be reached); `ProjectionsSpec`'s instance that cannot start; `ClusterSerializerSpec`
   reads a status of 1.0.6. Version 1.0.7.
+
+**10/11/2026: builds that wait start by priority (D99)**
+
+- `Projections.start` takes a `priority` (0 by default); `BuildSlots` grants the waiting request with the highest one first, equal ones in the
+  order they asked, also among those a `BuildHold` releases together. A host gives it to the projections its users wait for.
+- `BuildSlotsSpec`: the order of the turns, and a held build of a higher priority that asked later; both red when the priority is ignored.
+  Book chapter 10 (English and Polish), ARCHITECTURE §8. Version 1.0.8.
+- A targeted rebuild that a projection does not support (`clearForRebuild` not implemented, or not for that target) is a refusal, not a failure:
+  the projection and its supervisor say so at info, without a stack trace; the requester still gets `RebuildRefused` with the reason. Seen in Neula:
+  one aggregate offered to 14 read models wrote 29 error lines. Not covered by a scenario of its own: only the log's level changed.

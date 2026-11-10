@@ -375,7 +375,11 @@ Four things start one:
    projection that listens to cart events only (an `EventsListener`) keeps its build.
 4. **You ask for it**, with `RebuildProjection` (next section).
 
-At most two builds run at once (`buildsAtOnce`); the others wait for their turn.
+At most two builds run at once (`buildsAtOnce`); the others wait for their turn. Among those that
+wait, the one with the highest `priority` goes first, and equal ones go in the order they asked.
+Give one to a projection that others, or your users, wait for, such as the one that decides who may
+see what: `projections.start[CartNames]("e10-cart-names", version, "cartNames", priority = 1) { ... }`.
+The default is 0. A build that already runs is never interrupted for it.
 
 ### Holding builds until the store is ready
 

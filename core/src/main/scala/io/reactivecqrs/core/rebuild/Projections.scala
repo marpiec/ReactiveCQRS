@@ -68,10 +68,13 @@ class Projections(actors: ActorRefFactory, val settings: ProjectionsSettings) {
     * build must take its stores' table names from that build (`build.documentStore(...)`). `P`, the projection's class,
     * names the subscriptions of a projection 0.12 built, which is adopted as it is (D81). In a cluster (started on an
     * actor system with the cluster provider) the supervisor is a singleton (D53): every node starts it, and the
-    * `ActorRef` returned is this node's proxy to it, for queries and for this node's event bus (`RegisterSubscribers`). */
-  def start[P <: ProjectionActor : ClassTag](name: String, version: Int, actorName: String, whileBuilding: WhileBuilding = ServeLive)
+    * `ActorRef` returned is this node's proxy to it, for queries and for this node's event bus (`RegisterSubscribers`).
+    * `priority` (D99): among the builds that wait for their turn, or for the hold to end, the one with the highest
+    * priority starts first; equal ones in the order they asked. For the projections the others or the users wait for. */
+  def start[P <: ProjectionActor : ClassTag](name: String, version: Int, actorName: String, whileBuilding: WhileBuilding = ServeLive,
+                                            priority: Int = 0)
                                            (create: ProjectionBuild => P): ActorRef = {
-    val spec = ProjectionSpec(name, version, classTag[P].runtimeClass.getName, whileBuilding)
+    val spec = ProjectionSpec(name, version, classTag[P].runtimeClass.getName, whileBuilding, priority)
     val props = Props(new ProjectionSupervisor(spec, create, this)).withDispatcher(BlockingDispatcher.id)
     actors match {
       case system: ActorSystem => Singletons.start(system, actorName, props)
@@ -112,7 +115,7 @@ object Projections {
 
 /** A managed projection as `Projections.start` describes it to its supervisor: its name and version, the subscriber name
   * of its 0.12 form (adopted as build 0), and what its active build does while a new one is built. */
-case class ProjectionSpec(name: String, version: Int, legacySubscriber: String, whileBuilding: WhileBuilding)
+case class ProjectionSpec(name: String, version: Int, legacySubscriber: String, whileBuilding: WhileBuilding, priority: Int = 0)
 
 /** The messages of a managed projection's supervisor: the `ActorRef` that `Projections.start` returns (chapter 10). */
 object ProjectionSupervisor {
@@ -150,7 +153,8 @@ object ProjectionSupervisor {
     * `heldBy`: while full builds are held (CR-2), why; the build in progress then waits to start its bulk pass. */
   case class Builds(name: String, active: Option[BuildRecord], building: Option[BuildRecord], caughtUp: Boolean, heldBy: Option[String] = None)
 
-  private[rebuild] case object RequestBuildSlot
+  /** `priority`: the waiting request with the highest one is granted first (D99). */
+  private[rebuild] case class RequestBuildSlot(priority: Int = 0)
   private[rebuild] case object BuildSlotGranted
   private[rebuild] case object ReleaseBuildSlot
   /** To a supervisor whose request waits: why it is held (CR-2), or None once the hold is over. */
@@ -188,11 +192,12 @@ private[rebuild] object NoPositions extends BuildPositions {
   override def save(position: BuildPosition): Unit = ()
 }
 
-/** At most `slots` builds at once, granted in the order they were asked for; a supervisor holds or waits for one at most.
-  * With a `hold` (CR-2), none is granted until it is over. */
+/** At most `slots` builds at once, granted by priority (D99) and, among equal ones, in the order they were asked for; a
+  * supervisor holds or waits for one at most. With a `hold` (CR-2), none is granted until it is over. */
 private[rebuild] class BuildSlots(slots: Int, hold: Option[BuildHold] = None) extends Actor with MyActorLogging {
   private var holders = Set[ActorRef]()
-  private val waiting = mutable.Queue[ActorRef]()
+  private val waiting = mutable.ArrayBuffer[ActorRef]() // in the order they asked
+  private var priorities = Map[ActorRef, Int]()
   private var heldBy: Option[String] = None // the hold's last answer, while it holds
   private var released = hold.isEmpty
   private var checking = false
@@ -202,19 +207,20 @@ private[rebuild] class BuildSlots(slots: Int, hold: Option[BuildHold] = None) ex
   private case object Check
 
   override def receive: Receive = {
-    case RequestBuildSlot =>
+    case RequestBuildSlot(priority) =>
       val supervisor = sender()
       if (!holders.contains(supervisor) && !waiting.contains(supervisor)) {
         context.watch(supervisor)
-        waiting.enqueue(supervisor)
+        waiting += supervisor
+        priorities += supervisor -> priority
         grantWaiting()
         if (heldBy.isDefined) supervisor ! BuildSlotHeld(heldBy)
       }
     case ReleaseBuildSlot =>
-      waiting.dequeueAll(_ == sender())
+      leave(sender())
       release(sender())
     case Terminated(supervisor) =>
-      waiting.dequeueAll(_ == supervisor)
+      leave(supervisor)
       release(supervisor)
     case Check =>
       checkDue = false
@@ -226,7 +232,16 @@ private[rebuild] class BuildSlots(slots: Int, hold: Option[BuildHold] = None) ex
 
   private def grantWaiting(): Unit =
     if (!released) check()
-    else while (holders.size < slots && waiting.nonEmpty) grant(waiting.dequeue())
+    else while (holders.size < slots && waiting.nonEmpty) {
+      val next = waiting.maxBy(priorities) // the first of the highest priority: maxBy keeps the first of equal ones
+      leave(next)
+      grant(next)
+    }
+
+  private def leave(supervisor: ActorRef): Unit = {
+    waiting -= supervisor
+    priorities -= supervisor
+  }
 
   // The hold is asked off this actor's thread, as it may read the database; only while a build waits.
   private def check(): Unit = for (h <- hold if !released && !checking && !checkDue && waiting.nonEmpty) {
@@ -468,7 +483,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   private def connect(): Unit = {
     runningBuild.foreach(_.ref ! BuildFromStore(self))
     subscribeTakers()
-    runningBuild.foreach(_ => runtime.slots ! RequestBuildSlot)
+    runningBuild.foreach(_ => runtime.slots ! RequestBuildSlot(spec.priority))
   }
 
   // Buses answered before get the new takers' subscriptions; buses that asked get every subscription. Until a bus has
@@ -545,7 +560,8 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
     case RunTargetedBuilder => startTargetedBuilder()
     case Status.Failure(e) if targeted.exists(t => t.builder.isEmpty && instanceOfJob(t.job).exists(_.ref == sender())) =>
       val t = targeted.get
-      log.error("Projection " + spec.name + " cannot rebuild " + t.target + ": " + Errors.describe(e))
+      if (e.isInstanceOf[UnsupportedOperationException]) log.info("Projection " + spec.name + " does not rebuild " + t.target + ": " + Errors.message(e))
+      else log.error("Projection " + spec.name + " cannot rebuild " + t.target + ": " + Errors.describe(e))
       targeted = None
       saveJobs() // before the answer: the registry says what is left once the requester hears
       t.job.requesters.foreach(_ ! RebuildRefused(Errors.message(e)))
@@ -832,7 +848,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
           log.warning("Projection " + spec.name + ": the builder of build " + building.map(_.record.number).getOrElse("-") + " stopped; it continues in " + settings.restartAfter)
           troubled("the builder", ref)
           runtime.slots ! ReleaseBuildSlot
-          context.system.scheduler.scheduleOnce(settings.restartAfter, runtime.slots, RequestBuildSlot)(context.dispatcher, self)
+          context.system.scheduler.scheduleOnce(settings.restartAfter, runtime.slots, RequestBuildSlot(spec.priority))(context.dispatcher, self)
         }
       case None if building.exists(_.ref == ref) && !active.exists(_.ref == ref) =>
         // The build's instance stopped by itself (its stores could not be made): the active build serves on (D57), and

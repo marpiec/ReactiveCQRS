@@ -1324,7 +1324,8 @@ served unchanged meanwhile (`ServeStale`), it then catches up through a reconcil
 It binds each instance to its build (`BindSubscriber`), subscribes the instances that take
 deliveries (`ConnectedTo`, answering the bus's `GetSubscriptionRequests`, or `AddSubscriptions`
 once the bus runs), puts the build in progress into `BuildFromStore`, and runs its
-`ProjectionBuilder` when one of the runtime's build slots is free (`buildsAtOnce`, 2) and no `BuildHold` holds full
+`ProjectionBuilder` when one of the runtime's build slots is free (`buildsAtOnce`, 2; among the waiting ones the highest
+`priority` of `start` first, then the order they asked, D99) and no `BuildHold` holds full
 builds (D89: the slots grant none until its check, run on the blocking dispatcher every `checkEvery` while a build
 waits, answers None, such as the store's `buildReadiness`; the held supervisors keep the reason for `Builds` and
 `BuildStatus`; targeted rebuilds and the catch-up use no slot and are not held). Every

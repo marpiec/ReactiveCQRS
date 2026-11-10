@@ -403,6 +403,10 @@ abstract class ProjectionActor(options: ProjectionActorOptions = ProjectionActor
         if (!takenWhileGrouping(message)) flushGroup()
         handlers(message)
       } catch {
+        // A targeted rebuild this projection does not support is refused, not failed: its requester hears why (RebuildRefused)
+        case e: UnsupportedOperationException if message.isInstanceOf[ResetForRebuild] =>
+          log.info("Projection " + projectionName + " does not rebuild that target: " + e.getMessage)
+          sender() ! Status.Failure(e)
         case NonFatal(e) =>
           log.error(e, "Projection " + projectionName + " failed on " + message.getClass.getSimpleName)
           sender() ! Status.Failure(e)

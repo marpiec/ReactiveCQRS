@@ -383,7 +383,11 @@ Budowę uruchamiają cztery rzeczy:
    koszyka (`EventsListener`), zachowuje swoją budowę.
 4. **Prosisz o nią** przez `RebuildProjection` (następna sekcja).
 
-Naraz działają najwyżej dwie budowy (`buildsAtOnce`); pozostałe czekają na swoją kolej.
+Naraz działają najwyżej dwie budowy (`buildsAtOnce`); pozostałe czekają na swoją kolej. Spośród
+czekających pierwsza rusza ta o najwyższym priorytecie (`priority`), a równe w kolejności zgłoszeń.
+Nadaj go projekcji, na którą czekają inne albo użytkownicy, na przykład tej, która rozstrzyga, kto
+co może zobaczyć: `projections.start[CartNames]("e10-cart-names", version, "cartNames", priority = 1) { ... }`.
+Domyślnie 0. Budowa, która już działa, nie jest z tego powodu przerywana.
 
 ### Wstrzymanie budów, aż magazyn będzie gotowy
 
