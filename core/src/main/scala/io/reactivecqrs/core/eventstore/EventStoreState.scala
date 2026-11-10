@@ -113,6 +113,10 @@ abstract class EventStoreState {
     * base's), each with its version and squash point. A build reads them a type at a time, then each one's events. */
   def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int, scope: AggregateScope = AggregateScope.All): Seq[StoredAggregate]
 
+  /** How many aggregates of `aggregateType` `aggregatesOf` lists in `scope`, with ids up to `upTo` if given: a build
+    * says with it how far it is (D98). */
+  def aggregatesCount(aggregateType: AggregateType, scope: AggregateScope = AggregateScope.All, upTo: Option[AggregateId] = None): Long
+
   /** Removes delivered versions from the outbox. It may return before the rows are gone (the PostgreSQL store batches
     * these deletes, F26); a delete that fails only leaves rows that the outbox poller re-publishes later. */
   def deletePublished(aggregateId: AggregateId, versions: Seq[AggregateVersion]): Unit

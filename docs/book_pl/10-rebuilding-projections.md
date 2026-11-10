@@ -251,6 +251,23 @@ projekcji; tę, która głównie odtwarza, czytanie magazynu i obsługa zdarzeń
 to: wysłane zdarzenia, wypełnione luki, agregaty przekazane do dostarczania na żywo i zdarzenia,
 których nie udało się odczytać.
 
+Stan odpowiada też na dwa pytania, które każdy zadaje, gdy długa budowa trwa:
+
+- **Jak daleko jest?** `aggregatesRead` z `aggregatesTotal`: ile agregatów typów projekcji budowa
+  przeczytała, z tych, które ma przeczytać. Liczą się przez wszystkie typy razem, więc udział tylko
+  rośnie, a budowa, która ruszyła dalej po zatrzymaniu, liczy to, co przeczytała przed nim.
+  Uzgadnianie przechodzi po agregatach jeszcze raz, więc w fazie `Reconciling` obie liczby zaczynają
+  od nowa. Dopóki magazyn ich nie policzy, obie wynoszą 0.
+- **Czy się rusza?** `lastProgressAt` mówi, kiedy projekcja ostatnio nałożyła porcję albo budowniczy
+  ostatnio przeczytał stronę. Gdy coś nie pozwala budowie iść dalej, a ona sama próbuje ponownie,
+  `retrying` mówi co, a `retryingSince` od kiedy: `the store could not be read: ...`, `the projection
+  could not apply a chunk: ...` albo, w fazie `Waiting`, że budowniczy lub instancja budowy zatrzymali
+  się i ruszą ponownie. Gdy budowa znów idzie, `retrying` jest puste.
+
+Stan ze starym `lastProgressAt` i pustym `retrying` oznacza więc jeden długi krok, zwykle twoją
+projekcję nakładającą porcję; stan z ustawionym `retrying` oznacza, że budowa czeka, aż coś innego
+wróci, i mówi co.
+
 > **Pamiętaj:** przerwana budowa (gdy zatrzymujesz aplikację albo ta pada) przy następnym starcie
 > rusza dalej od miejsca, w którym była; nie zaczyna od nowa. Ale jeśli wdrożysz wersję 3, gdy wersja
 > 2 wciąż się buduje, w połowie zbudowana wersja 2 trafia do kosza: zamiast niej buduje się wersja 3.

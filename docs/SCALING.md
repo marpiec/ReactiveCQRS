@@ -202,6 +202,10 @@ Estimated from the measured numbers. None of this was run at this scale.
     `aggregates (type_id, id) WHERE id = base_id`, in an organization with its space, so a build of a
     few types or one organization reads only its own aggregates and their events (D96; F124's event
     keys, which did this for the commit-order read, are gone with it).
+  - A build's status counts its aggregates once a pass (D98): one `count(*)` per type through the
+    index its pages are listed by, so it grows with the aggregates of the projection's types, not with
+    the events (not measured at this scale). It runs on the builder's thread when the first status of
+    the pass is made; a store that cannot count leaves the totals at 0 and the build goes on.
   - A projection that writes for every event is bound by its own writes, whatever the threads: the
     bench's counter projection built at about 6 000 events/s with either builder (measured, d96-before
     and d96-after). `BuildStatus.waitingMillis` shows it.

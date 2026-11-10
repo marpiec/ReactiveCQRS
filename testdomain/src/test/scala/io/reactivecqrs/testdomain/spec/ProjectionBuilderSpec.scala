@@ -167,6 +167,16 @@ class FlakyRangeEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNames
     if (failures.getAndDecrement() > 0) throw new java.sql.SQLException("connection lost", "08006") else super.readPart(aggregateId, from, to, maxBytes)
 }
 
+/** The store, but while `down` it lists and counts no aggregates: it fails as a lost connection does (F117). */
+class UnreachableEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNamesState) extends PostgresEventStoreState(mpjsons, typesNamesState) {
+  val down = new java.util.concurrent.atomic.AtomicBoolean(false)
+  private def reached[T](read: => T): T = if (down.get()) throw new java.sql.SQLException("connection lost", "08006") else read
+  override def aggregatesOf(types: Seq[AggregateType], after: AggregateId, limit: Int, scope: AggregateScope): Seq[StoredAggregate] =
+    reached(super.aggregatesOf(types, after, limit, scope))
+  override def aggregatesCount(aggregateType: AggregateType, scope: AggregateScope, upTo: Option[AggregateId]): Long =
+    reached(super.aggregatesCount(aggregateType, scope, upTo))
+}
+
 /** The store, counting the ranges of versions read, in all and per aggregate. */
 class CountingPartsEventStore(mpjsons: MPJsons, typesNamesState: PostgresTypesNamesState) extends PostgresEventStoreState(mpjsons, typesNamesState) {
   val parts = new AtomicInteger()
@@ -866,6 +876,109 @@ class ProjectionBuilderSpec extends CommonSpec {
       status.readingMillis must be >= 100L
       status.replayingMillis must be >= 150L
       status.waitingMillis must be >= 300L
+    }
+  }
+
+  Feature("How far a build is, and whether it moves (D98)") {
+
+    // A projection that applies each chunk when told to, and never goes live: the builder stays to be asked.
+    def stepped(): TestProbe = TestProbe()
+    def nextChunk(projection: TestProbe): ApplyChunk = projection.fishForMessage(30.seconds) { case _: ApplyChunk => true; case _ => false }.asInstanceOf[ApplyChunk]
+    def statesPlan(identity: String): BuildPlan = {
+      val listing = onBlocking(Props(new NoteStates(identity, subscriptions, lines(identity.replace('-', '_')))))
+      try BuildPlan(listing.askFor[Listeners](GetListeners, 5.seconds).subscriptions) finally system.stop(listing)
+    }
+    def builder(projection: TestProbe, identity: String, store: EventStoreState, positions: BuildPositions, settings: BuilderSettings): ActorRef =
+      onBlocking(Props(new ProjectionBuilder(projection.ref, identity, statesPlan(identity), store, subscriptions, sources, positions, TestProbe().ref, settings)))
+
+    Scenario("its status counts the aggregates it has read of those it has to read, also when it continued after a stop") {
+      Given("notes, and a build that reads two of them a page and has one chunk in flight")
+      val live = new Live(Nil)
+      val notes = (1 to 5).map(n => live.create("counted " + n))
+      val noteType = AggregateType.of[BuildNote]
+      val total = eventStore.aggregatesCount(noteType)
+      val settings = BuilderSettings(pageSize = 2, chunkEvents = 2, chunksInFlight = 1)
+      val projection = stepped()
+      val building = builder(projection, "m4b-counted", eventStore, new MemoryBuildPositions, settings)
+
+      When("the projection has its first chunk")
+      val first = nextChunk(projection)
+
+      Then("two of all the notes are read, and the build moved a moment ago")
+      val began = building.askFor[BuildStatus](GetBuildStatus, 5.seconds)
+      (began.phase, began.aggregatesRead, began.aggregatesTotal) mustBe (("Bulk", 2L, total))
+      began.lastProgressAt.get.isAfter(java.time.Instant.now.minusSeconds(30)) mustBe true
+      began.retrying mustBe None
+
+      When("every chunk is applied")
+      projection.reply(ChunkApplied(first.id, Nil, 0))
+      projection.fishForMessage(60.seconds) {
+        case chunk: ApplyChunk => projection.reply(ChunkApplied(chunk.id, Nil, 0)); false
+        case GoLive => true
+        case _ => false
+      }
+
+      Then("all of them are read")
+      val read = building.askFor[BuildStatus](GetBuildStatus, 5.seconds)
+      (read.aggregatesRead, read.aggregatesTotal) mustBe ((total, total))
+      system.stop(building)
+
+      When("a build continues from the position of the third of these notes")
+      val before = eventStore.aggregatesCount(noteType, upTo = Some(notes(2)))
+      val continued = stepped()
+      val continuing = builder(continued, "m4b-counted-again", eventStore,
+        new MemoryBuildPositions { save(BuildPosition(bulkDone = false, notes(2).asLong)) }, settings)
+      nextChunk(continued)
+
+      Then("the notes before it count as read, with the page it read since")
+      val resumed = continuing.askFor[BuildStatus](GetBuildStatus, 5.seconds)
+      (resumed.aggregatesRead, resumed.aggregatesTotal) mustBe ((before + 2, total))
+      system.stop(continuing)
+    }
+
+    Scenario("a build that cannot read the store says so, with why and since when, and no longer once it reads again") {
+      Given("a note, and a store that cannot be reached")
+      val live = new Live(Nil)
+      live.create("unreachable")
+      val store = new UnreachableEventStore(mpjsons, typesNamesState)
+      store.down.set(true)
+      val projection = TestProbe()
+      projection.setAutoPilot((sender: ActorRef, message: Any) => {
+        message match {
+          case chunk: ApplyChunk => sender ! ChunkApplied(chunk.id, Nil, 0)
+          case _ => ()
+        }
+        org.apache.pekko.testkit.TestActor.KeepRunning
+      })
+      val building = builder(projection, "m4b-unreachable", store, new MemoryBuildPositions,
+        BuilderSettings(pageSize = 50, chunkEvents = 20, retryAfter = 100.millis))
+
+      Then("its status says it retries, why and since when; it knows no totals yet")
+      val since = awaitAssert({
+        val status = building.askFor[BuildStatus](GetBuildStatus, 5.seconds)
+        status.phase mustBe "Bulk"
+        status.retrying.get must (startWith("the store could not be read: ") and include("SQLException"))
+        (status.aggregatesRead, status.aggregatesTotal) mustBe ((0L, 0L))
+        status.retryingSince.get
+      }, 10.seconds, 50.millis)
+
+      And("it says the same since the same moment while the store stays away")
+      Thread.sleep(300)
+      building.askFor[BuildStatus](GetBuildStatus, 5.seconds).retryingSince mustBe Some(since)
+
+      When("the store is back")
+      store.down.set(false)
+
+      Then("the build reads on, and says nothing of a retry any more")
+      awaitAssert({
+        val status = building.askFor[BuildStatus](GetBuildStatus, 5.seconds)
+        status.phase mustBe "GoingLive"
+        status.retrying mustBe None
+        status.retryingSince mustBe None
+        status.aggregatesTotal must be > 0L
+        status.lastProgressAt.get.isAfter(since) mustBe true
+      }, 20.seconds, 50.millis)
+      system.stop(building)
     }
   }
 }

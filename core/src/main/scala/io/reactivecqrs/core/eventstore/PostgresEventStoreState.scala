@@ -436,6 +436,14 @@ class PostgresEventStoreState(mpjsons: MPJsons, typesNamesState: TypesNamesState
           rs.intOpt(4).map(AggregateVersion(_)))).list()
     }
 
+  // Through aggregates (type_id, id) of the own rows, as a page is read (F173).
+  override def aggregatesCount(aggregateType: AggregateType, scope: AggregateScope = AggregateScope.All, upTo: Option[AggregateId] = None): Long =
+    DB.readOnly { implicit session =>
+      sql"""SELECT count(*) FROM aggregates a
+           | WHERE a.base_id = a.id AND a.type_id = ${typesNamesState.typeIdByClassName(aggregateType.typeName)}
+           |   ${upTo.fold(sqls"")(id => sqls"AND a.id <= ${id.asLong}")} ${scoped(scope)}""".stripMargin.map(_.long(1)).single().getOrElse(0L)
+    }
+
   private def typeIds(types: Seq[AggregateType]): Seq[Short] = types.map(t => typesNamesState.typeIdByClassName(t.typeName)).distinct
 
   // On the aggregate's own row, `a`.

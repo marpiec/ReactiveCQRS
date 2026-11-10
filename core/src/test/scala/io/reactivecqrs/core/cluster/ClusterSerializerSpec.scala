@@ -21,6 +21,10 @@ case class BuildStatusOfRc1(phase: String, position: Long, eventsSent: Long, gap
 // 1.0.2's shape of the build status, which 1.0.3 added the timings to (CR-8).
 case class BuildStatusOf102(phase: String, position: Long, eventsSent: Long, gapsFilled: Long, handedOver: Long, unreadable: Long,
                             heldBy: Option[String], reportedAt: Option[java.time.Instant], statesRestored: Long)
+// 1.0.6's shape of the build status, which 1.0.7 added its counts and its retry to (D98).
+case class BuildStatusOf106(phase: String, position: Long, eventsSent: Long, gapsFilled: Long, handedOver: Long, unreadable: Long,
+                            heldBy: Option[String], reportedAt: Option[java.time.Instant], readingMillis: Long, replayingMillis: Long,
+                            waitingMillis: Long, typeIndex: Int, types: Int)
 // An actor's own messages are defined inside its class, so they hold its instance.
 class Holder { case class Inner(id: Int) }
 
@@ -74,6 +78,17 @@ class ClusterSerializerSpec extends AnyFeatureSpec with Matchers with BeforeAndA
       val timed = BuildStatus("Bulk", 5, 6, 7, 8, 9, None, at, readingMillis = 10, replayingMillis = 20, waitingMillis = 30, typeIndex = 1, types = 3)
       val serializer = new ClusterSerializer(system)
       serializer.fromBinary(serializer.toBinary(timed), serializer.manifest(timed)) mustBe timed
+    }
+
+    Scenario("1.0.7's build status: one of 1.0.6 reads without its counts, and the counts and the retry travel (D98)") {
+      import io.reactivecqrs.core.rebuild.ProjectionBuilder.BuildStatus
+      val at = Some(java.time.Instant.parse("2026-11-10T10:00:00Z"))
+      asWrittenFor(BuildStatusOf106("Bulk", 5, 6, 7, 8, 9, None, at, 10, 20, 30, 1, 3), classOf[BuildStatus]) mustBe
+        BuildStatus("Bulk", 5, 6, 7, 8, 9, None, at, readingMillis = 10, replayingMillis = 20, waitingMillis = 30, typeIndex = 1, types = 3)
+      val counted = BuildStatus("Bulk", 5, 6, 7, 8, 9, None, at, aggregatesTotal = 400, aggregatesRead = 120, lastProgressAt = at,
+        retrying = Some("the store could not be read: SQLException 08006"), retryingSince = at)
+      val serializer = new ClusterSerializer(system)
+      serializer.fromBinary(serializer.toBinary(counted), serializer.manifest(counted)) mustBe counted
     }
 
     Scenario("a field whose type changed fails the message") {

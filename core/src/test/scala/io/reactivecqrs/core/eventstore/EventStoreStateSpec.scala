@@ -437,6 +437,29 @@ abstract class EventStoreStateSpec(val eventStoreState: EventStoreState) extends
       Seq(a.aggregateId, b.aggregateId)
   }
 
+  // D98: a build says how far it is: how many aggregates it will read, and how many lie before the one it continues from.
+  Scenario("The aggregates of a type are counted as a build lists them: their own rows, in a scope, up to an id") {
+    val a = new TestFixture(eventStoreState)
+    val nested = AggregateId(TestIds.aggregate())
+    val b = new TestFixture(eventStoreState)
+    a.storeEvents(Seq(EventA("a"), EventB(2)))
+    eventStoreState.localTx(session => eventStoreState.persistEvents(nested,
+      NewEvents[Nesting.NestedRoot](UserId(1), AggregateVersion.ZERO, Instant.now, Seq(Nesting.NestedCreated())))(session)).get
+    b.storeEvents(Seq(EventA("b")))
+    val copy = new TestFixture(eventStoreState)
+    copy.storeEvents(Seq(Copy(SpaceId(0), a.aggregateId, AggregateVersion(2)), EventC(true)))
+    val someType = AggregateType.of[SomeAggregate]
+    val ours = AggregateScope.Only(Set(a.aggregateId, nested, b.aggregateId, copy.aggregateId))
+
+    eventStoreState.aggregatesCount(someType, ours) mustBe 3 // a, b and the copy, each once, however many events; not the other type's
+    eventStoreState.aggregatesCount(AggregateType.of[Nesting.NestedRoot], ours) mustBe 1
+    eventStoreState.aggregatesCount(someType, ours, upTo = Some(b.aggregateId)) mustBe 2
+    eventStoreState.aggregatesCount(someType, ours, upTo = Some(AggregateId(a.aggregateId.asLong - 1))) mustBe 0
+    eventStoreState.aggregatesCount(someType, AggregateScope.Only(Set.empty)) mustBe 0
+    eventStoreState.aggregatesCount(someType, AggregateScope.InSpace(SpaceId(77))) mustBe 0
+    eventStoreState.aggregatesCount(someType) must be >= 3L
+  }
+
   // D17, F8: a rewrite may change an event's values, never its class.
   Scenario("A rewrite that would change an event's class is refused, and nothing is rewritten") {
     val f = new TestFixture(eventStoreState)

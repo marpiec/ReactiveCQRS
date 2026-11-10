@@ -246,6 +246,23 @@ waits for its turn, or for a restart after a failure) or `NoBuild`. The other nu
 events sent, the gaps filled, the aggregates handed over to live delivery and the events that
 could not be read.
 
+The status also answers the two questions everyone asks while a long build runs:
+
+- **How far is it?** `aggregatesRead` of `aggregatesTotal`: how many aggregates of the projection's
+  types the build has read, of those it has to read. They count across all the types, so the share
+  only grows, and a build that continued after a stop counts what it read before the stop. The
+  reconciliation walks the aggregates once more, so in `Reconciling` both start again. Until the
+  store has counted them, both are 0.
+- **Does it move?** `lastProgressAt` is when the projection last applied a chunk or the builder last
+  read a page. When something keeps the build from moving while it tries again by itself, `retrying`
+  says what and `retryingSince` since when: `the store could not be read: ...`, `the projection could
+  not apply a chunk: ...`, or, with the phase `Waiting`, that the builder or the build's instance
+  stopped and starts again. Once the build moves, `retrying` is empty again.
+
+So a status with an old `lastProgressAt` and nothing in `retrying` means one long step, usually your
+projection applying a chunk; one with `retrying` set means the build waits for something else to come
+back, and tells you what.
+
 > **Remember:** a build that is interrupted (you stop the application, or it crashes) carries on
 > from where it was at the next start; it does not begin again. But deploy version 3 while version 2
 > is still building, and the half-built version 2 is thrown away: version 3 builds instead.

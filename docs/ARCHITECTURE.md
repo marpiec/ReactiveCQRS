@@ -1282,6 +1282,16 @@ projection could not take is sent again. A row that cannot be read, or an aggreg
 cannot be restored, fails its subscription at that version (D20a, visible in the projection's
 status) and the build goes on (F82); the events before it are delivered. A transient error (F117) is read again later.
 
+**Status (D98).** `BuildStatus` says how far the pass at work is and whether it moves. `aggregatesRead` of
+`aggregatesTotal`: the aggregates of the plan's types its pages have read, of those `EventStoreState.aggregatesCount`
+counted in the builder's scope when a status was first made in the pass (through `aggregates (type_id, id)` of the own
+rows, as a page is listed; a store that cannot count is asked again at the next status, and the build goes on). A bulk pass
+that continued counts those before its position as read; the reconciliation counts anew. `lastProgressAt`: the last chunk
+the projection applied or page the builder read. `retrying`, `retryingSince`: the store could not be read, or the
+projection could not take a chunk, and the builder tries again after `retryAfter`; empty once it moved. Without a builder,
+the supervisor's `Waiting` status carries them when the builder or the build's instance stopped and starts again after
+`restartAfter`, with what the stopped child failed with.
+
 ### 8.2 Managed projections: the registry and the supervisor (`rebuild/Projections.scala`, M4)
 
 **Wiring.** The host creates one `Projections(actorSystem, ProjectionsSettings(eventStore,

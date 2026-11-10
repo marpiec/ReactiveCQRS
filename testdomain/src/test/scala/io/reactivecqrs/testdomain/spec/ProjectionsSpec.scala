@@ -327,6 +327,14 @@ class ProjectionsSpec extends CommonSpec {
 
       Then("version 1 serves, and takes events, while the build fails and is tried again")
       awaitAssert(attempts.get() must be >= 2, 10.seconds, 10.millis)
+
+      And("the build's status says why it does not move: its instance stopped, with what it failed on, and that it starts again (D98)")
+      awaitAssert({
+        val waiting = v2.askFor[BuildStatus](GetBuildStatus, 5.seconds)
+        waiting.phase mustBe "Waiting"
+        waiting.retrying.get must (startWith("the build's instance stopped: ") and include("its store cannot be made") and include("it starts again in"))
+        waiting.retryingSince mustBe defined
+      }, 10.seconds, 20.millis)
       second.send(AddBuildNoteLine(userId, note, AggregateVersion(2), "two"))
       awaitAssert(linesOf(v2, note) mustBe Some(NoteLines("note", Vector("one", "two"))), 10.seconds, 20.millis)
 

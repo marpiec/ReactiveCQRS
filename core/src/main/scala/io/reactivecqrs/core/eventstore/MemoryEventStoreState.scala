@@ -318,6 +318,11 @@ class MemoryEventStoreState(commitOrder: Boolean = true) extends EventStoreState
       .map { case (id, aggregateType) => StoredAggregate(aggregateType, id, eventStore(id).last.version, squashedVersions.get(id)) }
   }
 
+  override def aggregatesCount(aggregateType: AggregateType, scope: AggregateScope = AggregateScope.All, upTo: Option[AggregateId] = None): Long = synchronized {
+    eventsRows.iterator.filter(row => row.aggregateType == aggregateType && upTo.forall(row.aggregateId.asLong <= _.asLong))
+      .map(_.aggregateId).toSet.count(inScope(_, scope)).toLong
+  }
+
   // The space is the first event's, as PostgreSQL keeps it with the aggregate (D38).
   private def inScope(id: AggregateId, scope: AggregateScope): Boolean = scope match {
     case AggregateScope.All => true

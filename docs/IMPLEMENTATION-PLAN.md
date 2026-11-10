@@ -2805,3 +2805,12 @@ Open test-infrastructure items:
 - Red first: `ProjectionBuilderSpec`'s "what a build holds and reads of one aggregate" (11 parts of a twenty-line note read
   before two chunks were applied; one part and one restore per short note); `EventStoreStateSpec`'s history read, on both
   stores. Version 1.0.6.
+
+**10/11/2026: a build's status says how far it is and whether it moves (D98)**
+- For the administrators of Neula's updates, who could not tell a slow rebuild from a stuck one: `BuildStatus` gains
+  `aggregatesRead` of `aggregatesTotal` (`EventStoreState.aggregatesCount`, on both stores), `lastProgressAt`, and `retrying`
+  with `retryingSince`; the supervisor's `Waiting` status says when the builder or the build's instance stopped and
+  starts again, with what it failed with.
+- Each red under a mutation of what it checks: `EventStoreStateSpec`'s count; `ProjectionBuilderSpec`'s "how far a build is, and whether it moves" (a build
+  that continued, a store that cannot be reached); `ProjectionsSpec`'s instance that cannot start; `ClusterSerializerSpec`
+  reads a status of 1.0.6. Version 1.0.7.

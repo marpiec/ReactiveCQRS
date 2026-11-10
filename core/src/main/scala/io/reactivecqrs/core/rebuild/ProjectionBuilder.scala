@@ -70,11 +70,20 @@ object ProjectionBuilder {
     * CR-8, where the builder's time went: `readingMillis` reading the store (pages of aggregates, and what the gaps and the
     * reconciliation read), `replayingMillis` making the bulk pass's items (reading each aggregate's events and restoring
     * states, on `restoreThreads` threads), `waitingMillis` waiting for the projection to apply its chunks or go live. The
-    * rest is the builder's own work and its waits to retry. */
+    * rest is the builder's own work and its waits to retry.
+    * D98, how far the build is and whether it moves: `aggregatesRead` of `aggregatesTotal`, the aggregates of its types the
+    * pass at work has read and has to read (the bulk pass, then the reconciliation, which walks them again; a bulk pass
+    * that continued after a stop counts those before its position as read; both 0 until the store counted them, and
+    * without a builder). `lastProgressAt`: when the projection last applied a chunk or the builder last read a page.
+    * `retrying`, since `retryingSince`: why it does not move now, while it tries again by itself: the store cannot be
+    * read, the projection cannot apply a chunk, or, from the supervisor, the builder or the build's instance stopped
+    * and starts again; None once it moved. */
   case class BuildStatus(phase: String, position: Long, eventsSent: Long, gapsFilled: Long, handedOver: Long, unreadable: Long,
                          heldBy: Option[String] = None, reportedAt: Option[java.time.Instant] = None,
                          readingMillis: Long = 0, replayingMillis: Long = 0, waitingMillis: Long = 0, typeIndex: Int = 0,
-                         types: Int = 0)
+                         types: Int = 0, aggregatesTotal: Long = 0, aggregatesRead: Long = 0,
+                         lastProgressAt: Option[java.time.Instant] = None, retrying: Option[String] = None,
+                         retryingSince: Option[java.time.Instant] = None)
   object BuildStatus {
     /** No build runs. */
     val NoBuild: BuildStatus = BuildStatus("NoBuild", 0, 0, 0, 0, 0)
@@ -172,14 +181,53 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
   private var waiting = 0L
   private var idleSince = Option.empty[Long]
 
+  // D98: how far the pass at work is, in aggregates of the plan's types. `aggregatesTotal` and, for a bulk pass that
+  // continued after a stop, `aggregatesBefore` its position are counted when a status is first asked for in the pass
+  // (None until the store could count them); `aggregatesRead` are those its pages read since.
+  private var aggregatesTotal = Option.empty[Long]
+  private var aggregatesBefore = 0L
+  private var aggregatesRead = 0L
+  private var passStart = (0, 0L) // the type and the position the bulk pass began or continued at
+  // When the build last moved, and why it does not move now, since when (the store or the projection failed; it retries)
+  private var lastProgressAt = java.time.Instant.now
+  private var retrying = Option.empty[(String, java.time.Instant)]
+
   override def postStop(): Unit = {
     reports.foreach(_.cancel())
     restorers.foreach(_.shutdown())
   }
 
-  private def status: BuildStatus = BuildStatus(phase.toString, position, eventsSent, gapsFilled, handedOver, unreadable,
-    reportedAt = Some(java.time.Instant.now), readingMillis = reading / 1000000, replayingMillis = replaying / 1000000,
-    waitingMillis = waiting / 1000000, typeIndex = math.min(typeIndex, plan.types.size), types = plan.types.size)
+  private def status: BuildStatus = {
+    countAggregates()
+    val read = aggregatesBefore + aggregatesRead
+    BuildStatus(phase.toString, position, eventsSent, gapsFilled, handedOver, unreadable,
+      reportedAt = Some(java.time.Instant.now), readingMillis = reading / 1000000, replayingMillis = replaying / 1000000,
+      waitingMillis = waiting / 1000000, typeIndex = math.min(typeIndex, plan.types.size), types = plan.types.size,
+      // Aggregates created since the count are read too: the total never falls behind what was read
+      aggregatesTotal = aggregatesTotal.fold(0L)(math.max(_, read)), aggregatesRead = if (aggregatesTotal.isDefined) read else 0L,
+      lastProgressAt = Some(lastProgressAt), retrying = retrying.map(_._1), retryingSince = retrying.map(_._2))
+  }
+
+  // Once a pass; a store that cannot count now is asked again at the next status, and the build goes on meanwhile.
+  private def countAggregates(): Unit = if (aggregatesTotal.isEmpty && phase != CaughtUp) try {
+    val totals = plan.types.map(eventStore.aggregatesCount(_, scope))
+    val (startType, startPosition) = passStart
+    aggregatesBefore =
+      if (phase == Reconciling) 0L
+      else totals.take(startType).sum +
+        (if (startPosition > 0 && startType < plan.types.size) eventStore.aggregatesCount(plan.types(startType), scope, Some(AggregateId(startPosition))) else 0L)
+    aggregatesTotal = Some(totals.sum)
+  } catch {
+    case NonFatal(e) => log.debug("Building " + subscriberName + " could not count its aggregates yet: " + Errors.describe(e))
+  }
+
+  private def moved(): Unit = {
+    lastProgressAt = java.time.Instant.now
+    retrying = None
+  }
+
+  private def stuck(what: String, e: Throwable): Unit =
+    retrying = Some((what + ": " + Errors.describe(e), retrying.fold(java.time.Instant.now)(_._2)))
 
   private def reads[T](body: => T): T = timed(body)(reading += _)
   private def replays[T](body: => T): T = timed(body)(replaying += _)
@@ -195,7 +243,6 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
   private def report(): Unit = if (reportStatus) reportTo ! BuildStatusReport(status)
 
   override def preStart(): Unit = {
-    report()
     context.watch(target)
     val start = positions.read()
     if (start.bulkDone) {
@@ -203,6 +250,8 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
     } else {
       position = start.position
       typeIndex = start.typeIndex
+      passStart = (typeIndex, position)
+      report()
       if (targeted.isEmpty) target ! BuildFromStore(self)
       log.info((if (targeted.isDefined) "Rebuilding " + scope + " of " else "Building ") + subscriberName +
         (if (position > 0 || typeIndex > 0) " from position " + position + " of type " + typeIndex else "") +
@@ -225,6 +274,7 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
       }
       outstanding += handed
       handedOver += handed
+      moved()
       fill(gaps.map(gap => (gap.aggregateType, gap.aggregateId, gap.from)))
       pump()
       report()
@@ -236,10 +286,12 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
       pump()
     case ProjectionLive if phase == GoingLive =>
       log.info("Projection " + subscriberName + " is live; reconciling it with the store")
+      moved()
       reconcile()
     case Status.Failure(e) =>
       // The projection could not take a chunk (its store is down): the chunks in flight are sent again, after a wait.
       log.warning("Projection " + subscriberName + " failed on a chunk, sending it again in " + settings.retryAfter + ": " + Errors.describe(e))
+      stuck("the projection could not apply a chunk", e)
       inFlight.reverseIterator.foreach(sent => first.prepend(sent)) // re-sent first, in their order
       inFlight.clear()
       retryLater()
@@ -308,6 +360,7 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
       try {
         val head = work.head
         val made = reads(head.next())
+        moved()
         if (head.done) work.dequeue()
         items ++= made
         events += made.map(item => math.max(item.events.size, 1)).sum
@@ -315,6 +368,7 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
       } catch {
         case NonFatal(e) =>
           log.error(e, "Building " + subscriberName + " could not read what an aggregate lacks; trying again in " + settings.retryAfter)
+          stuck("the store could not be read", e)
           retryLater()
           read = false
       }
@@ -333,6 +387,9 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
 
   private def reconcile(): Unit = {
     phase = Reconciling
+    // The reconciliation walks every aggregate again: counted anew, as some were created since
+    aggregatesTotal = None
+    aggregatesRead = 0L
     report()
     position = 0L
     readAll = false
@@ -352,6 +409,8 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
         (made, Nil, last, read, false)
     }
     val lastPage = count < settings.pageSize && !cut // a page its bytes ended is short, but not the last (F126)
+    aggregatesRead += count
+    moved()
     work ++= long
     chunked(items, reached).foreach { case (chunk, at) => ready.enqueue(chunk -> Reached(typeIndex, at)) }
     position = reached
@@ -363,6 +422,7 @@ class ProjectionBuilder(target: ActorRef, subscriberName: String, plan: BuildPla
   } catch {
     case NonFatal(e) =>
       log.error(e, "Building " + subscriberName + " could not read the store at position " + position + "; trying again in " + settings.retryAfter)
+      stuck("the store could not be read", e)
       retryLater()
       false
   }

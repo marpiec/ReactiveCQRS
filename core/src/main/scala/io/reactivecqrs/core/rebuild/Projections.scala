@@ -326,10 +326,23 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
   // replacements are subscribed; then they leave it, and their outbox rows go to the replacements.
   private var replaced = Vector[ActorRef]()
   private var children = 0 // names each child once, so a new one never meets the name of one still stopping
+  // D98: why the build does not move while no builder runs (its builder or its instance stopped and starts again), since
+  // when; and what the child that stopped last failed with, if it failed.
+  private var trouble = Option.empty[(String, java.time.Instant)]
+  private var childFailure = Option.empty[(ActorRef, String)]
 
   // AR7: an instance that fails to start (its stores cannot be made) is stopped, not restarted, and the projection
   // starts again after a wait.
-  override val supervisorStrategy: SupervisorStrategy = OneForOneStrategy() { case _ => SupervisorStrategy.Stop }
+  override val supervisorStrategy: SupervisorStrategy = OneForOneStrategy() { case e =>
+    childFailure = Some((sender(), Errors.describe(e)))
+    SupervisorStrategy.Stop
+  }
+
+  // The build waits to start again after `what` stopped: said in its status, with the failure `stopped` ended with.
+  private def troubled(what: String, stopped: ActorRef): Unit = {
+    val cause = childFailure.collect { case (`stopped`, failure) => ": " + failure }.getOrElse("")
+    trouble = Some((what + " stopped" + cause + "; it starts again in " + settings.restartAfter, trouble.fold(java.time.Instant.now)(_._2)))
+  }
 
   override def preStart(): Unit = self ! Start
 
@@ -576,7 +589,8 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
     // CR-7: answered at once, from what the builder reported last, never waiting on its reads.
     case GetBuildStatus => builder.orElse(targeted.flatMap(_.builder)) match {
       case Some(b) => sender() ! reports.getOrElse(b, BuildStatus("Starting", saved(building.getOrElse(active.get).record).position.position, 0, 0, 0, 0))
-      case None => sender() ! building.fold(BuildStatus.NoBuild)(b => BuildStatus.waiting(saved(b.record).position.position, heldBy))
+      case None => sender() ! building.fold(BuildStatus.NoBuild)(b =>
+        BuildStatus.waiting(saved(b.record).position.position, heldBy).copy(retrying = trouble.map(_._1), retryingSince = trouble.map(_._2)))
     }
     case request: RequestRepublish => builder.foreach(_.forward(request)) // from the build in progress, before its builder runs
     case Terminated(ref) => terminated(ref)
@@ -608,6 +622,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
       runtime.slots ! ReleaseBuildSlot
     } else {
       val positions = new RegistryBuildPositions(registry, spec.name, b.record.number)
+      trouble = None // a builder runs again: it says itself whether it moves
       builder = Some(context.watch(context.actorOf(Props(new ProjectionBuilder(b.ref, b.record.subscriber, BuildPlan(listeners), settings.eventStore,
         settings.subscriptionsState, runtime.sources, positions, self, settings.builder, restoreFailures = Some(failuresOf(b.record)), reportStatus = true))
         .withDispatcher(BlockingDispatcher.id),
@@ -815,6 +830,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
         builder = None
         if (!caughtUp) {
           log.warning("Projection " + spec.name + ": the builder of build " + building.map(_.record.number).getOrElse("-") + " stopped; it continues in " + settings.restartAfter)
+          troubled("the builder", ref)
           runtime.slots ! ReleaseBuildSlot
           context.system.scheduler.scheduleOnce(settings.restartAfter, runtime.slots, RequestBuildSlot)(context.dispatcher, self)
         }
@@ -822,6 +838,7 @@ class ProjectionSupervisor(spec: ProjectionSpec, create: ProjectionBuild => Proj
         // The build's instance stopped by itself (its stores could not be made): the active build serves on (D57), and
         // the build starts again in a new instance after a wait.
         log.error("Projection " + spec.name + ": the instance of build " + building.get.record.number + " stopped; it starts again in " + settings.restartAfter)
+        troubled("the build's instance", ref)
         if (building.exists(_.subscribed)) replaced :+= ref
         builder.foreach(context.stop)
         builder = None
